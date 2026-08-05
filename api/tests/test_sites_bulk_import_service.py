@@ -67,11 +67,31 @@ def test_bad_file_extension_and_broken_payloads():
         bi.parse_upload("x.json", b"{not json")
     assert exc.value.code == "invalid_json"
     with pytest.raises(bi.BulkImportError) as exc:
-        bi.number_json_rows({"rows": []})  # type: ignore[arg-type]
+        bi.number_json_rows("just a string")  # type: ignore[arg-type]
+    assert exc.value.code == "invalid_json"
+    with pytest.raises(bi.BulkImportError) as exc:
+        bi.number_json_rows([{"name": "A"}, "not a row"])  # type: ignore[list-item]
     assert exc.value.code == "invalid_json"
     with pytest.raises(bi.BulkImportError) as exc:
         bi.parse_upload("big.csv", b"x" * (bi.MAX_BYTES + 1))
     assert exc.value.code == "file_too_large"
+
+
+def test_single_object_wraps_into_one_row():
+    """Pasting ONE site as a bare JSON object (no array brackets) must work —
+    the array wrapper is a formality users will forget."""
+    rows = bi.number_json_rows({"name": "HO1", "city": "Houston"})
+    assert [n for n, _ in rows] == [1]
+    assert rows[0][1]["name"] == "HO1"
+
+    via_file = bi.parse_upload("x.json", b'{"name": "HO1", "city": "Houston"}')
+    assert [r for _, r in via_file] == [r for _, r in rows]
+
+    # pasting the API envelope by mistake gets the clearer column error
+    with pytest.raises(bi.BulkImportError) as exc:
+        bi.number_json_rows({"rows": []})
+    assert exc.value.code == "unknown_columns"
+    assert exc.value.extra["columns"] == ["rows"]
 
 
 async def test_preview_missing_name_and_payload_dupes(db, seeded_user):
