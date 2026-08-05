@@ -1,0 +1,12 @@
+/* Assets pages — reuses the directory-list shell, chip classes, and
+   --surface/--c-* tokens from directory.css (imported by the page).
+   Only genuinely new bits live here. */
+
+.asset-dupe-hint { color: var(--c-amber); font-size: 12px; }
+.knowledge-block {
+  white-space: pre-wrap;
+  background: var(--surface-2);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+}

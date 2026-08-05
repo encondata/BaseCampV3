@@ -118,7 +118,7 @@ export default function Topbar() {
     } else if (hit.kind === 'partner') {
       navigate('/stakeholders/partners', { state: { openRow: hit.id } });
     } else if (hit.kind === 'asset') {
-      navigate('/assets', { state: { openRow: hit.id } });
+      navigate(`/assets?open=${encodeURIComponent(hit.id)}`);
     } else if (hit.kind === 'asset_model') {
       navigate('/admin/asset-models', { state: { openRow: hit.id } });
     }
