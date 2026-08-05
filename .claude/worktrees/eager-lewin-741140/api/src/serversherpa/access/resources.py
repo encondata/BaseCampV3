@@ -1,0 +1,62 @@
+"""Resource registry — the code-side list of app surfaces access control
+knows about. Deploys introduce resources; the DB stores only grants."""
+
+from dataclasses import dataclass, field
+
+ACTIONS: tuple[str, ...] = ("view", "add", "change", "delete")
+
+
+@dataclass(frozen=True)
+class Resource:
+    id: str
+    label: str
+    routes: tuple[str, ...] = ()
+    # which scope anchors can see this resource at all (hard gate)
+    visible_to: frozenset[str] = field(
+        default_factory=lambda: frozenset({"global"}))
+    developer_only: bool = False
+    always_viewable: bool = False
+
+
+_RESOURCES = [
+    Resource("dashboard", "Dashboard", routes=("/",),
+             visible_to=frozenset({"global", "client", "partner", "self"})),
+    Resource("users", "Users", routes=("/people/users",),
+             # "self" so a per-person override can let an external-anchored
+             # contact see their own /external row — no role grants "users"
+             # by default for self/client/partner anchors, so this alone
+             # doesn't widen anyone's access.
+             #
+             # Write-side note: visible_to gates the whole resource, not
+             # individual actions — a users:change/add/delete override
+             # handed to a non-global (self/client/partner-anchored)
+             # person would pass require_permission() here too, not just
+             # view. The users-router's mutating endpoints (reset-password,
+             # disable/enable/unlock, profile PATCH, create) enforce rank
+             # only and have no row-level scope, so they each additionally
+             # require actor.access.is_global outright rather than relying
+             # on this hard gate to keep non-global actors out.
+             visible_to=frozenset({"global", "self"})),
+    Resource("workers", "Workers", routes=("/people/workers",),
+             visible_to=frozenset({"global", "partner", "self"})),
+    Resource("clients", "Clients", routes=("/stakeholders/clients",),
+             visible_to=frozenset({"global", "client"})),
+    Resource("partners", "Partners", routes=("/stakeholders/partners",),
+             visible_to=frozenset({"global", "partner"})),
+    Resource("sites", "Sites", routes=("/sites",),
+             # internal-only: no client/partner-anchored actor may see this
+             # resource, even via a per-person override — the hard gate in
+             # resolver.py blocks on visible_to before overrides are read.
+             visible_to=frozenset({"global"})),
+    Resource("attachments", "Files & attachments",
+             visible_to=frozenset({"global", "client", "partner"})),
+    Resource("settings", "Settings", routes=("/settings",)),
+    Resource("access", "Access control", routes=("/access",),
+             always_viewable=True),
+    Resource("audit", "Audit log", routes=("/audit",)),
+    Resource("devtools", "Developer tools", developer_only=True),
+]
+
+REGISTRY: dict[str, Resource] = {r.id: r for r in _RESOURCES}
+ROUTE_RESOURCE: dict[str, str] = {
+    route: r.id for r in _RESOURCES for route in r.routes}

@@ -1,0 +1,211 @@
+/* ============================================================
+   profile.css — My profile & details (fibertrace
+   user-menu-and-account.md §5), V3 theme. Fluid width.
+   ============================================================ */
+
+.profile-hero {
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 18px;
+  overflow: hidden;
+  margin-top: 20px;
+}
+
+.profile-cover {
+  height: 132px;
+  background:
+    radial-gradient(120% 160% at 85% 0%, rgba(var(--accent-rgb), 0.35) 0%, transparent 55%),
+    radial-gradient(120% 160% at 15% 100%, rgba(var(--accent-rgb), 0.18) 0%, transparent 60%),
+    var(--ink);
+}
+
+.profile-id {
+  display: flex;
+  align-items: flex-end;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding: 0 26px 22px;
+  margin-top: -46px;
+}
+
+.profile-photo {
+  width: 104px;
+  height: 104px;
+  flex: none;
+  border-radius: 26px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 34px;
+  font-weight: 600;
+  border: 3px solid var(--surface, #fff);
+  box-shadow: 0 18px 40px -18px rgba(0, 0, 0, 0.5);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.profile-meta { min-width: 0; }
+.profile-meta h1 {
+  margin: 0;
+  font-size: 25px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.profile-meta .pm-role {
+  margin-top: 4px;
+  font-size: 13.5px;
+  font-weight: 300;
+  color: var(--text-mute);
+}
+.profile-meta .pm-sub {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.profile-actions { margin-left: auto; display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* ── grid & panels ────────────────────────────────────────── */
+
+.profile-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 1.1fr) minmax(360px, 1.6fr);
+  gap: 18px;
+  align-items: start;
+  margin-top: 18px;
+}
+@media (max-width: 1080px) {
+  .profile-grid { grid-template-columns: 1fr; }
+}
+
+.panel {
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 16px;
+  overflow: hidden;
+}
+.panel + .panel { margin-top: 18px; }
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--paper-line);
+  background: var(--surface-2, #f5f7fa);
+}
+.panel-head h3 { margin: 0; font-size: 14.5px; font-weight: 600; color: var(--text-dark); }
+.panel-body { padding: 18px; }
+
+/* ── edit form ────────────────────────────────────────────── */
+
+.pf-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.pf-form .full { grid-column: 1 / -1; }
+.pf-form label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  display: block;
+  margin-bottom: 6px;
+}
+.pf-form input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+  background: var(--surface-2, #f5f7fa);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.pf-form input:focus {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
+  background: var(--surface, #fff);
+}
+
+.pf-form-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 4px;
+}
+.pf-error { font-size: 12.5px; color: var(--c-red, #c03540); }
+
+.btn-solid {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 9px;
+  padding: 10px 18px;
+  background: var(--accent);
+  color: #0c1117;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+.btn-solid:hover { filter: brightness(1.06); }
+.btn-solid:disabled { opacity: 0.55; cursor: default; }
+
+/* ── sessions ─────────────────────────────────────────────── */
+
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--paper-line);
+}
+.session-item:last-child { border-bottom: 0; padding-bottom: 0; }
+.session-item:first-child { padding-top: 0; }
+.session-icon {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: var(--surface-2, #f5f7fa);
+  border: 1px solid var(--paper-line);
+  color: var(--text-mute);
+}
+.session-icon svg { width: 17px; height: 17px; }
+.session-main { min-width: 0; flex: 1; }
+.session-main b { display: block; font-size: 13.5px; font-weight: 500; color: var(--text-dark); }
+.session-main p {
+  margin: 2px 0 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-mute);
+  overflow-wrap: anywhere;
+}
+
+.link-plain {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--text-mute);
+  cursor: pointer;
+  text-decoration: underline;
+}

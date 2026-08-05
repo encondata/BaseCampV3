@@ -1,0 +1,466 @@
+/* ============================================================
+   access.css — Access control page: stat strip, pill tabs,
+   3-mode permission matrix (role / override / effective),
+   role + group cards. Shares tokens from portal-theme.css and
+   the categorical palette set up in directory.css.
+   ============================================================ */
+
+/* ── page header actions ──────────────────────────────────── */
+
+.access-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.ro-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--c-amber, #a36207);
+  background: var(--c-amber-bg, rgba(255, 161, 46, 0.14));
+  border: 1px solid var(--c-amber-bd, rgba(255, 161, 46, 0.38));
+  white-space: nowrap;
+}
+.ro-chip svg { width: 13px; height: 13px; flex: none; }
+
+/* ── stat strip ───────────────────────────────────────────── */
+
+.stat-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 14px;
+  margin: 20px 0 22px;
+}
+
+.stat-tile {
+  background: var(--surface);
+  border: 1px solid var(--paper-line);
+  border-radius: 14px;
+  padding: 16px 18px;
+  box-shadow: 0 1px 2px rgba(27, 33, 41, 0.05);
+}
+.stat-tile .stat-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.stat-tile .stat-value {
+  margin-top: 7px;
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--text-dark);
+  letter-spacing: -0.01em;
+}
+.stat-tile .stat-sub {
+  margin-top: 4px;
+  font-size: 11.5px;
+  font-weight: 300;
+  color: var(--text-mute);
+}
+
+/* ── pill tab bar ─────────────────────────────────────────── */
+
+.subs-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 11px;
+  margin-bottom: 20px;
+}
+.subs-tabs button {
+  border: 0;
+  background: transparent;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-mute);
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.subs-tabs button:hover { color: var(--text-dark); }
+.subs-tabs button.on {
+  background: var(--surface);
+  color: var(--text-dark);
+  font-weight: 500;
+  box-shadow: 0 1px 3px rgba(27, 33, 41, 0.08);
+}
+
+.access-tab-panel { min-height: 200px; }
+
+.access-empty {
+  padding: 48px 20px;
+  text-align: center;
+  color: var(--text-mute);
+  font-size: 13.5px;
+  font-weight: 300;
+}
+.access-empty b { display: block; font-size: 15px; font-weight: 600; color: var(--text-dark); margin-bottom: 4px; }
+
+/* ── role / group cards (Tasks 5-8) ──────────────────────── */
+
+.role-card, .grp-card {
+  background: var(--surface);
+  border: 1px solid var(--paper-line);
+  border-radius: 14px;
+  padding: 16px 18px;
+  box-shadow: 0 1px 2px rgba(27, 33, 41, 0.05);
+}
+
+/* picker row above each tab's detail panel */
+.tab-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 440px;
+  margin-bottom: 16px;
+}
+
+.role-detail, .grp-detail { margin-bottom: 18px; }
+
+.rd-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.rd-head .mtx-actions { margin-left: auto; }
+.rc-name { font-size: 15px; font-weight: 600; color: var(--text-dark); }
+.rank-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  background: var(--surface-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 999px;
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+.rc-desc {
+  margin-top: 7px;
+  font-size: 12.5px;
+  font-weight: 300;
+  color: var(--text-mute);
+}
+.rd-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-top: 8px;
+}
+.rc-count {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-dark);
+  letter-spacing: -0.01em;
+}
+.rc-count span {
+  margin-left: 6px;
+  font-size: 11.5px;
+  font-weight: 300;
+  color: var(--text-mute);
+  letter-spacing: 0;
+}
+.rd-note { font-size: 12px; font-weight: 300; color: var(--text-mute); }
+
+/* ── groups + page-access panel (Task 6) ──────────────────── */
+
+.gc-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gc-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: var(--c-violet-bg, rgba(133, 102, 216, 0.1));
+  border: 1px solid var(--c-violet-bd, rgba(133, 102, 216, 0.28));
+  color: var(--c-violet, #6d4fc4);
+  flex: none;
+}
+.gc-icon svg { width: 15px; height: 15px; }
+.gc-name { font-size: 15px; font-weight: 600; color: var(--text-dark); }
+.gc-sub {
+  font-size: 12px;
+  font-weight: 300;
+  color: var(--text-mute);
+}
+
+.av-stack { display: flex; align-items: center; margin-top: 12px; min-height: 26px; flex-wrap: wrap; }
+.av-sm {
+  position: relative;
+  overflow: hidden;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #fff;
+  border: 2px solid var(--surface);
+  flex: none;
+}
+.av-stack .av-sm + .av-sm { margin-left: -7px; }
+.av-sm img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.av-sm.av-more {
+  background: var(--surface-2);
+  color: var(--text-mute);
+  border-color: var(--paper-line);
+  font-size: 9px;
+}
+
+.gate-panel {
+  background: var(--surface);
+  border: 1px solid var(--paper-line);
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(27, 33, 41, 0.05);
+  overflow: hidden;
+  margin-top: 22px;
+}
+.gate-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 18px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--paper-line);
+}
+.gate-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--paper-line);
+}
+.gate-row:last-child { border-bottom: 0; }
+.gate-label {
+  width: 130px;
+  flex: none;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-dark);
+}
+.gate-chips { flex: 1; display: flex; flex-wrap: wrap; gap: 6px; }
+.gate-opt-sub { margin-left: auto; font-size: 11px; color: var(--text-mute); }
+
+/* member rows inside the group detail panel */
+.mem-list { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.mem-row { display: flex; align-items: center; gap: 10px; }
+.mem-row .av-sm { border-color: var(--paper-line); }
+.mem-name { flex: 1; min-width: 0; font-size: 13px; color: var(--text-dark); }
+.mem-add { max-width: 340px; margin-top: 10px; }
+
+/* ── matrix panel head + save bar ─────────────────────────── */
+
+.mtx-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 4px 0 12px;
+}
+.mtx-title { display: flex; align-items: baseline; gap: 10px; }
+.mtx-title b { font-size: 15px; font-weight: 600; color: var(--text-dark); }
+.mtx-title span { font-size: 12px; font-weight: 300; color: var(--text-mute); }
+.mtx-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.save-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 10px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--c-amber-bd, rgba(255, 161, 46, 0.38));
+  background: var(--c-amber-bg, rgba(255, 161, 46, 0.14));
+  font-size: 12.5px;
+  color: var(--text-dark);
+}
+.save-bar span { flex: 1; min-width: 0; }
+
+/* ── permission matrix ────────────────────────────────────── */
+
+.pm-scroll {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--paper-line);
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(27, 33, 41, 0.05);
+}
+
+.pm-table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+}
+
+.pm-table thead th {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--paper-line);
+  padding: 10px 14px;
+  text-align: center;
+  white-space: nowrap;
+}
+.pm-table th.pm-res-head { text-align: left; }
+
+.pm-col-head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.pm-col-toggle {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-mute);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.pm-col-toggle:hover { background: var(--surface); color: var(--amber); }
+.pm-col-toggle svg { width: 10px; height: 10px; }
+
+.pm-table tbody tr { border-bottom: 1px solid var(--paper-line); }
+.pm-table tbody tr:last-child { border-bottom: 0; }
+.pm-table tbody tr:hover { background: rgba(var(--accent-rgb), 0.035); }
+
+.pm-res-label {
+  padding: 11px 16px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-dark);
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pm-lock-glyph { display: inline-flex; color: var(--text-mute); }
+.pm-lock-glyph svg { width: 13px; height: 13px; }
+
+.pm-cell { text-align: center; padding: 6px 14px; }
+
+.pm-chk, .pm-tri {
+  width: 27px;
+  height: 27px;
+  border-radius: 8px;
+  border: 1px solid var(--paper-line);
+  background: var(--surface-2);
+  color: var(--text-mute);
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.pm-chk svg, .pm-tri svg { width: 12px; height: 12px; }
+.pm-chk:disabled, .pm-tri:disabled { cursor: default; opacity: 0.55; }
+.pm-chk:not(:disabled):hover, .pm-tri:not(:disabled):hover { border-color: var(--amber); }
+
+.pm-chk.on {
+  background: var(--c-green-bg);
+  border-color: var(--c-green-bd);
+  color: var(--c-green);
+}
+
+.pm-tri.allow {
+  background: var(--c-green-bg);
+  border-color: var(--c-green-bd);
+  color: var(--c-green);
+}
+.pm-tri.deny {
+  background: var(--c-red-bg);
+  border-color: var(--c-red-bd);
+  color: var(--c-red);
+}
+.pm-tri.inherit {
+  background: var(--surface-2);
+  border-color: var(--paper-line);
+  color: var(--text-mute);
+}
+.pm-ghost { display: inline-flex; opacity: 0.4; }
+
+.pm-eff {
+  width: 27px;
+  height: 27px;
+  border-radius: 8px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--text-mute);
+}
+.pm-eff svg { width: 12px; height: 12px; }
+.pm-eff.yes { background: var(--c-green-bg); color: var(--c-green); }
+.pm-eff.no { background: var(--surface-2); color: var(--text-mute); opacity: 0.65; }
+.pm-eff.ov { box-shadow: 0 0 0 2px var(--c-violet); }
+
+/* ── override editor modal (Task 7) ───────────────────────── */
+
+.override-modal { width: min(780px, 96vw); }
+.ov-head { display: flex; align-items: center; gap: 10px; }
+.ov-head h3 { font-size: 15px; }
+.ov-sub { font-size: 11.5px; font-weight: 300; color: var(--text-mute); }
+
+/* ── explorer tab (Task 8) ────────────────────────────────── */
+
+.exp-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--paper-line);
+  border-radius: 14px;
+  padding: 16px 18px;
+  box-shadow: 0 1px 2px rgba(27, 33, 41, 0.05);
+  margin-bottom: 18px;
+}
+.exp-av {
+  position: relative;
+  overflow: hidden;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  flex: none;
+}
+.exp-av img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.exp-name { font-size: 16px; font-weight: 600; color: var(--text-dark); }
+.exp-scope { font-size: 12px; font-weight: 300; color: var(--text-mute); margin-top: 2px; }
+.exp-perm-count {
+  margin-left: auto;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.exp-perm-count b { display: block; font-size: 20px; font-family: var(--font-display); color: var(--text-dark); }

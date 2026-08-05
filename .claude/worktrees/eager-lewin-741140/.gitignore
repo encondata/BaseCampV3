@@ -1,0 +1,31 @@
+# Secrets — never commit real environment files
+.env
+.env.*
+!.env.example
+
+# OS noise
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+dist/
+
+# Reference material (previous-generation projects, not part of V3)
+BaseCampV2/
+Fiber Trace/
+fibertrace/
+
+# Local machine settings (Claude Code permissions etc.)
+.claude/settings.local.json
+
+# Python build artifacts
+*.egg-info/
+portal/tsconfig.tsbuildinfo
