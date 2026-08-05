@@ -7,8 +7,7 @@
  * are wired to placeholder state so Task 3 only has to add the modals.
  */
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import SiteEditModal from '../components/sites/SiteEditModal';
@@ -28,7 +27,7 @@ import {
   type SurveySchema,
 } from '../lib/api';
 import { initialOpenId } from '../lib/auditFormat';
-import { useDeepLinkFilter } from '../lib/useDeepLinkFilter';
+import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   formatCoords, matchesSiteFilters, naturalCompare, siteSearchText, type SiteFilters,
 } from '../lib/sites';
@@ -109,31 +108,7 @@ export default function Sites() {
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
-  useDeepLinkFilter(sites, s => s.id, s => s.name, setQuery);
-
-  // global-search handoff (same contract as Users/OrgDirectory), plus the
-  // filter-to-top behavior: expand the row AND pre-fill search with its
-  // name so it never lands below the fold. Handles both a fresh mount
-  // (rows not loaded yet — stash and fill when they arrive) and searching
-  // while already on this page (rows loaded — fill immediately).
-  const location = useLocation();
-  const navigate = useNavigate();
-  const pendingFocus = useRef<string | null>(null);
-  useEffect(() => {
-    const state = location.state as { openRow?: string } | null;
-    if (!state?.openRow) return;
-    setOpenId(state.openRow);
-    const target = sites?.find((s) => s.id === state.openRow);
-    if (target) setQuery(target.name);
-    else pendingFocus.current = state.openRow;
-    navigate(location.pathname, { replace: true, state: null });
-  }, [location.state, location.pathname, navigate, sites]);
-  useEffect(() => {
-    if (!pendingFocus.current || !sites) return;
-    const target = sites.find((s) => s.id === pendingFocus.current);
-    if (target) setQuery(target.name);
-    pendingFocus.current = null;
-  }, [sites]);
+  useRecordFocus(sites, (s) => s.id, (s) => s.name, setOpenId, setQuery);
   const [facets, setFacets] = useState<FacetState>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(
     () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));

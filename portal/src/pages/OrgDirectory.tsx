@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
@@ -19,7 +19,7 @@ import {
   afterLinkFailure, buildNewContactPersonPayload, planAddContact,
 } from '../lib/external';
 import { initialOpenId } from '../lib/auditFormat';
-import { useDeepLinkFilter } from '../lib/useDeepLinkFilter';
+import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate } from '../lib/format';
 import {
   ColumnsButton,
@@ -177,7 +177,6 @@ function csvColumns(hasType: boolean): [string, (o: OrgItem) => string][] {
 
 export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
   const { can } = useAuth();
-  const location = useLocation();
   const navigate = useNavigate();
 
   const [orgs, setOrgs] = useState<OrgItem[] | null>(null);
@@ -187,7 +186,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
-  useDeepLinkFilter(orgs, o => o.id, o => o.name, setQuery);
+  useRecordFocus(orgs, (o) => o.id, (o) => o.name, setOpenId, setQuery);
   const [contacts, setContacts] = useState<Record<string, ContactItem[]>>({});
   const [editing, setEditing] = useState<OrgItem | 'new' | null>(null);
   const [facets, setFacets] = useState<FacetState>({});
@@ -226,14 +225,8 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
 
   useEffect(() => { void load(); /* eslint-disable-next-line */ }, [cfg.apiBase]);
 
-  // global-search / palette handoff
-  useEffect(() => {
-    const state = location.state as { openRow?: string } | null;
-    if (state?.openRow) {
-      setOpenId(state.openRow);
-      navigate(location.pathname, { replace: true, state: null });
-    }
-  }, [location.state, location.pathname, navigate]);
+  // global-search / palette handoff now lives in useRecordFocus
+  // (expands AND filters the row to the top)
 
   // fetch contacts when a row opens
   useEffect(() => {
