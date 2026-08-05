@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import AssetEditModal from '../components/assets/AssetEditModal';
+import NotesFilesPanel from '../components/NotesFilesPanel';
 import {
   ApiError,
   listAssetCategories,
@@ -367,8 +368,7 @@ function AssetRowDetail({ asset, canEdit, onEdit }: {
           <dd>{asset.last_seen_at ? new Date(asset.last_seen_at).toLocaleString() : '—'}</dd>
         </dl>
       </div>
-      {/* Task 13 mounts <NotesFilesPanel entityType="asset" entityId={asset.id}
-          canWrite={canEdit} /> here as a third, full-width detail block */}
+      <NotesFilesPanel entityType="asset" entityId={asset.id} canWrite={canEdit} />
       {canEdit && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
           <button className="btn-solid" onClick={onEdit}>Edit</button>
