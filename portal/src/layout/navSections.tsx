@@ -16,6 +16,24 @@ export interface NavSection { label: string; items: NavItem[] }
 
 export const NAV_SECTIONS: NavSection[] = [
   {
+    label: 'Assets',
+    items: [
+      {
+        to: '/assets',
+        label: 'Assets',
+        resource: 'assets',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="4" width="18" height="6" rx="1.5" />
+            <rect x="3" y="14" width="18" height="6" rx="1.5" />
+            <path d="M7 7h.01M7 17h.01M11 7h6M11 17h6" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
     label: 'Operations',
     items: [
       {
@@ -113,6 +131,23 @@ export const NAV_SECTIONS: NavSection[] = [
                strokeLinecap="round" strokeLinejoin="round">
             <path d="M11 17 7.5 20.5a2.1 2.1 0 0 1-3-3L8 14" />
             <path d="m14 7 4.9-4.9a2.1 2.1 0 0 1 3 3L17 10l3 3a2.1 2.1 0 0 1-3 3l-6-6-3.5 3.5a2.1 2.1 0 0 1-3-3L9 6 6 3" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
+    label: 'Admin',
+    items: [
+      {
+        to: '/admin/asset-models',
+        label: 'Makes / Models',
+        resource: 'asset_models',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 7h16M4 12h16M4 17h10" />
+            <circle cx="19" cy="17" r="2.5" />
           </svg>
         ),
       },

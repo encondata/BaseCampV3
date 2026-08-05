@@ -73,11 +73,13 @@ export default function CommandPalette() {
     const cmds: Command[] = [
       ...navGated('Dashboard', '/', 'dashboard'),
       ...navGated('Sites', '/sites', 'sites'),
+      ...navGated('Assets', '/assets', 'assets'),
       ...navGated('Users', '/people/users', 'users'),
       ...navGated('Workers', '/people/workers', 'workers'),
       ...navGated('External', '/people/external', 'users'),
       ...navGated('Clients', '/stakeholders/clients', 'clients'),
       ...navGated('Partners', '/stakeholders/partners', 'partners'),
+      ...navGated('Makes / Models', '/admin/asset-models', 'asset_models'),
       ...navGated('Access control', '/access', 'access'),
       ...navGated('Settings', '/settings', 'settings'),
       ...navGated('Developer tools', '/dev', 'devtools', true),

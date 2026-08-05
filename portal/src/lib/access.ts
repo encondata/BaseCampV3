@@ -10,6 +10,7 @@ export const ACTIONS: Action[] = ['view', 'add', 'change', 'delete'];
 /** Mirrors api/src/serversherpa/access/resources.py routes. */
 export const ROUTE_RESOURCE: Record<string, string> = {
   '/': 'dashboard',
+  '/assets': 'assets',
   '/people/users': 'users',
   '/people/workers': 'workers',
   '/people/external': 'users',
@@ -18,6 +19,7 @@ export const ROUTE_RESOURCE: Record<string, string> = {
   '/stakeholders/partners': 'partners',
   '/settings': 'settings',
   '/access': 'access',
+  '/admin/asset-models': 'asset_models',
   '/audit': 'audit',
   '/dev': 'devtools',
   '/dev/database/variables': 'devtools',

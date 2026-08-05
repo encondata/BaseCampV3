@@ -13,10 +13,13 @@ import { useTopbar } from '../lib/topbar';
 
 const CRUMBS: Record<string, string[]> = {
   '/': ['Operations', 'Dashboard'],
+  '/assets': ['Assets', 'Assets'],
+  '/sites': ['Operations', 'Sites'],
   '/people/users': ['People', 'Users'],
   '/people/workers': ['People', 'Workers'],
   '/stakeholders/clients': ['Stakeholders', 'Clients'],
   '/stakeholders/partners': ['Stakeholders', 'Partners'],
+  '/admin/asset-models': ['Admin', 'Makes / Models'],
   '/settings': ['System', 'Settings'],
   '/me': ['Account', 'My profile'],
   '/dev': ['Portal', 'Developer tools'],
@@ -29,16 +32,19 @@ const G_CHORD: Record<string, string> = {
 
 const PAGES = [
   { label: 'Dashboard', to: '/' },
+  { label: 'Assets', to: '/assets' },
+  { label: 'Sites', to: '/sites' },
   { label: 'Users', to: '/people/users' },
   { label: 'Workers', to: '/people/workers' },
   { label: 'Clients', to: '/stakeholders/clients' },
   { label: 'Partners', to: '/stakeholders/partners' },
+  { label: 'Makes / Models', to: '/admin/asset-models' },
   { label: 'Settings', to: '/settings' },
   { label: 'My profile', to: '/me' },
 ];
 
 interface Hit {
-  kind: 'page' | 'user' | 'client' | 'partner';
+  kind: 'page' | 'user' | 'client' | 'partner' | 'asset' | 'asset_model';
   id: string;
   label: string;
   sub?: string | null;
@@ -111,6 +117,10 @@ export default function Topbar() {
       navigate('/stakeholders/clients', { state: { openRow: hit.id } });
     } else if (hit.kind === 'partner') {
       navigate('/stakeholders/partners', { state: { openRow: hit.id } });
+    } else if (hit.kind === 'asset') {
+      navigate('/assets', { state: { openRow: hit.id } });
+    } else if (hit.kind === 'asset_model') {
+      navigate('/admin/asset-models', { state: { openRow: hit.id } });
     }
   };
 
@@ -216,6 +226,7 @@ export default function Topbar() {
             {hits.map((h, i) => {
               const GROUPS: Record<string, string> = {
                 page: 'Pages', user: 'People', client: 'Clients', partner: 'Partners',
+                asset: 'Assets', asset_model: 'Makes / Models',
               };
               const header = h.kind !== lastKind ? (
                 <div className="kbar-group">{GROUPS[h.kind]}</div>

@@ -41,4 +41,24 @@ describe('NAV_SECTIONS', () => {
     expect(isNavItemVisible(item!, canAll, false)).toBe(false);
     expect(isNavItemVisible(item!, canAll, true)).toBe(true);
   });
+
+  it('registers Assets above Operations and Admin above System', () => {
+    const labels = NAV_SECTIONS.map((s) => s.label);
+    expect(labels.indexOf('Assets')).toBeGreaterThanOrEqual(0);
+    expect(labels.indexOf('Assets')).toBeLessThan(labels.indexOf('Operations'));
+    expect(labels.indexOf('Admin')).toBeGreaterThan(labels.indexOf('Stakeholders'));
+    expect(labels.indexOf('Admin')).toBeLessThan(labels.indexOf('System'));
+
+    const assets = NAV_SECTIONS.flatMap((s) => s.items).find((i) => i.to === '/assets');
+    expect(assets, 'no nav item for /assets').toBeDefined();
+    expect(assets!.resource).toBe('assets');
+    expect(isNavItemVisible(assets!, canAllBut('assets'), false)).toBe(false);
+    expect(isNavItemVisible(assets!, canAll, false)).toBe(true);
+
+    const models = NAV_SECTIONS.flatMap((s) => s.items)
+      .find((i) => i.to === '/admin/asset-models');
+    expect(models, 'no nav item for /admin/asset-models').toBeDefined();
+    expect(models!.resource).toBe('asset_models');
+    expect(isNavItemVisible(models!, canAllBut('asset_models'), false)).toBe(false);
+  });
 });
