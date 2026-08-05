@@ -6,14 +6,14 @@
  */
 
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
 import ComboBox from '../components/ComboBox';
 import { apiFetch, listWorkerStatuses, type StatusValue } from '../lib/api';
 import { initialOpenId } from '../lib/auditFormat';
-import { useDeepLinkFilter } from '../lib/useDeepLinkFilter';
+import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate } from '../lib/format';
 import {
   ColumnsButton,
@@ -122,7 +122,6 @@ function LevelBadge({ level, levels }: { level: string | null; levels: LevelDef[
 
 export default function Workers() {
   const { can } = useAuth();
-  const location = useLocation();
   const navigate = useNavigate();
 
   const [workers, setWorkers] = useState<WorkerItem[] | null>(null);
@@ -133,7 +132,8 @@ export default function Workers() {
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
-  useDeepLinkFilter(workers, w => w.person_id, w => w.display_name, setQuery);
+  useRecordFocus(workers, (w) => w.person_id, (w) => w.display_name,
+                 setOpenId, setQuery);
   const [facets, setFacets] = useState<FacetState>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(
     () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));
@@ -177,13 +177,7 @@ export default function Workers() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => {
-    const state = location.state as { openRow?: string } | null;
-    if (state?.openRow) {
-      setOpenId(state.openRow);
-      navigate(location.pathname, { replace: true, state: null });
-    }
-  }, [location.state, location.pathname, navigate]);
+  // openRow handoff now lives in useRecordFocus (expands AND filters to top)
 
   const visible = useMemo(() => {
     if (!workers) return [];

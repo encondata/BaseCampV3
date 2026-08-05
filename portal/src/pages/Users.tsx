@@ -17,7 +17,7 @@ import {
 import { apiFetch, ApiError } from '../lib/api';
 import { canTouchRank } from '../lib/access';
 import { initialOpenId } from '../lib/auditFormat';
-import { useDeepLinkFilter } from '../lib/useDeepLinkFilter';
+import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate, relativeTime } from '../lib/format';
 import '../styles/directory.css';
 import '../styles/profile.css';   /* .pf-form, .btn-solid */
@@ -131,7 +131,8 @@ export default function Users() {
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
-  useDeepLinkFilter(users, u => u.person_id, u => u.display_name, setQuery);
+  useRecordFocus(users, (u) => u.person_id, (u) => u.display_name,
+                 setOpenId, setQuery);
   const [pop, setPop] = useState<'filters' | 'columns' | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
@@ -149,10 +150,13 @@ export default function Users() {
 
   // command-palette handoffs: open Add modal / jump to a row
   useEffect(() => {
-    const state = location.state as { openAdd?: boolean; openRow?: string } | null;
-    if (state?.openAdd) setAddOpen(true);
-    if (state?.openRow) setOpenId(state.openRow);
-    if (state?.openAdd || state?.openRow) {
+    // openRow handoff now lives in useRecordFocus (expands AND filters to
+    // top); this effect keeps only the palette's openAdd handoff. Both
+    // navigate-away calls are safe to double-fire — replace+null is
+    // idempotent.
+    const state = location.state as { openAdd?: boolean } | null;
+    if (state?.openAdd) {
+      setAddOpen(true);
       navigate(location.pathname, { replace: true, state: null });
     }
   }, [location.state, location.pathname, navigate]);

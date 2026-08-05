@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import SiteEditModal from '../components/sites/SiteEditModal';
-import SitesMap from '../components/sites/SitesMap';
+import SitesMap, { SiteMapModal, SiteMiniMap } from '../components/sites/SitesMap';
 import {
   ApiError,
   getSite,
@@ -27,7 +27,7 @@ import {
   type SurveySchema,
 } from '../lib/api';
 import { initialOpenId } from '../lib/auditFormat';
-import { useDeepLinkFilter } from '../lib/useDeepLinkFilter';
+import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   formatCoords, matchesSiteFilters, naturalCompare, siteSearchText, type SiteFilters,
 } from '../lib/sites';
@@ -108,7 +108,7 @@ export default function Sites() {
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
-  useDeepLinkFilter(sites, s => s.id, s => s.name, setQuery);
+  useRecordFocus(sites, (s) => s.id, (s) => s.name, setOpenId, setQuery);
   const [facets, setFacets] = useState<FacetState>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(
     () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));
@@ -412,6 +412,7 @@ function SiteRowDetail({ site, schema, canEdit, onEdit }: {
 }) {
   const [surveyData, setSurveyData] = useState<Record<string, unknown> | null>(null);
   const [surveyStatus, setSurveyStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
+  const [mapOpen, setMapOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -430,7 +431,7 @@ function SiteRowDetail({ site, schema, canEdit, onEdit }: {
     .filter(Boolean).join(', '), site.postal_code, site.country].filter(Boolean);
 
   return (
-    <div className="detail-grid">
+    <div className="detail-grid site-detail-grid">
       <div className="detail-block">
         <p className="eyebrow-sm">Address</p>
         {address.length === 0 ? (
@@ -475,6 +476,19 @@ function SiteRowDetail({ site, schema, canEdit, onEdit }: {
           <p className="survey-summary">{surveySummary(surveyData, schema)}</p>
         )}
       </div>
+
+      <div className="detail-block">
+        <p className="eyebrow-sm">Location</p>
+        {site.latitude !== null && site.longitude !== null ? (
+          <SiteMiniMap site={site} onOpen={() => setMapOpen(true)} />
+        ) : (
+          <p className="set-note" style={{ padding: 0 }}>
+            No coordinates — add them in Edit to see the map.
+          </p>
+        )}
+      </div>
+
+      {mapOpen && <SiteMapModal site={site} onClose={() => setMapOpen(false)} />}
 
       {canEdit && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>

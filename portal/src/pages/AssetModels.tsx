@@ -19,7 +19,7 @@ import {
 import { formatDims, matchesModelFacets, modelSearchText } from '../lib/assets';
 import { initialOpenId } from '../lib/auditFormat';
 import { naturalCompare } from '../lib/sites';
-import { useDeepLinkFilter } from '../lib/useDeepLinkFilter';
+import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   ColumnsButton,
   ExportButton,
@@ -86,7 +86,7 @@ export default function AssetModels() {
   const [sortKey, setSortKey] = useState<SortKey>('model');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
-  useDeepLinkFilter(models, (m) => m.id, (m) => `${m.make} ${m.model}`, setQuery);
+  useRecordFocus(models, (m) => m.id, (m) => `${m.make} ${m.model}`, setOpenId, setQuery);
   const [facets, setFacets] = useState<FacetState>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(
     () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));

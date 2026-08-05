@@ -44,7 +44,7 @@ const PAGES = [
 ];
 
 interface Hit {
-  kind: 'page' | 'user' | 'client' | 'partner' | 'asset' | 'asset_model';
+  kind: 'page' | 'user' | 'client' | 'partner' | 'site' | 'asset' | 'asset_model';
   id: string;
   label: string;
   sub?: string | null;
@@ -117,10 +117,12 @@ export default function Topbar() {
       navigate('/stakeholders/clients', { state: { openRow: hit.id } });
     } else if (hit.kind === 'partner') {
       navigate('/stakeholders/partners', { state: { openRow: hit.id } });
+    } else if (hit.kind === 'site') {
+      navigate('/sites', { state: { openRow: hit.id } });
     } else if (hit.kind === 'asset') {
-      navigate(`/assets?open=${encodeURIComponent(hit.id)}`);
+      navigate('/assets', { state: { openRow: hit.id } });
     } else if (hit.kind === 'asset_model') {
-      navigate(`/admin/asset-models?open=${encodeURIComponent(hit.id)}`);
+      navigate('/admin/asset-models', { state: { openRow: hit.id } });
     }
   };
 
@@ -226,7 +228,7 @@ export default function Topbar() {
             {hits.map((h, i) => {
               const GROUPS: Record<string, string> = {
                 page: 'Pages', user: 'People', client: 'Clients', partner: 'Partners',
-                asset: 'Assets', asset_model: 'Makes / Models',
+                site: 'Sites', asset: 'Assets', asset_model: 'Makes / Models',
               };
               const header = h.kind !== lastKind ? (
                 <div className="kbar-group">{GROUPS[h.kind]}</div>

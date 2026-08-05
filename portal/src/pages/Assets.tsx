@@ -27,7 +27,7 @@ import {
 import { assetSearchText, duplicateSerials, matchesAssetFacets } from '../lib/assets';
 import { initialOpenId } from '../lib/auditFormat';
 import { naturalCompare } from '../lib/sites';
-import { useDeepLinkFilter } from '../lib/useDeepLinkFilter';
+import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   ColumnsButton,
   ExportButton,
@@ -91,7 +91,7 @@ export default function Assets() {
   const [sortKey, setSortKey] = useState<SortKey>('serial');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
-  useDeepLinkFilter(assets, (a) => a.id, (a) => a.serial_number ?? a.name ?? '', setQuery);
+  useRecordFocus(assets, (a) => a.id, (a) => a.serial_number ?? a.name ?? '', setOpenId, setQuery);
   const [facets, setFacets] = useState<FacetState>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(
     () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));

@@ -10,7 +10,16 @@ from sqlalchemy import func, or_, select
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import CurrentUser, DbSession
 from serversherpa.api.schemas import SearchOut, SearchResult
-from serversherpa.db.models import Asset, AssetModel, AssetModelAlias, Client, Partner, Person, UserAccount
+from serversherpa.db.models import (
+    Asset,
+    AssetModel,
+    AssetModelAlias,
+    Client,
+    Partner,
+    Person,
+    Site,
+    UserAccount,
+)
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -56,8 +65,11 @@ async def global_search(
             for person, account in rows
         )
 
+    # sites share the org shape searched here: name/code/city columns,
+    # sub = code-or-city; the hard gate keeps org-anchored actors out
     for model, kind, resource in ((Client, "client", "clients"),
-                                   (Partner, "partner", "partners")):
+                                   (Partner, "partner", "partners"),
+                                   (Site, "site", "sites")):
         if not user.access.can(resource, "view"):
             continue
         query = select(model).where(
