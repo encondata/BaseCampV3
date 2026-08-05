@@ -163,7 +163,7 @@ async def test_same_key_across_record_types_is_allowed(client, db, seeded_user):
     hdrs = await _make(db, client, "developer", "dev4@test.example.com")
     rows = (await client.get("/status-values", headers=hdrs)).json()
     actives = [r for r in rows if r["key"] == "active"]
-    assert {r["record_type"] for r in actives} == {"site", "worker"}
+    assert {r["record_type"] for r in actives} == {"site", "worker", "asset"}
 
 
 async def test_deactivating_an_in_use_status_keeps_the_record_rendering(

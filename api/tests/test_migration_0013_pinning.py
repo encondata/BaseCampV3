@@ -78,8 +78,11 @@ STATUS_TOKEN = {
 
 async def test_seeded_status_colors_match_migration_token_hex(db):
     migration = _load_migration_0013()
+    # scoped to site/worker — 0013 predates other record types (e.g. 0014's
+    # 'asset'), which carry their own hex colors with no TOKEN_HEX entry
     rows = {(r.record_type, r.key): r.color
-            for r in await db.scalars(select(StatusValue))}
+            for r in await db.scalars(select(StatusValue))
+            if r.record_type in ("site", "worker")}
     assert rows.keys() == STATUS_TOKEN.keys(), (
         "conftest's seeded statuses and this test's token map have drifted apart")
     for status_key, token in STATUS_TOKEN.items():

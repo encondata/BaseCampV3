@@ -405,3 +405,97 @@ class SiteClient(Base):
         ForeignKey("clients.id"), primary_key=True)
     linked_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     linked_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class AssetCategory(Base):
+    __tablename__ = "asset_categories"
+
+    key: Mapped[str] = mapped_column(primary_key=True)
+    label: Mapped[str]
+    description: Mapped[str] = mapped_column(server_default="")
+    sort_order: Mapped[int] = mapped_column(Integer)
+    color: Mapped[str]
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class AssetModel(Base):
+    """Catalog row (legacy assets_make_model). Dual-unit columns are always
+    written in pairs — assets/units.py computes the missing partner."""
+
+    __tablename__ = "asset_models"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    make: Mapped[str] = mapped_column(CITEXT)
+    model: Mapped[str] = mapped_column(CITEXT)
+    category: Mapped[str | None] = mapped_column(ForeignKey("asset_categories.key"))
+    ru_size: Mapped[int | None] = mapped_column(Integer)
+    weight_lbs: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    length_in: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    width_in: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    height_in: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    length_cm: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    width_cm: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    height_cm: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
+    mount_type: Mapped[str | None]
+    rail_type: Mapped[str | None]
+    knowledge: Mapped[str] = mapped_column(server_default="")
+    legacy_id: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class AssetModelAlias(Base):
+    __tablename__ = "asset_model_aliases"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    model_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("asset_models.id", ondelete="CASCADE"))
+    alias: Mapped[str] = mapped_column(CITEXT, unique=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class Asset(Base):
+    __tablename__ = "assets"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    serial_number: Mapped[str | None] = mapped_column(CITEXT)
+    name: Mapped[str | None] = mapped_column(CITEXT)
+    rfid_tag: Mapped[str | None] = mapped_column(CITEXT)
+    model_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("asset_models.id"))
+    client_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("clients.id"))
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
+    location_detail: Mapped[str] = mapped_column(server_default="")
+    status: Mapped[str] = mapped_column(server_default="unknown")
+    status_record_type: Mapped[str] = mapped_column(
+        server_default=text("'asset'"))  # GENERATED column; never written
+    has_rails: Mapped[bool | None] = mapped_column(Boolean)
+    last_seen_at: Mapped[datetime | None]
+    legacy_id: Mapped[int | None] = mapped_column(BigInteger)
+    source: Mapped[str] = mapped_column(server_default="manual")
+    source_ref: Mapped[str | None]
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    archived_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class Note(Base):
+    """Global polymorphic notes (attachments-style entity_type/entity_id).
+    Soft-deleted like attachments; only entity_type='asset' is wired in V1."""
+
+    __tablename__ = "notes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    entity_type: Mapped[str]
+    entity_id: Mapped[uuid.UUID]
+    body: Mapped[str]
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    deleted_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

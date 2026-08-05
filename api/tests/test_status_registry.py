@@ -9,8 +9,8 @@ def test_registry_is_keyed_by_id():
     assert set(STATUS_REGISTRY) == {rt.id for rt in STATUS_RECORD_TYPES}
 
 
-def test_launch_types_are_site_and_worker():
-    assert set(STATUS_REGISTRY) == {"site", "worker"}
+def test_launch_types_are_site_worker_and_asset():
+    assert set(STATUS_REGISTRY) == {"site", "worker", "asset"}
 
 
 def test_every_record_type_points_at_a_real_resource():
@@ -27,3 +27,9 @@ def test_worker_type_targets_the_worker_profiles_status_column():
     worker = STATUS_REGISTRY["worker"]
     assert (worker.table, worker.column, worker.resource) == (
         "worker_profiles", "status", "workers")
+
+
+def test_asset_type_targets_the_assets_status_column():
+    asset = STATUS_REGISTRY["asset"]
+    assert (asset.table, asset.column, asset.resource) == (
+        "assets", "status", "assets")

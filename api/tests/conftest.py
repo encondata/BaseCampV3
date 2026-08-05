@@ -53,7 +53,8 @@ async def clean_db():
             "TRUNCATE auth_sessions, person_roles, user_accounts, clients, "
             "partners, people, access_groups, access_group_members, "
             "resource_group_gates, permission_overrides, audit_log, "
-            "contact_profiles, sites, site_clients CASCADE"))
+            "contact_profiles, sites, site_clients, notes, assets, "
+            "asset_model_aliases, asset_models CASCADE"))
         # role matrix is editable seed data — restore defaults & drop customs
         await session.execute(text("DELETE FROM roles WHERE is_system = false"))
         await session.execute(text("DELETE FROM role_permissions"))
@@ -124,6 +125,29 @@ async def clean_db():
               ('partner_office','Partner office','Facility operated by a partner.',5,'handshake','#178a4c'),
               ('other','Other','Anything that does not fit the other types.',6,'pin','#51606f')
             ) AS v(key, label, description, sort_order, icon, color) WHERE st.key = v.key
+        """))
+        # asset vocabulary — restore canonical seeds (0014)
+        await session.execute(text(
+            "DELETE FROM status_values WHERE record_type = 'asset'"))
+        await session.execute(text("""
+            INSERT INTO status_values
+              (record_type, key, label, description, color, sort_order)
+            VALUES
+              ('asset','active','Active','Racked and in service.','#178a4c',1),
+              ('asset','in_transit','In transit','Between locations.','#0f7c86',2),
+              ('asset','in_storage','In storage','Warehoused, not in service.','#51606f',3),
+              ('asset','decommissioned','Decommissioned','Retired; retained for history.','#c03540',4),
+              ('asset','unknown','Unknown','Not yet verified.','#a36207',5)
+        """))
+        await session.execute(text("DELETE FROM asset_categories"))
+        await session.execute(text("""
+            INSERT INTO asset_categories (key, label, description, sort_order, color)
+            VALUES
+              ('server','Server','Compute hardware.',1,'#1668a7'),
+              ('storage','Storage','Disk shelves, arrays, tape.',2,'#6d4fc4'),
+              ('network','Network','Switches, routers, firewalls.',3,'#0f7c86'),
+              ('power','Power','PDUs, UPSes.',4,'#a36207'),
+              ('other','Other','Anything that does not fit the other categories.',5,'#51606f')
         """))
         await session.commit()
     yield
