@@ -26,6 +26,23 @@ function FitBounds({ points }: { points: [number, number][] }) {
   return null;
 }
 
+/** Small single-site locator for the row expansion: marker centered,
+ *  interactions off (it's a picture, not a map to wander) — the map view
+ *  exists for exploring. Rendered only when the site has coordinates. */
+export function SiteMiniMap({ site }: { site: SiteItem }) {
+  if (site.latitude === null || site.longitude === null) return null;
+  const point: [number, number] = [site.latitude, site.longitude];
+  return (
+    <MapContainer center={point} zoom={12} className="site-mini-map"
+                  zoomControl={false} dragging={false} scrollWheelZoom={false}
+                  doubleClickZoom={false} touchZoom={false} keyboard={false}
+                  attributionControl={false}>
+      <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+      <Marker position={point} icon={icon} interactive={false} />
+    </MapContainer>
+  );
+}
+
 export default function SitesMap({ sites, onSelect }: {
   sites: SiteItem[];
   onSelect: (id: string) => void;

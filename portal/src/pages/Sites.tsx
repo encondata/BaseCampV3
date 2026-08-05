@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import SiteEditModal from '../components/sites/SiteEditModal';
-import SitesMap from '../components/sites/SitesMap';
+import SitesMap, { SiteMiniMap } from '../components/sites/SitesMap';
 import {
   ApiError,
   getSite,
@@ -430,7 +430,7 @@ function SiteRowDetail({ site, schema, canEdit, onEdit }: {
     .filter(Boolean).join(', '), site.postal_code, site.country].filter(Boolean);
 
   return (
-    <div className="detail-grid">
+    <div className="detail-grid site-detail-grid">
       <div className="detail-block">
         <p className="eyebrow-sm">Address</p>
         {address.length === 0 ? (
@@ -473,6 +473,17 @@ function SiteRowDetail({ site, schema, canEdit, onEdit }: {
         )}
         {surveyStatus === 'loaded' && (
           <p className="survey-summary">{surveySummary(surveyData, schema)}</p>
+        )}
+      </div>
+
+      <div className="detail-block">
+        <p className="eyebrow-sm">Location</p>
+        {site.latitude !== null && site.longitude !== null ? (
+          <SiteMiniMap site={site} />
+        ) : (
+          <p className="set-note" style={{ padding: 0 }}>
+            No coordinates — add them in Edit to see the map.
+          </p>
         )}
       </div>
 
