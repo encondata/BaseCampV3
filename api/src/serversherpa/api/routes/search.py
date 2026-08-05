@@ -10,7 +10,7 @@ from sqlalchemy import func, or_, select
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import CurrentUser, DbSession
 from serversherpa.api.schemas import SearchOut, SearchResult
-from serversherpa.db.models import Client, Partner, Person, UserAccount
+from serversherpa.db.models import Asset, AssetModel, AssetModelAlias, Client, Partner, Person, UserAccount
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -73,6 +73,44 @@ async def global_search(
             SearchResult(kind=kind, id=o.id, label=o.name,
                          sub=o.code or o.city)
             for o in orgs
+        )
+
+    # assets — serial / name / rfid; row-scoped for client actors
+    if user.access.can("assets", "view"):
+        query = select(Asset).where(or_(
+            Asset.serial_number.ilike(needle),
+            Asset.name.ilike(needle),
+            Asset.rfid_tag.ilike(needle),
+        ))
+        cond = scope_conditions("assets", user.access, user.person.id)
+        if cond is not None:
+            query = query.where(cond)
+        assets = (await db.scalars(
+            query.order_by(Asset.serial_number, Asset.name)
+            .limit(LIMIT_PER_KIND))).all()
+        results.extend(
+            SearchResult(kind="asset", id=a.id,
+                         label=a.serial_number or a.name or str(a.id),
+                         sub=a.name if a.serial_number else a.location_detail or None)
+            for a in assets
+        )
+
+    # asset models — make / model / alias; internal-only resource
+    if user.access.can("asset_models", "view"):
+        alias_owner = select(AssetModelAlias.model_id).where(
+            AssetModelAlias.alias.ilike(needle))
+        query = select(AssetModel).where(or_(
+            AssetModel.make.ilike(needle),
+            AssetModel.model.ilike(needle),
+            AssetModel.id.in_(alias_owner),
+        ))
+        models = (await db.scalars(
+            query.order_by(AssetModel.make, AssetModel.model)
+            .limit(LIMIT_PER_KIND))).all()
+        results.extend(
+            SearchResult(kind="asset_model", id=m.id,
+                         label=f"{m.make} {m.model}", sub=m.category)
+            for m in models
         )
 
     return SearchOut(results=results)
