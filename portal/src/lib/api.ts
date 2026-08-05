@@ -305,6 +305,48 @@ export async function getMyActivityRequest(): Promise<MyActivityItem[]> {
   return resp.json();
 }
 
+// ── audit log (admin viewer) ────────────────────────────────────────
+
+export interface AuditLogItem {
+  id: string;
+  at: string;
+  action: string;
+  entity_type: string;
+  entity_id: string | null;
+  ip: string | null;
+  actor_id: string | null;
+  actor_name: string | null;
+  changes: Record<string, unknown>;
+}
+
+export interface AuditQuery {
+  entity_type?: string;
+  action?: string;
+  actor_id?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function listAuditLog(query: AuditQuery): Promise<AuditLogItem[]> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== '') params.set(key, String(value));
+  }
+  const resp = await apiFetch(`/audit?${params.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getAuditFacets(): Promise<{
+  entity_types: string[]; actions: string[];
+}> {
+  const resp = await apiFetch('/audit/facets');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export async function updateProfileRequest(patch: ProfileUpdate): Promise<PersonDetail> {
   const resp = await apiFetch('/auth/me/profile', {
     method: 'PATCH',

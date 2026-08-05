@@ -4,6 +4,7 @@ import { AuthProvider } from './auth/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import AppShell from './layout/AppShell';
 import Access from './pages/Access';
+import Audit from './pages/Audit';
 import Clients from './pages/Clients';
 import Dev from './pages/Dev';
 import External from './pages/External';
@@ -41,6 +42,7 @@ export default function App() {
             <Route path="/stakeholders/partners" element={<ProtectedRoute resource="partners"><Partners /></ProtectedRoute>} />
             <Route path="/settings" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
             <Route path="/access" element={<ProtectedRoute resource="access"><Access /></ProtectedRoute>} />
+            <Route path="/admin/audit" element={<ProtectedRoute resource="audit"><Audit /></ProtectedRoute>} />
             <Route path="/dev" element={<ProtectedRoute resource="devtools"><Dev /></ProtectedRoute>} />
             <Route path="/dev/database/variables" element={
               <ProtectedRoute resource="devtools"><Variables /></ProtectedRoute>

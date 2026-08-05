@@ -7,6 +7,9 @@
 import { useMemo, useState } from 'react';
 
 import { type MyActivityItem } from '../lib/api';
+import {
+  actionLabel, changeRows, entityLabel, targetLabel as sharedTargetLabel,
+} from '../lib/auditFormat';
 import { relativeTime } from '../lib/format';
 import {
   ColumnsButton,
@@ -20,79 +23,13 @@ import {
 } from '../lib/listTools';
 import { naturalCompare } from '../lib/sites';
 
-const ACTION_LABELS: Record<string, string> = {
-  login: 'Signed in',
-  login_failed: 'Failed sign-in attempt',
-  logout: 'Signed out',
-  token_replay_detected: 'Token replay detected — sessions revoked',
-  'password.change': 'Changed password',
-  'session.revoke': 'Signed out another session',
-  bulk_import: 'Ran a bulk import',
-  create: 'Created',
-  update: 'Updated',
-  archive: 'Archived',
-  restore: 'Unarchived',
-  'clients.set': 'Changed client links',
-  'survey.update': 'Updated survey',
-  'godmode.enable': 'Enabled god mode',
-};
-
-const ENTITY_LABELS: Record<string, string> = {
-  auth: 'account',
-  person: 'profile',
-  user_account: 'account',
-  site: 'site',
-  site_type: 'site type',
-  site_bulk_import: 'sites (bulk)',
-  status_value: 'status value',
-  worker: 'worker',
-  worker_level: 'worker level',
-  access_group: 'access group',
-  role: 'role',
-  resource: 'access matrix',
-};
-
-function actionLabel(row: MyActivityItem): string {
-  return ACTION_LABELS[row.action] ?? row.action.replace(/[._]/g, ' ');
-}
-
-function entityLabel(row: MyActivityItem): string {
-  return ENTITY_LABELS[row.entity_type] ?? row.entity_type.replace(/_/g, ' ');
-}
-
-/** "site 'Acme DC1'" when the changes carry a recognizable name. */
 function targetLabel(row: MyActivityItem): string {
-  if (row.entity_type === 'auth') return row.by_me ? '—' : (row.entity_id ?? '—');
-  const label = entityLabel(row);
-  for (const key of ('name' in row.changes ? ['name'] : ['label', 'title'])) {
-    const change = row.changes[key];
-    if (change && typeof change === 'object' && 'to' in change) {
-      const to = (change as { to?: unknown }).to;
-      if (typeof to === 'string' && to) return `${label} '${to}'`;
-    }
-  }
-  return label;
+  // your own auth rows are just you — no target worth showing
+  return sharedTargetLabel(row, { hideAuthTarget: row.by_me });
 }
 
 function whoLabel(row: MyActivityItem): string {
   return row.by_me ? 'You' : (row.actor_name ?? 'System');
-}
-
-/** One rendered before/after pair. Values that aren't {from,to} objects
- * (bulk summaries, client add/remove sets) render as plain JSON. */
-function changeRows(changes: Record<string, unknown>):
-  { field: string; from: string; to: string }[] {
-  const show = (v: unknown): string => {
-    if (v === null || v === undefined || v === '') return '—';
-    return typeof v === 'string' ? v : JSON.stringify(v);
-  };
-  return Object.entries(changes).map(([field, value]) => {
-    if (value && typeof value === 'object' && ('from' in value || 'to' in value)) {
-      const pair = value as { from?: unknown; to?: unknown };
-      return { field, from: show(pair.from), to: show(pair.to) };
-    }
-    return { field, from: '—', to: show(value) };
-  });
 }
 
 const COLUMNS: ColumnDef[] = [

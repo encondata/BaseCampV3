@@ -6,8 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from serversherpa.api.routes import (
-    access, attachments, auth, devtools, me, search, sites, stakeholders,
-    status_values, users, workers,
+    access, attachments, audit, auth, devtools, me, search, sites,
+    stakeholders, status_values, users, workers,
 )
 from serversherpa.config import get_settings
 from serversherpa.db.engine import dispose_engine
@@ -67,6 +67,7 @@ def create_app() -> FastAPI:
     app.include_router(sites.lookups_router)
     app.include_router(status_values.router)
     app.include_router(devtools.router)
+    app.include_router(audit.router)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict:

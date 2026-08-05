@@ -119,6 +119,23 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    label: 'Admin',
+    items: [
+      {
+        to: '/admin/audit',
+        label: 'Audit log',
+        resource: 'audit',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M8 3h8a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+            <path d="M9.5 8h5M9.5 12h5M9.5 16h3" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
     label: 'System',
     items: [
       {

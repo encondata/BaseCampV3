@@ -145,6 +145,21 @@ class PersonDetail(BaseModel):
     password_updated_at: datetime | None = None
 
 
+class AuditLogItem(BaseModel):
+    """One audit row for the admin log viewer — same shape as
+    MyActivityItem but actor-explicit instead of by_me-relative."""
+
+    id: uuid.UUID
+    at: datetime
+    action: str
+    entity_type: str
+    entity_id: str | None
+    ip: str | None
+    actor_id: uuid.UUID | None
+    actor_name: str | None
+    changes: dict
+
+
 class MyActivityItem(BaseModel):
     """One row of the signed-in user's history: something they did, or
     something done to their account (by_me=False, actor_name says who).
