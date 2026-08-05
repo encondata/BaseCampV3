@@ -34,7 +34,7 @@ Problems this design deliberately fixes:
 6. **Dual-unit weight and dimensions.** Enter either unit system; the server computes the partner. Both stored — exports/sorts/filters never convert at runtime.
 7. **Serial numbers are indexed but NOT unique.** Legacy data has dupes and test junk; the UI warns on duplicate serial instead of the DB rejecting.
 8. **`rfid_tag` IS unique where present** (partial unique index) — two assets can't share a live tag.
-9. **Makes/Models management lives in a new Admin nav section** (above System). The Admin section is also the designated future home of the **Lookups** editor page (site types/statuses, worker levels, asset statuses, device categories — APIs exist, UI deferred).
+9. **Makes/Models management lives in a new Admin nav section** (above System). Jimmy also designated Admin as the future home of a **Lookups** editor page (site types/statuses, worker levels, asset statuses, device categories — APIs exist, UI deferred). **Open reconciliation, not blocking V1:** the god-mode Variables page (`/dev/database/variables`) already edits raw vocabulary, under the standing rule "changing what values EXIST is developer-only." When the Lookups page gets designed, decide whether it supersedes that rule or becomes a curated staff-facing subset with Variables remaining the developer escape hatch. Asset statuses in V1 follow the current rule (edited via Variables, god-only).
 10. **Everything registers in global search and the ⌘K palette** — standing rule for all new sections, recorded here because Assets is the first section landing after it was made explicit.
 
 ## 1. Data model — migration 0014
