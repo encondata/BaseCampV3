@@ -60,5 +60,13 @@ describe('NAV_SECTIONS', () => {
     expect(models, 'no nav item for /admin/asset-models').toBeDefined();
     expect(models!.resource).toBe('asset_models');
     expect(isNavItemVisible(models!, canAllBut('asset_models'), false)).toBe(false);
+
+    // Exactly one Admin section — our Makes/Models item and main's Audit
+    // log item must share it, not each get their own.
+    const adminSections = NAV_SECTIONS.filter((s) => s.label === 'Admin');
+    expect(adminSections).toHaveLength(1);
+    const adminItems = adminSections[0].items.map((i) => i.to);
+    expect(adminItems).toContain('/admin/asset-models');
+    expect(adminItems).toContain('/admin/audit');
   });
 });
