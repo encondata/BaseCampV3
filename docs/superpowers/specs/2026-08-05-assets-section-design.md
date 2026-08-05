@@ -44,7 +44,7 @@ Problems this design deliberately fixes:
 Seed: `server`, `storage`, `network`, `power`, `other` (legacy `device_catagory` values, typo retired).
 
 **`status_values`** seed rows, `record_type = 'asset'` (same pattern as sites/workers):
-`active` (c-green), `in_transit` (c-aqua), `in_storage` (c-slate), `decommissioned` (c-red), `unknown` (c-amber). Exact set editable post-launch; seeds match the dominant legacy `status_options` rows for `association_type = 'assets'`.
+`active` (c-green), `in_transit` (c-aqua), `in_storage` (c-slate), `decommissioned` (c-red), `unknown` (c-amber). Exact set editable post-launch. Note: legacy `status_options` rows for `association_type = 'Assets'` (Pre-Stage, Racked, Labeled, Pack/Logistics, On Truck, Received, QA, Complete, …) are **move-pipeline stages**, not registry lifecycle states — they belong to the future activities/moves workflow (asset lines will carry their own stage), so V1 deliberately seeds a simple lifecycle set instead of porting them.
 
 **`asset_models`** (the catalog; legacy `assets_make_model`):
 
