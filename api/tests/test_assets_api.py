@@ -95,3 +95,40 @@ async def test_client_contact_scoped_list_and_403s(client, db, seeded_user):
 
     resp = await client.get("/asset-models", headers=hdrs)
     assert resp.status_code == 403      # catalog is internal-only
+
+
+async def test_list_embeds_labels_and_model_summary(client, db, seeded_user):
+    hdrs = await login(client)
+    m = AssetModel(make="Dell", model="R740", category="server", ru_size=2)
+    org = Client(name="Acme L")
+    site = Site(name="DC-1")
+    db.add_all([m, org, site])
+    await db.flush()
+    db.add(Asset(serial_number="SN-100", name="web-01", model_id=m.id,
+                 client_id=org.id, site_id=site.id, status="active",
+                 location_detail="Hall B, Rack 14"))
+    await db.commit()
+
+    rows = (await client.get("/assets", headers=hdrs)).json()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["serial_number"] == "SN-100"
+    assert row["status_label"] == "Active" and row["status_color"] == "#178a4c"
+    assert row["client_name"] == "Acme L"
+    assert row["site_name"] == "DC-1"
+    assert row["model"]["make"] == "Dell"
+    assert row["model"]["category_label"] == "Server"
+    assert "knowledge" not in row["model"]        # summary only — house IP
+
+
+async def test_client_contact_gets_model_summary_but_not_catalog(client, db, seeded_user):
+    org, hdrs = await _client_contact(db, client, "Acme MS", "ms@acme.example.com")
+    m = AssetModel(make="Dell", model="R640")
+    db.add(m)
+    await db.flush()
+    db.add(Asset(name="mine", client_id=org.id, model_id=m.id))
+    await db.commit()
+
+    rows = (await client.get("/assets", headers=hdrs)).json()
+    assert rows[0]["model"]["make"] == "Dell"     # embedded summary works
+    assert (await client.get("/asset-models", headers=hdrs)).status_code == 403

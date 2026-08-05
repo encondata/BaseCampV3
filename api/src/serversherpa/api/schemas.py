@@ -771,5 +771,52 @@ class AssetModelAliasesIn(BaseModel):
     aliases: list[str]
 
 
+class AssetItem(BaseModel):
+    id: uuid.UUID
+    serial_number: str | None = None
+    name: str | None = None
+    rfid_tag: str | None = None
+    model_id: uuid.UUID | None = None
+    model: AssetModelRef | None = None
+    client_id: uuid.UUID | None = None
+    client_name: str | None = None
+    site_id: uuid.UUID | None = None
+    site_name: str | None = None
+    location_detail: str
+    status: str
+    status_label: str
+    status_color: str
+    has_rails: bool | None = None
+    last_seen_at: datetime | None = None
+    archived_at: datetime | None = None
+    created_at: datetime
+
+
+class AssetCreateIn(BaseModel):
+    serial_number: str | None = None
+    name: str | None = None
+    rfid_tag: str | None = None
+    model_id: uuid.UUID | None = None
+    client_id: uuid.UUID | None = None
+    site_id: uuid.UUID | None = None
+    location_detail: str = ""
+    status: str | None = None
+    has_rails: bool | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class AssetUpdateIn(BaseModel):
+    serial_number: str | None = None
+    name: str | None = None
+    rfid_tag: str | None = None
+    model_id: uuid.UUID | None = None
+    client_id: uuid.UUID | None = None
+    site_id: uuid.UUID | None = None
+    location_detail: str | None = None
+    status: str | None = None
+    has_rails: bool | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
 class GodModeIn(BaseModel):
     word: str
