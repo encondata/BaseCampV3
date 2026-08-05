@@ -2,7 +2,7 @@
 
 from sqlalchemy import select
 
-from serversherpa.db.models import Asset, AssetModel, AuditLog, Client, Person, PersonRole
+from serversherpa.db.models import Asset, AuditLog, Client, Person, PersonRole
 from tests.test_assets_api import login, make_login
 
 
@@ -28,8 +28,14 @@ async def test_create_update_archive_with_audit(client, db, seeded_user):
 
     assert (await client.post(f"/assets/{asset_id}/archive",
                               headers=hdrs)).status_code == 204
+    row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "asset", AuditLog.action == "archive"))
+    assert row is not None and row.entity_id == asset_id
     assert (await client.post(f"/assets/{asset_id}/unarchive",
                               headers=hdrs)).status_code == 204
+    row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "asset", AuditLog.action == "restore"))
+    assert row is not None and row.entity_id == asset_id
 
 
 async def test_default_status_applied(client, seeded_user):
@@ -76,7 +82,9 @@ async def test_noop_patch_writes_no_audit(client, db, seeded_user):
     hdrs = await login(client)
     created = (await client.post("/assets", headers=hdrs,
                                  json={"name": "same"})).json()
-    before = created["created_at"]
+    asset = await db.get(Asset, created["id"])
+    await db.refresh(asset)
+    orig_updated_at = asset.updated_at
     resp = await client.patch(f"/assets/{created['id']}", headers=hdrs,
                               json={"name": "same"})
     assert resp.status_code == 200
@@ -84,8 +92,8 @@ async def test_noop_patch_writes_no_audit(client, db, seeded_user):
         AuditLog.entity_type == "asset", AuditLog.action == "update"))
     assert upd is None
     asset = await db.get(Asset, created["id"])
-    assert asset.updated_at.isoformat() != ""     # untouched (equals created_at)
-    assert asset.created_at.isoformat().startswith(before[:19])
+    await db.refresh(asset)
+    assert asset.updated_at == orig_updated_at   # no-op PATCH must not bump
 
 
 async def test_client_contact_cannot_write(client, db, seeded_user):
@@ -115,4 +123,8 @@ async def test_client_contact_cannot_write(client, db, seeded_user):
     await db.commit()
     resp = await client.patch(f"/assets/{mine.id}", headers=hdrs,
                               json={"name": "renamed"})
+    assert resp.status_code == 403
+    resp = await client.post(f"/assets/{mine.id}/archive", headers=hdrs)
+    assert resp.status_code == 403
+    resp = await client.post(f"/assets/{mine.id}/unarchive", headers=hdrs)
     assert resp.status_code == 403
