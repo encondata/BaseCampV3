@@ -751,6 +751,75 @@ export async function getSurveySchema(): Promise<SurveySchema> {
   return resp.json();
 }
 
+// ── sites bulk import ───────────────────────────────────────────────
+
+export interface BulkRowResult {
+  row: number;
+  name: string | null;
+  action: 'create' | 'update' | 'unchanged' | 'error';
+  errors: string[];
+  diff: Record<
+    string,
+    { old?: unknown; new?: unknown; add?: string[]; remove?: string[] }
+  > | null;
+  site_id: string | null;
+  data: Record<string, unknown> | null;
+}
+
+export interface BulkPreview {
+  rows: BulkRowResult[];
+  can_commit: boolean;
+  update_allowed: boolean;
+}
+
+export async function getSiteBulkSample(): Promise<Record<string, string>[]> {
+  const resp = await apiFetch('/sites/bulk-import/template?format=json');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Pasted JSON rides the same multipart path as a real file: the caller
+ * wraps it in a Blob named paste.json, so the API has one parsing entry. */
+export async function previewSiteBulk(
+  file: File | Blob, filename: string,
+): Promise<BulkPreview> {
+  const fd = new FormData();
+  fd.append('file', file, filename);
+  // no Content-Type header — the browser sets the multipart boundary
+  const resp = await apiFetch('/sites/bulk-import/preview', {
+    method: 'POST',
+    body: fd,
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function commitSiteBulk(
+  rows: Record<string, unknown>[], approved: string[], source: string,
+): Promise<{ created: number; updated: number; unchanged: number }> {
+  const resp = await apiFetch('/sites/bulk-import/commit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows, approved_updates: approved, source }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function downloadSiteTemplate(format: 'csv' | 'xlsx'): Promise<void> {
+  const resp = await apiFetch(`/sites/bulk-import/template?format=${format}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `sites-template.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export async function listSiteTypes(): Promise<SiteLookup[]> {
   const resp = await apiFetch('/site-types');
   if (!resp.ok) throw await errorFrom(resp);

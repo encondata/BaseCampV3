@@ -87,9 +87,10 @@ function surveySummary(
 }
 
 export default function Sites() {
-  const { can } = useAuth();
+  const { can, maxRank } = useAuth();
   const canAdd = can('sites', 'add');
   const canChange = can('sites', 'change');
+  const canBulk = canAdd && maxRank >= 60;   // mirrors the API's GATE_BYPASS_RANK bar
 
   const [sites, setSites] = useState<SiteItem[] | null>(null);
   const [types, setTypes] = useState<SiteLookup[]>([]);
@@ -386,6 +387,7 @@ export default function Sites() {
           clients={clients}
           partners={partners}
           canChange={canChange}
+          canBulk={canBulk}
           onClose={() => setCreating(false)}
           onSaved={() => load()}
         />
