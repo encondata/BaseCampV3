@@ -219,3 +219,21 @@ export function modelPayload(
   }
   return out;
 }
+
+/* ── create-mode save trap ───────────────────────────────────────────
+ * Mirrors sites.ts's needsSiteCreate: once createAssetModel has
+ * succeeded for this modal session, a retry (e.g. after the
+ * setAssetModelAliases step fails) must NEVER call createAssetModel
+ * again — it must PATCH the model that already exists. This pure
+ * helper owns that decision so it's testable without a live API. */
+
+export interface ModelSaveState {
+  isCreateMode: boolean;      // the modal opened with model=null
+  createdId: string | null;   // set once createAssetModel has succeeded this session
+}
+
+/** Does this Save press need to POST a new model, or PATCH one that
+ *  already exists (editing, or a previous attempt already created it)? */
+export function needsModelCreate(state: ModelSaveState): boolean {
+  return state.isCreateMode && state.createdId === null;
+}

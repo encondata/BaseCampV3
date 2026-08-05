@@ -1,8 +1,11 @@
 /**
  * ModelEditModal — the only place a catalog make/model is ever mutated:
  * field edits and the aliases list. `model === null` opens the modal in
- * create mode. Follows the modal-scrim/modal-card/modal-head/modal-body/
- * modal-foot conventions from SiteEditModal.tsx.
+ * create mode; once createAssetModel succeeds the modal flips itself to
+ * edit mode for the created record (see the needsModelCreate trap in
+ * lib/assets.ts) so a retry after a failed alias-save step never
+ * re-creates the model. Follows the modal-scrim/modal-card/modal-head/
+ * modal-body/modal-foot conventions from SiteEditModal.tsx.
  *
  * Dual-unit weight/dimension inputs are display convenience only — each
  * side is a real, independently-editable form field; the OTHER side's
@@ -22,8 +25,8 @@ import {
   type AssetModelItem,
 } from '../../lib/api';
 import {
-  formFromModel, formatDims, IN_TO_CM, LB_TO_KG, modelPayload, parseDims, partnerFor,
-  type ModelFormState,
+  formFromModel, formatDims, IN_TO_CM, LB_TO_KG, modelPayload, needsModelCreate, parseDims,
+  partnerFor, type ModelFormState,
 } from '../../lib/assets';
 import ComboBox from '../ComboBox';
 
@@ -73,6 +76,13 @@ export default function ModelEditModal({
 }: Props) {
   const isCreateMode = model === null;
 
+  const [createdId, setCreatedId] = useState<string | null>(null);
+  const [createdModel, setCreatedModel] = useState<AssetModelItem | null>(null);
+  const editingId = model?.id ?? createdId; // non-null once a record exists to edit
+  const originalForDiff = model ?? createdModel; // diff baseline: server record, or the
+                                                   // just-created one when recovering
+  const needsCreate = needsModelCreate({ isCreateMode, createdId });
+
   const [form, setForm] = useState<ModelFormState>(() => formFromModel(model));
   const [aliases, setAliases] = useState<string[]>(() => model?.aliases ?? []);
   const [aliasInput, setAliasInput] = useState('');
@@ -91,7 +101,7 @@ export default function ModelEditModal({
   const weightEdited = useRef<'imp' | 'met' | null>(null);
   const dimsEdited = useRef<'imp' | 'met' | null>(null);
 
-  const locked = saving || (!isCreateMode && !canChange);
+  const locked = saving || (!needsCreate && !canChange);
 
   const setField = (key: keyof ModelFormState, value: string) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -169,21 +179,25 @@ export default function ModelEditModal({
     setSaving(true);
     setError('');
 
-    const payload = modelPayload(form, model);
-    const aliasesChanged = !sameAliasSet(model?.aliases ?? [], aliases);
-    if (Object.keys(payload).length === 0 && !aliasesChanged) {
+    const payload = modelPayload(form, needsCreate ? null : originalForDiff);
+    const baselineAliases = needsCreate ? [] : (originalForDiff?.aliases ?? []);
+    const aliasesChanged = !sameAliasSet(baselineAliases, aliases);
+
+    if (!needsCreate && Object.keys(payload).length === 0 && !aliasesChanged) {
       setSaving(false);
       onClose();
       return;
     }
 
-    let id = model?.id ?? null;
+    let id = editingId;
     try {
-      if (isCreateMode) {
+      if (needsCreate) {
         const created = await createAssetModel(payload);
         id = created.id;
+        setCreatedId(created.id);
+        setCreatedModel(created);
       } else if (Object.keys(payload).length > 0) {
-        await updateAssetModel(model.id, payload);
+        await updateAssetModel(id as string, payload);
       }
     } catch (err) {
       setError(mapError(err, 'Could not save — try again.'));
@@ -202,12 +216,13 @@ export default function ModelEditModal({
       }
     }
 
+    setError('');
     await onSaved();
     setSaving(false);
     onClose();
   };
 
-  const title = model ? `Edit — ${form.make} ${form.model}` : 'New model';
+  const title = editingId ? `Edit — ${form.make} ${form.model}` : 'New model';
 
   return (
     <div className="modal-scrim" onMouseDown={(e) => {
@@ -349,7 +364,7 @@ export default function ModelEditModal({
           </div>
           <div className="modal-foot">
             <button className="btn-solid" type="submit" disabled={saving}>
-              {saving ? 'Saving…' : (isCreateMode ? 'Create model' : 'Save')}
+              {saving ? 'Saving…' : (needsCreate ? 'Create model' : 'Save')}
             </button>
             <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>
               Cancel

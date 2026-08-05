@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { AssetItem, AssetModelItem } from './api';
 import {
   assetPayload, duplicateSerials, formFromAsset, formFromModel,
-  formatDims, modelPayload, parseDims, partnerFor,
+  formatDims, modelPayload, needsModelCreate, parseDims, partnerFor,
 } from './assets';
 
 const asset = (over: Partial<AssetItem> = {}): AssetItem => ({
@@ -100,6 +100,18 @@ describe('model form payload', () => {
     const p = modelPayload(f, model);
     expect(p.weight_lbs).toBeNull();
     expect('weight_kg' in p).toBe(false);   // untouched side omitted; server clears it
+  });
+});
+
+describe('needsModelCreate', () => {
+  it('true in fresh create mode', () => {
+    expect(needsModelCreate({ isCreateMode: true, createdId: null })).toBe(true);
+  });
+  it('false in edit mode', () => {
+    expect(needsModelCreate({ isCreateMode: false, createdId: null })).toBe(false);
+  });
+  it('false once a create already succeeded this session', () => {
+    expect(needsModelCreate({ isCreateMode: true, createdId: 'm-new' })).toBe(false);
   });
 });
 
