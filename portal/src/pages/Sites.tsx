@@ -27,6 +27,7 @@ import {
   type SurveySchema,
 } from '../lib/api';
 import { initialOpenId } from '../lib/auditFormat';
+import { useDeepLinkFilter } from '../lib/useDeepLinkFilter';
 import {
   formatCoords, matchesSiteFilters, naturalCompare, siteSearchText, type SiteFilters,
 } from '../lib/sites';
@@ -107,6 +108,7 @@ export default function Sites() {
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
+  useDeepLinkFilter(sites, s => s.id, s => s.name, setQuery);
   const [facets, setFacets] = useState<FacetState>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(
     () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));

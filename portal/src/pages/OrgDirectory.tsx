@@ -19,6 +19,7 @@ import {
   afterLinkFailure, buildNewContactPersonPayload, planAddContact,
 } from '../lib/external';
 import { initialOpenId } from '../lib/auditFormat';
+import { useDeepLinkFilter } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate } from '../lib/format';
 import {
   ColumnsButton,
@@ -186,6 +187,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
+  useDeepLinkFilter(orgs, o => o.id, o => o.name, setQuery);
   const [contacts, setContacts] = useState<Record<string, ContactItem[]>>({});
   const [editing, setEditing] = useState<OrgItem | 'new' | null>(null);
   const [facets, setFacets] = useState<FacetState>({});
