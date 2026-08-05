@@ -25,6 +25,7 @@ import {
 } from '../lib/api';
 import { assetSearchText, duplicateSerials, matchesAssetFacets } from '../lib/assets';
 import { initialOpenId } from '../lib/auditFormat';
+import { naturalCompare } from '../lib/sites';
 import { useDeepLinkFilter } from '../lib/useDeepLinkFilter';
 import {
   ColumnsButton,
@@ -155,10 +156,7 @@ export default function Assets() {
         case 'last_seen': return a.last_seen_at ?? '';
       }
     };
-    return rows.sort((a, b) => {
-      const va = val(a), vb = val(b);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
-    });
+    return rows.sort((a, b) => naturalCompare(val(a), val(b)) * sortDir);
   }, [assets, facets, query, sortKey, sortDir]);
 
   useEffect(() => {
