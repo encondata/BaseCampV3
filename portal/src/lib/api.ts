@@ -74,6 +74,17 @@ export interface PersonDetail {
   created_at: string;
   avatar_key: string | null;
   avatar_url: string | null;
+  password_updated_at: string | null;
+}
+
+export interface MyActivityItem {
+  at: string;
+  action: string;
+  entity_type: string;
+  entity_id: string | null;
+  ip: string | null;
+  by_me: boolean;
+  actor_name: string | null;
 }
 
 export interface AttachmentOut {
@@ -282,6 +293,12 @@ export async function uploadAttachmentRequest(opts: {
 
 export async function getProfileRequest(): Promise<PersonDetail> {
   const resp = await apiFetch('/auth/me/profile');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getMyActivityRequest(): Promise<MyActivityItem[]> {
+  const resp = await apiFetch('/auth/me/activity');
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

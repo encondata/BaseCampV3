@@ -14,19 +14,23 @@
 .profile-cover {
   height: 132px;
   background:
-    radial-gradient(120% 160% at 85% 0%, rgba(var(--accent-rgb), 0.35) 0%, transparent 55%),
-    radial-gradient(120% 160% at 15% 100%, rgba(var(--accent-rgb), 0.18) 0%, transparent 60%),
+    radial-gradient(120% 160% at 85% 0%, rgba(var(--accent-rgb), 0.65) 0%, transparent 60%),
+    radial-gradient(120% 160% at 15% 100%, rgba(var(--accent-rgb), 0.35) 0%, transparent 65%),
+    linear-gradient(105deg, rgba(var(--accent-rgb), 0.2) 0%, transparent 55%),
     var(--ink);
 }
 
+/* Only the AVATAR overlaps the dark cover. The meta text and actions used
+   to ride up with it (the whole row was pulled -46px), which put the top
+   of the name onto the gradient in dark ink — unreadable. */
 .profile-id {
   display: flex;
   align-items: flex-end;
   gap: 20px;
   flex-wrap: wrap;
-  padding: 0 26px 22px;
-  margin-top: -46px;
+  padding: 14px 26px 22px;
 }
+.profile-id > :first-child { margin-top: -60px; }
 
 .profile-photo {
   width: 104px;
@@ -208,4 +212,35 @@
   color: var(--text-mute);
   cursor: pointer;
   text-decoration: underline;
+}
+
+/* ── user history ─────────────────────────────────────────── */
+
+.activity-panel { margin-top: 22px; }
+
+.activity-item {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--paper-line);
+}
+.activity-item:last-child { border-bottom: none; }
+
+.activity-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transform: translateY(-1px);
+}
+.activity-dot.me { background: rgba(var(--accent-rgb), 0.9); }
+.activity-dot.other { background: var(--text-mute); }
+
+.activity-main b { font-size: 13px; font-weight: 600; }
+.activity-main p {
+  margin: 2px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
 }

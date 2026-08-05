@@ -140,6 +140,22 @@ class PersonDetail(BaseModel):
     created_at: datetime
     avatar_key: str | None = None
     avatar_url: str | None = None
+    # only /auth/me/profile fills this (from the caller's own UserAccount) —
+    # person-shaped payloads elsewhere leave it None
+    password_updated_at: datetime | None = None
+
+
+class MyActivityItem(BaseModel):
+    """One row of the signed-in user's history: something they did, or
+    something done to their account (by_me=False, actor_name says who)."""
+
+    at: datetime
+    action: str
+    entity_type: str
+    entity_id: str | None
+    ip: str | None
+    by_me: bool
+    actor_name: str | None
 
 
 class AttachmentOut(BaseModel):
