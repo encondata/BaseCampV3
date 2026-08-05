@@ -188,9 +188,9 @@ export function modelPayload(
       out[imp] = null;                                // clearing clears both
       out[met] = null;
     } else if (impChanged && !metChanged) {
-      out[imp] = Number(impStr);                      // partner recomputed
+      out[imp] = impStr === '' ? null : Number(impStr);   // null clears the pair server-side
     } else if (metChanged && !impChanged) {
-      out[met] = Number(metStr);
+      out[met] = metStr === '' ? null : Number(metStr);
     } else {
       out[imp] = impStr === '' ? null : Number(impStr);
       out[met] = metStr === '' ? null : Number(metStr);

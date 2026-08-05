@@ -94,6 +94,13 @@ describe('model form payload', () => {
     const p = modelPayload(f, null);
     expect(p).toEqual({ make: 'HPE', model: 'DL380', weight_lbs: 40 });
   });
+  it('blanking one side alone sends null, not a fabricated 0', () => {
+    const f = formFromModel(model);
+    f.weight_lbs = '';
+    const p = modelPayload(f, model);
+    expect(p.weight_lbs).toBeNull();
+    expect('weight_kg' in p).toBe(false);   // untouched side omitted; server clears it
+  });
 });
 
 describe('duplicateSerials', () => {
