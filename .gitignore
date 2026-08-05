@@ -29,3 +29,6 @@ fibertrace/
 # Python build artifacts
 *.egg-info/
 portal/tsconfig.tsbuildinfo
+
+# macOS AppleDouble sidecar files (external drives)
+._*
