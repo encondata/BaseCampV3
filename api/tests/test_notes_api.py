@@ -94,7 +94,36 @@ async def test_asset_attachment_upload_and_scoped_view(client, db, seeded_user):
     assert listing.status_code == 200
     assert listing.json()[0]["filename"] == "manual.pdf"
 
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000d4944415478da63fcff9fa10e0002fe01fda9e70eb80000000049454e44ae426082")
     resp = await client.post("/attachments", headers=hdrs, files={
-        "file": ("x.png", b"png", "image/png")}, data={
+        "file": ("x.png", png, "image/png")}, data={
         "entity_type": "asset", "entity_id": str(asset.id), "kind": "avatar"})
     assert resp.status_code == 422            # assets have no avatar slot
+    assert resp.json()["detail"]["code"] == "avatar_not_supported"
+
+
+async def test_client_cannot_write_asset_attachments_but_can_view(client, db, seeded_user):
+    org, hdrs = await _client_contact(db, client, "Acme AT", "at@acme.example.com")
+    staff_hdrs = await login(client)
+    mine = await _asset(db, client_id=org.id)
+
+    files = {"file": ("doc.pdf", b"%PDF-1.4 fake", "application/pdf")}
+    resp = await client.post("/attachments", headers=staff_hdrs, files=files, data={
+        "entity_type": "asset", "entity_id": str(mine.id), "kind": "document"})
+    assert resp.status_code in (200, 201)
+    att_id = resp.json()["id"]
+
+    # client actor: can view own asset's attachments WITHOUT attachments:view...
+    listing = await client.get(
+        f"/attachments?entity_type=asset&entity_id={mine.id}", headers=hdrs)
+    assert listing.status_code == 200
+    assert len(listing.json()) == 1
+
+    # ...but cannot write
+    resp = await client.post("/attachments", headers=hdrs, files=files, data={
+        "entity_type": "asset", "entity_id": str(mine.id), "kind": "document"})
+    assert resp.status_code == 403
+    resp = await client.delete(f"/attachments/{att_id}", headers=hdrs)
+    assert resp.status_code == 403

@@ -64,27 +64,30 @@ async def _authorize(
         # self-service: managing your OWN avatar is always allowed,
         # regardless of role/permission grants.
         return
-    if not actor.access.can("attachments", action):
-        raise _err(403, "forbidden")
-    # attachments has no SCOPE_COLUMNS entry to backstop a matrix/override
-    # grant, so a non-global actor's "attachments" permission (even an
-    # admin-set override) is not enough on its own — deny until attachments
-    # get a real scope map.
-    if not actor.access.is_global:
-        # asset attachments inherit the asset's visibility: a client-scoped
-        # actor may VIEW files on assets they can see (spec: clients read,
-        # staff write). Other entity types keep the interim hard deny until
-        # attachments get a real scope map.
-        if entity_type == "asset" and action == "view":
-            if not actor.access.can("assets", "view"):
-                raise _err(403, "forbidden")
+    if entity_type == "asset" and action == "view":
+        # asset attachments inherit the asset's visibility: permission
+        # derives ENTIRELY from the host resource (assets:view + row
+        # scope), exactly like the notes router — attachments:view is
+        # never consulted for this case, so a client-scoped actor with
+        # only assets:view can see attachments on assets they can see.
+        if not actor.access.can("assets", "view"):
+            raise _err(403, "forbidden")
+        if not actor.access.is_global:
             cond = scope_conditions("assets", actor.access, actor.person.id)
             if cond is not None:
                 visible = await db.scalar(select(Asset.id).where(
                     Asset.id == entity_id, cond))
                 if visible is None:
                     raise _err(404, "entity_not_found")
-            return
+        return
+    if not actor.access.can("attachments", action):
+        raise _err(403, "forbidden")
+    # attachments has no SCOPE_COLUMNS entry to backstop a matrix/override
+    # grant, so a non-global actor's "attachments" permission (even an
+    # admin-set override) is not enough on its own — deny until attachments
+    # get a real scope map. Other entity types (and asset add/delete) keep
+    # this interim hard deny.
+    if not actor.access.is_global:
         raise _err(403, "forbidden")
 
 
@@ -104,6 +107,9 @@ async def upload_attachment(
     file: Annotated[UploadFile, File()],
 ) -> AttachmentOut:
     await _authorize(db, user, entity_type, entity_id, "add")
+
+    if kind == "avatar" and entity_type not in AVATAR_KEY_FIELD:
+        raise _err(422, "avatar_not_supported")
 
     data = await file.read()
     if kind in ("avatar", "photo"):
@@ -125,9 +131,6 @@ async def upload_attachment(
     await put_object(key, data, content_type)
 
     now = datetime.now(UTC)
-
-    if kind == "avatar" and entity_type not in AVATAR_KEY_FIELD:
-        raise _err(422, "avatar_not_supported")
 
     if kind == "avatar":
         # single current avatar/logo: retire previous rows BEFORE inserting
