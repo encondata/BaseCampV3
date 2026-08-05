@@ -265,7 +265,7 @@ export async function savePreferencesRequest(prefs: UiPreferences): Promise<void
 /** Global attachment upload — avatars now; asset photos, documents later.
  *  FormData: the browser sets the multipart boundary itself. */
 export async function uploadAttachmentRequest(opts: {
-  entityType: 'person' | 'client' | 'partner';
+  entityType: 'person' | 'client' | 'partner' | 'asset';
   entityId: string;
   kind: 'avatar' | 'photo' | 'document';
   file: File;
@@ -879,6 +879,184 @@ export async function createWorkerLevel(
   });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
+}
+
+/* ── assets ───────────────────────────────────────────────────────── */
+
+export interface AssetModelRef {
+  id: string; make: string; model: string;
+  category: string | null; category_label: string | null;
+  category_color: string | null; ru_size: number | null;
+}
+
+export interface AssetItem {
+  id: string; serial_number: string | null; name: string | null;
+  rfid_tag: string | null; model_id: string | null; model: AssetModelRef | null;
+  client_id: string | null; client_name: string | null;
+  site_id: string | null; site_name: string | null;
+  location_detail: string; status: string; status_label: string;
+  status_color: string; has_rails: boolean | null;
+  last_seen_at: string | null; archived_at: string | null; created_at: string;
+}
+
+export interface AssetModelItem {
+  id: string; make: string; model: string;
+  category: string | null; category_label: string | null;
+  category_color: string | null; ru_size: number | null;
+  weight_lbs: number | null; weight_kg: number | null;
+  length_in: number | null; width_in: number | null; height_in: number | null;
+  length_cm: number | null; width_cm: number | null; height_cm: number | null;
+  mount_type: string | null; rail_type: string | null;
+  knowledge: string; aliases: string[]; created_at: string; updated_at: string;
+}
+
+export interface AssetCategoryOut {
+  key: string; label: string; description: string;
+  sort_order: number; color: string;
+}
+
+export interface NoteOut {
+  id: string; entity_type: string; entity_id: string; body: string;
+  created_by: string | null; author_name: string | null;
+  created_at: string; updated_at: string;
+}
+
+export async function listAssets(): Promise<AssetItem[]> {
+  const resp = await apiFetch('/assets');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createAsset(body: Record<string, unknown>): Promise<AssetItem> {
+  const resp = await apiFetch('/assets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateAsset(
+  id: string, body: Record<string, unknown>,
+): Promise<AssetItem> {
+  const resp = await apiFetch(`/assets/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function archiveAsset(id: string, archived: boolean): Promise<void> {
+  const resp = await apiFetch(
+    `/assets/${id}/${archived ? 'archive' : 'unarchive'}`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function listAssetStatuses(): Promise<StatusValue[]> {
+  const resp = await apiFetch('/status-values?record_type=asset');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listAssetModels(): Promise<AssetModelItem[]> {
+  const resp = await apiFetch('/asset-models');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createAssetModel(
+  body: Record<string, unknown>,
+): Promise<AssetModelItem> {
+  const resp = await apiFetch('/asset-models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateAssetModel(
+  id: string, body: Record<string, unknown>,
+): Promise<AssetModelItem> {
+  const resp = await apiFetch(`/asset-models/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function setAssetModelAliases(
+  id: string, aliases: string[],
+): Promise<AssetModelItem> {
+  const resp = await apiFetch(`/asset-models/${id}/aliases`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ aliases }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listAssetCategories(): Promise<AssetCategoryOut[]> {
+  const resp = await apiFetch('/asset-categories');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listNotes(entityType: string, entityId: string): Promise<NoteOut[]> {
+  const resp = await apiFetch(`/notes?entity_type=${entityType}&entity_id=${entityId}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createNote(
+  entityType: string, entityId: string, body: string,
+): Promise<NoteOut> {
+  const resp = await apiFetch('/notes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity_type: entityType, entity_id: entityId, body }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateNote(id: string, body: string): Promise<NoteOut> {
+  const resp = await apiFetch(`/notes/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function deleteNote(id: string): Promise<void> {
+  const resp = await apiFetch(`/notes/${id}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+/** NEW: no list method existed for attachments before assets needed a
+ *  panel view — GET /attachments?entity_type=&entity_id= (mirrors the
+ *  notes list query shape; matches attachments.py's list_attachments). */
+export async function listAttachments(
+  entityType: string, entityId: string,
+): Promise<AttachmentOut[]> {
+  const resp = await apiFetch(
+    `/attachments?entity_type=${entityType}&entity_id=${entityId}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function deleteAttachment(id: string): Promise<void> {
+  const resp = await apiFetch(`/attachments/${id}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
 }
 
 /* ── god mode (developer easter egg) ─────────────────────────────── */
