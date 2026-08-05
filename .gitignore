@@ -29,3 +29,7 @@ fibertrace/
 # Python build artifacts
 *.egg-info/
 portal/tsconfig.tsbuildinfo
+
+# macOS AppleDouble files (exFAT/SMB volumes)
+._*
+**/._*
