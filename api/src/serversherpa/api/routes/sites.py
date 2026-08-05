@@ -5,7 +5,7 @@ lookups, one M:N client relationship (not two), and a validated survey."""
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
 
 from serversherpa.access.scope import scope_conditions
@@ -17,7 +17,9 @@ from serversherpa.api.schemas import (
 from serversherpa.db.models import (
     Client, Partner, Site, SiteClient, SiteType, StatusValue,
 )
+from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.sites import bulk_import as bulk
 from serversherpa.sites.survey import SurveyError, survey_schema, validate_survey
 
 router = APIRouter(prefix="/sites", tags=["sites"])
@@ -119,6 +121,108 @@ async def get_survey_schema(
     _actor: AuthContext = require_permission("sites", "view"),
 ) -> dict:
     return survey_schema()
+
+
+# ── bulk import ────────────────────────────────────────────────────
+# Declared ABOVE get_site: /sites/bulk-import/* must never be swallowed by
+# GET /sites/{site_id} (which would 422 on the non-UUID segment).
+
+def _require_bulk_rank(actor: AuthContext) -> None:
+    """Bulk import is admin-and-up: sites:add alone (staff hold it) is not
+    enough — the blast radius of a thousand-row write warrants the same bar
+    as the other rank-gated admin tooling."""
+    if not actor.access.is_global or actor.access.max_rank < GATE_BYPASS_RANK:
+        raise _err(403, "forbidden")
+
+
+def _bulk_err(exc: bulk.BulkImportError) -> HTTPException:
+    return _err(422, exc.code, **exc.extra)
+
+
+@router.get("/bulk-import/template")
+async def bulk_import_template(
+    db: DbSession,
+    format: str = "csv",
+    actor: AuthContext = require_permission("sites", "add"),
+):
+    _require_bulk_rank(actor)
+    if format == "json":
+        return bulk.SAMPLE_ROWS
+    if format == "csv":
+        return Response(bulk.build_template_csv(), media_type="text/csv",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="sites-template.csv"'})
+    if format == "xlsx":
+        types = [t.key for t in await db.scalars(
+            select(SiteType).order_by(SiteType.sort_order))]
+        statuses = list(await db.scalars(
+            select(StatusValue.key)
+            .where(StatusValue.record_type == "site")
+            .order_by(StatusValue.sort_order)))
+        return Response(
+            bulk.build_template_xlsx(types, statuses),
+            media_type="application/vnd.openxmlformats-officedocument"
+                       ".spreadsheetml.sheet",
+            headers={"Content-Disposition":
+                     'attachment; filename="sites-template.xlsx"'})
+    raise _err(422, "unknown_format")
+
+
+async def _rows_from_request(request: Request) -> list[tuple[int, dict]]:
+    ctype = request.headers.get("content-type", "")
+    try:
+        if ctype.startswith("multipart/"):
+            form = await request.form()
+            upload = form.get("file")
+            if upload is None or isinstance(upload, str):
+                raise bulk.BulkImportError("missing_file")
+            return bulk.parse_upload(upload.filename or "", await upload.read())
+        body = await request.json()
+        return bulk.number_json_rows(body.get("rows"))
+    except bulk.BulkImportError as exc:
+        raise _bulk_err(exc) from None
+    except (ValueError, AttributeError):
+        raise _err(422, "invalid_json") from None
+
+
+@router.post("/bulk-import/preview")
+async def bulk_import_preview(
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = require_permission("sites", "add"),
+) -> dict:
+    _require_bulk_rank(actor)
+    numbered = await _rows_from_request(request)
+    return await bulk.preview_rows(
+        db, numbered, allow_updates=actor.access.can("devtools", "change"))
+
+
+@router.post("/bulk-import/commit")
+async def bulk_import_commit(
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = require_permission("sites", "add"),
+) -> dict:
+    _require_bulk_rank(actor)
+    try:
+        body = await request.json()
+    except ValueError:
+        raise _err(422, "invalid_json") from None
+    try:
+        numbered = bulk.number_json_rows(body.get("rows"))
+    except bulk.BulkImportError as exc:
+        raise _bulk_err(exc) from None
+    approved = {str(s) for s in body.get("approved_updates") or []}
+    allow = actor.access.can("devtools", "change")
+    if approved and not allow:
+        raise _err(422, "updates_not_allowed")
+    try:
+        return await bulk.commit_rows(
+            db, actor.person.id, numbered, allow_updates=allow,
+            approved_updates=approved,
+            source_label=str(body.get("source") or "paste"))
+    except bulk.BulkImportError as exc:
+        raise _bulk_err(exc) from None
 
 
 async def _detail(db: DbSession, site: Site) -> SiteDetail:
