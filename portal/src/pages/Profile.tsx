@@ -7,6 +7,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
+import ActivityHistory from '../components/ActivityHistory';
 import AvatarUpload from '../components/AvatarUpload';
 import ChangePasswordForm from '../components/ChangePasswordForm';
 import {
@@ -39,27 +40,6 @@ const EDIT_FIELDS = [
 ] as const;
 
 type EditKey = (typeof EDIT_FIELDS)[number]['key'];
-
-const ACTIVITY_ACTIONS: Record<string, string> = {
-  login: 'Signed in',
-  login_failed: 'Failed sign-in attempt',
-  logout: 'Signed out',
-  token_replay_detected: 'Token replay detected — sessions revoked',
-  'password.change': 'Changed password',
-  'session.revoke': 'Signed out another session',
-  bulk_import: 'Ran a bulk import',
-  create: 'Created',
-  update: 'Updated',
-  archive: 'Archived',
-  restore: 'Unarchived',
-};
-
-/** "Signed in" for auth rows; "Updated site" style for entity rows. */
-function describeActivity(row: MyActivityItem): string {
-  const verb = ACTIVITY_ACTIONS[row.action] ?? row.action.replace(/[._]/g, ' ');
-  if (row.entity_type === 'auth' || row.entity_type === 'person') return verb;
-  return `${verb} ${row.entity_type.replace(/_/g, ' ')}`;
-}
 
 function formStateFrom(p: PersonDetail): Record<EditKey, string> {
   const out = {} as Record<EditKey, string>;
@@ -313,37 +293,7 @@ export default function Profile() {
         </div>
       </div>
 
-      <div className="panel activity-panel">
-        <div className="panel-head">
-          <h3>User history</h3>
-          <span className="result-count">last {activity.length} events</span>
-        </div>
-        <div className="panel-body">
-          {activity.map((row, i) => (
-            <div className="activity-item" key={`${row.at}-${i}`}>
-              <span className={`activity-dot ${row.by_me ? 'me' : 'other'}`} />
-              <div className="activity-main">
-                <b>
-                  {row.by_me ? 'You' : (row.actor_name ?? 'System')}
-                  {' · '}
-                  {describeActivity(row)}
-                </b>
-                <p>
-                  <span title={new Date(row.at).toLocaleString()}>
-                    {relativeTime(row.at)}
-                  </span>
-                  {row.ip && ` · ${row.ip}`}
-                  {row.entity_type === 'auth' && !row.by_me && row.entity_id
-                    && ` · ${row.entity_id}`}
-                </p>
-              </div>
-            </div>
-          ))}
-          {activity.length === 0 && (
-            <p className="set-note" style={{ padding: 0 }}>No recorded activity yet.</p>
-          )}
-        </div>
-      </div>
+      <ActivityHistory rows={activity} />
     </div>
   );
 }

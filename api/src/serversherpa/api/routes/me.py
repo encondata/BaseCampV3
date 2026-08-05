@@ -64,12 +64,13 @@ async def my_activity(user: CurrentUser, db: DbSession) -> list[MyActivityItem]:
         .limit(50)
     )).all()
     return [MyActivityItem(
-        at=log.at, action=log.action, entity_type=log.entity_type,
+        id=log.id, at=log.at, action=log.action, entity_type=log.entity_type,
         entity_id=log.entity_id, ip=str(log.ip) if log.ip else None,
         by_me=log.actor_person_id == me,
         actor_name=(actor.display_name
                     if actor is not None and log.actor_person_id != me
                     else None),
+        changes=log.changes or {},
     ) for log, actor in rows]
 
 

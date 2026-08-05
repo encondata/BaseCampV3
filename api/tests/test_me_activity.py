@@ -20,7 +20,8 @@ async def test_activity_lists_own_and_about_me_only(client, db, seeded_user):
     await db.flush()
 
     db.add(AuditLog(actor_person_id=seeded_user.id, entity_type="site",
-                    entity_id="some-site", action="update", changes={}))
+                    entity_id="some-site", action="update",
+                    changes={"city": {"from": "Reno", "to": "Vegas"}}))
     db.add(AuditLog(actor_person_id=None, entity_type="auth",
                     entity_id="alice@test.example.com",
                     action="login_failed", changes={}))
@@ -43,6 +44,10 @@ async def test_activity_lists_own_and_about_me_only(client, db, seeded_user):
     admin_row = next(r for r in rows
                      if r["entity_type"] == "person" and r["by_me"] is False)
     assert admin_row["actor_name"] == "Ada Admin"
+
+    site_row = next(r for r in rows if r["entity_type"] == "site")
+    assert site_row["changes"] == {"city": {"from": "Reno", "to": "Vegas"}}
+    assert site_row["id"]
 
     assert not any(r["entity_id"] == str(other.id) for r in rows)
 

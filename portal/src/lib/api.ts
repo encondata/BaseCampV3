@@ -78,6 +78,7 @@ export interface PersonDetail {
 }
 
 export interface MyActivityItem {
+  id: string;
   at: string;
   action: string;
   entity_type: string;
@@ -85,6 +86,7 @@ export interface MyActivityItem {
   ip: string | null;
   by_me: boolean;
   actor_name: string | null;
+  changes: Record<string, unknown>;
 }
 
 export interface AttachmentOut {

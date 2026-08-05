@@ -147,8 +147,11 @@ class PersonDetail(BaseModel):
 
 class MyActivityItem(BaseModel):
     """One row of the signed-in user's history: something they did, or
-    something done to their account (by_me=False, actor_name says who)."""
+    something done to their account (by_me=False, actor_name says who).
+    `changes` is the audit row's field diff — sensitive fields were already
+    redacted at write time by the audit service."""
 
+    id: uuid.UUID
     at: datetime
     action: str
     entity_type: str
@@ -156,6 +159,7 @@ class MyActivityItem(BaseModel):
     ip: str | None
     by_me: bool
     actor_name: str | None
+    changes: dict
 
 
 class AttachmentOut(BaseModel):
