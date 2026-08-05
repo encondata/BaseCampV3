@@ -78,6 +78,8 @@ export default function Assets() {
   const { can } = useAuth();
   const canAdd = can('assets', 'add');
   const canChange = can('assets', 'change');
+  const canViewSites = can('sites', 'view');
+  const canViewCategories = can('asset_models', 'view');
 
   const [assets, setAssets] = useState<AssetItem[] | null>(null);
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
@@ -110,9 +112,9 @@ export default function Assets() {
   useEffect(() => {
     void load();
     void listAssetStatuses().then(setStatuses).catch(() => {});
-    void listAssetCategories().then(setCategories).catch(() => {});
+    if (canViewCategories) void listAssetCategories().then(setCategories).catch(() => {});
     void listClients().then(setClients).catch(() => {});
-    void listSites().then(setSites).catch(() => {});
+    if (canViewSites) void listSites().then(setSites).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -124,15 +126,15 @@ export default function Assets() {
   const facetGroups = useMemo<FacetGroup[]>(() => [
     { key: 'status', title: 'Status',
       options: statuses.map((s) => ({ value: s.key, label: s.label })) },
-    { key: 'category', title: 'Category',
-      options: categories.map((c) => ({ value: c.key, label: c.label })) },
+    ...(canViewCategories ? [{ key: 'category', title: 'Category',
+      options: categories.map((c) => ({ value: c.key, label: c.label })) }] : []),
     { key: 'client', title: 'Client', options:
       clients.filter((c) => !c.archived_at).map((c) => ({ value: c.id, label: c.name })) },
-    { key: 'site', title: 'Site',
-      options: sites.map((s) => ({ value: s.id, label: s.name })) },
+    ...(canViewSites ? [{ key: 'site', title: 'Site',
+      options: sites.map((s) => ({ value: s.id, label: s.name })) }] : []),
     { key: 'archived', title: 'Archived', options: [
       { value: 'no', label: 'Active only' }, { value: 'yes', label: 'Archived' }] },
-  ], [statuses, categories, clients, sites]);
+  ], [statuses, categories, clients, sites, canViewCategories, canViewSites]);
 
   const visible = useMemo(() => {
     if (!assets) return [];
@@ -218,7 +220,7 @@ export default function Assets() {
     <div className="portal-page">
       <div className="dir-head">
         <div>
-          <div className="eyebrow">Operations</div>
+          <div className="eyebrow">Assets</div>
           <h1 className="page-title">
             Assets
             <span className="badge-count">{assets?.length ?? '…'}</span>

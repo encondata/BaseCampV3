@@ -772,14 +772,14 @@ class AssetModelCreateIn(BaseModel):
     model: str = Field(min_length=1)
     category: str | None = None
     ru_size: int | None = Field(default=None, ge=0, le=100)
-    weight_lbs: float | None = Field(default=None, ge=0)
-    weight_kg: float | None = Field(default=None, ge=0)
-    length_in: float | None = Field(default=None, ge=0)
-    width_in: float | None = Field(default=None, ge=0)
-    height_in: float | None = Field(default=None, ge=0)
-    length_cm: float | None = Field(default=None, ge=0)
-    width_cm: float | None = Field(default=None, ge=0)
-    height_cm: float | None = Field(default=None, ge=0)
+    weight_lbs: float | None = Field(default=None, ge=0, le=99999)
+    weight_kg: float | None = Field(default=None, ge=0, le=99999)
+    length_in: float | None = Field(default=None, ge=0, le=99999)
+    width_in: float | None = Field(default=None, ge=0, le=99999)
+    height_in: float | None = Field(default=None, ge=0, le=99999)
+    length_cm: float | None = Field(default=None, ge=0, le=99999)
+    width_cm: float | None = Field(default=None, ge=0, le=99999)
+    height_cm: float | None = Field(default=None, ge=0, le=99999)
     mount_type: str | None = None
     rail_type: str | None = None
     knowledge: str = ""
@@ -791,14 +791,14 @@ class AssetModelUpdateIn(BaseModel):
     model: str | None = None
     category: str | None = None
     ru_size: int | None = Field(default=None, ge=0, le=100)
-    weight_lbs: float | None = Field(default=None, ge=0)
-    weight_kg: float | None = Field(default=None, ge=0)
-    length_in: float | None = Field(default=None, ge=0)
-    width_in: float | None = Field(default=None, ge=0)
-    height_in: float | None = Field(default=None, ge=0)
-    length_cm: float | None = Field(default=None, ge=0)
-    width_cm: float | None = Field(default=None, ge=0)
-    height_cm: float | None = Field(default=None, ge=0)
+    weight_lbs: float | None = Field(default=None, ge=0, le=99999)
+    weight_kg: float | None = Field(default=None, ge=0, le=99999)
+    length_in: float | None = Field(default=None, ge=0, le=99999)
+    width_in: float | None = Field(default=None, ge=0, le=99999)
+    height_in: float | None = Field(default=None, ge=0, le=99999)
+    length_cm: float | None = Field(default=None, ge=0, le=99999)
+    width_cm: float | None = Field(default=None, ge=0, le=99999)
+    height_cm: float | None = Field(default=None, ge=0, le=99999)
     mount_type: str | None = None
     rail_type: str | None = None
     knowledge: str | None = None

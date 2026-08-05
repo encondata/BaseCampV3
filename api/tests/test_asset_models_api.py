@@ -125,3 +125,10 @@ async def test_aliases_rejects_extra_keys(client, seeded_user):
     resp = await client.put(f"/asset-models/{created['id']}/aliases", headers=hdrs,
                             json={"aliases": ["X1"], "bogus": True})
     assert resp.status_code == 422
+
+
+async def test_unit_fields_bounded(client, seeded_user):
+    hdrs = await login(client)
+    resp = await client.post("/asset-models", headers=hdrs, json={
+        "make": "X", "model": "Overflow", "length_in": 500000})
+    assert resp.status_code == 422   # schema bound, not a DB 500
