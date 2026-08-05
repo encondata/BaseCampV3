@@ -679,5 +679,96 @@ class SiteUpdateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")   # rejects survey_data
 
 
+# ── assets ─────────────────────────────────────────────────────────
+
+
+class AssetCategoryOut(BaseModel):
+    key: str
+    label: str
+    description: str
+    sort_order: int
+    color: str
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AssetModelRef(BaseModel):
+    """Read-only catalog summary embedded in asset payloads — this is all a
+    client-anchored actor ever sees of the catalog (no knowledge field)."""
+
+    id: uuid.UUID
+    make: str
+    model: str
+    category: str | None = None
+    category_label: str | None = None
+    category_color: str | None = None
+    ru_size: int | None = None
+
+
+class AssetModelItem(BaseModel):
+    id: uuid.UUID
+    make: str
+    model: str
+    category: str | None = None
+    category_label: str | None = None
+    category_color: str | None = None
+    ru_size: int | None = None
+    weight_lbs: float | None = None
+    weight_kg: float | None = None
+    length_in: float | None = None
+    width_in: float | None = None
+    height_in: float | None = None
+    length_cm: float | None = None
+    width_cm: float | None = None
+    height_cm: float | None = None
+    mount_type: str | None = None
+    rail_type: str | None = None
+    knowledge: str
+    aliases: list[str] = []
+    created_at: datetime
+    updated_at: datetime
+
+
+class AssetModelCreateIn(BaseModel):
+    make: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    category: str | None = None
+    ru_size: int | None = Field(default=None, ge=0, le=100)
+    weight_lbs: float | None = Field(default=None, ge=0)
+    weight_kg: float | None = Field(default=None, ge=0)
+    length_in: float | None = Field(default=None, ge=0)
+    width_in: float | None = Field(default=None, ge=0)
+    height_in: float | None = Field(default=None, ge=0)
+    length_cm: float | None = Field(default=None, ge=0)
+    width_cm: float | None = Field(default=None, ge=0)
+    height_cm: float | None = Field(default=None, ge=0)
+    mount_type: str | None = None
+    rail_type: str | None = None
+    knowledge: str = ""
+    model_config = ConfigDict(extra="forbid")
+
+
+class AssetModelUpdateIn(BaseModel):
+    make: str | None = None
+    model: str | None = None
+    category: str | None = None
+    ru_size: int | None = Field(default=None, ge=0, le=100)
+    weight_lbs: float | None = Field(default=None, ge=0)
+    weight_kg: float | None = Field(default=None, ge=0)
+    length_in: float | None = Field(default=None, ge=0)
+    width_in: float | None = Field(default=None, ge=0)
+    height_in: float | None = Field(default=None, ge=0)
+    length_cm: float | None = Field(default=None, ge=0)
+    width_cm: float | None = Field(default=None, ge=0)
+    height_cm: float | None = Field(default=None, ge=0)
+    mount_type: str | None = None
+    rail_type: str | None = None
+    knowledge: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class AssetModelAliasesIn(BaseModel):
+    aliases: list[str]
+
+
 class GodModeIn(BaseModel):
     word: str
