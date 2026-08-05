@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import SiteEditModal from '../components/sites/SiteEditModal';
-import SitesMap, { SiteMiniMap } from '../components/sites/SitesMap';
+import SitesMap, { SiteMapModal, SiteMiniMap } from '../components/sites/SitesMap';
 import {
   ApiError,
   getSite,
@@ -412,6 +412,7 @@ function SiteRowDetail({ site, schema, canEdit, onEdit }: {
 }) {
   const [surveyData, setSurveyData] = useState<Record<string, unknown> | null>(null);
   const [surveyStatus, setSurveyStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
+  const [mapOpen, setMapOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -479,13 +480,15 @@ function SiteRowDetail({ site, schema, canEdit, onEdit }: {
       <div className="detail-block">
         <p className="eyebrow-sm">Location</p>
         {site.latitude !== null && site.longitude !== null ? (
-          <SiteMiniMap site={site} />
+          <SiteMiniMap site={site} onOpen={() => setMapOpen(true)} />
         ) : (
           <p className="set-note" style={{ padding: 0 }}>
             No coordinates — add them in Edit to see the map.
           </p>
         )}
       </div>
+
+      {mapOpen && <SiteMapModal site={site} onClose={() => setMapOpen(false)} />}
 
       {canEdit && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>

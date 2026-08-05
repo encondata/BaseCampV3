@@ -119,6 +119,18 @@
   .site-detail-grid { grid-template-columns: 1fr; }
 }
 
+.site-mini-map-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: zoom-in;
+  border-radius: 12px;
+}
+.site-mini-map-wrap:hover .site-mini-map-hint { opacity: 1; }
+
 .site-mini-map {
   height: 200px;
   border-radius: 12px;
@@ -126,3 +138,23 @@
   /* a static locator, not a map to wander — match the disabled handlers */
   pointer-events: none;
 }
+
+.site-mini-map-hint {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 500;             /* above leaflet tile panes */
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 7px;
+  background: rgba(12, 17, 23, 0.72);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+
+.site-map-modal-card { width: min(920px, 94vw); }
+.site-map-modal-body { padding: 0; }
+.site-map-modal-map { height: min(64vh, 620px); }

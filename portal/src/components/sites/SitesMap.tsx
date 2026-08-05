@@ -26,20 +26,69 @@ function FitBounds({ points }: { points: [number, number][] }) {
   return null;
 }
 
-/** Small single-site locator for the row expansion: marker centered,
- *  interactions off (it's a picture, not a map to wander) — the map view
- *  exists for exploring. Rendered only when the site has coordinates. */
-export function SiteMiniMap({ site }: { site: SiteItem }) {
+// street-level: the locator answers "which block", the modal lets you wander
+const MINI_ZOOM = 16;
+
+/** Small single-site locator for the row expansion: surrounding streets,
+ *  marker centered, interactions off — clicking it opens the interactive
+ *  modal at the same zoom. Rendered only when the site has coordinates. */
+export function SiteMiniMap({ site, onOpen }: {
+  site: SiteItem;
+  onOpen: () => void;
+}) {
   if (site.latitude === null || site.longitude === null) return null;
   const point: [number, number] = [site.latitude, site.longitude];
   return (
-    <MapContainer center={point} zoom={12} className="site-mini-map"
-                  zoomControl={false} dragging={false} scrollWheelZoom={false}
-                  doubleClickZoom={false} touchZoom={false} keyboard={false}
-                  attributionControl={false}>
-      <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-      <Marker position={point} icon={icon} interactive={false} />
-    </MapContainer>
+    <button type="button" className="site-mini-map-wrap" onClick={onOpen}
+            aria-label={`Open map for ${site.name}`}>
+      <MapContainer center={point} zoom={MINI_ZOOM} className="site-mini-map"
+                    zoomControl={false} dragging={false} scrollWheelZoom={false}
+                    doubleClickZoom={false} touchZoom={false} keyboard={false}
+                    attributionControl={false}>
+        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+        <Marker position={point} icon={icon} interactive={false} />
+      </MapContainer>
+      <span className="site-mini-map-hint">Click to explore</span>
+    </button>
+  );
+}
+
+/** Full-size interactive map in a modal — opens at the locator's zoom. */
+export function SiteMapModal({ site, onClose }: {
+  site: SiteItem;
+  onClose: () => void;
+}) {
+  if (site.latitude === null || site.longitude === null) return null;
+  const point: [number, number] = [site.latitude, site.longitude];
+  return (
+    <div className="modal-scrim" onMouseDown={(e) => {
+      if (e.target === e.currentTarget) onClose();
+    }}>
+      <div className="modal-card site-map-modal-card">
+        <div className="modal-head">
+          <h3>{site.name} — map</h3>
+          <button className="modal-close" aria-label="Close" onClick={onClose}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+                 strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
+          </button>
+        </div>
+        <div className="modal-body site-map-modal-body">
+          <MapContainer center={point} zoom={MINI_ZOOM} className="site-map-modal-map">
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+            <Marker position={point} icon={icon}>
+              <Popup>
+                <b>{site.name}</b>
+                <div>{[site.address_line1, site.city, site.region]
+                  .filter(Boolean).join(', ') || 'No address on file'}</div>
+              </Popup>
+            </Marker>
+          </MapContainer>
+        </div>
+      </div>
+    </div>
   );
 }
 
