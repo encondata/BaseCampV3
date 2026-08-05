@@ -12,6 +12,7 @@ import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
 import ComboBox from '../components/ComboBox';
 import { apiFetch, listWorkerStatuses, type StatusValue } from '../lib/api';
+import { initialOpenId } from '../lib/auditFormat';
 import { avatarGradient, initials, longDate } from '../lib/format';
 import {
   ColumnsButton,
@@ -130,7 +131,7 @@ export default function Workers() {
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(initialOpenId);
   const [facets, setFacets] = useState<FacetState>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(
     () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));

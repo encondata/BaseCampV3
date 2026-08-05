@@ -26,6 +26,7 @@ import {
   type SiteLookup,
   type SurveySchema,
 } from '../lib/api';
+import { initialOpenId } from '../lib/auditFormat';
 import {
   formatCoords, matchesSiteFilters, naturalCompare, siteSearchText, type SiteFilters,
 } from '../lib/sites';
@@ -105,7 +106,7 @@ export default function Sites() {
   const [view, setView] = useState<'list' | 'map'>('list');
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(initialOpenId);
   const [facets, setFacets] = useState<FacetState>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(
     () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));

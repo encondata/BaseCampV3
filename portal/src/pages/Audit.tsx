@@ -6,6 +6,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import ComboBox from '../components/ComboBox';
 import {
@@ -16,7 +17,7 @@ import {
   type UserSummary,
 } from '../lib/api';
 import {
-  actionLabel, changeRows, entityLabel, targetLabel,
+  actionLabel, changeRows, entityHref, entityLabel, targetLabel,
 } from '../lib/auditFormat';
 import { relativeTime } from '../lib/format';
 import {
@@ -251,7 +252,13 @@ export default function Audit() {
                           <dt>Action</dt><dd className="mono">{r.action}</dd>
                           <dt>Record</dt>
                           <dd className="mono">
-                            {r.entity_type}{r.entity_id ? ` · ${r.entity_id}` : ''}
+                            {entityHref(r) ? (
+                              <Link className="record-link" to={entityHref(r) as string}>
+                                {r.entity_type} · {r.entity_id} ↗
+                              </Link>
+                            ) : (
+                              <>{r.entity_type}{r.entity_id ? ` · ${r.entity_id}` : ''}</>
+                            )}
                           </dd>
                           <dt>IP</dt><dd className="mono">{r.ip ?? '—'}</dd>
                         </dl>

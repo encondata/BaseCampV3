@@ -70,6 +70,31 @@ export function targetLabel(row: AuditRowLike, opts?: { hideAuthTarget?: boolean
   return label;
 }
 
+/** Where a record lives in the portal, or null when it has no page.
+ * V3 records are rows in list pages, so "navigate to it" means the list
+ * route plus ?open=<id> — every list initializes its expanded row from
+ * that param. Worker and person audit rows both store the PERSON id,
+ * which is exactly what Workers/Users rows are keyed by. */
+export function entityHref(row: AuditRowLike): string | null {
+  if (!row.entity_id) return null;
+  const routes: Record<string, string> = {
+    site: '/sites',
+    worker: '/people/workers',
+    person: '/people/users',
+    user_account: '/people/users',
+    client: '/stakeholders/clients',
+    partner: '/stakeholders/partners',
+  };
+  const base = routes[row.entity_type];
+  return base ? `${base}?open=${encodeURIComponent(row.entity_id)}` : null;
+}
+
+/** Lazy initializer for a list page's expanded-row state: honors a
+ * ?open=<id> deep link (used by the audit viewers' Record links). */
+export function initialOpenId(): string | null {
+  return new URLSearchParams(window.location.search).get('open');
+}
+
 /** One rendered before/after pair. Values that aren't {from,to} objects
  * (bulk summaries, client add/remove sets) render as plain JSON. */
 export function changeRows(changes: Record<string, unknown>):

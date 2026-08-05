@@ -282,3 +282,6 @@
 .audit-actor { min-width: 190px; }
 
 .audit-more { display: flex; justify-content: center; padding: 14px 0 4px; }
+
+.record-link { color: var(--text-dark); text-decoration: underline; }
+.record-link:hover { color: rgb(var(--accent-rgb)); }

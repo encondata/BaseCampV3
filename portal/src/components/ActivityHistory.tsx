@@ -5,10 +5,12 @@
  */
 
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { type MyActivityItem } from '../lib/api';
 import {
-  actionLabel, changeRows, entityLabel, targetLabel as sharedTargetLabel,
+  actionLabel, changeRows, entityHref, entityLabel,
+  targetLabel as sharedTargetLabel,
 } from '../lib/auditFormat';
 import { relativeTime } from '../lib/format';
 import {
@@ -198,7 +200,13 @@ export default function ActivityHistory({ rows }: { rows: MyActivityItem[] }) {
                           <dt>Action</dt><dd className="mono">{r.action}</dd>
                           <dt>Record</dt>
                           <dd className="mono">
-                            {r.entity_type}{r.entity_id ? ` · ${r.entity_id}` : ''}
+                            {entityHref(r) ? (
+                              <Link className="record-link" to={entityHref(r) as string}>
+                                {r.entity_type} · {r.entity_id} ↗
+                              </Link>
+                            ) : (
+                              <>{r.entity_type}{r.entity_id ? ` · ${r.entity_id}` : ''}</>
+                            )}
                           </dd>
                           <dt>IP</dt><dd className="mono">{r.ip ?? '—'}</dd>
                         </dl>
