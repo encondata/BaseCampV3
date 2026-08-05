@@ -17,7 +17,7 @@ type Entry =
   | { kind: 'file'; at: string; file: AttachmentOut };
 
 export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
-  entityType: 'asset'; entityId: string; canWrite: boolean;
+  entityType: string; entityId: string; canWrite: boolean;
 }) {
   const [notes, setNotes] = useState<NoteOut[]>([]);
   const [files, setFiles] = useState<AttachmentOut[]>([]);
@@ -29,24 +29,25 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
   const [error, setError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const load = async () => {
+  const load = async (isLive: () => boolean = () => true) => {
     try {
       const [n, f] = await Promise.all([
         listNotes(entityType, entityId),
         listAttachments(entityType, entityId),
       ]);
+      if (!isLive()) return;
       setNotes(n);
       setFiles(f);
       setStatus('loaded');
     } catch {
-      setStatus('error');
+      if (isLive()) setStatus('error');
     }
   };
 
   useEffect(() => {
     let cancelled = false;
     setStatus('loading');
-    void load().then(() => { if (cancelled) return; });
+    void load(() => !cancelled);
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityType, entityId]);
@@ -54,7 +55,7 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
   const entries: Entry[] = [
     ...notes.map((n) => ({ kind: 'note' as const, at: n.created_at, note: n })),
     ...files.map((f) => ({ kind: 'file' as const, at: f.created_at, file: f })),
-  ].sort((a, b) => b.at.localeCompare(a.at));
+  ].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
 
   const addNote = async () => {
     const body = draft.trim();
@@ -75,6 +76,7 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
   const saveEdit = async () => {
     if (editingId === null) return;
     setBusy(true);
+    setError('');
     try {
       await updateNote(editingId, editBody.trim());
       setEditingId(null);
@@ -91,7 +93,11 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
     setError('');
     try {
       await uploadAttachmentRequest({
-        entityType, entityId,
+        // uploadAttachmentRequest predates this panel and still narrows
+        // entityType to its historical avatar/photo/document callers;
+        // this component is contractually generic, so assert here.
+        entityType: entityType as 'person' | 'client' | 'partner' | 'asset',
+        entityId,
         kind: file.type.startsWith('image/') ? 'photo' : 'document',
         file,
       });
@@ -101,6 +107,32 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
     } finally {
       setBusy(false);
       if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
+  const removeNote = async (id: string) => {
+    setBusy(true);
+    setError('');
+    try {
+      await deleteNote(id);
+      await load();
+    } catch {
+      setError('Could not delete the note.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeAttachment = async (id: string) => {
+    setBusy(true);
+    setError('');
+    try {
+      await deleteAttachment(id);
+      await load();
+    } catch {
+      setError('Could not delete the file.');
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -155,12 +187,12 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                       <span>{new Date(entry.note.created_at).toLocaleString()}</span>
                       {canWrite && (
                         <span className="nf-actions">
-                          <button className="mini-btn" onClick={() => {
+                          <button className="mini-btn" disabled={busy} onClick={() => {
                             setEditingId(entry.note.id);
                             setEditBody(entry.note.body);
                           }}>Edit</button>
-                          <button className="mini-btn danger" onClick={() => {
-                            void deleteNote(entry.note.id).then(load);
+                          <button className="mini-btn danger" disabled={busy} onClick={() => {
+                            void removeNote(entry.note.id);
                           }}>Delete</button>
                         </span>
                       )}
@@ -183,8 +215,8 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                   <span>{new Date(entry.file.created_at).toLocaleString()}</span>
                   {canWrite && (
                     <span className="nf-actions">
-                      <button className="mini-btn danger" onClick={() => {
-                        void deleteAttachment(entry.file.id).then(load);
+                      <button className="mini-btn danger" disabled={busy} onClick={() => {
+                        void removeAttachment(entry.file.id);
                       }}>Delete</button>
                     </span>
                   )}
