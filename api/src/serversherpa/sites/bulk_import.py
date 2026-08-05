@@ -340,3 +340,113 @@ def _diff_row(site: Site, data: dict, blank: dict,
         if add or remove:
             out["clients"] = {"add": add, "remove": remove}
     return out
+
+
+# ── commit ──────────────────────────────────────────────────────────
+
+async def commit_rows(db: AsyncSession, actor_person_id: uuid.UUID,
+                      numbered: list[tuple[int, dict]], *, allow_updates: bool,
+                      approved_updates: set[str], source_label: str) -> dict:
+    """All-or-nothing: re-validates everything, then commits creates plus
+    APPROVED updates in one transaction. Raises rows_invalid (carrying the
+    full preview payload) if anything blocks — nothing is written."""
+    from serversherpa.services.audit import audit
+
+    preview = await preview_rows(db, numbered, allow_updates=allow_updates)
+    blocked = [r for r in preview["rows"] if r["action"] == "error"]
+    unapproved = [r for r in preview["rows"]
+                  if r["action"] == "update" and r["site_id"] not in approved_updates]
+    if blocked or unapproved or not preview["rows"]:
+        for r in unapproved:
+            r["errors"] = [*r["errors"], "update not approved"]
+            r["action"] = "error"
+        raise BulkImportError("rows_invalid", rows=preview["rows"])
+
+    ref = await _reference_data(db)
+    created = updated = unchanged = 0
+    for r in preview["rows"]:
+        data = r["data"]
+        if r["action"] == "unchanged":
+            unchanged += 1
+        elif r["action"] == "create":
+            await _create_site(db, actor_person_id, data, ref)
+            created += 1
+        else:
+            await _apply_update(db, actor_person_id, r, ref)
+            updated += 1
+    audit(db, actor_id=actor_person_id, entity_type="site_bulk_import",
+          entity_id=None, action="bulk_import",
+          changes={"created": created, "updated": updated,
+                   "unchanged": unchanged, "source": source_label})
+    await db.commit()
+    return {"created": created, "updated": updated, "unchanged": unchanged}
+
+
+def _resolve_partner(ref: dict, name: str) -> Partner | None:
+    matches = ref["partners"].get(name.lower(), []) if name else []
+    return matches[0] if len(matches) == 1 else None
+
+
+async def _create_site(db: AsyncSession, actor_person_id: uuid.UUID,
+                       data: dict, ref: dict) -> None:
+    from serversherpa.services.audit import audit
+
+    fields = {attr: data[col] for col, attr in SITE_ATTR.items()
+              if data[col] not in ("", None)}
+    partner = _resolve_partner(ref, data["partner"])
+    if partner is not None:
+        fields["partner_id"] = partner.id
+    site = Site(**fields, created_by=actor_person_id)
+    db.add(site)
+    await db.flush()
+    for cname in data["clients"]:
+        client = ref["clients"][cname.lower()][0]
+        db.add(SiteClient(site_id=site.id, client_id=client.id,
+                          linked_by=actor_person_id))
+    changes = {key: {"from": None, "to": _audit_value(value)}
+               for key, value in fields.items()}
+    if data["clients"]:
+        changes["clients"] = {"from": [], "to": sorted(data["clients"])}
+    audit(db, actor_id=actor_person_id, entity_type="site",
+          entity_id=str(site.id), action="create", changes=changes)
+
+
+def _audit_value(value: Any) -> Any:
+    return str(value) if isinstance(value, uuid.UUID) else value
+
+
+async def _apply_update(db: AsyncSession, actor_person_id: uuid.UUID,
+                        r: dict, ref: dict) -> None:
+    from datetime import UTC, datetime
+
+    from serversherpa.services.audit import audit
+
+    site = await db.get(Site, uuid.UUID(r["site_id"]))
+    changes: dict = {}
+    for col, change in (r["diff"] or {}).items():
+        if col == "clients":
+            continue
+        if col == "partner":
+            partner = _resolve_partner(ref, change["new"])
+            site.partner_id = partner.id if partner else site.partner_id
+            changes["partner"] = {"from": change["old"], "to": change["new"]}
+            continue
+        setattr(site, SITE_ATTR[col], change["new"])
+        changes[col] = {"from": change["old"], "to": change["new"]}
+    client_change = (r["diff"] or {}).get("clients")
+    if client_change:
+        current = set(await db.scalars(select(SiteClient.client_id).where(
+            SiteClient.site_id == site.id)))
+        want_ids = {ref["clients"][n.lower()][0].id
+                    for n in r["data"]["clients"]}
+        for client_id in current - want_ids:
+            await db.execute(SiteClient.__table__.delete().where(
+                SiteClient.site_id == site.id,
+                SiteClient.client_id == client_id))
+        for client_id in want_ids - current:
+            db.add(SiteClient(site_id=site.id, client_id=client_id,
+                              linked_by=actor_person_id))
+        changes["clients"] = client_change
+    site.updated_at = datetime.now(UTC)
+    audit(db, actor_id=actor_person_id, entity_type="site",
+          entity_id=str(site.id), action="update", changes=changes)

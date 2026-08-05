@@ -169,3 +169,121 @@ async def test_clients_diff_add_remove_and_partner(db, seeded_user):
     assert row["action"] == "update"
     assert row["diff"]["clients"] == {"add": ["New Co"], "remove": ["Old Co"]}
     assert row["diff"]["partner"] == {"old": None, "new": "Haul It"}
+
+
+# ── commit_rows ─────────────────────────────────────────────────────
+
+async def _count_sites(db):
+    from sqlalchemy import func
+    from serversherpa.db.models import Site
+    return await db.scalar(select(func.count()).select_from(Site))
+
+
+from sqlalchemy import select  # noqa: E402  (test-file convenience)
+
+
+async def test_commit_creates_sites_links_and_audit(db, seeded_user):
+    from serversherpa.db.models import AuditLog, Client, Partner, Site, SiteClient
+    acme = Client(name="Acme Co")
+    pt = Partner(name="Haul It")
+    db.add_all([acme, pt])
+    await db.commit()
+
+    rows = bi.number_json_rows([
+        {"name": "  BC One  ", "city": "Reno"},
+        {"name": "BC Two", "clients": "Acme Co", "partner": "Haul It",
+         "type": "datacenter"},
+    ])
+    out = await bi.commit_rows(db, seeded_user.id, rows, allow_updates=False,
+                               approved_updates=set(), source_label="paste")
+    assert out == {"created": 2, "updated": 0, "unchanged": 0}
+
+    one = await db.scalar(select(Site).where(Site.name == "BC One"))
+    assert one.status == "active" and one.country == "US"
+    two = await db.scalar(select(Site).where(Site.name == "BC Two"))
+    assert two.partner_id == pt.id and two.site_type == "datacenter"
+    link = await db.scalar(select(SiteClient).where(
+        SiteClient.site_id == two.id, SiteClient.client_id == acme.id))
+    assert link is not None
+
+    creates = (await db.scalars(select(AuditLog).where(
+        AuditLog.entity_type == "site", AuditLog.action == "create"))).all()
+    assert len(creates) == 2
+    summary = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "site_bulk_import"))
+    assert summary.changes["created"] == 2
+    assert summary.changes["source"] == "paste"
+
+
+async def test_commit_all_or_nothing(db, seeded_user):
+    from serversherpa.db.models import AuditLog
+    before = await _count_sites(db)
+    rows = bi.number_json_rows([
+        {"name": "Good Row"}, {"name": "Bad Row", "type": "spaceport"}])
+    with pytest.raises(bi.BulkImportError) as exc:
+        await bi.commit_rows(db, seeded_user.id, rows, allow_updates=False,
+                             approved_updates=set(), source_label="paste")
+    assert exc.value.code == "rows_invalid"
+    actions = {r["action"] for r in exc.value.extra["rows"]}
+    assert "error" in actions
+    assert await _count_sites(db) == before
+    assert await db.scalar(select(AuditLog.id).where(
+        AuditLog.entity_type == "site_bulk_import")) is None
+
+
+async def test_commit_update_requires_approval(db, seeded_user):
+    from serversherpa.db.models import AuditLog, Site
+    site = Site(name="Approve Me", city="Old", country="US", status="active")
+    db.add(site)
+    await db.commit()
+    rows = bi.number_json_rows([{"name": "Approve Me", "city": "New"}])
+
+    with pytest.raises(bi.BulkImportError) as exc:
+        await bi.commit_rows(db, seeded_user.id, rows, allow_updates=True,
+                             approved_updates=set(), source_label="paste")
+    assert exc.value.code == "rows_invalid"
+    assert any("update not approved" in e
+               for r in exc.value.extra["rows"] for e in r["errors"])
+
+    out = await bi.commit_rows(db, seeded_user.id, rows, allow_updates=True,
+                               approved_updates={str(site.id)},
+                               source_label="paste")
+    assert out["updated"] == 1
+    await db.refresh(site)
+    assert site.city == "New"
+    upd = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "site", AuditLog.action == "update"))
+    assert upd is not None and upd.changes["city"]["to"] == "New"
+
+
+async def test_commit_unchanged_rows_skipped(db, seeded_user):
+    from serversherpa.db.models import AuditLog, Site
+    db.add(Site(name="Static", city="Reno", country="US", status="active"))
+    await db.commit()
+    rows = bi.number_json_rows([{"name": "Static", "city": "Reno"}])
+    out = await bi.commit_rows(db, seeded_user.id, rows, allow_updates=True,
+                               approved_updates=set(), source_label="paste")
+    assert out == {"created": 0, "updated": 0, "unchanged": 1}
+    assert await db.scalar(select(AuditLog.id).where(
+        AuditLog.entity_type == "site", AuditLog.action == "update")) is None
+
+
+async def test_commit_update_links_clients(db, seeded_user):
+    from serversherpa.db.models import Client, Site, SiteClient
+    old_co, new_co = Client(name="Old Co"), Client(name="New Co")
+    db.add_all([old_co, new_co])
+    await db.flush()
+    site = Site(name="Relink", country="US", status="active")
+    db.add(site)
+    await db.flush()
+    db.add(SiteClient(site_id=site.id, client_id=old_co.id))
+    await db.commit()
+
+    rows = bi.number_json_rows([{"name": "Relink", "clients": "New Co"}])
+    out = await bi.commit_rows(db, seeded_user.id, rows, allow_updates=True,
+                               approved_updates={str(site.id)},
+                               source_label="paste")
+    assert out["updated"] == 1
+    linked = set(await db.scalars(select(SiteClient.client_id).where(
+        SiteClient.site_id == site.id)))
+    assert linked == {new_co.id}
