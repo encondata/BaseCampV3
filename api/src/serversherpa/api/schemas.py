@@ -818,5 +818,28 @@ class AssetUpdateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class NoteOut(BaseModel):
+    id: uuid.UUID
+    entity_type: str
+    entity_id: uuid.UUID
+    body: str
+    created_by: uuid.UUID | None = None
+    author_name: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class NoteCreateIn(BaseModel):
+    entity_type: str
+    entity_id: uuid.UUID
+    body: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+
+
+class NoteUpdateIn(BaseModel):
+    body: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+
+
 class GodModeIn(BaseModel):
     word: str

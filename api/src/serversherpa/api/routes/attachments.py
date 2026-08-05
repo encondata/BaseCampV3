@@ -12,17 +12,20 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from sqlalchemy import select, update
 
+from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
 from serversherpa.api.schemas import AttachmentOut
-from serversherpa.db.models import Attachment, Client, Partner, Person
+from serversherpa.db.models import Asset, Attachment, Client, Partner, Person
 from serversherpa.services.audit import audit
 from serversherpa.services.storage import presign_get, put_object
 
 router = APIRouter(prefix="/attachments", tags=["attachments"])
 
-EntityType = Literal["person", "client", "partner"]
+EntityType = Literal["person", "client", "partner", "asset"]
 
-ENTITY_MODEL = {"person": Person, "client": Client, "partner": Partner}
+ENTITY_MODEL = {
+    "person": Person, "client": Client, "partner": Partner, "asset": Asset,
+}
 AVATAR_KEY_FIELD = {"person": "avatar_key", "client": "logo_key", "partner": "logo_key"}
 Kind = Literal["avatar", "photo", "document"]
 
@@ -68,6 +71,20 @@ async def _authorize(
     # admin-set override) is not enough on its own — deny until attachments
     # get a real scope map.
     if not actor.access.is_global:
+        # asset attachments inherit the asset's visibility: a client-scoped
+        # actor may VIEW files on assets they can see (spec: clients read,
+        # staff write). Other entity types keep the interim hard deny until
+        # attachments get a real scope map.
+        if entity_type == "asset" and action == "view":
+            if not actor.access.can("assets", "view"):
+                raise _err(403, "forbidden")
+            cond = scope_conditions("assets", actor.access, actor.person.id)
+            if cond is not None:
+                visible = await db.scalar(select(Asset.id).where(
+                    Asset.id == entity_id, cond))
+                if visible is None:
+                    raise _err(404, "entity_not_found")
+            return
         raise _err(403, "forbidden")
 
 
@@ -108,6 +125,9 @@ async def upload_attachment(
     await put_object(key, data, content_type)
 
     now = datetime.now(UTC)
+
+    if kind == "avatar" and entity_type not in AVATAR_KEY_FIELD:
+        raise _err(422, "avatar_not_supported")
 
     if kind == "avatar":
         # single current avatar/logo: retire previous rows BEFORE inserting
