@@ -17,7 +17,7 @@ import {
   type UserSummary,
 } from '../lib/api';
 import {
-  actionLabel, changeRows, entityHref, entityLabel, targetLabel,
+  actionLabel, changeRows, entityHref, entityLabel, recordTooltip, targetLabel,
 } from '../lib/auditFormat';
 import { relativeTime } from '../lib/format';
 import {
@@ -232,7 +232,10 @@ export default function Audit() {
                   {relativeTime(r.at)}
                 </div>
                 {shownCols.map((c) => (
-                  <div className="cell" key={c.key}>{cellFor(r, c.key)}</div>
+                  <div className="cell" key={c.key}
+                       title={c.key === 'target' ? recordTooltip(r) : undefined}>
+                    {cellFor(r, c.key)}
+                  </div>
                 ))}
                 <div className="cell chevron-cell">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -251,13 +254,15 @@ export default function Audit() {
                           <dt>Actor</dt><dd>{r.actor_name ?? 'System'}</dd>
                           <dt>Action</dt><dd className="mono">{r.action}</dd>
                           <dt>Record</dt>
-                          <dd className="mono">
+                          <dd className="mono" title={recordTooltip(r)}>
                             {entityHref(r) ? (
                               <Link className="record-link" to={entityHref(r) as string}>
-                                {r.entity_type} · {r.entity_id} ↗
+                                {r.entity_type} · {r.entity_name ?? r.entity_id} ↗
                               </Link>
                             ) : (
-                              <>{r.entity_type}{r.entity_id ? ` · ${r.entity_id}` : ''}</>
+                              <>{r.entity_type}
+                                {(r.entity_name ?? r.entity_id)
+                                  ? ` · ${r.entity_name ?? r.entity_id}` : ''}</>
                             )}
                           </dd>
                           <dt>IP</dt><dd className="mono">{r.ip ?? '—'}</dd>

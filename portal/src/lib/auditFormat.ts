@@ -9,6 +9,8 @@ export interface AuditRowLike {
   entity_type: string;
   entity_id: string | null;
   changes: Record<string, unknown>;
+  entity_name?: string | null;
+  entity_summary?: Record<string, string>;
 }
 
 export const ACTION_LABELS: Record<string, string> = {
@@ -60,6 +62,9 @@ export function targetLabel(row: AuditRowLike, opts?: { hideAuthTarget?: boolean
     return opts?.hideAuthTarget ? '—' : (row.entity_id ?? '—');
   }
   const label = entityLabel(row);
+  // server-resolved current name wins; fall back to a name captured in the
+  // change diff (covers records deleted since)
+  if (row.entity_name) return `${label} '${row.entity_name}'`;
   for (const key of ('name' in row.changes ? ['name'] : ['label', 'title'])) {
     const change = row.changes[key];
     if (change && typeof change === 'object' && 'to' in change) {
@@ -68,6 +73,15 @@ export function targetLabel(row: AuditRowLike, opts?: { hideAuthTarget?: boolean
     }
   }
   return label;
+}
+
+/** Multi-line tooltip for a record reference: resolved summary details
+ * plus the raw id (kept findable without cluttering the visible line). */
+export function recordTooltip(row: AuditRowLike): string {
+  const lines = Object.entries(row.entity_summary ?? {})
+    .map(([k, v]) => `${k}: ${v}`);
+  if (row.entity_id) lines.push(`ID: ${row.entity_id}`);
+  return lines.join('\n');
 }
 
 /** Where a record lives in the portal, or null when it has no page.

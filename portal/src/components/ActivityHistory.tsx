@@ -9,7 +9,7 @@ import { Link } from 'react-router-dom';
 
 import { type MyActivityItem } from '../lib/api';
 import {
-  actionLabel, changeRows, entityHref, entityLabel,
+  actionLabel, changeRows, entityHref, entityLabel, recordTooltip,
   targetLabel as sharedTargetLabel,
 } from '../lib/auditFormat';
 import { relativeTime } from '../lib/format';
@@ -173,7 +173,8 @@ export default function ActivityHistory({ rows }: { rows: MyActivityItem[] }) {
                   {relativeTime(r.at)}
                 </div>
                 {shownCols.map((c) => (
-                  <div className="cell" key={c.key}>
+                  <div className="cell" key={c.key}
+                       title={c.key === 'target' ? recordTooltip(r) : undefined}>
                     {c.key === 'who' ? (
                       <span className="activity-who">
                         <span className={`activity-dot ${r.by_me ? 'me' : 'other'}`} />
@@ -199,13 +200,15 @@ export default function ActivityHistory({ rows }: { rows: MyActivityItem[] }) {
                           <dt>Actor</dt><dd>{whoLabel(r)}</dd>
                           <dt>Action</dt><dd className="mono">{r.action}</dd>
                           <dt>Record</dt>
-                          <dd className="mono">
+                          <dd className="mono" title={recordTooltip(r)}>
                             {entityHref(r) ? (
                               <Link className="record-link" to={entityHref(r) as string}>
-                                {r.entity_type} · {r.entity_id} ↗
+                                {r.entity_type} · {r.entity_name ?? r.entity_id} ↗
                               </Link>
                             ) : (
-                              <>{r.entity_type}{r.entity_id ? ` · ${r.entity_id}` : ''}</>
+                              <>{r.entity_type}
+                                {(r.entity_name ?? r.entity_id)
+                                  ? ` · ${r.entity_name ?? r.entity_id}` : ''}</>
                             )}
                           </dd>
                           <dt>IP</dt><dd className="mono">{r.ip ?? '—'}</dd>

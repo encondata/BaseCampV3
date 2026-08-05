@@ -88,3 +88,33 @@ async def test_facets_list_distinct_values(client, db, seeded_user, admin_hdrs):
     assert "worker" in body["entity_types"]
     assert "archive" in body["actions"]
     assert "auth" in body["entity_types"]   # the logins from this test session
+
+
+async def test_entity_names_resolved(client, db, seeded_user, admin_hdrs):
+    from serversherpa.db.models import Site
+    site = Site(name="Named DC", city="Reno", region="NV",
+                country="US", status="active")
+    db.add(site)
+    await db.flush()
+    db.add(AuditLog(actor_person_id=seeded_user.id, entity_type="site",
+                    entity_id=str(site.id), action="update",
+                    changes={"city": {"from": "X", "to": "Reno"}}))
+    db.add(AuditLog(actor_person_id=seeded_user.id, entity_type="worker",
+                    entity_id=str(seeded_user.id), action="profile.update",
+                    changes={}))
+    # a row whose record no longer exists must not break resolution
+    db.add(AuditLog(actor_person_id=seeded_user.id, entity_type="site",
+                    entity_id=str(uuid.uuid4()), action="update", changes={}))
+    await db.commit()
+
+    rows = (await client.get("/audit", headers=admin_hdrs)).json()
+    site_row = next(r for r in rows if r["entity_id"] == str(site.id))
+    assert site_row["entity_name"] == "Named DC"
+    assert site_row["entity_summary"] == {"Location": "Reno, NV",
+                                          "Status": "active"}
+    worker_row = next(r for r in rows if r["entity_type"] == "worker")
+    assert worker_row["entity_name"] == "Alice Anderson"
+    assert worker_row["entity_summary"]["Email"] == "alice@test.example.com"
+    ghost = next(r for r in rows
+                 if r["entity_type"] == "site" and r["entity_id"] != str(site.id))
+    assert ghost["entity_name"] is None

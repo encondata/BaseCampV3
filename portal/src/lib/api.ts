@@ -87,6 +87,8 @@ export interface MyActivityItem {
   by_me: boolean;
   actor_name: string | null;
   changes: Record<string, unknown>;
+  entity_name: string | null;
+  entity_summary: Record<string, string>;
 }
 
 export interface AttachmentOut {
@@ -317,6 +319,8 @@ export interface AuditLogItem {
   actor_id: string | null;
   actor_name: string | null;
   changes: Record<string, unknown>;
+  entity_name: string | null;
+  entity_summary: Record<string, string>;
 }
 
 export interface AuditQuery {

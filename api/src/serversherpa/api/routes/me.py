@@ -63,6 +63,10 @@ async def my_activity(user: CurrentUser, db: DbSession) -> list[MyActivityItem]:
         .order_by(AuditLog.at.desc())
         .limit(50)
     )).all()
+    from serversherpa.services.entity_refs import resolve_entity_refs
+    refs = await resolve_entity_refs(db, {
+        (log.entity_type, log.entity_id) for log, _ in rows
+        if log.entity_id is not None})
     return [MyActivityItem(
         id=log.id, at=log.at, action=log.action, entity_type=log.entity_type,
         entity_id=log.entity_id, ip=str(log.ip) if log.ip else None,
@@ -71,6 +75,8 @@ async def my_activity(user: CurrentUser, db: DbSession) -> list[MyActivityItem]:
                     if actor is not None and log.actor_person_id != me
                     else None),
         changes=log.changes or {},
+        entity_name=refs.get((log.entity_type, log.entity_id or ""), {}).get("name"),
+        entity_summary=refs.get((log.entity_type, log.entity_id or ""), {}).get("summary", {}),
     ) for log, actor in rows]
 
 

@@ -11,6 +11,7 @@ from sqlalchemy import select
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import AuditLogItem
 from serversherpa.db.models import AuditLog, Person
+from serversherpa.services.entity_refs import resolve_entity_refs
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
@@ -54,6 +55,9 @@ async def list_audit(
         query = query.where(AuditLog.at <= until)
 
     rows = (await db.execute(query)).all()
+    refs = await resolve_entity_refs(db, {
+        (log.entity_type, log.entity_id) for log, _ in rows
+        if log.entity_id is not None})
     return [AuditLogItem(
         id=log.id, at=log.at, action=log.action,
         entity_type=log.entity_type, entity_id=log.entity_id,
@@ -61,6 +65,8 @@ async def list_audit(
         actor_id=log.actor_person_id,
         actor_name=person.display_name if person is not None else None,
         changes=log.changes or {},
+        entity_name=refs.get((log.entity_type, log.entity_id or ""), {}).get("name"),
+        entity_summary=refs.get((log.entity_type, log.entity_id or ""), {}).get("summary", {}),
     ) for log, person in rows]
 
 

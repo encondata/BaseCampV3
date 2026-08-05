@@ -158,6 +158,8 @@ class AuditLogItem(BaseModel):
     actor_id: uuid.UUID | None
     actor_name: str | None
     changes: dict
+    entity_name: str | None = None
+    entity_summary: dict = {}
 
 
 class MyActivityItem(BaseModel):
@@ -175,6 +177,8 @@ class MyActivityItem(BaseModel):
     by_me: bool
     actor_name: str | None
     changes: dict
+    entity_name: str | None = None
+    entity_summary: dict = {}
 
 
 class AttachmentOut(BaseModel):
