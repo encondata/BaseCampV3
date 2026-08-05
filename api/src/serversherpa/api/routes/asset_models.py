@@ -162,6 +162,8 @@ async def update_asset_model(
     for field in NON_NULLABLE_MODEL_FIELDS:
         if field in data and not data[field]:
             raise _err(422, f"{field}_required")
+    if "knowledge" in data and data["knowledge"] is None:
+        raise _err(422, "knowledge_required")
     await _validate(db, data)
     await _check_duplicate(db, data.get("make", m.make),
                            data.get("model", m.model), exclude=m.id)

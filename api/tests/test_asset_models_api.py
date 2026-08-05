@@ -94,3 +94,34 @@ async def test_categories_endpoint(client, seeded_user):
     cats = (await client.get("/asset-categories", headers=hdrs)).json()
     assert [c["key"] for c in cats][:2] == ["server", "storage"]   # sort_order
     assert all(c["color"].startswith("#") for c in cats)
+
+
+async def test_noop_patch_writes_no_audit(client, db, seeded_user):
+    hdrs = await login(client)
+    created = (await client.post("/asset-models", headers=hdrs, json={
+        "make": "Dell", "model": "R760", "knowledge": "same"})).json()
+    resp = await client.patch(f"/asset-models/{created['id']}", headers=hdrs,
+                              json={"knowledge": "same"})
+    assert resp.status_code == 200
+    upd = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "asset_model", AuditLog.action == "update"))
+    assert upd is None
+
+
+async def test_patch_null_knowledge_422(client, seeded_user):
+    hdrs = await login(client)
+    created = (await client.post("/asset-models", headers=hdrs, json={
+        "make": "Dell", "model": "R770"})).json()
+    resp = await client.patch(f"/asset-models/{created['id']}", headers=hdrs,
+                              json={"knowledge": None})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "knowledge_required"
+
+
+async def test_aliases_rejects_extra_keys(client, seeded_user):
+    hdrs = await login(client)
+    created = (await client.post("/asset-models", headers=hdrs, json={
+        "make": "Dell", "model": "R780"})).json()
+    resp = await client.put(f"/asset-models/{created['id']}/aliases", headers=hdrs,
+                            json={"aliases": ["X1"], "bogus": True})
+    assert resp.status_code == 422

@@ -767,6 +767,7 @@ class AssetModelUpdateIn(BaseModel):
 
 
 class AssetModelAliasesIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     aliases: list[str]
 
 
