@@ -38,7 +38,7 @@ const PAGES = [
 ];
 
 interface Hit {
-  kind: 'page' | 'user' | 'client' | 'partner';
+  kind: 'page' | 'user' | 'client' | 'partner' | 'site';
   id: string;
   label: string;
   sub?: string | null;
@@ -111,6 +111,8 @@ export default function Topbar() {
       navigate('/stakeholders/clients', { state: { openRow: hit.id } });
     } else if (hit.kind === 'partner') {
       navigate('/stakeholders/partners', { state: { openRow: hit.id } });
+    } else if (hit.kind === 'site') {
+      navigate('/sites', { state: { openRow: hit.id } });
     }
   };
 
@@ -215,7 +217,8 @@ export default function Topbar() {
             )}
             {hits.map((h, i) => {
               const GROUPS: Record<string, string> = {
-                page: 'Pages', user: 'People', client: 'Clients', partner: 'Partners',
+                page: 'Pages', user: 'People', client: 'Clients',
+                partner: 'Partners', site: 'Sites',
               };
               const header = h.kind !== lastKind ? (
                 <div className="kbar-group">{GROUPS[h.kind]}</div>

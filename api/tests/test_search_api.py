@@ -92,3 +92,49 @@ async def test_search_respects_permissions_and_scope(client, db, seeded_user):
     assert "Acme Search" in flat
     assert "Bcme Search" not in flat        # other client scoped out
     assert "alice" not in flat.lower()      # no users:view -> no people results
+
+
+async def test_sites_appear_for_staff_not_org_actors(client, db, seeded_user):
+    """Sites join global search: staff find them by name/code/city; the
+    sites hard gate (internal-only) keeps client-anchored actors from ever
+    seeing site results."""
+    from datetime import UTC, datetime
+
+    from serversherpa.config import get_settings
+    from serversherpa.db.models import (
+        Client, Person, PersonRole, Site, UserAccount,
+    )
+    from serversherpa.security.passwords import hash_password
+    from tests.test_sites_api import login
+
+    db.add(Site(name="Delta Hall", code="DH1", city="Searchville",
+                country="US", status="active"))
+    await db.commit()
+
+    hdrs = await login(client)
+    for term in ("Delta", "DH1", "Searchville"):
+        results = (await client.get(f"/search?q={term}", headers=hdrs)).json()
+        hit = next((r for r in results["results"] if r["kind"] == "site"), None)
+        assert hit is not None, term
+        assert hit["label"] == "Delta Hall"
+
+    ca = Client(name="Siteless Co")
+    db.add(ca)
+    await db.flush()
+    contact = Person(first_name="S", last_name="Contact",
+                     email="ssearch@acme.example.com")
+    db.add(contact)
+    await db.flush()
+    db.add(UserAccount(person_id=contact.id, email="ssearch@acme.example.com",
+                       password_hash=hash_password(
+                           "CorrectHorse9!",
+                           pepper=get_settings().password_pepper.get_secret_value()),
+                       password_updated_at=datetime.now(UTC)))
+    db.add(PersonRole(person_id=contact.id, role="client_viewer", client_id=ca.id))
+    await db.commit()
+
+    resp = await client.post("/auth/login", json={
+        "email": "ssearch@acme.example.com", "password": "CorrectHorse9!"})
+    chdrs = {"Authorization": f"Bearer {resp.json()['access_token']}"}
+    results = (await client.get("/search?q=Delta", headers=chdrs)).json()
+    assert not any(r["kind"] == "site" for r in results["results"])
