@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   afterSiteClientsFailure, EMPTY_SITE_FILTERS, formFromSite, formatCoords, matchesSiteFilters,
-  needsSiteCreate, sameClientSet, SITE_CREATED_UNLINKED_MESSAGE, siteSearchText, sitePayload,
-  surveyChanged, surveyPayload, type SiteFormState,
+  naturalCompare, needsSiteCreate, sameClientSet, SITE_CREATED_UNLINKED_MESSAGE, siteSearchText,
+  sitePayload, surveyChanged, surveyPayload, type SiteFormState,
 } from './sites';
 import type { SiteItem, SurveySchema } from './api';
 
@@ -164,5 +164,19 @@ describe('afterSiteClientsFailure', () => {
   });
   it('still no message when nothing was created, reason or not', () => {
     expect(afterSiteClientsFailure(null, 'some reason')).toBeNull();
+  });
+});
+
+describe('naturalCompare', () => {
+  it('sorts embedded numbers numerically, not lexicographically', () => {
+    const names = ['da10', 'da2', 'DA11', 'da1'];
+    expect(names.sort(naturalCompare)).toEqual(['da1', 'da2', 'da10', 'DA11']);
+  });
+  it('is case-insensitive and stable for plain strings', () => {
+    expect(['Zurich', 'austin', 'Reno'].sort(naturalCompare))
+      .toEqual(['austin', 'Reno', 'Zurich']);
+  });
+  it('handles empty strings without throwing', () => {
+    expect(['b', '', 'a'].sort(naturalCompare)).toEqual(['', 'a', 'b']);
   });
 });

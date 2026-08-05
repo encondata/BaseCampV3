@@ -26,7 +26,9 @@ import {
   type SiteLookup,
   type SurveySchema,
 } from '../lib/api';
-import { formatCoords, matchesSiteFilters, siteSearchText, type SiteFilters } from '../lib/sites';
+import {
+  formatCoords, matchesSiteFilters, naturalCompare, siteSearchText, type SiteFilters,
+} from '../lib/sites';
 import {
   ColumnsButton,
   ExportButton,
@@ -180,10 +182,7 @@ export default function Sites() {
         case 'coords': return formatCoords(s.latitude, s.longitude);
       }
     };
-    return rows.sort((a, b) => {
-      const va = val(a), vb = val(b);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
-    });
+    return rows.sort((a, b) => naturalCompare(val(a), val(b)) * sortDir);
   }, [sites, filters, query, sortKey, sortDir]);
 
   useEffect(() => {
