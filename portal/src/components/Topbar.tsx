@@ -120,7 +120,7 @@ export default function Topbar() {
     } else if (hit.kind === 'asset') {
       navigate(`/assets?open=${encodeURIComponent(hit.id)}`);
     } else if (hit.kind === 'asset_model') {
-      navigate('/admin/asset-models', { state: { openRow: hit.id } });
+      navigate(`/admin/asset-models?open=${encodeURIComponent(hit.id)}`);
     }
   };
 

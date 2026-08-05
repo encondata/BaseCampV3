@@ -53,6 +53,21 @@ export function matchesAssetFacets(a: AssetItem, state: FacetState): boolean {
   });
 }
 
+export function modelSearchText(m: AssetModelItem): string {
+  return [m.make, m.model, m.rail_type, ...m.aliases].filter(Boolean).join(' ').toLowerCase();
+}
+
+export function matchesModelFacets(m: AssetModelItem, state: FacetState): boolean {
+  return passesFacets(state, (group) => {
+    switch (group) {
+      case 'category': return m.category ? [m.category] : [];
+      case 'mount': return m.mount_type ? [m.mount_type] : [];
+      case 'knowledge': return [m.knowledge.trim() ? 'yes' : 'no'];
+      default: return [];
+    }
+  });
+}
+
 /** Serials appearing on 2+ assets (case-insensitive, blanks ignored). */
 export function duplicateSerials(assets: AssetItem[]): Set<string> {
   const seen = new Map<string, number>();
