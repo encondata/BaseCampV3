@@ -33,3 +33,6 @@ portal/tsconfig.tsbuildinfo
 # macOS AppleDouble files (exFAT/SMB volumes)
 ._*
 **/._*
+
+# Other sessions' scratch worktrees
+.claude/worktrees/
