@@ -6,6 +6,7 @@ import AppShell from './layout/AppShell';
 import Access from './pages/Access';
 import Assets from './pages/Assets';
 import AssetModels from './pages/AssetModels';
+import Audit from './pages/Audit';
 import Clients from './pages/Clients';
 import Dev from './pages/Dev';
 import External from './pages/External';
@@ -47,6 +48,7 @@ export default function App() {
             <Route path="/admin/asset-models" element={
               <ProtectedRoute resource="asset_models"><AssetModels /></ProtectedRoute>
             } />
+            <Route path="/admin/audit" element={<ProtectedRoute resource="audit"><Audit /></ProtectedRoute>} />
             <Route path="/dev" element={<ProtectedRoute resource="devtools"><Dev /></ProtectedRoute>} />
             <Route path="/dev/database/variables" element={
               <ProtectedRoute resource="devtools"><Variables /></ProtectedRoute>

@@ -140,6 +140,45 @@ class PersonDetail(BaseModel):
     created_at: datetime
     avatar_key: str | None = None
     avatar_url: str | None = None
+    # only /auth/me/profile fills this (from the caller's own UserAccount) —
+    # person-shaped payloads elsewhere leave it None
+    password_updated_at: datetime | None = None
+
+
+class AuditLogItem(BaseModel):
+    """One audit row for the admin log viewer — same shape as
+    MyActivityItem but actor-explicit instead of by_me-relative."""
+
+    id: uuid.UUID
+    at: datetime
+    action: str
+    entity_type: str
+    entity_id: str | None
+    ip: str | None
+    actor_id: uuid.UUID | None
+    actor_name: str | None
+    changes: dict
+    entity_name: str | None = None
+    entity_summary: dict = {}
+
+
+class MyActivityItem(BaseModel):
+    """One row of the signed-in user's history: something they did, or
+    something done to their account (by_me=False, actor_name says who).
+    `changes` is the audit row's field diff — sensitive fields were already
+    redacted at write time by the audit service."""
+
+    id: uuid.UUID
+    at: datetime
+    action: str
+    entity_type: str
+    entity_id: str | None
+    ip: str | None
+    by_me: bool
+    actor_name: str | None
+    changes: dict
+    entity_name: str | None = None
+    entity_summary: dict = {}
 
 
 class AttachmentOut(BaseModel):

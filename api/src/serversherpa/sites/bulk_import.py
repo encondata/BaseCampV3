@@ -88,6 +88,8 @@ def _numbered(rows: list[dict], first_row: int) -> list[tuple[int, dict]]:
 
 
 def number_json_rows(rows: Any) -> list[tuple[int, dict]]:
+    if isinstance(rows, dict):
+        rows = [rows]          # a single bare object is a one-row import
     if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
         raise BulkImportError("invalid_json")
     return _numbered(rows, first_row=1)

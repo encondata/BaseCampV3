@@ -7,13 +7,16 @@
 import { useEffect, useState, type FormEvent } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
+import ActivityHistory from '../components/ActivityHistory';
 import AvatarUpload from '../components/AvatarUpload';
 import ChangePasswordForm from '../components/ChangePasswordForm';
 import {
+  getMyActivityRequest,
   getProfileRequest,
   getSessionsRequest,
   revokeSessionRequest,
   updateProfileRequest,
+  type MyActivityItem,
   type PersonDetail,
   type SessionInfo,
 } from '../lib/api';
@@ -54,10 +57,12 @@ export default function Profile() {
   const [error, setError] = useState('');
   const [changingPw, setChangingPw] = useState(false);
   const [pwChanged, setPwChanged] = useState(false);
+  const [activity, setActivity] = useState<MyActivityItem[]>([]);
 
   useEffect(() => {
     void getProfileRequest().then(setProfile).catch(() => {});
     void getSessionsRequest().then(setSessions).catch(() => {});
+    void getMyActivityRequest().then(setActivity).catch(() => {});
   }, []);
 
   const startEdit = () => {
@@ -277,7 +282,9 @@ export default function Profile() {
                   <dt>Password</dt>
                   <dd>{pwChanged
                     ? <span className="chip c-green"><span className="dot" />changed — other sessions signed out</span>
-                    : 'set'}</dd>
+                    : profile.password_updated_at
+                      ? `Last reset ${longDate(profile.password_updated_at)}`
+                      : 'set'}</dd>
                   <dt>Two-factor auth</dt><dd>TOTP enrollment — coming soon</dd>
                 </dl>
               )}
@@ -285,6 +292,8 @@ export default function Profile() {
           </div>
         </div>
       </div>
+
+      <ActivityHistory rows={activity} />
     </div>
   );
 }

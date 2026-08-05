@@ -10,11 +10,12 @@ from sqlalchemy.exc import IntegrityError
 from serversherpa.api.deps import CurrentUser, DbSession
 from serversherpa.api.schemas import (
     ChangePasswordIn,
+    MyActivityItem,
     PersonDetail,
     ProfileUpdateIn,
     SessionItem,
 )
-from serversherpa.db.models import AuthSession
+from serversherpa.db.models import AuditLog, AuthSession, Person
 from serversherpa.config import get_settings
 from serversherpa.security.passwords import hash_password, verify_password
 from serversherpa.services.audit import audit, diff, snapshot
@@ -24,15 +25,59 @@ from serversherpa.services.storage import presign_get
 router = APIRouter(prefix="/auth/me", tags=["me"])
 
 
-def _detail(person) -> PersonDetail:
+def _detail(person, account=None) -> PersonDetail:
     out = PersonDetail.model_validate(person)
     out.avatar_url = presign_get(person.avatar_key)
+    if account is not None:
+        out.password_updated_at = account.password_updated_at
     return out
 
 
 @router.get("/profile", response_model=PersonDetail)
 async def get_profile(user: CurrentUser) -> PersonDetail:
-    return _detail(user.person)
+    return _detail(user.person, user.account)
+
+
+ABOUT_ME_ENTITY_TYPES = ("person", "user_account", "auth")
+
+
+@router.get("/activity", response_model=list[MyActivityItem])
+async def my_activity(user: CurrentUser, db: DbSession) -> list[MyActivityItem]:
+    """The signed-in user's history: rows they acted in, plus rows about
+    their person/account/auth identity (admin resets, failed logins against
+    their email — those carry actor NULL and entity_id = the typed email)."""
+    from sqlalchemy import and_, or_
+
+    me = user.person.id
+    identities = [str(me)]
+    if user.account.email:
+        identities.append(user.account.email)
+    rows = (await db.execute(
+        select(AuditLog, Person)
+        .outerjoin(Person, Person.id == AuditLog.actor_person_id)
+        .where(or_(
+            AuditLog.actor_person_id == me,
+            and_(AuditLog.entity_type.in_(ABOUT_ME_ENTITY_TYPES),
+                 AuditLog.entity_id.in_(identities)),
+        ))
+        .order_by(AuditLog.at.desc())
+        .limit(50)
+    )).all()
+    from serversherpa.services.entity_refs import resolve_entity_refs
+    refs = await resolve_entity_refs(db, {
+        (log.entity_type, log.entity_id) for log, _ in rows
+        if log.entity_id is not None})
+    return [MyActivityItem(
+        id=log.id, at=log.at, action=log.action, entity_type=log.entity_type,
+        entity_id=log.entity_id, ip=str(log.ip) if log.ip else None,
+        by_me=log.actor_person_id == me,
+        actor_name=(actor.display_name
+                    if actor is not None and log.actor_person_id != me
+                    else None),
+        changes=log.changes or {},
+        entity_name=refs.get((log.entity_type, log.entity_id or ""), {}).get("name"),
+        entity_summary=refs.get((log.entity_type, log.entity_id or ""), {}).get("summary", {}),
+    ) for log, actor in rows]
 
 
 @router.patch("/profile", response_model=PersonDetail)
@@ -63,7 +108,7 @@ async def update_profile(
         # partial unique index on people.email
         raise HTTPException(status_code=409, detail={"code": "email_in_use"}) from None
 
-    return _detail(user.person)
+    return _detail(user.person, user.account)
 
 
 @router.get("/sessions", response_model=list[SessionItem])

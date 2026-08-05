@@ -11,7 +11,10 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
 API_DIR = Path(__file__).resolve().parents[1]
-TEST_DB = "serversherpa_test"
+# Override when parallel sessions/worktrees would otherwise fight over one
+# test DB (they truncate between tests AND may sit on different migration
+# heads — both collide): SS_TEST_DB=serversherpa_test_<branch> pytest …
+TEST_DB = os.environ.get("SS_TEST_DB", "serversherpa_test")
 
 
 def _prepare_environment() -> None:

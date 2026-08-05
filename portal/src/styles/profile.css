@@ -12,21 +12,25 @@
 }
 
 .profile-cover {
-  height: 132px;
+  height: 44px;
   background:
-    radial-gradient(120% 160% at 85% 0%, rgba(var(--accent-rgb), 0.35) 0%, transparent 55%),
-    radial-gradient(120% 160% at 15% 100%, rgba(var(--accent-rgb), 0.18) 0%, transparent 60%),
+    radial-gradient(120% 320% at 85% 0%, rgba(var(--accent-rgb), 0.65) 0%, transparent 60%),
+    radial-gradient(120% 320% at 15% 100%, rgba(var(--accent-rgb), 0.35) 0%, transparent 65%),
+    linear-gradient(105deg, rgba(var(--accent-rgb), 0.2) 0%, transparent 55%),
     var(--ink);
 }
 
+/* Only the AVATAR overlaps the dark cover. The meta text and actions used
+   to ride up with it (the whole row was pulled -46px), which put the top
+   of the name onto the gradient in dark ink — unreadable. */
 .profile-id {
   display: flex;
   align-items: flex-end;
   gap: 20px;
   flex-wrap: wrap;
-  padding: 0 26px 22px;
-  margin-top: -46px;
+  padding: 12px 26px 20px;
 }
+.profile-id > :first-child { margin-top: -34px; }
 
 .profile-photo {
   width: 104px;
@@ -209,3 +213,75 @@
   cursor: pointer;
   text-decoration: underline;
 }
+
+/* ── user history ─────────────────────────────────────────── */
+
+.activity-panel { margin-top: 22px; }
+
+.activity-tools { display: flex; align-items: center; gap: 8px; }
+
+.activity-list { border: none; border-radius: 0; }
+
+.activity-who { display: inline-flex; align-items: center; gap: 8px; }
+
+.activity-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.activity-dot.me { background: rgba(var(--accent-rgb), 0.9); }
+.activity-dot.other { background: var(--text-mute); }
+
+.activity-detail {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(300px, 1.2fr);
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .activity-detail { grid-template-columns: 1fr; }
+}
+
+.activity-changes {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.activity-changes th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  padding: 4px 10px 6px 0;
+  border-bottom: 1px solid var(--paper-line);
+}
+.activity-changes td {
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--paper-line);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.activity-changes tr:last-child td { border-bottom: none; }
+
+/* ── audit log page toolbar ───────────────────────────────── */
+
+.audit-toolbar { flex-wrap: wrap; gap: 8px; }
+.audit-toolbar select,
+.audit-toolbar input[type='date'] {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  color: var(--text-dark);
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  padding: 8px 10px;
+}
+.audit-actor { min-width: 190px; }
+
+.audit-more { display: flex; justify-content: center; padding: 14px 0 4px; }
+
+.record-link { color: var(--text-dark); text-decoration: underline; }
+.record-link:hover { color: rgb(var(--accent-rgb)); }

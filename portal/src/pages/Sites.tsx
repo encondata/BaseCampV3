@@ -26,7 +26,11 @@ import {
   type SiteLookup,
   type SurveySchema,
 } from '../lib/api';
-import { formatCoords, matchesSiteFilters, siteSearchText, type SiteFilters } from '../lib/sites';
+import { initialOpenId } from '../lib/auditFormat';
+import { useDeepLinkFilter } from '../lib/useDeepLinkFilter';
+import {
+  formatCoords, matchesSiteFilters, naturalCompare, siteSearchText, type SiteFilters,
+} from '../lib/sites';
 import {
   ColumnsButton,
   ExportButton,
@@ -87,9 +91,10 @@ function surveySummary(
 }
 
 export default function Sites() {
-  const { can } = useAuth();
+  const { can, maxRank } = useAuth();
   const canAdd = can('sites', 'add');
   const canChange = can('sites', 'change');
+  const canBulk = canAdd && maxRank >= 60;   // mirrors the API's GATE_BYPASS_RANK bar
 
   const [sites, setSites] = useState<SiteItem[] | null>(null);
   const [types, setTypes] = useState<SiteLookup[]>([]);
@@ -102,7 +107,8 @@ export default function Sites() {
   const [view, setView] = useState<'list' | 'map'>('list');
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(initialOpenId);
+  useDeepLinkFilter(sites, s => s.id, s => s.name, setQuery);
   const [facets, setFacets] = useState<FacetState>({});
   const [visibleCols, setVisibleCols] = useState<Set<string>>(
     () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));
@@ -179,10 +185,7 @@ export default function Sites() {
         case 'coords': return formatCoords(s.latitude, s.longitude);
       }
     };
-    return rows.sort((a, b) => {
-      const va = val(a), vb = val(b);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
-    });
+    return rows.sort((a, b) => naturalCompare(val(a), val(b)) * sortDir);
   }, [sites, filters, query, sortKey, sortDir]);
 
   useEffect(() => {
@@ -386,6 +389,7 @@ export default function Sites() {
           clients={clients}
           partners={partners}
           canChange={canChange}
+          canBulk={canBulk}
           onClose={() => setCreating(false)}
           onSaved={() => load()}
         />

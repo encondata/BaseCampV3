@@ -74,6 +74,21 @@ export interface PersonDetail {
   created_at: string;
   avatar_key: string | null;
   avatar_url: string | null;
+  password_updated_at: string | null;
+}
+
+export interface MyActivityItem {
+  id: string;
+  at: string;
+  action: string;
+  entity_type: string;
+  entity_id: string | null;
+  ip: string | null;
+  by_me: boolean;
+  actor_name: string | null;
+  changes: Record<string, unknown>;
+  entity_name: string | null;
+  entity_summary: Record<string, string>;
 }
 
 export interface AttachmentOut {
@@ -282,6 +297,56 @@ export async function uploadAttachmentRequest(opts: {
 
 export async function getProfileRequest(): Promise<PersonDetail> {
   const resp = await apiFetch('/auth/me/profile');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getMyActivityRequest(): Promise<MyActivityItem[]> {
+  const resp = await apiFetch('/auth/me/activity');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+// ── audit log (admin viewer) ────────────────────────────────────────
+
+export interface AuditLogItem {
+  id: string;
+  at: string;
+  action: string;
+  entity_type: string;
+  entity_id: string | null;
+  ip: string | null;
+  actor_id: string | null;
+  actor_name: string | null;
+  changes: Record<string, unknown>;
+  entity_name: string | null;
+  entity_summary: Record<string, string>;
+}
+
+export interface AuditQuery {
+  entity_type?: string;
+  action?: string;
+  actor_id?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function listAuditLog(query: AuditQuery): Promise<AuditLogItem[]> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== '') params.set(key, String(value));
+  }
+  const resp = await apiFetch(`/audit?${params.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getAuditFacets(): Promise<{
+  entity_types: string[]; actions: string[];
+}> {
+  const resp = await apiFetch('/audit/facets');
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
@@ -749,6 +814,75 @@ export async function getSurveySchema(): Promise<SurveySchema> {
   const resp = await apiFetch('/sites/survey-schema');
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
+}
+
+// ── sites bulk import ───────────────────────────────────────────────
+
+export interface BulkRowResult {
+  row: number;
+  name: string | null;
+  action: 'create' | 'update' | 'unchanged' | 'error';
+  errors: string[];
+  diff: Record<
+    string,
+    { old?: unknown; new?: unknown; add?: string[]; remove?: string[] }
+  > | null;
+  site_id: string | null;
+  data: Record<string, unknown> | null;
+}
+
+export interface BulkPreview {
+  rows: BulkRowResult[];
+  can_commit: boolean;
+  update_allowed: boolean;
+}
+
+export async function getSiteBulkSample(): Promise<Record<string, string>[]> {
+  const resp = await apiFetch('/sites/bulk-import/template?format=json');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Pasted JSON rides the same multipart path as a real file: the caller
+ * wraps it in a Blob named paste.json, so the API has one parsing entry. */
+export async function previewSiteBulk(
+  file: File | Blob, filename: string,
+): Promise<BulkPreview> {
+  const fd = new FormData();
+  fd.append('file', file, filename);
+  // no Content-Type header — the browser sets the multipart boundary
+  const resp = await apiFetch('/sites/bulk-import/preview', {
+    method: 'POST',
+    body: fd,
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function commitSiteBulk(
+  rows: Record<string, unknown>[], approved: string[], source: string,
+): Promise<{ created: number; updated: number; unchanged: number }> {
+  const resp = await apiFetch('/sites/bulk-import/commit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows, approved_updates: approved, source }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function downloadSiteTemplate(format: 'csv' | 'xlsx'): Promise<void> {
+  const resp = await apiFetch(`/sites/bulk-import/template?format=${format}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `sites-template.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 export async function listSiteTypes(): Promise<SiteLookup[]> {

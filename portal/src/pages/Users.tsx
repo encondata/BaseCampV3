@@ -16,6 +16,8 @@ import {
 } from '../components/UserAdminModals';
 import { apiFetch, ApiError } from '../lib/api';
 import { canTouchRank } from '../lib/access';
+import { initialOpenId } from '../lib/auditFormat';
+import { useDeepLinkFilter } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate, relativeTime } from '../lib/format';
 import '../styles/directory.css';
 import '../styles/profile.css';   /* .pf-form, .btn-solid */
@@ -128,7 +130,8 @@ export default function Users() {
     new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<1 | -1>(1);
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(initialOpenId);
+  useDeepLinkFilter(users, u => u.person_id, u => u.display_name, setQuery);
   const [pop, setPop] = useState<'filters' | 'columns' | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
