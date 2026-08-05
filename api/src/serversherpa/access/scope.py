@@ -7,7 +7,7 @@ import sqlalchemy as sa
 from sqlalchemy.sql.elements import ColumnElement
 
 from serversherpa.access.resolver import AccessInfo
-from serversherpa.db.models import Client, Partner, Person, WorkerProfile
+from serversherpa.db.models import Asset, Client, Partner, Person, WorkerProfile
 
 # resource -> anchor -> column carrying that anchor's id
 SCOPE_COLUMNS = {
@@ -16,6 +16,7 @@ SCOPE_COLUMNS = {
     "clients": {"client": Client.id},
     "partners": {"partner": Partner.id},
     "users": {"self": Person.id},
+    "assets": {"client": Asset.client_id},
 }
 
 

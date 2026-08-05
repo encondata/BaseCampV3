@@ -48,6 +48,14 @@ _RESOURCES = [
              # resource, even via a per-person override — the hard gate in
              # resolver.py blocks on visible_to before overrides are read.
              visible_to=frozenset({"global"})),
+    Resource("assets", "Assets", routes=("/assets",),
+             # client-visible: client org roles see their own org's assets
+             # read-only via SCOPE_COLUMNS; writes are globally anchored.
+             visible_to=frozenset({"global", "client"})),
+    Resource("asset_models", "Makes / Models", routes=("/admin/asset-models",),
+             # internal-only: the catalog (incl. the knowledge field) is house
+             # IP. Asset payloads embed a read-only model summary instead.
+             visible_to=frozenset({"global"})),
     Resource("attachments", "Files & attachments",
              visible_to=frozenset({"global", "client", "partner"})),
     Resource("settings", "Settings", routes=("/settings",)),
