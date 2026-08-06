@@ -14,7 +14,7 @@
  * that gate is open.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ApiError } from './api';
 import ComboBox, { type ComboOption } from '../components/ComboBox';
 import './../styles/god-edit.css';
@@ -92,6 +92,10 @@ export function GodCell<T extends { id: string }>({ row, gf, patch, onRowSaved,
   const [value, setValue] = useState(seed);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A ref, not state: state updates are async and Enter-then-blur fires
+  // commit() twice before either setSaving(true) has committed, so a
+  // state-based guard would still let the second call through.
+  const inFlight = useRef(false);
 
   // Re-seed whenever the row's underlying value changes — e.g. after
   // onRowSaved swaps in the freshly-patched row, or another editor's
@@ -105,6 +109,8 @@ export function GodCell<T extends { id: string }>({ row, gf, patch, onRowSaved,
   const toPatch = gf.toPatch ?? defaultToPatch;
 
   async function commit(raw: string) {
+    if (inFlight.current) return;
+
     const mapped = tryToPatch(raw, toPatch);
     if (!mapped.ok) {
       const msg = mapped.error instanceof Error && mapped.error.message === 'not_a_number'
@@ -124,6 +130,7 @@ export function GodCell<T extends { id: string }>({ row, gf, patch, onRowSaved,
 
     setError(null);
     setSaving(true);
+    inFlight.current = true;
     try {
       const updated = await patch(row.id, { [gf.field]: mapped.value });
       onRowSaved(updated);
@@ -132,6 +139,7 @@ export function GodCell<T extends { id: string }>({ row, gf, patch, onRowSaved,
       setError((code && errorMap[code]) ?? 'Could not save.');
     } finally {
       setSaving(false);
+      inFlight.current = false;
     }
   }
 
