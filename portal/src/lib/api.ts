@@ -135,20 +135,25 @@ export interface SessionData {
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, public code: string) {
+  // `detail` is the raw FastAPI error-detail object (e.g. { code, conflicts }
+  // for the container-membership 409) — callers that need more than `code`
+  // narrow it themselves, same as ContainerEditModal's mapError does.
+  constructor(public status: number, public code: string, public detail?: unknown) {
     super(code);
   }
 }
 
 async function errorFrom(resp: Response): Promise<ApiError> {
   let code = 'unknown_error';
+  let detail: unknown;
   try {
     const body = await resp.json();
+    detail = body?.detail;
     code = body?.detail?.code ?? code;
   } catch {
     /* non-JSON error body */
   }
-  return new ApiError(resp.status, code);
+  return new ApiError(resp.status, code, detail);
 }
 
 // ── in-memory session state ─────────────────────────────────────────

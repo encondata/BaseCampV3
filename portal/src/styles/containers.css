@@ -1,0 +1,9 @@
+/* Containers page + ContainerEditModal contents list. Imported by the
+ * Containers page (Task 8), same as assets.css is imported by Assets.tsx. */
+
+.contents-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.contents-row {
+  display: grid; grid-template-columns: 1fr 1.4fr auto auto;
+  gap: 10px; align-items: center; padding: 6px 8px;
+  border: 1px solid var(--paper-line); border-radius: 8px;
+}
