@@ -4,6 +4,7 @@
  * no way around it except signing out.
  */
 
+import { type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -25,7 +26,13 @@ export default function ForceChangePassword() {
       minHeight: '100vh', display: 'grid', placeItems: 'center',
       background: '#0c1117', padding: 24,
       fontFamily: "'Geologica', sans-serif",
-    }}>
+      // This screen renders INSTEAD of .portal-shell, which is where the
+      // theme variables live — without these, .btn-solid's background
+      // resolves to nothing and the submit renders as bare text.
+      '--accent': '#ffa12e',
+      '--accent-soft': '#ffc06b',
+      '--font-display': "'Geologica', sans-serif",
+    } as CSSProperties}>
       <div style={{
         width: 'min(480px, 96vw)', background: '#fbfcfd', borderRadius: 18,
         padding: '30px 30px 26px', boxShadow: '0 40px 90px -30px rgba(0,0,0,.7)',
