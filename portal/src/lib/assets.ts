@@ -2,7 +2,9 @@
  * Assets page logic — pure functions the components delegate to, so the
  * behaviour is unit-testable without jsdom (the lib/sites.ts pattern).
  */
+import type { ComboOption } from '../components/ComboBox';
 import type { AssetItem, AssetModelItem } from './api';
+import { boolTriToPatch, numberToPatch, type GodField } from './godEdit';
 import { passesFacets, type FacetState } from './listTools';
 
 export const LB_TO_KG = 0.453592;
@@ -79,6 +81,17 @@ export function duplicateSerials(assets: AssetItem[]): Set<string> {
   return new Set([...seen].filter(([, n]) => n > 1).map(([s]) => s));
 }
 
+export const ASSET_ERRORS: Record<string, string> = {
+  rfid_tag_in_use: 'That RFID tag is already on another asset.',
+  asset_model_not_found: 'Pick a model from the catalog list.',
+  client_not_found: 'Pick a client from the list.',
+  site_not_found: 'Pick a site from the list.',
+  unknown_status: 'Pick a status from the list.',
+  location_detail_required: 'Location cannot be null.',
+  status_required: 'Status is required.',
+  forbidden: 'You do not have permission to change assets.',
+};
+
 /* ── asset edit/create form ────────────────────────────────────── */
 
 export interface AssetFormState {
@@ -125,6 +138,16 @@ export function assetPayload(form: AssetFormState): Record<string, unknown> {
   // server-side (create_asset uses model_dump(exclude_none=True)).
   return out;
 }
+
+export const MODEL_ERRORS: Record<string, string> = {
+  duplicate_model: 'A model with this make + model already exists.',
+  unknown_category: 'Pick a category from the list.',
+  unknown_mount_type: 'Mount type must be rails, ears, shelf, or custom.',
+  alias_in_use: 'One of these aliases already belongs to another model.',
+  make_required: 'Make is required.',
+  model_required: 'Model is required.',
+  forbidden: 'You do not have permission to change the catalog.',
+};
 
 /* ── model edit/create form ────────────────────────────────────── */
 
@@ -236,4 +259,82 @@ export interface ModelSaveState {
  *  already exists (editing, or a previous attempt already created it)? */
 export function needsModelCreate(state: ModelSaveState): boolean {
   return state.isCreateMode && state.createdId === null;
+}
+
+/* ── god-edit descriptors ──────────────────────────────────────────
+ * Factories, not static tables: combo options come from the page's own
+ * loaded lookup lists (models/clients/sites/statuses; categories), so each
+ * page builds the descriptor table from its current state via these
+ * getters, memoized on those dependencies. See lib/godEdit.tsx for the
+ * GodField contract. */
+
+export interface AssetGodLookups {
+  models: () => ComboOption[];
+  clients: () => ComboOption[];
+  sites: () => ComboOption[];
+  statuses: () => ComboOption[];
+}
+
+export function ASSET_GOD_FIELDS(lookups: AssetGodLookups): GodField<AssetItem>[] {
+  return [
+    { column: 'primary', field: 'serial_number', kind: 'text',
+      fromRow: (a) => a.serial_number ?? '' },
+    { column: 'primary2', field: 'name', kind: 'text',
+      fromRow: (a) => a.name ?? '' },
+    { column: 'rfid', field: 'rfid_tag', kind: 'text',
+      fromRow: (a) => a.rfid_tag ?? '' },
+    { column: 'location', field: 'location_detail', kind: 'text',
+      fromRow: (a) => a.location_detail },
+    { column: 'model', field: 'model_id', kind: 'combo',
+      fromRow: (a) => a.model_id ?? '', options: lookups.models },
+    { column: 'client', field: 'client_id', kind: 'combo',
+      fromRow: (a) => a.client_id ?? '', options: lookups.clients },
+    { column: 'site', field: 'site_id', kind: 'combo',
+      fromRow: (a) => a.site_id ?? '', options: lookups.sites },
+    { column: 'status', field: 'status', kind: 'combo',
+      fromRow: (a) => a.status, options: lookups.statuses },
+    { column: 'has_rails', field: 'has_rails', kind: 'bool',
+      fromRow: (a) => (a.has_rails === true ? 'yes' : a.has_rails === false ? 'no' : ''),
+      toPatch: boolTriToPatch },
+  ];
+}
+
+export interface ModelGodLookups {
+  categories: () => ComboOption[];
+}
+
+const GOD_MOUNT_OPTIONS: ComboOption[] = [
+  { value: 'rails', label: 'Rails' },
+  { value: 'ears', label: 'Ears' },
+  { value: 'shelf', label: 'Shelf' },
+  { value: 'custom', label: 'Custom' },
+];
+
+export function MODEL_GOD_FIELDS(lookups: ModelGodLookups): GodField<AssetModelItem>[] {
+  const num = (column: string, field: keyof AssetModelItem): GodField<AssetModelItem> => ({
+    column, field, kind: 'number',
+    fromRow: (m) => numStr(m[field] as number | null),
+    toPatch: numberToPatch,
+  });
+  return [
+    { column: 'primary', field: 'make', kind: 'text', fromRow: (m) => m.make },
+    { column: 'primary2', field: 'model', kind: 'text', fromRow: (m) => m.model },
+    { column: 'category', field: 'category', kind: 'combo',
+      fromRow: (m) => m.category ?? '', options: lookups.categories },
+    num('ru', 'ru_size'),
+    num('weight_lbs', 'weight_lbs'),
+    num('weight_kg', 'weight_kg'),
+    num('length_in', 'length_in'),
+    num('width_in', 'width_in'),
+    num('height_in', 'height_in'),
+    num('length_cm', 'length_cm'),
+    num('width_cm', 'width_cm'),
+    num('height_cm', 'height_cm'),
+    { column: 'mount', field: 'mount_type', kind: 'select',
+      fromRow: (m) => m.mount_type ?? '', options: () => GOD_MOUNT_OPTIONS },
+    { column: 'rail', field: 'rail_type', kind: 'text',
+      fromRow: (m) => m.rail_type ?? '' },
+    { column: 'knowledge', field: 'knowledge', kind: 'text',
+      fromRow: (m) => m.knowledge },
+  ];
 }

@@ -13,11 +13,15 @@ import {
   ApiError,
   listAssetCategories,
   listAssetModels,
+  updateAssetModel,
   type AssetCategoryOut,
   type AssetModelItem,
 } from '../lib/api';
-import { formatDims, matchesModelFacets, modelSearchText } from '../lib/assets';
+import {
+  MODEL_ERRORS, MODEL_GOD_FIELDS, formatDims, matchesModelFacets, modelSearchText,
+} from '../lib/assets';
 import { initialOpenId } from '../lib/auditFormat';
+import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
@@ -25,6 +29,7 @@ import {
   ExportButton,
   FilterButton,
   exportCsv,
+  visibleColumnsFor,
   type ColumnDef,
   type FacetGroup,
   type FacetState,
@@ -42,6 +47,15 @@ const COLUMNS: ColumnDef[] = [
   { key: 'mount', label: 'Mount', width: '0.8fr', default: true },
   { key: 'rail', label: 'Rail type', width: '0.8fr', default: false },
   { key: 'aliases', label: 'Aliases', width: '0.6fr', default: false },
+  { key: 'weight_lbs', label: 'Weight (lb)', width: '0.8fr', default: false, godOnly: true },
+  { key: 'weight_kg', label: 'Weight (kg)', width: '0.8fr', default: false, godOnly: true },
+  { key: 'length_in', label: 'Length (in)', width: '0.8fr', default: false, godOnly: true },
+  { key: 'width_in', label: 'Width (in)', width: '0.8fr', default: false, godOnly: true },
+  { key: 'height_in', label: 'Height (in)', width: '0.8fr', default: false, godOnly: true },
+  { key: 'length_cm', label: 'Length (cm)', width: '0.8fr', default: false, godOnly: true },
+  { key: 'width_cm', label: 'Width (cm)', width: '0.8fr', default: false, godOnly: true },
+  { key: 'height_cm', label: 'Height (cm)', width: '0.8fr', default: false, godOnly: true },
+  { key: 'knowledge', label: 'Knowledge', width: '1.4fr', default: false, godOnly: true },
 ];
 
 const MOUNT_OPTIONS = [
@@ -51,7 +65,9 @@ const MOUNT_OPTIONS = [
   { value: 'custom', label: 'Custom' },
 ];
 
-type SortKey = 'model' | 'category' | 'ru' | 'weight' | 'dims' | 'mount' | 'rail' | 'aliases';
+type SortKey = 'model' | 'category' | 'ru' | 'weight' | 'dims' | 'mount' | 'rail' | 'aliases'
+  | 'weight_lbs' | 'weight_kg' | 'length_in' | 'width_in' | 'height_in'
+  | 'length_cm' | 'width_cm' | 'height_cm' | 'knowledge';
 
 const titleCase = (v: string | null): string =>
   v ? v[0].toUpperCase() + v.slice(1) : '—';
@@ -75,9 +91,10 @@ const CSV_COLUMNS: [string, (m: AssetModelItem) => string][] = [
 ];
 
 export default function AssetModels() {
-  const { can } = useAuth();
+  const { can, godMode } = useAuth();
   const canAdd = can('asset_models', 'add');
   const canChange = can('asset_models', 'change');
+  const god = useGodEdit();
 
   const [models, setModels] = useState<AssetModelItem[] | null>(null);
   const [categories, setCategories] = useState<AssetCategoryOut[]>([]);
@@ -110,6 +127,13 @@ export default function AssetModels() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const godFields = useMemo(() => MODEL_GOD_FIELDS({
+    categories: () => categories.map((c) => ({ value: c.key, label: c.label })),
+  }), [categories]);
+  const godFieldFor = (column: string) => godFields.find((f) => f.column === column);
+  const replaceRow = (u: AssetModelItem) =>
+    setModels((xs) => xs?.map((x) => (x.id === u.id ? u : x)) ?? xs);
+
   const facetGroups = useMemo<FacetGroup[]>(() => [
     { key: 'category', title: 'Category',
       options: categories.map((c) => ({ value: c.key, label: c.label })) },
@@ -136,6 +160,15 @@ export default function AssetModels() {
         case 'mount': return (m.mount_type ?? '').toLowerCase();
         case 'rail': return (m.rail_type ?? '').toLowerCase();
         case 'aliases': return m.aliases.join(' ').toLowerCase();
+        case 'weight_lbs': return String(m.weight_lbs ?? 0);
+        case 'weight_kg': return String(m.weight_kg ?? 0);
+        case 'length_in': return String(m.length_in ?? 0);
+        case 'width_in': return String(m.width_in ?? 0);
+        case 'height_in': return String(m.height_in ?? 0);
+        case 'length_cm': return String(m.length_cm ?? 0);
+        case 'width_cm': return String(m.width_cm ?? 0);
+        case 'height_cm': return String(m.height_cm ?? 0);
+        case 'knowledge': return m.knowledge.toLowerCase();
       }
     };
     return rows.sort((a, b) => naturalCompare(val(a), val(b)) * sortDir);
@@ -152,10 +185,19 @@ export default function AssetModels() {
   const caret = (key: SortKey) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
-  const shownCols = COLUMNS.filter((c) => visibleCols.has(c.key));
+  const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
   const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
 
   const cellFor = (m: AssetModelItem, key: string) => {
+    if (god.editing) {
+      const gf = godFieldFor(key);
+      if (gf) {
+        return (
+          <GodCell row={m} gf={gf} patch={updateAssetModel} onRowSaved={replaceRow}
+                   errorMap={MODEL_ERRORS} disabled={!canChange} />
+        );
+      }
+    }
     switch (key) {
       case 'category':
         return m.category_color
@@ -179,6 +221,24 @@ export default function AssetModels() {
         return <span className="mono">{m.rail_type ?? '—'}</span>;
       case 'aliases':
         return <span className="cell-top">{m.aliases.length ? m.aliases.join(', ') : '—'}</span>;
+      case 'weight_lbs':
+        return <span className="mono">{m.weight_lbs ?? '—'}</span>;
+      case 'weight_kg':
+        return <span className="mono">{m.weight_kg ?? '—'}</span>;
+      case 'length_in':
+        return <span className="mono">{m.length_in ?? '—'}</span>;
+      case 'width_in':
+        return <span className="mono">{m.width_in ?? '—'}</span>;
+      case 'height_in':
+        return <span className="mono">{m.height_in ?? '—'}</span>;
+      case 'length_cm':
+        return <span className="mono">{m.length_cm ?? '—'}</span>;
+      case 'width_cm':
+        return <span className="mono">{m.width_cm ?? '—'}</span>;
+      case 'height_cm':
+        return <span className="mono">{m.height_cm ?? '—'}</span>;
+      case 'knowledge':
+        return <span className="cell-top">{m.knowledge || '—'}</span>;
       default:
         return null;
     }
@@ -209,8 +269,9 @@ export default function AssetModels() {
           </div>
           <span className="result-count">{visible.length} of {models?.length ?? 0} shown</span>
           <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
-          <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} />
+          <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
           <ExportButton onExport={() => exportCsv('asset-models', CSV_COLUMNS, visible)} />
+          <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canChange} />
           {canAdd && (
             <button className="btn-solid" onClick={() => setCreating(true)}>
               + New model
@@ -247,7 +308,16 @@ export default function AssetModels() {
                 <div className="row-main" style={grid}
                      onClick={() => setOpenId(open ? null : m.id)}>
                   <div className="cell cell-primary">
-                    <div className="pn"><b>{m.make}</b><span>{m.model}</span></div>
+                    {god.editing && godFieldFor('primary') && godFieldFor('primary2') ? (
+                      <div className="pn god-primary-edit">
+                        <GodCell row={m} gf={godFieldFor('primary')!} patch={updateAssetModel}
+                                 onRowSaved={replaceRow} errorMap={MODEL_ERRORS} disabled={!canChange} />
+                        <GodCell row={m} gf={godFieldFor('primary2')!} patch={updateAssetModel}
+                                 onRowSaved={replaceRow} errorMap={MODEL_ERRORS} disabled={!canChange} />
+                      </div>
+                    ) : (
+                      <div className="pn"><b>{m.make}</b><span>{m.model}</span></div>
+                    )}
                   </div>
                   {shownCols.map((c) => (
                     <div className="cell" key={c.key}>{cellFor(m, c.key)}</div>

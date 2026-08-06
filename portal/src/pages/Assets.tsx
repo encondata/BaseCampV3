@@ -14,18 +14,24 @@ import NotesFilesPanel from '../components/NotesFilesPanel';
 import {
   ApiError,
   listAssetCategories,
+  listAssetModels,
   listAssetStatuses,
   listAssets,
   listClients,
   listSites,
+  updateAsset,
   type AssetCategoryOut,
   type AssetItem,
+  type AssetModelItem,
   type OrgRef,
   type SiteItem,
   type StatusValue,
 } from '../lib/api';
-import { assetSearchText, duplicateSerials, matchesAssetFacets } from '../lib/assets';
+import {
+  ASSET_ERRORS, ASSET_GOD_FIELDS, assetSearchText, duplicateSerials, matchesAssetFacets,
+} from '../lib/assets';
 import { initialOpenId } from '../lib/auditFormat';
+import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
@@ -33,6 +39,7 @@ import {
   ExportButton,
   FilterButton,
   exportCsv,
+  visibleColumnsFor,
   type ColumnDef,
   type FacetGroup,
   type FacetState,
@@ -52,10 +59,11 @@ const COLUMNS: ColumnDef[] = [
   { key: 'location', label: 'Location', width: '1.4fr', default: false },
   { key: 'rfid', label: 'RFID', width: '1fr', default: false },
   { key: 'last_seen', label: 'Last seen', width: '1fr', default: false },
+  { key: 'has_rails', label: 'Rails', width: '0.8fr', default: false, godOnly: true },
 ];
 
 type SortKey = 'serial' | 'model' | 'category' | 'client' | 'site' | 'status'
-  | 'ru' | 'location' | 'rfid' | 'last_seen';
+  | 'ru' | 'location' | 'rfid' | 'last_seen' | 'has_rails';
 
 const CSV_COLUMNS: [string, (a: AssetItem) => string][] = [
   ['ID', (a) => a.id],
@@ -75,15 +83,17 @@ const CSV_COLUMNS: [string, (a: AssetItem) => string][] = [
 ];
 
 export default function Assets() {
-  const { can } = useAuth();
+  const { can, godMode } = useAuth();
   const canAdd = can('assets', 'add');
   const canChange = can('assets', 'change');
   const canViewSites = can('sites', 'view');
   const canViewCategories = can('asset_models', 'view');
+  const god = useGodEdit();
 
   const [assets, setAssets] = useState<AssetItem[] | null>(null);
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
   const [categories, setCategories] = useState<AssetCategoryOut[]>([]);
+  const [models, setModels] = useState<AssetModelItem[]>([]);
   const [clients, setClients] = useState<OrgRef[]>([]);
   const [sites, setSites] = useState<SiteItem[]>([]);
   const [error, setError] = useState('');
@@ -112,11 +122,24 @@ export default function Assets() {
   useEffect(() => {
     void load();
     void listAssetStatuses().then(setStatuses).catch(() => {});
-    if (canViewCategories) void listAssetCategories().then(setCategories).catch(() => {});
+    if (canViewCategories) {
+      void listAssetCategories().then(setCategories).catch(() => {});
+      void listAssetModels().then(setModels).catch(() => {});
+    }
     void listClients().then(setClients).catch(() => {});
     if (canViewSites) void listSites().then(setSites).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const godFields = useMemo(() => ASSET_GOD_FIELDS({
+    models: () => models.map((m) => ({ value: m.id, label: `${m.make} ${m.model}` })),
+    clients: () => clients.map((c) => ({ value: c.id, label: c.name })),
+    sites: () => (canViewSites ? sites.map((s) => ({ value: s.id, label: s.name })) : []),
+    statuses: () => statuses.map((s) => ({ value: s.key, label: s.label })),
+  }), [models, clients, sites, statuses, canViewSites]);
+  const godFieldFor = (column: string) => godFields.find((f) => f.column === column);
+  const replaceRow = (u: AssetItem) =>
+    setAssets((xs) => xs?.map((x) => (x.id === u.id ? u : x)) ?? xs);
 
   const dupes = useMemo(() => duplicateSerials(assets ?? []), [assets]);
   const existingSerials = useMemo(() => new Set(
@@ -157,6 +180,7 @@ export default function Assets() {
         case 'location': return a.location_detail.toLowerCase();
         case 'rfid': return (a.rfid_tag ?? '').toLowerCase();
         case 'last_seen': return a.last_seen_at ?? '';
+        case 'has_rails': return a.has_rails === null ? '' : a.has_rails ? 'yes' : 'no';
       }
     };
     return rows.sort((a, b) => naturalCompare(val(a), val(b)) * sortDir);
@@ -173,10 +197,19 @@ export default function Assets() {
   const caret = (key: SortKey) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
-  const shownCols = COLUMNS.filter((c) => visibleCols.has(c.key));
+  const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
   const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
 
   const cellFor = (a: AssetItem, key: string) => {
+    if (god.editing) {
+      const gf = godFieldFor(key);
+      if (gf) {
+        return (
+          <GodCell row={a} gf={gf} patch={updateAsset} onRowSaved={replaceRow}
+                   errorMap={ASSET_ERRORS} disabled={!canChange} />
+        );
+      }
+    }
     switch (key) {
       case 'model':
         return <span className="cell-top">{a.model ? `${a.model.make} ${a.model.model}` : '—'}</span>;
@@ -211,6 +244,10 @@ export default function Assets() {
         return <span className="cell-top">
           {a.last_seen_at ? new Date(a.last_seen_at).toLocaleDateString() : '—'}
         </span>;
+      case 'has_rails':
+        return <span className="cell-top">
+          {a.has_rails === null ? 'Unknown' : a.has_rails ? 'Yes' : 'No'}
+        </span>;
       default:
         return null;
     }
@@ -241,8 +278,9 @@ export default function Assets() {
           </div>
           <span className="result-count">{visible.length} of {assets?.length ?? 0} shown</span>
           <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
-          <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} />
+          <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
           <ExportButton onExport={() => exportCsv('assets', CSV_COLUMNS, visible)} />
+          <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canChange} />
           {canAdd && (
             <button className="btn-solid" onClick={() => setCreating(true)}>
               + New asset
@@ -280,7 +318,16 @@ export default function Assets() {
                 <div className="row-main" style={grid}
                      onClick={() => setOpenId(open ? null : a.id)}>
                   <div className="cell cell-primary">
-                    <div className="pn"><b>{a.serial_number ?? '—'}</b><span>{a.name ?? '—'}</span></div>
+                    {god.editing && godFieldFor('primary') && godFieldFor('primary2') ? (
+                      <div className="pn god-primary-edit">
+                        <GodCell row={a} gf={godFieldFor('primary')!} patch={updateAsset}
+                                 onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
+                        <GodCell row={a} gf={godFieldFor('primary2')!} patch={updateAsset}
+                                 onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
+                      </div>
+                    ) : (
+                      <div className="pn"><b>{a.serial_number ?? '—'}</b><span>{a.name ?? '—'}</span></div>
+                    )}
                     {isDupe && <span className="chip c-amber">Duplicate SN</span>}
                   </div>
                   {shownCols.map((c) => (

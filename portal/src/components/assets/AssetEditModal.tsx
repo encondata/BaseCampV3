@@ -20,7 +20,7 @@ import {
   type SiteItem,
   type StatusValue,
 } from '../../lib/api';
-import { assetPayload, formFromAsset, type AssetFormState } from '../../lib/assets';
+import { ASSET_ERRORS, assetPayload, formFromAsset, type AssetFormState } from '../../lib/assets';
 import ComboBox from '../ComboBox';
 
 interface Props {
@@ -33,17 +33,6 @@ interface Props {
   onClose: () => void;
   onSaved: () => Promise<void> | void;   // parent refetches
 }
-
-const ASSET_ERRORS: Record<string, string> = {
-  rfid_tag_in_use: 'That RFID tag is already on another asset.',
-  asset_model_not_found: 'Pick a model from the catalog list.',
-  client_not_found: 'Pick a client from the list.',
-  site_not_found: 'Pick a site from the list.',
-  unknown_status: 'Pick a status from the list.',
-  location_detail_required: 'Location cannot be null.',
-  status_required: 'Status is required.',
-  forbidden: 'You do not have permission to change assets.',
-};
 
 function mapError(err: unknown, fallback: string): string {
   return err instanceof ApiError ? (ASSET_ERRORS[err.code] ?? fallback) : 'Network error.';

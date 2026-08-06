@@ -25,6 +25,7 @@ import {
   type AssetModelItem,
 } from '../../lib/api';
 import {
+  MODEL_ERRORS,
   formFromModel, formatDims, IN_TO_CM, LB_TO_KG, modelPayload, needsModelCreate, parseDims,
   partnerFor, type ModelFormState,
 } from '../../lib/assets';
@@ -44,16 +45,6 @@ const MOUNT_TYPES = [
   { value: 'shelf', label: 'Shelf' },
   { value: 'custom', label: 'Custom' },
 ];
-
-const MODEL_ERRORS: Record<string, string> = {
-  duplicate_model: 'A model with this make + model already exists.',
-  unknown_category: 'Pick a category from the list.',
-  unknown_mount_type: 'Mount type must be rails, ears, shelf, or custom.',
-  alias_in_use: 'One of these aliases already belongs to another model.',
-  make_required: 'Make is required.',
-  model_required: 'Model is required.',
-  forbidden: 'You do not have permission to change the catalog.',
-};
 
 function mapError(err: unknown, fallback: string): string {
   return err instanceof ApiError ? (MODEL_ERRORS[err.code] ?? fallback) : 'Network error.';

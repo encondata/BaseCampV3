@@ -55,3 +55,9 @@
 }
 
 .god-cell.saving { opacity: 0.6; }
+
+.pn.god-primary-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
