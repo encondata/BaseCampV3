@@ -8,6 +8,11 @@ import type { GodField } from './godEdit';
 
 export interface PartnerRef { id: string; name: string }
 
+/** The slice of Workers.tsx's page-local LevelDef that workerCellText needs
+ *  to render the same "L2 · Journeyman" text the LevelBadge cell shows —
+ *  kept minimal so this module doesn't have to import the page's type. */
+export interface WorkerLevelLookup { level: string; title: string }
+
 export interface WorkerItem {
   person_id: string;
   display_name: string;
@@ -35,6 +40,41 @@ export interface WorkerItem {
  *  status_required (NON_NULLABLE_PROFILE_FIELDS), blacklist_requires_note,
  *  rank_too_low, cannot_target_self, unknown_level, partner_not_found,
  *  unknown_status. */
+/** Global search-box text — every column's cellText joined, so typing
+ *  matches whatever a user can already see in the row. */
+export function workerSearchText(w: WorkerItem, levels: WorkerLevelLookup[]): string {
+  const def = w.level ? levels.find((l) => l.level === w.level) : undefined;
+  return [
+    w.display_name, w.trade, w.level, def?.title,
+    w.partner?.name ?? 'direct', w.contact_email, w.phone,
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+/** Column-menu accessor (lib/columnMenu.tsx's `CellText<T>`) — one row's
+ *  display text for a given column key. Mirrors exactly what the page's own
+ *  cell renderer shows: 'level' combines the key with the level's title the
+ *  way LevelBadge does, 'certs' shows the same "N expired" vs. bare count
+ *  the chip/mono cell shows, and 'primary' is the always-shown name+contact
+ *  cell. Needs `levels` (not on the row itself) to resolve the level's
+ *  title, so — unlike assetCellText/siteCellText — this isn't a bare
+ *  (row, colKey) function; pages close over their loaded `levels` list. */
+export function workerCellText(w: WorkerItem, colKey: string, levels: WorkerLevelLookup[]): string {
+  switch (colKey) {
+    case 'primary': return `${w.display_name} ${w.contact_email ?? w.phone ?? ''}`.trim();
+    case 'trade': return w.trade ?? '—';
+    case 'level': {
+      if (!w.level) return 'unleveled';
+      const def = levels.find((l) => l.level === w.level);
+      return def ? `${w.level} · ${def.title}` : w.level;
+    }
+    case 'partner': return w.partner?.name ?? 'Direct';
+    case 'status': return w.status_label;
+    case 'certs': return w.certs_expired > 0 ? `${w.certs_expired} expired` : String(w.cert_count);
+    case 'contact': return w.contact_email ?? w.phone ?? '—';
+    default: return '';
+  }
+}
+
 export const WORKER_ERRORS: Record<string, string> = {
   person_not_found: 'This worker no longer exists.',
   not_a_worker: 'This person no longer holds the worker role.',
