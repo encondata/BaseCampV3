@@ -203,6 +203,7 @@ export default function External() {
     const state = location.state as { openRow?: string; openAdd?: boolean } | null;
     if (state?.openRow) {
       deepLinkTarget.current = state.openRow;
+      clearedDeepLink.current = null; // re-arm: a fresh arrival gets its own one-shot clear
       setOpenId(state.openRow);
     }
     if (state?.openAdd) setAddOpen(true);

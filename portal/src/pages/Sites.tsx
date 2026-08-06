@@ -159,6 +159,7 @@ export default function Sites() {
   const deepLinkTarget = useRef<string | null>(initialOpenId());
   const focusOpenId = (id: string | null) => {
     deepLinkTarget.current = id;
+    clearedDeepLink.current = null; // re-arm: a fresh arrival gets its own one-shot clear
     setOpenId(id);
   };
   useRecordFocus(sites, (s) => s.id, (s) => s.name, focusOpenId, setQuery);

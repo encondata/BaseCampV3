@@ -140,6 +140,7 @@ export default function Users() {
   const deepLinkTarget = useRef<string | null>(initialOpenId());
   const focusOpenId = (id: string | null) => {
     deepLinkTarget.current = id;
+    clearedDeepLink.current = null; // re-arm: a fresh arrival gets its own one-shot clear
     setOpenId(id);
   };
   useRecordFocus(users, (u) => u.person_id, (u) => u.display_name,

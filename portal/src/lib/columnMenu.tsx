@@ -1,12 +1,14 @@
 /**
  * Excel-style per-column header menus: sort (A→Z / Z→A), a type-to-filter
  * text box, and a unique-value checkbox multi-select that narrows live as
- * you type. Replaces the toolbar-level FilterButton one page at a time —
- * Task 6 removes FilterButton once every list page has adopted this.
+ * you type. Replaces the toolbar-level FilterButton one page at a time;
+ * FilterButton itself stays in lib/listTools.tsx for its three remaining
+ * consumers (ActivityHistory, MembersTab, Variables) that haven't adopted
+ * column menus.
  *
  * `ColumnFilter`/`ColumnFilters`/`activeFilterCount` live in lib/listTools.tsx
- * (next to their toolbar-chip cousin, facetCount) and are re-exported here so
- * every consumer of the column-menu mechanism can import from one module.
+ * and are re-exported here so every consumer of the column-menu mechanism
+ * can import from one module.
  *
  * Persistence (`usePersistentListState`) piggybacks on the existing
  * account-wide preferences PATCH (see auth/AuthContext's updatePreferences,

@@ -135,6 +135,7 @@ export default function Assets() {
   const deepLinkTarget = useRef<string | null>(initialOpenId());
   const focusOpenId = (id: string | null) => {
     deepLinkTarget.current = id;
+    clearedDeepLink.current = null; // re-arm: a fresh arrival gets its own one-shot clear
     setOpenId(id);
   };
   useRecordFocus(assets, (a) => a.id, (a) => a.serial_number ?? a.name ?? '', focusOpenId, setQuery);
