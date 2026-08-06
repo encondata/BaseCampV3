@@ -1239,6 +1239,140 @@ export async function deleteAttachment(id: string): Promise<void> {
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+/* ── containers ───────────────────────────────────────────────────── */
+
+export interface ContainerItem {
+  id: string; name: string; rfid_tag: string | null;
+  container_type: string | null; type_label: string | null;
+  type_color: string | null;
+  status: string; status_label: string; status_color: string;
+  site_id: string | null; site_name: string | null;
+  location_detail: string; asset_count: number;
+  last_audit_at: string | null; last_validated_at: string | null;
+  archived_at: string | null; created_at: string;
+}
+
+export interface ContainerAssetRow {
+  asset_id: string; serial_number: string | null; name: string | null;
+  model_name: string | null;
+  status: string; status_label: string; status_color: string;
+  added_at: string; added_by_name: string | null;
+}
+
+export async function listContainers(): Promise<ContainerItem[]> {
+  const resp = await apiFetch('/containers');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createContainer(
+  body: Record<string, unknown>,
+): Promise<ContainerItem> {
+  const resp = await apiFetch('/containers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateContainer(
+  id: string, body: Record<string, unknown>,
+): Promise<ContainerItem> {
+  const resp = await apiFetch(`/containers/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function archiveContainer(
+  id: string, archived: boolean,
+): Promise<void> {
+  const resp = await apiFetch(
+    `/containers/${id}/${archived ? 'archive' : 'unarchive'}`,
+    { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function listContainerStatuses(): Promise<StatusValue[]> {
+  const resp = await apiFetch('/status-values?record_type=container');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listContainerTypes(): Promise<StatusValue[]> {
+  const resp = await apiFetch('/status-values?record_type=container_type');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listContainerAssets(
+  id: string,
+): Promise<ContainerAssetRow[]> {
+  const resp = await apiFetch(`/containers/${id}/assets`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function addContainerAssets(
+  id: string, assetIds: string[],
+): Promise<ContainerAssetRow[]> {
+  const resp = await apiFetch(`/containers/${id}/assets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ asset_ids: assetIds }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function removeContainerAsset(
+  id: string, assetId: string,
+): Promise<void> {
+  const resp = await apiFetch(`/containers/${id}/assets/${assetId}`,
+    { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export interface ContainerBulkRow {
+  row: number; action: 'create' | 'error';
+  data: Record<string, unknown>; errors: string[];
+}
+
+export async function previewContainerBulk(
+  rows: Record<string, unknown>[],
+): Promise<{ rows: ContainerBulkRow[] }> {
+  const resp = await apiFetch('/containers/bulk-import/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function commitContainerBulk(
+  rows: Record<string, unknown>[],
+): Promise<{ created: number }> {
+  const resp = await apiFetch('/containers/bulk-import/commit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function downloadContainerTemplate(): Promise<Blob> {
+  const resp = await apiFetch('/containers/bulk-import/template?fmt=csv');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.blob();
+}
+
 /* ── god mode (developer easter egg) ─────────────────────────────── */
 
 /** Returns the nav colour on success, or null when refused. A refusal is
