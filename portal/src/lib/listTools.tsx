@@ -48,13 +48,9 @@ export function visibleColumnsFor(
 
 /* ── advanced filters (facets) ──────────────────────────────────── */
 
-export interface FacetOption { value: string; label: string }
+interface FacetOption { value: string; label: string }
 export interface FacetGroup { key: string; title: string; options: FacetOption[] }
 export type FacetState = Record<string, Set<string>>;
-
-export function facetCount(state: FacetState): number {
-  return Object.values(state).reduce((n, s) => n + s.size, 0);
-}
 
 const CHECK = (
   <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2.4"
@@ -80,7 +76,7 @@ export function FilterButton({ groups, state, onChange }: {
 }) {
   const [open, setOpen] = useState(false);
   const ref = useOutsideClose<HTMLDivElement>(() => setOpen(false));
-  const active = facetCount(state);
+  const active = Object.values(state).reduce((n, s) => n + s.size, 0);
 
   const toggle = (groupKey: string, value: string) => {
     const set = new Set(state[groupKey] ?? []);
