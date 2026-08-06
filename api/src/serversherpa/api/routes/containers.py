@@ -11,9 +11,12 @@ from sqlalchemy import func, select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    ContainerCreateIn, ContainerItem, ContainerUpdateIn,
+    ContainerAssetRow, ContainerAssetsAddIn, ContainerCreateIn, ContainerItem,
+    ContainerUpdateIn,
 )
-from serversherpa.db.models import Container, ContainerAsset, Site, StatusValue
+from serversherpa.db.models import (
+    Asset, AssetModel, Container, ContainerAsset, Person, Site, StatusValue,
+)
 from serversherpa.services.audit import audit, diff, snapshot
 
 router = APIRouter(prefix="/containers", tags=["containers"])
@@ -207,4 +210,104 @@ async def unarchive_container(
     container.updated_at = datetime.now(UTC)
     audit(db, actor_id=actor.person.id, entity_type="container",
           entity_id=str(container_id), action="restore")
+    await db.commit()
+
+
+async def _asset_rows(db: DbSession,
+                      container_id: uuid.UUID) -> list[ContainerAssetRow]:
+    rows = (await db.execute(
+        select(ContainerAsset, Asset)
+        .join(Asset, Asset.id == ContainerAsset.asset_id)
+        .where(ContainerAsset.container_id == container_id)
+        .order_by(ContainerAsset.added_at))).all()
+    statuses = {s.key: (s.label, s.color) for s in await db.scalars(
+        select(StatusValue).where(StatusValue.record_type == "asset"))}
+    model_ids = {a.model_id for _, a in rows if a.model_id}
+    models = dict((await db.execute(
+        select(AssetModel.id, AssetModel.make + " " + AssetModel.model)
+        .where(AssetModel.id.in_(model_ids)))).all()) if model_ids else {}
+    person_ids = {m.added_by for m, _ in rows if m.added_by}
+    people = dict((await db.execute(
+        select(Person.id, Person.first_name + " " + Person.last_name)
+        .where(Person.id.in_(person_ids)))).all()) if person_ids else {}
+    out = []
+    for membership, asset in rows:
+        label, color = statuses.get(asset.status, (asset.status, "#51606f"))
+        out.append(ContainerAssetRow(
+            asset_id=asset.id, serial_number=asset.serial_number,
+            name=asset.name, model_name=models.get(asset.model_id),
+            status=asset.status, status_label=label, status_color=color,
+            added_at=membership.added_at,
+            added_by_name=people.get(membership.added_by)))
+    return out
+
+
+@router.get("/{container_id}/assets", response_model=list[ContainerAssetRow])
+async def list_container_assets(
+    container_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("containers", "view"),
+) -> list[ContainerAssetRow]:
+    await _get_container(db, container_id)
+    return await _asset_rows(db, container_id)
+
+
+@router.post("/{container_id}/assets", response_model=list[ContainerAssetRow])
+async def add_container_assets(
+    container_id: uuid.UUID,
+    body: ContainerAssetsAddIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("containers", "change"),
+) -> list[ContainerAssetRow]:
+    container = await _get_container(db, container_id)
+    ids = list(dict.fromkeys(body.asset_ids))  # dedupe, keep order
+    if not ids:
+        raise _err(422, "asset_ids_required")
+    found = set(await db.scalars(select(Asset.id).where(Asset.id.in_(ids))))
+    if missing := [i for i in ids if i not in found]:
+        raise _err(422, "asset_not_found", asset_ids=[str(i) for i in missing])
+
+    taken = (await db.execute(
+        select(ContainerAsset.asset_id, Container.id, Container.name)
+        .join(Container, Container.id == ContainerAsset.container_id)
+        .where(ContainerAsset.asset_id.in_(ids)))).all()
+    if conflicts := [
+        {"asset_id": str(aid), "container_id": str(cid), "container_name": name}
+        for aid, cid, name in taken if cid != container_id
+    ]:
+        raise _err(409, "assets_in_containers", conflicts=conflicts)
+
+    already = {aid for aid, cid, _ in taken if cid == container_id}
+    added = [i for i in ids if i not in already]
+    for asset_id in added:
+        db.add(ContainerAsset(container_id=container_id, asset_id=asset_id,
+                              added_by=actor.person.id))
+    if added:
+        container.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor.person.id, entity_type="container",
+              entity_id=str(container_id), action="assets_add",
+              changes={"asset_ids": {
+                  "from": None, "to": [str(i) for i in added]}})
+    await db.commit()
+    return await _asset_rows(db, container_id)
+
+
+@router.delete("/{container_id}/assets/{asset_id}", status_code=204)
+async def remove_container_asset(
+    container_id: uuid.UUID,
+    asset_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("containers", "change"),
+) -> None:
+    container = await _get_container(db, container_id)
+    membership = await db.scalar(select(ContainerAsset).where(
+        ContainerAsset.container_id == container_id,
+        ContainerAsset.asset_id == asset_id))
+    if membership is None:
+        raise _err(404, "membership_not_found")
+    await db.delete(membership)
+    container.updated_at = datetime.now(UTC)
+    audit(db, actor_id=actor.person.id, entity_type="container",
+          entity_id=str(container_id), action="assets_remove",
+          changes={"asset_ids": {"from": [str(asset_id)], "to": None}})
     await db.commit()

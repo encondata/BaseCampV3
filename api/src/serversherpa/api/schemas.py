@@ -922,6 +922,23 @@ class ContainerUpdateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ContainerAssetRow(BaseModel):
+    asset_id: uuid.UUID
+    serial_number: str | None = None
+    name: str | None = None
+    model_name: str | None = None
+    status: str
+    status_label: str
+    status_color: str
+    added_at: datetime
+    added_by_name: str | None = None
+
+
+class ContainerAssetsAddIn(BaseModel):
+    asset_ids: list[uuid.UUID]
+    model_config = ConfigDict(extra="forbid")
+
+
 class NoteOut(BaseModel):
     id: uuid.UUID
     entity_type: str
