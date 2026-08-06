@@ -19,6 +19,7 @@ import {
   afterLinkFailure, buildNewContactPersonPayload, planAddContact,
 } from '../lib/external';
 import { initialOpenId } from '../lib/auditFormat';
+import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate } from '../lib/format';
 import {
@@ -27,10 +28,12 @@ import {
   FilterButton,
   exportCsv,
   passesFacets,
+  visibleColumnsFor,
   type ColumnDef,
   type FacetGroup,
   type FacetState,
 } from '../lib/listTools';
+import { ORG_ERRORS, ORG_GOD_FIELDS, type OrgItem } from '../lib/orgs';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
@@ -42,31 +45,6 @@ export interface OrgConfig {
   blurb: string;
   addLabel: string;
   hasType: boolean;
-}
-
-interface ManagerRef { id: string; display_name: string }
-
-interface OrgItem {
-  id: string;
-  name: string;
-  code: string | null;
-  partner_types: string[];
-  status: string;
-  tier: string;
-  phone: string | null;
-  website: string | null;
-  address_line1: string | null;
-  address_line2: string | null;
-  city: string | null;
-  region: string | null;
-  postal_code: string | null;
-  country: string;
-  notes: string | null;
-  account_manager: ManagerRef | null;
-  contact_count: number;
-  logo_url: string | null;
-  archived_at: string | null;
-  created_at: string;
 }
 
 interface ContactItem {
@@ -133,7 +111,8 @@ const PILLS = [
 ];
 
 type SortKey = 'name' | 'type' | 'tier' | 'status' | 'manager' | 'contacts'
-  | 'created' | 'website' | 'phone' | 'location';
+  | 'created' | 'website' | 'phone' | 'location'
+  | 'city' | 'region' | 'postal_code' | 'country' | 'address_line1' | 'address_line2' | 'notes';
 
 function effectiveStatus(o: OrgItem): string {
   return o.archived_at ? 'archived' : o.status;
@@ -151,6 +130,14 @@ const ALL_COLUMNS: (ColumnDef & { partnerOnly?: boolean })[] = [
   { key: 'phone', label: 'Phone', width: '1.1fr', default: false },
   { key: 'location', label: 'Location', width: '1.3fr', default: false },
   { key: 'created', label: 'Created', width: '1.1fr', default: false },
+  // God-only columns: hidden from the column picker until god mode is on.
+  { key: 'city', label: 'City', width: '1.1fr', default: false, godOnly: true },
+  { key: 'region', label: 'Region', width: '1fr', default: false, godOnly: true },
+  { key: 'postal_code', label: 'Postal code', width: '1fr', default: false, godOnly: true },
+  { key: 'country', label: 'Country', width: '0.8fr', default: false, godOnly: true },
+  { key: 'address_line1', label: 'Address line 1', width: '1.4fr', default: false, godOnly: true },
+  { key: 'address_line2', label: 'Address line 2', width: '1.4fr', default: false, godOnly: true },
+  { key: 'notes', label: 'Notes', width: '1.6fr', default: false, godOnly: true },
 ];
 
 function csvColumns(hasType: boolean): [string, (o: OrgItem) => string][] {
@@ -176,8 +163,9 @@ function csvColumns(hasType: boolean): [string, (o: OrgItem) => string][] {
 }
 
 export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
-  const { can } = useAuth();
+  const { can, godMode } = useAuth();
   const navigate = useNavigate();
+  const god = useGodEdit();
 
   const [orgs, setOrgs] = useState<OrgItem[] | null>(null);
   const [error, setError] = useState('');
@@ -275,6 +263,13 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
         case 'website': return o.website ?? '';
         case 'phone': return o.phone ?? '';
         case 'location': return `${o.city ?? ''} ${o.region ?? ''}`.toLowerCase();
+        case 'city': return (o.city ?? '').toLowerCase();
+        case 'region': return (o.region ?? '').toLowerCase();
+        case 'postal_code': return (o.postal_code ?? '').toLowerCase();
+        case 'country': return o.country.toLowerCase();
+        case 'address_line1': return (o.address_line1 ?? '').toLowerCase();
+        case 'address_line2': return (o.address_line2 ?? '').toLowerCase();
+        case 'notes': return (o.notes ?? '').toLowerCase();
       }
     };
     return rows.sort((a, b) => {
@@ -300,7 +295,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
     void load();
   };
 
-  const shownCols = columns.filter((c) => visibleCols.has(c.key));
+  const shownCols = visibleColumnsFor(columns, visibleCols, godMode);
   const grid = {
     gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px`,
   };
@@ -308,7 +303,34 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
   const canManage = can(cfg.kind === 'client' ? 'clients' : 'partners', 'change');
   const canViewUsers = can('users', 'view');
 
+  const godFields = useMemo(() => ORG_GOD_FIELDS(), []);
+  const godFieldFor = (column: string) => godFields.find((f) => f.column === column);
+  const patchOrg = (id: string, body: Record<string, unknown>) =>
+    apiFetch(`${cfg.apiBase}/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(async (r) => {
+      if (!r.ok) {
+        let code = 'unknown';
+        try { code = (await r.json())?.detail?.code ?? code; } catch { /* noop */ }
+        throw new ApiError(r.status, code);
+      }
+      return r.json();
+    });
+  const replaceRow = (u: OrgItem) =>
+    setOrgs((xs) => xs?.map((x) => (x.id === u.id ? u : x)) ?? xs);
+
   const cellFor = (o: OrgItem, key: string) => {
+    if (god.editing) {
+      const gf = godFieldFor(key);
+      if (gf) {
+        return (
+          <GodCell row={o} gf={gf} patch={patchOrg} onRowSaved={replaceRow}
+                   errorMap={ORG_ERRORS} disabled={!canManage} />
+        );
+      }
+    }
     switch (key) {
       case 'type':
         return (
@@ -337,6 +359,20 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
         return <span className="cell-top">{[o.city, o.region].filter(Boolean).join(', ') || '—'}</span>;
       case 'created':
         return <span className="mono">{longDate(o.created_at)}</span>;
+      case 'city':
+        return <span className="cell-top">{o.city ?? '—'}</span>;
+      case 'region':
+        return <span className="cell-top">{o.region ?? '—'}</span>;
+      case 'postal_code':
+        return <span className="mono">{o.postal_code ?? '—'}</span>;
+      case 'country':
+        return <span className="mono">{o.country}</span>;
+      case 'address_line1':
+        return <span className="cell-top">{o.address_line1 ?? '—'}</span>;
+      case 'address_line2':
+        return <span className="cell-top">{o.address_line2 ?? '—'}</span>;
+      case 'notes':
+        return <span className="cell-top">{o.notes || '—'}</span>;
       default:
         return null;
     }
@@ -373,9 +409,10 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
           </div>
           <span className="result-count">{visible.length} of {orgs?.length ?? 0} shown</span>
           <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
-          <ColumnsButton columns={columns} visible={visibleCols} onChange={setVisibleCols} />
+          <ColumnsButton columns={columns} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
           <ExportButton onExport={() =>
             exportCsv(cfg.title.toLowerCase(), csvColumns(cfg.hasType), visible)} />
+          <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canManage} />
           {canManage && (
             <button className="btn-solid" onClick={() => setEditing('new')}>
               + {cfg.addLabel}
@@ -412,11 +449,20 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                        style={{ background: o.logo_url ? 'var(--surface-2)' : avatarGradient(o.name) }}>
                     {o.logo_url ? <img src={o.logo_url} alt="" /> : initials(o.name)}
                   </div>
-                  <div className="pn">
-                    <b>{o.name}</b>
-                    <span>{[o.code, [o.city, o.region].filter(Boolean).join(', ')]
-                      .filter(Boolean).join(' · ') || '—'}</span>
-                  </div>
+                  {god.editing && godFieldFor('primary') && godFieldFor('primary2') ? (
+                    <div className="pn god-primary-edit">
+                      <GodCell row={o} gf={godFieldFor('primary')!} patch={patchOrg}
+                               onRowSaved={replaceRow} errorMap={ORG_ERRORS} disabled={!canManage} />
+                      <GodCell row={o} gf={godFieldFor('primary2')!} patch={patchOrg}
+                               onRowSaved={replaceRow} errorMap={ORG_ERRORS} disabled={!canManage} />
+                    </div>
+                  ) : (
+                    <div className="pn">
+                      <b>{o.name}</b>
+                      <span>{[o.code, [o.city, o.region].filter(Boolean).join(', ')]
+                        .filter(Boolean).join(' · ') || '—'}</span>
+                    </div>
+                  )}
                 </div>
                 {shownCols.map((c) => (
                   <div className="cell" key={c.key}>{cellFor(o, c.key)}</div>
@@ -966,11 +1012,7 @@ function AddContactModal({ cfg, orgId, linkedIds, onClose, onAdded }: {
 }
 
 /* ── create / edit modal ────────────────────────────────────────── */
-
-const ORG_ERRORS: Record<string, string> = {
-  name_or_code_in_use: 'That name or code is already in use.',
-  manager_not_found: 'Pick a valid account manager.',
-};
+/* ORG_ERRORS now lives in lib/orgs.ts, shared with GodCell's error map. */
 
 function OrgFormModal({ cfg, org, onClose, onSaved }: {
   cfg: OrgConfig;
