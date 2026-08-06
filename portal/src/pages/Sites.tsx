@@ -21,21 +21,25 @@ import {
   listSiteStatuses,
   listSiteTypes,
   listSites,
+  updateSite,
   type OrgRef,
   type SiteItem,
   type SiteLookup,
   type SurveySchema,
 } from '../lib/api';
 import { initialOpenId } from '../lib/auditFormat';
-import { useRecordFocus } from '../lib/useDeepLinkFilter';
+import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import {
-  formatCoords, matchesSiteFilters, naturalCompare, siteSearchText, type SiteFilters,
+  formatCoords, matchesSiteFilters, naturalCompare, siteSearchText, SITE_ERRORS,
+  SITE_GOD_FIELDS, type SiteFilters,
 } from '../lib/sites';
+import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   ColumnsButton,
   ExportButton,
   FilterButton,
   exportCsv,
+  visibleColumnsFor,
   type ColumnDef,
   type FacetGroup,
   type FacetState,
@@ -53,9 +57,19 @@ const COLUMNS: ColumnDef[] = [
   { key: 'country', label: 'Country', width: '0.8fr', default: false },
   { key: 'dc_provider', label: 'DC provider', width: '1.2fr', default: false },
   { key: 'coords', label: 'Coords', width: '1.4fr', default: false },
+  { key: 'address_line1', label: 'Address line 1', width: '1.4fr', default: false, godOnly: true },
+  { key: 'address_line2', label: 'Address line 2', width: '1.4fr', default: false, godOnly: true },
+  { key: 'region', label: 'Region', width: '1fr', default: false, godOnly: true },
+  { key: 'postal_code', label: 'Postal code', width: '1fr', default: false, godOnly: true },
+  { key: 'timezone', label: 'Timezone', width: '1.2fr', default: false, godOnly: true },
+  { key: 'notes', label: 'Notes', width: '1.6fr', default: false, godOnly: true },
+  { key: 'latitude', label: 'Latitude', width: '0.9fr', default: false, godOnly: true },
+  { key: 'longitude', label: 'Longitude', width: '0.9fr', default: false, godOnly: true },
 ];
 
-type SortKey = 'name' | 'type' | 'status' | 'clients' | 'city' | 'country' | 'dc_provider' | 'coords';
+type SortKey = 'name' | 'type' | 'status' | 'clients' | 'city' | 'country' | 'dc_provider' | 'coords'
+  | 'address_line1' | 'address_line2' | 'region' | 'postal_code' | 'timezone' | 'notes'
+  | 'latitude' | 'longitude';
 
 const CSV_COLUMNS: [string, (s: SiteItem) => string][] = [
   ['ID', (s) => s.id],
@@ -91,10 +105,11 @@ function surveySummary(
 }
 
 export default function Sites() {
-  const { can, maxRank } = useAuth();
+  const { can, godMode, maxRank } = useAuth();
   const canAdd = can('sites', 'add');
   const canChange = can('sites', 'change');
   const canBulk = canAdd && maxRank >= 60;   // mirrors the API's GATE_BYPASS_RANK bar
+  const god = useGodEdit();
 
   const [sites, setSites] = useState<SiteItem[] | null>(null);
   const [types, setTypes] = useState<SiteLookup[]>([]);
@@ -137,6 +152,14 @@ export default function Sites() {
     void getSurveySchema().then(setSchema).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const godFields = useMemo(() => SITE_GOD_FIELDS({
+    types: () => types.map((t) => ({ value: t.key, label: t.label })),
+    statuses: () => statuses.map((s) => ({ value: s.key, label: s.label })),
+  }), [types, statuses]);
+  const godFieldFor = (column: string) => godFields.find((f) => f.column === column);
+  const replaceRow = (u: SiteItem) =>
+    setSites((xs) => xs?.map((x) => (x.id === u.id ? u : x)) ?? xs);
 
   const filters: SiteFilters = useMemo(() => ({
     type: [...(facets.type ?? [])],
@@ -183,6 +206,14 @@ export default function Sites() {
         case 'country': return s.country.toLowerCase();
         case 'dc_provider': return (s.dc_provider ?? '').toLowerCase();
         case 'coords': return formatCoords(s.latitude, s.longitude);
+        case 'address_line1': return (s.address_line1 ?? '').toLowerCase();
+        case 'address_line2': return (s.address_line2 ?? '').toLowerCase();
+        case 'region': return (s.region ?? '').toLowerCase();
+        case 'postal_code': return (s.postal_code ?? '').toLowerCase();
+        case 'timezone': return (s.timezone ?? '').toLowerCase();
+        case 'notes': return (s.notes ?? '').toLowerCase();
+        case 'latitude': return s.latitude === null ? '' : String(s.latitude);
+        case 'longitude': return s.longitude === null ? '' : String(s.longitude);
       }
     };
     return rows.sort((a, b) => naturalCompare(val(a), val(b)) * sortDir);
@@ -204,10 +235,19 @@ export default function Sites() {
   const caret = (key: SortKey) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
-  const shownCols = COLUMNS.filter((c) => visibleCols.has(c.key));
+  const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
   const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
 
   const cellFor = (s: SiteItem, key: string) => {
+    if (god.editing) {
+      const gf = godFieldFor(key);
+      if (gf) {
+        return (
+          <GodCell row={s} gf={gf} patch={updateSite} onRowSaved={replaceRow}
+                   errorMap={SITE_ERRORS} disabled={!canChange} />
+        );
+      }
+    }
     switch (key) {
       case 'type':
         return s.type_color
@@ -245,6 +285,22 @@ export default function Sites() {
         return <span className="cell-top">{s.dc_provider ?? '—'}</span>;
       case 'coords':
         return <span className="mono">{formatCoords(s.latitude, s.longitude)}</span>;
+      case 'address_line1':
+        return <span className="cell-top">{s.address_line1 ?? '—'}</span>;
+      case 'address_line2':
+        return <span className="cell-top">{s.address_line2 ?? '—'}</span>;
+      case 'region':
+        return <span className="cell-top">{s.region ?? '—'}</span>;
+      case 'postal_code':
+        return <span className="cell-top">{s.postal_code ?? '—'}</span>;
+      case 'timezone':
+        return <span className="cell-top">{s.timezone ?? '—'}</span>;
+      case 'notes':
+        return <span className="cell-top">{s.notes || '—'}</span>;
+      case 'latitude':
+        return <span className="mono">{s.latitude ?? '—'}</span>;
+      case 'longitude':
+        return <span className="mono">{s.longitude ?? '—'}</span>;
       default:
         return null;
     }
@@ -285,8 +341,9 @@ export default function Sites() {
           </div>
           <span className="result-count">{visible.length} of {sites?.length ?? 0} shown</span>
           <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
-          <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} />
+          <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
           <ExportButton onExport={() => exportCsv('sites', CSV_COLUMNS, visible)} />
+          <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canChange} />
           {canAdd && (
             <button className="btn-solid" onClick={() => setCreating(true)}>
               + New site
@@ -323,10 +380,19 @@ export default function Sites() {
                 <div className="row-main" style={grid}
                      onClick={() => setOpenId(open ? null : s.id)}>
                   <div className="cell cell-primary">
-                    <div className="pn">
-                      <b>{s.name}</b>
-                      <span>{s.code ?? '—'}</span>
-                    </div>
+                    {god.editing && godFieldFor('primary') && godFieldFor('primary2') ? (
+                      <div className="pn god-primary-edit">
+                        <GodCell row={s} gf={godFieldFor('primary')!} patch={updateSite}
+                                 onRowSaved={replaceRow} errorMap={SITE_ERRORS} disabled={!canChange} />
+                        <GodCell row={s} gf={godFieldFor('primary2')!} patch={updateSite}
+                                 onRowSaved={replaceRow} errorMap={SITE_ERRORS} disabled={!canChange} />
+                      </div>
+                    ) : (
+                      <div className="pn">
+                        <b>{s.name}</b>
+                        <span>{s.code ?? '—'}</span>
+                      </div>
+                    )}
                   </div>
                   {shownCols.map((c) => (
                     <div className="cell" key={c.key}>{cellFor(s, c.key)}</div>

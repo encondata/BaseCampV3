@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   afterSiteClientsFailure, EMPTY_SITE_FILTERS, formFromSite, formatCoords, matchesSiteFilters,
-  naturalCompare, needsSiteCreate, sameClientSet, SITE_CREATED_UNLINKED_MESSAGE, siteSearchText,
-  sitePayload, surveyChanged, surveyPayload, type SiteFormState,
+  naturalCompare, needsSiteCreate, sameClientSet, SITE_CREATED_UNLINKED_MESSAGE, SITE_ERRORS,
+  SITE_GOD_FIELDS, siteSearchText, sitePayload, surveyChanged, surveyPayload, type SiteFormState,
 } from './sites';
 import type { SiteItem, SurveySchema } from './api';
 
@@ -164,6 +164,62 @@ describe('afterSiteClientsFailure', () => {
   });
   it('still no message when nothing was created, reason or not', () => {
     expect(afterSiteClientsFailure(null, 'some reason')).toBeNull();
+  });
+});
+
+/* ── god-edit descriptors ──────────────────────────────────────────── */
+
+const SITE_WRITABLE_FIELDS = new Set([
+  'name', 'code', 'site_type', 'status', 'city', 'region', 'postal_code',
+  'country', 'address_line1', 'address_line2', 'timezone', 'dc_provider',
+  'notes', 'latitude', 'longitude',
+]);
+
+describe('SITE_GOD_FIELDS', () => {
+  const fields = SITE_GOD_FIELDS({
+    types: () => [{ value: 'datacenter', label: 'Data centre' }],
+    statuses: () => [{ value: 'active', label: 'Active' }],
+  });
+
+  it('only exposes fields on the writable allowlist', () => {
+    for (const f of fields) expect(SITE_WRITABLE_FIELDS.has(f.field)).toBe(true);
+    expect(fields.map((f) => f.field).sort()).toEqual([...SITE_WRITABLE_FIELDS].sort());
+  });
+
+  it('every fromRow round-trips a sample row', () => {
+    const expected: Record<string, string> = {
+      primary: 'Acme DC1', primary2: 'ADC1', type: 'datacenter', status: 'active',
+      city: 'Austin', country: 'US', dc_provider: 'Switch',
+      address_line1: '1 Way', address_line2: '', region: 'TX', postal_code: '78701',
+      timezone: 'America/Chicago', notes: '', latitude: '30.2672', longitude: '-97.7431',
+    };
+    expect(fields.map((f) => f.column).sort()).toEqual(Object.keys(expected).sort());
+    for (const f of fields) expect(f.fromRow(site)).toBe(expected[f.column]);
+  });
+
+  it('latitude/longitude use numberToPatch: blank clears, non-numeric throws', () => {
+    const lat = fields.find((f) => f.column === 'latitude')!;
+    const lon = fields.find((f) => f.column === 'longitude')!;
+    expect(lat.toPatch?.('30.5')).toBe(30.5);
+    expect(lat.toPatch?.('')).toBeNull();
+    expect(() => lat.toPatch?.('abc')).toThrow('not_a_number');
+    expect(lon.toPatch?.('-97.5')).toBe(-97.5);
+    expect(lon.toPatch?.('')).toBeNull();
+  });
+
+  it('a null coordinate round-trips to an empty string, not "null"', () => {
+    const noCoords = { ...site, latitude: null, longitude: null };
+    const lat = fields.find((f) => f.column === 'latitude')!;
+    const lon = fields.find((f) => f.column === 'longitude')!;
+    expect(lat.fromRow(noCoords)).toBe('');
+    expect(lon.fromRow(noCoords)).toBe('');
+  });
+});
+
+describe('SITE_ERRORS', () => {
+  it('is a non-empty error map covering the invalid_coordinates case', () => {
+    expect(SITE_ERRORS.invalid_coordinates).toBeTruthy();
+    expect(SITE_ERRORS.forbidden).toBeTruthy();
   });
 });
 

@@ -32,6 +32,7 @@ import {
   needsSiteCreate,
   sameClientSet,
   SITE_CREATED_UNLINKED_MESSAGE,
+  SITE_ERRORS,
   sitePayload,
   surveyChanged,
   surveyPayload,
@@ -53,20 +54,6 @@ interface Props {
   onClose: () => void;
   onSaved: () => Promise<void> | void;   // parent refetches
 }
-
-const SITE_ERRORS: Record<string, string> = {
-  invalid_coordinates: 'Latitude and longitude must both be set, and within range.',
-  unknown_site_type: 'That site type no longer exists — pick another.',
-  unknown_status: 'That status no longer exists — pick another.',
-  unknown_survey_field: 'A survey field is no longer valid — reload and retry.',
-  invalid_survey_value: 'A survey answer has the wrong format.',
-  client_not_found: 'One of the selected clients no longer exists.',
-  site_not_found: 'This site no longer exists.',
-  forbidden: 'You do not have permission to change sites.',
-  name_required: 'Name is required.',
-  status_required: 'Status is required.',
-  country_required: 'Country is required.',
-};
 
 function mapError(err: unknown, fallback: string): string {
   return err instanceof ApiError ? (SITE_ERRORS[err.code] ?? fallback) : 'Network error.';

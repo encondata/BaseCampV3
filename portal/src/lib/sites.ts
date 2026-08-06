@@ -1,7 +1,23 @@
 /** Pure helpers for the Sites page — filtering, search text, and the
  *  payload builders. Kept out of the component so they're unit-testable. */
 
+import type { ComboOption } from '../components/ComboBox';
 import type { SiteItem, SurveySchema } from './api';
+import { numberToPatch, type GodField } from './godEdit';
+
+export const SITE_ERRORS: Record<string, string> = {
+  invalid_coordinates: 'Latitude and longitude must both be set, and within range.',
+  unknown_site_type: 'That site type no longer exists — pick another.',
+  unknown_status: 'That status no longer exists — pick another.',
+  unknown_survey_field: 'A survey field is no longer valid — reload and retry.',
+  invalid_survey_value: 'A survey answer has the wrong format.',
+  client_not_found: 'One of the selected clients no longer exists.',
+  site_not_found: 'This site no longer exists.',
+  forbidden: 'You do not have permission to change sites.',
+  name_required: 'Name is required.',
+  status_required: 'Status is required.',
+  country_required: 'Country is required.',
+};
 
 export interface SiteFilters {
   type: string[];
@@ -187,4 +203,55 @@ const COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'bas
 
 export function naturalCompare(a: string, b: string): number {
   return COLLATOR.compare(a, b);
+}
+
+/* ── god-edit descriptors ──────────────────────────────────────────
+ * Factory, not a static table: the type/status combos come from the
+ * page's own loaded lookup lists, so the page builds the descriptor
+ * table from its current state via these getters, memoized on those
+ * dependencies. See lib/godEdit.tsx for the GodField contract. The
+ * `clients` rollup and `coords` display column stay read-only — no
+ * descriptor here, so god-editing never touches them. */
+
+export interface SiteGodLookups {
+  types: () => ComboOption[];
+  statuses: () => ComboOption[];
+}
+
+const numStr = (v: number | null): string => (v === null ? '' : String(v));
+
+export function SITE_GOD_FIELDS(lookups: SiteGodLookups): GodField<SiteItem>[] {
+  return [
+    { column: 'primary', field: 'name', kind: 'text',
+      fromRow: (s) => s.name },
+    { column: 'primary2', field: 'code', kind: 'text',
+      fromRow: (s) => s.code ?? '' },
+    { column: 'type', field: 'site_type', kind: 'combo',
+      fromRow: (s) => s.site_type ?? '', options: lookups.types },
+    { column: 'status', field: 'status', kind: 'combo',
+      fromRow: (s) => s.status, options: lookups.statuses },
+    { column: 'city', field: 'city', kind: 'text',
+      fromRow: (s) => s.city ?? '' },
+    { column: 'country', field: 'country', kind: 'text',
+      fromRow: (s) => s.country },
+    { column: 'dc_provider', field: 'dc_provider', kind: 'text',
+      fromRow: (s) => s.dc_provider ?? '' },
+    // God-only columns: hidden from the column picker until god mode is on.
+    { column: 'address_line1', field: 'address_line1', kind: 'text',
+      fromRow: (s) => s.address_line1 ?? '' },
+    { column: 'address_line2', field: 'address_line2', kind: 'text',
+      fromRow: (s) => s.address_line2 ?? '' },
+    { column: 'region', field: 'region', kind: 'text',
+      fromRow: (s) => s.region ?? '' },
+    { column: 'postal_code', field: 'postal_code', kind: 'text',
+      fromRow: (s) => s.postal_code ?? '' },
+    { column: 'timezone', field: 'timezone', kind: 'text',
+      fromRow: (s) => s.timezone ?? '' },
+    { column: 'notes', field: 'notes', kind: 'text',
+      fromRow: (s) => s.notes ?? '' },
+    { column: 'latitude', field: 'latitude', kind: 'number',
+      fromRow: (s) => numStr(s.latitude), toPatch: numberToPatch },
+    { column: 'longitude', field: 'longitude', kind: 'number',
+      fromRow: (s) => numStr(s.longitude), toPatch: numberToPatch },
+  ];
 }
