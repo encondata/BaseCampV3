@@ -84,8 +84,10 @@ async def _reference_data(db: AsyncSession) -> dict:
         return out
 
     names = {n.lower() for n in await db.scalars(select(Container.name))}
+    rfids = {t.lower() for t in await db.scalars(
+        select(Container.rfid_tag).where(Container.rfid_tag.is_not(None)))}
     return {"sites": sites, "statuses": vocab("container"),
-            "types": vocab("container_type"), "names": names}
+            "types": vocab("container_type"), "names": names, "rfids": rfids}
 
 
 def _resolve(row: dict, refs: dict) -> tuple[dict, list[str]]:
@@ -118,6 +120,8 @@ def _resolve(row: dict, refs: dict) -> tuple[dict, list[str]]:
             errors.append("unknown_site")
     if raw := str(row.get("rfid_tag", "")).strip():
         data["rfid_tag"] = raw
+        if raw.lower() in refs["rfids"]:
+            errors.append("duplicate_rfid_tag")
     if raw := str(row.get("location_detail", "")).strip():
         data["location_detail"] = raw
     return data, errors
@@ -132,12 +136,17 @@ async def preview_rows(db: AsyncSession,
     refs = await _reference_data(db)
     results = []
     seen: set[str] = set()
+    seen_rfids: set[str] = set()
     for row_no, row in numbered:
         data, errors = _resolve(row, refs)
         key = data["name"].lower()
         if key and key in seen:
             errors.append("duplicate_name")
         seen.add(key)
+        tag_key = data.get("rfid_tag", "").lower()
+        if tag_key and tag_key in seen_rfids:
+            errors.append("duplicate_rfid_tag")
+        seen_rfids.add(tag_key)
         results.append({
             "row": row_no,
             "action": "error" if errors else "create",
@@ -156,12 +165,17 @@ async def commit_rows(db: AsyncSession, actor_person_id: uuid.UUID,
     refs = await _reference_data(db)
     resolved = []
     seen: set[str] = set()
+    seen_rfids: set[str] = set()
     for row_no, row in numbered:
         data, errors = _resolve(row, refs)
         key = data["name"].lower()
         if key and key in seen:
             errors.append("duplicate_name")
         seen.add(key)
+        tag_key = data.get("rfid_tag", "").lower()
+        if tag_key and tag_key in seen_rfids:
+            errors.append("duplicate_rfid_tag")
+        seen_rfids.add(tag_key)
         if errors:
             raise BulkImportError("rows_invalid")
         resolved.append(data)

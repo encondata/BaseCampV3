@@ -35,6 +35,26 @@ async def test_preview_resolves_and_errors(db, seeded_user):
     assert results[3]["errors"] == ["duplicate_name"]
 
 
+async def test_preview_rejects_duplicate_rfid_within_file(db, seeded_user):
+    results = await bulk.preview_rows(db, _rows(
+        {"name": "Tag A", "rfid_tag": "RF-100"},
+        {"name": "Tag B", "rfid_tag": "rf-100"},
+    ))
+    assert [r["action"] for r in results] == ["create", "error"]
+    assert results[1]["errors"] == ["duplicate_rfid_tag"]
+
+
+async def test_preview_rejects_rfid_matching_existing_container(db, seeded_user):
+    db.add(Container(name="Existing Tagged", rfid_tag="RF-200"))
+    await db.commit()
+
+    results = await bulk.preview_rows(db, _rows(
+        {"name": "New Crate", "rfid_tag": "rf-200"},
+    ))
+    assert results[0]["action"] == "error"
+    assert results[0]["errors"] == ["duplicate_rfid_tag"]
+
+
 async def test_commit_creates_only_valid_rows(db, seeded_user, client):
     hdrs = await login(client)
     db.add(Site(name="DC-West"))
