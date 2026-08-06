@@ -5,7 +5,7 @@
  * Blacklisting kills login access (leaving blacklist restores it).
  */
 
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -13,22 +13,22 @@ import AvatarUpload from '../components/AvatarUpload';
 import ComboBox from '../components/ComboBox';
 import { apiFetch, listWorkerStatuses, updateWorkerProfile, type StatusValue } from '../lib/api';
 import { initialOpenId } from '../lib/auditFormat';
+import {
+  ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
+  usePersistentListState,
+} from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate } from '../lib/format';
 import {
   ColumnsButton,
   ExportButton,
-  FilterButton,
   exportCsv,
-  passesFacets,
   visibleColumnsFor,
   type ColumnDef,
-  type FacetGroup,
-  type FacetState,
 } from '../lib/listTools';
 import {
-  applyWorkerPatch, WORKER_ERRORS, WORKER_GOD_FIELDS,
+  applyWorkerPatch, WORKER_ERRORS, WORKER_GOD_FIELDS, workerCellText, workerSearchText,
   type PartnerRef, type WorkerItem,
 } from '../lib/workers';
 import '../styles/directory.css';
@@ -67,8 +67,6 @@ interface Cert {
 // needs it — and the CHECK would still name this literal.
 const BLACKLIST = 'blacklist';
 
-type SortKey = 'name' | 'trade' | 'level' | 'partner' | 'status' | 'certs' | 'contact';
-
 const COLUMNS: ColumnDef[] = [
   { key: 'trade', label: 'Trade', width: '1.3fr', default: true },
   { key: 'level', label: 'Level', width: '1.2fr', default: true },
@@ -77,6 +75,32 @@ const COLUMNS: ColumnDef[] = [
   { key: 'certs', label: 'Certs', width: '0.9fr', default: false },
   { key: 'contact', label: 'Contact', width: '1.6fr', default: false },
 ];
+
+// Every column the page can offer plus the 'primary' pseudo-column (the
+// always-shown name+contact cell). No godOnly columns and no archived
+// concept on this page.
+const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'primary']);
+const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/** Sort value per column key — deliberately separate from `workerCellText`:
+ *  that accessor's job is display/filter text ("N expired" vs. the bare
+ *  count, "unleveled", the level+title combo), which would sort wrong
+ *  (certs would sort as text, not by count). This stays raw so numeric
+ *  columns order by magnitude and the rest order the way a user expects. */
+function sortValueFor(w: WorkerItem, key: string): string | number {
+  switch (key) {
+    case 'primary': return w.display_name.toLowerCase();
+    case 'trade': return (w.trade ?? '').toLowerCase();
+    case 'level': return w.level ?? '';
+    case 'partner': return w.partner?.name.toLowerCase() ?? '';
+    // the column shows the label, so sorting by the key would strand a
+    // status whose key and label disagree
+    case 'status': return w.status_label.toLowerCase();
+    case 'certs': return w.cert_count;
+    case 'contact': return (w.contact_email ?? '').toLowerCase();
+    default: return '';
+  }
+}
 
 const CSV_COLUMNS: [string, (w: WorkerItem) => string][] = [
   ['Person ID', (w) => w.person_id],
@@ -114,34 +138,30 @@ export default function Workers() {
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [sortKey, setSortKey] = useState<SortKey>('name');
-  const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
+  // See Assets.tsx for the full rationale — the id of the most recent
+  // deep-link arrival, as opposed to a plain row click (which never touches
+  // this ref), so an unrelated later filter edit can't be mistaken for a
+  // fresh arrival and re-trigger the once-per-id clearFilters() below.
+  const deepLinkTarget = useRef<string | null>(initialOpenId());
+  const focusOpenId = (id: string | null) => {
+    deepLinkTarget.current = id;
+    clearedDeepLink.current = null; // re-arm: a fresh arrival gets its own one-shot clear
+    setOpenId(id);
+  };
   useRecordFocus(workers, (w) => w.person_id, (w) => w.display_name,
-                 setOpenId, setQuery);
-  const [facets, setFacets] = useState<FacetState>({});
-  const [visibleCols, setVisibleCols] = useState<Set<string>>(
-    () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));
+                 focusOpenId, setQuery);
+  const clearedDeepLink = useRef<string | null>(null);
+  const {
+    visibleCols, setVisibleCols,
+    sortKey, sortDir, setSort, toggleSort,
+    filters, setFilter, clearFilters,
+  } = usePersistentListState(
+    'workers', { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 }, ALL_COLUMN_KEYS,
+  );
 
-  const facetGroups = useMemo<FacetGroup[]>(() => {
-    const partnerNames = new Map<string, string>();
-    for (const w of workers ?? []) {
-      if (w.partner) partnerNames.set(w.partner.id, w.partner.name);
-    }
-    return [
-      { key: 'level', title: 'Level', options:
-        levels.map((l) => ({ value: l.level, label: `${l.level} · ${l.title}` })) },
-      { key: 'status', title: 'Status', options:
-        statuses.map((s) => ({ value: s.key, label: s.label })) },
-      { key: 'partner', title: 'Partner', options: [
-        { value: '__direct__', label: 'Direct hire' },
-        ...[...partnerNames].map(([value, label]) => ({ value, label })),
-      ] },
-      { key: 'certs', title: 'Compliance', options: [
-        { value: 'expired', label: 'Has expired certs' },
-      ] },
-    ];
-  }, [workers, levels, statuses]);
+  const cellText = useMemo(() => (w: WorkerItem, colKey: string) =>
+    workerCellText(w, colKey, levels), [levels]);
 
   const load = async () => {
     const resp = await apiFetch('/workers');
@@ -187,47 +207,42 @@ export default function Workers() {
     if (!workers) return [];
     const q = query.trim().toLowerCase();
     const rows = workers.filter((w) => {
-      if (!passesFacets(facets, (g) =>
-        g === 'level' ? (w.level ? [w.level] : [])
-          : g === 'status' ? [w.status]
-            : g === 'partner' ? [w.partner?.id ?? '__direct__']
-              : g === 'certs' ? (w.certs_expired > 0 ? ['expired'] : [])
-                : [])) return false;
+      if (!passesColumnFilters(w, filters, cellText)) return false;
       if (!q) return true;
-      const hay = `${w.display_name} ${w.trade ?? ''} ${w.level ?? ''} ` +
-        `${w.partner?.name ?? 'direct'} ${w.contact_email ?? ''}`.toLowerCase();
-      return hay.includes(q);
+      return workerSearchText(w, levels).includes(q);
     });
-    const val = (w: WorkerItem): string | number => {
-      switch (sortKey) {
-        case 'name': return w.display_name.toLowerCase();
-        case 'trade': return (w.trade ?? '').toLowerCase();
-        case 'level': return w.level ?? '';
-        case 'partner': return w.partner?.name.toLowerCase() ?? '';
-        // the column shows the label, so sorting by the key would strand a
-        // status whose key and label disagree
-        case 'status': return w.status_label.toLowerCase();
-        case 'certs': return w.cert_count;
-        case 'contact': return (w.contact_email ?? '').toLowerCase();
-      }
-    };
     return rows.sort((a, b) => {
-      const va = val(a), vb = val(b);
+      const va = sortValueFor(a, sortKey), vb = sortValueFor(b, sortKey);
       return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
     });
-  }, [workers, query, facets, sortKey, sortDir]);
+  }, [workers, filters, cellText, levels, query, sortKey, sortDir]);
 
+  // Auto-close the open row when it drops out of `visible` — EXCEPT the one
+  // case where it just arrived via a deep link and the reason it's missing
+  // is a persisted column filter: then clear the filters instead. See
+  // Assets.tsx for the full rationale.
   useEffect(() => {
-    if (workers && openId && !visible.some((w) => w.person_id === openId)) {
-      setOpenId(null);
+    if (!workers || !openId || visible.some((w) => w.person_id === openId)) return;
+    if (openId === deepLinkTarget.current && clearedDeepLink.current !== openId) {
+      clearedDeepLink.current = openId;
+      const target = workers.find((w) => w.person_id === openId);
+      if (target && !passesColumnFilters(target, filters, cellText)) {
+        clearFilters();
+        return;
+      }
     }
-  }, [workers, visible, openId]);
+    setOpenId(null);
+  }, [workers, visible, openId, filters, cellText, clearFilters]);
 
-  const toggleSort = (key: SortKey) => {
-    if (key === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
-    else { setSortKey(key); setSortDir(1); }
-  };
-  const caret = (key: SortKey) =>
+  // Release the deep-link guard once the target row is first confirmed
+  // visible — see Assets.tsx for the full rationale.
+  useEffect(() => {
+    if (deepLinkTarget.current && visible.some((w) => w.person_id === deepLinkTarget.current)) {
+      deepLinkTarget.current = null;
+    }
+  }, [visible]);
+
+  const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const canManage = can('workers', 'change');
@@ -292,7 +307,7 @@ export default function Workers() {
                    onChange={(e) => setQuery(e.target.value)} />
           </div>
           <span className="result-count">{visible.length} of {workers?.length ?? 0} shown</span>
-          <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
+          <FilterSummaryChip filters={filters} onClear={clearFilters} />
           <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
           <ExportButton onExport={() => exportCsv('workers', CSV_COLUMNS, visible)} />
           <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canManage} />
@@ -307,12 +322,29 @@ export default function Workers() {
 
       <div className="dir-list">
         <div className="list-head" style={grid}>
-          <button className="sortable" onClick={() => toggleSort('name')}>Name {caret('name')}</button>
-          {shownCols.map((c) => (
-            <button key={c.key} className="sortable"
-                    onClick={() => toggleSort(c.key as SortKey)}>
-              {c.label} {caret(c.key as SortKey)}
+          <span className="col-head">
+            <button className="sortable" onClick={() => toggleSort('primary')}>
+              Name {caret('primary')}
             </button>
+            <ColumnMenu colKey="primary" label="Name"
+                        allRows={workers ?? []} filters={filters}
+                        text={cellText}
+                        filter={filters.primary} onFilter={setFilter}
+                        sortDir={sortKey === 'primary' ? sortDir : null}
+                        onSort={(dir) => setSort('primary', dir)} />
+          </span>
+          {shownCols.map((c) => (
+            <span key={c.key} className="col-head">
+              <button className="sortable" onClick={() => toggleSort(c.key)}>
+                {c.label} {caret(c.key)}
+              </button>
+              <ColumnMenu colKey={c.key} label={c.label}
+                          allRows={workers ?? []} filters={filters}
+                          text={cellText}
+                          filter={filters[c.key]} onFilter={setFilter}
+                          sortDir={sortKey === c.key ? sortDir : null}
+                          onSort={(dir) => setSort(c.key, dir)} />
+            </span>
           ))}
           <span />
         </div>
@@ -321,6 +353,7 @@ export default function Workers() {
         {!error && workers && visible.length === 0 && (
           <div className="dir-empty">
             <b>No matches</b>Grant someone the worker role via Users → Manage roles.
+            <EmptyClearFilters filters={filters} onClear={clearFilters} />
           </div>
         )}
 
@@ -329,7 +362,7 @@ export default function Workers() {
           return (
             <div key={w.person_id} className={`dir-row ${open ? 'open' : ''}`}>
               <div className="row-main" style={grid}
-                   onClick={() => setOpenId(open ? null : w.person_id)}>
+                   onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : w.person_id); }}>
                 {/* Primary cell has no god-edit descriptor: display_name comes from
                     the Person record and is edited via PUT /users/{id}/profile — a
                     different endpoint than the worker-profile PATCH this page's

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ORG_ERRORS, ORG_GOD_FIELDS, type OrgItem } from './orgs';
+import { effectiveStatus, ORG_ERRORS, ORG_GOD_FIELDS, orgCellText, type OrgItem } from './orgs';
 
 const org: OrgItem = {
   id: 'o1', name: 'Acme Co', code: 'ACME',
@@ -70,6 +70,69 @@ describe('ORG_GOD_FIELDS', () => {
     for (const col of ['type', 'manager', 'contacts', 'created', 'archived']) {
       expect(fields.some((f) => f.column === col)).toBe(false);
     }
+  });
+});
+
+describe('effectiveStatus', () => {
+  it('reads the raw status when not archived', () => {
+    expect(effectiveStatus(org)).toBe('active');
+  });
+  it('archived_at overrides the raw status', () => {
+    expect(effectiveStatus({ ...org, archived_at: '2026-01-01T00:00:00Z' })).toBe('archived');
+  });
+});
+
+describe('orgCellText', () => {
+  const blank: OrgItem = {
+    ...org, code: null, city: null, region: null, website: null, phone: null,
+    postal_code: null, address_line1: null, address_line2: null, notes: null,
+    account_manager: null, partner_types: [],
+  };
+
+  it('primary combines name with a code · city/region secondary line', () => {
+    expect(orgCellText(org, 'primary')).toBe('Acme Co ACME · Austin, TX');
+    expect(orgCellText(blank, 'primary')).toBe('Acme Co');
+  });
+
+  it('type joins the partner-types labels, dashing when empty', () => {
+    expect(orgCellText(org, 'type')).toBe('Staffing');
+    expect(orgCellText({ ...org, partner_types: ['staffing', 'other'] }, 'type'))
+      .toBe('Staffing, Other');
+    expect(orgCellText(blank, 'type')).toBe('—');
+  });
+
+  it('tier reads the raw key, unlabeled — matching the cell', () => {
+    expect(orgCellText(org, 'tier')).toBe('preferred');
+  });
+
+  it('status reads the STATUS_META label through effectiveStatus, so archived is selectable', () => {
+    expect(orgCellText(org, 'status')).toBe('Active');
+    expect(orgCellText({ ...org, archived_at: '2026-01-01T00:00:00Z' }, 'status')).toBe('Archived');
+  });
+
+  it('manager/website/phone/notes dash when unset', () => {
+    expect(orgCellText(org, 'manager')).toBe('Jamie Rivera');
+    expect(orgCellText(blank, 'manager')).toBe('—');
+    expect(orgCellText(blank, 'website')).toBe('—');
+    expect(orgCellText(blank, 'phone')).toBe('—');
+    expect(orgCellText(blank, 'notes')).toBe('—');
+  });
+
+  it('contacts shows the bare rollup count', () => {
+    expect(orgCellText(org, 'contacts')).toBe('3');
+  });
+
+  it('location joins city/region, dashing when both unset', () => {
+    expect(orgCellText(org, 'location')).toBe('Austin, TX');
+    expect(orgCellText(blank, 'location')).toBe('—');
+  });
+
+  it('country reads straight through (never blank)', () => {
+    expect(orgCellText(org, 'country')).toBe('US');
+  });
+
+  it('unknown column keys return empty string', () => {
+    expect(orgCellText(org, 'nonsense')).toBe('');
   });
 });
 

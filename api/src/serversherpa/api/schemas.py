@@ -67,6 +67,11 @@ class UiPreferences(BaseModel):
     density: Literal["comfortable", "compact"] = "comfortable"
     motion: bool = True
     notif: NotifPrefs = NotifPrefs()
+    # Per-page list UI state (visible columns, sort, column filters), keyed
+    # by page — free-form so the portal can evolve the shape without an API
+    # change. Same PUT endpoint as every other preference; the portal is
+    # responsible for merging so one page's save never clobbers another's.
+    list_prefs: dict = {}
 
     @field_validator("accent")
     @classmethod

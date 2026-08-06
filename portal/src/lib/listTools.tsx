@@ -48,13 +48,9 @@ export function visibleColumnsFor(
 
 /* ── advanced filters (facets) ──────────────────────────────────── */
 
-export interface FacetOption { value: string; label: string }
+interface FacetOption { value: string; label: string }
 export interface FacetGroup { key: string; title: string; options: FacetOption[] }
 export type FacetState = Record<string, Set<string>>;
-
-export function facetCount(state: FacetState): number {
-  return Object.values(state).reduce((n, s) => n + s.size, 0);
-}
 
 const CHECK = (
   <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2.4"
@@ -80,7 +76,7 @@ export function FilterButton({ groups, state, onChange }: {
 }) {
   const [open, setOpen] = useState(false);
   const ref = useOutsideClose<HTMLDivElement>(() => setOpen(false));
-  const active = facetCount(state);
+  const active = Object.values(state).reduce((n, s) => n + s.size, 0);
 
   const toggle = (groupKey: string, value: string) => {
     const set = new Set(state[groupKey] ?? []);
@@ -142,6 +138,18 @@ export function passesFacets(
     if (!rowVals.some((v) => selected.has(v))) return false;
   }
   return true;
+}
+
+/* ── column filters (Excel-style per-header menus) ──────────────────
+ * Types + the pure count live here alongside facetCount (their toolbar-
+ * chip cousin); the menu UI, matcher, and persistence hook live in
+ * lib/columnMenu.tsx, which re-exports these two for one-stop importing. */
+
+export interface ColumnFilter { text?: string; values?: string[] }
+export type ColumnFilters = Record<string, ColumnFilter>;
+
+export function activeFilterCount(filters: ColumnFilters): number {
+  return Object.keys(filters).length;
 }
 
 export function ColumnsButton({ columns, visible, onChange, godMode }: {

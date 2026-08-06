@@ -23,22 +23,42 @@ export function distinctFunctions(links: ExternalLinkItem[]): string[] {
   return [...new Set(links.flatMap((l) => l.functions))];
 }
 
-/** Row values for a given facet group key — feeds the shared `passesFacets`. */
-export function externalFacetValues(groupKey: string, person: ExternalPersonItem): string[] {
-  switch (groupKey) {
-    case 'orgType': return person.links.map((l) => l.kind);
-    case 'org': return person.links.map((l) => orgKey(l.kind, l.org_id));
-    case 'tier': return person.links.map((l) => l.tier);
-    case 'function': return distinctFunctions(person.links);
-    case 'login': return [person.login_status];
-    default: return [];
-  }
-}
+/** Portal-login label/style — moved out of External.tsx so
+ *  externalCellText (below) can read the same label the chip renders. */
+export const LOGIN_META: Record<string, { label: string; cls: string }> = {
+  active: { label: 'Active', cls: 'c-green' },
+  disabled: { label: 'Disabled', cls: 'c-red' },
+  none: { label: 'No login', cls: 'tag' },
+};
 
 export function externalSearchHay(person: ExternalPersonItem): string {
   return (`${person.display_name} ${person.email ?? ''} ${person.phone ?? ''} ` +
     `${person.links.map((l) => l.org_name).join(' ')} ${distinctTitles(person.links).join(' ')} ` +
     `${distinctFunctions(person.links).join(' ')}`).toLowerCase();
+}
+
+/** Column-menu accessor (lib/columnMenu.tsx's `CellText<T>`) — one row's
+ *  display text for a given column key. Mirrors exactly what the page's own
+ *  cell renderer shows: 'orgs' joins each link's "org · tier" the way its
+ *  chips do, and 'login' reads the same LOGIN_META label the chip shows.
+ *  This replaces the page's old orgType/org/tier/function/login facets —
+ *  filtering the 'orgs' column's joined text covers org name, kind (via
+ *  the separate 'type' column) and tier all at once; an exact-value
+ *  checkbox can't multi-select out of a joined cell, but typing still
+ *  substring-matches (same rollup-column tradeoff Sites made for its
+ *  'clients' column). 'primary' is the always-shown name+contact cell. */
+export function externalCellText(p: ExternalPersonItem, colKey: string): string {
+  switch (colKey) {
+    case 'primary': return `${p.display_name} ${p.email ?? p.phone ?? ''}`.trim();
+    case 'orgs': return p.links.length ? p.links.map((l) => `${l.org_name} · ${l.tier}`).join(', ') : '—';
+    case 'type': return typeLabel(p.links);
+    case 'title': return distinctTitles(p.links).join(', ') || '—';
+    case 'functions': return distinctFunctions(p.links).join(', ') || '—';
+    case 'email': return p.email ?? '—';
+    case 'phone': return p.phone ?? '—';
+    case 'login': return LOGIN_META[p.login_status]?.label ?? p.login_status;
+    default: return '';
+  }
 }
 
 /** A ComboBox that must pick from two org tables at once (clients + partners)

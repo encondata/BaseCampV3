@@ -4,7 +4,7 @@
  * CSV Export · Add person (create modal). Search lives in the topbar.
  */
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -17,19 +17,22 @@ import {
 import { adminUpdateProfileRequest, apiFetch, ApiError } from '../lib/api';
 import { canTouchRank } from '../lib/access';
 import { initialOpenId } from '../lib/auditFormat';
+import {
+  ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
+  usePersistentListState,
+} from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
-import { applyUserPatch, USER_ERRORS, USER_GOD_FIELDS, type UserItem } from '../lib/users';
+import {
+  applyUserPatch, STATUS_META, USER_ERRORS, USER_GOD_FIELDS, userCellText, userSearchText,
+  type UserItem,
+} from '../lib/users';
 import { avatarGradient, initials, longDate, relativeTime } from '../lib/format';
+import { visibleColumnsFor, type ColumnDef } from '../lib/listTools';
+import { naturalCompare } from '../lib/sites';
 import '../styles/directory.css';
 import '../styles/profile.css';   /* .pf-form, .btn-solid */
 import '../styles/settings.css';  /* .set-note */
-
-const STATUS_META: Record<string, { label: string; cls: string }> = {
-  active: { label: 'Active', cls: 'c-green' },
-  locked: { label: 'Locked', cls: 'c-amber' },
-  disabled: { label: 'Disabled', cls: 'c-red' },
-};
 
 const ROLE_CLS: Record<string, string> = {
   admin: 'c-amber', staff: 'c-blue', worker: 'c-green',
@@ -45,7 +48,7 @@ const PILLS = [
 ];
 
 /* column registry: name is fixed-first, chevron fixed-last */
-const COLUMNS = [
+const COLUMNS: ColumnDef[] = [
   { key: 'roles', label: 'Roles', width: '1.4fr', default: true },
   { key: 'status', label: 'Status', width: '1fr', default: true },
   { key: 'job_title', label: 'Job title', width: '1.3fr', default: false },
@@ -53,10 +56,36 @@ const COLUMNS = [
   { key: 'phone', label: 'Phone', width: '1.2fr', default: false },
   { key: 'last_login', label: 'Last sign-in', width: '1.1fr', default: true },
   { key: 'created', label: 'Created', width: '1.1fr', default: false },
-] as const;
+];
 
-type ColKey = (typeof COLUMNS)[number]['key'];
-type SortKey = 'name' | ColKey;
+// Every column the page can offer plus 'primary' (the always-shown
+// name+email cell) and 'must_change' — a pseudo-column, no COLUMNS entry,
+// no visible header label, behind the trailing chevron header's ColumnMenu
+// (mirrors Assets' 'archived' pseudo-column). It's how the "Password
+// change required" toggle that used to live in the bespoke Filters
+// popover survives as a persisted column filter.
+const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'primary', 'must_change']);
+const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/** Sort value per column key — deliberately separate from `userCellText`:
+ *  that accessor's job is display/filter text (relative time, the joined
+ *  role list), which would sort wrong (relative time is lexicographic
+ *  garbage, and a joined role list sorts by first-role text rather than a
+ *  stable key). This stays raw so date columns sort chronologically. */
+function sortValueFor(u: UserItem, key: string): string {
+  switch (key) {
+    case 'primary': return u.display_name.toLowerCase();
+    case 'roles': return u.roles.join(',');
+    case 'status': return u.status;
+    case 'job_title': return (u.job_title ?? '').toLowerCase();
+    case 'contact_email': return u.contact_email ?? '';
+    case 'phone': return u.phone ?? '';
+    case 'last_login': return u.last_login_at ?? '';
+    case 'created': return u.account_created_at ?? '';
+    case 'must_change': return u.must_change_password ? '1' : '0';
+    default: return '';
+  }
+}
 
 const CSV_COLUMNS: [string, (u: UserItem) => string][] = [
   ['Person ID', (u) => u.person_id],
@@ -88,11 +117,6 @@ function exportCsv(rows: UserItem[]): void {
   URL.revokeObjectURL(a.href);
 }
 
-interface Facets {
-  roles: Set<string>;
-  mustChange: boolean;
-}
-
 type ManageAction =
   | { kind: 'edit' | 'reset' | 'roles'; user: UserItem }
   | { kind: 'state'; action: 'disable' | 'enable' | 'unlock'; user: UserItem };
@@ -108,15 +132,33 @@ export default function Users() {
   const [users, setUsers] = useState<UserItem[] | null>(null);
   const [error, setError] = useState('');
   const [pill, setPill] = useState('all');
-  const [facets, setFacets] = useState<Facets>({ roles: new Set(), mustChange: false });
-  const [visibleCols, setVisibleCols] = useState<Set<ColKey>>(
-    new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));
-  const [sortKey, setSortKey] = useState<SortKey>('name');
-  const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
+  // See Assets.tsx for the full rationale — the id of the most recent
+  // deep-link arrival, as opposed to a plain row click (which never touches
+  // this ref), so an unrelated later filter edit can't be mistaken for a
+  // fresh arrival and re-trigger the once-per-id clearFilters() below.
+  const deepLinkTarget = useRef<string | null>(initialOpenId());
+  const focusOpenId = (id: string | null) => {
+    deepLinkTarget.current = id;
+    clearedDeepLink.current = null; // re-arm: a fresh arrival gets its own one-shot clear
+    setOpenId(id);
+  };
   useRecordFocus(users, (u) => u.person_id, (u) => u.display_name,
-                 setOpenId, setQuery);
-  const [pop, setPop] = useState<'filters' | 'columns' | null>(null);
+                 focusOpenId, setQuery);
+  const clearedDeepLink = useRef<string | null>(null);
+  const {
+    visibleCols, setVisibleCols,
+    sortKey, sortDir, setSort, toggleSort,
+    filters, setFilter, clearFilters,
+  } = usePersistentListState(
+    'users', { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 }, ALL_COLUMN_KEYS,
+  );
+  // Bespoke columns picker (kept — see recipe) — its UI shell stays custom,
+  // just backed by the hook's visibleCols/setVisibleCols instead of local
+  // state. The old 'filters' popover is gone: role filtering now lives on
+  // the Roles column's ColumnMenu, and "must change password" on the
+  // must_change pseudo-column behind the chevron header.
+  const [pop, setPop] = useState<'columns' | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
   const load = async () => {
@@ -184,59 +226,54 @@ export default function Users() {
     return c;
   }, [users]);
 
-  const activeFacetCount = facets.roles.size + (facets.mustChange ? 1 : 0);
-
   const visible = useMemo(() => {
     if (!users) return [];
     const q = query.trim().toLowerCase();
     const rows = users.filter((u) => {
       if (pill !== 'all' && u.status !== pill) return false;
-      if (facets.roles.size > 0 && !u.roles.some((r) => facets.roles.has(r))) return false;
-      if (facets.mustChange && !u.must_change_password) return false;
+      if (!passesColumnFilters(u, filters, userCellText)) return false;
       if (!q) return true;
-      const hay = `${u.display_name} ${u.login_email ?? ''} ${u.contact_email ?? ''} ` +
-        `${u.job_title ?? ''} ${u.phone ?? ''} ${u.roles.join(' ')}`.toLowerCase();
-      return hay.includes(q);
+      return userSearchText(u).includes(q);
     });
-    const val = (u: UserItem): string => {
-      switch (sortKey) {
-        case 'name': return u.display_name.toLowerCase();
-        case 'roles': return u.roles.join(',');
-        case 'status': return u.status;
-        case 'job_title': return (u.job_title ?? '').toLowerCase();
-        case 'contact_email': return u.contact_email ?? '';
-        case 'phone': return u.phone ?? '';
-        case 'last_login': return u.last_login_at ?? '';
-        case 'created': return u.account_created_at ?? '';
-      }
-    };
-    return rows.sort((a, b) => {
-      const va = val(a), vb = val(b);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
-    });
-  }, [users, pill, facets, query, sortKey, sortDir]);
+    return rows.sort((a, b) => (
+      naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir
+    ));
+  }, [users, pill, filters, query, sortKey, sortDir]);
 
-  // hide the open row if filtering hid it (only once data is loaded —
-  // otherwise this races the openRow handoff from global search / palette)
+  // Auto-close the open row when it drops out of `visible` — EXCEPT the one
+  // case where it just arrived via a deep link and the reason it's missing
+  // is a persisted column filter: then clear the filters instead. See
+  // Assets.tsx for the full rationale.
   useEffect(() => {
-    if (users && openId && !visible.some((u) => u.person_id === openId)) {
-      setOpenId(null);
+    if (!users || !openId || visible.some((u) => u.person_id === openId)) return;
+    if (openId === deepLinkTarget.current && clearedDeepLink.current !== openId) {
+      clearedDeepLink.current = openId;
+      const target = users.find((u) => u.person_id === openId);
+      if (target && !passesColumnFilters(target, filters, userCellText)) {
+        clearFilters();
+        return;
+      }
     }
-  }, [users, visible, openId]);
+    setOpenId(null);
+  }, [users, visible, openId, filters, clearFilters]);
 
-  const shownCols = COLUMNS.filter((c) => visibleCols.has(c.key));
+  // Release the deep-link guard once the target row is first confirmed
+  // visible — see Assets.tsx for the full rationale.
+  useEffect(() => {
+    if (deepLinkTarget.current && visible.some((u) => u.person_id === deepLinkTarget.current)) {
+      deepLinkTarget.current = null;
+    }
+  }, [visible]);
+
+  const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
   const grid = {
     gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px`,
   };
 
-  const toggleSort = (key: SortKey) => {
-    if (key === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
-    else { setSortKey(key); setSortDir(1); }
-  };
-  const caret = (key: SortKey) =>
+  const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
-  const cellFor = (u: UserItem, key: ColKey) => {
+  const cellFor = (u: UserItem, key: string) => {
     if (god.editing) {
       const gf = godFieldFor(key);
       if (gf) {
@@ -271,6 +308,8 @@ export default function Users() {
         return <span className="mono">{relativeTime(u.last_login_at)}</span>;
       case 'created':
         return <span className="mono">{longDate(u.account_created_at)}</span>;
+      default:
+        return null;
     }
   };
 
@@ -307,60 +346,7 @@ export default function Users() {
                    onChange={(e) => setQuery(e.target.value)} />
           </div>
           <span className="result-count">{visible.length} of {users?.length ?? 0} shown</span>
-
-          <div className="pop-wrap">
-            <button className="btn-ghost" onClick={() => setPop(pop === 'filters' ? null : 'filters')}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                   strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 3H2l8 9.5V19l4 2v-8.5z" />
-              </svg>
-              Filters
-              {activeFacetCount > 0 && <span className="fbadge">{activeFacetCount}</span>}
-            </button>
-            {pop === 'filters' && (
-              <div className="pop-menu">
-                <div className="pop-title">Role</div>
-                {ALL_ROLES.map((r) => {
-                  const on = facets.roles.has(r);
-                  return (
-                    <button key={r} className={`pop-item ${on ? 'on' : ''}`}
-                            onClick={() => setFacets((f) => {
-                              const roles = new Set(f.roles);
-                              if (on) roles.delete(r); else roles.add(r);
-                              return { ...f, roles };
-                            })}>
-                      <span className="pop-check">
-                        <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"
-                             strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M2 6.5 4.8 9.5 10 2.8" /></svg>
-                      </span>
-                      {r}
-                    </button>
-                  );
-                })}
-                <div className="pop-sep" />
-                <div className="pop-title">Account</div>
-                <button className={`pop-item ${facets.mustChange ? 'on' : ''}`}
-                        onClick={() => setFacets((f) => ({ ...f, mustChange: !f.mustChange }))}>
-                  <span className="pop-check">
-                    <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"
-                         strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M2 6.5 4.8 9.5 10 2.8" /></svg>
-                  </span>
-                  Password change required
-                </button>
-                {activeFacetCount > 0 && (
-                  <>
-                    <div className="pop-sep" />
-                    <button className="pop-item"
-                            onClick={() => setFacets({ roles: new Set(), mustChange: false })}>
-                      Clear all filters
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
+          <FilterSummaryChip filters={filters} onClear={clearFilters} />
 
           <div className="pop-wrap">
             <button className="btn-ghost" onClick={() => setPop(pop === 'columns' ? null : 'columns')}>
@@ -375,11 +361,11 @@ export default function Users() {
                   const on = visibleCols.has(c.key);
                   return (
                     <button key={c.key} className={`pop-item ${on ? 'on' : ''}`}
-                            onClick={() => setVisibleCols((prev) => {
-                              const next = new Set(prev);
+                            onClick={() => {
+                              const next = new Set(visibleCols);
                               if (on) next.delete(c.key); else next.add(c.key);
-                              return next;
-                            })}>
+                              setVisibleCols(next);
+                            }}>
                       <span className="pop-check">
                         <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"
                              strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -412,18 +398,44 @@ export default function Users() {
 
       <div className="dir-list">
         <div className="list-head" style={grid}>
-          <button className="sortable" onClick={() => toggleSort('name')}>Name {caret('name')}</button>
-          {shownCols.map((c) => (
-            <button key={c.key} className="sortable" onClick={() => toggleSort(c.key)}>
-              {c.label} {caret(c.key)}
+          <span className="col-head">
+            <button className="sortable" onClick={() => toggleSort('primary')}>
+              Name {caret('primary')}
             </button>
+            <ColumnMenu colKey="primary" label="Name"
+                        allRows={users ?? []} filters={filters}
+                        text={userCellText}
+                        filter={filters.primary} onFilter={setFilter}
+                        sortDir={sortKey === 'primary' ? sortDir : null}
+                        onSort={(dir) => setSort('primary', dir)} />
+          </span>
+          {shownCols.map((c) => (
+            <span key={c.key} className="col-head">
+              <button className="sortable" onClick={() => toggleSort(c.key)}>
+                {c.label} {caret(c.key)}
+              </button>
+              <ColumnMenu colKey={c.key} label={c.label}
+                          allRows={users ?? []} filters={filters}
+                          text={userCellText}
+                          filter={filters[c.key]} onFilter={setFilter}
+                          sortDir={sortKey === c.key ? sortDir : null}
+                          onSort={(dir) => setSort(c.key, dir)} />
+            </span>
           ))}
-          <span />
+          <ColumnMenu colKey="must_change" label="Password change required"
+                      allRows={users ?? []} filters={filters}
+                      text={userCellText}
+                      filter={filters.must_change} onFilter={setFilter}
+                      sortDir={sortKey === 'must_change' ? sortDir : null}
+                      onSort={(dir) => setSort('must_change', dir)} />
         </div>
 
         {error && <div className="dir-empty"><b>Cannot load users</b>{error}</div>}
         {!error && users && visible.length === 0 && (
-          <div className="dir-empty"><b>No matches</b>Try a different search or filter.</div>
+          <div className="dir-empty">
+            <b>No matches</b>Try a different search or filter.
+            <EmptyClearFilters filters={filters} onClear={clearFilters} />
+          </div>
         )}
 
         {visible.map((u) => {
@@ -432,7 +444,7 @@ export default function Users() {
           return (
             <div key={u.person_id} className={`dir-row ${open ? 'open' : ''}`}>
               <div className="row-main" style={grid}
-                   onClick={() => setOpenId(open ? null : u.person_id)}>
+                   onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : u.person_id); }}>
                 <div className="cell cell-primary">
                   <div className="dir-avatar"
                        style={{ background: u.avatar_url ? 'var(--surface-2)' : avatarGradient(u.display_name) }}>
@@ -594,6 +606,7 @@ export default function Users() {
           onClose={() => setAddOpen(false)}
           onCreated={(personId) => {
             setAddOpen(false);
+            deepLinkTarget.current = null;
             void load().then(() => setOpenId(personId));
           }}
         />

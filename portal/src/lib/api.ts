@@ -53,6 +53,10 @@ export interface UiPreferences {
   density: 'comfortable' | 'compact';
   motion: boolean;
   notif: NotifPrefs;
+  // Per-page list UI state (visible columns, sort, column filters), keyed by
+  // page key — free-form on the wire; lib/columnMenu.tsx owns the shape it
+  // reads/writes here and sanitizes on hydrate, so this stays loosely typed.
+  list_prefs: Record<string, unknown>;
 }
 
 export interface PersonDetail {

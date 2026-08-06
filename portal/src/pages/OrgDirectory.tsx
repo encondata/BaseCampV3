@@ -5,7 +5,7 @@
  * a contacts panel backed by scoped role grants.
  */
 
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -19,21 +19,25 @@ import {
   afterLinkFailure, buildNewContactPersonPayload, planAddContact,
 } from '../lib/external';
 import { initialOpenId } from '../lib/auditFormat';
+import {
+  ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
+  usePersistentListState,
+} from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate } from '../lib/format';
 import {
   ColumnsButton,
   ExportButton,
-  FilterButton,
   exportCsv,
-  passesFacets,
   visibleColumnsFor,
   type ColumnDef,
-  type FacetGroup,
-  type FacetState,
 } from '../lib/listTools';
-import { ORG_ERRORS, ORG_GOD_FIELDS, type OrgItem } from '../lib/orgs';
+import { naturalCompare } from '../lib/sites';
+import {
+  effectiveStatus, ORG_ERRORS, ORG_GOD_FIELDS, orgCellText, STATUS_META, TYPE_LABEL,
+  type OrgItem,
+} from '../lib/orgs';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
@@ -86,20 +90,8 @@ interface PersonPick {
   has_account: boolean;
 }
 
-const STATUS_META: Record<string, { label: string; cls: string }> = {
-  prospect: { label: 'Prospect', cls: 'c-blue' },
-  active: { label: 'Active', cls: 'c-green' },
-  dormant: { label: 'Dormant', cls: 'c-amber' },
-  archived: { label: 'Archived', cls: 'c-red' },
-};
-
 const TIER_META: Record<string, string> = {
   standard: 'tag', preferred: 'c-blue', strategic: 'c-amber',
-};
-
-const TYPE_LABEL: Record<string, string> = {
-  staffing: 'Staffing', logistics: 'Logistics', subcontractor: 'Subcontractor',
-  consultant: 'Consultant', other: 'Other',
 };
 
 const PILLS = [
@@ -109,14 +101,6 @@ const PILLS = [
   { key: 'dormant', label: 'Dormant' },
   { key: 'archived', label: 'Archived' },
 ];
-
-type SortKey = 'name' | 'type' | 'tier' | 'status' | 'manager' | 'contacts'
-  | 'created' | 'website' | 'phone' | 'location'
-  | 'city' | 'region' | 'postal_code' | 'country' | 'address_line1' | 'address_line2' | 'notes';
-
-function effectiveStatus(o: OrgItem): string {
-  return o.archived_at ? 'archived' : o.status;
-}
 
 /* column registry (Name is fixed-first, chevron fixed-last). `type` is
    partner-only and filtered out for clients at render time. */
@@ -139,6 +123,43 @@ const ALL_COLUMNS: (ColumnDef & { partnerOnly?: boolean })[] = [
   { key: 'address_line2', label: 'Address line 2', width: '1.4fr', default: false, godOnly: true },
   { key: 'notes', label: 'Notes', width: '1.6fr', default: false, godOnly: true },
 ];
+
+// Every column either kind can offer (incl. godOnly and the partner-only
+// 'type' column — harmless to include for clients too, since `columns`
+// below still excludes it from what actually renders) plus 'primary' (the
+// always-shown name+code/city cell). No archived pseudo-column: archived
+// already lives inside 'status' via effectiveStatus.
+const ALL_COLUMN_KEYS = new Set<string>([...ALL_COLUMNS.map((c) => c.key), 'primary']);
+const DEFAULT_VISIBLE = new Set<string>(ALL_COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/** Sort value per column key — deliberately separate from `orgCellText`:
+ *  that accessor's job is display/filter text (the STATUS_META label, the
+ *  joined type-labels list), which would sort wrong (labels don't order
+ *  prospect/active/dormant/archived the way the raw status key does).
+ *  This stays raw/lowercase so naturalCompare orders rows the way a user
+ *  expects. */
+function sortValueFor(o: OrgItem, key: string): string | number {
+  switch (key) {
+    case 'primary': return o.name.toLowerCase();
+    case 'type': return o.partner_types.join(',');
+    case 'tier': return o.tier;
+    case 'status': return effectiveStatus(o);
+    case 'manager': return o.account_manager?.display_name.toLowerCase() ?? '';
+    case 'contacts': return o.contact_count;
+    case 'created': return o.created_at;
+    case 'website': return o.website ?? '';
+    case 'phone': return o.phone ?? '';
+    case 'location': return `${o.city ?? ''} ${o.region ?? ''}`.toLowerCase();
+    case 'city': return (o.city ?? '').toLowerCase();
+    case 'region': return (o.region ?? '').toLowerCase();
+    case 'postal_code': return (o.postal_code ?? '').toLowerCase();
+    case 'country': return o.country.toLowerCase();
+    case 'address_line1': return (o.address_line1 ?? '').toLowerCase();
+    case 'address_line2': return (o.address_line2 ?? '').toLowerCase();
+    case 'notes': return (o.notes ?? '').toLowerCase();
+    default: return '';
+  }
+}
 
 function csvColumns(hasType: boolean): [string, (o: OrgItem) => string][] {
   const cols: [string, (o: OrgItem) => string][] = [
@@ -171,34 +192,35 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
   const [error, setError] = useState('');
   const [pill, setPill] = useState('all');
   const [query, setQuery] = useState('');
-  const [sortKey, setSortKey] = useState<SortKey>('name');
-  const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
-  useRecordFocus(orgs, (o) => o.id, (o) => o.name, setOpenId, setQuery);
+  // See Assets.tsx for the full rationale — the id of the most recent
+  // deep-link arrival, as opposed to a plain row click (which never touches
+  // this ref), so an unrelated later filter edit can't be mistaken for a
+  // fresh arrival and re-trigger the once-per-id clearFilters() below.
+  const deepLinkTarget = useRef<string | null>(initialOpenId());
+  const focusOpenId = (id: string | null) => {
+    deepLinkTarget.current = id;
+    clearedDeepLink.current = null; // re-arm: a fresh arrival gets its own one-shot clear
+    setOpenId(id);
+  };
+  useRecordFocus(orgs, (o) => o.id, (o) => o.name, focusOpenId, setQuery);
+  const clearedDeepLink = useRef<string | null>(null);
   const [contacts, setContacts] = useState<Record<string, ContactItem[]>>({});
   const [editing, setEditing] = useState<OrgItem | 'new' | null>(null);
-  const [facets, setFacets] = useState<FacetState>({});
+
+  // Clients and Partners persist their list state independently — same
+  // component, two pageKeys, one per cfg.kind.
+  const {
+    visibleCols, setVisibleCols,
+    sortKey, sortDir, setSort, toggleSort,
+    filters, setFilter, clearFilters,
+  } = usePersistentListState(
+    `${cfg.kind}s`, { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 }, ALL_COLUMN_KEYS,
+  );
 
   const columns = useMemo(
     () => ALL_COLUMNS.filter((c) => cfg.hasType || !c.partnerOnly),
     [cfg.hasType]);
-  const [visibleCols, setVisibleCols] = useState<Set<string>>(
-    () => new Set(ALL_COLUMNS.filter((c) => c.default).map((c) => c.key)));
-
-  const facetGroups = useMemo<FacetGroup[]>(() => {
-    const groups: FacetGroup[] = [
-      { key: 'tier', title: 'Tier', options: [
-        { value: 'standard', label: 'Standard' },
-        { value: 'preferred', label: 'Preferred' },
-        { value: 'strategic', label: 'Strategic' },
-      ] },
-    ];
-    if (cfg.hasType) {
-      groups.push({ key: 'type', title: 'Type', options:
-        Object.entries(TYPE_LABEL).map(([value, label]) => ({ value, label })) });
-    }
-    return groups;
-  }, [cfg.hasType]);
 
   const load = async () => {
     const resp = await apiFetch(cfg.apiBase);
@@ -244,49 +266,44 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
     const q = query.trim().toLowerCase();
     const rows = orgs.filter((o) => {
       if (pill !== 'all' && effectiveStatus(o) !== pill) return false;
-      if (!passesFacets(facets, (g) =>
-        g === 'tier' ? [o.tier] : g === 'type' ? o.partner_types : [])) return false;
+      if (!passesColumnFilters(o, filters, orgCellText)) return false;
       if (!q) return true;
       const hay = `${o.name} ${o.code ?? ''} ${o.city ?? ''} ${o.region ?? ''} ` +
         `${o.partner_types.join(' ')} ${o.account_manager?.display_name ?? ''}`.toLowerCase();
       return hay.includes(q);
     });
-    const val = (o: OrgItem): string | number => {
-      switch (sortKey) {
-        case 'name': return o.name.toLowerCase();
-        case 'type': return o.partner_types.join(',');
-        case 'tier': return o.tier;
-        case 'status': return effectiveStatus(o);
-        case 'manager': return o.account_manager?.display_name.toLowerCase() ?? '';
-        case 'contacts': return o.contact_count;
-        case 'created': return o.created_at;
-        case 'website': return o.website ?? '';
-        case 'phone': return o.phone ?? '';
-        case 'location': return `${o.city ?? ''} ${o.region ?? ''}`.toLowerCase();
-        case 'city': return (o.city ?? '').toLowerCase();
-        case 'region': return (o.region ?? '').toLowerCase();
-        case 'postal_code': return (o.postal_code ?? '').toLowerCase();
-        case 'country': return o.country.toLowerCase();
-        case 'address_line1': return (o.address_line1 ?? '').toLowerCase();
-        case 'address_line2': return (o.address_line2 ?? '').toLowerCase();
-        case 'notes': return (o.notes ?? '').toLowerCase();
-      }
-    };
     return rows.sort((a, b) => {
-      const va = val(a), vb = val(b);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+      const va = sortValueFor(a, sortKey), vb = sortValueFor(b, sortKey);
+      return naturalCompare(String(va), String(vb)) * sortDir;
     });
-  }, [orgs, pill, query, facets, sortKey, sortDir]);
+  }, [orgs, pill, query, filters, sortKey, sortDir]);
 
+  // Auto-close the open row when it drops out of `visible` — EXCEPT the one
+  // case where it just arrived via a deep link and the reason it's missing
+  // is a persisted column filter: then clear the filters instead. See
+  // Assets.tsx for the full rationale.
   useEffect(() => {
-    if (orgs && openId && !visible.some((o) => o.id === openId)) setOpenId(null);
-  }, [orgs, visible, openId]);
+    if (!orgs || !openId || visible.some((o) => o.id === openId)) return;
+    if (openId === deepLinkTarget.current && clearedDeepLink.current !== openId) {
+      clearedDeepLink.current = openId;
+      const target = orgs.find((o) => o.id === openId);
+      if (target && !passesColumnFilters(target, filters, orgCellText)) {
+        clearFilters();
+        return;
+      }
+    }
+    setOpenId(null);
+  }, [orgs, visible, openId, filters, clearFilters]);
 
-  const toggleSort = (key: SortKey) => {
-    if (key === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
-    else { setSortKey(key); setSortDir(1); }
-  };
-  const caret = (key: SortKey) =>
+  // Release the deep-link guard once the target row is first confirmed
+  // visible — see Assets.tsx for the full rationale.
+  useEffect(() => {
+    if (deepLinkTarget.current && visible.some((o) => o.id === deepLinkTarget.current)) {
+      deepLinkTarget.current = null;
+    }
+  }, [visible]);
+
+  const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const setArchived = async (org: OrgItem, archive: boolean) => {
@@ -408,7 +425,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                    onChange={(e) => setQuery(e.target.value)} />
           </div>
           <span className="result-count">{visible.length} of {orgs?.length ?? 0} shown</span>
-          <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
+          <FilterSummaryChip filters={filters} onClear={clearFilters} />
           <ColumnsButton columns={columns} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
           <ExportButton onExport={() =>
             exportCsv(cfg.title.toLowerCase(), csvColumns(cfg.hasType), visible)} />
@@ -423,19 +440,39 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
 
       <div className="dir-list">
         <div className="list-head" style={grid}>
-          <button className="sortable" onClick={() => toggleSort('name')}>Name {caret('name')}</button>
-          {shownCols.map((c) => (
-            <button key={c.key} className="sortable"
-                    onClick={() => toggleSort(c.key as SortKey)}>
-              {c.label} {caret(c.key as SortKey)}
+          <span className="col-head">
+            <button className="sortable" onClick={() => toggleSort('primary')}>
+              Name {caret('primary')}
             </button>
+            <ColumnMenu colKey="primary" label="Name"
+                        allRows={orgs ?? []} filters={filters}
+                        text={orgCellText}
+                        filter={filters.primary} onFilter={setFilter}
+                        sortDir={sortKey === 'primary' ? sortDir : null}
+                        onSort={(dir) => setSort('primary', dir)} />
+          </span>
+          {shownCols.map((c) => (
+            <span key={c.key} className="col-head">
+              <button className="sortable" onClick={() => toggleSort(c.key)}>
+                {c.label} {caret(c.key)}
+              </button>
+              <ColumnMenu colKey={c.key} label={c.label}
+                          allRows={orgs ?? []} filters={filters}
+                          text={orgCellText}
+                          filter={filters[c.key]} onFilter={setFilter}
+                          sortDir={sortKey === c.key ? sortDir : null}
+                          onSort={(dir) => setSort(c.key, dir)} />
+            </span>
           ))}
           <span />
         </div>
 
         {error && <div className="dir-empty"><b>Cannot load</b>{error}</div>}
         {!error && orgs && visible.length === 0 && (
-          <div className="dir-empty"><b>No matches</b>Try a different filter — or add one.</div>
+          <div className="dir-empty">
+            <b>No matches</b>Try a different filter — or add one.
+            <EmptyClearFilters filters={filters} onClear={clearFilters} />
+          </div>
         )}
 
         {visible.map((o) => {
@@ -443,7 +480,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
           return (
             <div key={o.id} className={`dir-row ${open ? 'open' : ''}`}>
               <div className="row-main" style={grid}
-                   onClick={() => setOpenId(open ? null : o.id)}>
+                   onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : o.id); }}>
                 <div className="cell cell-primary">
                   <div className="dir-avatar"
                        style={{ background: o.logo_url ? 'var(--surface-2)' : avatarGradient(o.name) }}>
@@ -569,6 +606,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
           onClose={() => setEditing(null)}
           onSaved={(id) => {
             setEditing(null);
+            deepLinkTarget.current = null;
             void load().then(() => setOpenId(id));
           }}
         />

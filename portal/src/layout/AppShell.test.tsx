@@ -31,6 +31,7 @@ vi.mock('../auth/AuthContext', () => ({
       density: 'comfortable',
       motion: true,
       notif: { critical: true, email: true, maint: true, digest: true },
+      list_prefs: {},
     } satisfies UiPreferences,
     can: auth.can,
     godMode: auth.godMode,

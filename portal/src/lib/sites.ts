@@ -19,32 +19,6 @@ export const SITE_ERRORS: Record<string, string> = {
   country_required: 'Country is required.',
 };
 
-export interface SiteFilters {
-  type: string[];
-  status: string[];
-  client: string[];
-  country: string[];
-  coords: string[];        // 'yes' | 'no'
-}
-
-export const EMPTY_SITE_FILTERS: SiteFilters = {
-  type: [], status: [], client: [], country: [], coords: [],
-};
-
-export function matchesSiteFilters(site: SiteItem, f: SiteFilters): boolean {
-  if (f.type.length && !f.type.includes(site.site_type ?? '')) return false;
-  if (f.status.length && !f.status.includes(site.status)) return false;
-  if (f.client.length && !site.clients.some((c) => f.client.includes(c.client_id))) {
-    return false;
-  }
-  if (f.country.length && !f.country.includes(site.country)) return false;
-  if (f.coords.length) {
-    const has = site.latitude !== null && site.longitude !== null;
-    if (!f.coords.includes(has ? 'yes' : 'no')) return false;
-  }
-  return true;
-}
-
 export function siteSearchText(site: SiteItem): string {
   return [
     site.name, site.code, site.type_label, site.status_label, site.city,
@@ -56,6 +30,36 @@ export function siteSearchText(site: SiteItem): string {
 export function formatCoords(lat: number | null, lon: number | null): string {
   if (lat === null || lon === null) return '—';
   return `${lat}, ${lon}`;
+}
+
+/** Column-menu accessor (lib/columnMenu.tsx's `CellText<T>`) — one row's
+ *  display text for a given column key. Mirrors exactly what the page's own
+ *  cell renderer shows (including the '—' fallback and the coords display
+ *  string), so the filter checkbox list and the grid cell never disagree.
+ *  'primary' is the always-shown name+code cell; there's no archived
+ *  pseudo-column here — Sites has never hidden or facet-filtered archived
+ *  rows (they just carry an inline "Archived" chip), so column menus don't
+ *  introduce that behavior either. */
+export function siteCellText(site: SiteItem, colKey: string): string {
+  switch (colKey) {
+    case 'primary': return `${site.name} ${site.code ?? ''}`.trim();
+    case 'type': return site.type_label ?? '';
+    case 'status': return site.status_label;
+    case 'clients': return site.clients.length ? site.clients.map((c) => c.name).join(', ') : '—';
+    case 'city': return site.city ?? '—';
+    case 'country': return site.country;
+    case 'dc_provider': return site.dc_provider ?? '—';
+    case 'coords': return formatCoords(site.latitude, site.longitude);
+    case 'address_line1': return site.address_line1 ?? '—';
+    case 'address_line2': return site.address_line2 ?? '—';
+    case 'region': return site.region ?? '—';
+    case 'postal_code': return site.postal_code ?? '—';
+    case 'timezone': return site.timezone ?? '—';
+    case 'notes': return site.notes || '—';
+    case 'latitude': return site.latitude === null ? '—' : String(site.latitude);
+    case 'longitude': return site.longitude === null ? '—' : String(site.longitude);
+    default: return '';
+  }
 }
 
 export interface SiteFormState {

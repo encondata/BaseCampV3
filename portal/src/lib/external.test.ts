@@ -10,8 +10,8 @@ import {
   canEditExternalPerson,
   distinctFunctions,
   distinctTitles,
+  externalCellText,
   EXTERNAL_GOD_FIELDS,
-  externalFacetValues,
   externalSearchHay,
   orgKey,
   parseOrgKey,
@@ -73,21 +73,57 @@ describe('distinctTitles / distinctFunctions', () => {
   });
 });
 
-describe('externalFacetValues', () => {
-  const p = person({
+describe('externalCellText', () => {
+  const withLinks = person({
+    email: 'jane@acme.test',
     links: [
-      link({ kind: 'client', org_id: 'org-1', tier: 'admin', functions: ['billing'] }),
-      link({ kind: 'partner', org_id: 'org-2', tier: 'viewer', functions: ['scheduling'] }),
+      link({ kind: 'client', org_id: 'org-1', org_name: 'Acme', tier: 'admin',
+             org_title: 'VP Sales', functions: ['billing'] }),
+      link({ kind: 'partner', org_id: 'org-2', org_name: 'Beta Corp', tier: 'viewer',
+             org_title: 'VP Sales', functions: ['scheduling'] }),
     ],
     login_status: 'active',
   });
+  const blank = person({ email: null, phone: null, links: [], login_status: 'none' });
 
-  it('orgType', () => expect(externalFacetValues('orgType', p)).toEqual(['client', 'partner']));
-  it('org', () => expect(externalFacetValues('org', p)).toEqual(['client:org-1', 'partner:org-2']));
-  it('tier', () => expect(externalFacetValues('tier', p)).toEqual(['admin', 'viewer']));
-  it('function', () => expect(externalFacetValues('function', p)).toEqual(['billing', 'scheduling']));
-  it('login', () => expect(externalFacetValues('login', p)).toEqual(['active']));
-  it('unknown group', () => expect(externalFacetValues('bogus', p)).toEqual([]));
+  it('primary combines display_name + email/phone', () => {
+    expect(externalCellText(withLinks, 'primary')).toBe('Jane Doe jane@acme.test');
+    expect(externalCellText(person({ email: null, phone: '555-1212' }), 'primary'))
+      .toBe('Jane Doe 555-1212');
+    expect(externalCellText(blank, 'primary')).toBe('Jane Doe');
+  });
+
+  it('orgs joins each link\'s "org · tier", dashing when empty', () => {
+    expect(externalCellText(withLinks, 'orgs')).toBe('Acme · admin, Beta Corp · viewer');
+    expect(externalCellText(blank, 'orgs')).toBe('—');
+  });
+
+  it('type reads typeLabel', () => {
+    expect(externalCellText(withLinks, 'type')).toBe('Both');
+    expect(externalCellText(blank, 'type')).toBe('—');
+  });
+
+  it('title/functions dedupe+join, dashing when empty', () => {
+    expect(externalCellText(withLinks, 'title')).toBe('VP Sales');
+    expect(externalCellText(withLinks, 'functions')).toBe('billing, scheduling');
+    expect(externalCellText(blank, 'title')).toBe('—');
+    expect(externalCellText(blank, 'functions')).toBe('—');
+  });
+
+  it('email/phone dash when unset', () => {
+    expect(externalCellText(withLinks, 'email')).toBe('jane@acme.test');
+    expect(externalCellText(blank, 'email')).toBe('—');
+    expect(externalCellText(blank, 'phone')).toBe('—');
+  });
+
+  it('login reads the same LOGIN_META label the chip shows', () => {
+    expect(externalCellText(withLinks, 'login')).toBe('Active');
+    expect(externalCellText(blank, 'login')).toBe('No login');
+  });
+
+  it('unknown column keys return empty string', () => {
+    expect(externalCellText(withLinks, 'nonsense')).toBe('');
+  });
 });
 
 describe('externalSearchHay', () => {

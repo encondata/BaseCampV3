@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import type { AssetItem, AssetModelItem } from './api';
 import {
   ASSET_ERRORS, ASSET_GOD_FIELDS, MODEL_ERRORS, MODEL_GOD_FIELDS,
-  assetPayload, duplicateSerials, formFromAsset, formFromModel,
-  formatDims, modelPayload, needsModelCreate, parseDims, partnerFor,
+  assetCellText, assetPayload, duplicateSerials, formFromAsset, formFromModel,
+  formatDims, modelCellText, modelPayload, needsModelCreate, parseDims, partnerFor,
 } from './assets';
 
 const asset = (over: Partial<AssetItem> = {}): AssetItem => ({
@@ -136,6 +136,167 @@ describe('duplicateSerials', () => {
     ]);
     expect(dupes.has('sn1')).toBe(true);
     expect(dupes.size).toBe(1);
+  });
+});
+
+describe('assetCellText', () => {
+  const full = asset({
+    serial_number: 'SN9', name: 'web-09', rfid_tag: 'RF1',
+    location_detail: 'Rack 3, U12',
+    model_id: 'm1', model: {
+      id: 'm1', make: 'Dell', model: 'R740', category: 'server',
+      category_label: 'Server', category_color: '#1668a7', ru_size: 2,
+    },
+    client_id: 'c1', client_name: 'Acme',
+    site_id: 's1', site_name: 'DC1',
+    status: 'active', status_label: 'Active',
+    has_rails: true,
+    last_seen_at: '2026-01-15T00:00:00Z',
+    archived_at: null,
+  });
+
+  const blank = asset({
+    serial_number: null, name: null, rfid_tag: null,
+    location_detail: '', model_id: null, model: null,
+    client_id: null, client_name: null, site_id: null, site_name: null,
+    has_rails: null, last_seen_at: null, archived_at: '2026-01-01T00:00:00Z',
+  });
+
+  it('primary combines serial + name', () => {
+    expect(assetCellText(full, 'primary')).toBe('SN9 web-09');
+  });
+
+  it('status reads status_label', () => {
+    expect(assetCellText(full, 'status')).toBe('Active');
+  });
+
+  it('category reads the model category label', () => {
+    expect(assetCellText(full, 'category')).toBe('Server');
+    expect(assetCellText(blank, 'category')).toBe('');
+  });
+
+  it('client reads client_name', () => {
+    expect(assetCellText(full, 'client')).toBe('Acme');
+    expect(assetCellText(blank, 'client')).toBe('');
+  });
+
+  it('site reads site_name', () => {
+    expect(assetCellText(full, 'site')).toBe('DC1');
+    expect(assetCellText(blank, 'site')).toBe('');
+  });
+
+  it('model combines make + model', () => {
+    expect(assetCellText(full, 'model')).toBe('Dell R740');
+    expect(assetCellText(blank, 'model')).toBe('');
+  });
+
+  it('location reads location_detail, dashing when blank', () => {
+    expect(assetCellText(full, 'location')).toBe('Rack 3, U12');
+    expect(assetCellText(blank, 'location')).toBe('—');
+  });
+
+  it('rfid reads rfid_tag, dashing when null', () => {
+    expect(assetCellText(full, 'rfid')).toBe('RF1');
+    expect(assetCellText(blank, 'rfid')).toBe('—');
+  });
+
+  it('ru reads the model ru_size, dashing when unset', () => {
+    expect(assetCellText(full, 'ru')).toBe('2');
+    expect(assetCellText(blank, 'ru')).toBe('—');
+  });
+
+  it('last_seen formats the date, dashing when unset', () => {
+    expect(assetCellText(full, 'last_seen')).toBe(new Date(full.last_seen_at!).toLocaleDateString());
+    expect(assetCellText(blank, 'last_seen')).toBe('—');
+  });
+
+  it('has_rails maps true/false/null to Yes/No/—', () => {
+    expect(assetCellText(full, 'has_rails')).toBe('Yes');
+    expect(assetCellText(asset({ has_rails: false }), 'has_rails')).toBe('No');
+    expect(assetCellText(blank, 'has_rails')).toBe('—');
+  });
+
+  it('archived maps archived_at presence to Yes/No', () => {
+    expect(assetCellText(full, 'archived')).toBe('No');
+    expect(assetCellText(blank, 'archived')).toBe('Yes');
+  });
+
+  it('unknown column keys return empty string', () => {
+    expect(assetCellText(full, 'nonsense')).toBe('');
+  });
+});
+
+describe('modelCellText', () => {
+  const full = assetModel({
+    make: 'Dell', model: 'R740', category_label: 'Server',
+    ru_size: 2, weight_lbs: 50, weight_kg: 22.68,
+    length_in: 32, width_in: 17, height_in: 3.4,
+    mount_type: 'rails', rail_type: 'B7', knowledge: 'Careful with rails.',
+    aliases: ['R740', 'PowerEdge R740'],
+  });
+
+  const blank = assetModel({
+    category: null, category_label: null, ru_size: null,
+    weight_lbs: null, weight_kg: null,
+    length_in: null, width_in: null, height_in: null,
+    mount_type: null, rail_type: null, knowledge: '', aliases: [],
+  });
+
+  it('primary combines make + model', () => {
+    expect(modelCellText(full, 'primary')).toBe('Dell R740');
+  });
+
+  it('category reads category_label, dashing when blank', () => {
+    expect(modelCellText(full, 'category')).toBe('Server');
+    expect(modelCellText(blank, 'category')).toBe('');
+  });
+
+  it('ru reads ru_size, dashing when unset', () => {
+    expect(modelCellText(full, 'ru')).toBe('2');
+    expect(modelCellText(blank, 'ru')).toBe('—');
+  });
+
+  it('weight combines both units into the display string', () => {
+    expect(modelCellText(full, 'weight')).toBe('50 lb / 22.68 kg');
+    expect(modelCellText(blank, 'weight')).toBe('—');
+  });
+
+  it('dims formats the L x W x H display string', () => {
+    expect(modelCellText(full, 'dims')).toBe('32 × 17 × 3.4 in');
+    expect(modelCellText(blank, 'dims')).toBe('—');
+  });
+
+  it('mount title-cases the mount type, dashing when unset', () => {
+    expect(modelCellText(full, 'mount')).toBe('Rails');
+    expect(modelCellText(blank, 'mount')).toBe('—');
+  });
+
+  it('rail reads rail_type, dashing when unset', () => {
+    expect(modelCellText(full, 'rail')).toBe('B7');
+    expect(modelCellText(blank, 'rail')).toBe('—');
+  });
+
+  it('aliases joins the list, dashing when empty', () => {
+    expect(modelCellText(full, 'aliases')).toBe('R740, PowerEdge R740');
+    expect(modelCellText(blank, 'aliases')).toBe('—');
+  });
+
+  it('the per-unit godOnly columns show the bare number, not the combined display string', () => {
+    expect(modelCellText(full, 'weight_lbs')).toBe('50');
+    expect(modelCellText(full, 'weight_kg')).toBe('22.68');
+    expect(modelCellText(full, 'length_in')).toBe('32');
+    expect(modelCellText(full, 'width_in')).toBe('17');
+    expect(modelCellText(full, 'height_in')).toBe('3.4');
+    expect(modelCellText(blank, 'weight_lbs')).toBe('—');
+  });
+
+  it('knowledge reads the free-text field, dashing when blank', () => {
+    expect(modelCellText(full, 'knowledge')).toBe('Careful with rails.');
+    expect(modelCellText(blank, 'knowledge')).toBe('—');
+  });
+
+  it('unknown column keys return empty string', () => {
+    expect(modelCellText(full, 'nonsense')).toBe('');
   });
 });
 

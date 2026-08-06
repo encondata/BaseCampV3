@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { applyWorkerPatch, WORKER_ERRORS, WORKER_GOD_FIELDS, type WorkerItem } from './workers';
+import {
+  applyWorkerPatch, WORKER_ERRORS, WORKER_GOD_FIELDS, workerCellText, workerSearchText,
+  type WorkerItem, type WorkerLevelLookup,
+} from './workers';
 import type { StatusValue } from './api';
 
 const worker: WorkerItem = {
@@ -10,6 +13,11 @@ const worker: WorkerItem = {
   partner: { id: 'pt1', name: 'Acme Staffing' },
   cert_count: 3, certs_expired: 0,
 };
+
+const levels: WorkerLevelLookup[] = [
+  { level: 'L2', title: 'Journeyman' },
+  { level: 'L3', title: 'Senior' },
+];
 
 const statuses: StatusValue[] = [
   { record_type: 'worker', key: 'active', label: 'Active', description: '',
@@ -86,6 +94,78 @@ describe('applyWorkerPatch', () => {
     const before = { ...worker };
     applyWorkerPatch(worker, { trade: 'Electrician' }, statuses);
     expect(worker).toEqual(before);
+  });
+});
+
+describe('workerCellText', () => {
+  it('primary combines display_name + contact', () => {
+    expect(workerCellText(worker, 'primary', levels)).toBe('Jamie Rivera jamie@example.com');
+  });
+
+  it('primary falls back to phone, then blank, when no email', () => {
+    expect(workerCellText({ ...worker, contact_email: null, phone: '555-1212' }, 'primary', levels))
+      .toBe('Jamie Rivera 555-1212');
+    expect(workerCellText({ ...worker, contact_email: null, phone: null }, 'primary', levels))
+      .toBe('Jamie Rivera');
+  });
+
+  it('trade dashes when unset', () => {
+    expect(workerCellText(worker, 'trade', levels)).toBe('Server tech');
+    expect(workerCellText({ ...worker, trade: null }, 'trade', levels)).toBe('—');
+  });
+
+  it('level combines the key with the title, like LevelBadge', () => {
+    expect(workerCellText(worker, 'level', levels)).toBe('L2 · Journeyman');
+  });
+
+  it('level falls back to the bare key when the level has no lookup match', () => {
+    expect(workerCellText({ ...worker, level: 'L9' }, 'level', levels)).toBe('L9');
+  });
+
+  it('level reads "unleveled" when unset — matching the chip, not a dash', () => {
+    expect(workerCellText({ ...worker, level: null }, 'level', levels)).toBe('unleveled');
+  });
+
+  it('partner reads the name, or "Direct" for direct hires', () => {
+    expect(workerCellText(worker, 'partner', levels)).toBe('Acme Staffing');
+    expect(workerCellText({ ...worker, partner: null }, 'partner', levels)).toBe('Direct');
+  });
+
+  it('status reads status_label', () => {
+    expect(workerCellText(worker, 'status', levels)).toBe('Active');
+  });
+
+  it('certs shows "N expired" when any are expired, else the bare count', () => {
+    expect(workerCellText(worker, 'certs', levels)).toBe('3');
+    expect(workerCellText({ ...worker, certs_expired: 2 }, 'certs', levels)).toBe('2 expired');
+  });
+
+  it('contact falls back email -> phone -> dash', () => {
+    expect(workerCellText(worker, 'contact', levels)).toBe('jamie@example.com');
+    expect(workerCellText({ ...worker, contact_email: null, phone: '555-1212' }, 'contact', levels))
+      .toBe('555-1212');
+    expect(workerCellText({ ...worker, contact_email: null, phone: null }, 'contact', levels))
+      .toBe('—');
+  });
+
+  it('unknown column keys return empty string', () => {
+    expect(workerCellText(worker, 'nonsense', levels)).toBe('');
+  });
+});
+
+describe('workerSearchText', () => {
+  it('includes name, trade, level + title, partner, and contact', () => {
+    const text = workerSearchText(worker, levels);
+    expect(text).toContain('jamie rivera');
+    expect(text).toContain('server tech');
+    expect(text).toContain('l2');
+    expect(text).toContain('journeyman');
+    expect(text).toContain('acme staffing');
+    expect(text).toContain('jamie@example.com');
+  });
+
+  it('direct hires search as "direct"', () => {
+    expect(workerSearchText({ ...worker, partner: null }, levels)).toContain('direct');
   });
 });
 
