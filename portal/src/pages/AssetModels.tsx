@@ -5,7 +5,7 @@
  * (create/edit) lands in ModelEditModal.
  */
 
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import ModelEditModal from '../components/assets/ModelEditModal';
@@ -18,21 +18,22 @@ import {
   type AssetModelItem,
 } from '../lib/api';
 import {
-  MODEL_ERRORS, MODEL_GOD_FIELDS, formatDims, matchesModelFacets, modelSearchText,
+  MODEL_ERRORS, MODEL_GOD_FIELDS, formatDims, modelCellText, modelSearchText, titleCase,
 } from '../lib/assets';
 import { initialOpenId } from '../lib/auditFormat';
+import {
+  ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
+  usePersistentListState,
+} from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   ColumnsButton,
   ExportButton,
-  FilterButton,
   exportCsv,
   visibleColumnsFor,
   type ColumnDef,
-  type FacetGroup,
-  type FacetState,
 } from '../lib/listTools';
 import '../styles/directory.css';
 import '../styles/profile.css';
@@ -58,19 +59,41 @@ const COLUMNS: ColumnDef[] = [
   { key: 'knowledge', label: 'Knowledge', width: '1.4fr', default: false, godOnly: true },
 ];
 
-const MOUNT_OPTIONS = [
-  { value: 'rails', label: 'Rails' },
-  { value: 'ears', label: 'Ears' },
-  { value: 'shelf', label: 'Shelf' },
-  { value: 'custom', label: 'Custom' },
-];
+// Every column the page can offer (incl. godOnly) plus the 'primary'
+// pseudo-column (the always-shown make+model cell) — so a persisted
+// filter/sort/visibility referencing it survives usePersistentListState's
+// rehydrate-time sanitization. No 'archived' pseudo-column here: the
+// catalog has no archive concept.
+const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'primary']);
+const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
-type SortKey = 'model' | 'category' | 'ru' | 'weight' | 'dims' | 'mount' | 'rail' | 'aliases'
-  | 'weight_lbs' | 'weight_kg' | 'length_in' | 'width_in' | 'height_in'
-  | 'length_cm' | 'width_cm' | 'height_cm' | 'knowledge';
-
-const titleCase = (v: string | null): string =>
-  v ? v[0].toUpperCase() + v.slice(1) : '—';
+/** Sort value per column key — deliberately separate from `modelCellText`:
+ *  that accessor's job is display/filter text (formatted weight/dims
+ *  strings, dashes for blanks), which would sort wrong (e.g. "50 lb / 22.68
+ *  kg" sorts lexicographically, not by magnitude). This stays raw/lowercase
+ *  so naturalCompare orders rows the way a user expects. */
+function sortValueFor(m: AssetModelItem, key: string): string {
+  switch (key) {
+    case 'primary': return `${m.make} ${m.model}`.toLowerCase();
+    case 'category': return (m.category_label ?? '').toLowerCase();
+    case 'ru': return String(m.ru_size ?? 0);
+    case 'weight': return String(m.weight_lbs ?? 0);
+    case 'dims': return String(m.length_in ?? 0);
+    case 'mount': return (m.mount_type ?? '').toLowerCase();
+    case 'rail': return (m.rail_type ?? '').toLowerCase();
+    case 'aliases': return m.aliases.join(' ').toLowerCase();
+    case 'weight_lbs': return String(m.weight_lbs ?? 0);
+    case 'weight_kg': return String(m.weight_kg ?? 0);
+    case 'length_in': return String(m.length_in ?? 0);
+    case 'width_in': return String(m.width_in ?? 0);
+    case 'height_in': return String(m.height_in ?? 0);
+    case 'length_cm': return String(m.length_cm ?? 0);
+    case 'width_cm': return String(m.width_cm ?? 0);
+    case 'height_cm': return String(m.height_cm ?? 0);
+    case 'knowledge': return m.knowledge.toLowerCase();
+    default: return '';
+  }
+}
 
 const CSV_COLUMNS: [string, (m: AssetModelItem) => string][] = [
   ['ID', (m) => m.id],
@@ -100,13 +123,25 @@ export default function AssetModels() {
   const [categories, setCategories] = useState<AssetCategoryOut[]>([]);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [sortKey, setSortKey] = useState<SortKey>('model');
-  const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
-  useRecordFocus(models, (m) => m.id, (m) => `${m.make} ${m.model}`, setOpenId, setQuery);
-  const [facets, setFacets] = useState<FacetState>({});
-  const [visibleCols, setVisibleCols] = useState<Set<string>>(
-    () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));
+  // See Assets.tsx for the full rationale — the id of the most recent
+  // deep-link arrival, as opposed to a plain row click (which never touches
+  // this ref), so an unrelated later filter edit can't be mistaken for a
+  // fresh arrival and re-trigger the once-per-id clearFilters() below.
+  const deepLinkTarget = useRef<string | null>(initialOpenId());
+  const focusOpenId = (id: string | null) => {
+    deepLinkTarget.current = id;
+    setOpenId(id);
+  };
+  useRecordFocus(models, (m) => m.id, (m) => `${m.make} ${m.model}`, focusOpenId, setQuery);
+  const clearedDeepLink = useRef<string | null>(null);
+  const {
+    visibleCols, setVisibleCols,
+    sortKey, sortDir, setSort, toggleSort,
+    filters, setFilter, clearFilters,
+  } = usePersistentListState(
+    'asset_models', { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 }, ALL_COLUMN_KEYS,
+  );
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -134,55 +169,43 @@ export default function AssetModels() {
   const replaceRow = (u: AssetModelItem) =>
     setModels((xs) => xs?.map((x) => (x.id === u.id ? u : x)) ?? xs);
 
-  const facetGroups = useMemo<FacetGroup[]>(() => [
-    { key: 'category', title: 'Category',
-      options: categories.map((c) => ({ value: c.key, label: c.label })) },
-    { key: 'mount', title: 'Mount type', options: MOUNT_OPTIONS },
-    { key: 'knowledge', title: 'Field knowledge', options: [
-      { value: 'yes', label: 'Has knowledge' }, { value: 'no', label: 'No knowledge' }] },
-  ], [categories]);
-
   const visible = useMemo(() => {
     if (!models) return [];
     const q = query.trim().toLowerCase();
     const rows = models.filter((m) => {
-      if (!matchesModelFacets(m, facets)) return false;
+      if (!passesColumnFilters(m, filters, modelCellText)) return false;
       if (!q) return true;
       return modelSearchText(m).includes(q);
     });
-    const val = (m: AssetModelItem): string => {
-      switch (sortKey) {
-        case 'model': return `${m.make} ${m.model}`.toLowerCase();
-        case 'category': return (m.category_label ?? '').toLowerCase();
-        case 'ru': return String(m.ru_size ?? 0);
-        case 'weight': return String(m.weight_lbs ?? 0);
-        case 'dims': return String(m.length_in ?? 0);
-        case 'mount': return (m.mount_type ?? '').toLowerCase();
-        case 'rail': return (m.rail_type ?? '').toLowerCase();
-        case 'aliases': return m.aliases.join(' ').toLowerCase();
-        case 'weight_lbs': return String(m.weight_lbs ?? 0);
-        case 'weight_kg': return String(m.weight_kg ?? 0);
-        case 'length_in': return String(m.length_in ?? 0);
-        case 'width_in': return String(m.width_in ?? 0);
-        case 'height_in': return String(m.height_in ?? 0);
-        case 'length_cm': return String(m.length_cm ?? 0);
-        case 'width_cm': return String(m.width_cm ?? 0);
-        case 'height_cm': return String(m.height_cm ?? 0);
-        case 'knowledge': return m.knowledge.toLowerCase();
-      }
-    };
-    return rows.sort((a, b) => naturalCompare(val(a), val(b)) * sortDir);
-  }, [models, facets, query, sortKey, sortDir]);
+    return rows.sort((a, b) => naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
+  }, [models, filters, query, sortKey, sortDir]);
 
+  // Auto-close the open row when it drops out of `visible` — EXCEPT the one
+  // case where it just arrived via a deep link and the reason it's missing
+  // is a persisted column filter: then clear the filters instead. See
+  // Assets.tsx for the full rationale.
   useEffect(() => {
-    if (models && openId && !visible.some((m) => m.id === openId)) setOpenId(null);
-  }, [models, visible, openId]);
+    if (!models || !openId || visible.some((m) => m.id === openId)) return;
+    if (openId === deepLinkTarget.current && clearedDeepLink.current !== openId) {
+      clearedDeepLink.current = openId;
+      const target = models.find((m) => m.id === openId);
+      if (target && !passesColumnFilters(target, filters, modelCellText)) {
+        clearFilters();
+        return;
+      }
+    }
+    setOpenId(null);
+  }, [models, visible, openId, filters, clearFilters]);
 
-  const toggleSort = (key: SortKey) => {
-    if (key === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
-    else { setSortKey(key); setSortDir(1); }
-  };
-  const caret = (key: SortKey) =>
+  // Release the deep-link guard once the target row is first confirmed
+  // visible — see Assets.tsx for the full rationale.
+  useEffect(() => {
+    if (deepLinkTarget.current && visible.some((m) => m.id === deepLinkTarget.current)) {
+      deepLinkTarget.current = null;
+    }
+  }, [visible]);
+
+  const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
@@ -268,7 +291,7 @@ export default function AssetModels() {
                    onChange={(e) => setQuery(e.target.value)} />
           </div>
           <span className="result-count">{visible.length} of {models?.length ?? 0} shown</span>
-          <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
+          <FilterSummaryChip filters={filters} onClear={clearFilters} />
           <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
           <ExportButton onExport={() => exportCsv('asset-models', CSV_COLUMNS, visible)} />
           <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canChange} />
@@ -285,12 +308,29 @@ export default function AssetModels() {
       {!error && (
         <div className="dir-list">
           <div className="list-head" style={grid}>
-            <button className="sortable" onClick={() => toggleSort('model')}>Make / Model {caret('model')}</button>
-            {shownCols.map((c) => (
-              <button key={c.key} className="sortable"
-                      onClick={() => toggleSort(c.key as SortKey)}>
-                {c.label} {caret(c.key as SortKey)}
+            <span className="col-head">
+              <button className="sortable" onClick={() => toggleSort('primary')}>
+                Make / Model {caret('primary')}
               </button>
+              <ColumnMenu colKey="primary" label="Make / Model"
+                          allRows={models ?? []} filters={filters}
+                          text={modelCellText}
+                          filter={filters.primary} onFilter={setFilter}
+                          sortDir={sortKey === 'primary' ? sortDir : null}
+                          onSort={(dir) => setSort('primary', dir)} />
+            </span>
+            {shownCols.map((c) => (
+              <span key={c.key} className="col-head">
+                <button className="sortable" onClick={() => toggleSort(c.key)}>
+                  {c.label} {caret(c.key)}
+                </button>
+                <ColumnMenu colKey={c.key} label={c.label}
+                            allRows={models ?? []} filters={filters}
+                            text={modelCellText}
+                            filter={filters[c.key]} onFilter={setFilter}
+                            sortDir={sortKey === c.key ? sortDir : null}
+                            onSort={(dir) => setSort(c.key, dir)} />
+              </span>
             ))}
             <span />
           </div>
@@ -298,6 +338,7 @@ export default function AssetModels() {
           {models && visible.length === 0 && (
             <div className="dir-empty">
               <b>No matches</b>Try a different filter — or add a model.
+              <EmptyClearFilters filters={filters} onClear={clearFilters} />
             </div>
           )}
 
@@ -306,7 +347,7 @@ export default function AssetModels() {
             return (
               <div key={m.id} className={`dir-row ${open ? 'open' : ''}`}>
                 <div className="row-main" style={grid}
-                     onClick={() => setOpenId(open ? null : m.id)}>
+                     onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : m.id); }}>
                   <div className="cell cell-primary">
                     {god.editing && godFieldFor('primary') && godFieldFor('primary2') ? (
                       <div className="pn god-primary-edit">

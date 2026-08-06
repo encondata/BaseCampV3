@@ -5,7 +5,6 @@
 import type { ComboOption } from '../components/ComboBox';
 import type { AssetItem, AssetModelItem } from './api';
 import { boolTriToPatch, numberToPatch, type GodField } from './godEdit';
-import { passesFacets, type FacetState } from './listTools';
 
 export const LB_TO_KG = 0.453592;
 export const IN_TO_CM = 2.54;
@@ -70,15 +69,36 @@ export function modelSearchText(m: AssetModelItem): string {
   return [m.make, m.model, m.rail_type, ...m.aliases].filter(Boolean).join(' ').toLowerCase();
 }
 
-export function matchesModelFacets(m: AssetModelItem, state: FacetState): boolean {
-  return passesFacets(state, (group) => {
-    switch (group) {
-      case 'category': return m.category ? [m.category] : [];
-      case 'mount': return m.mount_type ? [m.mount_type] : [];
-      case 'knowledge': return [m.knowledge.trim() ? 'yes' : 'no'];
-      default: return [];
-    }
-  });
+export const titleCase = (v: string | null): string =>
+  v ? v[0].toUpperCase() + v.slice(1) : '—';
+
+/** Column-menu accessor (lib/columnMenu.tsx's `CellText<T>`) for the
+ *  AssetModels page. Mirrors the page's own cell renderer exactly —
+ *  'weight'/'dims' are the combined display strings the grid shows, while
+ *  the godOnly per-unit columns (weight_lbs, length_in, ...) show the bare
+ *  number. 'primary' is the always-shown make+model cell; there's no
+ *  archived pseudo-column here — the catalog has no archive concept. */
+export function modelCellText(m: AssetModelItem, colKey: string): string {
+  switch (colKey) {
+    case 'primary': return `${m.make} ${m.model}`.trim();
+    case 'category': return m.category_label ?? '';
+    case 'ru': return m.ru_size !== null ? String(m.ru_size) : '—';
+    case 'weight': return m.weight_lbs !== null ? `${m.weight_lbs} lb / ${m.weight_kg} kg` : '—';
+    case 'dims': return formatDims(m.length_in, m.width_in, m.height_in, 'in');
+    case 'mount': return titleCase(m.mount_type);
+    case 'rail': return m.rail_type ?? '—';
+    case 'aliases': return m.aliases.length ? m.aliases.join(', ') : '—';
+    case 'weight_lbs': return m.weight_lbs !== null ? String(m.weight_lbs) : '—';
+    case 'weight_kg': return m.weight_kg !== null ? String(m.weight_kg) : '—';
+    case 'length_in': return m.length_in !== null ? String(m.length_in) : '—';
+    case 'width_in': return m.width_in !== null ? String(m.width_in) : '—';
+    case 'height_in': return m.height_in !== null ? String(m.height_in) : '—';
+    case 'length_cm': return m.length_cm !== null ? String(m.length_cm) : '—';
+    case 'width_cm': return m.width_cm !== null ? String(m.width_cm) : '—';
+    case 'height_cm': return m.height_cm !== null ? String(m.height_cm) : '—';
+    case 'knowledge': return m.knowledge || '—';
+    default: return '';
+  }
 }
 
 /** Serials appearing on 2+ assets (case-insensitive, blanks ignored). */
