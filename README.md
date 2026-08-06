@@ -51,7 +51,8 @@ python3 -m venv .venv
 .venv/bin/alembic upgrade head
 .venv/bin/serversherpa bootstrap-admin --email you@example.com \
     --first-name You --last-name Name          # prompts for password
-.venv/bin/uvicorn --factory serversherpa.api.app:create_app --reload
+.venv/bin/uvicorn --factory serversherpa.api.app:create_app --reload --host 0.0.0.0
+# --host 0.0.0.0 so phones/laptops on the network can reach the API too
 
 # 4. Portal (second terminal)
 cd portal

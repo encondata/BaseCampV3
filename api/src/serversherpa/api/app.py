@@ -35,14 +35,13 @@ def create_app() -> FastAPI:
     )
 
     origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
-    # dev/staging: also accept any private-LAN origin so phones/laptops on the
-    # local network can hit the dev servers; production stays allowlist-only
-    origin_regex = None if is_prod else (
-        r"^https?://(localhost|127\.0\.0\.1"
-        r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
-        r"|192\.168\.\d{1,3}\.\d{1,3}"
-        r"|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?$"
-    )
+    # dev/staging: accept ANY origin — Jimmy reaches the dev stack from
+    # phones/laptops via LAN IPs, .local mDNS names, and tunnel hostnames,
+    # and the old private-IP-only regex silently blocked the non-RFC-1918
+    # ones. The regex path echoes the caller's Origin (never "*"), so it
+    # stays compatible with allow_credentials. Production stays
+    # allowlist-only via SS_ALLOWED_ORIGINS.
+    origin_regex = None if is_prod else r"^https?://.+$"
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
