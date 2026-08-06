@@ -7,7 +7,7 @@
  * are wired to placeholder state so Task 3 only has to add the modals.
  */
 
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import SiteEditModal from '../components/sites/SiteEditModal';
@@ -28,21 +28,21 @@ import {
   type SurveySchema,
 } from '../lib/api';
 import { initialOpenId } from '../lib/auditFormat';
+import {
+  ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
+  usePersistentListState,
+} from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import {
-  formatCoords, matchesSiteFilters, naturalCompare, siteSearchText, SITE_ERRORS,
-  SITE_GOD_FIELDS, type SiteFilters,
+  formatCoords, naturalCompare, siteCellText, siteSearchText, SITE_ERRORS, SITE_GOD_FIELDS,
 } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   ColumnsButton,
   ExportButton,
-  FilterButton,
   exportCsv,
   visibleColumnsFor,
   type ColumnDef,
-  type FacetGroup,
-  type FacetState,
 } from '../lib/listTools';
 import '../styles/directory.css';
 import '../styles/profile.css';
@@ -67,9 +67,40 @@ const COLUMNS: ColumnDef[] = [
   { key: 'longitude', label: 'Longitude', width: '0.9fr', default: false, godOnly: true },
 ];
 
-type SortKey = 'name' | 'type' | 'status' | 'clients' | 'city' | 'country' | 'dc_provider' | 'coords'
-  | 'address_line1' | 'address_line2' | 'region' | 'postal_code' | 'timezone' | 'notes'
-  | 'latitude' | 'longitude';
+// Every column the page can offer (incl. godOnly) plus the 'primary'
+// pseudo-column (the always-shown name+code cell). No 'archived'
+// pseudo-column here — Sites has never hidden or facet-filtered archived
+// rows (they just carry an inline "Archived" chip), so column menus don't
+// introduce that behavior either.
+const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'primary']);
+const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/** Sort value per column key — deliberately separate from `siteCellText`:
+ *  that accessor's job is display/filter text (the '—' fallback, the
+ *  formatted coords string), which would sort wrong (lat/lon sort
+ *  lexicographically, not numerically, once formatted). This stays
+ *  raw/lowercase so naturalCompare orders rows the way a user expects. */
+function sortValueFor(s: SiteItem, key: string): string {
+  switch (key) {
+    case 'primary': return s.name.toLowerCase();
+    case 'type': return (s.type_label ?? '').toLowerCase();
+    case 'status': return s.status_label.toLowerCase();
+    case 'clients': return s.clients.map((c) => c.name).join(',').toLowerCase();
+    case 'city': return (s.city ?? '').toLowerCase();
+    case 'country': return s.country.toLowerCase();
+    case 'dc_provider': return (s.dc_provider ?? '').toLowerCase();
+    case 'coords': return formatCoords(s.latitude, s.longitude);
+    case 'address_line1': return (s.address_line1 ?? '').toLowerCase();
+    case 'address_line2': return (s.address_line2 ?? '').toLowerCase();
+    case 'region': return (s.region ?? '').toLowerCase();
+    case 'postal_code': return (s.postal_code ?? '').toLowerCase();
+    case 'timezone': return (s.timezone ?? '').toLowerCase();
+    case 'notes': return (s.notes ?? '').toLowerCase();
+    case 'latitude': return s.latitude === null ? '' : String(s.latitude);
+    case 'longitude': return s.longitude === null ? '' : String(s.longitude);
+    default: return '';
+  }
+}
 
 const CSV_COLUMNS: [string, (s: SiteItem) => string][] = [
   ['ID', (s) => s.id],
@@ -120,13 +151,25 @@ export default function Sites() {
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [view, setView] = useState<'list' | 'map'>('list');
-  const [sortKey, setSortKey] = useState<SortKey>('name');
-  const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
-  useRecordFocus(sites, (s) => s.id, (s) => s.name, setOpenId, setQuery);
-  const [facets, setFacets] = useState<FacetState>({});
-  const [visibleCols, setVisibleCols] = useState<Set<string>>(
-    () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));
+  // See Assets.tsx for the full rationale — the id of the most recent
+  // deep-link arrival, as opposed to a plain row click (which never touches
+  // this ref), so an unrelated later filter edit can't be mistaken for a
+  // fresh arrival and re-trigger the once-per-id clearFilters() below.
+  const deepLinkTarget = useRef<string | null>(initialOpenId());
+  const focusOpenId = (id: string | null) => {
+    deepLinkTarget.current = id;
+    setOpenId(id);
+  };
+  useRecordFocus(sites, (s) => s.id, (s) => s.name, focusOpenId, setQuery);
+  const clearedDeepLink = useRef<string | null>(null);
+  const {
+    visibleCols, setVisibleCols,
+    sortKey, sortDir, setSort, toggleSort,
+    filters, setFilter, clearFilters,
+  } = usePersistentListState(
+    'sites', { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 }, ALL_COLUMN_KEYS,
+  );
 
   // Edit/New-site modals land in Task 3 — these hold the row/create-mode
   // intent so that task only has to add the modal, not rewire the buttons.
@@ -161,78 +204,48 @@ export default function Sites() {
   const replaceRow = (u: SiteItem) =>
     setSites((xs) => xs?.map((x) => (x.id === u.id ? u : x)) ?? xs);
 
-  const filters: SiteFilters = useMemo(() => ({
-    type: [...(facets.type ?? [])],
-    status: [...(facets.status ?? [])],
-    client: [...(facets.client ?? [])],
-    country: [...(facets.country ?? [])],
-    coords: [...(facets.coords ?? [])],
-  }), [facets]);
-
-  const facetGroups = useMemo<FacetGroup[]>(() => {
-    const countries = new Set<string>();
-    for (const s of sites ?? []) countries.add(s.country);
-    return [
-      { key: 'type', title: 'Type', options:
-        types.map((t) => ({ value: t.key, label: t.label })) },
-      { key: 'status', title: 'Status', options:
-        statuses.map((s) => ({ value: s.key, label: s.label })) },
-      { key: 'client', title: 'Client', options:
-        clients.filter((c) => !c.archived_at).map((c) => ({ value: c.id, label: c.name })) },
-      { key: 'country', title: 'Country', options:
-        [...countries].sort().map((c) => ({ value: c, label: c })) },
-      { key: 'coords', title: 'Coordinates', options: [
-        { value: 'yes', label: 'Has coordinates' },
-        { value: 'no', label: 'Missing coordinates' },
-      ] },
-    ];
-  }, [sites, types, statuses, clients]);
-
   const visible = useMemo(() => {
     if (!sites) return [];
     const q = query.trim().toLowerCase();
     const rows = sites.filter((s) => {
-      if (!matchesSiteFilters(s, filters)) return false;
+      if (!passesColumnFilters(s, filters, siteCellText)) return false;
       if (!q) return true;
       return siteSearchText(s).includes(q);
     });
-    const val = (s: SiteItem): string => {
-      switch (sortKey) {
-        case 'name': return s.name.toLowerCase();
-        case 'type': return (s.type_label ?? '').toLowerCase();
-        case 'status': return s.status_label.toLowerCase();
-        case 'clients': return s.clients.map((c) => c.name).join(',').toLowerCase();
-        case 'city': return (s.city ?? '').toLowerCase();
-        case 'country': return s.country.toLowerCase();
-        case 'dc_provider': return (s.dc_provider ?? '').toLowerCase();
-        case 'coords': return formatCoords(s.latitude, s.longitude);
-        case 'address_line1': return (s.address_line1 ?? '').toLowerCase();
-        case 'address_line2': return (s.address_line2 ?? '').toLowerCase();
-        case 'region': return (s.region ?? '').toLowerCase();
-        case 'postal_code': return (s.postal_code ?? '').toLowerCase();
-        case 'timezone': return (s.timezone ?? '').toLowerCase();
-        case 'notes': return (s.notes ?? '').toLowerCase();
-        case 'latitude': return s.latitude === null ? '' : String(s.latitude);
-        case 'longitude': return s.longitude === null ? '' : String(s.longitude);
-      }
-    };
-    return rows.sort((a, b) => naturalCompare(val(a), val(b)) * sortDir);
+    return rows.sort((a, b) => naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
   }, [sites, filters, query, sortKey, sortDir]);
 
+  // Auto-close the open row when it drops out of `visible` — EXCEPT the one
+  // case where it just arrived via a deep link and the reason it's missing
+  // is a persisted column filter: then clear the filters instead. See
+  // Assets.tsx for the full rationale.
   useEffect(() => {
-    if (sites && openId && !visible.some((s) => s.id === openId)) setOpenId(null);
-  }, [sites, visible, openId]);
+    if (!sites || !openId || visible.some((s) => s.id === openId)) return;
+    if (openId === deepLinkTarget.current && clearedDeepLink.current !== openId) {
+      clearedDeepLink.current = openId;
+      const target = sites.find((s) => s.id === openId);
+      if (target && !passesColumnFilters(target, filters, siteCellText)) {
+        clearFilters();
+        return;
+      }
+    }
+    setOpenId(null);
+  }, [sites, visible, openId, filters, clearFilters]);
+
+  // Release the deep-link guard once the target row is first confirmed
+  // visible — see Assets.tsx for the full rationale.
+  useEffect(() => {
+    if (deepLinkTarget.current && visible.some((s) => s.id === deepLinkTarget.current)) {
+      deepLinkTarget.current = null;
+    }
+  }, [visible]);
 
   const noCoords = useMemo(
     () => visible.filter((s) => s.latitude === null || s.longitude === null),
     [visible],
   );
 
-  const toggleSort = (key: SortKey) => {
-    if (key === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
-    else { setSortKey(key); setSortDir(1); }
-  };
-  const caret = (key: SortKey) =>
+  const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
@@ -340,7 +353,7 @@ export default function Sites() {
                    onChange={(e) => setQuery(e.target.value)} />
           </div>
           <span className="result-count">{visible.length} of {sites?.length ?? 0} shown</span>
-          <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
+          <FilterSummaryChip filters={filters} onClear={clearFilters} />
           <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
           <ExportButton onExport={() => exportCsv('sites', CSV_COLUMNS, visible)} />
           <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canChange} />
@@ -357,12 +370,29 @@ export default function Sites() {
       {!error && view === 'list' && (
         <div className="dir-list">
           <div className="list-head" style={grid}>
-            <button className="sortable" onClick={() => toggleSort('name')}>Name {caret('name')}</button>
-            {shownCols.map((c) => (
-              <button key={c.key} className="sortable"
-                      onClick={() => toggleSort(c.key as SortKey)}>
-                {c.label} {caret(c.key as SortKey)}
+            <span className="col-head">
+              <button className="sortable" onClick={() => toggleSort('primary')}>
+                Name {caret('primary')}
               </button>
+              <ColumnMenu colKey="primary" label="Name"
+                          allRows={sites ?? []} filters={filters}
+                          text={siteCellText}
+                          filter={filters.primary} onFilter={setFilter}
+                          sortDir={sortKey === 'primary' ? sortDir : null}
+                          onSort={(dir) => setSort('primary', dir)} />
+            </span>
+            {shownCols.map((c) => (
+              <span key={c.key} className="col-head">
+                <button className="sortable" onClick={() => toggleSort(c.key)}>
+                  {c.label} {caret(c.key)}
+                </button>
+                <ColumnMenu colKey={c.key} label={c.label}
+                            allRows={sites ?? []} filters={filters}
+                            text={siteCellText}
+                            filter={filters[c.key]} onFilter={setFilter}
+                            sortDir={sortKey === c.key ? sortDir : null}
+                            onSort={(dir) => setSort(c.key, dir)} />
+              </span>
             ))}
             <span />
           </div>
@@ -370,6 +400,7 @@ export default function Sites() {
           {sites && visible.length === 0 && (
             <div className="dir-empty">
               <b>No matches</b>Try a different filter — or add a site.
+              <EmptyClearFilters filters={filters} onClear={clearFilters} />
             </div>
           )}
 
@@ -378,7 +409,7 @@ export default function Sites() {
             return (
               <div key={s.id} className={`dir-row ${open ? 'open' : ''} ${s.archived_at ? 'archived' : ''}`}>
                 <div className="row-main" style={grid}
-                     onClick={() => setOpenId(open ? null : s.id)}>
+                     onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : s.id); }}>
                   <div className="cell cell-primary">
                     {god.editing && godFieldFor('primary') && godFieldFor('primary2') ? (
                       <div className="pn god-primary-edit">
@@ -425,7 +456,9 @@ export default function Sites() {
 
       {!error && view === 'map' && (
         <div className="sites-map-view">
-          <SitesMap sites={visible} onSelect={(id) => { setView('list'); setOpenId(id); }} />
+          <SitesMap sites={visible} onSelect={(id) => {
+            deepLinkTarget.current = null; setView('list'); setOpenId(id);
+          }} />
           {noCoords.length > 0 && (
             <p className="set-note">
               {noCoords.length} site{noCoords.length === 1 ? '' : 's'} without coordinates —{' '}

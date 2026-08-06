@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  afterSiteClientsFailure, EMPTY_SITE_FILTERS, formFromSite, formatCoords, matchesSiteFilters,
-  naturalCompare, needsSiteCreate, sameClientSet, SITE_CREATED_UNLINKED_MESSAGE, SITE_ERRORS,
+  afterSiteClientsFailure, formFromSite, formatCoords,
+  naturalCompare, needsSiteCreate, sameClientSet, siteCellText,
+  SITE_CREATED_UNLINKED_MESSAGE, SITE_ERRORS,
   SITE_GOD_FIELDS, siteSearchText, sitePayload, surveyChanged, surveyPayload, type SiteFormState,
 } from './sites';
 import type { SiteItem, SurveySchema } from './api';
@@ -18,23 +19,56 @@ const site: SiteItem = {
   clients: [{ client_id: 'c1', name: 'Acme Co' }],
 };
 
-describe('matchesSiteFilters', () => {
-  it('passes everything when empty', () => {
-    expect(matchesSiteFilters(site, EMPTY_SITE_FILTERS)).toBe(true);
+describe('siteCellText', () => {
+  const blank: SiteItem = {
+    ...site, code: null, type_label: null, city: null, dc_provider: null,
+    address_line1: null, address_line2: null, region: null, postal_code: null,
+    timezone: null, notes: null, latitude: null, longitude: null, clients: [],
+  };
+
+  it('primary combines name + code', () => {
+    expect(siteCellText(site, 'primary')).toBe('Acme DC1 ADC1');
   });
-  it('filters by type, status, client, country', () => {
-    expect(matchesSiteFilters(site, { ...EMPTY_SITE_FILTERS, type: ['office'] })).toBe(false);
-    expect(matchesSiteFilters(site, { ...EMPTY_SITE_FILTERS, type: ['datacenter'] })).toBe(true);
-    expect(matchesSiteFilters(site, { ...EMPTY_SITE_FILTERS, status: ['planned'] })).toBe(false);
-    expect(matchesSiteFilters(site, { ...EMPTY_SITE_FILTERS, client: ['c1'] })).toBe(true);
-    expect(matchesSiteFilters(site, { ...EMPTY_SITE_FILTERS, client: ['c2'] })).toBe(false);
-    expect(matchesSiteFilters(site, { ...EMPTY_SITE_FILTERS, country: ['CA'] })).toBe(false);
+
+  it('clients joins the linked-client names, dashing when empty', () => {
+    expect(siteCellText(site, 'clients')).toBe('Acme Co');
+    expect(siteCellText({ ...site, clients: [
+      { client_id: 'c1', name: 'Acme Co' }, { client_id: 'c2', name: 'Beta Inc' },
+    ] }, 'clients')).toBe('Acme Co, Beta Inc');
+    expect(siteCellText(blank, 'clients')).toBe('—');
   });
-  it('filters by coords presence', () => {
-    expect(matchesSiteFilters(site, { ...EMPTY_SITE_FILTERS, coords: ['yes'] })).toBe(true);
-    expect(matchesSiteFilters(site, { ...EMPTY_SITE_FILTERS, coords: ['no'] })).toBe(false);
-    const noCoords = { ...site, latitude: null, longitude: null };
-    expect(matchesSiteFilters(noCoords, { ...EMPTY_SITE_FILTERS, coords: ['no'] })).toBe(true);
+
+  it('coords uses the formatCoords display string', () => {
+    expect(siteCellText(site, 'coords')).toBe('30.2672, -97.7431');
+    expect(siteCellText(blank, 'coords')).toBe('—');
+  });
+
+  it('latitude/longitude show the bare number, dashing when unset', () => {
+    expect(siteCellText(site, 'latitude')).toBe('30.2672');
+    expect(siteCellText(site, 'longitude')).toBe('-97.7431');
+    expect(siteCellText(blank, 'latitude')).toBe('—');
+    expect(siteCellText(blank, 'longitude')).toBe('—');
+  });
+
+  it('city/dc_provider/address/region/postal/timezone/notes dash when blank', () => {
+    expect(siteCellText(site, 'city')).toBe('Austin');
+    expect(siteCellText(blank, 'city')).toBe('—');
+    expect(siteCellText(blank, 'dc_provider')).toBe('—');
+    expect(siteCellText(blank, 'address_line1')).toBe('—');
+    expect(siteCellText(blank, 'address_line2')).toBe('—');
+    expect(siteCellText(blank, 'region')).toBe('—');
+    expect(siteCellText(blank, 'postal_code')).toBe('—');
+    expect(siteCellText(blank, 'timezone')).toBe('—');
+    expect(siteCellText(blank, 'notes')).toBe('—');
+  });
+
+  it('country and status always read straight through (never blank)', () => {
+    expect(siteCellText(site, 'country')).toBe('US');
+    expect(siteCellText(site, 'status')).toBe('Active');
+  });
+
+  it('unknown column keys return empty string', () => {
+    expect(siteCellText(site, 'nonsense')).toBe('');
   });
 });
 
