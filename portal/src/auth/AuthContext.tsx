@@ -34,6 +34,7 @@ interface AuthState {
   perms: PermMap | null;
   maxRank: number;
   scope: ScopeInfo | null;
+  passwordMinLength: number;
 }
 
 interface AuthContextValue extends AuthState {
@@ -67,6 +68,7 @@ const ANON: AuthState = {
   perms: null,
   maxRank: 0,
   scope: null,
+  passwordMinLength: 8,
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -82,6 +84,7 @@ function stateFrom(data: SessionData): AuthState {
     perms: data.perms,
     maxRank: data.max_rank,
     scope: data.scope,
+    passwordMinLength: data.password_min_length ?? 8,
   };
 }
 

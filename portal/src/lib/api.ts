@@ -127,6 +127,7 @@ export interface SessionData {
   perms: PermMap;
   max_rank: number;
   scope: ScopeInfo;
+  password_min_length: number;
 }
 
 export class ApiError extends Error {

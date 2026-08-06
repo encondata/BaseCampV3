@@ -5,14 +5,17 @@
 
 import { useState, type FormEvent } from 'react';
 
+import { useAuth } from '../auth/AuthContext';
 import { ApiError, changePasswordRequest } from '../lib/api';
 
 const ERRORS: Record<string, string> = {
   invalid_current_password: 'Current password is incorrect.',
   same_as_current: 'The new password must be different from the current one.',
+  password_too_short: 'The new password is too short.',
 };
 
 export default function ChangePasswordForm({ onSuccess }: { onSuccess: () => void }) {
+  const { passwordMinLength } = useAuth();
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -22,8 +25,8 @@ export default function ChangePasswordForm({ onSuccess }: { onSuccess: () => voi
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
-    if (next.length < 12) {
-      setError('New password must be at least 12 characters.');
+    if (next.length < passwordMinLength) {
+      setError(`New password must be at least ${passwordMinLength} characters.`);
       return;
     }
     if (next !== confirm) {
@@ -50,10 +53,10 @@ export default function ChangePasswordForm({ onSuccess }: { onSuccess: () => voi
                value={current} onChange={(e) => setCurrent(e.target.value)} required />
       </div>
       <div>
-        <label htmlFor="cp-new">New password (12+ characters)</label>
+        <label htmlFor="cp-new">New password ({passwordMinLength}+ characters)</label>
         <input id="cp-new" type="password" autoComplete="new-password"
                value={next} onChange={(e) => setNext(e.target.value)}
-               required minLength={12} />
+               required minLength={passwordMinLength} />
       </div>
       <div>
         <label htmlFor="cp-confirm">Confirm new password</label>

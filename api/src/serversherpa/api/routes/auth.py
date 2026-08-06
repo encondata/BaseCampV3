@@ -69,6 +69,7 @@ def _session_response(result: AuthResult, response: Response) -> SessionOut:
         perms=result.access.perms,
         max_rank=result.access.max_rank,
         scope=_scope_out(result.access),
+        password_min_length=get_settings().password_min_length,
     )
 
 
@@ -130,6 +131,7 @@ async def me(user: CurrentUser) -> MeOut:
         perms=user.access.perms,
         max_rank=user.access.max_rank,
         scope=_scope_out(user.access),
+        password_min_length=get_settings().password_min_length,
     )
 
 

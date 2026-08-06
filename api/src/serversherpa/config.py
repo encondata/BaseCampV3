@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     session_ttl_seconds: int = 86_400
     totp_encryption_key: SecretStr
     password_pepper: SecretStr
+    # one bar for every password the API accepts (self-change, admin reset,
+    # temp passwords); SS_PASSWORD_MIN_LENGTH overrides
+    password_min_length: int = 8
     max_failed_logins: int = 10       # failures before temporary lockout
     lockout_seconds: int = 900        # lockout duration (15 min)
 
