@@ -196,8 +196,11 @@ export function ColumnMenu<T>({
         aria-pressed={isFiltered}
         onClick={() => setOpen((v) => !v)}
       >
+        {/* classic funnel, sized to read at header-text scale */}
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-             strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+             strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 5h18l-7 8.5V19l-4 2v-7.5L3 5z" />
+        </svg>
       </button>
       {open && (
         <div className="pop-menu colmenu-menu">

@@ -33,7 +33,7 @@
   cursor: pointer;
   flex: none;
 }
-.colmenu-trigger svg { width: 12px; height: 12px; }
+.colmenu-trigger svg { width: 14px; height: 14px; }
 .colmenu-trigger:hover { background: var(--surface-2, #f5f7fa); color: var(--text-dark); }
 .colmenu-trigger.filtered {
   color: var(--accent);
