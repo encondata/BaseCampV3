@@ -270,10 +270,10 @@ interface StoredListPrefs {
 const SAVE_DEBOUNCE_MS = 600;
 
 /** Sanitize one page's stored list_prefs entry against the columns the page
- *  currently knows about (`known` — the caller's default visible set is the
- *  only column-identity information this hook has). A column dropped from
- *  the codebase, or a stale/malformed value written by an older shape,
- *  never survives hydration. */
+ *  currently knows about (`known` — every column the page can offer, not
+ *  just the default-visible ones; callers without a fuller set fall back to
+ *  `defaults.visible`). A column dropped from the codebase, or a stale/
+ *  malformed value written by an older shape, never survives hydration. */
 function sanitize(
   stored: StoredListPrefs, known: Set<string>, defaults: PersistentListDefaults,
 ): { visible: Set<string>; sortKey: string; sortDir: 1 | -1; filters: ColumnFilters } {
@@ -315,9 +315,19 @@ function sanitize(
  *  filters. Hydrates once from the account's saved preferences on mount,
  *  then debounces (600ms) a save of every subsequent change — merged onto
  *  the current preferences so no other page's entry, and no other
- *  preference field, is ever clobbered. */
-export function usePersistentListState(pageKey: string, defaults: PersistentListDefaults) {
+ *  preference field, is ever clobbered.
+ *
+ *  `allKeys` is every column the page can offer — including non-default
+ *  and god-only columns a user may have made visible or filtered/sorted by.
+ *  Sanitization checks stored values against `allKeys` (falling back to
+ *  `defaults.visible` when the caller doesn't pass it), so a persisted
+ *  column that isn't part of the default set still survives rehydrate;
+ *  only a column absent from the full offered set is stripped. */
+export function usePersistentListState(
+  pageKey: string, defaults: PersistentListDefaults, allKeys?: Set<string>,
+) {
   const { preferences, updatePreferences } = useAuth();
+  const known = allKeys ?? defaults.visible;
 
   // Hydrate synchronously via the lazy initializer — it runs exactly once,
   // during the first render, so the mounted state is already the hydrated
@@ -328,18 +338,18 @@ export function usePersistentListState(pageKey: string, defaults: PersistentList
   const [visibleCols, setVisibleColsState] = useState<Set<string>>(() => {
     const stored = preferences.list_prefs?.[pageKey];
     if (!stored || typeof stored !== 'object') return defaults.visible;
-    return sanitize(stored as StoredListPrefs, defaults.visible, defaults).visible;
+    return sanitize(stored as StoredListPrefs, known, defaults).visible;
   });
   const [sort, setSortState] = useState<{ key: string; dir: 1 | -1 }>(() => {
     const stored = preferences.list_prefs?.[pageKey];
     if (!stored || typeof stored !== 'object') return { key: defaults.sortKey, dir: defaults.sortDir };
-    const s = sanitize(stored as StoredListPrefs, defaults.visible, defaults);
+    const s = sanitize(stored as StoredListPrefs, known, defaults);
     return { key: s.sortKey, dir: s.sortDir };
   });
   const [filters, setFiltersState] = useState<ColumnFilters>(() => {
     const stored = preferences.list_prefs?.[pageKey];
     if (!stored || typeof stored !== 'object') return {};
-    return sanitize(stored as StoredListPrefs, defaults.visible, defaults).filters;
+    return sanitize(stored as StoredListPrefs, known, defaults).filters;
   });
 
   // Latest preferences, read (not depended-on) by the debounced save so a
@@ -348,13 +358,18 @@ export function usePersistentListState(pageKey: string, defaults: PersistentList
   const prefsRef = useRef(preferences);
   prefsRef.current = preferences;
 
+  // Holds the not-yet-fired save (its timer + the payload-builder to run
+  // early) so a separate unmount-only effect below can flush it. Cleared
+  // once the save actually fires (normally or flushed).
+  const pendingSaveRef = useRef<{ timer: ReturnType<typeof setTimeout>; save: () => void } | null>(null);
+
   const skipNextSave = useRef(true); // the mount-time (already-hydrated) state must not itself trigger a save
   useEffect(() => {
     if (skipNextSave.current) {
       skipNextSave.current = false;
       return;
     }
-    const timer = setTimeout(() => {
+    const save = () => {
       const current = prefsRef.current;
       void updatePreferences({
         ...current,
@@ -368,9 +383,30 @@ export function usePersistentListState(pageKey: string, defaults: PersistentList
           },
         },
       });
+    };
+    const timer = setTimeout(() => {
+      pendingSaveRef.current = null;
+      save();
     }, SAVE_DEBOUNCE_MS);
+    pendingSaveRef.current = { timer, save };
+    // Only cancels the timer — on a real dependency change the effect body
+    // above immediately replaces pendingSaveRef with the new timer/save, so
+    // there's nothing to flush here. The unmount-only effect below is what
+    // flushes a save that's still pending when the component goes away.
     return () => clearTimeout(timer);
   }, [pageKey, updatePreferences, visibleCols, sort, filters]);
+
+  // Runs its cleanup exactly once, on unmount (empty deps) — never on a
+  // dependency change — so a debounced save still pending at navigation
+  // time (an edit made <600ms earlier) fires immediately instead of being
+  // silently dropped when the timer above gets cleared.
+  useEffect(() => () => {
+    if (pendingSaveRef.current) {
+      clearTimeout(pendingSaveRef.current.timer);
+      pendingSaveRef.current.save();
+      pendingSaveRef.current = null;
+    }
+  }, []);
 
   const setVisibleCols = useCallback((next: Set<string>) => {
     setVisibleColsState(next);

@@ -260,6 +260,57 @@ describe('usePersistentListState', () => {
     expect(result.current.filters).toEqual({ status: { values: ['active'] } }); // the ghost-keyed entry is dropped
   });
 
+  it('sanitizes against allKeys (not just defaults.visible) when provided, so a persisted non-default/god-only column survives', () => {
+    auth.preferences.list_prefs = {
+      sites: {
+        visible: ['name', 'region'], // 'region' isn't in defaults.visible
+        sortKey: 'name',
+        sortDir: 1,
+        filters: {},
+      },
+    };
+    const { result } = renderHook(() => usePersistentListState(
+      'sites',
+      { visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1 },
+      new Set(['name', 'status', 'region']), // the full offered set includes it
+    ));
+    expect(Array.from(result.current.visibleCols)).toEqual(['name', 'region']);
+  });
+
+  it('still strips a stored column absent from allKeys', () => {
+    auth.preferences.list_prefs = {
+      sites: {
+        visible: ['name', 'ghost'],
+        sortKey: 'name',
+        sortDir: 1,
+        filters: {},
+      },
+    };
+    const { result } = renderHook(() => usePersistentListState(
+      'sites',
+      { visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1 },
+      new Set(['name', 'status', 'region']),
+    ));
+    expect(Array.from(result.current.visibleCols)).toEqual(['name']);
+  });
+
+  it('falls back to the default sortKey when the stored sortKey is not in allKeys', () => {
+    auth.preferences.list_prefs = {
+      sites: {
+        visible: ['name'],
+        sortKey: 'ghost',
+        sortDir: -1,
+        filters: {},
+      },
+    };
+    const { result } = renderHook(() => usePersistentListState(
+      'sites',
+      { visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1 },
+      new Set(['name', 'status', 'region']),
+    ));
+    expect(result.current.sortKey).toBe('name');
+  });
+
   it('does not save immediately after hydration', () => {
     auth.preferences.list_prefs = {
       sites: { visible: ['name'], sortKey: 'name', sortDir: 1, filters: {} },
@@ -314,6 +365,27 @@ describe('usePersistentListState', () => {
     expect(saved.list_prefs.sites).toEqual({
       visible: ['status'], sortKey: 'status', sortDir: -1, filters: {},
     });
+  });
+
+  it('flushes a still-pending debounced save on unmount instead of losing it', () => {
+    const { result, unmount } = renderHook(() => usePersistentListState('sites', {
+      visible: new Set(['name', 'status']), sortKey: 'name', sortDir: 1,
+    }));
+
+    act(() => { result.current.setFilter('status', { values: ['active'] }); });
+    act(() => { vi.advanceTimersByTime(300); }); // still inside the 600ms debounce window
+    unmount();
+
+    expect(auth.updatePreferences).toHaveBeenCalledTimes(1);
+    const saved = auth.updatePreferences.mock.calls[0][0] as UiPreferences;
+    expect(saved.list_prefs.sites).toEqual({
+      visible: ['name', 'status'], sortKey: 'name', sortDir: 1,
+      filters: { status: { values: ['active'] } },
+    });
+
+    // The cancelled timer must not also fire later.
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(auth.updatePreferences).toHaveBeenCalledTimes(1);
   });
 
   it('toggleSort flips direction on the same key, resets to ascending on a new key', () => {
