@@ -21,6 +21,7 @@ import {
   addContactLink,
   adminAccountStateRequest,
   adminCreateAccountRequest,
+  adminUpdateProfileRequest,
   apiFetch,
   ApiError,
   getExternal,
@@ -33,11 +34,13 @@ import {
   type OrgKind,
 } from '../lib/api';
 import {
+  applyExternalPatch,
   buildLinkMetaPatch,
   buildNewContactPersonPayload,
   canEditExternalPerson,
   distinctFunctions,
   distinctTitles,
+  EXTERNAL_GOD_FIELDS,
   externalFacetValues,
   externalSearchHay,
   orgKey,
@@ -45,16 +48,19 @@ import {
   typeLabel,
 } from '../lib/external';
 import { avatarGradient, initials } from '../lib/format';
+import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import {
   ColumnsButton,
   ExportButton,
   FilterButton,
   exportCsv,
   passesFacets,
+  visibleColumnsFor,
   type ColumnDef,
   type FacetGroup,
   type FacetState,
 } from '../lib/listTools';
+import { USER_ERRORS } from '../lib/users';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
@@ -118,7 +124,8 @@ const GRANT_ERRORS: Record<string, string> = {
 };
 
 export default function External() {
-  const { can } = useAuth();
+  const { can, godMode } = useAuth();
+  const god = useGodEdit();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -186,6 +193,25 @@ export default function External() {
 
   const people = dir?.people ?? [];
   const functionTags = dir?.function_tags ?? [];
+
+  const godFields = EXTERNAL_GOD_FIELDS();
+  const godFieldFor = (column: string) => godFields.find((f) => f.column === column);
+  const replaceRow = (p: ExternalPersonItem) =>
+    setDir((d) => (d ? { ...d, people: d.people.map((x) => (x.person_id === p.person_id ? p : x)) } : d));
+
+  // Same endpoint the Users page uses (PATCH /users/{id}/profile) — see
+  // lib/external.ts's EXTERNAL_GOD_FIELDS comment for why only `phone`
+  // qualifies here. admin_update_profile returns the full PersonDetail;
+  // applyExternalPatch merges the one field god-edit can touch back into
+  // the row already in state.
+  const patchExternalPerson = async (
+    id: string, body: Record<string, unknown>,
+  ): Promise<ExternalPersonItem> => {
+    const detail = await adminUpdateProfileRequest(id, body);
+    const current = people.find((p) => p.person_id === id);
+    if (!current) throw new Error('external row not found after save');
+    return applyExternalPatch(current, detail);
+  };
 
   const orgFacetOptions = useMemo(() => {
     const seen = new Map<string, string>();
@@ -257,10 +283,20 @@ export default function External() {
   const caret = (key: SortKey) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
-  const shownCols = COLUMNS.filter((c) => visibleCols.has(c.key));
+  const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
   const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
 
   const cellFor = (p: ExternalPersonItem, key: string) => {
+    if (god.editing) {
+      const gf = godFieldFor(key);
+      if (gf) {
+        return (
+          <GodCell row={p} gf={gf} patch={patchExternalPerson} onRowSaved={replaceRow}
+                   errorMap={USER_ERRORS} disabled={!canUsers}
+                   idOf={(row) => row.person_id} />
+        );
+      }
+    }
     switch (key) {
       case 'orgs':
         return (
@@ -330,8 +366,9 @@ export default function External() {
           </div>
           <span className="result-count">{visible.length} of {people.length} shown</span>
           <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
-          <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} />
+          <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
           <ExportButton onExport={() => exportCsv('external-people', CSV_COLUMNS, visible)} />
+          <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canUsers} />
           {canCreatePerson && (canClients || canPartners) && (
             <button className="btn-solid" onClick={() => setAddOpen(true)}>
               + New external contact

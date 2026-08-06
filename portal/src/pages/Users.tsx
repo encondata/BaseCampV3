@@ -14,34 +14,16 @@ import {
   ManageRolesModal,
   ResetPasswordModal,
 } from '../components/UserAdminModals';
-import { apiFetch, ApiError } from '../lib/api';
+import { adminUpdateProfileRequest, apiFetch, ApiError } from '../lib/api';
 import { canTouchRank } from '../lib/access';
 import { initialOpenId } from '../lib/auditFormat';
+import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
+import { applyUserPatch, USER_ERRORS, USER_GOD_FIELDS, type UserItem } from '../lib/users';
 import { avatarGradient, initials, longDate, relativeTime } from '../lib/format';
 import '../styles/directory.css';
 import '../styles/profile.css';   /* .pf-form, .btn-solid */
 import '../styles/settings.css';  /* .set-note */
-
-interface UserItem {
-  person_id: string;
-  first_name: string;
-  last_name: string;
-  preferred_name: string | null;
-  display_name: string;
-  job_title: string | null;
-  phone: string | null;
-  contact_email: string | null;
-  login_email: string | null;
-  roles: string[];
-  status: string;
-  must_change_password: boolean;
-  last_login_at: string | null;
-  account_created_at: string | null;
-  archived_at: string | null;
-  avatar_url: string | null;
-  max_rank: number;
-}
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   active: { label: 'Active', cls: 'c-green' },
@@ -116,7 +98,8 @@ type ManageAction =
   | { kind: 'state'; action: 'disable' | 'enable' | 'unlock'; user: UserItem };
 
 export default function Users() {
-  const { person: mePerson, can, maxRank } = useAuth();
+  const { person: mePerson, can, maxRank, godMode } = useAuth();
+  const god = useGodEdit();
   const [manage, setManage] = useState<ManageAction | null>(null);
   const [query, setQuery] = useState('');
   const location = useLocation();
@@ -145,6 +128,29 @@ export default function Users() {
     }
     setUsers(await resp.json());
   };
+
+  const godFields = USER_GOD_FIELDS();
+  const godFieldFor = (column: string) => godFields.find((f) => f.column === column);
+  const replaceRow = (u: UserItem) =>
+    setUsers((xs) => xs?.map((x) => (x.person_id === u.person_id ? u : x)) ?? xs);
+
+  // admin_update_profile (PATCH /users/{id}/profile) returns the full
+  // PersonDetail, not a UserItem — applyUserPatch (lib/users.ts) merges the
+  // two fields god-edit can touch (job_title, phone) back into the row
+  // already in state rather than reshaping a PersonDetail into a UserItem.
+  const patchUser = async (id: string, body: Record<string, unknown>): Promise<UserItem> => {
+    const detail = await adminUpdateProfileRequest(id, body);
+    const current = users?.find((u) => u.person_id === id);
+    if (!current) throw new Error('user row not found after save');
+    return applyUserPatch(current, detail);
+  };
+
+  // Same "can this actor touch this row" rule the detail pane's action
+  // buttons already use: never self (admin_update_profile's own
+  // cannot_target_self guard, mirrored client-side), and rank must be
+  // strictly below the actor's own.
+  const canEditRow = (u: UserItem): boolean =>
+    u.person_id !== mePerson?.id && canTouchRank(maxRank, u.max_rank) && can('users', 'change');
 
   useEffect(() => { void load(); }, []);
 
@@ -231,6 +237,16 @@ export default function Users() {
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const cellFor = (u: UserItem, key: ColKey) => {
+    if (god.editing) {
+      const gf = godFieldFor(key);
+      if (gf) {
+        return (
+          <GodCell row={u} gf={gf} patch={patchUser} onRowSaved={replaceRow}
+                   errorMap={USER_ERRORS} disabled={!canEditRow(u)}
+                   idOf={(row) => row.person_id} />
+        );
+      }
+    }
     switch (key) {
       case 'roles':
         return (
@@ -384,6 +400,9 @@ export default function Users() {
             </svg>
             Export
           </button>
+
+          <GodEditToggle editing={god.editing} onToggle={god.toggle}
+                         visible={godMode && can('users', 'change')} />
 
           <button className="btn-solid" onClick={() => setAddOpen(true)}>
             + Add person

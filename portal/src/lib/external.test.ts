@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ExternalLinkItem, ExternalPersonItem } from './api';
+import type { ExternalLinkItem, ExternalPersonItem, PersonDetail } from './api';
 import {
   CREATED_UNLINKED_MESSAGE,
   afterLinkFailure,
+  applyExternalPatch,
   buildLinkMetaPatch,
   buildNewContactPersonPayload,
   canEditExternalPerson,
   distinctFunctions,
   distinctTitles,
+  EXTERNAL_GOD_FIELDS,
   externalFacetValues,
   externalSearchHay,
   orgKey,
@@ -214,5 +216,74 @@ describe('buildNewContactPersonPayload', () => {
       first_name: 'Jane', last_name: 'Doe', contact_email: null, phone: '555-1212',
       roles: [], create_account: false,
     });
+  });
+});
+
+// Fields admin_update_profile (PATCH /users/{person_id}/profile, api/src/
+// serversherpa/api/routes/users.py) accepts via ProfileUpdateIn (api/src/
+// serversherpa/api/schemas.py:199-216): first_name, last_name,
+// preferred_name, email, phone, job_title, address_line1, address_line2,
+// city, region, postal_code, country. Verified 1:1 against the schema;
+// EXTERNAL_GOD_FIELDS must only ever name a field from this set.
+const PROFILE_WRITABLE_FIELDS = new Set([
+  'first_name', 'last_name', 'preferred_name', 'email', 'phone', 'job_title',
+  'address_line1', 'address_line2', 'city', 'region', 'postal_code', 'country',
+]);
+
+function personDetail(overrides: Partial<PersonDetail> = {}): PersonDetail {
+  return {
+    id: 'p-1', first_name: 'Jane', last_name: 'Doe', preferred_name: null,
+    display_name: 'Jane Doe', email: 'jane@acme.test', phone: '555-0100',
+    job_title: null, address_line1: null, address_line2: null, city: null,
+    region: null, postal_code: null, country: 'US', badge_uid: 'b-1',
+    created_at: '2026-01-01T00:00:00Z', avatar_key: null, avatar_url: null,
+    password_updated_at: null,
+    ...overrides,
+  };
+}
+
+describe('EXTERNAL_GOD_FIELDS', () => {
+  const fields = EXTERNAL_GOD_FIELDS();
+
+  it('only exposes fields the profile PATCH endpoint accepts', () => {
+    for (const f of fields) expect(PROFILE_WRITABLE_FIELDS.has(f.field)).toBe(true);
+  });
+
+  it('exposes exactly phone, round-tripping a sample row', () => {
+    expect(fields.map((f) => f.column)).toEqual(['phone']);
+    expect(fields[0].fromRow(person({ phone: '555-1212' }))).toBe('555-1212');
+  });
+
+  it('falls back to empty string when phone is unset', () => {
+    expect(fields[0].fromRow(person({ phone: null }))).toBe('');
+  });
+
+  it('deliberately has no descriptor for the guarded, compound, or derived columns', () => {
+    for (const col of ['orgs', 'type', 'title', 'functions', 'email', 'login']) {
+      expect(fields.some((f) => f.column === col)).toBe(false);
+    }
+  });
+});
+
+describe('applyExternalPatch', () => {
+  it('merges phone from the server response', () => {
+    const row = person({ phone: '555-1212' });
+    const updated = applyExternalPatch(row, personDetail({ phone: '555-9999' }));
+    expect(updated.phone).toBe('555-9999');
+  });
+
+  it('leaves unrelated fields untouched', () => {
+    const row = person({ phone: '555-1212', login_status: 'active', links: [link()] });
+    const updated = applyExternalPatch(row, personDetail({ phone: '555-9999' }));
+    expect(updated.login_status).toBe('active');
+    expect(updated.links).toEqual(row.links);
+    expect(updated.display_name).toBe(row.display_name);
+  });
+
+  it('never mutates the input row', () => {
+    const row = person({ phone: '555-1212' });
+    const before = { ...row };
+    applyExternalPatch(row, personDetail({ phone: '555-9999' }));
+    expect(row).toEqual(before);
   });
 });

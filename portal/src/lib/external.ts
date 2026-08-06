@@ -5,7 +5,8 @@
  * the payload shaping for the "new external contact" one-form flow.
  */
 
-import type { ContactUpdatePatch, ExternalLinkItem, ExternalPersonItem, OrgKind } from './api';
+import type { ContactUpdatePatch, ExternalLinkItem, ExternalPersonItem, OrgKind, PersonDetail } from './api';
+import type { GodField } from './godEdit';
 
 export function typeLabel(links: ExternalLinkItem[]): string {
   const kinds = new Set(links.map((l) => l.kind));
@@ -159,4 +160,42 @@ export function afterLinkFailure(createdPersonId: string | null, reason?: string
     ? `${CREATED_UNLINKED_MESSAGE} ${reason}`
     : CREATED_UNLINKED_MESSAGE;
   return { showNew: false, pick: createdPersonId, message };
+}
+
+/* ── god-edit descriptors ──────────────────────────────────────────
+ * Only `phone` round-trips through a genuine single-field PATCH — the
+ * SAME endpoint the Users page uses, PATCH /users/{person_id}/profile
+ * (ProfileUpdateIn, api/src/serversherpa/api/schemas.py:199-216) — so its
+ * error map is lib/users.ts's USER_ERRORS; import that directly at the
+ * call site rather than duplicating it here. Left read-only, deliberately,
+ * with no descriptor:
+ *   - `email` maps 1:1 to ProfileUpdateIn's `email` field too, but stays
+ *     read-only per the task brief — email changes are a guarded flow,
+ *     not a bare inline edit, on every page that has this column;
+ *   - `orgs`/`title`/`functions` are per-org-link fields (ContactProfile,
+ *     scoped by BOTH org_id and person_id) — PATCH /clients|partners/
+ *     {org_id}/contacts/{person_id} (routes/stakeholders.py:update_contact)
+ *     needs an org_id this row's single id can't supply, and a person can
+ *     hold several links at once (each with its own title/functions), so
+ *     there is no single row-level value to inline-edit anyway — that's
+ *     exactly why EditPersonModal's org-links editor stays a modal;
+ *   - `type` is a derived label (typeLabel over links), no field of its
+ *     own to PATCH;
+ *   - `login` is portal-lifecycle (grant/enable/disable) — a guarded,
+ *     audited flow with its own confirm modal (GrantAccessModal / the
+ *     enable-disable buttons), not a row-level PATCH. */
+export function EXTERNAL_GOD_FIELDS(): GodField<ExternalPersonItem>[] {
+  return [
+    { column: 'phone', field: 'phone', kind: 'text',
+      fromRow: (p) => p.phone ?? '' },
+  ];
+}
+
+/** admin_update_profile returns the full PersonDetail — trust the server's
+ *  phone value rather than echoing back what was sent, so any server-side
+ *  normalisation is reflected. */
+export function applyExternalPatch(
+  row: ExternalPersonItem, detail: PersonDetail,
+): ExternalPersonItem {
+  return { ...row, phone: detail.phone };
 }
