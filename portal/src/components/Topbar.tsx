@@ -200,7 +200,8 @@ export default function Topbar() {
     <header className="topbar">
       <div className="crumbs">
         {trail.map((part, i) => (
-          <span key={part} style={{ display: 'contents' }}>
+          // key by position: a section and page can share a name ("Assets / Assets")
+          <span key={`${i}-${part}`} style={{ display: 'contents' }}>
             {i > 0 && <span className="crumb-sep">/</span>}
             {i === trail.length - 1 ? <b>{part}</b> : <span>{part}</span>}
           </span>
