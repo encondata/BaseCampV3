@@ -58,6 +58,22 @@ export function passesColumnFilters<T>(
   return true;
 }
 
+/** Rows to compute a column's checklist/uniqueValues from — Excel's own
+ *  cross-filter rule: every OTHER column's active filter narrows the list
+ *  (so opening the Site menu only offers sites among rows that already
+ *  pass the Status filter), but the column's OWN filter is excluded (so a
+ *  value the user already checked stays visible/uncheckable instead of
+ *  vanishing once it's the only thing left selected). */
+export function rowsForMenu<T>(
+  rows: T[], filters: ColumnFilters, colKey: string, text: CellText<T>,
+): T[] {
+  const others: ColumnFilters = {};
+  for (const [key, f] of Object.entries(filters)) {
+    if (key !== colKey) others[key] = f;
+  }
+  return rows.filter((row) => passesColumnFilters(row, others, text));
+}
+
 /** Sorted (naturalCompare), deduped display values for a column — blanks
  *  collapse to '—' so an empty cell gets one checkbox, not a blank row. */
 export function uniqueValues<T>(rows: T[], colKey: string, text: CellText<T>): string[] {

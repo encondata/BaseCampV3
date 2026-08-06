@@ -31,7 +31,7 @@ import {
 import { initialOpenId } from '../lib/auditFormat';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
-  usePersistentListState,
+  rowsForMenu, usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { naturalCompare } from '../lib/sites';
@@ -299,7 +299,9 @@ export default function Assets() {
               <button className="sortable" onClick={() => toggleSort('primary')}>
                 Serial {caret('primary')}
               </button>
-              <ColumnMenu colKey="primary" label="Serial" rows={assets ?? []} text={assetCellText}
+              <ColumnMenu colKey="primary" label="Serial"
+                          rows={rowsForMenu(assets ?? [], filters, 'primary', assetCellText)}
+                          text={assetCellText}
                           filter={filters.primary} onFilter={setFilter}
                           sortDir={sortKey === 'primary' ? sortDir : null}
                           onSort={(dir) => setSort('primary', dir)} />
@@ -309,13 +311,17 @@ export default function Assets() {
                 <button className="sortable" onClick={() => toggleSort(c.key)}>
                   {c.label} {caret(c.key)}
                 </button>
-                <ColumnMenu colKey={c.key} label={c.label} rows={assets ?? []} text={assetCellText}
+                <ColumnMenu colKey={c.key} label={c.label}
+                            rows={rowsForMenu(assets ?? [], filters, c.key, assetCellText)}
+                            text={assetCellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
               </span>
             ))}
-            <ColumnMenu colKey="archived" label="Archived" rows={assets ?? []} text={assetCellText}
+            <ColumnMenu colKey="archived" label="Archived"
+                        rows={rowsForMenu(assets ?? [], filters, 'archived', assetCellText)}
+                        text={assetCellText}
                         filter={filters.archived} onFilter={setFilter}
                         sortDir={sortKey === 'archived' ? sortDir : null}
                         onSort={(dir) => setSort('archived', dir)} />

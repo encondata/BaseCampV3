@@ -16,6 +16,7 @@ import {
   EmptyClearFilters,
   FilterSummaryChip,
   passesColumnFilters,
+  rowsForMenu,
   uniqueValues,
   usePersistentListState,
   type CellText,
@@ -81,6 +82,23 @@ describe('passesColumnFilters', () => {
     const row = rows[1]; // site: DA10
     expect(passesColumnFilters(row, { site: { text: 'da', values: ['DA10'] } }, text)).toBe(true);
     expect(passesColumnFilters(row, { site: { text: 'da', values: ['DA2'] } }, text)).toBe(false);
+  });
+});
+
+describe('rowsForMenu', () => {
+  it("ignores the column's own filter, so an already-checked value stays offered", () => {
+    // site filter narrowed to just DA1 — if rowsForMenu applied it, DA10/DA2
+    // would vanish from the Site menu's own options the moment DA1 alone is
+    // checked, making it impossible to add a second value back.
+    const result = rowsForMenu(rows, { site: { values: ['DA1'] } }, 'site', text);
+    expect(result).toEqual(rows);
+  });
+
+  it("applies every OTHER column's filter", () => {
+    // name filter to 'Bravo' (site: DA10) — opening the Site menu should
+    // only offer values among rows that still pass the name filter.
+    const result = rowsForMenu(rows, { name: { text: 'Bravo' } }, 'site', text);
+    expect(result).toEqual([rows[1]]);
   });
 });
 
