@@ -69,6 +69,35 @@ def bootstrap_admin(
 
 
 @app.command()
+def import_v2_assets(
+    dump: str = typer.Option(..., help="Path to the V2 pg_dump .sql file"),
+    limit: int = typer.Option(100, help="Max assets to import this run"),
+    dry_run: bool = typer.Option(False, help="Parse and report; write nothing"),
+) -> None:
+    """Seed real assets (+ referenced catalog models/aliases) from a legacy
+    BaseCamp V2 dump. Additive: re-runs skip already-imported legacy_ids."""
+
+    async def _run() -> None:
+        from serversherpa.assets.v2_import import SOURCE_REF, import_assets
+        from serversherpa.services.audit import audit
+
+        async with get_sessionmaker()() as db:
+            stats = await import_assets(db, dump, limit)
+            if dry_run:
+                await db.rollback()
+                typer.secho(f"[dry-run] would import: {stats}", fg="yellow")
+            else:
+                audit(db, actor_id=None, entity_type="asset", entity_id=None,
+                      action="import",
+                      changes={"source": SOURCE_REF, **stats})
+                await db.commit()
+                typer.secho(f"Imported: {stats}", fg="green")
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def set_password(
     email: str = typer.Option(..., help="Login email of the existing account"),
     password: str = typer.Option(
