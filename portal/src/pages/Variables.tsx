@@ -1,23 +1,27 @@
 /**
  * Variables — the admin surface for controlled vocabularies: status values
- * (per record type), site types, and worker levels. Three tabs, page-local
- * state; each tab owns its own facets/columns so switching tabs never
- * leaks a filter into another tab. Same directory-list pattern as
- * pages/Sites.tsx, applied three times — row expansion is read-only, every
- * mutation lives behind an Edit button in a modal.
+ * (per record type), site types, worker levels, and asset categories.
+ * Four tabs, page-local state; each tab owns its own facets/columns so
+ * switching tabs never leaks a filter into another tab. Same
+ * directory-list pattern as pages/Sites.tsx, applied per tab — row
+ * expansion is read-only, every mutation lives behind an Edit button in a
+ * modal.
  */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
+import AssetCategoryEditModal from '../components/variables/AssetCategoryEditModal';
 import SiteTypeEditModal from '../components/variables/SiteTypeEditModal';
 import StatusEditModal, { ColorSwatch } from '../components/variables/StatusEditModal';
 import WorkerLevelEditModal from '../components/variables/WorkerLevelEditModal';
 import {
   ApiError,
+  listAssetCategories,
   listSiteTypes,
   listStatusValues,
   listWorkerLevels,
+  type AssetCategoryOut,
   type SiteLookup,
   type StatusValue,
   type WorkerLevel,
@@ -53,7 +57,7 @@ function ChevronIcon() {
   );
 }
 
-type Tab = 'statuses' | 'site-types' | 'worker-levels';
+type Tab = 'statuses' | 'site-types' | 'worker-levels' | 'asset-categories';
 
 // Matches the server's status/labels.py UNKNOWN_COLOR fallback. Every site
 // type carries a colour after migration 0013, so this is defensive only —
@@ -64,6 +68,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'statuses', label: 'Statuses' },
   { id: 'site-types', label: 'Site types' },
   { id: 'worker-levels', label: 'Worker levels' },
+  { id: 'asset-categories', label: 'Asset categories' },
 ];
 
 export default function Variables() {
@@ -76,8 +81,8 @@ export default function Variables() {
           <div className="eyebrow">System</div>
           <h1 className="page-title">Variables</h1>
           <p className="page-hint">
-            Controlled vocabularies shared across the portal — statuses, site types, and worker
-            levels.
+            Controlled vocabularies shared across the portal — statuses, site types, worker
+            levels, and asset categories.
           </p>
         </div>
       </div>
@@ -96,6 +101,7 @@ export default function Variables() {
         {tab === 'statuses' && <StatusesTab />}
         {tab === 'site-types' && <SiteTypesTab />}
         {tab === 'worker-levels' && <WorkerLevelsTab />}
+        {tab === 'asset-categories' && <AssetCategoriesTab />}
       </div>
     </div>
   );
@@ -731,6 +737,196 @@ function WorkerLevelRowDetail({ value, canEdit, onEdit }: {
         <dl className="kv">
           <dt>Ordering</dt>
           <dd className="mono">{value.rank}</dd>
+        </dl>
+      </div>
+
+      {canEdit && (
+        <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
+          <button className="btn-solid" onClick={onEdit}>Edit</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════════════ Asset categories ══════════════════════════ */
+
+const CATEGORY_COLUMNS: ColumnDef[] = [
+  { key: 'key', label: 'Key', width: '1fr', default: true },
+  { key: 'label', label: 'Label', width: '1.2fr', default: true },
+  { key: 'description', label: 'Description', width: '2.4fr', default: true },
+  { key: 'color', label: 'Colour', width: '0.8fr', default: true },
+  { key: 'sort_order', label: 'Order', width: '0.6fr', default: true },
+];
+
+const CATEGORY_CSV_COLUMNS: [string, (c: AssetCategoryOut) => string][] = [
+  ['Key', (c) => c.key],
+  ['Label', (c) => c.label],
+  ['Description', (c) => c.description],
+  ['Colour', (c) => c.color],
+  ['Sort order', (c) => String(c.sort_order)],
+];
+
+function AssetCategoriesTab() {
+  const { can } = useAuth();
+  const canAdd = can('devtools', 'add');
+  const canChange = can('devtools', 'change');
+
+  const [categories, setCategories] = useState<AssetCategoryOut[] | null>(null);
+  const [error, setError] = useState('');
+  const [query, setQuery] = useState('');
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [visibleCols, setVisibleCols] = useState<Set<string>>(
+    () => new Set(CATEGORY_COLUMNS.filter((c) => c.default).map((c) => c.key)));
+  const [editingRow, setEditingRow] = useState<AssetCategoryOut | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  const load = async () => {
+    try {
+      setCategories(await listAssetCategories());
+      setError('');
+    } catch (err) {
+      setError(err instanceof ApiError && err.status === 403
+        ? 'You do not have permission to view asset categories.'
+        : 'Failed to load asset categories.');
+    }
+  };
+
+  useEffect(() => { void load(); }, []);
+
+  const visible = useMemo(() => {
+    if (!categories) return [];
+    const q = query.trim().toLowerCase();
+    const rows = categories.filter((c) => {
+      if (!q) return true;
+      return [c.key, c.label, c.description].join(' ').toLowerCase().includes(q);
+    });
+    return rows.sort((a, b) => a.sort_order - b.sort_order || a.label.localeCompare(b.label));
+  }, [categories, query]);
+
+  useEffect(() => {
+    if (categories && openKey && !visible.some((c) => c.key === openKey)) setOpenKey(null);
+  }, [categories, visible, openKey]);
+
+  const shownCols = CATEGORY_COLUMNS.filter((c) => visibleCols.has(c.key));
+  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 30px` };
+
+  const cellFor = (c: AssetCategoryOut, key: string) => {
+    switch (key) {
+      case 'key':
+        return <span className="mono">{c.key}</span>;
+      case 'label':
+        return <span className="cell-top">{c.label}</span>;
+      case 'description':
+        return <span className="cell-sub">{c.description || '—'}</span>;
+      case 'color':
+        return <ColorSwatch color={c.color} />;
+      case 'sort_order':
+        return <span className="mono">{c.sort_order}</span>;
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <>
+      <div className="dir-toolbar">
+        <div className="dir-search">
+          <SearchIcon />
+          <input placeholder="Filter this list…" value={query}
+                 onChange={(e) => setQuery(e.target.value)} />
+        </div>
+        <span className="result-count">{visible.length} of {categories?.length ?? 0} shown</span>
+        <ColumnsButton columns={CATEGORY_COLUMNS} visible={visibleCols} onChange={setVisibleCols} />
+        <ExportButton onExport={() => exportCsv('asset-categories', CATEGORY_CSV_COLUMNS, visible)} />
+        {canAdd && (
+          <button className="btn-solid" onClick={() => setCreating(true)}>+ New category</button>
+        )}
+      </div>
+
+      {error && (
+        <div className="dir-empty" style={{ marginBottom: 12 }}>
+          <b>Cannot load asset categories</b>{error}
+        </div>
+      )}
+
+      {!error && (
+        <div className="dir-list">
+          <div className="list-head" style={grid}>
+            {shownCols.map((c) => <span key={c.key}>{c.label}</span>)}
+            <span />
+          </div>
+
+          {categories && visible.length === 0 && (
+            <div className="dir-empty"><b>No matches</b>Try a different filter.</div>
+          )}
+
+          {visible.map((c) => {
+            const open = openKey === c.key;
+            return (
+              <div key={c.key} className={`dir-row ${open ? 'open' : ''}`}>
+                <div className="row-main" style={grid}
+                     onClick={() => setOpenKey(open ? null : c.key)}>
+                  {shownCols.map((col) => (
+                    <div className="cell" key={col.key}>{cellFor(c, col.key)}</div>
+                  ))}
+                  <div className="cell chevron-cell"><ChevronIcon /></div>
+                </div>
+                <div className="detail">
+                  <div className="detail-clip">
+                    <div className="detail-inner">
+                      {open && (
+                        <AssetCategoryRowDetail value={c} canEdit={canChange}
+                                                onEdit={() => setEditingRow(c)} />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {editingRow && (
+        <AssetCategoryEditModal value={editingRow} canChange={canChange}
+                                onClose={() => setEditingRow(null)} onSaved={() => load()} />
+      )}
+      {creating && (
+        <AssetCategoryEditModal value={null} canChange={canChange}
+                                onClose={() => setCreating(false)} onSaved={() => load()} />
+      )}
+    </>
+  );
+}
+
+function AssetCategoryRowDetail({ value, canEdit, onEdit }: {
+  value: AssetCategoryOut;
+  canEdit: boolean;
+  onEdit: () => void;
+}) {
+  return (
+    <div className="detail-grid">
+      <div className="detail-block">
+        <p className="eyebrow-sm">Description</p>
+        <p className="set-note" style={{ padding: 0 }}>{value.description || 'No description.'}</p>
+
+        <p className="eyebrow-sm">Colour</p>
+        <dl className="kv">
+          <dt>Hex</dt>
+          <dd className="mono">
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+              <ColorSwatch color={value.color} />{value.color}
+            </span>
+          </dd>
+        </dl>
+      </div>
+
+      <div className="detail-block">
+        <p className="eyebrow-sm">Ordering</p>
+        <dl className="kv">
+          <dt>Sort order</dt>
+          <dd className="mono">{value.sort_order}</dd>
         </dl>
       </div>
 

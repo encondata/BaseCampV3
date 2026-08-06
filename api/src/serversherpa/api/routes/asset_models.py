@@ -10,8 +10,9 @@ from sqlalchemy import select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    AssetCategoryOut, AssetModelAliasesIn, AssetModelCreateIn,
-    AssetModelItem, AssetModelUpdateIn,
+    AssetCategoryCreateIn, AssetCategoryOut, AssetCategoryUpdateIn,
+    AssetModelAliasesIn, AssetModelCreateIn, AssetModelItem,
+    AssetModelUpdateIn,
 )
 from serversherpa.assets.units import apply_unit_pairs
 from serversherpa.db.models import AssetCategory, AssetModel, AssetModelAlias
@@ -233,3 +234,64 @@ async def list_asset_categories(
         select(AssetCategory).order_by(AssetCategory.sort_order,
                                        AssetCategory.label))).all()
     return [AssetCategoryOut.model_validate(c) for c in cats]
+
+
+# ── category vocabulary (devtools-gated, mirrors site-types) ────────
+
+# every mutable column on AssetCategory is NOT NULL — an explicit null in a
+# PATCH must 422 up front rather than blind-setattr into an IntegrityError.
+# `is None` predicate, not falsy: sort_order=0 is a legitimate value.
+NON_NULLABLE_CATEGORY_FIELDS = ("label", "description", "sort_order", "color")
+
+
+@categories_router.post("/asset-categories", response_model=AssetCategoryOut,
+                        status_code=201)
+async def create_asset_category(
+    body: AssetCategoryCreateIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "add"),
+) -> AssetCategoryOut:
+    if await db.get(AssetCategory, body.key) is not None:
+        raise HTTPException(status_code=409,
+                            detail={"code": "asset_category_exists"})
+    row = AssetCategory(
+        key=body.key, label=body.label, description=body.description,
+        sort_order=body.sort_order, color=body.color,
+        updated_at=datetime.now(UTC),
+    )
+    db.add(row)
+    audit(db, actor_id=actor.person.id, entity_type="asset_category",
+          entity_id=body.key, action="create",
+          changes=diff({}, snapshot(row, list(NON_NULLABLE_CATEGORY_FIELDS))))
+    await db.commit()
+    return AssetCategoryOut.model_validate(row)
+
+
+@categories_router.patch("/asset-categories/{key}",
+                         response_model=AssetCategoryOut)
+async def update_asset_category(
+    key: str,
+    body: AssetCategoryUpdateIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> AssetCategoryOut:
+    row = await db.get(AssetCategory, key)
+    if row is None:
+        raise HTTPException(status_code=404,
+                            detail={"code": "asset_category_not_found"})
+    data = body.model_dump(exclude_unset=True)
+    for field in NON_NULLABLE_CATEGORY_FIELDS:
+        if field in data and data[field] is None:
+            raise HTTPException(status_code=422,
+                                detail={"code": f"{field}_required"})
+    fields = list(NON_NULLABLE_CATEGORY_FIELDS)
+    before = snapshot(row, fields)
+    for field, value in data.items():
+        setattr(row, field, value)
+    changes = diff(before, snapshot(row, fields))
+    if changes:
+        row.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor.person.id, entity_type="asset_category",
+              entity_id=key, action="update", changes=changes)
+    await db.commit()
+    return AssetCategoryOut.model_validate(row)

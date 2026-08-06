@@ -1,6 +1,6 @@
 // Pure helpers for the Variables page. Kept out of the component so they can
 // be tested without a live API — same convention as lib/sites.ts.
-import type { SiteLookup, StatusValue, WorkerLevel } from './api';
+import type { AssetCategoryOut, SiteLookup, StatusValue, WorkerLevel } from './api';
 
 // The seven the palette was built on. Not a limit any more — a starting point,
 // so the common case stays one click. Values are the light-theme hexes; render
@@ -286,6 +286,57 @@ export function workerLevelCreatePayload(form: WorkerLevelForm): Record<string, 
 // Mirrors needsStatusCreate.
 export function needsWorkerLevelCreate(
   original: WorkerLevel | null, createdKey: string | null,
+): boolean {
+  return original === null && createdKey === null;
+}
+
+/* ── asset categories ─────────────────────────────────────────────── */
+
+export interface AssetCategoryForm {
+  key: string;   // editable only in create mode; immutable (FK: asset_models.category) after
+  label: string;
+  description: string;
+  sort_order: string;   // form state is a string; coerced on the way out
+  color: string;
+}
+
+export function assetCategoryFormFromValue(v: AssetCategoryOut): AssetCategoryForm {
+  return {
+    key: v.key,
+    label: v.label,
+    description: v.description,
+    sort_order: String(v.sort_order),
+    color: v.color,
+  };
+}
+
+export function assetCategoryCreatePayload(form: AssetCategoryForm): Record<string, unknown> {
+  return {
+    key: form.key,
+    label: form.label,
+    description: form.description,
+    sort_order: Number(form.sort_order),
+    color: form.color,
+  };
+}
+
+// Same "send only what changed" contract as statusUpdatePayload.
+export function assetCategoryUpdatePayload(
+  form: AssetCategoryForm, original: AssetCategoryOut,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (form.label !== original.label) out.label = form.label;
+  if (form.description !== original.description) out.description = form.description;
+  if (Number(form.sort_order) !== original.sort_order) {
+    out.sort_order = Number(form.sort_order);
+  }
+  if (form.color !== original.color) out.color = form.color;
+  return out;
+}
+
+// Once POST succeeds, a retry after a later failure must never re-create.
+export function needsAssetCategoryCreate(
+  original: AssetCategoryOut | null, createdKey: string | null,
 ): boolean {
   return original === null && createdKey === null;
 }

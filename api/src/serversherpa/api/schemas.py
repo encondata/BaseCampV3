@@ -732,6 +732,24 @@ class AssetCategoryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AssetCategoryCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # slug, not prose — this is a stable identifier and an FK target
+    key: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9_]+$")
+    label: str = Field(min_length=1)
+    description: str = ""
+    sort_order: int = 0
+    color: HexColor
+
+
+class AssetCategoryUpdateIn(BaseModel):
+    label: str | None = None
+    description: str | None = None
+    sort_order: int | None = None
+    color: HexColor | None = None
+
+
 class AssetModelRef(BaseModel):
     """Read-only catalog summary embedded in asset payloads — this is all a
     client-anchored actor ever sees of the catalog (no knowledge field)."""

@@ -1161,6 +1161,30 @@ export async function listAssetCategories(): Promise<AssetCategoryOut[]> {
   return resp.json();
 }
 
+export async function createAssetCategory(
+  body: Record<string, unknown>,
+): Promise<AssetCategoryOut> {
+  const resp = await apiFetch('/asset-categories', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateAssetCategory(
+  key: string, body: Record<string, unknown>,
+): Promise<AssetCategoryOut> {
+  const resp = await apiFetch(`/asset-categories/${key}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export async function listNotes(entityType: string, entityId: string): Promise<NoteOut[]> {
   const resp = await apiFetch(`/notes?entity_type=${entityType}&entity_id=${entityId}`);
   if (!resp.ok) throw await errorFrom(resp);
