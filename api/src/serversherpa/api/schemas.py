@@ -882,6 +882,46 @@ class AssetUpdateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ContainerItem(BaseModel):
+    id: uuid.UUID
+    name: str
+    rfid_tag: str | None = None
+    container_type: str | None = None
+    type_label: str | None = None
+    type_color: str | None = None
+    status: str
+    status_label: str
+    status_color: str
+    site_id: uuid.UUID | None = None
+    site_name: str | None = None
+    location_detail: str
+    asset_count: int = 0
+    last_audit_at: datetime | None = None
+    last_validated_at: datetime | None = None
+    archived_at: datetime | None = None
+    created_at: datetime
+
+
+class ContainerCreateIn(BaseModel):
+    name: str
+    rfid_tag: str | None = None
+    container_type: str | None = None
+    status: str | None = None
+    site_id: uuid.UUID | None = None
+    location_detail: str = ""
+    model_config = ConfigDict(extra="forbid")
+
+
+class ContainerUpdateIn(BaseModel):
+    name: str | None = None
+    rfid_tag: str | None = None
+    container_type: str | None = None
+    status: str | None = None
+    site_id: uuid.UUID | None = None
+    location_detail: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
 class NoteOut(BaseModel):
     id: uuid.UUID
     entity_type: str
