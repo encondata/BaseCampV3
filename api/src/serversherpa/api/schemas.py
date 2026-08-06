@@ -100,6 +100,7 @@ class SessionOut(BaseModel):
     perms: dict[str, dict[str, bool]]
     max_rank: int
     scope: ScopeOut
+    password_min_length: int = 8
 
 
 class MeOut(BaseModel):
@@ -111,6 +112,7 @@ class MeOut(BaseModel):
     perms: dict[str, dict[str, bool]]
     max_rank: int
     scope: ScopeOut
+    password_min_length: int = 8
 
 
 class ErrorOut(BaseModel):
@@ -218,11 +220,11 @@ class ProfileUpdateIn(BaseModel):
 
 class ChangePasswordIn(BaseModel):
     current_password: str
-    new_password: str = Field(min_length=12)
+    new_password: str = Field(min_length=1)   # real bar: settings.password_min_length
 
 
 class ResetPasswordIn(BaseModel):
-    temp_password: str = Field(min_length=12)
+    temp_password: str = Field(min_length=1)  # real bar: settings.password_min_length
     must_change_password: bool = True
 
 
@@ -233,7 +235,7 @@ class AccountCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     login_email: EmailStr
-    temp_password: str = Field(min_length=10)
+    temp_password: str = Field(min_length=1)  # real bar: settings.password_min_length
     must_change_password: bool = True
 
 
@@ -302,7 +304,7 @@ class UserCreateIn(BaseModel):
     roles: list[str] = []
     create_account: bool = True
     login_email: EmailStr | None = None
-    temp_password: str | None = Field(None, min_length=10)
+    temp_password: str | None = Field(None, min_length=1)  # real bar: settings.password_min_length
     must_change_password: bool = True
 
 

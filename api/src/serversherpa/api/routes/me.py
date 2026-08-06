@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
-from serversherpa.api.deps import CurrentUser, DbSession
+from serversherpa.api.deps import CurrentUser, DbSession, require_password_length
 from serversherpa.api.schemas import (
     ChangePasswordIn,
     MyActivityItem,
@@ -176,6 +176,7 @@ async def change_password(
     """Self-service password change. Requires the current password; on
     success every OTHER login (family) is revoked — a stolen session
     can't ride through a password rotation."""
+    require_password_length(body.new_password)
     pepper = get_settings().password_pepper.get_secret_value()
     account = user.account
 

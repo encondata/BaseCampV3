@@ -10,7 +10,9 @@ from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.resolver import can_touch_rank
 from serversherpa.access.scope import scope_conditions
-from serversherpa.api.deps import AuthContext, DbSession, require_permission
+from serversherpa.api.deps import (
+    AuthContext, DbSession, require_password_length, require_permission,
+)
 from serversherpa.api.schemas import (
     AccountCreateIn,
     PersonDetail,
@@ -102,6 +104,8 @@ async def create_user(
     await _require_global(actor)
     if body.create_account and (not body.login_email or not body.temp_password):
         raise HTTPException(status_code=422, detail={"code": "login_details_required"})
+    if body.create_account and body.temp_password:
+        require_password_length(body.temp_password)
 
     desired = set(body.roles)
     current: set[str] = set()
@@ -257,6 +261,7 @@ async def create_account(
     promoted to portal users). `_load_target` doesn't fit here — it
     requires an account row, which is exactly what's missing."""
     await _require_global(actor)
+    require_password_length(body.temp_password)
     if person_id == actor.person.id:
         raise _err(403, "cannot_target_self")
     person = await db.get(Person, person_id)
@@ -298,6 +303,7 @@ async def reset_password(
     db: DbSession,
     actor: AuthContext = require_permission("users", "change"),
 ) -> None:
+    require_password_length(body.temp_password)
     _, account, _ = await _load_target(db, actor, person_id)
     now = datetime.now(UTC)
     account.password_hash = hash_password(

@@ -96,6 +96,17 @@ def require_permission(resource: str, action: str):
     return Depends(guard)
 
 
+def require_password_length(password: str) -> None:
+    """One policy gate for every password the API accepts. The schemas keep
+    only a non-empty floor — the real bar lives in settings so ops can
+    raise it without a deploy."""
+    min_length = get_settings().password_min_length
+    if len(password) < min_length:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "password_too_short", "min_length": min_length})
+
+
 def client_ip(request: Request) -> str | None:
     """Real client IP. Caddy (our only proxy) sets X-Forwarded-For."""
     forwarded = request.headers.get("x-forwarded-for")
