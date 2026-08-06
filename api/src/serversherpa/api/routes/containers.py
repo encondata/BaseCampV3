@@ -6,7 +6,7 @@ root); the join table enforces one-container-per-asset."""
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import func, select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
@@ -17,6 +17,7 @@ from serversherpa.api.schemas import (
 from serversherpa.db.models import (
     Asset, AssetModel, Container, ContainerAsset, Person, Site, StatusValue,
 )
+from serversherpa.logistics import bulk_import as bulk
 from serversherpa.services.audit import audit, diff, snapshot
 
 router = APIRouter(prefix="/containers", tags=["containers"])
@@ -98,6 +99,54 @@ async def list_containers(
     statuses, types, sites, counts = await _context(db, containers)
     return [ContainerItem(**_item(c, statuses, types, sites, counts))
             for c in containers]
+
+
+# ── bulk import ────────────────────────────────────────────────────
+# Declared ABOVE get_container: /containers/bulk-import/* must never be
+# swallowed by GET /containers/{container_id} (which would 422 on the
+# non-UUID segment).
+
+def _bulk_err(exc: bulk.BulkImportError) -> HTTPException:
+    return _err(422, exc.code, **exc.extra)
+
+
+@router.get("/bulk-import/template")
+async def bulk_import_template(
+    fmt: str = "csv",
+    actor: AuthContext = require_permission("containers", "add"),
+) -> Response:
+    if fmt == "csv":
+        return Response(
+            content=bulk.build_template_csv(), media_type="text/csv",
+            headers={"Content-Disposition":
+                     'attachment; filename="containers-template.csv"'})
+    raise _err(422, "unsupported_format")
+
+
+@router.post("/bulk-import/preview")
+async def bulk_import_preview(
+    body: dict,
+    db: DbSession,
+    actor: AuthContext = require_permission("containers", "add"),
+) -> dict:
+    try:
+        numbered = bulk.number_json_rows(body.get("rows"))
+        return {"rows": await bulk.preview_rows(db, numbered)}
+    except bulk.BulkImportError as exc:
+        raise _bulk_err(exc) from exc
+
+
+@router.post("/bulk-import/commit")
+async def bulk_import_commit(
+    body: dict,
+    db: DbSession,
+    actor: AuthContext = require_permission("containers", "add"),
+) -> dict:
+    try:
+        numbered = bulk.number_json_rows(body.get("rows"))
+        return await bulk.commit_rows(db, actor.person.id, numbered)
+    except bulk.BulkImportError as exc:
+        raise _bulk_err(exc) from exc
 
 
 @router.get("/{container_id}", response_model=ContainerItem)
