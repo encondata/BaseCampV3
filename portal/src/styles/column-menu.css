@@ -1,0 +1,85 @@
+/**
+ * Excel-style per-column header menus (lib/columnMenu.tsx). Reuses the
+ * generic .pop-wrap/.pop-menu/.pop-item/.pop-check/.pop-sep/.pop-empty
+ * primitives from chrome.css — this file only adds what's specific to the
+ * column menu: the header trigger, the search box, the scrollable value
+ * list, and the toolbar/empty-state filter-summary bits.
+ */
+
+.colmenu { display: inline-flex; }
+
+.colmenu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-mute);
+  cursor: pointer;
+  flex: none;
+}
+.colmenu-trigger svg { width: 12px; height: 12px; }
+.colmenu-trigger:hover { background: var(--surface-2, #f5f7fa); color: var(--text-dark); }
+.colmenu-trigger.filtered {
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.16);
+}
+
+.colmenu-menu { min-width: 220px; }
+
+.colmenu-sort {
+  display: flex;
+  gap: 6px;
+  padding: 2px;
+}
+.colmenu-sort .pop-item {
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.colmenu-search {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 4px 0 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  color: var(--text-dark);
+}
+.colmenu-search:focus { outline: none; border-color: var(--accent); }
+
+.colmenu-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.colmenu-actions { display: flex; gap: 6px; }
+.colmenu-actions .pop-item { text-align: center; justify-content: center; }
+
+/* ── toolbar summary chip ─────────────────────────────────────────── */
+
+.colfilter-chip { color: var(--accent); border-color: var(--accent); }
+.colfilter-chip .colfilter-clear {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  text-decoration: underline;
+  margin-left: 4px;
+}
+
+/* ── zero-results empty state ────────────────────────────────────── */
+
+.colfilter-empty {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--text-mute);
+}
+.colfilter-empty p { margin: 0 0 12px; font-size: 13px; }

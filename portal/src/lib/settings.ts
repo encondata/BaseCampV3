@@ -13,6 +13,7 @@ export const DEFAULT_PREFERENCES: UiPreferences = {
   density: 'comfortable',
   motion: true,
   notif: { critical: true, email: true, maint: true, digest: false },
+  list_prefs: {},
 };
 
 /** Swatch colors shown in Settings (must match the CSS data-accent sets). */

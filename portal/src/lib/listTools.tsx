@@ -144,6 +144,18 @@ export function passesFacets(
   return true;
 }
 
+/* ── column filters (Excel-style per-header menus) ──────────────────
+ * Types + the pure count live here alongside facetCount (their toolbar-
+ * chip cousin); the menu UI, matcher, and persistence hook live in
+ * lib/columnMenu.tsx, which re-exports these two for one-stop importing. */
+
+export interface ColumnFilter { text?: string; values?: string[] }
+export type ColumnFilters = Record<string, ColumnFilter>;
+
+export function activeFilterCount(filters: ColumnFilters): number {
+  return Object.keys(filters).length;
+}
+
 export function ColumnsButton({ columns, visible, onChange, godMode }: {
   columns: ColumnDef[];
   visible: Set<string>;
