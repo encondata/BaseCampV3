@@ -81,6 +81,15 @@ async def test_validation_errors(client, db, seeded_user):
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "status_required"
 
+    resp = await client.post("/containers", headers=hdrs, json={"name": ""})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "name_required"
+
+    resp = await client.patch(f"/containers/{cid}", headers=hdrs,
+                              json={"name": ""})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "name_required"
+
 
 async def test_archive_roundtrip(client, db, seeded_user):
     hdrs = await login(client)

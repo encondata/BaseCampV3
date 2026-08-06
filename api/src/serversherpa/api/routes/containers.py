@@ -191,6 +191,8 @@ async def create_container(
     actor: AuthContext = require_permission("containers", "add"),
 ) -> ContainerItem:
     data = body.model_dump(exclude_none=True)
+    if not data.get("name"):
+        raise _err(422, "name_required")
     await _check_refs(db, data)
     await _check_rfid(db, data.get("rfid_tag"))
     container = Container(**data, created_by=actor.person.id)
@@ -215,7 +217,7 @@ async def update_container(
     container = await _get_container(db, container_id)
     data = body.model_dump(exclude_unset=True)
     for field in NON_NULLABLE_FIELDS:
-        if field in data and data[field] is None:
+        if field in data and not data[field]:
             raise _err(422, f"{field}_required")
     await _check_refs(db, data)
     if "rfid_tag" in data:
