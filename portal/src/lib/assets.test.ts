@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { AssetItem, AssetModelItem } from './api';
 import {
   ASSET_ERRORS, ASSET_GOD_FIELDS, MODEL_ERRORS, MODEL_GOD_FIELDS,
-  assetPayload, duplicateSerials, formFromAsset, formFromModel,
+  assetCellText, assetPayload, duplicateSerials, formFromAsset, formFromModel,
   formatDims, modelPayload, needsModelCreate, parseDims, partnerFor,
 } from './assets';
 
@@ -136,6 +136,93 @@ describe('duplicateSerials', () => {
     ]);
     expect(dupes.has('sn1')).toBe(true);
     expect(dupes.size).toBe(1);
+  });
+});
+
+describe('assetCellText', () => {
+  const full = asset({
+    serial_number: 'SN9', name: 'web-09', rfid_tag: 'RF1',
+    location_detail: 'Rack 3, U12',
+    model_id: 'm1', model: {
+      id: 'm1', make: 'Dell', model: 'R740', category: 'server',
+      category_label: 'Server', category_color: '#1668a7', ru_size: 2,
+    },
+    client_id: 'c1', client_name: 'Acme',
+    site_id: 's1', site_name: 'DC1',
+    status: 'active', status_label: 'Active',
+    has_rails: true,
+    last_seen_at: '2026-01-15T00:00:00Z',
+    archived_at: null,
+  });
+
+  const blank = asset({
+    serial_number: null, name: null, rfid_tag: null,
+    location_detail: '', model_id: null, model: null,
+    client_id: null, client_name: null, site_id: null, site_name: null,
+    has_rails: null, last_seen_at: null, archived_at: '2026-01-01T00:00:00Z',
+  });
+
+  it('primary combines serial + name', () => {
+    expect(assetCellText(full, 'primary')).toBe('SN9 web-09');
+  });
+
+  it('status reads status_label', () => {
+    expect(assetCellText(full, 'status')).toBe('Active');
+  });
+
+  it('category reads the model category label', () => {
+    expect(assetCellText(full, 'category')).toBe('Server');
+    expect(assetCellText(blank, 'category')).toBe('');
+  });
+
+  it('client reads client_name', () => {
+    expect(assetCellText(full, 'client')).toBe('Acme');
+    expect(assetCellText(blank, 'client')).toBe('');
+  });
+
+  it('site reads site_name', () => {
+    expect(assetCellText(full, 'site')).toBe('DC1');
+    expect(assetCellText(blank, 'site')).toBe('');
+  });
+
+  it('model combines make + model', () => {
+    expect(assetCellText(full, 'model')).toBe('Dell R740');
+    expect(assetCellText(blank, 'model')).toBe('');
+  });
+
+  it('location reads location_detail, dashing when blank', () => {
+    expect(assetCellText(full, 'location')).toBe('Rack 3, U12');
+    expect(assetCellText(blank, 'location')).toBe('—');
+  });
+
+  it('rfid reads rfid_tag, dashing when null', () => {
+    expect(assetCellText(full, 'rfid')).toBe('RF1');
+    expect(assetCellText(blank, 'rfid')).toBe('—');
+  });
+
+  it('ru reads the model ru_size, dashing when unset', () => {
+    expect(assetCellText(full, 'ru')).toBe('2');
+    expect(assetCellText(blank, 'ru')).toBe('—');
+  });
+
+  it('last_seen formats the date, dashing when unset', () => {
+    expect(assetCellText(full, 'last_seen')).toBe(new Date(full.last_seen_at!).toLocaleDateString());
+    expect(assetCellText(blank, 'last_seen')).toBe('—');
+  });
+
+  it('has_rails maps true/false/null to Yes/No/—', () => {
+    expect(assetCellText(full, 'has_rails')).toBe('Yes');
+    expect(assetCellText(asset({ has_rails: false }), 'has_rails')).toBe('No');
+    expect(assetCellText(blank, 'has_rails')).toBe('—');
+  });
+
+  it('archived maps archived_at presence to Yes/No', () => {
+    expect(assetCellText(full, 'archived')).toBe('No');
+    expect(assetCellText(blank, 'archived')).toBe('Yes');
+  });
+
+  it('unknown column keys return empty string', () => {
+    expect(assetCellText(full, 'nonsense')).toBe('');
   });
 });
 

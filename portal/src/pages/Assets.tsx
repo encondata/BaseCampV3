@@ -13,14 +13,12 @@ import AssetEditModal from '../components/assets/AssetEditModal';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import {
   ApiError,
-  listAssetCategories,
   listAssetModels,
   listAssetStatuses,
   listAssets,
   listClients,
   listSites,
   updateAsset,
-  type AssetCategoryOut,
   type AssetItem,
   type AssetModelItem,
   type OrgRef,
@@ -28,21 +26,22 @@ import {
   type StatusValue,
 } from '../lib/api';
 import {
-  ASSET_ERRORS, ASSET_GOD_FIELDS, assetSearchText, duplicateSerials, matchesAssetFacets,
+  ASSET_ERRORS, ASSET_GOD_FIELDS, assetCellText, assetSearchText, duplicateSerials,
 } from '../lib/assets';
 import { initialOpenId } from '../lib/auditFormat';
+import {
+  ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
+  usePersistentListState,
+} from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   ColumnsButton,
   ExportButton,
-  FilterButton,
   exportCsv,
   visibleColumnsFor,
   type ColumnDef,
-  type FacetGroup,
-  type FacetState,
 } from '../lib/listTools';
 import '../styles/directory.css';
 import '../styles/profile.css';
@@ -62,8 +61,36 @@ const COLUMNS: ColumnDef[] = [
   { key: 'has_rails', label: 'Rails', width: '0.8fr', default: false, godOnly: true },
 ];
 
-type SortKey = 'serial' | 'model' | 'category' | 'client' | 'site' | 'status'
-  | 'ru' | 'location' | 'rfid' | 'last_seen' | 'has_rails';
+// Every column the page can offer (incl. godOnly) plus the two pseudo-
+// columns that aren't real COLUMNS entries — 'primary' (the always-shown
+// serial+name cell) and 'archived' (the chevron-header filter-only column)
+// — so a persisted filter/sort/visibility referencing either one survives
+// usePersistentListState's rehydrate-time sanitization.
+const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'primary', 'archived']);
+const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/** Sort value per column key — deliberately separate from `assetCellText`:
+ *  that accessor's job is display/filter text (dashes for blanks, formatted
+ *  dates), which would sort wrong (e.g. localized last-seen dates sort
+ *  lexicographically by month, not chronologically). This stays lowercase/
+ *  raw so naturalCompare orders rows the way a user expects. */
+function sortValueFor(a: AssetItem, key: string): string {
+  switch (key) {
+    case 'primary': return (a.serial_number ?? '').toLowerCase();
+    case 'model': return a.model ? `${a.model.make} ${a.model.model}`.toLowerCase() : '';
+    case 'category': return (a.model?.category_label ?? '').toLowerCase();
+    case 'client': return (a.client_name ?? '').toLowerCase();
+    case 'site': return (a.site_name ?? '').toLowerCase();
+    case 'status': return a.status_label.toLowerCase();
+    case 'ru': return String(a.model?.ru_size ?? 0);
+    case 'location': return a.location_detail.toLowerCase();
+    case 'rfid': return (a.rfid_tag ?? '').toLowerCase();
+    case 'last_seen': return a.last_seen_at ?? '';
+    case 'has_rails': return a.has_rails === null ? '' : a.has_rails ? 'yes' : 'no';
+    case 'archived': return a.archived_at ? '1' : '0';
+    default: return '';
+  }
+}
 
 const CSV_COLUMNS: [string, (a: AssetItem) => string][] = [
   ['ID', (a) => a.id],
@@ -92,19 +119,20 @@ export default function Assets() {
 
   const [assets, setAssets] = useState<AssetItem[] | null>(null);
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
-  const [categories, setCategories] = useState<AssetCategoryOut[]>([]);
   const [models, setModels] = useState<AssetModelItem[]>([]);
   const [clients, setClients] = useState<OrgRef[]>([]);
   const [sites, setSites] = useState<SiteItem[]>([]);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [sortKey, setSortKey] = useState<SortKey>('serial');
-  const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
   useRecordFocus(assets, (a) => a.id, (a) => a.serial_number ?? a.name ?? '', setOpenId, setQuery);
-  const [facets, setFacets] = useState<FacetState>({});
-  const [visibleCols, setVisibleCols] = useState<Set<string>>(
-    () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));
+  const {
+    visibleCols, setVisibleCols,
+    sortKey, sortDir, setSort, toggleSort,
+    filters, setFilter, clearFilters,
+  } = usePersistentListState(
+    'assets', { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 }, ALL_COLUMN_KEYS,
+  );
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -123,7 +151,6 @@ export default function Assets() {
     void load();
     void listAssetStatuses().then(setStatuses).catch(() => {});
     if (canViewCategories) {
-      void listAssetCategories().then(setCategories).catch(() => {});
       void listAssetModels().then(setModels).catch(() => {});
     }
     void listClients().then(setClients).catch(() => {});
@@ -146,55 +173,29 @@ export default function Assets() {
     (assets ?? []).map((a) => a.serial_number?.trim().toLowerCase()).filter((s): s is string => !!s),
   ), [assets]);
 
-  const facetGroups = useMemo<FacetGroup[]>(() => [
-    { key: 'status', title: 'Status',
-      options: statuses.map((s) => ({ value: s.key, label: s.label })) },
-    ...(canViewCategories ? [{ key: 'category', title: 'Category',
-      options: categories.map((c) => ({ value: c.key, label: c.label })) }] : []),
-    { key: 'client', title: 'Client', options:
-      clients.filter((c) => !c.archived_at).map((c) => ({ value: c.id, label: c.name })) },
-    ...(canViewSites ? [{ key: 'site', title: 'Site',
-      options: sites.map((s) => ({ value: s.id, label: s.name })) }] : []),
-    { key: 'archived', title: 'Archived', options: [
-      { value: 'no', label: 'Active only' }, { value: 'yes', label: 'Archived' }] },
-  ], [statuses, categories, clients, sites, canViewCategories, canViewSites]);
-
   const visible = useMemo(() => {
     if (!assets) return [];
     const q = query.trim().toLowerCase();
+    // Archived rows stay hidden by default — the chevron column's 'Archived'
+    // ColumnMenu is the only way back in, and only via its 'Yes' checkbox.
+    // (passesColumnFilters below independently enforces whatever the
+    // archived filter says once one exists; this covers the no-filter-yet
+    // default that passesColumnFilters has no opinion on.)
+    const showArchived = filters.archived?.values?.includes('Yes') ?? false;
     const rows = assets.filter((a) => {
-      if (!facets.archived?.size && a.archived_at) return false;
-      if (!matchesAssetFacets(a, facets)) return false;
+      if (!showArchived && a.archived_at) return false;
+      if (!passesColumnFilters(a, filters, assetCellText)) return false;
       if (!q) return true;
       return assetSearchText(a).includes(q);
     });
-    const val = (a: AssetItem): string => {
-      switch (sortKey) {
-        case 'serial': return (a.serial_number ?? '').toLowerCase();
-        case 'model': return a.model ? `${a.model.make} ${a.model.model}`.toLowerCase() : '';
-        case 'category': return (a.model?.category_label ?? '').toLowerCase();
-        case 'client': return (a.client_name ?? '').toLowerCase();
-        case 'site': return (a.site_name ?? '').toLowerCase();
-        case 'status': return a.status_label.toLowerCase();
-        case 'ru': return String(a.model?.ru_size ?? 0);
-        case 'location': return a.location_detail.toLowerCase();
-        case 'rfid': return (a.rfid_tag ?? '').toLowerCase();
-        case 'last_seen': return a.last_seen_at ?? '';
-        case 'has_rails': return a.has_rails === null ? '' : a.has_rails ? 'yes' : 'no';
-      }
-    };
-    return rows.sort((a, b) => naturalCompare(val(a), val(b)) * sortDir);
-  }, [assets, facets, query, sortKey, sortDir]);
+    return rows.sort((a, b) => naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
+  }, [assets, filters, query, sortKey, sortDir]);
 
   useEffect(() => {
     if (assets && openId && !visible.some((a) => a.id === openId)) setOpenId(null);
   }, [assets, visible, openId]);
 
-  const toggleSort = (key: SortKey) => {
-    if (key === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
-    else { setSortKey(key); setSortDir(1); }
-  };
-  const caret = (key: SortKey) =>
+  const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
@@ -277,7 +278,7 @@ export default function Assets() {
                    onChange={(e) => setQuery(e.target.value)} />
           </div>
           <span className="result-count">{visible.length} of {assets?.length ?? 0} shown</span>
-          <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
+          <FilterSummaryChip filters={filters} onClear={clearFilters} />
           <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
           <ExportButton onExport={() => exportCsv('assets', CSV_COLUMNS, visible)} />
           <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canChange} />
@@ -294,19 +295,36 @@ export default function Assets() {
       {!error && (
         <div className="dir-list">
           <div className="list-head" style={grid}>
-            <button className="sortable" onClick={() => toggleSort('serial')}>Serial {caret('serial')}</button>
-            {shownCols.map((c) => (
-              <button key={c.key} className="sortable"
-                      onClick={() => toggleSort(c.key as SortKey)}>
-                {c.label} {caret(c.key as SortKey)}
+            <span className="col-head">
+              <button className="sortable" onClick={() => toggleSort('primary')}>
+                Serial {caret('primary')}
               </button>
+              <ColumnMenu colKey="primary" label="Serial" rows={assets ?? []} text={assetCellText}
+                          filter={filters.primary} onFilter={setFilter}
+                          sortDir={sortKey === 'primary' ? sortDir : null}
+                          onSort={(dir) => setSort('primary', dir)} />
+            </span>
+            {shownCols.map((c) => (
+              <span key={c.key} className="col-head">
+                <button className="sortable" onClick={() => toggleSort(c.key)}>
+                  {c.label} {caret(c.key)}
+                </button>
+                <ColumnMenu colKey={c.key} label={c.label} rows={assets ?? []} text={assetCellText}
+                            filter={filters[c.key]} onFilter={setFilter}
+                            sortDir={sortKey === c.key ? sortDir : null}
+                            onSort={(dir) => setSort(c.key, dir)} />
+              </span>
             ))}
-            <span />
+            <ColumnMenu colKey="archived" label="Archived" rows={assets ?? []} text={assetCellText}
+                        filter={filters.archived} onFilter={setFilter}
+                        sortDir={sortKey === 'archived' ? sortDir : null}
+                        onSort={(dir) => setSort('archived', dir)} />
           </div>
 
           {assets && visible.length === 0 && (
             <div className="dir-empty">
               <b>No matches</b>Try a different filter — or add an asset.
+              <EmptyClearFilters filters={filters} onClear={clearFilters} />
             </div>
           )}
 

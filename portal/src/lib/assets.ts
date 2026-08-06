@@ -41,18 +41,29 @@ export function assetSearchText(a: AssetItem): string {
     .filter(Boolean).join(' ').toLowerCase();
 }
 
-export function matchesAssetFacets(a: AssetItem, state: FacetState): boolean {
-  return passesFacets(state, (group) => {
-    switch (group) {
-      case 'status': return [a.status];
-      case 'category': return a.model?.category ? [a.model.category] : [];
-      case 'client': return a.client_id ? [a.client_id] : [];
-      case 'site': return a.site_id ? [a.site_id] : [];
-      case 'model': return a.model_id ? [a.model_id] : [];
-      case 'archived': return [a.archived_at ? 'yes' : 'no'];
-      default: return [];
-    }
-  });
+/** Column-menu accessor (lib/columnMenu.tsx's `CellText<T>`) — one row's
+ *  display text for a given column key. Mirrors exactly what the page's
+ *  own cell renderer shows (including its '—' fallback), so the filter
+ *  checkbox list and the grid cell never disagree. 'primary' and
+ *  'archived' aren't real COLUMNS entries — 'primary' is the always-shown
+ *  serial+name cell, 'archived' is the pseudo-column behind the chevron
+ *  header's ColumnMenu that drives the archived-visibility rule. */
+export function assetCellText(a: AssetItem, colKey: string): string {
+  switch (colKey) {
+    case 'primary': return `${a.serial_number ?? ''} ${a.name ?? ''}`.trim();
+    case 'status': return a.status_label;
+    case 'category': return a.model?.category_label ?? '';
+    case 'client': return a.client_name ?? '';
+    case 'site': return a.site_name ?? '';
+    case 'model': return a.model ? `${a.model.make} ${a.model.model}` : '';
+    case 'location': return a.location_detail || '—';
+    case 'rfid': return a.rfid_tag ?? '—';
+    case 'ru': return a.model?.ru_size != null ? String(a.model.ru_size) : '—';
+    case 'last_seen': return a.last_seen_at ? new Date(a.last_seen_at).toLocaleDateString() : '—';
+    case 'has_rails': return a.has_rails === null ? '—' : a.has_rails ? 'Yes' : 'No';
+    case 'archived': return a.archived_at ? 'Yes' : 'No';
+    default: return '';
+  }
 }
 
 export function modelSearchText(m: AssetModelItem): string {

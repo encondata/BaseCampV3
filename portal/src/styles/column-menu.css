@@ -8,6 +8,18 @@
 
 .colmenu { display: inline-flex; }
 
+/* ── list-head integration ────────────────────────────────────────────
+ * Wraps a .sortable label button + its ColumnMenu trigger so they sit
+ * side by side in one grid cell of .list-head (directory.css) without
+ * the menu icon eating into the label's click target. */
+.list-head .col-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.list-head .col-head .sortable { min-width: 0; }
+
 .colmenu-trigger {
   display: inline-flex;
   align-items: center;
