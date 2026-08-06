@@ -8,7 +8,7 @@
  * Ref: docs/superpowers/specs/2026-07-14-external-people-design.md
  */
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -40,9 +40,10 @@ import {
   canEditExternalPerson,
   distinctFunctions,
   distinctTitles,
-  EXTERNAL_GOD_FIELDS,
-  externalFacetValues,
+  externalCellText,
   externalSearchHay,
+  EXTERNAL_GOD_FIELDS,
+  LOGIN_META,
   orgKey,
   parseOrgKey,
   typeLabel,
@@ -50,28 +51,23 @@ import {
 import { avatarGradient, initials } from '../lib/format';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import {
+  ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
+  usePersistentListState,
+} from '../lib/columnMenu';
+import {
   ColumnsButton,
   ExportButton,
-  FilterButton,
   exportCsv,
-  passesFacets,
   visibleColumnsFor,
   type ColumnDef,
-  type FacetGroup,
-  type FacetState,
 } from '../lib/listTools';
+import { naturalCompare } from '../lib/sites';
 import { USER_ERRORS } from '../lib/users';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
 
 interface OrgRef { id: string; name: string; kind: OrgKind }
-
-const LOGIN_META: Record<string, { label: string; cls: string }> = {
-  active: { label: 'Active', cls: 'c-green' },
-  disabled: { label: 'Disabled', cls: 'c-red' },
-  none: { label: 'No login', cls: 'tag' },
-};
 
 const PILLS = [
   { key: 'all', label: 'All' },
@@ -90,7 +86,33 @@ const COLUMNS: ColumnDef[] = [
   { key: 'login', label: 'Login', width: '1fr', default: true },
 ];
 
-type SortKey = 'name' | 'orgs' | 'type' | 'title' | 'functions' | 'email' | 'phone' | 'login';
+// Every column the page can offer plus 'primary' (the always-shown
+// name+contact cell). No godOnly columns and no archived concept on this
+// page. The old orgType/org/tier/function/login facets are gone — they're
+// fully covered by ColumnMenu filtering on 'orgs'/'type'/'functions'/
+// 'login', so no pseudo-column was needed (unlike Users' must_change).
+const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'primary']);
+const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/** Sort value per column key — deliberately separate from `externalCellText`:
+ *  that accessor's job is display/filter text (the joined "org · tier"
+ *  string, the LOGIN_META label), which would sort wrong (a joined-link
+ *  string sorts by its first link's text rather than a stable key; the
+ *  login label doesn't order active/disabled/none the way the raw status
+ *  key does). This stays raw so columns order the way a user expects. */
+function sortValueFor(p: ExternalPersonItem, key: string): string {
+  switch (key) {
+    case 'primary': return p.display_name.toLowerCase();
+    case 'orgs': return p.links.map((l) => l.org_name).join(',').toLowerCase();
+    case 'type': return typeLabel(p.links);
+    case 'title': return distinctTitles(p.links).join(',').toLowerCase();
+    case 'functions': return distinctFunctions(p.links).join(',').toLowerCase();
+    case 'email': return p.email ?? '';
+    case 'phone': return p.phone ?? '';
+    case 'login': return p.login_status;
+    default: return '';
+  }
+}
 
 const CSV_COLUMNS: [string, (p: ExternalPersonItem) => string][] = [
   ['Person ID', (p) => p.person_id],
@@ -133,12 +155,25 @@ export default function External() {
   const [error, setError] = useState('');
   const [pill, setPill] = useState('all');
   const [query, setQuery] = useState('');
-  const [sortKey, setSortKey] = useState<SortKey>('name');
-  const [sortDir, setSortDir] = useState<1 | -1>(1);
   const [openId, setOpenId] = useState<string | null>(null);
-  const [facets, setFacets] = useState<FacetState>({});
-  const [visibleCols, setVisibleCols] = useState<Set<string>>(
-    () => new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));
+  // Unlike the other converted pages, External has no useRecordFocus/
+  // ?open= support — its only arrival path is location.state.openRow from
+  // the topbar search/palette (see the effect below), handled with a plain
+  // setOpenId. That was harmless while filters were session-only local
+  // state, but usePersistentListState's filters now survive across visits,
+  // so a persisted filter really can hide a row an arrival just opened.
+  // Same ref-guard pattern as Assets.tsx, scoped to this page's one arrival
+  // path — not a new deep-link feature, just keeping the existing one safe
+  // under persisted filters.
+  const deepLinkTarget = useRef<string | null>(null);
+  const clearedDeepLink = useRef<string | null>(null);
+  const {
+    visibleCols, setVisibleCols,
+    sortKey, sortDir, setSort, toggleSort,
+    filters, setFilter, clearFilters,
+  } = usePersistentListState(
+    'external', { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 }, ALL_COLUMN_KEYS,
+  );
   const [addOpen, setAddOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [allOrgs, setAllOrgs] = useState<OrgRef[] | null>(null);
@@ -166,7 +201,10 @@ export default function External() {
   // global-search / palette handoff
   useEffect(() => {
     const state = location.state as { openRow?: string; openAdd?: boolean } | null;
-    if (state?.openRow) setOpenId(state.openRow);
+    if (state?.openRow) {
+      deepLinkTarget.current = state.openRow;
+      setOpenId(state.openRow);
+    }
     if (state?.openAdd) setAddOpen(true);
     if (state?.openRow || state?.openAdd) {
       navigate(location.pathname, { replace: true, state: null });
@@ -213,28 +251,6 @@ export default function External() {
     return applyExternalPatch(current, detail);
   };
 
-  const orgFacetOptions = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const p of people) for (const l of p.links) seen.set(orgKey(l.kind, l.org_id), l.org_name);
-    return [...seen.entries()].map(([value, label]) => ({ value, label }));
-  }, [people]);
-
-  const facetGroups = useMemo<FacetGroup[]>(() => [
-    { key: 'orgType', title: 'Org type', options: [
-      { value: 'client', label: 'Client' }, { value: 'partner', label: 'Partner' },
-    ] },
-    { key: 'org', title: 'Org', options: orgFacetOptions },
-    { key: 'tier', title: 'Tier', options: [
-      { value: 'owner', label: 'Owner' }, { value: 'admin', label: 'Admin' },
-      { value: 'viewer', label: 'Viewer' },
-    ] },
-    { key: 'function', title: 'Function', options: functionTags.map((f) => ({ value: f, label: f })) },
-    { key: 'login', title: 'Login', options: [
-      { value: 'active', label: 'Active' }, { value: 'disabled', label: 'Disabled' },
-      { value: 'none', label: 'No login' },
-    ] },
-  ], [orgFacetOptions, functionTags]);
-
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: people.length };
     for (const p of PILLS.slice(1)) c[p.key] = 0;
@@ -246,41 +262,45 @@ export default function External() {
     const q = query.trim().toLowerCase();
     const rows = people.filter((p) => {
       if (pill !== 'all' && p.login_status !== pill) return false;
-      if (!passesFacets(facets, (g) => externalFacetValues(g, p))) return false;
+      if (!passesColumnFilters(p, filters, externalCellText)) return false;
       if (!q) return true;
       return externalSearchHay(p).includes(q);
     });
-    const val = (p: ExternalPersonItem): string => {
-      switch (sortKey) {
-        case 'name': return p.display_name.toLowerCase();
-        case 'orgs': return p.links.map((l) => l.org_name).join(',').toLowerCase();
-        case 'type': return typeLabel(p.links);
-        case 'title': return distinctTitles(p.links).join(',').toLowerCase();
-        case 'functions': return distinctFunctions(p.links).join(',').toLowerCase();
-        case 'email': return p.email ?? '';
-        case 'phone': return p.phone ?? '';
-        case 'login': return p.login_status;
-      }
-    };
-    return rows.sort((a, b) => {
-      const va = val(a), vb = val(b);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
-    });
-  }, [people, pill, facets, query, sortKey, sortDir]);
+    return rows.sort((a, b) => (
+      naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir
+    ));
+  }, [people, pill, filters, query, sortKey, sortDir]);
 
+  // Auto-close the open row when it drops out of `visible` — EXCEPT the one
+  // case where it just arrived via location.state.openRow and the reason
+  // it's missing is a persisted column filter: then clear the filters
+  // instead. See Assets.tsx for the full rationale.
   useEffect(() => {
-    if (dir && openId && !visible.some((p) => p.person_id === openId)) setOpenId(null);
-  }, [dir, visible, openId]);
+    if (!dir || !openId || visible.some((p) => p.person_id === openId)) return;
+    if (openId === deepLinkTarget.current && clearedDeepLink.current !== openId) {
+      clearedDeepLink.current = openId;
+      const target = people.find((p) => p.person_id === openId);
+      if (target && !passesColumnFilters(target, filters, externalCellText)) {
+        clearFilters();
+        return;
+      }
+    }
+    setOpenId(null);
+  }, [dir, people, visible, openId, filters, clearFilters]);
+
+  // Release the deep-link guard once the target row is first confirmed
+  // visible — see Assets.tsx for the full rationale.
+  useEffect(() => {
+    if (deepLinkTarget.current && visible.some((p) => p.person_id === deepLinkTarget.current)) {
+      deepLinkTarget.current = null;
+    }
+  }, [visible]);
 
   const editPerson = useMemo(
     () => (editId ? people.find((p) => p.person_id === editId) ?? null : null),
     [people, editId]);
 
-  const toggleSort = (key: SortKey) => {
-    if (key === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
-    else { setSortKey(key); setSortDir(1); }
-  };
-  const caret = (key: SortKey) =>
+  const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
@@ -365,7 +385,7 @@ export default function External() {
                    onChange={(e) => setQuery(e.target.value)} />
           </div>
           <span className="result-count">{visible.length} of {people.length} shown</span>
-          <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
+          <FilterSummaryChip filters={filters} onClear={clearFilters} />
           <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
           <ExportButton onExport={() => exportCsv('external-people', CSV_COLUMNS, visible)} />
           <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canUsers} />
@@ -379,19 +399,39 @@ export default function External() {
 
       <div className="dir-list">
         <div className="list-head" style={grid}>
-          <button className="sortable" onClick={() => toggleSort('name')}>Member {caret('name')}</button>
-          {shownCols.map((c) => (
-            <button key={c.key} className="sortable"
-                    onClick={() => toggleSort(c.key as SortKey)}>
-              {c.label} {caret(c.key as SortKey)}
+          <span className="col-head">
+            <button className="sortable" onClick={() => toggleSort('primary')}>
+              Member {caret('primary')}
             </button>
+            <ColumnMenu colKey="primary" label="Member"
+                        allRows={people} filters={filters}
+                        text={externalCellText}
+                        filter={filters.primary} onFilter={setFilter}
+                        sortDir={sortKey === 'primary' ? sortDir : null}
+                        onSort={(dir) => setSort('primary', dir)} />
+          </span>
+          {shownCols.map((c) => (
+            <span key={c.key} className="col-head">
+              <button className="sortable" onClick={() => toggleSort(c.key)}>
+                {c.label} {caret(c.key)}
+              </button>
+              <ColumnMenu colKey={c.key} label={c.label}
+                          allRows={people} filters={filters}
+                          text={externalCellText}
+                          filter={filters[c.key]} onFilter={setFilter}
+                          sortDir={sortKey === c.key ? sortDir : null}
+                          onSort={(dir) => setSort(c.key, dir)} />
+            </span>
           ))}
           <span />
         </div>
 
         {error && <div className="dir-empty"><b>Cannot load</b>{error}</div>}
         {!error && dir && visible.length === 0 && (
-          <div className="dir-empty"><b>No matches</b>Try a different filter — or add a contact.</div>
+          <div className="dir-empty">
+            <b>No matches</b>Try a different filter — or add a contact.
+            <EmptyClearFilters filters={filters} onClear={clearFilters} />
+          </div>
         )}
 
         {visible.map((p) => {
@@ -399,7 +439,7 @@ export default function External() {
           return (
             <div key={p.person_id} className={`dir-row ${open ? 'open' : ''}`}>
               <div className="row-main" style={grid}
-                   onClick={() => setOpenId(open ? null : p.person_id)}>
+                   onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : p.person_id); }}>
                 <div className="cell cell-primary">
                   <div className="dir-avatar"
                        style={{ background: p.avatar_url ? 'var(--surface-2)' : avatarGradient(p.display_name) }}>
@@ -460,6 +500,7 @@ export default function External() {
           onClose={() => setAddOpen(false)}
           onCreated={(id) => {
             setAddOpen(false);
+            deepLinkTarget.current = null;
             void load().then(() => setOpenId(id));
           }}
         />

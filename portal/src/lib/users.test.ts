@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { applyUserPatch, USER_ERRORS, USER_GOD_FIELDS, type UserItem } from './users';
+import {
+  applyUserPatch, USER_ERRORS, USER_GOD_FIELDS, userCellText, userSearchText, type UserItem,
+} from './users';
 import type { PersonDetail } from './api';
 
 const user: UserItem = {
@@ -81,6 +83,63 @@ describe('applyUserPatch', () => {
     const before = { ...user };
     applyUserPatch(user, detail);
     expect(user).toEqual(before);
+  });
+});
+
+describe('userCellText', () => {
+  const blank: UserItem = {
+    ...user, job_title: null, phone: null, contact_email: null, login_email: null,
+    roles: [], status: 'invited', last_login_at: null, account_created_at: null,
+  };
+
+  it('primary combines display_name + login/contact email', () => {
+    expect(userCellText(user, 'primary')).toBe('Jamie Rivera jamie@login.example.com');
+    expect(userCellText({ ...user, login_email: null }, 'primary')).toBe('Jamie Rivera jamie@example.com');
+    expect(userCellText({ ...user, login_email: null, contact_email: null }, 'primary')).toBe('Jamie Rivera');
+  });
+
+  it('roles joins the chip list, falling back to "no roles"', () => {
+    expect(userCellText({ ...user, roles: ['staff', 'admin'] }, 'roles')).toBe('staff, admin');
+    expect(userCellText(blank, 'roles')).toBe('no roles');
+  });
+
+  it('status reads the STATUS_META label, falling back to the bare key for an unknown status', () => {
+    expect(userCellText(user, 'status')).toBe('Active');
+    expect(userCellText(blank, 'status')).toBe('invited');
+  });
+
+  it('job_title/contact_email/phone dash when unset', () => {
+    expect(userCellText(user, 'job_title')).toBe('Ops Manager');
+    expect(userCellText(blank, 'job_title')).toBe('—');
+    expect(userCellText(blank, 'contact_email')).toBe('—');
+    expect(userCellText(blank, 'phone')).toBe('—');
+  });
+
+  it('last_login/created use the same formatters the cells render', () => {
+    expect(userCellText(user, 'last_login')).not.toBe('');
+    expect(userCellText(blank, 'last_login')).toBe('never');
+    expect(userCellText(blank, 'created')).toBe('—');
+  });
+
+  it('must_change reads the tri-state as Yes/No', () => {
+    expect(userCellText(user, 'must_change')).toBe('No');
+    expect(userCellText({ ...user, must_change_password: true }, 'must_change')).toBe('Yes');
+  });
+
+  it('unknown column keys return empty string', () => {
+    expect(userCellText(user, 'nonsense')).toBe('');
+  });
+});
+
+describe('userSearchText', () => {
+  it('includes name, emails, job title, phone, and roles', () => {
+    const text = userSearchText(user);
+    expect(text).toContain('jamie rivera');
+    expect(text).toContain('jamie@login.example.com');
+    expect(text).toContain('jamie@example.com');
+    expect(text).toContain('ops manager');
+    expect(text).toContain('555-0100');
+    expect(text).toContain('staff');
   });
 });
 
