@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useAuth } from '../auth/AuthContext';
 import { ApiError } from './api';
 import ComboBox, { type ComboOption } from '../components/ComboBox';
 import './../styles/god-edit.css';
@@ -46,8 +47,19 @@ export function boolTriToPatch(raw: string): unknown {
 }
 
 export function useGodEdit() {
+  const { godMode } = useAuth();
   const [editing, setEditing] = useState(false);
-  return { editing, toggle: () => setEditing((e) => !e) };
+  return {
+    // Exiting god mode doesn't unmount the page, so `editing` alone can go
+    // stale (stuck true) after the toggle that gates it disappears. Derive
+    // the visible value from the current godMode instead of trusting the
+    // raw flag on its own.
+    editing: editing && godMode,
+    toggle: () => {
+      if (!godMode) return;
+      setEditing((e) => !e);
+    },
+  };
 }
 
 export function GodEditToggle({ editing, onToggle, visible }: {

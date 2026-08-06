@@ -14,7 +14,15 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 
-import { GodCell, type GodField } from './godEdit';
+import { GodCell, useGodEdit, type GodField } from './godEdit';
+
+// useGodEdit consumes useAuth for godMode; GodCell itself must not (the
+// tests above render it with no AuthContext at all, and that has to keep
+// working).
+const auth = vi.hoisted(() => ({ godMode: true }));
+vi.mock('../auth/AuthContext', () => ({
+  useAuth: () => ({ godMode: auth.godMode }),
+}));
 
 interface Row { id: string; name: string; }
 
@@ -101,4 +109,38 @@ it('guard resets once the patch resolves, so the next edit+Enter saves again', a
   await user.type(input, 'Acme Corp');
   fireEvent.keyDown(input, { key: 'Enter' });
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+});
+
+function GodEditHarness() {
+  const god = useGodEdit();
+  return (
+    <div>
+      <span data-testid="editing">{String(god.editing)}</span>
+      <button onClick={god.toggle}>toggle</button>
+    </div>
+  );
+}
+
+it('editing goes false when godMode exits, even though the toggle never fired', () => {
+  auth.godMode = true;
+  const { rerender } = render(<GodEditHarness />);
+
+  fireEvent.click(screen.getByText('toggle'));
+  expect(screen.getByTestId('editing').textContent).toBe('true');
+
+  // AppShell's exit button flips godMode in AuthContext; the page holding
+  // this hook doesn't unmount, so `editing` must be derived, not stuck.
+  auth.godMode = false;
+  rerender(<GodEditHarness />);
+
+  expect(screen.getByTestId('editing').textContent).toBe('false');
+});
+
+it('toggle is a no-op while godMode is off', () => {
+  auth.godMode = false;
+  render(<GodEditHarness />);
+
+  fireEvent.click(screen.getByText('toggle'));
+
+  expect(screen.getByTestId('editing').textContent).toBe('false');
 });
