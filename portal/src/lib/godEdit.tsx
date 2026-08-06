@@ -79,15 +79,39 @@ function tryToPatch(
   }
 }
 
-export function GodCell<T extends { id: string }>({ row, gf, patch, onRowSaved,
-                                                    errorMap, disabled }: {
+export function GodCell<T extends { id: string }>(props: {
   row: T;
   gf: GodField<T>;
   patch: (id: string, body: Record<string, unknown>) => Promise<T>;
   onRowSaved: (updated: T) => void;
   errorMap: Record<string, string>;
   disabled?: boolean;
+  idOf?: (row: T) => string;
+}): ReactNode;
+export function GodCell<T>(props: {
+  row: T;
+  gf: GodField<T>;
+  patch: (id: string, body: Record<string, unknown>) => Promise<T>;
+  onRowSaved: (updated: T) => void;
+  errorMap: Record<string, string>;
+  disabled?: boolean;
+  idOf: (row: T) => string;
+}): ReactNode;
+export function GodCell<T>({ row, gf, patch, onRowSaved, errorMap, disabled, idOf }: {
+  row: T;
+  gf: GodField<T>;
+  patch: (id: string, body: Record<string, unknown>) => Promise<T>;
+  onRowSaved: (updated: T) => void;
+  errorMap: Record<string, string>;
+  disabled?: boolean;
+  // Almost every page's row keys off `id` — that's the default. Workers.tsx
+  // is the exception (its rows key off `person_id`, the worker role's
+  // person, not a row of its own), so it passes idOf explicitly. The two
+  // overloads above keep every other call site's `T extends { id: string }`
+  // inference (and the freedom to omit idOf) exactly as it was.
+  idOf?: (row: T) => string;
 }) {
+  const rowId = idOf ? idOf(row) : (row as { id: string }).id;
   const seed = gf.fromRow(row);
   const [value, setValue] = useState(seed);
   const [saving, setSaving] = useState(false);
@@ -132,7 +156,7 @@ export function GodCell<T extends { id: string }>({ row, gf, patch, onRowSaved,
     setSaving(true);
     inFlight.current = true;
     try {
-      const updated = await patch(row.id, { [gf.field]: mapped.value });
+      const updated = await patch(rowId, { [gf.field]: mapped.value });
       onRowSaved(updated);
     } catch (err) {
       const code = err instanceof ApiError ? err.code : null;

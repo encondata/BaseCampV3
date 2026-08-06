@@ -921,6 +921,23 @@ export async function listWorkerStatuses(): Promise<StatusValue[]> {
   return resp.json();
 }
 
+/** PUT /workers/{id}/profile (routes/workers.py:upsert_profile) is a partial
+ *  upsert — `exclude_unset=True` server-side means only the keys present in
+ *  `body` are touched, so a single-field body (as god-edit sends) is a safe
+ *  1:1 PATCH-equivalent despite the PUT verb. Returns 204 with no body, so
+ *  callers reconstruct the updated row themselves — see lib/workers.ts's
+ *  applyWorkerPatch. */
+export async function updateWorkerProfile(
+  id: string, body: Record<string, unknown>,
+): Promise<void> {
+  const resp = await apiFetch(`/workers/${id}/profile`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
 // The Variables page's view: every record type, including inactive, with counts.
 export async function listStatusValues(): Promise<StatusValue[]> {
   const resp = await apiFetch('/status-values');

@@ -11,8 +11,9 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
 import ComboBox from '../components/ComboBox';
-import { apiFetch, listWorkerStatuses, type StatusValue } from '../lib/api';
+import { apiFetch, listWorkerStatuses, updateWorkerProfile, type StatusValue } from '../lib/api';
 import { initialOpenId } from '../lib/auditFormat';
+import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate } from '../lib/format';
 import {
@@ -21,35 +22,18 @@ import {
   FilterButton,
   exportCsv,
   passesFacets,
+  visibleColumnsFor,
   type ColumnDef,
   type FacetGroup,
   type FacetState,
 } from '../lib/listTools';
+import {
+  applyWorkerPatch, WORKER_ERRORS, WORKER_GOD_FIELDS,
+  type PartnerRef, type WorkerItem,
+} from '../lib/workers';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
-
-interface PartnerRef { id: string; name: string }
-
-interface WorkerItem {
-  person_id: string;
-  display_name: string;
-  first_name: string;
-  last_name: string;
-  contact_email: string | null;
-  phone: string | null;
-  avatar_url: string | null;
-  has_account: boolean;
-  trade: string | null;
-  level: string | null;
-  status: string;
-  status_label: string;
-  status_color: string;
-  status_note: string | null;
-  partner: PartnerRef | null;
-  cert_count: number;
-  certs_expired: number;
-}
 
 interface LevelDef {
   level: string;
@@ -121,8 +105,9 @@ function LevelBadge({ level, levels }: { level: string | null; levels: LevelDef[
 }
 
 export default function Workers() {
-  const { can } = useAuth();
+  const { can, godMode } = useAuth();
   const navigate = useNavigate();
+  const god = useGodEdit();
 
   const [workers, setWorkers] = useState<WorkerItem[] | null>(null);
   const [levels, setLevels] = useState<LevelDef[]>([]);
@@ -166,6 +151,25 @@ export default function Workers() {
       return;
     }
     setWorkers(await resp.json());
+  };
+
+  const godFields = useMemo(() => WORKER_GOD_FIELDS({
+    levels: () => levels.map((l) => ({ value: l.level, label: `${l.level} · ${l.title}` })),
+    statuses: () => statuses.map((s) => ({ value: s.key, label: s.label })),
+  }), [levels, statuses]);
+  const godFieldFor = (column: string) => godFields.find((f) => f.column === column);
+  const replaceRow = (u: WorkerItem) =>
+    setWorkers((xs) => xs?.map((x) => (x.person_id === u.person_id ? u : x)) ?? xs);
+
+  // PUT .../profile returns 204 (no updated row), so the row is reconstructed
+  // client-side from the row already in state + the lookups already loaded —
+  // see applyWorkerPatch in lib/workers.ts for why that's safe given god-edit
+  // only ever sends one field per commit.
+  const patchWorker = async (id: string, body: Record<string, unknown>): Promise<WorkerItem> => {
+    await updateWorkerProfile(id, body);
+    const current = workers?.find((w) => w.person_id === id);
+    if (!current) throw new Error('worker row not found after save');
+    return applyWorkerPatch(current, body, statuses);
   };
 
   useEffect(() => {
@@ -228,12 +232,22 @@ export default function Workers() {
 
   const canManage = can('workers', 'change');
 
-  const shownCols = COLUMNS.filter((c) => visibleCols.has(c.key));
+  const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
   const grid = {
     gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px`,
   };
 
   const cellFor = (w: WorkerItem, key: string) => {
+    if (god.editing) {
+      const gf = godFieldFor(key);
+      if (gf) {
+        return (
+          <GodCell row={w} gf={gf} patch={patchWorker} onRowSaved={replaceRow}
+                   errorMap={WORKER_ERRORS} disabled={!canManage}
+                   idOf={(row) => row.person_id} />
+        );
+      }
+    }
     switch (key) {
       case 'trade': return <span className="cell-top">{w.trade ?? '—'}</span>;
       case 'level': return <LevelBadge level={w.level} levels={levels} />;
@@ -279,8 +293,9 @@ export default function Workers() {
           </div>
           <span className="result-count">{visible.length} of {workers?.length ?? 0} shown</span>
           <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
-          <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} />
+          <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
           <ExportButton onExport={() => exportCsv('workers', CSV_COLUMNS, visible)} />
+          <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canManage} />
           {canManage && (
             <button className="btn-solid"
                     onClick={() => navigate('/people/users', { state: { openAdd: true } })}>
@@ -315,6 +330,10 @@ export default function Workers() {
             <div key={w.person_id} className={`dir-row ${open ? 'open' : ''}`}>
               <div className="row-main" style={grid}
                    onClick={() => setOpenId(open ? null : w.person_id)}>
+                {/* Primary cell has no god-edit descriptor: display_name comes from
+                    the Person record and is edited via PUT /users/{id}/profile — a
+                    different endpoint than the worker-profile PATCH this page's
+                    god-edit wiring uses, so it stays read-only even in god mode. */}
                 <div className="cell cell-primary">
                   <div className="dir-avatar"
                        style={{ background: w.avatar_url ? 'var(--surface-2)' : avatarGradient(w.display_name) }}>
