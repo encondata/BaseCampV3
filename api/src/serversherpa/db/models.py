@@ -483,6 +483,47 @@ class Asset(Base):
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
+class Container(Base):
+    __tablename__ = "containers"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    name: Mapped[str] = mapped_column(CITEXT)
+    rfid_tag: Mapped[str | None] = mapped_column(CITEXT)
+    container_type: Mapped[str | None]
+    status: Mapped[str] = mapped_column(server_default="available")
+    status_record_type: Mapped[str] = mapped_column(
+        server_default=text("'container'"))  # GENERATED column; never written
+    type_record_type: Mapped[str] = mapped_column(
+        server_default=text("'container_type'"))  # GENERATED; never written
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
+    location_detail: Mapped[str] = mapped_column(server_default="")
+    last_audit_at: Mapped[datetime | None]
+    audit_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    last_validated_at: Mapped[datetime | None]
+    legacy_id: Mapped[int | None] = mapped_column(BigInteger)
+    source: Mapped[str] = mapped_column(server_default="manual")
+    source_ref: Mapped[str | None]
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    archived_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class ContainerAsset(Base):
+    __tablename__ = "container_assets"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    container_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("containers.id", ondelete="CASCADE"))
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assets.id"), unique=True)
+    added_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    added_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    last_validated_at: Mapped[datetime | None]
+
+
 class Note(Base):
     """Global polymorphic notes (attachments-style entity_type/entity_id).
     Soft-deleted like attachments; only entity_type='asset' is wired in V1."""

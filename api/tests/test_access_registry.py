@@ -4,7 +4,8 @@ from serversherpa.access.resources import ACTIONS, REGISTRY, ROUTE_RESOURCE
 def test_registry_shape():
     assert set(REGISTRY) == {"dashboard", "users", "workers", "clients", "partners",
                              "attachments", "settings", "access", "audit",
-                             "devtools", "sites", "assets", "asset_models"}
+                             "devtools", "sites", "assets", "asset_models",
+                             "containers"}
     assert ACTIONS == ("view", "add", "change", "delete")
     assert REGISTRY["devtools"].developer_only is True
     assert REGISTRY["access"].always_viewable is True

@@ -57,7 +57,8 @@ async def clean_db():
             "partners, people, access_groups, access_group_members, "
             "resource_group_gates, permission_overrides, audit_log, "
             "contact_profiles, sites, site_clients, notes, assets, "
-            "asset_model_aliases, asset_models CASCADE"))
+            "asset_model_aliases, asset_models, container_assets, "
+            "containers CASCADE"))
         # role matrix is editable seed data — restore defaults & drop customs
         await session.execute(text("DELETE FROM roles WHERE is_system = false"))
         await session.execute(text("DELETE FROM role_permissions"))
@@ -141,6 +142,22 @@ async def clean_db():
               ('asset','in_storage','In storage','Warehoused, not in service.','#51606f',3),
               ('asset','decommissioned','Decommissioned','Retired; retained for history.','#c03540',4),
               ('asset','unknown','Unknown','Not yet verified.','#a36207',5)
+        """))
+        # container vocabulary — restore canonical seeds (0015)
+        await session.execute(text(
+            "DELETE FROM status_values WHERE record_type IN "
+            "('container', 'container_type')"))
+        await session.execute(text("""
+            INSERT INTO status_values
+              (record_type, key, label, description, color, sort_order)
+            VALUES
+              ('container','available','Available','Empty or accepting assets.','#178a4c',1),
+              ('container','packed','Packed','Loaded and sealed.','#6d4fc4',2),
+              ('container','in_transit','In transit','Between locations.','#0f7c86',3),
+              ('container','historical','Historical','Retired; retained for history.','#51606f',4),
+              ('container_type','pelican_case','Pelican case','Hard transport case.','#1668a7',1),
+              ('container_type','shipping_container','Shipping container','Full-size freight container.','#a36207',2),
+              ('container_type','cart','Cart','Rolling cart or trolley.','#0f7c86',3)
         """))
         await session.execute(text("DELETE FROM asset_categories"))
         await session.execute(text("""

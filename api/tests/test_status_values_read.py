@@ -84,7 +84,8 @@ async def test_developer_reads_everything_with_counts(client, db, seeded_user):
     resp = await client.get("/status-values", headers=hdrs)
     assert resp.status_code == 200
     rows = resp.json()
-    assert {r["record_type"] for r in rows} == {"site", "worker", "asset"}
+    assert {r["record_type"] for r in rows} == {
+        "site", "worker", "asset", "container", "container_type"}
     active_site = next(
         r for r in rows if r["record_type"] == "site" and r["key"] == "active")
     assert active_site["usage_count"] == 0

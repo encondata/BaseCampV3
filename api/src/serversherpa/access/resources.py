@@ -56,6 +56,9 @@ _RESOURCES = [
              # internal-only: the catalog (incl. the knowledge field) is house
              # IP. Asset payloads embed a read-only model summary instead.
              visible_to=frozenset({"global"})),
+    Resource("containers", "Containers", routes=("/logistics/containers",),
+             # internal-only, like sites — no client/partner visibility.
+             visible_to=frozenset({"global"})),
     Resource("attachments", "Files & attachments",
              visible_to=frozenset({"global", "client", "partner"})),
     Resource("settings", "Settings", routes=("/settings",)),
