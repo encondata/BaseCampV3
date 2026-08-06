@@ -15,6 +15,7 @@ from serversherpa.db.models import (
     AssetModel,
     AssetModelAlias,
     Client,
+    Container,
     Partner,
     Person,
     Site,
@@ -123,6 +124,20 @@ async def global_search(
             SearchResult(kind="asset_model", id=m.id,
                          label=f"{m.make} {m.model}", sub=m.category)
             for m in models
+        )
+
+    # containers — name / rfid; internal-only resource, no row scoping
+    if user.access.can("containers", "view"):
+        query = select(Container).where(or_(
+            Container.name.ilike(needle),
+            Container.rfid_tag.ilike(needle),
+        ))
+        containers = (await db.scalars(
+            query.order_by(Container.name).limit(LIMIT_PER_KIND))).all()
+        results.extend(
+            SearchResult(kind="container", id=c.id, label=c.name,
+                         sub=c.rfid_tag or "Container")
+            for c in containers
         )
 
     return SearchOut(results=results)
