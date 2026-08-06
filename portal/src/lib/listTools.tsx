@@ -33,6 +33,17 @@ export interface ColumnDef {
   label: string;
   width: string;   // grid-template fraction/px for this column
   default: boolean;
+  godOnly?: boolean; // only offered/shown once god mode is active
+}
+
+/** Columns to actually render: visible, and — for godOnly columns — only
+ *  while god mode is on. Lets a page drop god columns from the live grid
+ *  the instant god mode toggles off, without touching the `visible` set
+ *  (so re-enabling god mode restores the user's picks). */
+export function visibleColumnsFor(
+  columns: ColumnDef[], visible: Set<string>, godMode: boolean,
+): ColumnDef[] {
+  return columns.filter((c) => visible.has(c.key) && (!c.godOnly || godMode));
 }
 
 /* ── advanced filters (facets) ──────────────────────────────────── */
@@ -133,10 +144,11 @@ export function passesFacets(
   return true;
 }
 
-export function ColumnsButton({ columns, visible, onChange }: {
+export function ColumnsButton({ columns, visible, onChange, godMode }: {
   columns: ColumnDef[];
   visible: Set<string>;
   onChange: (next: Set<string>) => void;
+  godMode?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useOutsideClose<HTMLDivElement>(() => setOpen(false));
@@ -146,6 +158,8 @@ export function ColumnsButton({ columns, visible, onChange }: {
     if (next.has(key)) next.delete(key); else next.add(key);
     onChange(next);
   };
+
+  const offered = columns.filter((c) => !c.godOnly || godMode);
 
   return (
     <div className="pop-wrap" ref={ref}>
@@ -157,7 +171,7 @@ export function ColumnsButton({ columns, visible, onChange }: {
       {open && (
         <div className="pop-menu">
           <div className="pop-title">Visible columns</div>
-          {columns.map((c) => {
+          {offered.map((c) => {
             const on = visible.has(c.key);
             return (
               <button key={c.key} className={`pop-item ${on ? 'on' : ''}`}

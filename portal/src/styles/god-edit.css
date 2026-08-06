@@ -1,0 +1,57 @@
+/*
+ * God-edit: inline table editing for developers in god mode. Cells get an
+ * amber-tinted treatment so it's unmistakable that a value is directly
+ * writable — this bypasses the normal edit-modal path.
+ */
+
+.god-edit-toggle.on {
+  color: var(--accent);
+  border-color: rgba(var(--accent-rgb), 0.45);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+.god-edit-toggle.on svg { color: var(--accent); }
+
+.god-cell {
+  display: block;
+  width: 100%;
+}
+
+.god-cell-display {
+  display: block;
+  width: 100%;
+  color: var(--text-dark);
+}
+
+.god-cell input,
+.god-cell select {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: var(--text-dark);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-2, #f5f7fa));
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  border-radius: 8px;
+  padding: 6px 8px;
+  outline: none;
+}
+
+.god-cell input:focus,
+.god-cell select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
+}
+
+.god-cell.error input,
+.god-cell.error select {
+  outline: 2px solid var(--c-red);
+}
+
+.god-cell-msg {
+  display: block;
+  color: var(--c-red);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.god-cell.saving { opacity: 0.6; }
