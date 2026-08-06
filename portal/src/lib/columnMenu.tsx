@@ -88,11 +88,16 @@ const CHECK = (
 );
 
 export function ColumnMenu<T>({
-  colKey, label, rows, text, filter, onFilter, sortDir, onSort,
+  colKey, label, allRows, filters, text, filter, onFilter, sortDir, onSort,
 }: {
   colKey: string;
   label: string;
-  rows: T[];
+  /** The page's full unfiltered row set. `rowsForMenu` (cross-filter
+   *  scoping) runs on this ONLY while the popover is open — see `allValues`
+   *  below — so a page can pass its raw rows every render without paying
+   *  O(rows×filters) per column on every keystroke/render. */
+  allRows: T[];
+  filters: ColumnFilters;
   text: CellText<T>;
   filter: ColumnFilter | undefined;
   onFilter: (colKey: string, f: ColumnFilter | null) => void;
@@ -134,10 +139,13 @@ export function ColumnMenu<T>({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Only pay for uniqueValues while the popover is actually open.
+  // Only pay for rowsForMenu's cross-filter scan + uniqueValues while the
+  // popover is actually open — closed columns (the common case: every
+  // OTHER header on the page while one menu is open, and every header when
+  // none are) never touch `allRows`.
   const allValues = useMemo(
-    () => (open ? uniqueValues(rows, colKey, text) : []),
-    [open, rows, colKey, text],
+    () => (open ? uniqueValues(rowsForMenu(allRows, filters, colKey, text), colKey, text) : []),
+    [open, allRows, filters, colKey, text],
   );
   const narrowed = useMemo(() => {
     if (!typed) return allValues;

@@ -142,13 +142,13 @@ describe('EmptyClearFilters', () => {
 describe('ColumnMenu', () => {
   it('the trigger carries the filtered class only when a filter is active', () => {
     const { rerender } = render(
-      <ColumnMenu colKey="site" label="Site" rows={rows} text={text}
+      <ColumnMenu colKey="site" label="Site" allRows={rows} filters={{}} text={text}
                   filter={undefined} onFilter={vi.fn()} sortDir={null} onSort={vi.fn()} />,
     );
     expect(screen.getByRole('button', { name: 'Site column menu' }).getAttribute('aria-pressed')).toBe('false');
 
     rerender(
-      <ColumnMenu colKey="site" label="Site" rows={rows} text={text}
+      <ColumnMenu colKey="site" label="Site" allRows={rows} filters={{}} text={text}
                   filter={{ text: 'x' }} onFilter={vi.fn()} sortDir={null} onSort={vi.fn()} />,
     );
     expect(screen.getByRole('button', { name: 'Site column menu' }).getAttribute('aria-pressed')).toBe('true');
@@ -158,7 +158,7 @@ describe('ColumnMenu', () => {
     const user = userEvent.setup();
     const onFilter = vi.fn();
     render(
-      <ColumnMenu colKey="site" label="Site" rows={rows} text={text}
+      <ColumnMenu colKey="site" label="Site" allRows={rows} filters={{}} text={text}
                   filter={undefined} onFilter={onFilter} sortDir={null} onSort={vi.fn()} />,
     );
     await user.click(screen.getByRole('button', { name: 'Site column menu' }));
@@ -177,7 +177,7 @@ describe('ColumnMenu', () => {
     const user = userEvent.setup();
     const onFilter = vi.fn();
     render(
-      <ColumnMenu colKey="site" label="Site" rows={rows} text={text}
+      <ColumnMenu colKey="site" label="Site" allRows={rows} filters={{}} text={text}
                   filter={undefined} onFilter={onFilter} sortDir={null} onSort={vi.fn()} />,
     );
     await user.click(screen.getByRole('button', { name: 'Site column menu' }));
@@ -195,7 +195,7 @@ describe('ColumnMenu', () => {
     const user = userEvent.setup();
     const onFilter = vi.fn();
     render(
-      <ColumnMenu colKey="site" label="Site" rows={rows} text={text}
+      <ColumnMenu colKey="site" label="Site" allRows={rows} filters={{}} text={text}
                   filter={{ values: ['DA1'] }} onFilter={onFilter} sortDir={null} onSort={vi.fn()} />,
     );
     await user.click(screen.getByRole('button', { name: 'Site column menu' }));
@@ -207,12 +207,35 @@ describe('ColumnMenu', () => {
     const user = userEvent.setup();
     const onSort = vi.fn();
     render(
-      <ColumnMenu colKey="name" label="Name" rows={rows} text={text}
+      <ColumnMenu colKey="name" label="Name" allRows={rows} filters={{}} text={text}
                   filter={undefined} onFilter={vi.fn()} sortDir={null} onSort={onSort} />,
     );
     await user.click(screen.getByRole('button', { name: 'Name column menu' }));
     await user.click(screen.getByText('Z → A'));
     expect(onSort).toHaveBeenCalledWith(-1);
+  });
+
+  it("never scans rows (rowsForMenu's text accessor stays uncalled) while the menu is closed", async () => {
+    const user = userEvent.setup();
+    const spy = vi.fn(text);
+    const { rerender } = render(
+      <ColumnMenu colKey="site" label="Site" allRows={rows} filters={{}} text={spy}
+                  filter={undefined} onFilter={vi.fn()} sortDir={null} onSort={vi.fn()} />,
+    );
+    expect(spy).not.toHaveBeenCalled();
+
+    // A re-render with new filters/allRows (as happens every render on a
+    // real page, since the page no longer memoizes rowsForMenu itself)
+    // still must not scan while closed.
+    rerender(
+      <ColumnMenu colKey="site" label="Site" allRows={rows} filters={{ name: { text: 'a' } }} text={spy}
+                  filter={undefined} onFilter={vi.fn()} sortDir={null} onSort={vi.fn()} />,
+    );
+    expect(spy).not.toHaveBeenCalled();
+
+    // Opening the menu is what finally triggers the scan.
+    await user.click(screen.getByRole('button', { name: 'Site column menu' }));
+    expect(spy).toHaveBeenCalled();
   });
 });
 

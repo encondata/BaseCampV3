@@ -6,7 +6,7 @@
  * lands in AssetEditModal.
  */
 
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import AssetEditModal from '../components/assets/AssetEditModal';
@@ -31,7 +31,7 @@ import {
 import { initialOpenId } from '../lib/auditFormat';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
-  rowsForMenu, usePersistentListState,
+  usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { naturalCompare } from '../lib/sites';
@@ -125,7 +125,22 @@ export default function Assets() {
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
-  useRecordFocus(assets, (a) => a.id, (a) => a.serial_number ?? a.name ?? '', setOpenId, setQuery);
+  // The id of the most recent deep-link arrival (?open= param at mount, or
+  // a later location.state.openRow from the topbar search) — as opposed to
+  // a plain row click, which calls `setOpenId` directly and never touches
+  // this ref. Template for Tasks 3-5: any page adopting useRecordFocus
+  // alongside column-menu filters needs this same wrapper + the effect
+  // below, or a filter saved from a previous visit can permanently hide a
+  // record someone just followed a link to.
+  const deepLinkTarget = useRef<string | null>(initialOpenId());
+  const focusOpenId = (id: string | null) => {
+    deepLinkTarget.current = id;
+    setOpenId(id);
+  };
+  useRecordFocus(assets, (a) => a.id, (a) => a.serial_number ?? a.name ?? '', focusOpenId, setQuery);
+  // Guards the auto-clear below so it fires at most once per deep-link
+  // arrival, not on every subsequent filter edit.
+  const clearedDeepLink = useRef<string | null>(null);
   const {
     visibleCols, setVisibleCols,
     sortKey, sortDir, setSort, toggleSort,
@@ -191,9 +206,27 @@ export default function Assets() {
     return rows.sort((a, b) => naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
   }, [assets, filters, query, sortKey, sortDir]);
 
+  // Auto-close the open row when it drops out of `visible` — EXCEPT the one
+  // case where it just arrived via a deep link and the reason it's missing
+  // is a persisted column filter: then clear the filters instead, so the
+  // record the link pointed at actually surfaces (the FilterSummaryChip
+  // disappearing makes that state change obvious). `visible` here still
+  // reflects the pre-clear filters within this same render; the `return`
+  // after clearFilters() lets the next render (post-clear) settle whether
+  // the row is visible now, rather than racing this effect against that
+  // state update. Template for Tasks 3-5.
   useEffect(() => {
-    if (assets && openId && !visible.some((a) => a.id === openId)) setOpenId(null);
-  }, [assets, visible, openId]);
+    if (!assets || !openId || visible.some((a) => a.id === openId)) return;
+    if (openId === deepLinkTarget.current && clearedDeepLink.current !== openId) {
+      clearedDeepLink.current = openId; // once per deep-link arrival
+      const target = assets.find((a) => a.id === openId);
+      if (target && !passesColumnFilters(target, filters, assetCellText)) {
+        clearFilters();
+        return;
+      }
+    }
+    setOpenId(null);
+  }, [assets, visible, openId, filters, clearFilters]);
 
   const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
@@ -300,7 +333,7 @@ export default function Assets() {
                 Serial {caret('primary')}
               </button>
               <ColumnMenu colKey="primary" label="Serial"
-                          rows={rowsForMenu(assets ?? [], filters, 'primary', assetCellText)}
+                          allRows={assets ?? []} filters={filters}
                           text={assetCellText}
                           filter={filters.primary} onFilter={setFilter}
                           sortDir={sortKey === 'primary' ? sortDir : null}
@@ -312,7 +345,7 @@ export default function Assets() {
                   {c.label} {caret(c.key)}
                 </button>
                 <ColumnMenu colKey={c.key} label={c.label}
-                            rows={rowsForMenu(assets ?? [], filters, c.key, assetCellText)}
+                            allRows={assets ?? []} filters={filters}
                             text={assetCellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
@@ -320,7 +353,7 @@ export default function Assets() {
               </span>
             ))}
             <ColumnMenu colKey="archived" label="Archived"
-                        rows={rowsForMenu(assets ?? [], filters, 'archived', assetCellText)}
+                        allRows={assets ?? []} filters={filters}
                         text={assetCellText}
                         filter={filters.archived} onFilter={setFilter}
                         sortDir={sortKey === 'archived' ? sortDir : null}
