@@ -5,6 +5,7 @@
  *  org-PATCH error map and the god-edit descriptor table. */
 
 import type { GodField } from './godEdit';
+import { longDate } from './format';
 
 export interface ManagerRef { id: string; display_name: string }
 
@@ -29,6 +30,68 @@ export interface OrgItem {
   logo_url: string | null;
   archived_at: string | null;
   created_at: string;
+}
+
+/** Archived orgs don't hide — they surface as a fourth status alongside
+ *  the three real `status` values, both in the pill quick-filter and (now)
+ *  in the Status column's own text/checkbox filter. Moved out of
+ *  OrgDirectory.tsx so orgCellText (below) computes the exact same value
+ *  the page's pills/sort/cell already do. */
+export function effectiveStatus(o: OrgItem): string {
+  return o.archived_at ? 'archived' : o.status;
+}
+
+/** Status label/style — moved out of OrgDirectory.tsx so orgCellText can
+ *  read the same label the status chip renders. */
+export const STATUS_META: Record<string, { label: string; cls: string }> = {
+  prospect: { label: 'Prospect', cls: 'c-blue' },
+  active: { label: 'Active', cls: 'c-green' },
+  dormant: { label: 'Dormant', cls: 'c-amber' },
+  archived: { label: 'Archived', cls: 'c-red' },
+};
+
+/** Partner-type label map (the Type column, partners only) — moved out of
+ *  OrgDirectory.tsx so orgCellText and the OrgFormModal type picker share
+ *  one copy. */
+export const TYPE_LABEL: Record<string, string> = {
+  staffing: 'Staffing', logistics: 'Logistics', subcontractor: 'Subcontractor',
+  consultant: 'Consultant', other: 'Other',
+};
+
+/** Column-menu accessor (lib/columnMenu.tsx's `CellText<T>`) — one row's
+ *  display text for a given column key. Mirrors exactly what the page's own
+ *  cell renderer shows: 'status' reads effectiveStatus through STATUS_META
+ *  (so 'Archived' is a selectable value, same as the pill), 'tier' shows
+ *  the raw key (the cell renders it unlabeled), and 'type' joins the
+ *  partner-types chip list. 'primary' is the always-shown name+code/city
+ *  cell — no archived pseudo-column is needed since archived already lives
+ *  inside 'status'. */
+export function orgCellText(o: OrgItem, colKey: string): string {
+  switch (colKey) {
+    case 'primary': {
+      const secondary = [o.code, [o.city, o.region].filter(Boolean).join(', ')]
+        .filter(Boolean).join(' · ');
+      return `${o.name} ${secondary}`.trim();
+    }
+    case 'type': return o.partner_types.length
+      ? o.partner_types.map((t) => TYPE_LABEL[t] ?? t).join(', ') : '—';
+    case 'tier': return o.tier;
+    case 'status': return STATUS_META[effectiveStatus(o)]?.label ?? effectiveStatus(o);
+    case 'manager': return o.account_manager?.display_name ?? '—';
+    case 'contacts': return String(o.contact_count);
+    case 'website': return o.website ?? '—';
+    case 'phone': return o.phone ?? '—';
+    case 'location': return [o.city, o.region].filter(Boolean).join(', ') || '—';
+    case 'created': return longDate(o.created_at);
+    case 'city': return o.city ?? '—';
+    case 'region': return o.region ?? '—';
+    case 'postal_code': return o.postal_code ?? '—';
+    case 'country': return o.country;
+    case 'address_line1': return o.address_line1 ?? '—';
+    case 'address_line2': return o.address_line2 ?? '—';
+    case 'notes': return o.notes || '—';
+    default: return '';
+  }
 }
 
 /** Codes update_org (PATCH /clients|partners/{id}, api/src/serversherpa/
