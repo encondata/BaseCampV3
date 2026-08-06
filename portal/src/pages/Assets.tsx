@@ -228,6 +228,21 @@ export default function Assets() {
     setOpenId(null);
   }, [assets, visible, openId, filters, clearFilters]);
 
+  // Release the deep-link guard the moment the target row is first confirmed
+  // visible — otherwise `deepLinkTarget.current` sits there indefinitely,
+  // and a much later, unrelated filter edit that happens to hide that same
+  // row again (after the user reopened it with a plain click) would still
+  // read as "the deep link just arrived" and fire the once-per-id
+  // clearFilters() above. Clearing here (rather than inside the effect
+  // above) leaves the arrival behavior — including its "row missing on
+  // first render because of a persisted filter" clearFilters() path —
+  // untouched.
+  useEffect(() => {
+    if (deepLinkTarget.current && visible.some((a) => a.id === deepLinkTarget.current)) {
+      deepLinkTarget.current = null;
+    }
+  }, [visible]);
+
   const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
@@ -373,7 +388,7 @@ export default function Assets() {
             return (
               <div key={a.id} className={`dir-row ${open ? 'open' : ''} ${a.archived_at ? 'archived' : ''}`}>
                 <div className="row-main" style={grid}
-                     onClick={() => setOpenId(open ? null : a.id)}>
+                     onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : a.id); }}>
                   <div className="cell cell-primary">
                     {god.editing && godFieldFor('primary') && godFieldFor('primary2') ? (
                       <div className="pn god-primary-edit">
