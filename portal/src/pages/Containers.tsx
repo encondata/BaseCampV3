@@ -8,9 +8,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
-// Task 9: ContainerBulkImport does not exist yet — restore this import
-// (and the `importing` state + Import button below) once it lands.
-// import ContainerBulkImport from '../components/containers/ContainerBulkImport';
+import ContainerBulkImport from '../components/containers/ContainerBulkImport';
 import ContainerEditModal from '../components/containers/ContainerEditModal';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import {
@@ -125,8 +123,7 @@ export default function Containers() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  // Task 9: restore alongside the ContainerBulkImport import above.
-  // const [importing, setImporting] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const load = async () => {
     try {
@@ -267,13 +264,11 @@ export default function Containers() {
           <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
           <ExportButton onExport={() => exportCsv('containers', CSV_COLUMNS, visible)} />
           <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canChange} />
-          {/* Task 9: restore the Import button alongside ContainerBulkImport.
           {canAdd && (
             <button className="mini-btn" onClick={() => setImporting(true)}>
               Import
             </button>
           )}
-          */}
           {canAdd && (
             <button className="btn-solid" onClick={() => setCreating(true)}>
               + New container
@@ -393,14 +388,12 @@ export default function Containers() {
           onSaved={() => load()}
         />
       )}
-      {/* Task 9: restore alongside ContainerBulkImport import + `importing` state.
       {importing && (
         <ContainerBulkImport
           onClose={() => setImporting(false)}
           onDone={() => load()}
         />
       )}
-      */}
     </div>
   );
 }
