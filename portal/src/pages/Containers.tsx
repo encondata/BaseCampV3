@@ -1,0 +1,465 @@
+/**
+ * Containers — logistics transport containers: identity, type/status
+ * chips, site + location, and asset contents. Directory pattern cloned
+ * from Assets.tsx (incl. its deep-link/filter interplay); all mutation
+ * lands in ContainerEditModal.
+ */
+
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+
+import { useAuth } from '../auth/AuthContext';
+// Task 9: ContainerBulkImport does not exist yet — restore this import
+// (and the `importing` state + Import button below) once it lands.
+// import ContainerBulkImport from '../components/containers/ContainerBulkImport';
+import ContainerEditModal from '../components/containers/ContainerEditModal';
+import NotesFilesPanel from '../components/NotesFilesPanel';
+import {
+  ApiError,
+  listContainerAssets,
+  listContainers,
+  listContainerStatuses,
+  listContainerTypes,
+  listSites,
+  updateContainer,
+  type ContainerAssetRow,
+  type ContainerItem,
+  type SiteItem,
+  type StatusValue,
+} from '../lib/api';
+import {
+  CONTAINER_ERRORS, CONTAINER_GOD_FIELDS, containerCellText, containerSearchText,
+} from '../lib/containers';
+import { initialOpenId } from '../lib/auditFormat';
+import {
+  ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
+  usePersistentListState,
+} from '../lib/columnMenu';
+import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { naturalCompare } from '../lib/sites';
+import { useRecordFocus } from '../lib/useDeepLinkFilter';
+import {
+  ColumnsButton,
+  ExportButton,
+  exportCsv,
+  visibleColumnsFor,
+  type ColumnDef,
+} from '../lib/listTools';
+import '../styles/directory.css';
+import '../styles/profile.css';
+import '../styles/settings.css';
+import '../styles/assets.css';
+import '../styles/containers.css';
+
+const COLUMNS: ColumnDef[] = [
+  { key: 'type', label: 'Type', width: '1fr', default: true },
+  { key: 'rfid', label: 'RFID', width: '1fr', default: true },
+  { key: 'assets', label: 'Assets', width: '0.6fr', default: true },
+  { key: 'status', label: 'Status', width: '1.1fr', default: true },
+  { key: 'site', label: 'Site', width: '1.2fr', default: true },
+  { key: 'location', label: 'Location', width: '1.4fr', default: false },
+  { key: 'updated', label: 'Created', width: '1fr', default: false },
+];
+
+const ALL_COLUMN_KEYS = new Set<string>(
+  [...COLUMNS.map((c) => c.key), 'primary', 'archived']);
+const DEFAULT_VISIBLE = new Set<string>(
+  COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+function sortValueFor(c: ContainerItem, key: string): string {
+  switch (key) {
+    case 'primary': return c.name.toLowerCase();
+    case 'type': return (c.type_label ?? '').toLowerCase();
+    case 'rfid': return (c.rfid_tag ?? '').toLowerCase();
+    case 'assets': return String(c.asset_count).padStart(6, '0');
+    case 'status': return c.status_label.toLowerCase();
+    case 'site': return (c.site_name ?? '').toLowerCase();
+    case 'location': return c.location_detail.toLowerCase();
+    case 'updated': return c.created_at;
+    case 'archived': return c.archived_at ? '1' : '0';
+    default: return '';
+  }
+}
+
+const CSV_COLUMNS: [string, (c: ContainerItem) => string][] = [
+  ['ID', (c) => c.id],
+  ['Name', (c) => c.name],
+  ['Type', (c) => c.type_label ?? ''],
+  ['RFID', (c) => c.rfid_tag ?? ''],
+  ['Assets', (c) => String(c.asset_count)],
+  ['Status', (c) => c.status_label],
+  ['Site', (c) => c.site_name ?? ''],
+  ['Location', (c) => c.location_detail],
+  ['Created', (c) => c.created_at],
+];
+
+export default function Containers() {
+  const { can, godMode } = useAuth();
+  const canAdd = can('containers', 'add');
+  const canChange = can('containers', 'change');
+  const canViewSites = can('sites', 'view');
+  const god = useGodEdit();
+
+  const [containers, setContainers] = useState<ContainerItem[] | null>(null);
+  const [statuses, setStatuses] = useState<StatusValue[]>([]);
+  const [types, setTypes] = useState<StatusValue[]>([]);
+  const [sites, setSites] = useState<SiteItem[]>([]);
+  const [error, setError] = useState('');
+  const [query, setQuery] = useState('');
+  const [openId, setOpenId] = useState<string | null>(initialOpenId);
+  const deepLinkTarget = useRef<string | null>(initialOpenId());
+  const focusOpenId = (id: string | null) => {
+    deepLinkTarget.current = id;
+    clearedDeepLink.current = null;
+    setOpenId(id);
+  };
+  useRecordFocus(containers, (c) => c.id, (c) => c.name, focusOpenId, setQuery);
+  const clearedDeepLink = useRef<string | null>(null);
+  const {
+    visibleCols, setVisibleCols,
+    sortKey, sortDir, setSort, toggleSort,
+    filters, setFilter, clearFilters,
+  } = usePersistentListState(
+    'containers', { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 },
+    ALL_COLUMN_KEYS,
+  );
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  // Task 9: restore alongside the ContainerBulkImport import above.
+  // const [importing, setImporting] = useState(false);
+
+  const load = async () => {
+    try {
+      setContainers(await listContainers());
+      setError('');
+    } catch (err) {
+      setError(err instanceof ApiError && err.status === 403
+        ? 'You do not have permission to view containers.'
+        : 'Failed to load containers.');
+    }
+  };
+
+  useEffect(() => {
+    void load();
+    void listContainerStatuses().then(setStatuses).catch(() => {});
+    void listContainerTypes().then(setTypes).catch(() => {});
+    if (canViewSites) void listSites().then(setSites).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const godFields = useMemo(() => CONTAINER_GOD_FIELDS({
+    sites: () => (canViewSites ? sites.map((s) => ({ value: s.id, label: s.name })) : []),
+    statuses: () => statuses.map((s) => ({ value: s.key, label: s.label })),
+    types: () => types.map((t) => ({ value: t.key, label: t.label })),
+  }), [sites, statuses, types, canViewSites]);
+  const godFieldFor = (column: string) => godFields.find((f) => f.column === column);
+  const replaceRow = (u: ContainerItem) =>
+    setContainers((xs) => xs?.map((x) => (x.id === u.id ? u : x)) ?? xs);
+
+  const visible = useMemo(() => {
+    if (!containers) return [];
+    const q = query.trim().toLowerCase();
+    const showArchived = filters.archived?.values?.includes('Yes') ?? false;
+    const rows = containers.filter((c) => {
+      if (!showArchived && c.archived_at) return false;
+      if (!passesColumnFilters(c, filters, containerCellText)) return false;
+      if (!q) return true;
+      return containerSearchText(c).includes(q);
+    });
+    return rows.sort((a, b) =>
+      naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
+  }, [containers, filters, query, sortKey, sortDir]);
+
+  // Deep-link vs persisted-filter interplay — cloned from Assets.tsx.
+  useEffect(() => {
+    if (!containers || !openId || visible.some((c) => c.id === openId)) return;
+    if (openId === deepLinkTarget.current && clearedDeepLink.current !== openId) {
+      clearedDeepLink.current = openId;
+      const target = containers.find((c) => c.id === openId);
+      if (target && !passesColumnFilters(target, filters, containerCellText)) {
+        clearFilters();
+        return;
+      }
+    }
+    setOpenId(null);
+  }, [containers, visible, openId, filters, clearFilters]);
+
+  useEffect(() => {
+    if (deepLinkTarget.current && visible.some((c) => c.id === deepLinkTarget.current)) {
+      deepLinkTarget.current = null;
+    }
+  }, [visible]);
+
+  const caret = (key: string) =>
+    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
+
+  const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
+  const grid = { gridTemplateColumns: `2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
+
+  const cellFor = (c: ContainerItem, key: string) => {
+    if (god.editing) {
+      const gf = godFieldFor(key);
+      if (gf) {
+        return (
+          <GodCell row={c} gf={gf} patch={updateContainer} onRowSaved={replaceRow}
+                   errorMap={CONTAINER_ERRORS} disabled={!canChange} />
+        );
+      }
+    }
+    switch (key) {
+      case 'type':
+        return c.type_color
+          ? (
+            <span className="chip custom" style={{ '--chip': c.type_color } as CSSProperties}>
+              <span className="dot" />{c.type_label}
+            </span>
+          )
+          : <span className="cell-top">—</span>;
+      case 'rfid':
+        return <span className="mono">{c.rfid_tag ?? '—'}</span>;
+      case 'assets':
+        return <span className="mono">{c.asset_count}</span>;
+      case 'status':
+        return (
+          <div className="chips">
+            <span className="chip custom" style={{ '--chip': c.status_color } as CSSProperties}>
+              <span className="dot" />{c.status_label}
+            </span>
+            {c.archived_at && <span className="chip tag">Archived</span>}
+          </div>
+        );
+      case 'site':
+        return <span className="cell-top">{c.site_name ?? '—'}</span>;
+      case 'location':
+        return <span className="cell-top">{c.location_detail || '—'}</span>;
+      case 'updated':
+        return <span className="cell-top">{new Date(c.created_at).toLocaleDateString()}</span>;
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <div className="portal-page">
+      <div className="dir-head">
+        <div>
+          <div className="eyebrow">Logistics</div>
+          <h1 className="page-title">
+            Containers
+            <span className="badge-count">{containers?.length ?? '…'}</span>
+          </h1>
+          <p className="page-hint">
+            Transport containers — type, status, site, and asset contents.
+          </p>
+        </div>
+      </div>
+
+      <div className="dir-toolbar">
+        <div className="toolbar-right">
+          <div className="dir-search" style={{ marginLeft: 0 }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                 strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+            <input placeholder="Filter this list…" value={query}
+                   onChange={(e) => setQuery(e.target.value)} />
+          </div>
+          <span className="result-count">{visible.length} of {containers?.length ?? 0} shown</span>
+          <FilterSummaryChip filters={filters} onClear={clearFilters} />
+          <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
+          <ExportButton onExport={() => exportCsv('containers', CSV_COLUMNS, visible)} />
+          <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canChange} />
+          {/* Task 9: restore the Import button alongside ContainerBulkImport.
+          {canAdd && (
+            <button className="mini-btn" onClick={() => setImporting(true)}>
+              Import
+            </button>
+          )}
+          */}
+          {canAdd && (
+            <button className="btn-solid" onClick={() => setCreating(true)}>
+              + New container
+            </button>
+          )}
+        </div>
+      </div>
+
+      {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load containers</b>{error}</div>}
+
+      {!error && (
+        <div className="dir-list">
+          <div className="list-head" style={grid}>
+            <span className="col-head">
+              <button className="sortable" onClick={() => toggleSort('primary')}>
+                Name {caret('primary')}
+              </button>
+              <ColumnMenu colKey="primary" label="Name"
+                          allRows={containers ?? []} filters={filters}
+                          text={containerCellText}
+                          filter={filters.primary} onFilter={setFilter}
+                          sortDir={sortKey === 'primary' ? sortDir : null}
+                          onSort={(dir) => setSort('primary', dir)} />
+            </span>
+            {shownCols.map((c) => (
+              <span key={c.key} className="col-head">
+                <button className="sortable" onClick={() => toggleSort(c.key)}>
+                  {c.label} {caret(c.key)}
+                </button>
+                <ColumnMenu colKey={c.key} label={c.label}
+                            allRows={containers ?? []} filters={filters}
+                            text={containerCellText}
+                            filter={filters[c.key]} onFilter={setFilter}
+                            sortDir={sortKey === c.key ? sortDir : null}
+                            onSort={(dir) => setSort(c.key, dir)} />
+              </span>
+            ))}
+            <ColumnMenu colKey="archived" label="Archived"
+                        allRows={containers ?? []} filters={filters}
+                        text={containerCellText}
+                        filter={filters.archived} onFilter={setFilter}
+                        sortDir={sortKey === 'archived' ? sortDir : null}
+                        onSort={(dir) => setSort('archived', dir)} />
+          </div>
+
+          {containers && visible.length === 0 && (
+            <div className="dir-empty">
+              <b>No matches</b>Try a different filter — or add a container.
+              <EmptyClearFilters filters={filters} onClear={clearFilters} />
+            </div>
+          )}
+
+          {visible.map((c) => {
+            const open = openId === c.id;
+            return (
+              <div key={c.id} className={`dir-row ${open ? 'open' : ''} ${c.archived_at ? 'archived' : ''}`}>
+                <div className="row-main" style={grid}
+                     onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : c.id); }}>
+                  <div className="cell cell-primary">
+                    {god.editing && godFieldFor('primary') ? (
+                      <div className="pn god-primary-edit">
+                        <GodCell row={c} gf={godFieldFor('primary')!} patch={updateContainer}
+                                 onRowSaved={replaceRow} errorMap={CONTAINER_ERRORS} disabled={!canChange} />
+                      </div>
+                    ) : (
+                      <div className="pn"><b>{c.name}</b>
+                        <span>{c.type_label ?? '—'}</span></div>
+                    )}
+                  </div>
+                  {shownCols.map((col) => (
+                    <div className="cell" key={col.key}>{cellFor(c, col.key)}</div>
+                  ))}
+                  <div className="cell chevron-cell">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                         strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+                  </div>
+                </div>
+
+                <div className="detail">
+                  <div className="detail-clip">
+                    <div className="detail-inner">
+                      {open && (
+                        <ContainerRowDetail
+                          container={c}
+                          canEdit={canChange}
+                          onEdit={() => setEditingId(c.id)}
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {editingId !== null && (
+        <ContainerEditModal
+          container={containers?.find((c) => c.id === editingId) ?? null}
+          statuses={statuses}
+          types={types}
+          sites={sites}
+          canChange={canChange}
+          onClose={() => setEditingId(null)}
+          onSaved={() => load()}
+        />
+      )}
+      {creating && (
+        <ContainerEditModal
+          container={null}
+          statuses={statuses}
+          types={types}
+          sites={sites}
+          canChange={canChange}
+          onClose={() => setCreating(false)}
+          onSaved={() => load()}
+        />
+      )}
+      {/* Task 9: restore alongside ContainerBulkImport import + `importing` state.
+      {importing && (
+        <ContainerBulkImport
+          onClose={() => setImporting(false)}
+          onDone={() => load()}
+        />
+      )}
+      */}
+    </div>
+  );
+}
+
+/* ── row detail: read-only — the ONLY interactive element is Edit. ── */
+
+function ContainerRowDetail({ container, canEdit, onEdit }: {
+  container: ContainerItem; canEdit: boolean; onEdit: () => void;
+}) {
+  const [contents, setContents] = useState<ContainerAssetRow[] | null>(null);
+  useEffect(() => {
+    void listContainerAssets(container.id).then(setContents).catch(() => {});
+  }, [container.id]);
+
+  return (
+    <div className="detail-grid">
+      <div className="detail-block">
+        <p className="eyebrow-sm">Identity</p>
+        <dl className="kv">
+          <dt>Name</dt><dd>{container.name}</dd>
+          <dt>Type</dt><dd>{container.type_label ?? '—'}</dd>
+          <dt>RFID tag</dt><dd className="mono">{container.rfid_tag ?? '—'}</dd>
+          <dt>Last audit</dt>
+          <dd>{container.last_audit_at
+            ? new Date(container.last_audit_at).toLocaleString() : '—'}</dd>
+          <dt>Last validated</dt>
+          <dd>{container.last_validated_at
+            ? new Date(container.last_validated_at).toLocaleString() : '—'}</dd>
+        </dl>
+      </div>
+      <div className="detail-block">
+        <p className="eyebrow-sm">Location</p>
+        <dl className="kv">
+          <dt>Site</dt><dd>{container.site_name ?? '—'}</dd>
+          <dt>Location</dt><dd>{container.location_detail || '—'}</dd>
+          <dt>Assets</dt><dd>{container.asset_count}</dd>
+        </dl>
+      </div>
+      <div className="detail-block" style={{ gridColumn: '1 / -1' }}>
+        <p className="eyebrow-sm">Contents</p>
+        {contents === null && <p className="page-hint">Loading…</p>}
+        {contents?.length === 0 && <p className="page-hint">No assets in this container.</p>}
+        {contents && contents.length > 0 && (
+          <dl className="kv">
+            {contents.map((r) => (
+              <span key={r.asset_id} style={{ display: 'contents' }}>
+                <dt className="mono">{r.serial_number ?? '—'}</dt>
+                <dd>{r.name ?? r.model_name ?? '—'} · {r.status_label}</dd>
+              </span>
+            ))}
+          </dl>
+        )}
+      </div>
+      <NotesFilesPanel entityType="container" entityId={container.id} canWrite={canEdit} />
+      {canEdit && (
+        <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
+          <button className="btn-solid" onClick={onEdit}>Edit</button>
+        </div>
+      )}
+    </div>
+  );
+}

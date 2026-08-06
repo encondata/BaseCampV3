@@ -13,7 +13,7 @@ from sqlalchemy import select
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
 from serversherpa.api.schemas import NoteCreateIn, NoteOut, NoteUpdateIn
-from serversherpa.db.models import Asset, Note, Person
+from serversherpa.db.models import Asset, Container, Note, Person
 from serversherpa.services.audit import audit
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -21,6 +21,7 @@ router = APIRouter(prefix="/notes", tags=["notes"])
 # entity_type -> (resource id, model) — the permission/scope anchor
 NOTE_HOSTS: dict[str, tuple[str, type]] = {
     "asset": ("assets", Asset),
+    "container": ("containers", Container),
 }
 
 

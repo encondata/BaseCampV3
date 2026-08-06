@@ -34,6 +34,24 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    label: 'Logistics',
+    items: [
+      {
+        to: '/logistics/containers',
+        label: 'Containers',
+        resource: 'containers',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 8h18v10H3z" />
+            <path d="M3 8l2-4h14l2 4" />
+            <path d="M8 12v3M12 12v3M16 12v3" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
     label: 'Operations',
     items: [
       {

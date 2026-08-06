@@ -8,6 +8,7 @@ import Assets from './pages/Assets';
 import AssetModels from './pages/AssetModels';
 import Audit from './pages/Audit';
 import Clients from './pages/Clients';
+import Containers from './pages/Containers';
 import Dev from './pages/Dev';
 import External from './pages/External';
 import Home from './pages/Home';
@@ -37,6 +38,7 @@ export default function App() {
           >
             <Route path="/" element={<ProtectedRoute resource="dashboard"><Home /></ProtectedRoute>} />
             <Route path="/assets" element={<ProtectedRoute resource="assets"><Assets /></ProtectedRoute>} />
+            <Route path="/logistics/containers" element={<ProtectedRoute resource="containers"><Containers /></ProtectedRoute>} />
             <Route path="/sites" element={<ProtectedRoute resource="sites"><Sites /></ProtectedRoute>} />
             <Route path="/people/users" element={<ProtectedRoute resource="users"><Users /></ProtectedRoute>} />
             <Route path="/people/workers" element={<ProtectedRoute resource="workers"><Workers /></ProtectedRoute>} />

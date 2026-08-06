@@ -14,6 +14,7 @@ import { useTopbar } from '../lib/topbar';
 const CRUMBS: Record<string, string[]> = {
   '/': ['Operations', 'Dashboard'],
   '/assets': ['Assets', 'Assets'],
+  '/logistics/containers': ['Logistics', 'Containers'],
   '/sites': ['Operations', 'Sites'],
   '/people/users': ['People', 'Users'],
   '/people/workers': ['People', 'Workers'],
@@ -33,6 +34,7 @@ const G_CHORD: Record<string, string> = {
 const PAGES = [
   { label: 'Dashboard', to: '/' },
   { label: 'Assets', to: '/assets' },
+  { label: 'Containers', to: '/logistics/containers' },
   { label: 'Sites', to: '/sites' },
   { label: 'Users', to: '/people/users' },
   { label: 'Workers', to: '/people/workers' },
@@ -44,7 +46,7 @@ const PAGES = [
 ];
 
 interface Hit {
-  kind: 'page' | 'user' | 'client' | 'partner' | 'site' | 'asset' | 'asset_model';
+  kind: 'page' | 'user' | 'client' | 'partner' | 'site' | 'asset' | 'asset_model' | 'container';
   id: string;
   label: string;
   sub?: string | null;
@@ -121,6 +123,8 @@ export default function Topbar() {
       navigate('/sites', { state: { openRow: hit.id } });
     } else if (hit.kind === 'asset') {
       navigate('/assets', { state: { openRow: hit.id } });
+    } else if (hit.kind === 'container') {
+      navigate('/logistics/containers', { state: { openRow: hit.id } });
     } else if (hit.kind === 'asset_model') {
       navigate('/admin/asset-models', { state: { openRow: hit.id } });
     }
@@ -230,6 +234,7 @@ export default function Topbar() {
               const GROUPS: Record<string, string> = {
                 page: 'Pages', user: 'People', client: 'Clients', partner: 'Partners',
                 site: 'Sites', asset: 'Assets', asset_model: 'Makes / Models',
+                container: 'Containers',
               };
               const header = h.kind !== lastKind ? (
                 <div className="kbar-group">{GROUPS[h.kind]}</div>
