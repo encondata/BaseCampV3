@@ -182,3 +182,36 @@
 .idet-people-list { overflow: visible; }
 .idet-people-list .list-head { border-radius: 15px 15px 0 0; }
 .idet-people-list .dir-row:last-child .row-main { border-radius: 0 0 15px 15px; }
+
+/* Assets section (moves only) — same toolbar/list treatment as People
+   above; a plain progress bar sits above the toolbar. */
+.idet-assets-toolbar { margin: 0 0 12px; }
+.idet-assets-list .row-main { cursor: default; }
+.idet-assets-list .row-main:hover { background: none; }
+.idet-assets-list { overflow: visible; }
+.idet-assets-list .list-head { border-radius: 15px 15px 0 0; }
+.idet-assets-list .dir-row:last-child .row-main { border-radius: 0 0 15px 15px; }
+
+.idet-assets-progress { margin: 0 0 14px; }
+.idet-assets-progress-label {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-mute);
+  margin-bottom: 6px;
+}
+.idet-assets-progress-track {
+  height: 8px;
+  border-radius: 5px;
+  background: var(--surface-2, #f5f7fa);
+  border: 1px solid var(--paper-line);
+  overflow: hidden;
+}
+.idet-assets-progress-fill {
+  height: 100%;
+  background: var(--c-blue);
+  border-radius: 5px 0 0 5px;
+  transition: width 0.2s ease;
+}

@@ -3,8 +3,9 @@
  * (the lib/containers.ts pattern), unit-testable without jsdom.
  */
 import type { ComboOption } from '../components/ComboBox';
-import type { InitiativeItem, OrgRef, SiteItem } from './api';
+import type { InitiativeAssetRow, InitiativeItem, OrgRef, SiteItem } from './api';
 import type { GodField } from './godEdit';
+import type { ColumnDef } from './listTools';
 
 const day = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString() : '—';
@@ -251,3 +252,100 @@ export function INITIATIVE_GOD_FIELDS(
       fromRow: (i) => i.site_id ?? '', options: lookups.sites },
   ];
 }
+
+/* ── move assets — Full Details page asset roster (v2 MoveDetail parity,
+      docs/superpowers/specs/2026-08-25-move-assets-design.md). Read-only
+      table this slice (Task 3); edit dialog + remove land in Task 4. ── */
+
+const BLANK = '—';
+
+/** Default columns mirror v2's MoveDetail grid; optional columns are the
+ *  remaining per-move + asset fields, offered via the Columns picker. */
+export const MOVE_ASSET_COLUMNS: ColumnDef[] = [
+  { key: 'asset_id', label: 'Asset ID', width: '0.8fr', default: true },
+  { key: 'asset_name', label: 'Asset Name', width: '1.3fr', default: true },
+  { key: 'serial', label: 'Serial', width: '1.1fr', default: true },
+  { key: 'make_model', label: 'Make/Model', width: '1.2fr', default: true },
+  { key: 'status', label: 'Status', width: '1.1fr', default: true },
+  { key: 'source_rack', label: 'Source Rack', width: '1fr', default: true },
+  { key: 'source_ru', label: 'Source RU', width: '0.8fr', default: true },
+  { key: 'destination_rack', label: 'Destination Rack', width: '1fr', default: true },
+  { key: 'destination_ru', label: 'Destination RU', width: '0.9fr', default: true },
+  { key: 'wave', label: 'Wave', width: '0.8fr', default: false },
+  { key: 'disposition', label: 'Disposition', width: '1.1fr', default: false },
+  { key: 'owner', label: 'Owner', width: '1fr', default: false },
+  { key: 'source_verified', label: 'Source Verified', width: '0.9fr', default: false },
+  { key: 'source_position', label: 'Source Position', width: '1fr', default: false },
+  { key: 'destination_verified', label: 'Destination Verified', width: '1fr', default: false },
+  { key: 'destination_position', label: 'Destination Position', width: '1.1fr', default: false },
+  { key: 'cable_info', label: 'Cable Info', width: '1.2fr', default: false },
+  { key: 'vendor_involved', label: 'Vendor Involved', width: '1fr', default: false },
+  { key: 'asset_status', label: 'Asset Status', width: '1.1fr', default: false },
+  { key: 'rfid_tag', label: 'RFID Tag', width: '1fr', default: false },
+  { key: 'location', label: 'Location', width: '1.1fr', default: false },
+  { key: 'client', label: 'Client', width: '1fr', default: false },
+  { key: 'added', label: 'Added', width: '0.9fr', default: false },
+  { key: 'updated', label: 'Updated', width: '0.9fr', default: false },
+];
+
+const yesNo = (v: boolean | null): string => (v == null ? BLANK : v ? 'Yes' : 'No');
+const dayOf = (iso: string) => new Date(iso).toLocaleDateString();
+
+/** Column-menu accessor — one row's display text per column key (feeds
+ *  sort/filter/search AND CSV export). Every missing value — text, RU
+ *  number, or boolean — collapses to the same '—' blank marker. */
+export function moveAssetCellText(row: InitiativeAssetRow, colKey: string): string {
+  switch (colKey) {
+    case 'asset_id':
+      return row.asset.legacy_id != null ? String(row.asset.legacy_id) : BLANK;
+    case 'asset_name': return row.asset.name ?? BLANK;
+    case 'serial': return row.asset.serial_number ?? BLANK;
+    case 'make_model':
+      return [row.asset.model_make, row.asset.model_name]
+        .filter(Boolean).join(' ') || BLANK;
+    case 'status': return row.status_label;
+    case 'source_rack': return row.source_rack ?? BLANK;
+    case 'source_ru': return row.source_ru != null ? String(row.source_ru) : BLANK;
+    case 'destination_rack': return row.destination_rack ?? BLANK;
+    case 'destination_ru':
+      return row.destination_ru != null ? String(row.destination_ru) : BLANK;
+    case 'wave': return row.priority_wave ?? BLANK;
+    case 'disposition': return row.disposition ?? BLANK;
+    case 'owner': return row.owner ?? BLANK;
+    case 'source_verified': return yesNo(row.source_verified);
+    case 'source_position': return row.source_position ?? BLANK;
+    case 'destination_verified': return yesNo(row.destination_verified);
+    case 'destination_position': return row.destination_position ?? BLANK;
+    case 'cable_info': return row.cable_info ?? BLANK;
+    case 'vendor_involved': return yesNo(row.vendor_involved);
+    case 'asset_status': return row.asset.status_label;
+    case 'rfid_tag': return row.asset.rfid_tag ?? BLANK;
+    case 'location': return row.asset.location_detail ?? BLANK;
+    case 'client': return row.asset.client_name ?? BLANK;
+    case 'added': return dayOf(row.created_at);
+    case 'updated': return dayOf(row.updated_at);
+    default: return '';
+  }
+}
+
+/** "N of M complete" progress — status key `complete` only (v2 rule).
+ *  0 rows -> 0% rather than NaN. */
+export function moveAssetProgress(
+  rows: InitiativeAssetRow[],
+): { complete: number; total: number; pct: number } {
+  const total = rows.length;
+  const complete = rows.filter((r) => r.status === 'complete').length;
+  const pct = total === 0 ? 0 : Math.round((complete / total) * 100);
+  return { complete, total, pct };
+}
+
+export const MOVE_ASSET_ERRORS: Record<string, string> = {
+  not_a_move: 'Assets can only be attached to move initiatives.',
+  asset_ids_required: 'Pick at least one asset to attach.',
+  assets_not_found: 'One or more of those assets no longer exist.',
+  assets_already_on_initiative: 'One or more of those assets are already on this move.',
+  asset_assignment_not_found: 'That asset assignment no longer exists.',
+  invalid_ru: 'RU must be a number.',
+  unknown_status: 'Pick a status from the list.',
+  forbidden: 'You do not have permission to change this move.',
+};

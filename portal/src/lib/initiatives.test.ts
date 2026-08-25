@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import type { InitiativeItem } from './api';
+import type { InitiativeAssetRow, InitiativeItem } from './api';
 import {
   formFromInitiative, initiativeCellText, initiativePayload,
-  initiativeSearchText, partnerOptionsForRole, sectionsForType,
-  siteOptionsForClient,
+  initiativeSearchText, moveAssetCellText, moveAssetProgress,
+  partnerOptionsForRole, sectionsForType, siteOptionsForClient,
 } from './initiatives';
 
 const row: InitiativeItem = {
@@ -161,5 +161,125 @@ describe('partnerOptionsForRole', () => {
     expect(opts.every((o) => o.sub === undefined)).toBe(true);
     expect(partnerOptionsForRole(partners, ['cable'], 'p4').map((o) => o.value))
       .toContain('p4');
+  });
+});
+
+/* ── move assets ──────────────────────────────────────────────────── */
+
+function assetRow(overrides: Partial<InitiativeAssetRow> = {}): InitiativeAssetRow {
+  return {
+    id: 'ia1', asset_id: 'a1',
+    priority_wave: 'Wave 1', disposition: 'Relocate', owner: 'Jane Doe',
+    source_rack: 'BJ08', source_ru: 12, source_verified: true,
+    source_position: 'front',
+    destination_rack: '11.01.01.01A.02', destination_ru: 8.5,
+    destination_verified: false, destination_position: null,
+    cable_info: 'patched', vendor_involved: true,
+    status: 'racked', status_label: 'Racked', status_color: '#273FF5',
+    created_at: '2026-08-20T00:00:00Z', updated_at: '2026-08-21T00:00:00Z',
+    asset: {
+      id: 'a1', legacy_id: 4021, serial_number: 'SN-001', name: 'Server A',
+      rfid_tag: 'RFID-1', model_make: 'Dell', model_name: 'R740',
+      ru_size: 2, location_detail: 'Row 3', client_name: 'Acme',
+      status: 'active', status_label: 'Active', status_color: '#31F527',
+    },
+    ...overrides,
+  };
+}
+
+describe('moveAssetProgress', () => {
+  it('is all-zero for no rows', () => {
+    expect(moveAssetProgress([])).toEqual({ complete: 0, total: 0, pct: 0 });
+  });
+
+  it('counts only status key "complete" across mixed statuses', () => {
+    const rows = [
+      assetRow({ status: 'complete' }),
+      assetRow({ status: 'racked' }),
+      assetRow({ status: 'complete' }),
+      assetRow({ status: 'pre_stage' }),
+    ];
+    expect(moveAssetProgress(rows)).toEqual({ complete: 2, total: 4, pct: 50 });
+  });
+
+  it('is 100% when every row is complete', () => {
+    const rows = [assetRow({ status: 'complete' }), assetRow({ status: 'complete' })];
+    expect(moveAssetProgress(rows)).toEqual({ complete: 2, total: 2, pct: 100 });
+  });
+});
+
+describe('moveAssetCellText', () => {
+  it('reads default-column values, including nested asset fields', () => {
+    const row = assetRow();
+    expect(moveAssetCellText(row, 'asset_id')).toBe('4021');
+    expect(moveAssetCellText(row, 'asset_name')).toBe('Server A');
+    expect(moveAssetCellText(row, 'serial')).toBe('SN-001');
+    expect(moveAssetCellText(row, 'make_model')).toBe('Dell R740');
+    expect(moveAssetCellText(row, 'status')).toBe('Racked');
+    expect(moveAssetCellText(row, 'source_rack')).toBe('BJ08');
+    expect(moveAssetCellText(row, 'destination_rack')).toBe('11.01.01.01A.02');
+  });
+
+  it('renders RU numbers as plain strings, decimals included', () => {
+    const row = assetRow({ source_ru: 12, destination_ru: 8.5 });
+    expect(moveAssetCellText(row, 'source_ru')).toBe('12');
+    expect(moveAssetCellText(row, 'destination_ru')).toBe('8.5');
+  });
+
+  it('falls back to — for missing RU', () => {
+    const row = assetRow({ source_ru: null, destination_ru: null });
+    expect(moveAssetCellText(row, 'source_ru')).toBe('—');
+    expect(moveAssetCellText(row, 'destination_ru')).toBe('—');
+  });
+
+  it('renders booleans as Yes/No/—', () => {
+    const yes = assetRow({ source_verified: true, destination_verified: false,
+                           vendor_involved: null });
+    expect(moveAssetCellText(yes, 'source_verified')).toBe('Yes');
+    expect(moveAssetCellText(yes, 'destination_verified')).toBe('No');
+    expect(moveAssetCellText(yes, 'vendor_involved')).toBe('—');
+  });
+
+  it('reads optional-column values, including nested asset fields', () => {
+    const row = assetRow();
+    expect(moveAssetCellText(row, 'wave')).toBe('Wave 1');
+    expect(moveAssetCellText(row, 'disposition')).toBe('Relocate');
+    expect(moveAssetCellText(row, 'owner')).toBe('Jane Doe');
+    expect(moveAssetCellText(row, 'source_position')).toBe('front');
+    expect(moveAssetCellText(row, 'destination_position')).toBe('—');
+    expect(moveAssetCellText(row, 'cable_info')).toBe('patched');
+    expect(moveAssetCellText(row, 'asset_status')).toBe('Active');
+    expect(moveAssetCellText(row, 'rfid_tag')).toBe('RFID-1');
+    expect(moveAssetCellText(row, 'location')).toBe('Row 3');
+    expect(moveAssetCellText(row, 'client')).toBe('Acme');
+    expect(moveAssetCellText(row, 'added')).toBe(new Date(row.created_at).toLocaleDateString());
+    expect(moveAssetCellText(row, 'updated')).toBe(new Date(row.updated_at).toLocaleDateString());
+  });
+
+  it('falls back to — for missing nested/optional text fields', () => {
+    const row = assetRow({
+      priority_wave: null, disposition: null, owner: null,
+      source_rack: null, destination_rack: null, cable_info: null,
+      asset: { ...assetRow().asset, legacy_id: null, name: null,
+                serial_number: null, model_make: null, model_name: null,
+                rfid_tag: null, location_detail: null, client_name: null },
+    });
+    expect(moveAssetCellText(row, 'asset_id')).toBe('—');
+    expect(moveAssetCellText(row, 'asset_name')).toBe('—');
+    expect(moveAssetCellText(row, 'serial')).toBe('—');
+    expect(moveAssetCellText(row, 'make_model')).toBe('—');
+    expect(moveAssetCellText(row, 'wave')).toBe('—');
+    expect(moveAssetCellText(row, 'disposition')).toBe('—');
+    expect(moveAssetCellText(row, 'owner')).toBe('—');
+    expect(moveAssetCellText(row, 'source_rack')).toBe('—');
+    expect(moveAssetCellText(row, 'destination_rack')).toBe('—');
+    expect(moveAssetCellText(row, 'cable_info')).toBe('—');
+    expect(moveAssetCellText(row, 'rfid_tag')).toBe('—');
+    expect(moveAssetCellText(row, 'location')).toBe('—');
+    expect(moveAssetCellText(row, 'client')).toBe('—');
+  });
+
+  it('returns empty string for an unknown column key', () => {
+    expect(moveAssetCellText(assetRow(), 'nonsense')).toBe('');
   });
 });

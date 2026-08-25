@@ -1421,6 +1421,33 @@ export interface InitiativePersonRow {
   rating: number | null; created_at: string;
 }
 
+/** Embedded read-only asset summary on a move-asset row — mirrors the API's
+ *  InitiativeAssetSummary schema (routes/initiatives.py) field-for-field. */
+export interface InitiativeAssetSummary {
+  id: string; legacy_id: number | null; serial_number: string | null;
+  name: string | null; rfid_tag: string | null;
+  model_make: string | null; model_name: string | null;
+  ru_size: number | null; location_detail: string | null;
+  client_name: string | null;
+  status: string; status_label: string; status_color: string;
+}
+
+/** One asset's join row on a move — mirrors the API's InitiativeAssetOut
+ *  schema field-for-field. RU fields are plain numbers (the API serializes
+ *  its Decimal columns as float). */
+export interface InitiativeAssetRow {
+  id: string; asset_id: string;
+  priority_wave: string | null; disposition: string | null; owner: string | null;
+  source_rack: string | null; source_ru: number | null;
+  source_verified: boolean | null; source_position: string | null;
+  destination_rack: string | null; destination_ru: number | null;
+  destination_verified: boolean | null; destination_position: string | null;
+  cable_info: string | null; vendor_involved: boolean | null;
+  status: string; status_label: string; status_color: string;
+  created_at: string; updated_at: string;
+  asset: InitiativeAssetSummary;
+}
+
 export interface InitiativeLinkRow {
   id: string; other_id: string; other_name: string;
   other_type: string; other_type_label: string; other_type_color: string;
@@ -1524,6 +1551,48 @@ export async function updateInitiativePerson(
 
 export async function removeInitiativePerson(assocId: string): Promise<void> {
   const resp = await apiFetch(`/initiatives/people/${assocId}`,
+    { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+/** GET /initiatives/{id}/assets — the move's full asset roster (no
+ *  pagination this slice, matching V3 list conventions). */
+export async function listInitiativeAssets(
+  id: string,
+): Promise<InitiativeAssetRow[]> {
+  const resp = await apiFetch(`/initiatives/${id}/assets`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** POST /initiatives/{id}/assets — attach assets to a move (bulk-import
+ *  script + dev seeding path; no interactive picker in the portal). */
+export async function addInitiativeAssets(
+  id: string, assetIds: string[],
+): Promise<InitiativeAssetRow[]> {
+  const resp = await apiFetch(`/initiatives/${id}/assets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ asset_ids: assetIds }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateInitiativeAsset(
+  assocId: string, body: Record<string, unknown>,
+): Promise<InitiativeAssetRow> {
+  const resp = await apiFetch(`/initiatives/assets/${assocId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function removeInitiativeAsset(assocId: string): Promise<void> {
+  const resp = await apiFetch(`/initiatives/assets/${assocId}`,
     { method: 'DELETE' });
   if (!resp.ok) throw await errorFrom(resp);
 }

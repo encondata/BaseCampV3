@@ -21,6 +21,7 @@ import {
   addInitiativePerson,
   getInitiative,
   listClients,
+  listInitiativeAssets,
   listInitiativeStatuses,
   listInitiativeSubTypes,
   listInitiativeTypes,
@@ -33,6 +34,7 @@ import {
   removeInitiativeLink,
   removeInitiativePerson,
   updateInitiativePerson,
+  type InitiativeAssetRow,
   type InitiativeDetail as InitiativeDetailOut,
   type InitiativeItem,
   type InitiativePersonRow,
@@ -42,14 +44,17 @@ import {
   type WorkerOption,
 } from '../lib/api';
 import { ADMIN_RANK } from '../lib/access';
-import { INITIATIVE_ERRORS, initiativeCellText } from '../lib/initiatives';
+import {
+  INITIATIVE_ERRORS, MOVE_ASSET_COLUMNS, initiativeCellText, moveAssetCellText,
+  moveAssetProgress,
+} from '../lib/initiatives';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState,
 } from '../lib/columnMenu';
 import {
   applyColumnOrder,
-  ColumnsButton, moveKey, useReorderDrag, visibleColumnsFor,
+  ColumnsButton, ExportButton, exportCsv, moveKey, useReorderDrag, visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
 import { naturalCompare } from '../lib/sites';
@@ -77,6 +82,20 @@ const PEOPLE_COLUMNS: ColumnDef[] = [
 const PEOPLE_ALL_COLUMN_KEYS = new Set<string>(PEOPLE_COLUMNS.map((c) => c.key));
 const PEOPLE_DEFAULT_VISIBLE = new Set<string>(
   PEOPLE_COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/* ── Assets section (moves only) — same list machinery as People above,
+      built on the pure helpers in lib/initiatives.ts. Read-only this slice
+      (Task 3); edit dialog + remove land in Task 4. ────────────────── */
+
+const MOVE_ASSET_ALL_COLUMN_KEYS = new Set<string>(MOVE_ASSET_COLUMNS.map((c) => c.key));
+const MOVE_ASSET_DEFAULT_VISIBLE = new Set<string>(
+  MOVE_ASSET_COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/** Full column set, in CSV column order — exported columns always mirror
+ *  MOVE_ASSET_COLUMNS regardless of which ones are currently shown/hidden
+ *  on screen (same convention as Initiatives.tsx's CSV_COLUMNS). */
+const ASSET_CSV_COLUMNS: [string, (r: InitiativeAssetRow) => string][] =
+  MOVE_ASSET_COLUMNS.map((c) => [c.label, (r: InitiativeAssetRow) => moveAssetCellText(r, c.key)]);
 
 /** Same date formatting `initiativeCellText`'s 'created' column uses
  *  elsewhere on this page (toLocaleDateString) — `created_at` here is a
@@ -169,6 +188,54 @@ export default function InitiativeDetail() {
         * peopleSortDir));
   }, [initiative, peopleFilters, peopleQuery, peopleSortKey, peopleSortDir]);
 
+  // Assets section (moves only) — fetched separately from getInitiative,
+  // since GET /initiatives/{id}/assets is its own endpoint (Task 2).
+  const [assets, setAssets] = useState<InitiativeAssetRow[]>([]);
+  const [assetsLoaded, setAssetsLoaded] = useState(false);
+  const [assetsError, setAssetsError] = useState('');
+  const [assetsQuery, setAssetsQuery] = useState('');
+  const {
+    visibleCols: assetsVisibleCols, setVisibleCols: setAssetsVisibleCols,
+    sortKey: assetsSortKey, sortDir: assetsSortDir, setSort: setAssetsSort,
+    toggleSort: toggleAssetsSort,
+    filters: assetsFilters, setFilter: setAssetsFilter,
+    clearFilters: clearAssetsFilters,
+    colOrder: assetsColOrder, setColOrder: setAssetsColOrder,
+  } = usePersistentListState(
+    'initiative_assets', { visible: MOVE_ASSET_DEFAULT_VISIBLE, sortKey: 'wave', sortDir: 1 },
+    MOVE_ASSET_ALL_COLUMN_KEYS,
+  );
+  const assetsOrderedCols = applyColumnOrder(MOVE_ASSET_COLUMNS, assetsColOrder);
+  const assetsShownCols = visibleColumnsFor(assetsOrderedCols, assetsVisibleCols, false);
+  const assetsHeaderDrag = useReorderDrag(
+    (src, dst, before) => setAssetsColOrder(
+      moveKey(assetsOrderedCols.map((c) => c.key), src, dst, before)),
+    'x', { ignoreFrom: '.pop-menu' },
+  );
+  const assetsProgress = useMemo(() => moveAssetProgress(assets), [assets]);
+  const visibleAssets = useMemo(() => {
+    const q = assetsQuery.trim().toLowerCase();
+    const filtered = assets.filter((a) => {
+      if (!passesColumnFilters(a, assetsFilters, moveAssetCellText)) return false;
+      if (!q) return true;
+      return MOVE_ASSET_COLUMNS.some(
+        (c) => moveAssetCellText(a, c.key).toLowerCase().includes(q));
+    });
+    return filtered.sort((a, b) => {
+      const primary = naturalCompare(
+        moveAssetCellText(a, assetsSortKey), moveAssetCellText(b, assetsSortKey))
+        * assetsSortDir;
+      if (primary !== 0) return primary;
+      // Default sort is wave; break ties by serial (v2 parity) — a
+      // secondary key only meaningful while wave is still the active sort.
+      if (assetsSortKey === 'wave') {
+        return naturalCompare(moveAssetCellText(a, 'serial'), moveAssetCellText(b, 'serial'))
+          * assetsSortDir;
+      }
+      return 0;
+    });
+  }, [assets, assetsFilters, assetsQuery, assetsSortKey, assetsSortDir]);
+
   // Linked initiatives section
   const [pendingChild, setPendingChild] = useState('');
   const [linksBusy, setLinksBusy] = useState(false);
@@ -188,6 +255,18 @@ export default function InitiativeDetail() {
     });
   };
   useEffect(load, [id]);
+
+  useEffect(() => {
+    if (!initiative || initiative.initiative_type !== 'move') return;
+    setAssetsLoaded(false);
+    void listInitiativeAssets(initiative.id)
+      .then((rows) => {
+        setAssets(rows);
+        setAssetsError('');
+      })
+      .catch(() => setAssetsError('Failed to load assets.'))
+      .finally(() => setAssetsLoaded(true));
+  }, [initiative?.id, initiative?.initiative_type]);
 
   useEffect(() => {
     void listInitiativeStatuses().then(setStatuses).catch(() => {});
@@ -324,6 +403,27 @@ export default function InitiativeDetail() {
     }
   };
 
+  const assetsGrid = { gridTemplateColumns: assetsShownCols.map((c) => c.width).join(' ') };
+
+  const assetsCaret = (key: string) =>
+    assetsSortKey === key
+      ? <span className="caret">{assetsSortDir === 1 ? '▲' : '▼'}</span> : null;
+
+  /** Status/Asset Status render as chips (move-status and the asset's own
+   *  status, respectively); every other column reuses moveAssetCellText's
+   *  display text verbatim — it already carries the '—' blank convention. */
+  const assetCellFor = (a: InitiativeAssetRow, key: string) => {
+    if (key === 'status') {
+      return chip(a.status_label, a.status_color)
+        ?? <span className="cell-top">{a.status_label}</span>;
+    }
+    if (key === 'asset_status') {
+      return chip(a.asset.status_label, a.asset.status_color)
+        ?? <span className="cell-top">{a.asset.status_label}</span>;
+    }
+    return <span className="cell-top">{moveAssetCellText(a, key)}</span>;
+  };
+
   return (
     <div className="portal-page">
       <Link to="/initiatives" className="idet-back">← Initiatives</Link>
@@ -407,8 +507,90 @@ export default function InitiativeDetail() {
         )}
 
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
-          <p className="eyebrow-sm">Assets</p>
-          <p className="page-hint">Asset tracking lands here next.</p>
+          <p className="eyebrow-sm">Assets{isMove ? ` — ${assets.length}` : ''}</p>
+          {!isMove && <p className="page-hint">Asset tracking lands here next.</p>}
+          {isMove && assetsError && (
+            <div className="dir-empty" style={{ marginBottom: 12 }}>
+              <b>Cannot load assets</b>{assetsError}
+            </div>
+          )}
+          {isMove && !assetsError && assetsLoaded && assets.length === 0 && (
+            <p className="page-hint">
+              No assets on this move yet — assets arrive via bulk import.
+            </p>
+          )}
+          {isMove && !assetsError && assets.length > 0 && (
+            <>
+              {assetsProgress.total > 0 && (
+                <div className="idet-assets-progress">
+                  <div className="idet-assets-progress-label">
+                    <span>{assetsProgress.complete} of {assetsProgress.total} complete</span>
+                    <span>{assetsProgress.pct}%</span>
+                  </div>
+                  <div className="idet-assets-progress-track">
+                    <div className="idet-assets-progress-fill"
+                         style={{ width: `${assetsProgress.pct}%` }} />
+                  </div>
+                </div>
+              )}
+
+              <div className="dir-toolbar idet-assets-toolbar">
+                <div className="dir-search" style={{ marginLeft: 0 }}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       strokeWidth="2" strokeLinecap="round">
+                    <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                  <input placeholder="Filter assets…" value={assetsQuery}
+                         onChange={(e) => setAssetsQuery(e.target.value)} />
+                </div>
+                <span className="result-count">
+                  {visibleAssets.length} of {assets.length} shown</span>
+                <FilterSummaryChip filters={assetsFilters} onClear={clearAssetsFilters} />
+                <ColumnsButton columns={assetsOrderedCols} visible={assetsVisibleCols}
+                               onChange={setAssetsVisibleCols}
+                               onReorder={setAssetsColOrder} />
+                <ExportButton onExport={() =>
+                  exportCsv('move-assets', ASSET_CSV_COLUMNS, visibleAssets)} />
+              </div>
+
+              <div className="dir-list idet-assets-list">
+                <div className="list-head" style={assetsGrid}>
+                  {assetsShownCols.map((c) => (
+                    <span key={c.key}
+                          className={`col-head ${assetsHeaderDrag.dropClass(c.key)}`}
+                          {...assetsHeaderDrag.dragProps(c.key)}>
+                      <button type="button" className="sortable"
+                              onClick={() => toggleAssetsSort(c.key)}>
+                        {c.label} {assetsCaret(c.key)}
+                      </button>
+                      <ColumnMenu colKey={c.key} label={c.label}
+                                  allRows={assets} filters={assetsFilters}
+                                  text={moveAssetCellText}
+                                  filter={assetsFilters[c.key]} onFilter={setAssetsFilter}
+                                  sortDir={assetsSortKey === c.key ? assetsSortDir : null}
+                                  onSort={(dir) => setAssetsSort(c.key, dir)} />
+                    </span>
+                  ))}
+                </div>
+
+                {visibleAssets.length === 0 && (
+                  <div className="dir-empty">
+                    <b>No matches</b>Try a different search or filter.
+                    <EmptyClearFilters filters={assetsFilters} onClear={clearAssetsFilters} />
+                  </div>
+                )}
+
+                {visibleAssets.map((a) => (
+                  <div key={a.id} className="dir-row">
+                    <div className="row-main" style={assetsGrid}>
+                      {assetsShownCols.map((c) => (
+                        <div className="cell" key={c.key}>{assetCellFor(a, c.key)}</div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
 
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
