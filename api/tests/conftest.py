@@ -59,7 +59,7 @@ async def clean_db():
             "contact_profiles, sites, site_clients, notes, assets, "
             "asset_model_aliases, asset_models, container_assets, "
             "initiative_links, initiative_people, initiatives, "
-            "containers CASCADE"))
+            "containers, pending_deletes CASCADE"))
         # role matrix is editable seed data — restore defaults & drop customs
         await session.execute(text("DELETE FROM roles WHERE is_system = false"))
         await session.execute(text("DELETE FROM role_permissions"))

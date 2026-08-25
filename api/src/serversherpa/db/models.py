@@ -632,3 +632,19 @@ class Note(Base):
     deleted_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class PendingDelete(Base):
+    """God-mode staging area for a hard delete. entity_label is a
+    display-only snapshot taken at mark time — it never updates, so the
+    list stays readable even if the target changes before reconcile runs."""
+
+    __tablename__ = "pending_deletes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    entity_type: Mapped[str]
+    entity_id: Mapped[uuid.UUID]
+    entity_label: Mapped[str] = mapped_column(server_default="")
+    marked_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    marked_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

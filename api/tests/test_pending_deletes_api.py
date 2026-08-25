@@ -1,0 +1,233 @@
+"""God-mode pending deletes: mark an entity, list markers, unmark, and
+reconcile (hard-delete every marked target). Reconcile never fails wholesale
+— each target is deleted inside its own savepoint so one FK violation
+doesn't poison the rest of the batch."""
+
+from sqlalchemy import select
+
+from serversherpa.db.models import AuditLog, Initiative, PendingDelete, Site
+from tests.test_devtools import login, set_role
+
+
+async def _developer(db, client_api, seeded_user):
+    await set_role(db, seeded_user.id, "developer")
+    return await login(client_api)
+
+
+async def test_mark_list_unmark_round_trip(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    initiative = Initiative(name="Doomed", initiative_type="project")
+    db.add(initiative)
+    await db.commit()
+
+    resp = await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "initiative", "entity_id": str(initiative.id),
+        "entity_label": "Doomed"})
+    assert resp.status_code == 201, resp.text
+    marker = resp.json()
+    assert marker["entity_type"] == "initiative"
+    assert marker["entity_id"] == str(initiative.id)
+    assert marker["entity_label"] == "Doomed"
+    assert marker["marked_by_name"] == "Alice Anderson"
+
+    listing = (await client.get("/devtools/pending-deletes", headers=hdrs)).json()
+    assert [m["id"] for m in listing] == [marker["id"]]
+
+    resp = await client.delete(f"/devtools/pending-deletes/{marker['id']}",
+                               headers=hdrs)
+    assert resp.status_code == 204
+
+    listing = (await client.get("/devtools/pending-deletes", headers=hdrs)).json()
+    assert listing == []
+
+
+async def test_list_is_newest_first(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    a = Initiative(name="A", initiative_type="project")
+    b = Initiative(name="B", initiative_type="project")
+    db.add_all([a, b])
+    await db.commit()
+
+    await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "initiative", "entity_id": str(a.id), "entity_label": "A"})
+    await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "initiative", "entity_id": str(b.id), "entity_label": "B"})
+
+    listing = (await client.get("/devtools/pending-deletes", headers=hdrs)).json()
+    assert [m["entity_label"] for m in listing] == ["B", "A"]
+
+
+async def test_duplicate_mark_is_409(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    initiative = Initiative(name="Doomed", initiative_type="project")
+    db.add(initiative)
+    await db.commit()
+
+    body = {"entity_type": "initiative", "entity_id": str(initiative.id),
+            "entity_label": "Doomed"}
+    assert (await client.post("/devtools/pending-deletes", headers=hdrs,
+                              json=body)).status_code == 201
+    resp = await client.post("/devtools/pending-deletes", headers=hdrs, json=body)
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "already_pending"
+
+
+async def test_unknown_entity_type_is_422(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "spaceship", "entity_id": "00000000-0000-0000-0000-000000000000",
+        "entity_label": "x"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "unknown_entity_type"
+
+
+async def test_missing_target_is_422(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "initiative",
+        "entity_id": "00000000-0000-0000-0000-000000000000", "entity_label": "x"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "entity_not_found"
+
+
+async def test_unmark_unknown_marker_is_404(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await client.delete(
+        "/devtools/pending-deletes/00000000-0000-0000-0000-000000000000",
+        headers=hdrs)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "marker_not_found"
+
+
+async def test_reconcile_deletes_a_marked_initiative(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    initiative = Initiative(name="Doomed", initiative_type="project")
+    db.add(initiative)
+    await db.commit()
+    initiative_id = initiative.id
+
+    await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "initiative", "entity_id": str(initiative_id),
+        "entity_label": "Doomed"})
+
+    resp = await client.post("/devtools/pending-deletes/reconcile", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deleted"] == 1
+    assert body["failed"] == []
+
+    db.expire_all()
+    assert await db.get(Initiative, initiative_id) is None
+    assert (await db.execute(select(PendingDelete))).first() is None
+    audit_row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "initiative", AuditLog.action == "hard_delete"))
+    assert audit_row is not None
+    assert audit_row.entity_id == str(initiative_id)
+
+
+async def test_reconcile_reports_fk_violation_and_retains_marker(
+        client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    site = Site(name="Referenced Site")
+    db.add(site)
+    await db.flush()
+    initiative = Initiative(name="Uses Site", initiative_type="project",
+                            site_id=site.id)
+    db.add(initiative)
+    await db.commit()
+    site_id = site.id
+
+    await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "site", "entity_id": str(site_id), "entity_label": "Referenced Site"})
+
+    resp = await client.post("/devtools/pending-deletes/reconcile", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deleted"] == 0
+    assert len(body["failed"]) == 1
+    failure = body["failed"][0]
+    assert failure["entity_type"] == "site"
+    assert failure["entity_id"] == str(site_id)
+    assert failure["label"] == "Referenced Site"
+    assert failure["reason"] == "fk_violation"
+
+    db.expire_all()
+    assert await db.get(Site, site_id) is not None
+    marker = await db.scalar(select(PendingDelete).where(
+        PendingDelete.entity_id == site_id))
+    assert marker is not None
+
+
+async def test_reconcile_treats_already_gone_target_as_success(
+        client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    initiative = Initiative(name="Doomed", initiative_type="project")
+    db.add(initiative)
+    await db.commit()
+    initiative_id = initiative.id
+
+    await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "initiative", "entity_id": str(initiative_id),
+        "entity_label": "Doomed"})
+
+    # target deleted out-of-band, marker never cleared
+    row = await db.get(Initiative, initiative_id)
+    await db.delete(row)
+    await db.commit()
+
+    resp = await client.post("/devtools/pending-deletes/reconcile", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deleted"] == 1
+    assert body["failed"] == []
+    db.expire_all()
+    assert (await db.execute(select(PendingDelete))).first() is None
+
+
+async def test_reconcile_one_poisoned_row_does_not_block_others(
+        client, db, seeded_user):
+    """A savepoint per row: the fk_violation on the site marker must not
+    prevent the initiative marker (queued right after it) from reconciling."""
+    hdrs = await _developer(db, client, seeded_user)
+    site = Site(name="Referenced Site")
+    db.add(site)
+    await db.flush()
+    blocker = Initiative(name="Uses Site", initiative_type="project", site_id=site.id)
+    victim = Initiative(name="Free To Go", initiative_type="project")
+    db.add_all([blocker, victim])
+    await db.commit()
+    site_id, victim_id = site.id, victim.id
+
+    await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "site", "entity_id": str(site_id), "entity_label": "Referenced Site"})
+    await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "initiative", "entity_id": str(victim_id), "entity_label": "Free To Go"})
+
+    resp = await client.post("/devtools/pending-deletes/reconcile", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deleted"] == 1
+    assert len(body["failed"]) == 1
+    assert body["failed"][0]["entity_type"] == "site"
+
+    db.expire_all()
+    assert await db.get(Initiative, victim_id) is None
+    assert await db.get(Site, site_id) is not None
+
+
+async def test_staff_is_forbidden_on_all_four_endpoints(client, db, seeded_user):
+    hdrs = await login(client)  # seeded_user defaults to "staff"
+    initiative = Initiative(name="Doomed", initiative_type="project")
+    db.add(initiative)
+    await db.commit()
+
+    assert (await client.get("/devtools/pending-deletes", headers=hdrs)
+           ).status_code == 403
+    assert (await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "initiative", "entity_id": str(initiative.id),
+        "entity_label": "Doomed"})).status_code == 403
+    assert (await client.delete(
+        "/devtools/pending-deletes/00000000-0000-0000-0000-000000000000",
+        headers=hdrs)).status_code == 403
+    assert (await client.post("/devtools/pending-deletes/reconcile", headers=hdrs)
+           ).status_code == 403

@@ -964,6 +964,38 @@ class GodModeIn(BaseModel):
     word: str
 
 
+# ── pending deletes (god-mode banner) ─────────────────────────────
+
+
+class PendingDeleteOut(BaseModel):
+    id: uuid.UUID
+    entity_type: str
+    entity_id: uuid.UUID
+    entity_label: str
+    marked_by: uuid.UUID | None = None
+    marked_by_name: str | None = None
+    marked_at: datetime
+
+
+class PendingDeleteCreateIn(BaseModel):
+    entity_type: str
+    entity_id: uuid.UUID
+    entity_label: str = ""
+    model_config = ConfigDict(extra="forbid")
+
+
+class PendingDeleteFailure(BaseModel):
+    entity_type: str
+    entity_id: uuid.UUID
+    label: str
+    reason: str
+
+
+class PendingDeleteReconcileOut(BaseModel):
+    deleted: int
+    failed: list[PendingDeleteFailure] = []
+
+
 # ── initiatives ────────────────────────────────────────────────────
 
 
