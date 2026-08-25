@@ -40,9 +40,12 @@ import {
 } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
+  applyColumnOrder,
   ColumnsButton,
   ExportButton,
   exportCsv,
+  moveKey,
+  useReorderDrag,
   visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
@@ -171,6 +174,7 @@ export default function Sites() {
     visibleCols, setVisibleCols,
     sortKey, sortDir, setSort, toggleSort,
     filters, setFilter, clearFilters,
+    colOrder, setColOrder,
   } = usePersistentListState(
     'sites', { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 }, ALL_COLUMN_KEYS,
   );
@@ -252,7 +256,12 @@ export default function Sites() {
   const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
-  const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
+  const orderedCols = applyColumnOrder(COLUMNS, colOrder);
+  const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
+  const headerDrag = useReorderDrag(
+    (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
+    'x', { ignoreFrom: '.pop-menu' },
+  );
   const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
 
   const cellFor = (s: SiteItem, key: string) => {
@@ -359,7 +368,8 @@ export default function Sites() {
           </div>
           <span className="result-count">{visible.length} of {sites?.length ?? 0} shown</span>
           <FilterSummaryChip filters={filters} onClear={clearFilters} />
-          <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
+          <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols}
+                         godMode={godMode} onReorder={setColOrder} />
           <ExportButton onExport={() => exportCsv('sites', CSV_COLUMNS, visible)} />
           <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canChange} />
           {canAdd && (
@@ -387,7 +397,8 @@ export default function Sites() {
                           onSort={(dir) => setSort('primary', dir)} />
             </span>
             {shownCols.map((c) => (
-              <span key={c.key} className="col-head">
+              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
+                    {...headerDrag.dragProps(c.key)}>
                 <button className="sortable" onClick={() => toggleSort(c.key)}>
                   {c.label} {caret(c.key)}
                 </button>
