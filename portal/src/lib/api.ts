@@ -1378,6 +1378,177 @@ export async function downloadContainerTemplate(): Promise<Blob> {
   return resp.blob();
 }
 
+/* ── initiatives ──────────────────────────────────────────────────── */
+
+export interface InitiativeItem {
+  id: string; name: string; description: string | null;
+  initiative_type: string; type_label: string; type_color: string;
+  sub_type: string | null; sub_type_label: string | null;
+  sub_type_color: string | null;
+  status: string; status_label: string; status_color: string;
+  client_id: string | null; client_name: string | null;
+  site_id: string | null; site_name: string | null;
+  location: string | null;
+  scheduled_start: string | null; scheduled_end: string | null;
+  sky_command_project_id: string | null;
+  origin_site_id: string | null; origin_site_name: string | null;
+  destination_site_id: string | null; destination_site_name: string | null;
+  real_start_at: string | null; real_end_at: string | null;
+  priority_devices: boolean | null;
+  shipping_types: string[];
+  shipping_partner_id: string | null; shipping_partner_name: string | null;
+  origin_tech_partner_id: string | null;
+  origin_cable_partner_id: string | null;
+  origin_logistics_partner_id: string | null;
+  destination_tech_partner_id: string | null;
+  destination_cable_partner_id: string | null;
+  destination_logistics_partner_id: string | null;
+  origin_vendor_involved: boolean | null;
+  destination_vendor_involved: boolean | null;
+  people_count: number; links_count: number;
+  archived_at: string | null; created_at: string;
+}
+
+export interface InitiativePersonRow {
+  id: string; person_id: string; person_name: string;
+  work_type: string | null; work_type_label: string | null;
+  work_type_color: string | null;
+  site_worked_id: string | null; site_worked_name: string | null;
+  rating: number | null; created_at: string;
+}
+
+export interface InitiativeLinkRow {
+  id: string; other_id: string; other_name: string;
+  other_type: string; other_type_label: string; other_type_color: string;
+  other_status_label: string; other_status_color: string;
+  role: string | null; sort_order: number | null; notes: string | null;
+  created_at: string;
+}
+
+export interface InitiativeDetail extends InitiativeItem {
+  people: InitiativePersonRow[];
+  links_children: InitiativeLinkRow[];
+  links_parents: InitiativeLinkRow[];
+}
+
+export async function listInitiatives(): Promise<InitiativeItem[]> {
+  const resp = await apiFetch('/initiatives');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getInitiative(id: string): Promise<InitiativeDetail> {
+  const resp = await apiFetch(`/initiatives/${id}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createInitiative(
+  body: Record<string, unknown>,
+): Promise<InitiativeDetail> {
+  const resp = await apiFetch('/initiatives', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateInitiative(
+  id: string, body: Record<string, unknown>,
+): Promise<InitiativeDetail> {
+  const resp = await apiFetch(`/initiatives/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function archiveInitiative(
+  id: string, archived: boolean,
+): Promise<void> {
+  const resp = await apiFetch(
+    `/initiatives/${id}/${archived ? 'archive' : 'unarchive'}`,
+    { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+async function statusValuesFor(recordType: string): Promise<StatusValue[]> {
+  const resp = await apiFetch(`/status-values?record_type=${recordType}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export const listInitiativeStatuses = () => statusValuesFor('initiative');
+export const listInitiativeTypes = () => statusValuesFor('initiative_type');
+export const listInitiativeSubTypes = () =>
+  statusValuesFor('initiative_sub_type');
+export const listInitiativeWorkTypes = () =>
+  statusValuesFor('initiative_work_type');
+export const listShippingTypes = () => statusValuesFor('shipping_type');
+
+export async function addInitiativePerson(
+  id: string, body: Record<string, unknown>,
+): Promise<InitiativePersonRow[]> {
+  const resp = await apiFetch(`/initiatives/${id}/people`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateInitiativePerson(
+  assocId: string, body: Record<string, unknown>,
+): Promise<InitiativePersonRow> {
+  const resp = await apiFetch(`/initiatives/people/${assocId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function removeInitiativePerson(assocId: string): Promise<void> {
+  const resp = await apiFetch(`/initiatives/people/${assocId}`,
+    { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function addInitiativeLink(
+  id: string, body: Record<string, unknown>,
+): Promise<InitiativeDetail> {
+  const resp = await apiFetch(`/initiatives/${id}/links`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function removeInitiativeLink(linkId: string): Promise<void> {
+  const resp = await apiFetch(`/initiatives/links/${linkId}`,
+    { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+/** Minimal person options for the assignment picker (GET /workers). */
+export interface WorkerOption {
+  person_id: string; display_name: string;
+}
+
+export async function listWorkerOptions(): Promise<WorkerOption[]> {
+  const resp = await apiFetch('/workers');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /* ── god mode (developer easter egg) ─────────────────────────────── */
 
 /** Returns the nav colour on success, or null when refused. A refusal is
