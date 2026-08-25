@@ -184,7 +184,33 @@ async def _people_rows(db: DbSession,
 async def _link_rows(
     db: DbSession, initiative_id: uuid.UUID,
 ) -> tuple[list[InitiativeLinkRow], list[InitiativeLinkRow]]:
-    return [], []  # implemented in the links task
+    vocab = await _vocab(db)
+
+    def row(link: InitiativeLink, other: Initiative) -> InitiativeLinkRow:
+        t_label, t_color = vocab["initiative_type"].get(
+            other.initiative_type, (other.initiative_type, "#51606f"))
+        s_label, s_color = vocab["initiative"].get(
+            other.status, (other.status, "#51606f"))
+        return InitiativeLinkRow(
+            id=link.id, other_id=other.id, other_name=other.name,
+            other_type=other.initiative_type,
+            other_type_label=t_label, other_type_color=t_color,
+            other_status_label=s_label, other_status_color=s_color,
+            role=link.role, sort_order=link.sort_order, notes=link.notes,
+            created_at=link.created_at)
+
+    children = (await db.execute(
+        select(InitiativeLink, Initiative)
+        .join(Initiative, Initiative.id == InitiativeLink.child_id)
+        .where(InitiativeLink.parent_id == initiative_id)
+        .order_by(InitiativeLink.sort_order, InitiativeLink.created_at))).all()
+    parents = (await db.execute(
+        select(InitiativeLink, Initiative)
+        .join(Initiative, Initiative.id == InitiativeLink.parent_id)
+        .where(InitiativeLink.child_id == initiative_id)
+        .order_by(InitiativeLink.sort_order, InitiativeLink.created_at))).all()
+    return ([row(l, o) for l, o in children],
+            [row(l, o) for l, o in parents])
 
 
 async def _detail(db: DbSession, initiative: Initiative) -> InitiativeDetailOut:
@@ -425,4 +451,103 @@ async def remove_initiative_person(
     audit(db, actor_id=actor.person.id, entity_type="initiative",
           entity_id=str(initiative_id), action="person_remove",
           changes={"person_id": {"from": str(person_id), "to": None}})
+    await db.commit()
+
+
+async def _ancestor_ids(db: DbSession, start: uuid.UUID) -> set[uuid.UUID]:
+    """Every initiative above `start` in the link graph (transitive)."""
+    seen: set[uuid.UUID] = set()
+    frontier = [start]
+    while frontier:
+        parents = list(await db.scalars(
+            select(InitiativeLink.parent_id)
+            .where(InitiativeLink.child_id.in_(frontier))))
+        frontier = [p for p in parents if p not in seen]
+        seen.update(frontier)
+    return seen
+
+
+@router.get("/{initiative_id}/links")
+async def list_initiative_links(
+    initiative_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "view"),
+) -> dict:
+    await _get_initiative(db, initiative_id)
+    children, parents = await _link_rows(db, initiative_id)
+    return {"children": children, "parents": parents}
+
+
+@router.post("/{initiative_id}/links", response_model=InitiativeDetailOut,
+             status_code=201)
+async def add_initiative_link(
+    initiative_id: uuid.UUID,
+    body: InitiativeLinkAddIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> InitiativeDetailOut:
+    initiative = await _get_initiative(db, initiative_id)
+    if body.child_id == initiative_id:
+        raise _err(422, "self_link")
+    if await db.get(Initiative, body.child_id) is None:
+        raise _err(422, "initiative_not_found")
+    if await db.scalar(select(InitiativeLink.id).where(
+            InitiativeLink.parent_id == initiative_id,
+            InitiativeLink.child_id == body.child_id)) is not None:
+        raise _err(409, "duplicate_link")
+    # cycle: the proposed child must not already be an ancestor of parent
+    if body.child_id in await _ancestor_ids(db, initiative_id):
+        raise _err(422, "circular_link")
+    db.add(InitiativeLink(parent_id=initiative_id,
+                          **body.model_dump(exclude_none=True)))
+    initiative.updated_at = datetime.now(UTC)
+    audit(db, actor_id=actor.person.id, entity_type="initiative",
+          entity_id=str(initiative_id), action="link_add",
+          changes={"child_id": {"from": None, "to": str(body.child_id)}})
+    await db.commit()
+    return await _detail(db, initiative)
+
+
+async def _get_link(db: DbSession, link_id: uuid.UUID) -> InitiativeLink:
+    link = await db.get(InitiativeLink, link_id)
+    if link is None:
+        raise _err(404, "link_not_found")
+    return link
+
+
+@router.patch("/links/{link_id}", response_model=InitiativeLinkRow)
+async def update_initiative_link(
+    link_id: uuid.UUID,
+    body: InitiativeLinkUpdateIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> InitiativeLinkRow:
+    link = await _get_link(db, link_id)
+    data = body.model_dump(exclude_unset=True)
+    fields = list(data.keys())
+    before = snapshot(link, fields)
+    for field, value in data.items():
+        setattr(link, field, value)
+    changes = diff(before, snapshot(link, fields))
+    if changes:
+        audit(db, actor_id=actor.person.id, entity_type="initiative",
+              entity_id=str(link.parent_id), action="link_update",
+              changes=changes)
+    await db.commit()
+    children, _ = await _link_rows(db, link.parent_id)
+    return next(r for r in children if r.id == link_id)
+
+
+@router.delete("/links/{link_id}", status_code=204)
+async def remove_initiative_link(
+    link_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> None:
+    link = await _get_link(db, link_id)
+    parent_id, child_id = link.parent_id, link.child_id
+    await db.delete(link)
+    audit(db, actor_id=actor.person.id, entity_type="initiative",
+          entity_id=str(parent_id), action="link_remove",
+          changes={"child_id": {"from": str(child_id), "to": None}})
     await db.commit()
