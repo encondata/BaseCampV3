@@ -46,6 +46,36 @@ export function visibleColumnsFor(
   return columns.filter((c) => visible.has(c.key) && (!c.godOnly || godMode));
 }
 
+/** Reorder `columns` by a persisted key order. Keys in `order` come first,
+ *  in that order; columns the order doesn't mention (e.g. added to the
+ *  codebase after the user saved) keep their default relative order,
+ *  appended after the ordered ones. Unknown keys in `order` are skipped.
+ *  Empty order = default order. */
+export function applyColumnOrder(columns: ColumnDef[], order: string[]): ColumnDef[] {
+  if (order.length === 0) return columns;
+  const byKey = new Map(columns.map((c) => [c.key, c]));
+  const ordered = order
+    .map((k) => byKey.get(k))
+    .filter((c): c is ColumnDef => Boolean(c));
+  const placed = new Set(order);
+  return [...ordered, ...columns.filter((c) => !placed.has(c.key))];
+}
+
+/** Move `src` to sit before/after `dst` in a full ordered key list. Both
+ *  reorder surfaces (Columns-menu rows, header dragging) commit through
+ *  this, always over the COMPLETE key list — so one reorder converges a
+ *  partial stored order into a full one, and moving a visible column never
+ *  loses the position of hidden ones. */
+export function moveKey(keys: string[], src: string, dst: string, before: boolean): string[] {
+  if (src === dst || !keys.includes(src)) return keys;
+  const without = keys.filter((k) => k !== src);
+  const at = without.indexOf(dst);
+  if (at < 0) return keys;
+  const next = [...without];
+  next.splice(before ? at : at + 1, 0, src);
+  return next;
+}
+
 /* ── advanced filters (facets) ──────────────────────────────────── */
 
 interface FacetOption { value: string; label: string }
