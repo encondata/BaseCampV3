@@ -3,32 +3,46 @@
  * (/initiatives/:id), in the spirit of BaseCampV2's ProjectDetail/
  * MoveDetail: header with every top-level field, then section cards.
  * Field edits still route through InitiativeEditModal — this page only
- * owns its own data load plus the read-only sections below the header.
- * People/Links/Notes land in a follow-up slice.
+ * owns its own data load plus the sections below the header (People,
+ * Linked initiatives, Notes & Attachments follow the same run()/refetch
+ * pattern as InitiativeRowDetail in Initiatives.tsx).
  */
 
-import { useEffect, useState, type CSSProperties } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import ComboBox from '../components/ComboBox';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
+import NotesFilesPanel from '../components/NotesFilesPanel';
 import {
   ApiError,
+  addInitiativeLink,
+  addInitiativePerson,
   getInitiative,
   listClients,
   listInitiativeStatuses,
   listInitiativeSubTypes,
   listInitiativeTypes,
+  listInitiativeWorkTypes,
+  listInitiatives,
   listPartners,
   listShippingTypes,
   listSites,
+  listWorkerOptions,
+  removeInitiativeLink,
+  removeInitiativePerson,
+  updateInitiativePerson,
   type InitiativeDetail as InitiativeDetailOut,
+  type InitiativeItem,
+  type InitiativePersonRow,
   type OrgRef,
   type SiteItem,
   type StatusValue,
+  type WorkerOption,
 } from '../lib/api';
 import { ADMIN_RANK } from '../lib/access';
-import { initiativeCellText } from '../lib/initiatives';
+import { INITIATIVE_ERRORS, initiativeCellText } from '../lib/initiatives';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
@@ -40,11 +54,13 @@ const dateOnly = (iso: string | null) => (iso ? iso.slice(0, 10) : null);
 
 export default function InitiativeDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { can, maxRank } = useAuth();
   const canChange = can('initiatives', 'change');
   const canViewSites = can('sites', 'view');
   const canViewClients = can('clients', 'view');
   const canViewPartners = can('partners', 'view');
+  const canViewWorkers = can('workers', 'view');
   const isAdmin = maxRank >= ADMIN_RANK;
 
   const [initiative, setInitiative] = useState<InitiativeDetailOut | null>(null);
@@ -54,10 +70,25 @@ export default function InitiativeDetail() {
   const [types, setTypes] = useState<StatusValue[]>([]);
   const [subTypes, setSubTypes] = useState<StatusValue[]>([]);
   const [shippingTypes, setShippingTypes] = useState<StatusValue[]>([]);
+  const [workTypes, setWorkTypes] = useState<StatusValue[]>([]);
   const [sites, setSites] = useState<SiteItem[]>([]);
   const [clients, setClients] = useState<OrgRef[]>([]);
   const [partners, setPartners] = useState<OrgRef[]>([]);
+  const [workers, setWorkers] = useState<WorkerOption[]>([]);
+  const [allInitiatives, setAllInitiatives] = useState<InitiativeItem[]>([]);
   const [editing, setEditing] = useState(false);
+
+  // People section
+  const [editingPerson, setEditingPerson] = useState<InitiativePersonRow | null>(null);
+  const [pendingPerson, setPendingPerson] = useState('');
+  const [pendingWorkType, setPendingWorkType] = useState('');
+  const [peopleBusy, setPeopleBusy] = useState(false);
+  const [peopleError, setPeopleError] = useState('');
+
+  // Linked initiatives section
+  const [pendingChild, setPendingChild] = useState('');
+  const [linksBusy, setLinksBusy] = useState(false);
+  const [linksError, setLinksError] = useState('');
 
   const load = () => {
     if (!id) return;
@@ -79,11 +110,44 @@ export default function InitiativeDetail() {
     void listInitiativeTypes().then(setTypes).catch(() => {});
     void listInitiativeSubTypes().then(setSubTypes).catch(() => {});
     void listShippingTypes().then(setShippingTypes).catch(() => {});
+    void listInitiativeWorkTypes().then(setWorkTypes).catch(() => {});
+    void listInitiatives().then(setAllInitiatives).catch(() => {});
     if (canViewSites) void listSites().then(setSites).catch(() => {});
     if (canViewClients) void listClients().then(setClients).catch(() => {});
     if (canViewPartners) void listPartners().then(setPartners).catch(() => {});
+    if (canViewWorkers) void listWorkerOptions().then(setWorkers).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const runPeople = async (op: () => Promise<unknown>) => {
+    setPeopleBusy(true);
+    setPeopleError('');
+    try {
+      await op();
+      load();
+    } catch (err) {
+      setPeopleError(err instanceof ApiError
+        ? (INITIATIVE_ERRORS[err.code] ?? 'Could not save — try again.')
+        : 'Network error.');
+    } finally {
+      setPeopleBusy(false);
+    }
+  };
+
+  const runLinks = async (op: () => Promise<unknown>) => {
+    setLinksBusy(true);
+    setLinksError('');
+    try {
+      await op();
+      load();
+    } catch (err) {
+      setLinksError(err instanceof ApiError
+        ? (INITIATIVE_ERRORS[err.code] ?? 'Could not save — try again.')
+        : 'Network error.');
+    } finally {
+      setLinksBusy(false);
+    }
+  };
 
   const kv = (label: string, value: string | null | undefined) => (
     <><dt>{label}</dt><dd>{value || '—'}</dd></>
@@ -137,6 +201,19 @@ export default function InitiativeDetail() {
   }
 
   const isMove = initiative.initiative_type === 'move';
+
+  const onPeople = new Set(initiative.people.map((p) => p.person_id));
+  const personOptions = workers
+    .filter((w) => !onPeople.has(w.person_id))
+    .map((w) => ({ value: w.person_id, label: w.display_name }));
+  const linked = new Set([
+    initiative.id,
+    ...initiative.links_children.map((l) => l.other_id),
+    ...initiative.links_parents.map((l) => l.other_id),
+  ]);
+  const childOptions = allInitiatives
+    .filter((i) => !linked.has(i.id) && !i.archived_at)
+    .map((i) => ({ value: i.id, label: i.name, sub: i.type_label }));
 
   return (
     <div className="portal-page">
@@ -224,6 +301,164 @@ export default function InitiativeDetail() {
           <p className="eyebrow-sm">Assets</p>
           <p className="page-hint">Asset tracking lands here next.</p>
         </div>
+
+        <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
+          <p className="eyebrow-sm">People — {initiative.people.length}</p>
+          {initiative.people.length === 0
+            ? <p className="page-hint">No one assigned yet.</p>
+            : (
+              <div className="idet-table-wrap">
+                <table className="idet-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Work type</th>
+                      <th>Site worked</th>
+                      <th>Rating</th>
+                      {canChange && <th>Actions</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {initiative.people.map((p) => (
+                      <tr key={p.id}>
+                        <td>{p.person_name}</td>
+                        <td>
+                          {p.work_type_label
+                            ? (chip(p.work_type_label, p.work_type_color)
+                               ?? p.work_type_label)
+                            : '—'}
+                        </td>
+                        <td>{p.site_worked_name || '—'}</td>
+                        <td>{p.rating != null ? `★ ${p.rating}` : '—'}</td>
+                        {canChange && (
+                          <td className="idet-table-actions">
+                            <button type="button" className="mini-btn sm"
+                                    disabled={peopleBusy}
+                                    onClick={() => setEditingPerson(p)}>
+                              Edit
+                            </button>
+                            <button type="button" className="mini-btn sm danger"
+                                    disabled={peopleBusy}
+                                    onClick={() => void runPeople(
+                                      () => removeInitiativePerson(p.id))}>
+                              Remove
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          {canChange && (
+            <div className="init-add">
+              <div className="init-field">
+                <label>Add person</label>
+                <ComboBox
+                  placeholder="Type to search people…"
+                  value={pendingPerson}
+                  disabled={peopleBusy}
+                  onChange={setPendingPerson}
+                  options={personOptions}
+                />
+              </div>
+              <div className="init-field">
+                <label>Work type</label>
+                <ComboBox
+                  placeholder="Type to search work types…"
+                  value={pendingWorkType}
+                  clearable
+                  disabled={peopleBusy}
+                  onChange={setPendingWorkType}
+                  options={workTypes.map((w) => ({ value: w.key, label: w.label }))}
+                />
+              </div>
+              <button type="button" className="mini-btn"
+                      disabled={peopleBusy || !pendingPerson}
+                      onClick={() => void runPeople(async () => {
+                        await addInitiativePerson(initiative.id, {
+                          person_id: pendingPerson,
+                          work_type: pendingWorkType || null,
+                        });
+                        setPendingPerson('');
+                        setPendingWorkType('');
+                      })}>
+                Add
+              </button>
+            </div>
+          )}
+          {peopleError && <span className="pf-error">{peopleError}</span>}
+        </div>
+
+        <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
+          <p className="eyebrow-sm">Linked initiatives</p>
+          {initiative.links_children.length === 0
+            && initiative.links_parents.length === 0
+            ? <p className="page-hint">No linked initiatives.</p>
+            : (
+              <div className="init-rows">
+                {initiative.links_children.map((l) => (
+                  <div key={l.id} className="init-row">
+                    <span className="init-tag">Contains</span>
+                    <button type="button" className="init-name-btn"
+                            onClick={() => navigate(`/initiatives/${l.other_id}`)}>
+                      {l.other_name}
+                    </button>
+                    {chip(l.other_type_label, l.other_type_color)}
+                    {l.role && <span className="init-sub">{l.role}</span>}
+                    {canChange && (
+                      <button type="button" className="mini-btn sm danger spacer"
+                              disabled={linksBusy}
+                              onClick={() => void runLinks(
+                                () => removeInitiativeLink(l.id))}>
+                        Unlink
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {initiative.links_parents.map((l) => (
+                  <div key={l.id} className="init-row">
+                    <span className="init-tag">Part of</span>
+                    <button type="button" className="init-name-btn"
+                            onClick={() => navigate(`/initiatives/${l.other_id}`)}>
+                      {l.other_name}
+                    </button>
+                    {chip(l.other_type_label, l.other_type_color)}
+                  </div>
+                ))}
+              </div>
+            )}
+          {canChange && (
+            <div className="init-add">
+              <div className="init-field">
+                <label>Link an initiative (as child)</label>
+                <ComboBox
+                  placeholder="Type to search initiatives…"
+                  value={pendingChild}
+                  disabled={linksBusy}
+                  onChange={setPendingChild}
+                  options={childOptions}
+                />
+              </div>
+              <button type="button" className="mini-btn"
+                      disabled={linksBusy || !pendingChild}
+                      onClick={() => void runLinks(async () => {
+                        await addInitiativeLink(initiative.id,
+                                                { child_id: pendingChild });
+                        setPendingChild('');
+                      })}>
+                Link
+              </button>
+            </div>
+          )}
+          {linksError && <span className="pf-error">{linksError}</span>}
+        </div>
+
+        <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
+          <NotesFilesPanel entityType="initiative" entityId={initiative.id}
+                           canWrite={canChange} />
+        </div>
       </div>
 
       {editing && (
@@ -237,6 +472,111 @@ export default function InitiativeDetail() {
           onSaved={() => load()}
         />
       )}
+
+      {editingPerson && (
+        <PersonEditDialog
+          person={editingPerson}
+          workTypes={workTypes}
+          sites={sites}
+          onClose={() => setEditingPerson(null)}
+          onSaved={() => load()}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ── person edit dialog — small modal reusing InitiativeEditModal's
+      overlay/shell classes; the only place work_type/site_worked/rating
+      are patched for one person on an initiative. ────────────────── */
+function PersonEditDialog({ person, workTypes, sites, onClose, onSaved }: {
+  person: InitiativePersonRow;
+  workTypes: StatusValue[];
+  sites: SiteItem[];
+  onClose: () => void;
+  onSaved: () => Promise<void> | void;
+}) {
+  const [workType, setWorkType] = useState(person.work_type ?? '');
+  const [siteWorked, setSiteWorked] = useState(person.site_worked_id ?? '');
+  const [rating, setRating] = useState(
+    person.rating != null ? String(person.rating) : '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setError('');
+    try {
+      await updateInitiativePerson(person.id, {
+        work_type: workType || null,
+        site_worked_id: siteWorked || null,
+        rating: rating.trim() === '' ? null : Number(rating),
+      });
+      await onSaved();
+      onClose();
+    } catch (err) {
+      setError(err instanceof ApiError
+        ? (INITIATIVE_ERRORS[err.code] ?? 'Could not save — try again.')
+        : 'Network error.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="modal-scrim" onMouseDown={(e) => {
+      if (e.target === e.currentTarget && !saving) onClose();
+    }}>
+      <div className="modal-card">
+        <div className="modal-head">
+          <h3>Edit — {person.person_name}</h3>
+          <button className="modal-close" aria-label="Close" onClick={onClose}
+                  disabled={saving}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 strokeWidth="2.2" strokeLinecap="round">
+              <path d="M5 5l14 14M19 5L5 19" /></svg>
+          </button>
+        </div>
+        <form onSubmit={(e) => void submit(e)}>
+          <div className="modal-body">
+            <div className="pf-form">
+              <div><label>Work type</label>
+                <ComboBox
+                  placeholder="Type to search work types…"
+                  value={workType}
+                  clearable
+                  disabled={saving}
+                  onChange={setWorkType}
+                  options={workTypes.map((w) => ({ value: w.key, label: w.label }))}
+                /></div>
+              <div><label>Site worked</label>
+                <ComboBox
+                  placeholder="Type to search sites…"
+                  value={siteWorked}
+                  clearable
+                  disabled={saving}
+                  onChange={setSiteWorked}
+                  options={sites.map((s) => ({ value: s.id, label: s.name }))}
+                /></div>
+              <div><label>Rating (1–5)</label>
+                <input type="number" min={1} max={5} value={rating}
+                       disabled={saving}
+                       onChange={(e) => setRating(e.target.value)} /></div>
+            </div>
+          </div>
+          <div className="modal-foot">
+            <button className="btn-solid" type="submit" disabled={saving}>
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+            <button className="mini-btn" type="button" onClick={onClose}
+                    disabled={saving}>
+              Cancel
+            </button>
+            {error && <span className="pf-error">{error}</span>}
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

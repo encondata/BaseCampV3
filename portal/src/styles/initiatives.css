@@ -161,3 +161,26 @@
 /* the two info cards stack to one column below the same width the
    row-detail's .detail-grid already collapses at (directory.css) */
 .idet-grid { margin-bottom: 20px; }
+
+/* People table — wraps on narrow viewports rather than clipping */
+.idet-table-wrap { overflow-x: auto; }
+.idet-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.idet-table th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  padding: 4px 10px 8px 0;
+  border-bottom: 1px solid var(--paper-line);
+  white-space: nowrap;
+}
+.idet-table td {
+  padding: 8px 10px 8px 0;
+  border-bottom: 1px solid var(--paper-line);
+  vertical-align: middle;
+  color: var(--text-dark);
+}
+.idet-table tr:last-child td { border-bottom: none; }
+.idet-table-actions { display: flex; gap: 8px; white-space: nowrap; }
