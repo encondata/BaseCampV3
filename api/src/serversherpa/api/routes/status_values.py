@@ -9,8 +9,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import column, func, select, table, text as sqla_text
 
-from serversherpa.access.defaults import GATE_BYPASS_RANK
-from serversherpa.api.deps import CurrentUser, DbSession
+from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
 from serversherpa.api.schemas import StatusValueCreateIn, StatusValueOut, StatusValueUpdateIn
 from serversherpa.db.models import StatusValue
 from serversherpa.services.audit import audit, diff, snapshot
@@ -39,21 +38,6 @@ def _record_type(record_type: str) -> StatusRecordType:
     if rt is None:
         raise _err(422, "unknown_record_type")
     return rt
-
-
-def _require_vocabulary_write(actor: CurrentUser, rt: StatusRecordType,
-                               devtools_action: str) -> None:
-    """The vocabulary is developer-only by default (devtools grant), but an
-    actor who administers rt.resource outright — rank >= GATE_BYPASS_RANK,
-    same floor as other admin-only overrides — may also edit its values.
-    A resource grant alone is not enough: staff has every resource at FULL
-    but sits below the rank floor, so it still needs devtools."""
-    if actor.access.can("devtools", devtools_action):
-        return
-    if (actor.access.max_rank >= GATE_BYPASS_RANK
-            and actor.access.can(rt.resource, "change")):
-        return
-    raise _err(403, "forbidden")
 
 
 async def _usage_counts(db: DbSession, rt: StatusRecordType) -> dict[str, int]:
@@ -110,10 +94,9 @@ async def list_status_values(
 async def create_status_value(
     body: StatusValueCreateIn,
     db: DbSession,
-    actor: CurrentUser,
+    actor: AuthContext = require_permission("devtools", "add"),
 ) -> StatusValueOut:
     rt = _record_type(body.record_type)
-    _require_vocabulary_write(actor, rt, "add")
     existing = await db.get(StatusValue, (rt.id, body.key))
     if existing is not None:
         raise _err(409, "status_value_exists")
@@ -137,10 +120,9 @@ async def update_status_value(
     key: str,
     body: StatusValueUpdateIn,
     db: DbSession,
-    actor: CurrentUser,
+    actor: AuthContext = require_permission("devtools", "change"),
 ) -> StatusValueOut:
     rt = _record_type(record_type)
-    _require_vocabulary_write(actor, rt, "change")
     row = await db.get(StatusValue, (rt.id, key))
     if row is None:
         raise _err(404, "status_value_not_found")

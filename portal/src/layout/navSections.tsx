@@ -48,17 +48,6 @@ export const NAV_SECTIONS: NavSection[] = [
           </svg>
         ),
       },
-      {
-        to: '/initiatives/options',
-        label: 'Options',
-        resource: 'initiatives',
-        icon: (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 6h16M4 12h16M4 18h10" />
-          </svg>
-        ),
-      },
     ],
   },
   {
