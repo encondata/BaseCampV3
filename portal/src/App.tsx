@@ -12,6 +12,7 @@ import Containers from './pages/Containers';
 import Dev from './pages/Dev';
 import External from './pages/External';
 import Home from './pages/Home';
+import Initiatives from './pages/Initiatives';
 import Partners from './pages/Partners';
 import Login from './pages/Login';
 import Profile from './pages/Profile';
@@ -40,6 +41,9 @@ export default function App() {
             <Route path="/assets" element={<ProtectedRoute resource="assets"><Assets /></ProtectedRoute>} />
             <Route path="/logistics/containers" element={<ProtectedRoute resource="containers"><Containers /></ProtectedRoute>} />
             <Route path="/sites" element={<ProtectedRoute resource="sites"><Sites /></ProtectedRoute>} />
+            <Route path="/initiatives" element={
+              <ProtectedRoute resource="initiatives"><Initiatives /></ProtectedRoute>
+            } />
             <Route path="/people/users" element={<ProtectedRoute resource="users"><Users /></ProtectedRoute>} />
             <Route path="/people/workers" element={<ProtectedRoute resource="workers"><Workers /></ProtectedRoute>} />
             <Route path="/people/external" element={<ProtectedRoute resource="users"><External /></ProtectedRoute>} />

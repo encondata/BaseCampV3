@@ -34,6 +34,23 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    label: 'Initiatives',
+    items: [
+      {
+        to: '/initiatives',
+        label: 'Initiatives',
+        resource: 'initiatives',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M5 21V4" />
+            <path d="M5 4h13l-3 4 3 4H5" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
     label: 'Logistics',
     items: [
       {

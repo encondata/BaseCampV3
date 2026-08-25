@@ -15,6 +15,8 @@ export const ROUTE_RESOURCE: Record<string, string> = {
   '/people/workers': 'workers',
   '/people/external': 'users',
   '/sites': 'sites',
+  '/initiatives': 'initiatives',
+  '/logistics/containers': 'containers',
   '/stakeholders/clients': 'clients',
   '/stakeholders/partners': 'partners',
   '/settings': 'settings',

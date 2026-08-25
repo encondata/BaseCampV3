@@ -75,6 +75,7 @@ export default function CommandPalette() {
       ...navGated('Sites', '/sites', 'sites'),
       ...navGated('Assets', '/assets', 'assets'),
       ...navGated('Containers', '/logistics/containers', 'containers'),
+      ...navGated('Initiatives', '/initiatives', 'initiatives'),
       ...navGated('Users', '/people/users', 'users'),
       ...navGated('Workers', '/people/workers', 'workers'),
       ...navGated('External', '/people/external', 'users'),

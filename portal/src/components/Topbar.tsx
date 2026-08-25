@@ -46,7 +46,7 @@ const PAGES = [
 ];
 
 interface Hit {
-  kind: 'page' | 'user' | 'client' | 'partner' | 'site' | 'asset' | 'asset_model' | 'container';
+  kind: 'page' | 'user' | 'client' | 'partner' | 'site' | 'asset' | 'asset_model' | 'container' | 'initiative';
   id: string;
   label: string;
   sub?: string | null;
@@ -125,6 +125,8 @@ export default function Topbar() {
       navigate('/assets', { state: { openRow: hit.id } });
     } else if (hit.kind === 'container') {
       navigate('/logistics/containers', { state: { openRow: hit.id } });
+    } else if (hit.kind === 'initiative') {
+      navigate('/initiatives', { state: { openRow: hit.id } });
     } else if (hit.kind === 'asset_model') {
       navigate('/admin/asset-models', { state: { openRow: hit.id } });
     }
