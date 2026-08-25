@@ -8,15 +8,23 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 /* ── CSV export ─────────────────────────────────────────────────── */
 
+/** Encode one CSV field. Values starting with = + - @ get a leading
+ *  single quote (OWASP CSV-injection guard) so Excel/Sheets treat them
+ *  as text, not formulas — except purely numeric values ("-5", "+1.5"),
+ *  which are legitimate data. Then the usual quote/comma/newline quoting. */
+export function csvCell(v: string): string {
+  if (/^[=+\-@]/.test(v) && !/^[+-]?\d+(\.\d+)?$/.test(v)) v = `'${v}`;
+  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+
 export function exportCsv<T>(
   filename: string,
   columns: [string, (row: T) => string][],
   rows: T[],
 ): void {
-  const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
   const lines = [
-    columns.map(([h]) => esc(h)).join(','),
-    ...rows.map((r) => columns.map(([, fn]) => esc(fn(r))).join(',')),
+    columns.map(([h]) => csvCell(h)).join(','),
+    ...rows.map((r) => columns.map(([, fn]) => csvCell(fn(r))).join(',')),
   ];
   const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
