@@ -43,7 +43,7 @@ function typeLabel(entityType: string): string {
   return entityType.replace(/_/g, ' ');
 }
 
-const GRID = { gridTemplateColumns: '2fr 1fr 1.6fr 90px' };
+const GRID = { gridTemplateColumns: '2fr 1fr 1fr 1.3fr 90px' };
 
 export default function DevDatabase() {
   const [items, setItems] = useState<PendingDeleteItem[] | null>(null);
@@ -171,6 +171,7 @@ export default function DevDatabase() {
             <span>{typeLabel(entityType)} ({rows.length})</span>
             <span>Type</span>
             <span>Marked</span>
+            <span>Marked by</span>
             <span />
           </div>
           {rows.map((item) => (
@@ -178,11 +179,13 @@ export default function DevDatabase() {
               <div className="row-main" style={GRID}>
                 <div className="cell"><span className="cell-top">{item.entity_label || '—'}</span></div>
                 <div className="cell"><span className="chip tag">{typeLabel(item.entity_type)}</span></div>
-                <div className="cell cell-primary">
-                  <div className="pn">
-                    <b title={longDate(item.marked_at)}>{relativeTime(item.marked_at)}</b>
-                    <span>{item.marked_by_name ?? 'Unknown'}</span>
-                  </div>
+                <div className="cell">
+                  <span className="cell-top" title={longDate(item.marked_at)}>
+                    {relativeTime(item.marked_at)}
+                  </span>
+                </div>
+                <div className="cell">
+                  <span className="cell-top">{item.marked_by_name ?? 'Unknown'}</span>
                 </div>
                 <div className="cell">
                   <button
