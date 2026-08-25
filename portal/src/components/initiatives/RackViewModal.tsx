@@ -24,8 +24,13 @@ const LANE_PX = 14; // horizontal offset step for overlapping blocks
  *  first, and give each the first lane whose current occupant no longer
  *  overlaps it. Kept simple (no lane count cap, no re-balancing) since a
  *  single rack rarely has more than a couple of asset collisions at once;
- *  overlapping blocks just nudge right and shrink slightly to stay legible. */
-function assignLanes(blocks: { id: string; ru: number; height: number }[]): Map<string, number> {
+ *  overlapping blocks just nudge right and shrink slightly to stay legible.
+ *  Exported for testing (RackViewModal.test.tsx) alongside `laneGeometry`
+ *  below, which is what actually gets asserted against — this function
+ *  alone doesn't say anything about on-canvas placement. */
+export function assignLanes(
+  blocks: { id: string; ru: number; height: number }[],
+): Map<string, number> {
   const sorted = [...blocks].sort((a, b) => a.ru - b.ru);
   const laneEnds: number[] = []; // top RU currently occupied per lane
   const lanes = new Map<string, number>();
@@ -41,6 +46,25 @@ function assignLanes(blocks: { id: string; ru: number; height: number }[]): Map<
     lanes.set(b.id, lane);
   }
   return lanes;
+}
+
+export interface LaneRect { id: string; x: number; width: number; }
+
+/** Turns lane indices into actual x/width geometry within `usableWidth` —
+ *  pulled out from the render so it's testable without mounting the SVG.
+ *  `usableWidth` must be divided ACROSS the lanes (not just have the gap
+ *  gutters subtracted off the front) or extra lanes push later blocks past
+ *  the right edge of the frame instead of tiling inside it. */
+export function laneGeometry(
+  blocks: { id: string; ru: number; height: number }[], usableWidth: number,
+): LaneRect[] {
+  const lanes = assignLanes(blocks);
+  const laneCount = Math.max(1, ...blocks.map((b) => (lanes.get(b.id) ?? 0) + 1));
+  const width = Math.max(40, (usableWidth - (laneCount - 1) * LANE_PX) / laneCount);
+  return blocks.map((b) => {
+    const lane = lanes.get(b.id) ?? 0;
+    return { id: b.id, x: lane * (width + LANE_PX), width };
+  });
 }
 
 /** y (SVG, top-down) for the bottom edge of RU `ru` — RU 1 sits at the
@@ -62,10 +86,8 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   }, [onClose]);
 
   const blocks = rackLayout(rows, rackName, side);
-  const lanes = assignLanes(blocks);
-  const laneCount = Math.max(1, ...blocks.map((b) => (lanes.get(b.id) ?? 0) + 1));
   const usableWidth = FRAME_WIDTH - FRAME_LEFT - FRAME_RIGHT;
-  const laneWidth = Math.max(40, usableWidth - (laneCount - 1) * LANE_PX);
+  const geometry = new Map(laneGeometry(blocks, usableWidth).map((g) => [g.id, g]));
 
   const scaleMarks: number[] = [];
   for (let ru = 5; ru < RU_COUNT; ru += 5) scaleMarks.push(ru);
@@ -104,13 +126,14 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
                     </g>
                   ))}
                   {blocks.map((b) => {
-                    const lane = lanes.get(b.id) ?? 0;
-                    const x = FRAME_LEFT + lane * (laneWidth + LANE_PX);
+                    const g = geometry.get(b.id);
+                    const x = FRAME_LEFT + (g?.x ?? 0);
+                    const width = g?.width ?? usableWidth;
                     const height = b.height * RU_PX;
                     const y = yForRu(b.ru + b.height);
                     return (
                       <g key={b.id}>
-                        <rect x={x} y={y} width={laneWidth} height={height}
+                        <rect x={x} y={y} width={width} height={height}
                               rx={3}
                               className={`rack-block ${b.verified ? 'rack-block-verified'
                                 : 'rack-block-outline'}`} />

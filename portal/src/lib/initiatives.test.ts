@@ -397,6 +397,17 @@ describe('rackLayout', () => {
     expect(block.position).toBe('front');
   });
 
+  it('maps the destination side\'s verified flag and position note (not the source side\'s)', () => {
+    const rows = [assetRow({
+      id: 'a', destination_rack: 'BJ08', destination_ru: 10,
+      source_verified: true, source_position: 'front',
+      destination_verified: false, destination_position: 'rear',
+    })];
+    const [block] = rackLayout(rows, 'BJ08', 'destination');
+    expect(block.verified).toBe(false);
+    expect(block.position).toBe('rear');
+  });
+
   it('treats a null verified flag as unverified (not throwing)', () => {
     const rows = [assetRow({
       id: 'a', source_rack: 'BJ08', source_ru: 10, source_verified: null,
