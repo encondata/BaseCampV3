@@ -252,13 +252,17 @@
 }
 .idet-rack-cell-btn:hover { color: var(--accent-soft); }
 
-/* ── rack elevation modal (Task 6 redesign) — SVG rack view opened from a
-   rack cell button above, restyled to read as a physical server cabinet
-   rather than a bare outline chart: dark posts + EIA hole rails down each
-   inner edge, per-U hairlines, gradient equipment faceplates with a status
-   LED and vent lines. The palette is intentionally self-contained/dark
-   (hardcoded hex — real hardware doesn't take on the app's light/dark
-   theme); only the verified LED borrows var(--accent). ───────────────── */
+/* ── rack elevation modal (Task 6 redesign, print-friendly pass) — SVG
+   rack view opened from a rack cell button above. Two independent,
+   self-contained rack frames (FRONT/REAR) side by side rather than one
+   frame split by a divider; the REAR frame is omitted entirely when the
+   rack/side has no rear-mounted assets. The palette is intentionally
+   self-contained/light (hardcoded hex, not the app's --surface/--text
+   tokens) — designed to print legibly in grayscale: white interior,
+   near-black line work, no gradients, no color-only distinctions
+   (verified vs. planned differ by fill AND solid-vs-dashed border AND
+   label color). Only the modal chrome itself (card, head, legend
+   caption) follows the app's normal light/dark theme. ───────────────── */
 .modal-card.rack-modal-card { width: min(460px, 94vw); }
 .rack-modal-title {
   display: flex;
@@ -284,10 +288,10 @@
   border-radius: 2px;
   flex: none;
 }
-.rack-legend-swatch-verified { background: var(--accent); }
+.rack-legend-swatch-verified { background: #eef0f3; border: 1.5px solid #111827; }
 .rack-legend-swatch-planned {
-  background: transparent;
-  border: 1.5px dashed #7d8694;
+  background: #fff;
+  border: 1.5px dashed #111827;
 }
 .rack-modal-body {
   max-height: 70vh;
@@ -295,57 +299,104 @@
   display: flex;
   justify-content: center;
 }
-.rack-svg-wrap { width: 100%; max-width: 400px; }
+.rack-elevations {
+  position: relative; /* anchors the hover tooltip's absolute positioning */
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 24px;
+  width: 100%;
+}
+.rack-elevation { display: flex; flex-direction: column; align-items: center; width: 190px; flex: none; }
+.rack-elevation-heading {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: #111827;
+  margin-bottom: 6px;
+}
 /* overflow:hidden is the SVG-spec default for a root <svg>, but stated
    explicitly here: at this element's small on-screen size, anything that
    ever crept past the viewBox (or an anti-aliased edge bleeding past it)
    must be guaranteed clipped rather than relying on a UA default. */
 .rack-svg { width: 100%; height: auto; display: block; overflow: hidden; }
 
-.rack-post { fill: #2b3038; }
-.rack-cap { fill: #2b3038; }
-.rack-interior { fill: #23272e; }
-.rack-u-hairline { stroke: #2c313a; stroke-width: 1; shape-rendering: crispEdges; }
+.rack-post { fill: #f9fafb; stroke: #111827; stroke-width: 1.5; }
+.rack-cap { fill: #f9fafb; stroke: #111827; stroke-width: 1.5; }
+.rack-interior { fill: #fff; }
+.rack-u-hairline { stroke: #e5e7eb; stroke-width: 1; shape-rendering: crispEdges; }
 /* crispEdges: these are 4x4 (SVG-unit) squares repeated 54 times down a
    ~16px-tall column; at the modal's small render size, ordinary
    anti-aliasing on a shape this small can blur/fringe its edges enough to
    read as a smeared or doubled column instead of one crisp square. */
-.rack-rail-hole { fill: #1b1f24; shape-rendering: crispEdges; }
+.rack-rail-hole { fill: #111827; shape-rendering: crispEdges; }
 .rack-u-label {
   font-family: var(--font-mono);
   font-size: 7px;
-  fill: #8b93a0;
+  fill: #374151;
 }
-.rack-u-label-major { font-size: 8px; fill: #c7cdd6; font-weight: 600; }
-.rack-separator { stroke: #3a404a; stroke-width: 1.5; }
-.rack-half-label {
-  font-family: var(--font-mono);
-  font-size: 7.5px;
-  letter-spacing: 0.08em;
-  fill: #8b93a0;
-}
+.rack-u-label-major { font-size: 8px; fill: #111827; font-weight: 600; }
 .rack-empty-label {
   font-family: var(--font-mono);
   font-size: 10px;
-  fill: #8b93a0;
+  fill: #6b7280;
 }
 
-.rack-faceplate {
-  fill: url(#rackFaceplateGradient);
-  stroke: #565e6a;
-  stroke-width: 1;
-}
-.rack-faceplate-unverified {
-  fill-opacity: 0.35;
-  stroke: #7d8694;
-  stroke-dasharray: 4 3;
-}
-.rack-faceplate-vent { stroke: #2f353d; stroke-width: 1; }
-.rack-led-verified { fill: var(--accent); stroke: #1b1f24; stroke-width: 1.5; }
-.rack-led-unverified { fill: none; stroke: #8b93a0; stroke-width: 1; }
+/* verified = light-gray fill, solid border; planned/unverified = white
+   fill, dashed border, muted label — distinguishable in pure grayscale
+   without relying on the LED alone. */
+.rack-faceplate-verified { fill: #eef0f3; stroke: #111827; stroke-width: 1.5; }
+.rack-faceplate-unverified { fill: #fff; stroke: #111827; stroke-width: 1.25; stroke-dasharray: 4 3; }
+.rack-faceplate-vent { stroke: #d1d5db; stroke-width: 1; }
+.rack-led-verified { fill: #111827; }
+.rack-led-unverified { fill: none; stroke: #111827; stroke-width: 1; }
 .rack-block-label {
   font-family: var(--font-mono);
   font-size: 8.5px;
-  fill: #e8ebef;
+  fill: #111827;
 }
-.rack-block-label-unverified { fill: #aab1bb; }
+.rack-block-label-unverified { fill: #6b7280; }
+
+/* hover detail tooltip — real HTML element (not a native title tooltip),
+   positioned off the hovered faceplate's bounding rect; styled like the
+   app's other popovers (chrome.css .pop-menu) but tighter and mono. */
+.rack-tooltip {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 8px));
+  z-index: 5;
+  min-width: 160px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  box-shadow: 0 18px 50px -18px rgba(12, 17, 23, 0.35);
+  pointer-events: none;
+  font-family: var(--font-mono);
+}
+.rack-tooltip-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dark);
+  margin-bottom: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.rack-tooltip-kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  margin: 0;
+}
+.rack-tooltip-kv dt { font-size: 9px; color: var(--text-mute); white-space: nowrap; }
+.rack-tooltip-kv dd {
+  font-size: 9px;
+  color: var(--text-dark);
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}

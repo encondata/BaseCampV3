@@ -3,15 +3,16 @@
  * Smoke-mounts the actual RackViewModal (not just its pure helpers) so a
  * runtime SVG-rendering bug — bad JSX nesting, a NaN geometry value, a
  * missing key — fails a test instead of only showing up visually. Covers
- * the redesign's three render branches (populated rack, empty rack,
- * decimal-RU / overlapping-lane rack) plus the front/rear split follow-up:
- * same-half collisions still squeeze into lanes, but a front device and a
- * rear device at the same RU land in separate, full-width halves instead.
+ * the redesign's render branches (populated elevation, empty elevation,
+ * decimal-RU / overlapping-lane blocks), the front/rear SPLIT-ELEVATIONS
+ * follow-up (two independent frames, REAR omitted entirely when nothing is
+ * rear-mounted, per-elevation lane collisions), the per-cluster width fix,
+ * the single-rail-hole-column fix, and the light-theme hover tooltip.
  */
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import RackViewModal, { FACEPLATE_HALF_USABLE_WIDTH } from './RackViewModal';
+import RackViewModal, { FACEPLATE_USABLE_WIDTH } from './RackViewModal';
 import type { InitiativeAssetRow, InitiativeAssetSummary } from '../../lib/api';
 
 afterEach(cleanup);
@@ -42,28 +43,42 @@ function makeRow(overrides: Partial<InitiativeAssetRow> = {}): InitiativeAssetRo
 }
 
 describe('RackViewModal (render smoke)', () => {
-  it('renders a populated rack with a verified faceplate and its label', () => {
+  it('renders a populated REAR elevation with a verified faceplate and its label', () => {
     render(
       <RackViewModal rackName="R1" side="source" rows={[makeRow()]} onClose={() => {}} />,
     );
     expect(screen.getByText('Rack R1 — Source')).toBeTruthy();
-    // Matches twice by design: the visible <text> label and its nested
-    // <title> hover tooltip both carry the untruncated string here.
-    expect(screen.getAllByText('w1-hs4-m0407 (rear)').length).toBeGreaterThan(0);
-    expect(screen.getByRole('img', { name: /Rack R1 elevation, source/i })).toBeTruthy();
+    expect(screen.getByText('w1-hs4-m0407 (rear)')).toBeTruthy();
+    expect(screen.getByRole('img', { name: /Rack R1 — Source — rear elevation/i })).toBeTruthy();
   });
 
-  it('renders the empty-state message inside the SVG when nothing matches', () => {
+  it('omits the REAR elevation entirely when nothing is rear-mounted, centering FRONT alone', () => {
+    render(
+      <RackViewModal
+        rackName="R1" side="source"
+        rows={[makeRow({ source_position: 'front' })]} onClose={() => {}}
+      />,
+    );
+    expect(screen.getByRole('img', { name: /Rack R1 — Source — front elevation/i })).toBeTruthy();
+    expect(screen.queryByRole('img', { name: /rear elevation/i })).toBeNull();
+    expect(screen.queryByText('REAR')).toBeNull();
+    expect(screen.getByText('FRONT')).toBeTruthy();
+  });
+
+  it('renders the FRONT elevation\'s own empty-state message when the rack/side has no assets at all', () => {
     render(
       <RackViewModal rackName="R1" side="destination" rows={[makeRow()]} onClose={() => {}} />,
     );
+    // makeRow's default row only has a SOURCE placement, so the destination
+    // side has nothing -> FRONT renders empty, REAR is omitted (0 blocks).
     expect(screen.getByText('No assets recorded at this rack')).toBeTruthy();
+    expect(screen.queryByText('REAR')).toBeNull();
   });
 
-  it('renders overlapping decimal-RU blocks in the same half (collision lanes) without crashing', () => {
+  it('renders overlapping decimal-RU blocks in the same elevation (collision lanes) without crashing', () => {
     const rows: InitiativeAssetRow[] = [
       makeRow({
-        id: 'row-a', source_ru: 10.5, // both "rear" -> same half -> must share lanes
+        id: 'row-a', source_ru: 10.5, // both "rear" -> same elevation -> must share lanes
         asset: makeAsset({ id: 'asset-a', name: 'server-a', ru_size: 2 }),
       }),
       makeRow({
@@ -72,11 +87,14 @@ describe('RackViewModal (render smoke)', () => {
       }),
     ];
     render(<RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />);
-    expect(screen.getAllByText('server-a (rear)').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('SN-B (rear)').length).toBeGreaterThan(0);
+    // Squeezed to a 2-lane width here, so the label truncates (exact
+    // truncation math is covered by the dedicated `rackLabel` unit tests
+    // above) — a prefix match is enough to confirm both blocks rendered.
+    expect(screen.getByText(/^server-a/)).toBeTruthy();
+    expect(screen.getByText(/^SN-B/)).toBeTruthy();
   });
 
-  it('splits front/rear devices at the same RU into separate, full-width halves', () => {
+  it('splits front/rear devices at the same RU into two independent, full-width elevations', () => {
     const rows: InitiativeAssetRow[] = [
       makeRow({
         id: 'row-front', source_ru: 20, source_position: 'front',
@@ -91,25 +109,25 @@ describe('RackViewModal (render smoke)', () => {
       <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
     );
 
-    // Column chrome from the follow-up request.
     expect(screen.getByText('FRONT')).toBeTruthy();
     expect(screen.getByText('REAR')).toBeTruthy();
-    expect(container.querySelector('.rack-separator')).toBeTruthy();
+    expect(container.querySelectorAll('.rack-elevation')).toHaveLength(2);
+    expect(container.querySelectorAll('svg.rack-svg')).toHaveLength(2);
 
-    // Same RU, opposite halves -> neither should be squeezed by the other's
-    // lane-collision pass; each faceplate gets the full half width.
+    // Same RU, opposite elevations -> neither should be squeezed by the
+    // other's lane-collision pass; each faceplate gets the full width.
     const faceplates = Array.from(container.querySelectorAll('.rack-faceplate'));
     expect(faceplates).toHaveLength(2);
     for (const el of faceplates) {
-      expect(Number(el.getAttribute('width'))).toBe(FACEPLATE_HALF_USABLE_WIDTH);
+      expect(Number(el.getAttribute('width'))).toBe(FACEPLATE_USABLE_WIDTH);
     }
   });
 
-  it('does not let an unrelated collision squeeze an unrelated lone faceplate in the same half (visual-review regression)', () => {
+  it('does not let an unrelated collision squeeze an unrelated lone faceplate in the same elevation (visual-review regression)', () => {
     // Mirrors the exact bug reported from a rendered screenshot: a single
-    // isolated device (san-arr-04-like, ru 40) shared its half with a real
-    // collision elsewhere (two devices at ru 20) and was wrongly squeezed
-    // to the two-lane width even though nothing overlapped it.
+    // isolated device (san-arr-04-like, ru 40) shared its elevation with a
+    // real collision elsewhere (two devices at ru 20) and was wrongly
+    // squeezed to the two-lane width even though nothing overlapped it.
     const rows: InitiativeAssetRow[] = [
       makeRow({
         id: 'row-lone', source_ru: 40, source_position: 'front',
@@ -130,30 +148,63 @@ describe('RackViewModal (render smoke)', () => {
     const faceplates = Array.from(container.querySelectorAll('.rack-faceplate'));
     expect(faceplates).toHaveLength(3);
     const widths = faceplates.map((el) => Number(el.getAttribute('width')));
-    // The lone block must get the full half width...
-    expect(widths).toContain(FACEPLATE_HALF_USABLE_WIDTH);
+    // The lone block must get the full elevation width...
+    expect(widths).toContain(FACEPLATE_USABLE_WIDTH);
     // ...while the two that actually collide are still squeezed narrower.
-    const squeezed = widths.filter((w) => w < FACEPLATE_HALF_USABLE_WIDTH);
+    const squeezed = widths.filter((w) => w < FACEPLATE_USABLE_WIDTH);
     expect(squeezed).toHaveLength(2);
   });
 
-  it('renders exactly one rail-hole column per post, fully inside the viewBox', () => {
+  it('renders exactly one rail-hole column per post per elevation, fully inside each viewBox', () => {
     const { container } = render(
       <RackViewModal rackName="R1" side="source" rows={[makeRow()]} onClose={() => {}} />,
     );
-    const svg = container.querySelector('svg.rack-svg')!;
-    const viewBoxWidth = Number(svg.getAttribute('viewBox')!.split(' ')[2]);
-    const holes = Array.from(container.querySelectorAll('.rack-rail-hole'));
-    expect(holes).toHaveLength(54 * 3 * 2); // 54 RUs x 3 holes x 2 posts
-    const leftXs = new Set(holes.map((h) => h.getAttribute('x')).filter((x) => Number(x) < viewBoxWidth / 2));
-    const rightXs = new Set(holes.map((h) => h.getAttribute('x')).filter((x) => Number(x) >= viewBoxWidth / 2));
-    expect(leftXs.size).toBe(1); // exactly one hole column on the left post
-    expect(rightXs.size).toBe(1); // exactly one hole column on the right post
-    for (const h of holes) {
-      const x = Number(h.getAttribute('x'));
-      const width = Number(h.getAttribute('width'));
-      expect(x).toBeGreaterThanOrEqual(0);
-      expect(x + width).toBeLessThanOrEqual(viewBoxWidth);
+    for (const svg of Array.from(container.querySelectorAll('svg.rack-svg'))) {
+      const viewBoxWidth = Number(svg.getAttribute('viewBox')!.split(' ')[2]);
+      const holes = Array.from(svg.querySelectorAll('.rack-rail-hole'));
+      expect(holes).toHaveLength(54 * 3 * 2); // 54 RUs x 3 holes x 2 posts
+      const leftXs = new Set(holes.map((h) => h.getAttribute('x')).filter((x) => Number(x) < viewBoxWidth / 2));
+      const rightXs = new Set(holes.map((h) => h.getAttribute('x')).filter((x) => Number(x) >= viewBoxWidth / 2));
+      expect(leftXs.size).toBe(1); // exactly one hole column on the left post
+      expect(rightXs.size).toBe(1); // exactly one hole column on the right post
+      for (const h of holes) {
+        const x = Number(h.getAttribute('x'));
+        const width = Number(h.getAttribute('width'));
+        expect(x).toBeGreaterThanOrEqual(0);
+        expect(x + width).toBeLessThanOrEqual(viewBoxWidth);
+      }
     }
+  });
+
+  it('shows an HTML hover tooltip with name/serial/make-model/RU/position on mouseEnter, hides it on mouseLeave', () => {
+    const rows: InitiativeAssetRow[] = [
+      makeRow({
+        id: 'row-1', source_ru: 12, source_position: 'rear', source_verified: true,
+        asset: makeAsset({
+          id: 'asset-1', name: 'db-primary-01', serial_number: 'SN-XYZ-99',
+          model_make: 'Dell', model_name: 'R640', ru_size: 2,
+        }),
+      }),
+    ];
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+    );
+
+    // No tooltip until hovered.
+    expect(container.querySelector('.rack-tooltip')).toBeNull();
+
+    const faceplateGroup = container.querySelector('.rack-faceplate')!.parentElement!;
+    fireEvent.mouseEnter(faceplateGroup);
+
+    const tooltip = container.querySelector('.rack-tooltip');
+    expect(tooltip).toBeTruthy();
+    expect(tooltip!.textContent).toContain('db-primary-01');
+    expect(tooltip!.textContent).toContain('SN-XYZ-99');
+    expect(tooltip!.textContent).toContain('Dell R640');
+    expect(tooltip!.textContent).toContain('12'); // RU
+    expect(tooltip!.textContent).toContain('rear'); // position note
+
+    fireEvent.mouseLeave(faceplateGroup);
+    expect(container.querySelector('.rack-tooltip')).toBeNull();
   });
 });

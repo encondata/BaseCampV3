@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  assignLanes, FACEPLATE_HALF_USABLE_WIDTH, isRearPosition, laneGeometry, rackLabel,
+  assignLanes, FACEPLATE_USABLE_WIDTH, isRearPosition, laneGeometry, rackLabel,
 } from './RackViewModal';
 
 /* ── rack view collision layout (Task 6 fix-round) — laneGeometry is the
@@ -121,9 +121,12 @@ describe('rackLabel', () => {
   });
 });
 
-/* ── front/rear column assignment (follow-up) — a side position note
+/* ── front/rear elevation assignment (follow-up) — a side position note
       mentioning "rear" (case-insensitive substring) sends the block to the
-      REAR half; everything else (front, left/right, blank) stays FRONT. ── */
+      REAR elevation; everything else (front, left/right, blank) stays in
+      FRONT. This is also the exact predicate the component uses to decide
+      whether to render a REAR elevation at all (see the last test below):
+      `rows.filter((b) => isRearPosition(b.position))` empty => omit it. ── */
 
 describe('isRearPosition', () => {
   it('matches "Rear" case-insensitively', () => {
@@ -148,31 +151,49 @@ describe('isRearPosition', () => {
     expect(isRearPosition(null)).toBe(false);
     expect(isRearPosition(undefined)).toBe(false);
   });
-});
 
-/* ── half-width lane geometry (follow-up) — the front/rear split scopes
-      laneGeometry to each half's own (narrower) usable width, so a front
-      and a rear device at the same RU land in different halves instead of
-      colliding into shrunk side-by-side lanes. ─────────────────────────── */
-
-describe('laneGeometry with FACEPLATE_HALF_USABLE_WIDTH (front/rear split)', () => {
-  it('gives a single block the full half width, not the old full-interior width', () => {
-    const blocks = [{ id: 'a', ru: 10, height: 2 }];
-    const [g] = laneGeometry(blocks, FACEPLATE_HALF_USABLE_WIDTH);
-    expect(g.x).toBe(0);
-    expect(g.width).toBe(FACEPLATE_HALF_USABLE_WIDTH);
+  it('produces an empty rear group (the REAR elevation is omitted) when nothing is rear-mounted', () => {
+    const blocks = [
+      { id: 'a', position: 'front' as string | null },
+      { id: 'b', position: null },
+      { id: 'c', position: 'left' as string | null },
+    ];
+    expect(blocks.filter((b) => isRearPosition(b.position))).toHaveLength(0);
   });
 
-  it('tiles two overlapping blocks within one half without exceeding it', () => {
+  it('produces a non-empty rear group (the REAR elevation renders) when at least one asset is rear-mounted', () => {
+    const blocks = [
+      { id: 'a', position: 'front' as string | null },
+      { id: 'b', position: 'rear' as string | null },
+    ];
+    expect(blocks.filter((b) => isRearPosition(b.position))).toHaveLength(1);
+  });
+});
+
+/* ── per-elevation lane geometry (follow-up) — each of the two split
+      elevations lays out its own blocks with FACEPLATE_USABLE_WIDTH (the
+      one elevation's own interior width, not half of a shared one now
+      that FRONT/REAR are two independent frames), so a front and a rear
+      device at the same RU never share a lane-collision pass at all. ──── */
+
+describe('laneGeometry with FACEPLATE_USABLE_WIDTH (per-elevation)', () => {
+  it('gives a single block the elevation-interior width, not squeezed by anything', () => {
+    const blocks = [{ id: 'a', ru: 10, height: 2 }];
+    const [g] = laneGeometry(blocks, FACEPLATE_USABLE_WIDTH);
+    expect(g.x).toBe(0);
+    expect(g.width).toBe(FACEPLATE_USABLE_WIDTH);
+  });
+
+  it('tiles two overlapping blocks within one elevation without exceeding it', () => {
     const blocks = [
       { id: 'a', ru: 10, height: 2 },
       { id: 'b', ru: 10, height: 2 },
     ];
-    const rects = laneGeometry(blocks, FACEPLATE_HALF_USABLE_WIDTH);
+    const rects = laneGeometry(blocks, FACEPLATE_USABLE_WIDTH);
     expect(rects).toHaveLength(2);
     for (const r of rects) {
       expect(r.x).toBeGreaterThanOrEqual(0);
-      expect(r.x + r.width).toBeLessThanOrEqual(FACEPLATE_HALF_USABLE_WIDTH);
+      expect(r.x + r.width).toBeLessThanOrEqual(FACEPLATE_USABLE_WIDTH);
     }
     const [first, second] = [...rects].sort((a, b) => a.x - b.x);
     expect(first.x + first.width).toBeLessThanOrEqual(second.x);
