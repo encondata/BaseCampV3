@@ -12,7 +12,7 @@ import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
-import ComboBox from '../components/ComboBox';
+import ComboBox, { type ComboOption } from '../components/ComboBox';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import {
@@ -56,6 +56,9 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import {
+  GodCell, GodEditToggle, numberToPatch, useGodEdit, type GodField,
+} from '../lib/godEdit';
+import {
   applyColumnOrder,
   ColumnsButton, ExportButton, exportCsv, moveKey, useReorderDrag, visibleColumnsFor,
   type ColumnDef,
@@ -85,6 +88,27 @@ const PEOPLE_COLUMNS: ColumnDef[] = [
 const PEOPLE_ALL_COLUMN_KEYS = new Set<string>(PEOPLE_COLUMNS.map((c) => c.key));
 const PEOPLE_DEFAULT_VISIBLE = new Set<string>(
   PEOPLE_COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/** God-edit descriptors for the People roster (lib/initiatives.ts
+ *  INITIATIVE_GOD_FIELDS factory pattern) — name/added stay non-editable,
+ *  so godFieldFor returns undefined for those and personCellFor's normal
+ *  switch renders them. */
+interface PeopleGodLookups {
+  workTypes: () => ComboOption[];
+  sites: () => ComboOption[];
+}
+
+function PEOPLE_GOD_FIELDS(lookups: PeopleGodLookups): GodField<InitiativePersonRow>[] {
+  return [
+    { column: 'work_type', field: 'work_type', kind: 'select',
+      fromRow: (p) => p.work_type ?? '', options: lookups.workTypes },
+    { column: 'site_worked', field: 'site_worked_id', kind: 'combo',
+      fromRow: (p) => p.site_worked_id ?? '', options: lookups.sites },
+    { column: 'rating', field: 'rating', kind: 'number',
+      fromRow: (p) => (p.rating != null ? String(p.rating) : ''),
+      toPatch: numberToPatch },
+  ];
+}
 
 /* ── Assets section (moves only) — same list machinery as People above,
       built on the pure helpers in lib/initiatives.ts. Read-only this slice
@@ -128,13 +152,14 @@ function personRatingValue(row: InitiativePersonRow): number {
 export default function InitiativeDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { can, maxRank } = useAuth();
+  const { can, godMode, maxRank } = useAuth();
   const canChange = can('initiatives', 'change');
   const canViewSites = can('sites', 'view');
   const canViewClients = can('clients', 'view');
   const canViewPartners = can('partners', 'view');
   const canViewWorkers = can('workers', 'view');
   const isAdmin = maxRank >= ADMIN_RANK;
+  const god = useGodEdit();
 
   const [initiative, setInitiative] = useState<InitiativeDetailOut | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -190,6 +215,17 @@ export default function InitiativeDetail() {
       : naturalCompare(personCellText(a, peopleSortKey), personCellText(b, peopleSortKey))
         * peopleSortDir));
   }, [initiative, peopleFilters, peopleQuery, peopleSortKey, peopleSortDir]);
+  const godFields = useMemo(() => PEOPLE_GOD_FIELDS({
+    workTypes: () => workTypes.map((w) => ({ value: w.key, label: w.label })),
+    sites: () => (canViewSites ? sites.map((s) => ({ value: s.id, label: s.name })) : []),
+  }), [workTypes, sites, canViewSites]);
+  const godFieldFor = (column: string) => godFields.find((f) => f.column === column);
+  // Direct state splice, not a load() refetch — people live on the
+  // InitiativeDetail object held in `initiative`, not a separate array.
+  const replacePerson = (u: InitiativePersonRow) =>
+    setInitiative((cur) => (cur
+      ? { ...cur, people: cur.people.map((p) => (p.id === u.id ? u : p)) }
+      : cur));
 
   // Assets section (moves only) — fetched separately from getInitiative,
   // since GET /initiatives/{id}/assets is its own endpoint (Task 2).
@@ -417,6 +453,15 @@ export default function InitiativeDetail() {
       ? <span className="caret">{peopleSortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const personCellFor = (p: InitiativePersonRow, key: string) => {
+    if (god.editing) {
+      const gf = godFieldFor(key);
+      if (gf) {
+        return (
+          <GodCell row={p} gf={gf} patch={updateInitiativePerson} onRowSaved={replacePerson}
+                   errorMap={INITIATIVE_ERRORS} disabled={!canChange} />
+        );
+      }
+    }
     switch (key) {
       case 'name': return <span className="cell-top">{p.person_name}</span>;
       case 'work_type':
@@ -649,19 +694,23 @@ export default function InitiativeDetail() {
             : (
               <>
                 <div className="dir-toolbar idet-people-toolbar">
-                  <div className="dir-search" style={{ marginLeft: 0 }}>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                         strokeWidth="2" strokeLinecap="round">
-                      <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
-                    <input placeholder="Filter people…" value={peopleQuery}
-                           onChange={(e) => setPeopleQuery(e.target.value)} />
+                  <div className="toolbar-right">
+                    <div className="dir-search" style={{ marginLeft: 0 }}>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                           strokeWidth="2" strokeLinecap="round">
+                        <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                      <input placeholder="Filter people…" value={peopleQuery}
+                             onChange={(e) => setPeopleQuery(e.target.value)} />
+                    </div>
+                    <span className="result-count">
+                      {visiblePeople.length} of {initiative.people.length} shown</span>
+                    <FilterSummaryChip filters={peopleFilters} onClear={clearPeopleFilters} />
+                    <ColumnsButton columns={peopleOrderedCols} visible={peopleVisibleCols}
+                                   onChange={setPeopleVisibleCols}
+                                   onReorder={setPeopleColOrder} />
+                    <GodEditToggle editing={god.editing} onToggle={god.toggle}
+                                   visible={godMode && canChange} />
                   </div>
-                  <span className="result-count">
-                    {visiblePeople.length} of {initiative.people.length} shown</span>
-                  <FilterSummaryChip filters={peopleFilters} onClear={clearPeopleFilters} />
-                  <ColumnsButton columns={peopleOrderedCols} visible={peopleVisibleCols}
-                                 onChange={setPeopleVisibleCols}
-                                 onReorder={setPeopleColOrder} />
                 </div>
 
                 <div className="dir-list idet-people-list">
