@@ -49,16 +49,12 @@ export const FACEPLATE_USABLE_WIDTH = INTERIOR_WIDTH - FACEPLATE_INSET * 2;
 const FACEPLATE_X0 = INTERIOR_LEFT + FACEPLATE_INSET;
 const LANE_PX = 14; // horizontal offset step for overlapping blocks
 
-// U_LABEL_X keeps the exact x the numbers held when they were right-aligned
-// against the (now-removed) EIA rail holes — round 3 dropped the cage-nut
-// hole pattern entirely (posts are clean outlined rails now) but the
-// numbers stay put rather than re-centering in the freed-up space.
-const U_LABEL_X = 13;
-// Round 4 mirrors the same numbers onto the right rail: reflecting 13
-// across the frame's midline (ELEV_FRAME_WIDTH - 13) and flipping the
-// text-anchor from "end" to "start" puts them left-aligned inside the
-// right post, the same distance from ITS inner/outer edges as the left
-// column is from its own.
+// U numbers sit centered in each post (round 5 — text-anchor="middle" at
+// each post's own horizontal midpoint keeps single- and double-digit RUs
+// centered alike, instead of hugging whichever edge the old end/start
+// anchoring favored). Right rail is just the left one's x mirrored across
+// the elevation's midline.
+const U_LABEL_X = POST_WIDTH / 2;
 const U_LABEL_X_RIGHT = ELEV_FRAME_WIDTH - U_LABEL_X;
 
 const RU_LIST = Array.from({ length: RU_COUNT }, (_, i) => i + 1);
@@ -266,13 +262,14 @@ function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock 
                 className="rack-u-hairline" />
         ))}
 
-        {/* U numbering, both posts (round 4 mirrored the right rail; every
-            number is now the same size/weight/color — no every-5 emphasis).
+        {/* U numbering, both posts, centered in each (round 4 mirrored the
+            right rail and dropped every-5 emphasis; round 5 centered both
+            so single- vs. double-digit RUs no longer hug different edges).
             Posts otherwise stay clean outlined rails (round 3 dropped the
             cage-nut hole pattern entirely). */}
         <g className="rack-u-labels">
           {RU_LIST.map((ru) => (
-            <text key={ru} x={U_LABEL_X} y={ruTop(ru) + U_PX / 2} textAnchor="end"
+            <text key={ru} x={U_LABEL_X} y={ruTop(ru) + U_PX / 2} textAnchor="middle"
                   dominantBaseline="middle" className="rack-u-label">
               {ru}
             </text>
@@ -280,7 +277,7 @@ function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock 
         </g>
         <g className="rack-u-labels">
           {RU_LIST.map((ru) => (
-            <text key={ru} x={U_LABEL_X_RIGHT} y={ruTop(ru) + U_PX / 2} textAnchor="start"
+            <text key={ru} x={U_LABEL_X_RIGHT} y={ruTop(ru) + U_PX / 2} textAnchor="middle"
                   dominantBaseline="middle" className="rack-u-label">
               {ru}
             </text>
