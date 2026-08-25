@@ -252,16 +252,23 @@ async def test_unknown_record_type_on_write_is_422(client, db, seeded_user):
     assert resp.json()["detail"]["code"] == "unknown_record_type"
 
 
-async def test_admin_with_settings_change_cannot_touch_the_vocabulary(
+async def test_admin_edits_site_vocabulary_via_the_sites_grant_not_settings(
         client, db, seeded_user):
-    """The capability admins lose: PATCH /site-statuses was settings:change."""
+    """Previously this was a flat 403: admins had no path to the vocabulary
+    at all, `settings:change` included. That base fact is unchanged here —
+    settings:change still buys nothing on its own. What changed (this task)
+    is that admin also holds `sites` FULL at rank 60, and that now clears
+    the rank+resource bypass in _require_vocabulary_write, so admin reaches
+    the site vocabulary through `sites`, not through `settings`. See
+    test_staff_with_initiatives_full_still_hits_the_rank_floor for proof
+    that the resource grant alone, without the rank floor, still 403s."""
     hdrs = await _make(db, client, "admin", "ada@test.example.com")
     resp = await client.patch("/status-values/site/active", headers=hdrs,
                               json={"label": "Live"})
-    assert resp.status_code == 403
+    assert resp.status_code == 200, resp.text
     resp = await client.post("/status-values", headers=hdrs, json={
         "record_type": "site", "key": "x", "label": "X", "color": "#178a4c"})
-    assert resp.status_code == 403
+    assert resp.status_code == 201, resp.text
 
 
 async def test_non_global_actor_with_devtools_override_is_hard_gated(
@@ -302,3 +309,45 @@ async def test_patch_writes_an_audit_row(client, db, seeded_user):
     assert audit_row is not None
     assert audit_row.entity_id == "site:active"
     assert audit_row.changes["label"]["to"] == "Live"
+
+
+async def test_admin_edits_vocabulary_for_a_resource_they_administer(
+        client, db, seeded_user):
+    """An admin (rank 60, initiatives FULL, no devtools) may create and
+    update status_values for a record_type whose resource they administer.
+    This is the rank-gated bypass, distinct from the devtools grant."""
+    hdrs = await _make(db, client, "admin", "admin-vocab@test.example.com")
+    resp = await client.post("/status-values", headers=hdrs, json={
+        "record_type": "initiative_sub_type", "key": "retrofit",
+        "label": "Retrofit", "description": "Upgrade existing build.",
+        "color": "#2f6fed", "sort_order": 9,
+    })
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["key"] == "retrofit"
+
+    resp = await client.patch(
+        "/status-values/initiative_sub_type/retrofit", headers=hdrs,
+        json={"label": "Retrofit Program"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["label"] == "Retrofit Program"
+
+    rows = (await client.get(
+        "/status-values", headers=hdrs,
+        params={"record_type": "initiative_sub_type"})).json()
+    retrofit = [r for r in rows if r["key"] == "retrofit"]
+    assert len(retrofit) == 1
+    assert retrofit[0]["label"] == "Retrofit Program"
+
+
+async def test_staff_with_initiatives_full_still_hits_the_rank_floor(
+        client, db, seeded_user):
+    """staff (rank 40) has initiatives FULL, same resource grant as the
+    admin above — but the bypass requires rank >= GATE_BYPASS_RANK (60), so
+    staff must still be refused. This proves the guard checks rank, not
+    just the resource permission."""
+    staff = await login(client)
+    resp = await client.post("/status-values", headers=staff, json={
+        "record_type": "initiative_sub_type", "key": "retrofit",
+        "label": "Retrofit", "color": "#2f6fed"})
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "forbidden"
