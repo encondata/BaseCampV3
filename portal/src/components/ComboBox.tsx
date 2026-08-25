@@ -73,7 +73,13 @@ export default function ComboBox({
     const rect = el.getBoundingClientRect();
     const spaceBelow = window.innerHeight - rect.bottom;
     const spaceAbove = rect.top;
-    setDropUp(shouldDropUp({ spaceBelow, spaceAbove }));
+    // Use the menu's actual rendered height when it's already in the DOM
+    // with real content (shorter filtered lists need less room), capped at
+    // the CSS max-height reference; fall back to the full reference height
+    // if the list isn't measurable yet (e.g. momentarily empty).
+    const actualHeight = listRef.current?.getBoundingClientRect().height;
+    const neededHeight = Math.min(MENU_NEEDED_HEIGHT, actualHeight || MENU_NEEDED_HEIGHT);
+    setDropUp(shouldDropUp({ spaceBelow, spaceAbove, neededHeight }));
   }, [open, filter]);
 
   useEffect(() => {
