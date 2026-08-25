@@ -62,7 +62,9 @@ in the form.
    free-text `project_type`/`event_type`.
 6. **Slice scope** — this spec covers CRUD + list page + people assignments +
    initiative links. Deferred to later specs: move asset tracking / scanning /
-   reports / dashboards / bulk import; the man-hours time summary (V3 has no
+   reports / dashboards / bulk import (note for the reports slice: V2 reports
+   save their generated XLSX/PDF as document attachments on the initiative —
+   preserve that via the V3 files mechanism); the man-hours time summary (V3 has no
    timeclock yet — when timeclock is ported its entries will reference
    `initiative_id` and the card becomes a pure read); client-portal
    visibility (resource is global-only for now); V2's rating→worker-average
