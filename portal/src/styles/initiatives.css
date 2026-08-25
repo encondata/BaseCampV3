@@ -403,3 +403,26 @@
   text-overflow: ellipsis;
   max-width: 140px;
 }
+
+/* ── move assets — center-aligned columns (status/verify-style fields) ──
+ * .col-head is blockified to flex by the grid + stretches to fill its
+ * column (column-menu.css), so justify-content centers the label+menu
+ * cluster; .cell is a plain block grid item, so text-align centers its
+ * inline content — including the GodCell edit-mode <select>, which stays
+ * inline-level without needing any change in lib/godEdit.tsx. */
+.list-head .col-head.idet-col-center { justify-content: center; }
+.cell.idet-col-center { text-align: center; }
+
+/* ── move assets — verified-Yes green check (display mode only; CSV export
+ *  and moveAssetCellText stay text-only) ── */
+.idet-verified-yes {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.idet-check-yes {
+  width: 12px;
+  height: 12px;
+  color: var(--c-green);
+  flex: 0 0 auto;
+}

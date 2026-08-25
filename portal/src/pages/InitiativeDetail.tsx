@@ -119,6 +119,15 @@ const MOVE_ASSET_ALL_COLUMN_KEYS = new Set<string>(MOVE_ASSET_COLUMNS.map((c) =>
 const MOVE_ASSET_DEFAULT_VISIBLE = new Set<string>(
   MOVE_ASSET_COLUMNS.filter((c) => c.default).map((c) => c.key));
 
+/** Columns whose header + body cells are center-aligned rather than the
+ *  table's default left alignment — status/verify-style columns read
+ *  better centered. Page-local to the assets table; doesn't touch the
+ *  shared ColumnDef type or any other page's tables. */
+const ASSET_CENTERED_COLS = new Set<string>([
+  'status', 'source_ru', 'destination_ru', 'source_position',
+  'destination_position', 'source_verified', 'destination_verified',
+]);
+
 /** Full column set, in CSV column order — exported columns always mirror
  *  MOVE_ASSET_COLUMNS regardless of which ones are currently shown/hidden
  *  on screen (same convention as Initiatives.tsx's CSV_COLUMNS). */
@@ -534,6 +543,24 @@ export default function InitiativeDetail() {
       return chip(a.asset.status_label, a.asset.status_color)
         ?? <span className="cell-top">{a.asset.status_label}</span>;
     }
+    // Verified columns (Yes) get a small green check beside the text —
+    // No/Unknown fall through to the plain moveAssetCellText rendering
+    // below. CSV export / moveAssetCellText stay text-only by design.
+    if (key === 'source_verified' || key === 'destination_verified') {
+      const verified = key === 'source_verified' ? a.source_verified : a.destination_verified;
+      if (verified) {
+        return (
+          <span className="cell-top idet-verified-yes">
+            Yes
+            <svg className="idet-check-yes" viewBox="0 0 12 12" fill="none"
+                 stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"
+                 strokeLinejoin="round">
+              <path d="M2 6.5 4.8 9.5 10 2.8" />
+            </svg>
+          </span>
+        );
+      }
+    }
     // Rack view (Task 6) — non-empty Source/Destination Rack cells open the
     // elevation modal for that rack; edit-table mode is handled above via
     // assetGodFieldFor, so this only ever renders in read-only display mode.
@@ -690,7 +717,8 @@ export default function InitiativeDetail() {
                 <div className="list-head" style={assetsGrid}>
                   {assetsShownCols.map((c) => (
                     <span key={c.key}
-                          className={`col-head ${assetsHeaderDrag.dropClass(c.key)}`}
+                          className={`col-head ${assetsHeaderDrag.dropClass(c.key)}`
+                            + `${ASSET_CENTERED_COLS.has(c.key) ? ' idet-col-center' : ''}`}
                           {...assetsHeaderDrag.dragProps(c.key)}>
                       <button type="button" className="sortable"
                               onClick={() => toggleAssetsSort(c.key)}>
@@ -718,7 +746,9 @@ export default function InitiativeDetail() {
                   <div key={a.id} className="dir-row">
                     <div className="row-main" style={assetsGrid}>
                       {assetsShownCols.map((c) => (
-                        <div className="cell" key={c.key}>{assetCellFor(a, c.key)}</div>
+                        <div className={`cell${ASSET_CENTERED_COLS.has(c.key)
+                          ? ' idet-col-center' : ''}`}
+                             key={c.key}>{assetCellFor(a, c.key)}</div>
                       ))}
                       {canChange && (
                         <div className="cell idet-assets-actions">
