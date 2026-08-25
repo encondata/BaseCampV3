@@ -30,9 +30,12 @@ import { usePendingDeletes } from '../lib/pendingDeletes';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate } from '../lib/format';
 import {
+  applyColumnOrder,
   ColumnsButton,
   ExportButton,
   exportCsv,
+  moveKey,
+  useReorderDrag,
   visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
@@ -222,6 +225,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
     visibleCols, setVisibleCols,
     sortKey, sortDir, setSort, toggleSort,
     filters, setFilter, clearFilters,
+    colOrder, setColOrder,
   } = usePersistentListState(
     `${cfg.kind}s`, { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 }, ALL_COLUMN_KEYS,
   );
@@ -332,7 +336,12 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
     void load();
   };
 
-  const shownCols = visibleColumnsFor(columns, visibleCols, godMode);
+  const orderedCols = applyColumnOrder(columns, colOrder);
+  const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
+  const headerDrag = useReorderDrag(
+    (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
+    'x', { ignoreFrom: '.pop-menu' },
+  );
   const grid = {
     gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px`,
   };
@@ -454,7 +463,8 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
           </div>
           <span className="result-count">{visible.length} of {orgs?.length ?? 0} shown</span>
           <FilterSummaryChip filters={filters} onClear={clearFilters} />
-          <ColumnsButton columns={columns} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
+          <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols}
+                         godMode={godMode} onReorder={setColOrder} />
           <ExportButton onExport={() =>
             exportCsv(cfg.title.toLowerCase(), csvColumns(cfg.hasType), visible)} />
           <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canManage} />
@@ -480,7 +490,8 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                         onSort={(dir) => setSort('primary', dir)} />
           </span>
           {shownCols.map((c) => (
-            <span key={c.key} className="col-head">
+            <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
+                  {...headerDrag.dragProps(c.key)}>
               <button className="sortable" onClick={() => toggleSort(c.key)}>
                 {c.label} {caret(c.key)}
               </button>
