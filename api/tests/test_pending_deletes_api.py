@@ -7,7 +7,9 @@ import uuid
 
 from sqlalchemy import select
 
-from serversherpa.db.models import AuditLog, Initiative, PendingDelete, Site
+from serversherpa.db.models import (
+    AuditLog, Initiative, InitiativePerson, PendingDelete, Person, Site,
+)
 from tests.test_devtools import login, set_role
 
 
@@ -152,6 +154,10 @@ async def test_reconcile_reports_fk_violation_and_retains_marker(
     assert failure["entity_id"] == str(site_id)
     assert failure["label"] == "Referenced Site"
     assert failure["reason"] == "fk_violation"
+    assert failure["references"] == [{
+        "table": "initiatives", "column": "site_id", "nullable": True,
+        "count": 1, "labels": ["Uses Site"],
+    }]
 
     db.expire_all()
     assert await db.get(Site, site_id) is not None
@@ -296,3 +302,111 @@ async def test_single_reconcile_unknown_marker_is_404(client, db, seeded_user):
         f"/devtools/pending-deletes/{uuid.uuid4()}/reconcile", headers=hdrs)
     assert resp.status_code == 404
     assert resp.json()["detail"]["code"] == "marker_not_found"
+
+
+async def test_single_reconcile_failure_lists_referencing_records(
+        client, db, seeded_user):
+    """The failure payload names WHAT still references the target, not just
+    that something does — a site held by an initiative's (nullable) site_id
+    reports that initiative's table/column/count/label."""
+    hdrs = await _developer(db, client, seeded_user)
+    site = Site(name="Referenced Site")
+    db.add(site)
+    await db.flush()
+    initiative = Initiative(name="Vegas to Zurich migration",
+                            initiative_type="move", site_id=site.id)
+    db.add(initiative)
+    await db.commit()
+    site_id = site.id
+
+    resp = await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "site", "entity_id": str(site_id),
+        "entity_label": "Referenced Site"})
+    marker_id = resp.json()["id"]
+
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/reconcile", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deleted"] == 0
+    failure = body["failed"][0]
+    assert failure["reason"] == "fk_violation"
+    assert failure["references"] == [{
+        "table": "initiatives", "column": "site_id", "nullable": True,
+        "count": 1, "labels": ["Vegas to Zurich migration"],
+    }]
+
+
+async def test_single_reconcile_force_nulls_nullable_reference_and_deletes(
+        client, db, seeded_user):
+    """?force=true nulls every nullable reference before deleting, and the
+    audit row records exactly what it nulled."""
+    hdrs = await _developer(db, client, seeded_user)
+    site = Site(name="Referenced Site")
+    db.add(site)
+    await db.flush()
+    initiative = Initiative(name="Uses Site", initiative_type="move", site_id=site.id)
+    db.add(initiative)
+    await db.commit()
+    site_id, initiative_id = site.id, initiative.id
+
+    resp = await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "site", "entity_id": str(site_id),
+        "entity_label": "Referenced Site"})
+    marker_id = resp.json()["id"]
+
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/reconcile?force=true", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body == {"deleted": 1, "failed": []}
+
+    db.expire_all()
+    assert await db.get(Site, site_id) is None
+    assert await db.get(PendingDelete, uuid.UUID(marker_id)) is None
+    refreshed = await db.get(Initiative, initiative_id)
+    assert refreshed.site_id is None
+
+    audit_row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "site", AuditLog.entity_id == str(site_id),
+        AuditLog.action == "hard_delete"))
+    assert audit_row is not None
+    assert audit_row.changes == {
+        "nulled_references": {"initiatives.site_id": 1}}
+
+
+async def test_single_reconcile_force_still_fails_on_nonnullable_reference(
+        client, db, seeded_user):
+    """A non-nullable reference (initiative_people.person_id has no
+    ondelete) can't be forced away — force only nulls nullable columns, so
+    this still fails and the person survives."""
+    hdrs = await _developer(db, client, seeded_user)
+    worker = Person(first_name="Bob", last_name="Botched")
+    db.add(worker)
+    await db.flush()
+    initiative = Initiative(name="Holder", initiative_type="project")
+    db.add(initiative)
+    await db.flush()
+    db.add(InitiativePerson(initiative_id=initiative.id, person_id=worker.id))
+    await db.commit()
+    worker_id = worker.id
+
+    resp = await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "person", "entity_id": str(worker_id),
+        "entity_label": "Bob Botched"})
+    marker_id = resp.json()["id"]
+
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/reconcile?force=true", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deleted"] == 0
+    failure = body["failed"][0]
+    assert failure["reason"] == "fk_violation"
+    refs = {(r["table"], r["column"]): r for r in failure["references"]}
+    assert refs[("initiative_people", "person_id")]["nullable"] is False
+    assert refs[("initiative_people", "person_id")]["count"] == 1
+
+    db.expire_all()
+    assert await db.get(Person, worker_id) is not None
+    assert await db.get(PendingDelete, uuid.UUID(marker_id)) is not None

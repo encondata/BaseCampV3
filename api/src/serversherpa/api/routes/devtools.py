@@ -14,18 +14,19 @@ import secrets
 import uuid
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from sqlalchemy import String, cast, func, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.sql.schema import Table
 
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
 from serversherpa.api.schemas import (
     GodModeIn, PendingDeleteCreateIn, PendingDeleteFailure, PendingDeleteOut,
-    PendingDeleteReconcileOut,
+    PendingDeleteReconcileOut, PendingDeleteReference,
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    Asset, AssetModel, Client, Container, Initiative, Partner, PendingDelete,
-    Person, Site,
+    Asset, AssetModel, Base, Client, Container, Initiative, Partner,
+    PendingDelete, Person, Site,
 )
 from serversherpa.services.audit import audit
 
@@ -145,12 +146,88 @@ async def unmark_pending_delete(
     await db.commit()
 
 
+# Frozen label-column map for reference discovery: how to render a human
+# label for a row in a referencing table. Unmapped tables fall back to the
+# row's own primary key, stringified — never blank.
+_NAME_LABELED = {"initiatives", "sites", "containers", "clients", "partners"}
+
+
+def _label_expr(table: Table):
+    if table.name in _NAME_LABELED:
+        return table.c.name
+    if table.name == "assets":
+        return func.coalesce(table.c.serial_number, table.c.name)
+    if table.name == "people":
+        return table.c.first_name + " " + table.c.last_name
+    if table.name == "asset_models":
+        return table.c.make + " " + table.c.model
+    pk = next(iter(table.primary_key.columns))
+    return cast(pk, String)
+
+
+def _references_to(model: type):
+    """Yields (table, column) for every column anywhere in the schema whose
+    foreign key targets `model`'s primary key — the mechanism behind both
+    reference discovery and force-null."""
+    target_pk = next(iter(model.__table__.primary_key.columns))
+    for table in Base.metadata.tables.values():
+        for fk in table.foreign_keys:
+            if fk.column is target_pk:
+                yield table, fk.parent
+
+
+async def _find_references(
+    db: DbSession, model: type, entity_id: uuid.UUID,
+) -> list[PendingDeleteReference]:
+    """Walks the schema for every column that FKs to `model`'s primary key
+    and reports which ones currently have rows pointing at `entity_id` —
+    the "what's still using this" detail behind an fk_violation failure."""
+    refs: list[PendingDeleteReference] = []
+    for table, col in _references_to(model):
+        count = await db.scalar(
+            select(func.count()).select_from(table).where(col == entity_id))
+        if not count:
+            continue
+        labels = list(await db.scalars(
+            select(_label_expr(table)).select_from(table)
+            .where(col == entity_id).limit(3)))
+        refs.append(PendingDeleteReference(
+            table=table.name, column=col.name, nullable=col.nullable,
+            count=count, labels=[str(v) for v in labels]))
+    return refs
+
+
+async def _null_references(
+    db: DbSession, model: type, entity_id: uuid.UUID,
+) -> dict[str, int]:
+    """Force-mode mechanics: nulls out every NULLABLE column anywhere that
+    references `entity_id`, ahead of the delete. Non-nullable references are
+    left untouched — if one still blocks the delete, the IntegrityError path
+    below reports it as a reference like any other failure."""
+    nulled: dict[str, int] = {}
+    for table, col in _references_to(model):
+        if not col.nullable:
+            continue
+        result = await db.execute(
+            update(table).where(col == entity_id).values({col.name: None}))
+        if result.rowcount:
+            nulled[f"{table.name}.{col.name}"] = result.rowcount
+    return nulled
+
+
 async def _reconcile_markers(
     db: DbSession, actor: AuthContext, markers: list[PendingDelete],
+    force: bool = False,
 ) -> PendingDeleteReconcileOut:
     """Hard-delete the given marked targets. Each target runs inside its own
     savepoint so one FK violation rolls back only that row, not the batch:
-    a poisoned marker further down the list still gets its chance."""
+    a poisoned marker further down the list still gets its chance.
+
+    `force` (single-marker reconcile only — bulk reconcile never sets it)
+    nulls every NULLABLE reference to the target before deleting it;
+    non-nullable references are left alone, so if one still blocks the
+    delete the IntegrityError path reports it exactly like any other
+    fk_violation failure."""
     deleted = 0
     failed: list[PendingDeleteFailure] = []
     for marker in markers:
@@ -159,21 +236,27 @@ async def _reconcile_markers(
             async with db.begin_nested():
                 target = await db.get(model, marker.entity_id)
                 if target is not None:
+                    nulled = (await _null_references(db, model, marker.entity_id)
+                              if force else {})
                     await db.delete(target)
                     await db.flush()
                     audit(db, actor_id=actor.person.id,
                           entity_type=marker.entity_type,
-                          entity_id=str(marker.entity_id), action="hard_delete")
+                          entity_id=str(marker.entity_id), action="hard_delete",
+                          changes={"nulled_references": nulled} if nulled else None)
                 # a target already gone is a success too — clear the marker
                 await db.delete(marker)
                 await db.flush()
         except IntegrityError:
             # savepoint rolled back automatically: the target, the marker,
-            # and any audit row attempted inside this block are all as if
-            # nothing happened — the marker is retained for a later retry
+            # any nulled references, and any audit row attempted inside this
+            # block are all as if nothing happened — the marker is retained
+            # for a later retry. The session is still usable post-rollback,
+            # so we can look up what's still blocking right here.
             failed.append(PendingDeleteFailure(
                 entity_type=marker.entity_type, entity_id=marker.entity_id,
-                label=marker.entity_label, reason="fk_violation"))
+                label=marker.entity_label, reason="fk_violation",
+                references=await _find_references(db, model, marker.entity_id)))
             continue
         deleted += 1
     await db.commit()
@@ -196,10 +279,13 @@ async def reconcile_pending_delete(
     marker_id: uuid.UUID,
     db: DbSession,
     actor: AuthContext = require_permission("devtools", "change"),
+    force: bool = False,
 ) -> PendingDeleteReconcileOut:
     """Hard-delete a single marked target — same semantics and summary
-    shape as the bulk reconcile, scoped to one marker."""
+    shape as the bulk reconcile, scoped to one marker. `force=true` nulls
+    every nullable reference to the target before deleting it; bulk
+    reconcile has no such switch."""
     marker = await db.get(PendingDelete, marker_id)
     if marker is None:
         raise _err(404, "marker_not_found")
-    return await _reconcile_markers(db, actor, [marker])
+    return await _reconcile_markers(db, actor, [marker], force=force)

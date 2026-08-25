@@ -984,11 +984,23 @@ class PendingDeleteCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PendingDeleteReference(BaseModel):
+    """One (table, column) elsewhere in the schema that still points at a
+    reconcile target — the detail behind an fk_violation failure."""
+
+    table: str
+    column: str
+    nullable: bool
+    count: int
+    labels: list[str] = []
+
+
 class PendingDeleteFailure(BaseModel):
     entity_type: str
     entity_id: uuid.UUID
     label: str
     reason: str
+    references: list[PendingDeleteReference] = []
 
 
 class PendingDeleteReconcileOut(BaseModel):

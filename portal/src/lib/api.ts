@@ -1613,11 +1613,20 @@ export async function unmarkPendingDelete(markerId: string): Promise<void> {
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+export interface PendingDeleteReference {
+  table: string;
+  column: string;
+  nullable: boolean;
+  count: number;
+  labels: string[];
+}
+
 export interface PendingDeleteFailure {
   entity_type: string;
   entity_id: string;
   label: string;
   reason: string;
+  references: PendingDeleteReference[];
 }
 
 export interface PendingDeleteReconcileOut {
@@ -1635,12 +1644,15 @@ export async function reconcilePendingDeletes(): Promise<PendingDeleteReconcileO
   return resp.json();
 }
 
-/** Single-marker variant — same semantics and summary shape, one target. */
+/** Single-marker variant — same semantics and summary shape, one target.
+ *  `force` nulls every nullable reference to the target before deleting it
+ *  (bulk reconcile has no such switch — see routes/devtools.py). */
 export async function reconcilePendingDelete(
-  markerId: string,
+  markerId: string, force = false,
 ): Promise<PendingDeleteReconcileOut> {
   const resp = await apiFetch(
-    `/devtools/pending-deletes/${markerId}/reconcile`, { method: 'POST' });
+    `/devtools/pending-deletes/${markerId}/reconcile${force ? '?force=true' : ''}`,
+    { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

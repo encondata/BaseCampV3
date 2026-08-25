@@ -20,6 +20,7 @@ import {
   listPendingDeletes,
   reconcilePendingDelete, reconcilePendingDeletes,
   unmarkPendingDelete,
+  type PendingDeleteFailure,
   type PendingDeleteItem,
   type PendingDeleteReconcileOut,
 } from '../lib/api';
@@ -108,6 +109,40 @@ export default function DevDatabase() {
     }
   };
 
+  /** Failure payloads don't carry the marker id (they're keyed by entity),
+   *  so force-delete resolves it client-side against the loaded items —
+   *  the marker for a failed target is always still present (reconcile
+   *  only clears markers it actually resolved). */
+  const markerIdFor = (failure: PendingDeleteFailure): string | undefined =>
+    (items ?? []).find(
+      (i) => i.entity_type === failure.entity_type && i.entity_id === failure.entity_id,
+    )?.id;
+
+  const handleForceDelete = async (failure: PendingDeleteFailure) => {
+    const markerId = markerIdFor(failure);
+    if (!markerId) return;
+    const summary = failure.references
+      .map((r) => `${r.table}.${r.column} (${r.count} row${r.count === 1 ? '' : 's'})`)
+      .join(', ');
+    if (!confirm(
+      `Force delete "${failure.label || failure.entity_type}"? This will null out ${summary}, `
+      + 'then permanently delete the record. This cannot be undone.',
+    )) {
+      return;
+    }
+    setBusyId(markerId);
+    setError('');
+    try {
+      const out = await reconcilePendingDelete(markerId, true);
+      setResult(out);
+      await load();
+    } catch {
+      setError('Force delete failed — try again.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const handleReconcile = async () => {
     if (total === 0) return;
     if (!confirm(
@@ -169,11 +204,44 @@ export default function DevDatabase() {
           {result.deleted} deleted{result.failed.length > 0 && `, ${result.failed.length} failed`}.
           {result.failed.length > 0 && (
             <ul style={{ margin: '8px 0 0', paddingLeft: 18, textAlign: 'left' }}>
-              {result.failed.map((f) => (
-                <li key={`${f.entity_type}:${f.entity_id}`}>
-                  <b>{f.label}</b> — {humanizeReason(f.reason)}
-                </li>
-              ))}
+              {result.failed.map((f) => {
+                const allNullable = f.references.length > 0
+                  && f.references.every((r) => r.nullable);
+                return (
+                  <li key={`${f.entity_type}:${f.entity_id}`} style={{ marginBottom: 8 }}>
+                    <b>{f.label}</b> — {humanizeReason(f.reason)}
+                    {f.references.length > 0 && (
+                      <ul style={{
+                        margin: '4px 0 0', paddingLeft: 18,
+                        color: 'var(--text-mute)', fontSize: 12, fontWeight: 300,
+                      }}
+                      >
+                        {f.references.map((r) => (
+                          <li key={`${r.table}.${r.column}`}>
+                            {r.table}.{r.column} — {r.count} row{r.count === 1 ? '' : 's'}
+                            {r.labels.length > 0 && ` ("${r.labels.join('", "')}")`}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {f.references.length > 0 && (allNullable ? (
+                      <button
+                        type="button"
+                        className="mini-btn sm danger"
+                        style={{ marginTop: 6 }}
+                        disabled={busyId !== null}
+                        onClick={() => void handleForceDelete(f)}
+                      >
+                        Force delete — null references
+                      </button>
+                    ) : (
+                      <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-mute)' }}>
+                        Cannot force — some references are required fields.
+                      </div>
+                    ))}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
