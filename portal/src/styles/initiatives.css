@@ -264,13 +264,13 @@
    label color). Only the modal chrome itself (card, head, legend
    caption) follows the app's normal light/dark theme. ───────────────── */
 .modal-card.rack-modal-card { width: min(460px, 94vw); }
-.rack-modal-title {
-  display: flex;
-  align-items: baseline;
-  gap: 14px;
-  min-width: 0;
-}
+.rack-modal-title { min-width: 0; }
 .rack-modal-title h3 { white-space: nowrap; }
+/* legend chips live in the modal FOOTER (below the elevations), not the
+   header — .modal-foot is the app's normal footer bar (chrome.css); this
+   just re-centers its one row of content instead of the default
+   left-aligned button row other modals use it for. */
+.rack-modal-foot { justify-content: center; }
 .rack-legend {
   display: flex;
   align-items: center;
@@ -328,12 +328,13 @@
 /* crispEdges: hairlines are thin repeated strokes; at the modal's small
    render size, ordinary anti-aliasing can blur/fringe a line this thin. */
 .rack-u-hairline { stroke: #e5e7eb; stroke-width: 1; shape-rendering: crispEdges; }
+/* every U number is the same size/weight/color on both rails (round 4
+   dropped the every-5 bold/emphasis look entirely). */
 .rack-u-label {
   font-family: var(--font-mono);
   font-size: 7px;
   fill: #374151;
 }
-.rack-u-label-major { font-size: 8px; fill: #111827; font-weight: 600; }
 .rack-empty-label {
   font-family: var(--font-mono);
   font-size: 10px;

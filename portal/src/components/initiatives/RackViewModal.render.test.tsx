@@ -7,8 +7,10 @@
  * decimal-RU / overlapping-lane blocks), the front/rear SPLIT-ELEVATIONS
  * follow-up (two independent frames, REAR omitted entirely when nothing is
  * rear-mounted, per-elevation lane collisions), the per-cluster width fix,
- * the light-theme hover tooltip, and round 3 (cage-nut holes removed,
- * cross-side ghost blocks, tooltip Position-row suppression).
+ * the light-theme hover tooltip, round 3 (cage-nut holes removed,
+ * cross-side ghost blocks, tooltip Position-row suppression), and round 4
+ * (U numbers mirrored onto both rails with no every-5 emphasis, legend
+ * chips moved from the modal header to its footer).
  */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -196,8 +198,11 @@ describe('RackViewModal (render smoke)', () => {
     // makeRow's default row renders both elevations (FRONT always, REAR
     // because it's rear-mounted) -> 2 elevations x 2 posts each.
     expect(container.querySelectorAll('.rack-post')).toHaveLength(4);
-    // U numbers are the only thing left "inside" the rails, still present.
-    expect(container.querySelectorAll('.rack-u-label').length).toBe(54 * 2);
+    // U numbers are the only thing left "inside" the rails, mirrored onto
+    // both rails (round 4) -> 54 x 2 rails x 2 elevations.
+    expect(container.querySelectorAll('.rack-u-label').length).toBe(54 * 2 * 2);
+    // ...and every one of them is the uniform, unemphasized style now.
+    expect(container.querySelectorAll('.rack-u-label-major')).toHaveLength(0);
   });
 
   it('shows an HTML hover tooltip with name/serial/make-model/RU/position on mouseEnter, hides it on mouseLeave', () => {
@@ -277,5 +282,35 @@ describe('RackViewModal (render smoke)', () => {
     expect(tooltip.textContent).toContain('Raritan DKX3');
     expect(tooltip.textContent).toContain('30');
     expect(tooltip.textContent).toContain('rear');
+  });
+
+  it('mirrors U numbers onto both rails with no every-5 emphasis (round 4)', () => {
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={[makeRow({ source_position: 'front' })]} onClose={() => {}} />,
+    );
+    // Only FRONT renders here (no rear-mounted asset) -> one elevation.
+    const labels = Array.from(container.querySelectorAll('.rack-u-label'));
+    expect(labels).toHaveLength(54 * 2); // every RU, both rails
+    const xs = new Set(labels.map((l) => l.getAttribute('x')));
+    expect(xs.size).toBe(2); // exactly one left-rail x and one right-rail x
+    // No number is styled differently from any other (dropped entirely,
+    // not just unused elsewhere) — same class, same size/weight/color.
+    expect(container.querySelectorAll('.rack-u-label-major')).toHaveLength(0);
+    const u54 = labels.find((l) => l.textContent === '54')!;
+    const u50 = labels.find((l) => l.textContent === '50')!; // used to be "major"
+    expect(u54.getAttribute('class')).toBe(u50.getAttribute('class'));
+  });
+
+  it('moves the Verified/Planned legend from the modal header to the footer', () => {
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={[makeRow()]} onClose={() => {}} />,
+    );
+    const head = container.querySelector('.modal-head')!;
+    const foot = container.querySelector('.modal-foot')!;
+    expect(foot).toBeTruthy();
+    expect(head.querySelector('.rack-legend')).toBeNull();
+    expect(foot.querySelector('.rack-legend')).toBeTruthy();
+    expect(foot.textContent).toContain('Verified');
+    expect(foot.textContent).toContain('Planned');
   });
 });

@@ -54,6 +54,12 @@ const LANE_PX = 14; // horizontal offset step for overlapping blocks
 // hole pattern entirely (posts are clean outlined rails now) but the
 // numbers stay put rather than re-centering in the freed-up space.
 const U_LABEL_X = 13;
+// Round 4 mirrors the same numbers onto the right rail: reflecting 13
+// across the frame's midline (ELEV_FRAME_WIDTH - 13) and flipping the
+// text-anchor from "end" to "start" puts them left-aligned inside the
+// right post, the same distance from ITS inner/outer edges as the left
+// column is from its own.
+const U_LABEL_X_RIGHT = ELEV_FRAME_WIDTH - U_LABEL_X;
 
 const RU_LIST = Array.from({ length: RU_COUNT }, (_, i) => i + 1);
 
@@ -260,13 +266,22 @@ function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock 
                 className="rack-u-hairline" />
         ))}
 
-        {/* U numbering, left post — posts otherwise stay clean outlined
-            rails (round 3 dropped the cage-nut hole pattern entirely) */}
+        {/* U numbering, both posts (round 4 mirrored the right rail; every
+            number is now the same size/weight/color — no every-5 emphasis).
+            Posts otherwise stay clean outlined rails (round 3 dropped the
+            cage-nut hole pattern entirely). */}
         <g className="rack-u-labels">
           {RU_LIST.map((ru) => (
             <text key={ru} x={U_LABEL_X} y={ruTop(ru) + U_PX / 2} textAnchor="end"
-                  dominantBaseline="middle"
-                  className={ru % 5 === 0 ? 'rack-u-label rack-u-label-major' : 'rack-u-label'}>
+                  dominantBaseline="middle" className="rack-u-label">
+              {ru}
+            </text>
+          ))}
+        </g>
+        <g className="rack-u-labels">
+          {RU_LIST.map((ru) => (
+            <text key={ru} x={U_LABEL_X_RIGHT} y={ruTop(ru) + U_PX / 2} textAnchor="start"
+                  dominantBaseline="middle" className="rack-u-label">
               {ru}
             </text>
           ))}
@@ -385,16 +400,6 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
         <div className="modal-head">
           <div className="rack-modal-title">
             <h3>Rack {rackName} — {sideLabel}</h3>
-            <div className="rack-legend" aria-hidden="true">
-              <span className="rack-legend-item">
-                <span className="rack-legend-swatch rack-legend-swatch-verified" />
-                Verified
-              </span>
-              <span className="rack-legend-item">
-                <span className="rack-legend-swatch rack-legend-swatch-planned" />
-                Planned
-              </span>
-            </div>
           </div>
           <button className="modal-close" aria-label="Close" onClick={onClose}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
@@ -428,6 +433,18 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
                 </dl>
               </div>
             )}
+          </div>
+        </div>
+        <div className="modal-foot rack-modal-foot">
+          <div className="rack-legend" aria-hidden="true">
+            <span className="rack-legend-item">
+              <span className="rack-legend-swatch rack-legend-swatch-verified" />
+              Verified
+            </span>
+            <span className="rack-legend-item">
+              <span className="rack-legend-swatch rack-legend-swatch-planned" />
+              Planned
+            </span>
           </div>
         </div>
       </div>
