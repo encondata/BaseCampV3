@@ -57,9 +57,12 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import {
+  applyColumnOrder,
   ColumnsButton,
   ExportButton,
   exportCsv,
+  moveKey,
+  useReorderDrag,
   visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
@@ -174,6 +177,7 @@ export default function External() {
     visibleCols, setVisibleCols,
     sortKey, sortDir, setSort, toggleSort,
     filters, setFilter, clearFilters,
+    colOrder, setColOrder,
   } = usePersistentListState(
     'external', { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 }, ALL_COLUMN_KEYS,
   );
@@ -307,7 +311,12 @@ export default function External() {
   const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
-  const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
+  const orderedCols = applyColumnOrder(COLUMNS, colOrder);
+  const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
+  const headerDrag = useReorderDrag(
+    (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
+    'x', { ignoreFrom: '.pop-menu' },
+  );
   const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
 
   const cellFor = (p: ExternalPersonItem, key: string) => {
@@ -395,7 +404,8 @@ export default function External() {
           </div>
           <span className="result-count">{visible.length} of {people.length} shown</span>
           <FilterSummaryChip filters={filters} onClear={clearFilters} />
-          <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} />
+          <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols}
+                         godMode={godMode} onReorder={setColOrder} />
           <ExportButton onExport={() => exportCsv('external-people', CSV_COLUMNS, visible)} />
           <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canUsers} />
           {canCreatePerson && (canClients || canPartners) && (
@@ -420,7 +430,8 @@ export default function External() {
                         onSort={(dir) => setSort('primary', dir)} />
           </span>
           {shownCols.map((c) => (
-            <span key={c.key} className="col-head">
+            <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
+                  {...headerDrag.dragProps(c.key)}>
               <button className="sortable" onClick={() => toggleSort(c.key)}>
                 {c.label} {caret(c.key)}
               </button>
