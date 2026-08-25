@@ -3,7 +3,7 @@
  * (the lib/containers.ts pattern), unit-testable without jsdom.
  */
 import type { ComboOption } from '../components/ComboBox';
-import type { InitiativeItem } from './api';
+import type { InitiativeItem, SiteItem } from './api';
 import type { GodField } from './godEdit';
 
 const day = (iso: string | null) =>
@@ -72,6 +72,27 @@ export const INITIATIVE_ERRORS: Record<string, string> = {
   link_not_found: 'That link no longer exists.',
   forbidden: 'You do not have permission to change initiatives.',
 };
+
+/** Site options for the edit modal's site pickers. With a client selected,
+ *  that client's assigned sites list first (tagged "Client site") — but every
+ *  site stays typeable/selectable. Archived sites are hidden unless one is
+ *  the field's current value (`keepId`). */
+export function siteOptionsForClient(
+  sites: SiteItem[], clientId: string, keepId?: string,
+): ComboOption[] {
+  const usable = sites.filter((s) => !s.archived_at || s.id === keepId);
+  const isAssigned = (s: SiteItem) =>
+    s.clients.some((c) => c.client_id === clientId);
+  if (!clientId || !usable.some(isAssigned)) {
+    return usable.map((s) => ({ value: s.id, label: s.name }));
+  }
+  return [
+    ...usable.filter(isAssigned)
+      .map((s) => ({ value: s.id, label: s.name, sub: 'Client site' })),
+    ...usable.filter((s) => !isAssigned(s))
+      .map((s) => ({ value: s.id, label: s.name })),
+  ];
+}
 
 /** Which conditional form sections a type shows. */
 export function sectionsForType(

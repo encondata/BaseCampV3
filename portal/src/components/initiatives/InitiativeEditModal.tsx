@@ -21,7 +21,7 @@ import {
 } from '../../lib/api';
 import {
   formFromInitiative, INITIATIVE_ERRORS, initiativePayload, sectionsForType,
-  type InitiativeFormState,
+  siteOptionsForClient, type InitiativeFormState,
 } from '../../lib/initiatives';
 import ComboBox from '../ComboBox';
 
@@ -87,9 +87,10 @@ export default function InitiativeEditModal({
     initiative?.type_label).map((t) => ({ value: t.key, label: t.label }));
   const subTypeOptions = seedOption(subTypes, initiative?.sub_type,
     initiative?.sub_type_label).map((t) => ({ value: t.key, label: t.label }));
-  const siteOptions = (exclude?: string) => sites
-    .filter((s) => !s.archived_at || s.id === exclude)
-    .map((s) => ({ value: s.id, label: s.name }));
+  // client-aware: the selected client's assigned sites list first, but any
+  // site remains typeable/selectable
+  const siteOptions = (keepId?: string) =>
+    siteOptionsForClient(sites, form.client_id, keepId);
   const orgOptions = (orgs: OrgRef[]) =>
     orgs.filter((o) => !o.archived_at)
       .map((o) => ({ value: o.id, label: o.name }));
@@ -249,32 +250,6 @@ export default function InitiativeEditModal({
 
             {sections.move && (
               <>
-                <div className="modal-section">Shipping</div>
-                <div className="pf-form">
-                  <div style={{ gridColumn: '1 / -1' }}>
-                    <label>Shipping types</label>
-                    <div className="init-checks">
-                      {shippingTypes.map((s) => (
-                        <label key={s.key} className="init-check">
-                          <input type="checkbox"
-                                 checked={form.shipping_types.includes(s.key)}
-                                 disabled={locked}
-                                 onChange={() => toggleShipping(s.key)} />
-                          {s.label}
-                        </label>
-                      ))}
-                    </div></div>
-                  {partnerCombo('Shipping partner', 'shipping_partner_id')}
-                  <div style={{ alignSelf: 'end' }}>
-                    <label className="init-check">
-                      <input type="checkbox" checked={form.priority_devices}
-                             disabled={locked}
-                             onChange={(e) =>
-                               setFlag('priority_devices', e.target.checked)} />
-                      Priority devices
-                    </label></div>
-                </div>
-
                 <div className="modal-section">Origin</div>
                 <div className="pf-form">
                   <div><label>Site</label>
@@ -330,6 +305,32 @@ export default function InitiativeEditModal({
                                setFlag('destination_vendor_involved',
                                        e.target.checked)} />
                       Vendor involved
+                    </label></div>
+                </div>
+
+                <div className="modal-section">Shipping</div>
+                <div className="pf-form">
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <label>Shipping types</label>
+                    <div className="init-checks">
+                      {shippingTypes.map((s) => (
+                        <label key={s.key} className="init-check">
+                          <input type="checkbox"
+                                 checked={form.shipping_types.includes(s.key)}
+                                 disabled={locked}
+                                 onChange={() => toggleShipping(s.key)} />
+                          {s.label}
+                        </label>
+                      ))}
+                    </div></div>
+                  {partnerCombo('Shipping partner', 'shipping_partner_id')}
+                  <div style={{ alignSelf: 'end' }}>
+                    <label className="init-check">
+                      <input type="checkbox" checked={form.priority_devices}
+                             disabled={locked}
+                             onChange={(e) =>
+                               setFlag('priority_devices', e.target.checked)} />
+                      Priority devices
                     </label></div>
                 </div>
               </>

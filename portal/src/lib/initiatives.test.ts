@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { InitiativeItem } from './api';
 import {
   formFromInitiative, initiativeCellText, initiativePayload,
-  initiativeSearchText, sectionsForType,
+  initiativeSearchText, sectionsForType, siteOptionsForClient,
 } from './initiatives';
 
 const row: InitiativeItem = {
@@ -83,5 +83,46 @@ describe('form round-trip', () => {
     expect(p.scheduled_end).toBeNull();
     expect(p.shipping_types).toEqual(['truck', 'rail']);
     expect(p.priority_devices).toBe(true);
+  });
+});
+
+describe('siteOptionsForClient', () => {
+  const site = (id: string, name: string, clientIds: string[],
+                archived = false) => ({
+    id, name, archived_at: archived ? '2026-01-01T00:00:00Z' : null,
+    clients: clientIds.map((c) => ({ client_id: c, name: `Org ${c}` })),
+  }) as unknown as import('./api').SiteItem;
+
+  const sites = [
+    site('s1', 'DC-East', ['acme']),
+    site('s2', 'DC-West', []),
+    site('s3', 'DC-North', ['acme']),
+    site('s4', 'DC-Old', ['acme'], true),
+  ];
+
+  it('lists the selected client\'s sites first, everything still present', () => {
+    const opts = siteOptionsForClient(sites, 'acme');
+    expect(opts.map((o) => o.value)).toEqual(['s1', 's3', 's2']);
+    expect(opts[0].sub).toBe('Client site');
+    expect(opts[2].sub).toBeUndefined();
+  });
+
+  it('plain alphabetical-ish passthrough with no client selected', () => {
+    const opts = siteOptionsForClient(sites, '');
+    expect(opts.map((o) => o.value)).toEqual(['s1', 's2', 's3']);
+    expect(opts.every((o) => o.sub === undefined)).toBe(true);
+  });
+
+  it('hides archived sites unless one is the current value', () => {
+    expect(siteOptionsForClient(sites, 'acme').map((o) => o.value))
+      .not.toContain('s4');
+    expect(siteOptionsForClient(sites, 'acme', 's4').map((o) => o.value))
+      .toContain('s4');
+  });
+
+  it('falls back to the plain list when the client has no assigned sites', () => {
+    const opts = siteOptionsForClient(sites, 'globex');
+    expect(opts.map((o) => o.value)).toEqual(['s1', 's2', 's3']);
+    expect(opts.every((o) => o.sub === undefined)).toBe(true);
   });
 });

@@ -28,6 +28,14 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+
+  // grow with content while typing, capped so long notes scroll
+  const autoGrow = (el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight + 2, 220)}px`;
+  };
 
   const load = async (isLive: () => boolean = () => true) => {
     try {
@@ -65,6 +73,7 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
     try {
       await createNote(entityType, entityId, body);
       setDraft('');
+      if (composerRef.current) composerRef.current.style.height = '';
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? 'Could not save the note.' : 'Network error.');
@@ -147,8 +156,11 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
         <>
           {canWrite && (
             <div className="nf-composer">
-              <textarea rows={2} placeholder="Add a note…" value={draft}
-                        onChange={(e) => setDraft(e.target.value)} disabled={busy} />
+              <textarea ref={composerRef} rows={2} placeholder="Add a note…"
+                        value={draft}
+                        onChange={(e) => setDraft(e.target.value)}
+                        onInput={(e) => autoGrow(e.currentTarget)}
+                        disabled={busy} />
               <div className="nf-composer-actions">
                 <button className="mini-btn" onClick={() => void addNote()}
                         disabled={busy || !draft.trim()}>Add note</button>
@@ -170,8 +182,9 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
               <li key={`n-${entry.note.id}`} className="nf-item">
                 {editingId === entry.note.id ? (
                   <>
-                    <textarea rows={2} value={editBody}
-                              onChange={(e) => setEditBody(e.target.value)} />
+                    <textarea rows={2} value={editBody} ref={autoGrow}
+                              onChange={(e) => setEditBody(e.target.value)}
+                              onInput={(e) => autoGrow(e.currentTarget)} />
                     <div className="nf-actions">
                       <button className="mini-btn" onClick={() => void saveEdit()}
                               disabled={busy || !editBody.trim()}>Save</button>
