@@ -396,13 +396,17 @@ async def update_initiative_person(
     assoc = await _get_assignment(db, assoc_id)
     data = body.model_dump(exclude_unset=True)
     await _check_person_refs(db, data)
+
+    fields = list(data.keys())
+    before = snapshot(assoc, fields)
     for field, value in data.items():
         setattr(assoc, field, value)
-    assoc.updated_at = datetime.now(UTC)
-    audit(db, actor_id=actor.person.id, entity_type="initiative",
-          entity_id=str(assoc.initiative_id), action="person_update",
-          changes={field: {"from": None, "to": str(value)}
-                   for field, value in data.items()})
+    changes = diff(before, snapshot(assoc, fields))
+    if changes:
+        assoc.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor.person.id, entity_type="initiative",
+              entity_id=str(assoc.initiative_id), action="person_update",
+              changes=changes)
     await db.commit()
     rows = await _people_rows(db, assoc.initiative_id)
     return next(r for r in rows if r.id == assoc_id)
