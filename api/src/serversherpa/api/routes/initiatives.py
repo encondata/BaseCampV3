@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
@@ -353,6 +354,13 @@ async def unarchive_initiative(
     await db.commit()
 
 
+async def _person_assigned(db: DbSession, initiative_id: uuid.UUID,
+                           person_id: uuid.UUID) -> bool:
+    return await db.scalar(select(InitiativePerson.id).where(
+        InitiativePerson.initiative_id == initiative_id,
+        InitiativePerson.person_id == person_id)) is not None
+
+
 async def _check_person_refs(db: DbSession, data: dict) -> None:
     if data.get("work_type") is not None and await db.scalar(
         select(StatusValue).where(
@@ -390,9 +398,7 @@ async def add_initiative_person(
     if await db.get(Person, data["person_id"]) is None:
         raise _err(422, "person_not_found")
     await _check_person_refs(db, data)
-    if await db.scalar(select(InitiativePerson.id).where(
-            InitiativePerson.initiative_id == initiative_id,
-            InitiativePerson.person_id == data["person_id"])) is not None:
+    if await _person_assigned(db, initiative_id, data["person_id"]):
         raise _err(409, "duplicate_person")
     db.add(InitiativePerson(initiative_id=initiative_id, **data))
     initiative.updated_at = datetime.now(UTC)
@@ -400,7 +406,13 @@ async def add_initiative_person(
           entity_id=str(initiative_id), action="person_add",
           changes={"person_id": {"from": None,
                                  "to": str(data["person_id"])}})
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # lost the check-then-insert race against a concurrent add of the
+        # same (initiative, person) pair — initiative_people_uniq fired
+        await db.rollback()
+        raise _err(409, "duplicate_person") from None
     return await _people_rows(db, initiative_id)
 
 
@@ -454,6 +466,19 @@ async def remove_initiative_person(
     await db.commit()
 
 
+# Advisory-lock key serializing all link-graph mutations (one key for the
+# whole graph, not per edge pair: two concurrent inserts of *different*
+# edges can still close a cycle through existing links).
+LINK_GRAPH_LOCK_KEY = 0x696E6C6B  # "inlk"
+
+
+async def _link_exists(db: DbSession, parent_id: uuid.UUID,
+                       child_id: uuid.UUID) -> bool:
+    return await db.scalar(select(InitiativeLink.id).where(
+        InitiativeLink.parent_id == parent_id,
+        InitiativeLink.child_id == child_id)) is not None
+
+
 async def _ancestor_ids(db: DbSession, start: uuid.UUID) -> set[uuid.UUID]:
     """Every initiative above `start` in the link graph (transitive)."""
     seen: set[uuid.UUID] = set()
@@ -491,9 +516,11 @@ async def add_initiative_link(
         raise _err(422, "self_link")
     if await db.get(Initiative, body.child_id) is None:
         raise _err(422, "initiative_not_found")
-    if await db.scalar(select(InitiativeLink.id).where(
-            InitiativeLink.parent_id == initiative_id,
-            InitiativeLink.child_id == body.child_id)) is not None:
+    # serialize check+insert against concurrent link adds — two in-flight
+    # inserts can each pass the cycle check below and jointly close a cycle;
+    # the xact lock releases on commit/rollback (get_db rolls back on error)
+    await db.execute(select(func.pg_advisory_xact_lock(LINK_GRAPH_LOCK_KEY)))
+    if await _link_exists(db, initiative_id, body.child_id):
         raise _err(409, "duplicate_link")
     # cycle: the proposed child must not already be an ancestor of parent
     if body.child_id in await _ancestor_ids(db, initiative_id):
@@ -504,7 +531,13 @@ async def add_initiative_link(
     audit(db, actor_id=actor.person.id, entity_type="initiative",
           entity_id=str(initiative_id), action="link_add",
           changes={"child_id": {"from": None, "to": str(body.child_id)}})
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # defense-in-depth: initiative_links_uniq fired despite the lock
+        # (e.g. an edge written outside this route)
+        await db.rollback()
+        raise _err(409, "duplicate_link") from None
     return await _detail(db, initiative)
 
 

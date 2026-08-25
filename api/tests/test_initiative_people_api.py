@@ -81,6 +81,31 @@ async def test_people_validation(client, db, seeded_user):
     assert resp.json()["detail"]["code"] == "duplicate_person"
 
 
+async def test_people_add_race_loser_gets_409(client, db, seeded_user,
+                                              monkeypatch):
+    """The loser of a concurrent duplicate add misses the pre-check and
+    hits initiative_people_uniq — that must surface as the same 409, not
+    an unhandled IntegrityError."""
+    from serversherpa.api.routes import initiatives as initiatives_routes
+
+    headers = await login(client)
+    iid = await _initiative(client, headers)
+    p = await _person(db)
+    assert (await client.post(
+        f"/initiatives/{iid}/people", headers=headers,
+        json={"person_id": str(p.id)})).status_code == 201
+
+    async def _races_past_check(db, initiative_id, person_id):
+        return False
+
+    monkeypatch.setattr(initiatives_routes, "_person_assigned",
+                        _races_past_check)
+    resp = await client.post(f"/initiatives/{iid}/people", headers=headers,
+                             json={"person_id": str(p.id)})
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "duplicate_person"
+
+
 async def test_people_assoc_404(client, db, seeded_user):
     headers = await login(client)
     resp = await client.patch(f"/initiatives/people/{uuid.uuid4()}",
