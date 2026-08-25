@@ -20,6 +20,7 @@ from serversherpa.db.models import (
     Partner,
     Person,
     Site,
+    StatusValue,
     UserAccount,
 )
 
@@ -141,18 +142,29 @@ async def global_search(
             for c in containers
         )
 
-    # initiatives — name / location / sky-command ref; internal-only resource
+    # initiatives — name / location / sky-command ref / client name / site
+    # names; internal-only resource
     if user.access.can("initiatives", "view"):
+        client_ids = select(Client.id).where(Client.name.ilike(needle))
+        site_ids = select(Site.id).where(Site.name.ilike(needle))
         query = select(Initiative).where(or_(
             Initiative.name.ilike(needle),
             Initiative.location.ilike(needle),
             Initiative.sky_command_project_id.ilike(needle),
+            Initiative.client_id.in_(client_ids),
+            Initiative.site_id.in_(site_ids),
+            Initiative.origin_site_id.in_(site_ids),
+            Initiative.destination_site_id.in_(site_ids),
         ))
         initiatives = (await db.scalars(
             query.order_by(Initiative.name).limit(LIMIT_PER_KIND))).all()
+        type_labels = {s.key: s.label for s in await db.scalars(
+            select(StatusValue).where(
+                StatusValue.record_type == "initiative_type"))}
         results.extend(
             SearchResult(kind="initiative", id=i.id, label=i.name,
-                         sub=i.initiative_type)
+                         sub=type_labels.get(i.initiative_type,
+                                             i.initiative_type))
             for i in initiatives
         )
 

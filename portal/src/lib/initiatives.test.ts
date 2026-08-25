@@ -47,6 +47,7 @@ describe('initiativeCellText', () => {
     expect(initiativeCellText(row, 'status')).toBe('In progress');
     expect(initiativeCellText(row, 'client')).toBe('Acme');
     expect(initiativeCellText(row, 'site')).toBe('');
+    expect(initiativeCellText(row, 'start')).toBe('2026-09-01');
     expect(initiativeCellText({ ...row, scheduled_start: null }, 'start'))
       .toBe('—');
     expect(initiativeCellText(row, 'origin')).toBe('DC-East');

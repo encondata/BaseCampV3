@@ -191,8 +191,9 @@ Error codes: `initiative_not_found`, `client_not_found`, `site_not_found`,
 `duplicate_link`, `self_link`, `circular_link`, plus the standard
 non-nullable empty-string 422s.
 
-Global search: initiatives join the topbar search index (name, client name,
-site names), `kind: 'initiative'`, deep-linking to `/initiatives?open=<id>`.
+Global search: initiatives join the topbar search index — matching name,
+location, Sky Command ID, client name, and site/origin/destination site
+names — `kind: 'initiative'`, deep-linking to `/initiatives?open=<id>`.
 
 ## Portal
 
@@ -243,8 +244,9 @@ One page for all three types — `/initiatives`.
   shape.
 - `api/tests/conftest.py` — add the three tables to TRUNCATE list; add the
   five vocab seed-restore blocks.
-- Portal: `lib/initiatives.test.ts`,
-  `components/initiatives/InitiativeEditModal.test.tsx`; `npx tsc --noEmit`
-  + `npx vitest run` clean.
+- Portal: `lib/initiatives.test.ts` (the modal's logic — form round-trip,
+  cell/search text, error mapping — is pure and covered there; the codebase
+  has no jsdom component tests, so `InitiativeEditModal.tsx` itself isn't
+  separately test-rendered); `npx tsc --noEmit` + `npx vitest run` clean.
 
 Checks: `cd api && .venv/bin/pytest` · `cd portal && npx tsc --noEmit && npx vitest run`.

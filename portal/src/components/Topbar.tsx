@@ -34,6 +34,7 @@ const G_CHORD: Record<string, string> = {
 const PAGES = [
   { label: 'Dashboard', to: '/' },
   { label: 'Assets', to: '/assets' },
+  { label: 'Initiatives', to: '/initiatives' },
   { label: 'Containers', to: '/logistics/containers' },
   { label: 'Sites', to: '/sites' },
   { label: 'Users', to: '/people/users' },

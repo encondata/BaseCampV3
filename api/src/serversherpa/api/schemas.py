@@ -1052,6 +1052,13 @@ class InitiativeDetailOut(InitiativeItem):
     links_parents: list[InitiativeLinkRow] = []
 
 
+class InitiativeLinksOut(BaseModel):
+    """Response for GET /initiatives/{id}/links."""
+
+    children: list[InitiativeLinkRow] = []
+    parents: list[InitiativeLinkRow] = []
+
+
 class InitiativeCreateIn(BaseModel):
     name: str
     initiative_type: str

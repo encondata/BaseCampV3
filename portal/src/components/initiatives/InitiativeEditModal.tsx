@@ -318,7 +318,7 @@ export default function InitiativeEditModal({
             )}
           </div>
           <div className="modal-foot">
-            <button className="btn-solid" type="submit" disabled={saving}>
+            <button className="btn-solid" type="submit" disabled={locked}>
               {saving ? 'Saving…' : (isCreateMode ? 'Create initiative' : 'Save')}
             </button>
             <button className="mini-btn" type="button" onClick={onClose}

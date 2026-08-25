@@ -9,6 +9,13 @@ import type { GodField } from './godEdit';
 const day = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString() : '—';
 
+/** Date-only fields (start/end) are stored as midnight UTC for a plain
+ *  YYYY-MM-DD user input — rendering them with local-time toLocaleDateString
+ *  shifts a day west of UTC (e.g. Denver sees 8/31 for 9/1). Slice the ISO
+ *  string instead, matching the edit modal's round-trip (lib/initiatives.ts
+ *  toDay). */
+const dateOnly = (iso: string | null) => (iso ? iso.slice(0, 10) : '—');
+
 export function initiativeSearchText(i: InitiativeItem): string {
   return [i.name, i.type_label, i.sub_type_label, i.status_label,
           i.client_name, i.site_name, i.location, i.origin_site_name,
@@ -28,8 +35,8 @@ export function initiativeCellText(i: InitiativeItem, colKey: string): string {
     case 'client': return i.client_name ?? '';
     case 'site': return i.site_name ?? '';
     case 'location': return i.location || '—';
-    case 'start': return day(i.scheduled_start);
-    case 'end': return day(i.scheduled_end);
+    case 'start': return dateOnly(i.scheduled_start);
+    case 'end': return dateOnly(i.scheduled_end);
     case 'origin': return i.origin_site_name ?? '';
     case 'destination': return i.destination_site_name ?? '';
     case 'shipping': return i.shipping_types.join(', ') || '—';

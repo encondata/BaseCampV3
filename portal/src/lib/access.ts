@@ -7,6 +7,10 @@ export interface ScopeInfo { global: boolean; client_ids: string[]; partner_ids:
 
 export const ACTIONS: Action[] = ['view', 'add', 'change', 'delete'];
 
+/** Mirrors roles.rank for "admin" (migration 0009) / the server's
+ *  GATE_BYPASS_RANK — the minimum rank treated as admin client-side. */
+export const ADMIN_RANK = 60;
+
 /** Mirrors api/src/serversherpa/access/resources.py routes. */
 export const ROUTE_RESOURCE: Record<string, string> = {
   '/': 'dashboard',

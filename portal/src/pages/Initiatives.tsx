@@ -39,6 +39,7 @@ import {
   INITIATIVE_ERRORS, INITIATIVE_GOD_FIELDS, initiativeCellText,
   initiativeSearchText,
 } from '../lib/initiatives';
+import { ADMIN_RANK } from '../lib/access';
 import { initialOpenId } from '../lib/auditFormat';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
@@ -127,7 +128,7 @@ export default function Initiatives() {
   const canViewClients = can('clients', 'view');
   const canViewPartners = can('partners', 'view');
   const canViewWorkers = can('workers', 'view');
-  const isAdmin = maxRank >= 60;   // roles.rank for "admin" (migration 0009)
+  const isAdmin = maxRank >= ADMIN_RANK;
   const god = useGodEdit();
 
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);

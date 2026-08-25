@@ -14,9 +14,9 @@ from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     InitiativeCreateIn, InitiativeDetailOut, InitiativeItem,
-    InitiativeLinkAddIn, InitiativeLinkRow, InitiativeLinkUpdateIn,
-    InitiativePersonAddIn, InitiativePersonRow, InitiativePersonUpdateIn,
-    InitiativeUpdateIn,
+    InitiativeLinkAddIn, InitiativeLinkRow, InitiativeLinksOut,
+    InitiativeLinkUpdateIn, InitiativePersonAddIn, InitiativePersonRow,
+    InitiativePersonUpdateIn, InitiativeUpdateIn,
 )
 from serversherpa.db.models import (
     Client, Initiative, InitiativeLink, InitiativePerson, Partner, Person,
@@ -467,15 +467,15 @@ async def _ancestor_ids(db: DbSession, start: uuid.UUID) -> set[uuid.UUID]:
     return seen
 
 
-@router.get("/{initiative_id}/links")
+@router.get("/{initiative_id}/links", response_model=InitiativeLinksOut)
 async def list_initiative_links(
     initiative_id: uuid.UUID,
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "view"),
-) -> dict:
+) -> InitiativeLinksOut:
     await _get_initiative(db, initiative_id)
     children, parents = await _link_rows(db, initiative_id)
-    return {"children": children, "parents": parents}
+    return InitiativeLinksOut(children=children, parents=parents)
 
 
 @router.post("/{initiative_id}/links", response_model=InitiativeDetailOut,
