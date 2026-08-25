@@ -11,6 +11,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
 import ComboBox from '../components/ComboBox';
+import GodDeleteButton from '../components/GodDeleteButton';
 import TagInput from '../components/TagInput';
 import TierSelect, { TIER_LABEL } from '../components/TierSelect';
 import {
@@ -25,6 +26,7 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { usePendingDeletes } from '../lib/pendingDeletes';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate } from '../lib/format';
 import {
@@ -188,6 +190,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
   const { can, godMode } = useAuth();
   const navigate = useNavigate();
   const god = useGodEdit();
+  const pd = usePendingDeletes(godMode);
 
   const [orgs, setOrgs] = useState<OrgItem[] | null>(null);
   const [error, setError] = useState('');
@@ -382,7 +385,12 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
         return <span className={`chip ${TIER_META[o.tier] ?? 'tag'}`}>{o.tier}</span>;
       case 'status': {
         const s = STATUS_META[effectiveStatus(o)];
-        return <span className={`chip ${s.cls}`}><span className="dot" />{s.label}</span>;
+        return (
+          <div className="chips">
+            <span className={`chip ${s.cls}`}><span className="dot" />{s.label}</span>
+            {pd.pendingIds.has(o.id) && <span className="chip tag">Pending delete</span>}
+          </div>
+        );
       }
       case 'manager':
         return <span className="cell-top">{o.account_manager?.display_name ?? '—'}</span>;
@@ -577,6 +585,15 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                                 Archive
                               </button>
                             )}
+                          </div>
+                        )}
+                        {godMode && (
+                          <div className="detail-actions">
+                            <GodDeleteButton visible={godMode} entityType={cfg.kind} entityId={o.id}
+                                             label={o.name} pending={pd.pendingIds.has(o.id)}
+                                             onChange={pd.pendingIds.has(o.id)
+                                               ? () => pd.unmark(o.id)
+                                               : () => pd.mark(cfg.kind, o.id, o.name)} />
                           </div>
                         )}
                       </div>

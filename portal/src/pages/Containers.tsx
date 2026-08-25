@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useAuth } from '../auth/AuthContext';
 import ContainerBulkImport from '../components/containers/ContainerBulkImport';
 import ContainerEditModal from '../components/containers/ContainerEditModal';
+import GodDeleteButton from '../components/GodDeleteButton';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import {
   ApiError,
@@ -33,6 +34,7 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { usePendingDeletes } from '../lib/pendingDeletes';
 import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
@@ -96,6 +98,7 @@ export default function Containers() {
   const canChange = can('containers', 'change');
   const canViewSites = can('sites', 'view');
   const god = useGodEdit();
+  const pd = usePendingDeletes(godMode);
 
   const [containers, setContainers] = useState<ContainerItem[] | null>(null);
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
@@ -223,6 +226,7 @@ export default function Containers() {
               <span className="dot" />{c.status_label}
             </span>
             {c.archived_at && <span className="chip tag">Archived</span>}
+            {pd.pendingIds.has(c.id) && <span className="chip tag">Pending delete</span>}
           </div>
         );
       case 'site':
@@ -355,6 +359,10 @@ export default function Containers() {
                           container={c}
                           canEdit={canChange}
                           onEdit={() => setEditingId(c.id)}
+                          godVisible={godMode}
+                          pending={pd.pendingIds.has(c.id)}
+                          onMark={() => pd.mark('container', c.id, c.name)}
+                          onUnmark={() => pd.unmark(c.id)}
                         />
                       )}
                     </div>
@@ -400,8 +408,12 @@ export default function Containers() {
 
 /* ── row detail: read-only — the ONLY interactive element is Edit. ── */
 
-function ContainerRowDetail({ container, canEdit, onEdit }: {
+function ContainerRowDetail({
+  container, canEdit, onEdit, godVisible, pending, onMark, onUnmark,
+}: {
   container: ContainerItem; canEdit: boolean; onEdit: () => void;
+  godVisible: boolean; pending: boolean;
+  onMark: () => Promise<void>; onUnmark: () => Promise<void>;
 }) {
   const [contents, setContents] = useState<ContainerAssetRow[] | null>(null);
   useEffect(() => {
@@ -451,6 +463,13 @@ function ContainerRowDetail({ container, canEdit, onEdit }: {
       {canEdit && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
           <button className="btn-solid" onClick={onEdit}>Edit</button>
+        </div>
+      )}
+      {godVisible && (
+        <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
+          <GodDeleteButton visible={godVisible} entityType="container" entityId={container.id}
+                           label={container.name} pending={pending}
+                           onChange={pending ? onUnmark : onMark} />
         </div>
       )}
     </div>

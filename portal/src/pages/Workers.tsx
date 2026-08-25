@@ -11,6 +11,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
 import ComboBox from '../components/ComboBox';
+import GodDeleteButton from '../components/GodDeleteButton';
 import { apiFetch, listWorkerStatuses, updateWorkerProfile, type StatusValue } from '../lib/api';
 import { initialOpenId } from '../lib/auditFormat';
 import {
@@ -18,6 +19,7 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { usePendingDeletes } from '../lib/pendingDeletes';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate } from '../lib/format';
 import {
@@ -132,6 +134,7 @@ export default function Workers() {
   const { can, godMode } = useAuth();
   const navigate = useNavigate();
   const god = useGodEdit();
+  const pd = usePendingDeletes(godMode);
 
   const [workers, setWorkers] = useState<WorkerItem[] | null>(null);
   const [levels, setLevels] = useState<LevelDef[]>([]);
@@ -269,9 +272,12 @@ export default function Workers() {
       case 'partner': return <span className="cell-top">{w.partner?.name ?? 'Direct'}</span>;
       case 'status':
         return (
-          <span className="chip custom" style={{ '--chip': w.status_color } as CSSProperties}>
-            <span className="dot" />{w.status_label}
-          </span>
+          <div className="chips">
+            <span className="chip custom" style={{ '--chip': w.status_color } as CSSProperties}>
+              <span className="dot" />{w.status_label}
+            </span>
+            {pd.pendingIds.has(w.person_id) && <span className="chip tag">Pending delete</span>}
+          </div>
         );
       case 'certs':
         return w.certs_expired > 0
@@ -396,6 +402,10 @@ export default function Workers() {
                         statuses={statuses}
                         canManage={canManage}
                         onChanged={() => void load()}
+                        godVisible={godMode}
+                        pending={pd.pendingIds.has(w.person_id)}
+                        onMark={() => pd.mark('person', w.person_id, w.display_name)}
+                        onUnmark={() => pd.unmark(w.person_id)}
                       />
                     )}
                   </div>
@@ -411,12 +421,18 @@ export default function Workers() {
 
 /* ── detail: profile edit + level card + certifications ─────────── */
 
-function WorkerDetail({ worker, levels, statuses, canManage, onChanged }: {
+function WorkerDetail({
+  worker, levels, statuses, canManage, onChanged, godVisible, pending, onMark, onUnmark,
+}: {
   worker: WorkerItem;
   levels: LevelDef[];
   statuses: StatusValue[];
   canManage: boolean;
   onChanged: () => void;
+  godVisible: boolean;
+  pending: boolean;
+  onMark: () => Promise<void>;
+  onUnmark: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const levelDef = levels.find((l) => l.level === worker.level);
@@ -479,6 +495,13 @@ function WorkerDetail({ worker, levels, statuses, canManage, onChanged }: {
                 <button className="mini-btn accent" onClick={() => setEditing(true)}>
                   Edit profile
                 </button>
+              </div>
+            )}
+            {godVisible && (
+              <div className="detail-actions">
+                <GodDeleteButton visible={godVisible} entityType="person"
+                                 entityId={worker.person_id} label={worker.display_name}
+                                 pending={pending} onChange={pending ? onUnmark : onMark} />
               </div>
             )}
           </>

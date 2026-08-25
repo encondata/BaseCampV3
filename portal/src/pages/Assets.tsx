@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import { useAuth } from '../auth/AuthContext';
 import AssetEditModal from '../components/assets/AssetEditModal';
+import GodDeleteButton from '../components/GodDeleteButton';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import {
   ApiError,
@@ -34,6 +35,7 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { usePendingDeletes } from '../lib/pendingDeletes';
 import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
@@ -116,6 +118,7 @@ export default function Assets() {
   const canViewSites = can('sites', 'view');
   const canViewCategories = can('asset_models', 'view');
   const god = useGodEdit();
+  const pd = usePendingDeletes(godMode);
 
   const [assets, setAssets] = useState<AssetItem[] | null>(null);
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
@@ -282,6 +285,7 @@ export default function Assets() {
               <span className="dot" />{a.status_label}
             </span>
             {a.archived_at && <span className="chip tag">Archived</span>}
+            {pd.pendingIds.has(a.id) && <span className="chip tag">Pending delete</span>}
           </div>
         );
       case 'ru':
@@ -419,6 +423,10 @@ export default function Assets() {
                         <AssetRowDetail
                           asset={a}
                           canEdit={canChange}
+                          godVisible={godMode}
+                          pending={pd.pendingIds.has(a.id)}
+                          onMark={() => pd.mark('asset', a.id, a.name ?? a.serial_number ?? 'Asset')}
+                          onUnmark={() => pd.unmark(a.id)}
                           onEdit={() => setEditingId(a.id)}
                         />
                       )}
@@ -463,8 +471,12 @@ export default function Assets() {
  * Edit button. The Notes & Files panel (Task 13) mounts as a third,
  * full-width detail block below the two here. ────────────────────── */
 
-function AssetRowDetail({ asset, canEdit, onEdit }: {
+function AssetRowDetail({
+  asset, canEdit, onEdit, godVisible, pending, onMark, onUnmark,
+}: {
   asset: AssetItem; canEdit: boolean; onEdit: () => void;
+  godVisible: boolean; pending: boolean;
+  onMark: () => Promise<void>; onUnmark: () => Promise<void>;
 }) {
   return (
     <div className="detail-grid">
@@ -494,6 +506,13 @@ function AssetRowDetail({ asset, canEdit, onEdit }: {
       {canEdit && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
           <button className="btn-solid" onClick={onEdit}>Edit</button>
+        </div>
+      )}
+      {godVisible && (
+        <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
+          <GodDeleteButton visible={godVisible} entityType="asset" entityId={asset.id}
+                           label={asset.name ?? asset.serial_number ?? 'Asset'} pending={pending}
+                           onChange={pending ? onUnmark : onMark} />
         </div>
       )}
     </div>

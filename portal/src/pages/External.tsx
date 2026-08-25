@@ -14,6 +14,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
 import ComboBox from '../components/ComboBox';
+import GodDeleteButton from '../components/GodDeleteButton';
 import InlineTextField from '../components/InlineTextField';
 import TagInput from '../components/TagInput';
 import TierSelect from '../components/TierSelect';
@@ -50,6 +51,7 @@ import {
 } from '../lib/external';
 import { avatarGradient, initials } from '../lib/format';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { usePendingDeletes } from '../lib/pendingDeletes';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState,
@@ -148,6 +150,7 @@ const GRANT_ERRORS: Record<string, string> = {
 export default function External() {
   const { can, godMode } = useAuth();
   const god = useGodEdit();
+  const pd = usePendingDeletes(godMode);
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -347,7 +350,12 @@ export default function External() {
         return <span className="mono">{p.phone ?? '—'}</span>;
       case 'login': {
         const m = LOGIN_META[p.login_status];
-        return <span className={`chip ${m.cls}`}><span className="dot" />{m.label}</span>;
+        return (
+          <div className="chips">
+            <span className={`chip ${m.cls}`}><span className="dot" />{m.label}</span>
+            {pd.pendingIds.has(p.person_id) && <span className="chip tag">Pending delete</span>}
+          </div>
+        );
       }
       default:
         return null;
@@ -468,6 +476,10 @@ export default function External() {
                         person={p}
                         canEdit={canEditExternalPerson(editPerms, p)}
                         onEdit={() => setEditId(p.person_id)}
+                        godVisible={godMode}
+                        pending={pd.pendingIds.has(p.person_id)}
+                        onMark={() => pd.mark('person', p.person_id, p.display_name)}
+                        onUnmark={() => pd.unmark(p.person_id)}
                       />
                     )}
                   </div>
@@ -514,10 +526,16 @@ export default function External() {
  * Edit button. All mutation (org links, title/functions, login lifecycle,
  * avatar) lives in EditPersonModal. ───────────────────────────────── */
 
-function ExternalDetail({ person, canEdit, onEdit }: {
+function ExternalDetail({
+  person, canEdit, onEdit, godVisible, pending, onMark, onUnmark,
+}: {
   person: ExternalPersonItem;
   canEdit: boolean;
   onEdit: () => void;
+  godVisible: boolean;
+  pending: boolean;
+  onMark: () => Promise<void>;
+  onUnmark: () => Promise<void>;
 }) {
   return (
     <div className="detail-grid">
@@ -563,6 +581,13 @@ function ExternalDetail({ person, canEdit, onEdit }: {
       {canEdit && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
           <button className="btn-solid" onClick={onEdit}>Edit</button>
+        </div>
+      )}
+      {godVisible && (
+        <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
+          <GodDeleteButton visible={godVisible} entityType="person" entityId={person.person_id}
+                           label={person.display_name} pending={pending}
+                           onChange={pending ? onUnmark : onMark} />
         </div>
       )}
     </div>

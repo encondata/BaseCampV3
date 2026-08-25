@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
+import GodDeleteButton from '../components/GodDeleteButton';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import {
@@ -47,6 +48,7 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { usePendingDeletes } from '../lib/pendingDeletes';
 import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
@@ -132,6 +134,7 @@ export default function Initiatives() {
   const canViewWorkers = can('workers', 'view');
   const isAdmin = maxRank >= ADMIN_RANK;
   const god = useGodEdit();
+  const pd = usePendingDeletes(godMode);
 
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
@@ -277,6 +280,7 @@ export default function Initiatives() {
           <div className="chips">
             {chip(i.status_label, i.status_color)}
             {i.archived_at && <span className="chip tag">Archived</span>}
+            {pd.pendingIds.has(i.id) && <span className="chip tag">Pending delete</span>}
           </div>
         );
       case 'client': return <span className="cell-top">{i.client_name ?? '—'}</span>;
@@ -434,6 +438,10 @@ export default function Initiatives() {
                           onEdit={() => setEditingId(i.id)}
                           onChanged={() => void load()}
                           onNavigate={(id) => focusOpenId(id)}
+                          godVisible={godMode}
+                          pending={pd.pendingIds.has(i.id)}
+                          onMark={() => pd.mark('initiative', i.id, i.name)}
+                          onUnmark={() => pd.unmark(i.id)}
                         />
                       )}
                     </div>
@@ -476,7 +484,7 @@ export default function Initiatives() {
 
 function InitiativeRowDetail({
   initiative, canEdit, workTypes, workers, allInitiatives,
-  onEdit, onChanged, onNavigate,
+  onEdit, onChanged, onNavigate, godVisible, pending, onMark, onUnmark,
 }: {
   initiative: InitiativeItem;
   canEdit: boolean;
@@ -486,6 +494,10 @@ function InitiativeRowDetail({
   onEdit: () => void;
   onChanged: () => void;
   onNavigate: (id: string) => void;
+  godVisible: boolean;
+  pending: boolean;
+  onMark: () => Promise<void>;
+  onUnmark: () => Promise<void>;
 }) {
   const [detail, setDetail] = useState<InitiativeDetail | null>(null);
   const [pendingPerson, setPendingPerson] = useState('');
@@ -712,6 +724,13 @@ function InitiativeRowDetail({
       {canEdit && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
           <button className="btn-solid" onClick={onEdit}>Edit</button>
+        </div>
+      )}
+      {godVisible && (
+        <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
+          <GodDeleteButton visible={godVisible} entityType="initiative" entityId={initiative.id}
+                           label={initiative.name} pending={pending}
+                           onChange={pending ? onUnmark : onMark} />
         </div>
       )}
     </div>

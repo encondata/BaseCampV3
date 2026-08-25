@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import GodDeleteButton from '../components/GodDeleteButton';
 import {
   AccountStateModal,
   AdminEditProfileModal,
@@ -22,6 +23,7 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { usePendingDeletes } from '../lib/pendingDeletes';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   applyUserPatch, STATUS_META, USER_ERRORS, USER_GOD_FIELDS, userCellText, userSearchText,
@@ -124,6 +126,7 @@ type ManageAction =
 export default function Users() {
   const { person: mePerson, can, maxRank, godMode } = useAuth();
   const god = useGodEdit();
+  const pd = usePendingDeletes(godMode);
   const [manage, setManage] = useState<ManageAction | null>(null);
   const [query, setQuery] = useState('');
   const location = useLocation();
@@ -296,7 +299,12 @@ export default function Users() {
         );
       case 'status': {
         const meta = STATUS_META[u.status] ?? { label: u.status, cls: 'tag' };
-        return <span className={`chip ${meta.cls}`}><span className="dot" />{meta.label}</span>;
+        return (
+          <div className="chips">
+            <span className={`chip ${meta.cls}`}><span className="dot" />{meta.label}</span>
+            {pd.pendingIds.has(u.person_id) && <span className="chip tag">Pending delete</span>}
+          </div>
+        );
       }
       case 'job_title':
         return <span className="cell-top">{u.job_title ?? '—'}</span>;
@@ -569,6 +577,16 @@ export default function Users() {
                             </div>
                           );
                         })()}
+                        {godMode && (
+                          <div className="detail-actions">
+                            <GodDeleteButton visible={godMode} entityType="person"
+                                             entityId={u.person_id} label={u.display_name}
+                                             pending={pd.pendingIds.has(u.person_id)}
+                                             onChange={pd.pendingIds.has(u.person_id)
+                                               ? () => pd.unmark(u.person_id)
+                                               : () => pd.mark('person', u.person_id, u.display_name)} />
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>

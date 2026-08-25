@@ -1572,3 +1572,43 @@ export async function unlockGodMode(word: string): Promise<string | null> {
   const data: { nav_color: string } = await resp.json();
   return data.nav_color;
 }
+
+/* ── pending deletes ──────────────────────────────────────────────── */
+
+export interface PendingDeleteItem {
+  id: string;
+  entity_type: string;
+  entity_id: string;
+  entity_label: string;
+  marked_by: string | null;
+  marked_by_name: string | null;
+  marked_at: string;
+}
+
+export async function listPendingDeletes(): Promise<PendingDeleteItem[]> {
+  const resp = await apiFetch('/devtools/pending-deletes');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function markPendingDelete(
+  entityType: string, entityId: string, entityLabel: string,
+): Promise<PendingDeleteItem> {
+  const resp = await apiFetch('/devtools/pending-deletes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      entity_type: entityType, entity_id: entityId, entity_label: entityLabel,
+    }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** `markerId` is the pending-delete row's own id, not the entity's — the
+ *  API keys the DELETE off the marker so callers must track that mapping
+ *  themselves (see usePendingDeletes). */
+export async function unmarkPendingDelete(markerId: string): Promise<void> {
+  const resp = await apiFetch(`/devtools/pending-deletes/${markerId}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}

@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import { useAuth } from '../auth/AuthContext';
 import ModelEditModal from '../components/assets/ModelEditModal';
+import GodDeleteButton from '../components/GodDeleteButton';
 import {
   ApiError,
   listAssetCategories,
@@ -26,6 +27,7 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { usePendingDeletes } from '../lib/pendingDeletes';
 import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
@@ -118,6 +120,7 @@ export default function AssetModels() {
   const canAdd = can('asset_models', 'add');
   const canChange = can('asset_models', 'change');
   const god = useGodEdit();
+  const pd = usePendingDeletes(godMode);
 
   const [models, setModels] = useState<AssetModelItem[] | null>(null);
   const [categories, setCategories] = useState<AssetCategoryOut[]>([]);
@@ -224,13 +227,18 @@ export default function AssetModels() {
     }
     switch (key) {
       case 'category':
-        return m.category_color
-          ? (
-            <span className="chip custom" style={{ '--chip': m.category_color } as CSSProperties}>
-              <span className="dot" />{m.category_label}
-            </span>
-          )
-          : <span className="chip tag">{m.category_label ?? '—'}</span>;
+        return (
+          <div className="chips">
+            {m.category_color
+              ? (
+                <span className="chip custom" style={{ '--chip': m.category_color } as CSSProperties}>
+                  <span className="dot" />{m.category_label}
+                </span>
+              )
+              : <span className="chip tag">{m.category_label ?? '—'}</span>}
+            {pd.pendingIds.has(m.id) && <span className="chip tag">Pending delete</span>}
+          </div>
+        );
       case 'ru':
         return <span className="mono">{m.ru_size ?? '—'}</span>;
       case 'weight':
@@ -378,6 +386,10 @@ export default function AssetModels() {
                           model={m}
                           canEdit={canChange}
                           onEdit={() => setEditingId(m.id)}
+                          godVisible={godMode}
+                          pending={pd.pendingIds.has(m.id)}
+                          onMark={() => pd.mark('asset_model', m.id, `${m.make} ${m.model}`)}
+                          onUnmark={() => pd.unmark(m.id)}
                         />
                       )}
                     </div>
@@ -414,8 +426,12 @@ export default function AssetModels() {
 /* ── row detail: read-only display — the ONLY interactive element is the
  * Edit button. ─────────────────────────────────────────────────────── */
 
-function ModelRowDetail({ model, canEdit, onEdit }: {
+function ModelRowDetail({
+  model, canEdit, onEdit, godVisible, pending, onMark, onUnmark,
+}: {
   model: AssetModelItem; canEdit: boolean; onEdit: () => void;
+  godVisible: boolean; pending: boolean;
+  onMark: () => Promise<void>; onUnmark: () => Promise<void>;
 }) {
   return (
     <div className="detail-grid">
@@ -449,6 +465,13 @@ function ModelRowDetail({ model, canEdit, onEdit }: {
       {canEdit && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
           <button className="btn-solid" onClick={onEdit}>Edit</button>
+        </div>
+      )}
+      {godVisible && (
+        <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
+          <GodDeleteButton visible={godVisible} entityType="asset_model" entityId={model.id}
+                           label={`${model.make} ${model.model}`} pending={pending}
+                           onChange={pending ? onUnmark : onMark} />
         </div>
       )}
     </div>

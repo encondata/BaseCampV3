@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
+import GodDeleteButton from '../components/GodDeleteButton';
 import SiteEditModal from '../components/sites/SiteEditModal';
 import SitesMap, { SiteMapModal, SiteMiniMap } from '../components/sites/SitesMap';
 import {
@@ -33,6 +34,7 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { usePendingDeletes } from '../lib/pendingDeletes';
 import {
   formatCoords, naturalCompare, siteCellText, siteSearchText, SITE_ERRORS, SITE_GOD_FIELDS,
 } from '../lib/sites';
@@ -141,6 +143,7 @@ export default function Sites() {
   const canChange = can('sites', 'change');
   const canBulk = canAdd && maxRank >= 60;   // mirrors the API's GATE_BYPASS_RANK bar
   const god = useGodEdit();
+  const pd = usePendingDeletes(godMode);
 
   const [sites, setSites] = useState<SiteItem[] | null>(null);
   const [types, setTypes] = useState<SiteLookup[]>([]);
@@ -278,6 +281,7 @@ export default function Sites() {
               <span className="dot" />{s.status_label}
             </span>
             {s.archived_at && <span className="chip tag">Archived</span>}
+            {pd.pendingIds.has(s.id) && <span className="chip tag">Pending delete</span>}
           </div>
         );
       case 'clients': {
@@ -444,6 +448,10 @@ export default function Sites() {
                           schema={schema}
                           canEdit={canChange}
                           onEdit={() => setEditingId(s.id)}
+                          godVisible={godMode}
+                          pending={pd.pendingIds.has(s.id)}
+                          onMark={() => pd.mark('site', s.id, s.name)}
+                          onUnmark={() => pd.unmark(s.id)}
                         />
                       )}
                     </div>
@@ -504,11 +512,17 @@ export default function Sites() {
  * isn't in the list projection), lazily loaded only while the row is open,
  * mirroring Workers.tsx's CertsPanel pattern. ───────────────────────── */
 
-function SiteRowDetail({ site, schema, canEdit, onEdit }: {
+function SiteRowDetail({
+  site, schema, canEdit, onEdit, godVisible, pending, onMark, onUnmark,
+}: {
   site: SiteItem;
   schema: SurveySchema | null;
   canEdit: boolean;
   onEdit: () => void;
+  godVisible: boolean;
+  pending: boolean;
+  onMark: () => Promise<void>;
+  onUnmark: () => Promise<void>;
 }) {
   const [surveyData, setSurveyData] = useState<Record<string, unknown> | null>(null);
   const [surveyStatus, setSurveyStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
@@ -593,6 +607,13 @@ function SiteRowDetail({ site, schema, canEdit, onEdit }: {
       {canEdit && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
           <button className="btn-solid" onClick={onEdit}>Edit</button>
+        </div>
+      )}
+      {godVisible && (
+        <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
+          <GodDeleteButton visible={godVisible} entityType="site" entityId={site.id}
+                           label={site.name} pending={pending}
+                           onChange={pending ? onUnmark : onMark} />
         </div>
       )}
     </div>
