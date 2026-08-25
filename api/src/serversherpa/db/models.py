@@ -6,9 +6,9 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, Date, ForeignKey, Integer, Numeric, Text, text,
+    BigInteger, Boolean, Date, ForeignKey, Integer, Numeric, SmallInteger, Text, text,
 )
-from sqlalchemy.dialects.postgresql import BYTEA, CITEXT, INET, JSONB, TIMESTAMP, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, BYTEA, CITEXT, INET, JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -522,6 +522,96 @@ class ContainerAsset(Base):
     added_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     added_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     last_validated_at: Mapped[datetime | None]
+
+
+class Initiative(Base):
+    """Unified V2 projects/events/moves. initiative_type discriminates;
+    the move-only block stays NULL for the other types and is retained
+    (not wiped) on an admin type change."""
+
+    __tablename__ = "initiatives"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    name: Mapped[str] = mapped_column(CITEXT)
+    description: Mapped[str | None]
+    initiative_type: Mapped[str]
+    type_record_type: Mapped[str] = mapped_column(
+        server_default=text("'initiative_type'"))  # GENERATED; never written
+    sub_type: Mapped[str | None]
+    sub_type_record_type: Mapped[str] = mapped_column(
+        server_default=text("'initiative_sub_type'"))  # GENERATED; never written
+    status: Mapped[str] = mapped_column(server_default="planned")
+    status_record_type: Mapped[str] = mapped_column(
+        server_default=text("'initiative'"))  # GENERATED; never written
+    client_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("clients.id"))
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
+    location: Mapped[str | None]
+    scheduled_start: Mapped[datetime | None]
+    scheduled_end: Mapped[datetime | None]
+    sky_command_project_id: Mapped[str | None]
+    origin_site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
+    destination_site_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sites.id"))
+    real_start_at: Mapped[datetime | None]
+    real_end_at: Mapped[datetime | None]
+    priority_devices: Mapped[bool | None]
+    shipping_types: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    shipping_partner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("partners.id"))
+    origin_tech_partner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("partners.id"))
+    origin_cable_partner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("partners.id"))
+    origin_logistics_partner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("partners.id"))
+    destination_tech_partner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("partners.id"))
+    destination_cable_partner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("partners.id"))
+    destination_logistics_partner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("partners.id"))
+    origin_vendor_involved: Mapped[bool | None]
+    destination_vendor_involved: Mapped[bool | None]
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    archived_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class InitiativePerson(Base):
+    __tablename__ = "initiative_people"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    initiative_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="CASCADE"))
+    person_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.id"))
+    work_type: Mapped[str | None]
+    work_type_record_type: Mapped[str] = mapped_column(
+        server_default=text("'initiative_work_type'"))  # GENERATED; never written
+    site_worked_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
+    rating: Mapped[int | None] = mapped_column(SmallInteger)
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class InitiativeLink(Base):
+    """parent contains child. Any type may parent any type; the API
+    enforces acyclicity (the DB only blocks direct self-links)."""
+
+    __tablename__ = "initiative_links"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    parent_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="CASCADE"))
+    child_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="CASCADE"))
+    role: Mapped[str | None]
+    sort_order: Mapped[int | None]
+    notes: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
 class Note(Base):

@@ -17,6 +17,8 @@ class StatusRecordType:
     column: str
     # the resource whose "view" permission gates reading these values
     resource: str
+    # True when column is text[] — usage counting must unnest
+    array: bool = False
 
 
 STATUS_RECORD_TYPES: list[StatusRecordType] = [
@@ -30,6 +32,19 @@ STATUS_RECORD_TYPES: list[StatusRecordType] = [
                      column="status", resource="containers"),
     StatusRecordType("container_type", "Container type", table="containers",
                      column="container_type", resource="containers"),
+    StatusRecordType("initiative", "Initiative", table="initiatives",
+                     column="status", resource="initiatives"),
+    StatusRecordType("initiative_type", "Initiative type", table="initiatives",
+                     column="initiative_type", resource="initiatives"),
+    StatusRecordType("initiative_sub_type", "Initiative sub-type",
+                     table="initiatives", column="sub_type",
+                     resource="initiatives"),
+    StatusRecordType("initiative_work_type", "Initiative work type",
+                     table="initiative_people", column="work_type",
+                     resource="initiatives"),
+    StatusRecordType("shipping_type", "Shipping type", table="initiatives",
+                     column="shipping_types", resource="initiatives",
+                     array=True),
 ]
 
 STATUS_REGISTRY: dict[str, StatusRecordType] = {

@@ -7,7 +7,7 @@ but the *vocabulary* is not."""
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import column, func, select, table
+from sqlalchemy import column, func, select, table, text as sqla_text
 
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
 from serversherpa.api.schemas import StatusValueCreateIn, StatusValueOut, StatusValueUpdateIn
@@ -43,10 +43,15 @@ def _record_type(record_type: str) -> StatusRecordType:
 async def _usage_counts(db: DbSession, rt: StatusRecordType) -> dict[str, int]:
     """Count referencing rows per key. Table/column come from the frozen code
     registry, never from user input."""
-    t = table(rt.table, column(rt.column))
-    rows = (await db.execute(
-        select(t.c[rt.column], func.count())
-        .group_by(t.c[rt.column]))).all()
+    if rt.array:
+        rows = (await db.execute(sqla_text(
+            f"SELECT k, count(*) FROM {rt.table}, unnest({rt.column}) AS k "
+            f"GROUP BY k"))).all()
+    else:
+        t = table(rt.table, column(rt.column))
+        rows = (await db.execute(
+            select(t.c[rt.column], func.count())
+            .group_by(t.c[rt.column]))).all()
     return {key: n for key, n in rows if key is not None}
 
 

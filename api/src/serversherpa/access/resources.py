@@ -59,6 +59,10 @@ _RESOURCES = [
     Resource("containers", "Containers", routes=("/logistics/containers",),
              # internal-only, like sites — no client/partner visibility.
              visible_to=frozenset({"global"})),
+    Resource("initiatives", "Initiatives", routes=("/initiatives",),
+             # internal-only for the first slice — client visibility is a
+             # future decision (V2 exposed a client work-history view).
+             visible_to=frozenset({"global"})),
     Resource("attachments", "Files & attachments",
              visible_to=frozenset({"global", "client", "partner"})),
     Resource("settings", "Settings", routes=("/settings",)),

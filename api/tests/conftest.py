@@ -58,6 +58,7 @@ async def clean_db():
             "resource_group_gates, permission_overrides, audit_log, "
             "contact_profiles, sites, site_clients, notes, assets, "
             "asset_model_aliases, asset_models, container_assets, "
+            "initiative_links, initiative_people, initiatives, "
             "containers CASCADE"))
         # role matrix is editable seed data — restore defaults & drop customs
         await session.execute(text("DELETE FROM roles WHERE is_system = false"))
@@ -158,6 +159,40 @@ async def clean_db():
               ('container_type','pelican_case','Pelican case','Hard transport case.','#1668a7',1),
               ('container_type','shipping_container','Shipping container','Full-size freight container.','#a36207',2),
               ('container_type','cart','Cart','Rolling cart or trolley.','#0f7c86',3)
+        """))
+        # initiative vocabularies — restore canonical seeds (0016)
+        await session.execute(text(
+            "DELETE FROM status_values WHERE record_type IN "
+            "('initiative', 'initiative_type', 'initiative_sub_type', "
+            "'initiative_work_type', 'shipping_type')"))
+        await session.execute(text("""
+            INSERT INTO status_values
+              (record_type, key, label, description, color, sort_order)
+            VALUES
+              ('initiative','planned','Planned','Not yet scheduled.','#51606f',1),
+              ('initiative','scheduled','Scheduled','Date set; not started.','#0f7c86',2),
+              ('initiative','in_progress','In progress','Work underway.','#1668a7',3),
+              ('initiative','on_hold','On hold','Paused.','#a36207',4),
+              ('initiative','completed','Completed','Done; retained for history.','#178a4c',5),
+              ('initiative','cancelled','Cancelled','Will not happen.','#c03540',6),
+              ('initiative_type','project','Project','Long-running engagement.','#1668a7',1),
+              ('initiative_type','event','Event','Date-bound occasion.','#6d4fc4',2),
+              ('initiative_type','move','Move','Physical relocation of assets.','#a36207',3),
+              ('initiative_sub_type','deployment','Deployment','New equipment install.','#178a4c',1),
+              ('initiative_sub_type','decommission','Decommission','Teardown / removal.','#c03540',2),
+              ('initiative_sub_type','migration','Migration','Data-centre migration.','#0f7c86',3),
+              ('initiative_sub_type','maintenance','Maintenance','Scheduled maintenance.','#a36207',4),
+              ('initiative_sub_type','conference','Conference','Conference or trade show.','#6d4fc4',5),
+              ('initiative_sub_type','office_move','Office move','Office relocation.','#1668a7',6),
+              ('initiative_work_type','lead','Lead','On-site lead.','#1668a7',1),
+              ('initiative_work_type','tech','Tech','Hands-on technician.','#178a4c',2),
+              ('initiative_work_type','cabling','Cabling','Structured cabling.','#0f7c86',3),
+              ('initiative_work_type','logistics','Logistics','Transport & handling.','#a36207',4),
+              ('initiative_work_type','other','Other','Anything else.','#51606f',5),
+              ('shipping_type','truck','Truck','Road freight.','#1668a7',1),
+              ('shipping_type','air','Air','Air freight.','#0f7c86',2),
+              ('shipping_type','rail','Rail','Rail freight.','#a36207',3),
+              ('shipping_type','ferry','Ferry','Sea / ferry.','#6d4fc4',4)
         """))
         await session.execute(text("DELETE FROM asset_categories"))
         await session.execute(text("""
