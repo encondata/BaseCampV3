@@ -30,7 +30,9 @@ import {
   type UserItem,
 } from '../lib/users';
 import { avatarGradient, initials, longDate, relativeTime } from '../lib/format';
-import { visibleColumnsFor, type ColumnDef } from '../lib/listTools';
+import {
+  applyColumnOrder, moveKey, useReorderDrag, visibleColumnsFor, type ColumnDef,
+} from '../lib/listTools';
 import { naturalCompare } from '../lib/sites';
 import '../styles/directory.css';
 import '../styles/profile.css';   /* .pf-form, .btn-solid */
@@ -153,6 +155,7 @@ export default function Users() {
     visibleCols, setVisibleCols,
     sortKey, sortDir, setSort, toggleSort,
     filters, setFilter, clearFilters,
+    colOrder, setColOrder,
   } = usePersistentListState(
     'users', { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 }, ALL_COLUMN_KEYS,
   );
@@ -268,7 +271,12 @@ export default function Users() {
     }
   }, [visible]);
 
-  const shownCols = visibleColumnsFor(COLUMNS, visibleCols, godMode);
+  const orderedCols = applyColumnOrder(COLUMNS, colOrder);
+  const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
+  const reorder = (src: string, dst: string, before: boolean) =>
+    setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before));
+  const headerDrag = useReorderDrag(reorder, 'x', { ignoreFrom: '.pop-menu' });
+  const menuDrag = useReorderDrag(reorder, 'y');
   const grid = {
     gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px`,
   };
@@ -365,15 +373,24 @@ export default function Users() {
             {pop === 'columns' && (
               <div className="pop-menu">
                 <div className="pop-title">Visible columns</div>
-                {COLUMNS.map((c) => {
+                {orderedCols.map((c) => {
                   const on = visibleCols.has(c.key);
                   return (
-                    <button key={c.key} className={`pop-item ${on ? 'on' : ''}`}
+                    <button key={c.key}
+                            className={`pop-item ${on ? 'on' : ''} ${menuDrag.dropClass(c.key)}`}
+                            {...menuDrag.dragProps(c.key)}
                             onClick={() => {
                               const next = new Set(visibleCols);
                               if (on) next.delete(c.key); else next.add(c.key);
                               setVisibleCols(next);
                             }}>
+                      <span className="pop-grip" aria-hidden="true">
+                        <svg viewBox="0 0 8 12" fill="currentColor">
+                          <circle cx="2.5" cy="2" r="1.1" /><circle cx="5.5" cy="2" r="1.1" />
+                          <circle cx="2.5" cy="6" r="1.1" /><circle cx="5.5" cy="6" r="1.1" />
+                          <circle cx="2.5" cy="10" r="1.1" /><circle cx="5.5" cy="10" r="1.1" />
+                        </svg>
+                      </span>
                       <span className="pop-check">
                         <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"
                              strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
@@ -418,7 +435,8 @@ export default function Users() {
                         onSort={(dir) => setSort('primary', dir)} />
           </span>
           {shownCols.map((c) => (
-            <span key={c.key} className="col-head">
+            <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
+                  {...headerDrag.dragProps(c.key)}>
               <button className="sortable" onClick={() => toggleSort(c.key)}>
                 {c.label} {caret(c.key)}
               </button>
