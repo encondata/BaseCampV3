@@ -571,8 +571,9 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                             <dt>Created</dt><dd className="mono">{longDate(o.created_at)}</dd>
                           </dl>
                         </div>
-                        {canManage && (
+                        {(canManage || godMode) && (
                           <div className="detail-actions">
+                            {canManage && (<>
                             <button className="mini-btn accent" onClick={() => setEditing(o)}>
                               Edit {cfg.kind}
                             </button>
@@ -585,10 +586,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                                 Archive
                               </button>
                             )}
-                          </div>
-                        )}
-                        {godMode && (
-                          <div className="detail-actions">
+                            </>)}
                             <GodDeleteButton visible={godMode} entityType={cfg.kind} entityId={o.id}
                                              label={o.name} pending={pd.pendingIds.has(o.id)}
                                              onChange={pd.pendingIds.has(o.id)

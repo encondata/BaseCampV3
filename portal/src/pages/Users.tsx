@@ -535,7 +535,7 @@ export default function Users() {
                               </div>
                             );
                           }
-                          if (!canManageUsers && !canManageRoles) return null;
+                          if (!canManageUsers && !canManageRoles && !godMode) return null;
                           const guard = (title: string) => title;
                           return (
                             <div className="detail-actions">
@@ -574,19 +574,15 @@ export default function Users() {
                                   Disable account
                                 </button>
                               ))}
+                              <GodDeleteButton visible={godMode} entityType="person"
+                                               entityId={u.person_id} label={u.display_name}
+                                               pending={pd.pendingIds.has(u.person_id)}
+                                               onChange={pd.pendingIds.has(u.person_id)
+                                                 ? () => pd.unmark(u.person_id)
+                                                 : () => pd.mark('person', u.person_id, u.display_name)} />
                             </div>
                           );
                         })()}
-                        {godMode && (
-                          <div className="detail-actions">
-                            <GodDeleteButton visible={godMode} entityType="person"
-                                             entityId={u.person_id} label={u.display_name}
-                                             pending={pd.pendingIds.has(u.person_id)}
-                                             onChange={pd.pendingIds.has(u.person_id)
-                                               ? () => pd.unmark(u.person_id)
-                                               : () => pd.mark('person', u.person_id, u.display_name)} />
-                          </div>
-                        )}
                       </div>
                     </div>
                   </div>

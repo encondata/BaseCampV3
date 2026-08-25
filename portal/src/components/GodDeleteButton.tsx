@@ -41,7 +41,7 @@ export default function GodDeleteButton({
     return (
       <span className="god-delete" data-entity-id={entityId} data-entity-type={entityType}>
         <span className="chip tag">Pending delete</span>
-        <button type="button" className="mini-btn sm" disabled={busy} onClick={() => void run()}>
+        <button type="button" className="mini-btn" disabled={busy} onClick={() => void run()}>
           {busy ? 'Undoing…' : 'Undo'}
         </button>
         {error && <span className="pf-error">{error}</span>}
@@ -51,7 +51,7 @@ export default function GodDeleteButton({
 
   return (
     <span className="god-delete" data-entity-id={entityId} data-entity-type={entityType}>
-      <button type="button" className="mini-btn sm danger" disabled={busy}
+      <button type="button" className="mini-btn danger" disabled={busy}
               onClick={() => {
                 if (!confirm(`Mark "${label}" for deletion?`)) return;
                 void run();

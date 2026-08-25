@@ -490,15 +490,13 @@ function WorkerDetail({
                   : <span className="chip c-green"><span className="dot" />portal access</span>)
                 : <span className="chip tag">no account</span>}</dd>
             </dl>
-            {canManage && (
+            {(canManage || godVisible) && (
               <div className="detail-actions">
-                <button className="mini-btn accent" onClick={() => setEditing(true)}>
-                  Edit profile
-                </button>
-              </div>
-            )}
-            {godVisible && (
-              <div className="detail-actions">
+                {canManage && (
+                  <button className="mini-btn accent" onClick={() => setEditing(true)}>
+                    Edit profile
+                  </button>
+                )}
                 <GodDeleteButton visible={godVisible} entityType="person"
                                  entityId={worker.person_id} label={worker.display_name}
                                  pending={pending} onChange={pending ? onUnmark : onMark} />

@@ -604,13 +604,11 @@ function SiteRowDetail({
 
       {mapOpen && <SiteMapModal site={site} onClose={() => setMapOpen(false)} />}
 
-      {canEdit && (
+      {(canEdit || godVisible) && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
-          <button className="btn-solid" onClick={onEdit}>Edit</button>
-        </div>
-      )}
-      {godVisible && (
-        <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
+          {canEdit && (
+            <button className="btn-solid" onClick={onEdit}>Edit</button>
+          )}
           <GodDeleteButton visible={godVisible} entityType="site" entityId={site.id}
                            label={site.name} pending={pending}
                            onChange={pending ? onUnmark : onMark} />
