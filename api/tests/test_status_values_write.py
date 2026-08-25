@@ -351,3 +351,43 @@ async def test_staff_with_initiatives_full_still_hits_the_rank_floor(
         "label": "Retrofit", "color": "#2f6fed"})
     assert resp.status_code == 403
     assert resp.json()["detail"]["code"] == "forbidden"
+
+
+async def test_rank_bypass_is_bound_to_the_record_types_own_resource(
+        client, db, seeded_user):
+    """_require_vocabulary_write checks `actor.access.can(rt.resource,
+    "change")` — the resource named by the record type being written, not
+    just any admin-tier resource grant. An admin (rank 60) with the
+    `initiatives` grant revoked must still be refused on
+    initiative_sub_type, even though rank alone clears the floor and the
+    admin still holds other FULL grants (e.g. `sites`). A buggy guard that
+    accepted "any admin-tier resource grant" instead of rt.resource
+    specifically would let this actor through — this pins that it can't.
+
+    The same actor writing `site` (whose resource, `sites`, was never
+    revoked) must still succeed — proving the 403 above is resource-bound
+    denial, not a blanket loss of the rank bypass."""
+    admin = Person(first_name="R", last_name="Bound")
+    db.add(admin)
+    await db.flush()
+    db.add(UserAccount(
+        person_id=admin.id, email="admin-bound@test.example.com",
+        password_hash=hash_password(
+            PW, pepper=get_settings().password_pepper.get_secret_value())))
+    db.add(PersonRole(person_id=admin.id, role="admin"))
+    db.add(PermissionOverride(person_id=admin.id, resource="initiatives",
+                              action="change", allow=False))
+    await db.commit()
+    hdrs = await login(client, email="admin-bound@test.example.com")
+
+    resp = await client.post("/status-values", headers=hdrs, json={
+        "record_type": "initiative_sub_type", "key": "retrofit",
+        "label": "Retrofit", "color": "#2f6fed"})
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "forbidden"
+
+    resp = await client.post("/status-values", headers=hdrs, json={
+        "record_type": "site", "key": "mothballed", "label": "Mothballed",
+        "color": "#8e44ad", "sort_order": 5})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["key"] == "mothballed"
