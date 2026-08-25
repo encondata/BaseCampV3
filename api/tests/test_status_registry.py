@@ -13,7 +13,8 @@ def test_launch_types_are_site_worker_asset_and_container():
     assert set(STATUS_REGISTRY) == {
         "site", "worker", "asset", "container", "container_type",
         "initiative", "initiative_type", "initiative_sub_type",
-        "initiative_work_type", "shipping_type", "partner_type"}
+        "initiative_work_type", "shipping_type", "partner_type",
+        "move_asset_status"}
 
 
 def test_every_record_type_points_at_a_real_resource():
@@ -48,3 +49,10 @@ def test_container_type_type_targets_the_containers_container_type_column():
     container_type = STATUS_REGISTRY["container_type"]
     assert (container_type.table, container_type.column,
              container_type.resource) == ("containers", "container_type", "containers")
+
+
+def test_move_asset_status_targets_the_initiative_assets_status_column():
+    move_asset_status = STATUS_REGISTRY["move_asset_status"]
+    assert (move_asset_status.table, move_asset_status.column,
+             move_asset_status.resource) == (
+        "initiative_assets", "status", "initiatives")

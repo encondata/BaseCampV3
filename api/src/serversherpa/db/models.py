@@ -6,7 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, Date, ForeignKey, Integer, Numeric, SmallInteger, Text, text,
+    BigInteger, Boolean, Date, ForeignKey, Integer, Numeric, SmallInteger, String, Text, text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, BYTEA, CITEXT, INET, JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -614,6 +614,37 @@ class InitiativeLink(Base):
     sort_order: Mapped[int | None]
     notes: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class InitiativeAsset(Base):
+    """Per-move asset roster (V2 moves_assets_list). Assets reach a move
+    only via the future bulk-import script or dev seeding — no
+    interactive picker."""
+
+    __tablename__ = "initiative_assets"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    initiative_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="CASCADE"))
+    asset_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("assets.id"))
+    priority_wave: Mapped[str | None] = mapped_column(String(30))
+    disposition: Mapped[str | None]
+    owner: Mapped[str | None]
+    source_rack: Mapped[str | None]
+    source_ru: Mapped[Decimal | None] = mapped_column(Numeric)
+    source_verified: Mapped[bool | None] = mapped_column(Boolean)
+    source_position: Mapped[str | None]
+    destination_rack: Mapped[str | None]
+    destination_ru: Mapped[Decimal | None] = mapped_column(Numeric)
+    destination_verified: Mapped[bool | None] = mapped_column(Boolean)
+    destination_position: Mapped[str | None]
+    cable_info: Mapped[str | None]
+    vendor_involved: Mapped[bool | None] = mapped_column(Boolean)
+    status: Mapped[str] = mapped_column(server_default="loaded_in_system")
+    added_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
 class Note(Base):
