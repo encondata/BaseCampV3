@@ -189,7 +189,6 @@ async def test_attach_race_loser_gets_409(client, db, seeded_user,
                              json={"asset_ids": [str(a.id)]})
     assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "assets_already_on_initiative"
-    del orig
 
 
 async def test_patch_whitelist_and_ru_number(client, db, seeded_user):
@@ -265,6 +264,36 @@ async def test_patch_invalid_ru(client, db, seeded_user):
                               headers=headers, json={"source_ru": "not-a-number"})
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "invalid_ru"
+
+
+async def test_patch_priority_wave_too_long_is_422(client, db, seeded_user):
+    headers = await login(client)
+    iid = await _move(client, headers)
+    a = await _asset(db, serial_number="SN-wave-len")
+    await db.commit()
+    assoc_id = (await client.post(
+        f"/initiatives/{iid}/assets", headers=headers,
+        json={"asset_ids": [str(a.id)]})).json()[0]["id"]
+
+    resp = await client.patch(f"/initiatives/assets/{assoc_id}",
+                              headers=headers, json={"priority_wave": "x" * 31})
+    assert resp.status_code == 422, resp.text
+
+
+async def test_patch_non_finite_ru_is_422(client, db, seeded_user):
+    headers = await login(client)
+    iid = await _move(client, headers)
+    a = await _asset(db, serial_number="SN-ru-nonfinite")
+    await db.commit()
+    assoc_id = (await client.post(
+        f"/initiatives/{iid}/assets", headers=headers,
+        json={"asset_ids": [str(a.id)]})).json()[0]["id"]
+
+    for bad in ("NaN", "Infinity", "-Infinity"):
+        resp = await client.patch(f"/initiatives/assets/{assoc_id}",
+                                  headers=headers, json={"source_ru": bad})
+        assert resp.status_code == 422, (bad, resp.text)
+        assert resp.json()["detail"]["code"] == "invalid_ru"
 
 
 async def test_patch_unknown_status(client, db, seeded_user):

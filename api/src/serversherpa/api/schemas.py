@@ -1220,7 +1220,7 @@ class InitiativeAssetsAddIn(BaseModel):
 
 
 class InitiativeAssetUpdateIn(BaseModel):
-    priority_wave: str | None = None
+    priority_wave: str | None = Field(None, max_length=30)
     disposition: str | None = None
     owner: str | None = None
     source_rack: str | None = None

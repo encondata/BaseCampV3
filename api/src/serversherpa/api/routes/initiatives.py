@@ -729,9 +729,12 @@ def _parse_ru(value: object) -> Decimal | None:
     if value is None:
         return None
     try:
-        return Decimal(str(value))
+        parsed = Decimal(str(value))
     except (InvalidOperation, ValueError):
         raise _err(422, "invalid_ru") from None
+    if not parsed.is_finite():
+        raise _err(422, "invalid_ru") from None
+    return parsed
 
 
 async def _check_asset_status(db: DbSession, data: dict) -> None:
