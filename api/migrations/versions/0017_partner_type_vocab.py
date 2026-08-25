@@ -57,7 +57,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("ALTER TABLE partners ALTER COLUMN partner_types DROP NOT NULL")
     op.execute("ALTER TABLE partners ALTER COLUMN partner_types DROP DEFAULT")
     op.execute("""
         ALTER TABLE partners ALTER COLUMN partner_types TYPE jsonb
