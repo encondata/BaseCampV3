@@ -143,8 +143,6 @@ async def test_worker_role_forbidden(client, db, seeded_user):
 
 async def test_shipping_type_usage_counts(client, db, seeded_user):
     """The Variables page usage counter must survive the text[] column."""
-    from serversherpa.db.models import Person, PersonRole
-
     headers = await login(client)
     await client.post("/initiatives", headers=headers, json={
         "name": "X", "initiative_type": "move", "shipping_types": ["truck"]})
@@ -156,7 +154,6 @@ async def test_shipping_type_usage_counts(client, db, seeded_user):
     await db.flush()
     db.add(PersonRole(person_id=dev.id, role="developer"))
     await db.commit()
-    from .test_assets_api import make_login
     dev_headers = await make_login(db, client, dev, "dev@test.example.com")
 
     resp = await client.get("/status-values", headers=dev_headers)

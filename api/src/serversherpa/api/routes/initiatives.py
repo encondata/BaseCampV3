@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
 
+from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     InitiativeCreateIn, InitiativeDetailOut, InitiativeItem,
@@ -24,10 +25,6 @@ from serversherpa.db.models import (
 from serversherpa.services.audit import audit, diff, snapshot
 
 router = APIRouter(prefix="/initiatives", tags=["initiatives"])
-
-# roles.rank for "admin" (migration 0009); super_admin/founder/developer
-# rank higher. Changing initiative_type after creation is admin-and-up.
-ADMIN_RANK = 60
 
 PARTNER_FIELDS = (
     "shipping_partner_id",
@@ -258,8 +255,9 @@ async def update_initiative(
     for field in NON_NULLABLE_FIELDS:
         if field in data and not data[field]:
             raise _err(422, f"{field}_required")
+    # Changing initiative_type after creation is admin-and-up only.
     if data.get("initiative_type") not in (None, initiative.initiative_type) \
-            and actor.access.max_rank < ADMIN_RANK:
+            and actor.access.max_rank < GATE_BYPASS_RANK:
         raise _err(403, "type_change_forbidden")
     await _check_refs(db, data)
 
