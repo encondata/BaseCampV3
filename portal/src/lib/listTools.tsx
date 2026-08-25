@@ -245,14 +245,23 @@ export function activeFilterCount(filters: ColumnFilters): number {
   return Object.keys(filters).length;
 }
 
-export function ColumnsButton({ columns, visible, onChange, godMode }: {
+export function ColumnsButton({ columns, visible, onChange, godMode, onReorder }: {
   columns: ColumnDef[];
   visible: Set<string>;
   onChange: (next: Set<string>) => void;
   godMode?: boolean;
+  /** When set, rows are drag-reorderable; a drop emits the FULL new key
+   *  order of `columns` (offered or not), so a partial persisted order
+   *  becomes complete on the first reorder. Pass display-ordered columns
+   *  so the list reads in on-screen order. */
+  onReorder?: (next: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useOutsideClose<HTMLDivElement>(() => setOpen(false));
+  const { dragProps, dropClass } = useReorderDrag(
+    (src, dst, before) => onReorder?.(moveKey(columns.map((c) => c.key), src, dst, before)),
+    'y',
+  );
 
   const toggle = (key: string) => {
     const next = new Set(visible);
@@ -275,8 +284,19 @@ export function ColumnsButton({ columns, visible, onChange, godMode }: {
           {offered.map((c) => {
             const on = visible.has(c.key);
             return (
-              <button key={c.key} className={`pop-item ${on ? 'on' : ''}`}
+              <button key={c.key}
+                      className={`pop-item ${on ? 'on' : ''} ${onReorder ? dropClass(c.key) : ''}`}
+                      {...(onReorder ? dragProps(c.key) : {})}
                       onClick={() => toggle(c.key)}>
+                {onReorder && (
+                  <span className="pop-grip" aria-hidden="true">
+                    <svg viewBox="0 0 8 12" fill="currentColor">
+                      <circle cx="2.5" cy="2" r="1.1" /><circle cx="5.5" cy="2" r="1.1" />
+                      <circle cx="2.5" cy="6" r="1.1" /><circle cx="5.5" cy="6" r="1.1" />
+                      <circle cx="2.5" cy="10" r="1.1" /><circle cx="5.5" cy="10" r="1.1" />
+                    </svg>
+                  </span>
+                )}
                 <span className="pop-check">{CHECK}</span>
                 {c.label}
               </button>

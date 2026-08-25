@@ -7,7 +7,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { applyColumnOrder, moveKey, useReorderDrag, type ColumnDef } from './listTools';
+import { applyColumnOrder, ColumnsButton, moveKey, useReorderDrag, type ColumnDef } from './listTools';
 
 // The pinned jsdom here has no DragEvent constructor, so @testing-library/dom's
 // generic Event fallback silently drops clientX/clientY from fireEvent.dragOver
@@ -128,5 +128,40 @@ describe('useReorderDrag', () => {
     fireEvent.dragStart(screen.getByTestId('a'), { dataTransfer: dt() });
     fireEvent.drop(screen.getByTestId('a'), { dataTransfer: dt() });
     expect(onMove).not.toHaveBeenCalled();
+  });
+});
+
+describe('ColumnsButton reorder', () => {
+  const BTN_COLS: ColumnDef[] = [col('a'), col('b'), col('c')];
+
+  it('emits the full new order when a row is dropped on another', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(
+      { left: 0, top: 100, width: 50, height: 20, right: 50, bottom: 120, x: 0, y: 100, toJSON: () => ({}) } as DOMRect,
+    );
+    const onReorder = vi.fn();
+    render(
+      <ColumnsButton columns={BTN_COLS} visible={new Set(['a', 'b', 'c'])}
+                     onChange={vi.fn()} onReorder={onReorder} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Columns' }));
+    // Exact-string names — a regex like /c/ would also match the "Columns" toggle.
+    const rowC = screen.getByRole('button', { name: 'c' });
+    const rowA = screen.getByRole('button', { name: 'a' });
+    fireEvent.dragStart(rowC, { dataTransfer: dt() });
+    fireEvent.dragOver(rowA, { clientY: 105, dataTransfer: dt() }); // top half → before
+    fireEvent.drop(rowA, { dataTransfer: dt() });
+    expect(onReorder).toHaveBeenCalledWith(['c', 'a', 'b']);
+    vi.restoreAllMocks();
+  });
+
+  it('still toggles visibility on click, and shows no grip without onReorder', () => {
+    const onChange = vi.fn();
+    const { container } = render(
+      <ColumnsButton columns={BTN_COLS} visible={new Set(['a'])} onChange={onChange} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Columns' }));
+    expect(container.querySelector('.pop-grip')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'b' }));
+    expect(onChange).toHaveBeenCalledWith(new Set(['a', 'b']));
   });
 });
