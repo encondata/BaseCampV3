@@ -1,7 +1,7 @@
 """Attachment flow: avatar upload/replace/delete against real MinIO."""
 
 from serversherpa.config import get_settings
-from serversherpa.db.models import Person, PersonRole, UserAccount
+from serversherpa.db.models import Initiative, Person, PersonRole, UserAccount
 from serversherpa.security.passwords import hash_password
 
 LOGIN = {"email": "alice@test.example.com", "password": "CorrectHorse9!"}
@@ -157,6 +157,23 @@ async def test_plain_worker_manages_own_avatar_only(client, seeded_user, db):
     await db.commit()
     resp = await _upload(client, headers, other.id)
     assert resp.status_code == 403
+
+
+async def test_initiative_attachments_list_empty(client, seeded_user, db):
+    """initiative is a registered attachment host (ENTITY_MODEL) even though
+    it has no avatar slot — listing on a fresh initiative just 200s empty."""
+    headers, _ = await _login(client)
+    initiative = Initiative(name="host-initiative-1", initiative_type="project")
+    db.add(initiative)
+    await db.commit()
+
+    resp = await client.get(
+        "/attachments",
+        headers=headers,
+        params={"entity_type": "initiative", "entity_id": str(initiative.id)},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == []
 
 
 async def test_client_anchored_override_denied_without_scope_map(client, seeded_user, db):

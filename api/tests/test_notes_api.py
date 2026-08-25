@@ -3,7 +3,7 @@ host entity's resource. Clients read their own assets' notes; staff write."""
 
 from sqlalchemy import select
 
-from serversherpa.db.models import Asset, AuditLog, Note
+from serversherpa.db.models import Asset, AuditLog, Initiative, Note
 from tests.test_assets_api import _client_contact, login
 
 
@@ -12,6 +12,13 @@ async def _asset(db, **kw):
     db.add(a)
     await db.commit()
     return a
+
+
+async def _initiative(db, **kw):
+    i = Initiative(name="host-initiative-1", initiative_type="project", **kw)
+    db.add(i)
+    await db.commit()
+    return i
 
 
 async def test_note_crud_with_audit(client, db, seeded_user):
@@ -43,6 +50,27 @@ async def test_note_crud_with_audit(client, db, seeded_user):
         f"/notes?entity_type=asset&entity_id={asset.id}", headers=hdrs)).json()
     assert listing == []                      # soft-deleted rows hidden
     assert (await db.get(Note, note["id"])).deleted_at is not None
+
+
+async def test_note_crud_on_initiative(client, db, seeded_user):
+    """initiative hosts notes exactly like asset/container — entity_type
+    'initiative' is registered in NOTE_HOSTS per the design spec."""
+    hdrs = await login(client)
+    initiative = await _initiative(db)
+
+    resp = await client.post("/notes", headers=hdrs, json={
+        "entity_type": "initiative", "entity_id": str(initiative.id),
+        "body": "Kickoff scheduled for next week."})
+    assert resp.status_code == 201, resp.text
+    note = resp.json()
+    assert note["entity_type"] == "initiative"
+    assert note["body"] == "Kickoff scheduled for next week."
+
+    listing = (await client.get(
+        f"/notes?entity_type=initiative&entity_id={initiative.id}",
+        headers=hdrs)).json()
+    assert len(listing) == 1
+    assert listing[0]["id"] == note["id"]
 
 
 async def test_unknown_entity_type_422(client, seeded_user):

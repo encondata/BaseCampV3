@@ -15,17 +15,19 @@ from sqlalchemy import select, update
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
 from serversherpa.api.schemas import AttachmentOut
-from serversherpa.db.models import Asset, Attachment, Client, Container, Partner, Person
+from serversherpa.db.models import (
+    Asset, Attachment, Client, Container, Initiative, Partner, Person,
+)
 from serversherpa.services.audit import audit
 from serversherpa.services.storage import presign_get, put_object
 
 router = APIRouter(prefix="/attachments", tags=["attachments"])
 
-EntityType = Literal["person", "client", "partner", "asset", "container"]
+EntityType = Literal["person", "client", "partner", "asset", "container", "initiative"]
 
 ENTITY_MODEL = {
     "person": Person, "client": Client, "partner": Partner, "asset": Asset,
-    "container": Container,
+    "container": Container, "initiative": Initiative,
 }
 AVATAR_KEY_FIELD = {"person": "avatar_key", "client": "logo_key", "partner": "logo_key"}
 Kind = Literal["avatar", "photo", "document"]
