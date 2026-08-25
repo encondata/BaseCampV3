@@ -252,48 +252,85 @@
 }
 .idet-rack-cell-btn:hover { color: var(--accent-soft); }
 
-/* ── rack elevation modal (Task 6) — SVG rack view opened from a rack
-   cell button above. A bit narrower than the plain modal-card default;
-   tall since the SVG itself is fixed-aspect (54 RU) and scrolls within
-   the body rather than being squashed to fit. ────────────────────── */
-.modal-card.rack-modal-card { width: min(420px, 94vw); }
+/* ── rack elevation modal (Task 6 redesign) — SVG rack view opened from a
+   rack cell button above, restyled to read as a physical server cabinet
+   rather than a bare outline chart: dark posts + EIA hole rails down each
+   inner edge, per-U hairlines, gradient equipment faceplates with a status
+   LED and vent lines. The palette is intentionally self-contained/dark
+   (hardcoded hex — real hardware doesn't take on the app's light/dark
+   theme); only the verified LED borrows var(--accent). ───────────────── */
+.modal-card.rack-modal-card { width: min(460px, 94vw); }
+.rack-modal-title {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  min-width: 0;
+}
+.rack-modal-title h3 { white-space: nowrap; }
+.rack-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.rack-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.rack-legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+}
+.rack-legend-swatch-verified { background: var(--accent); }
+.rack-legend-swatch-planned {
+  background: transparent;
+  border: 1.5px dashed #7d8694;
+}
 .rack-modal-body {
-  max-height: 78vh;
+  max-height: 70vh;
   overflow-y: auto;
   display: flex;
   justify-content: center;
 }
-.rack-svg-wrap { width: 100%; max-width: 320px; }
+.rack-svg-wrap { width: 100%; max-width: 400px; }
 .rack-svg { width: 100%; height: auto; display: block; }
 
-.rack-frame {
-  fill: var(--surface-2, #f5f7fa);
-  stroke: var(--paper-line);
-  stroke-width: 1;
-}
-.rack-scale-tick { stroke: var(--paper-line); stroke-width: 1; }
-.rack-scale-label {
+.rack-post { fill: #2b3038; }
+.rack-cap { fill: #2b3038; }
+.rack-interior { fill: #23272e; }
+.rack-u-hairline { stroke: #2c313a; stroke-width: 1; }
+.rack-rail-hole { fill: #1b1f24; }
+.rack-u-label {
   font-family: var(--font-mono);
-  font-size: 9px;
-  fill: var(--text-mute);
+  font-size: 7px;
+  fill: #8b93a0;
+}
+.rack-u-label-major { font-size: 8px; fill: #c7cdd6; font-weight: 600; }
+.rack-empty-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  fill: #8b93a0;
 }
 
-/* verified = filled accent block; unverified = outlined only, per spec.
-   Both keep the same accent-colored border so the distinction reads at a
-   glance without relying on color alone. */
-.rack-block {
-  stroke: var(--accent);
-  stroke-width: 1.4;
+.rack-faceplate {
+  fill: url(#rackFaceplateGradient);
+  stroke: #565e6a;
+  stroke-width: 1;
 }
-.rack-block-verified { fill: rgba(var(--accent-rgb), 0.32); }
-.rack-block-outline { fill: var(--paper, #fff); }
+.rack-faceplate-unverified {
+  fill-opacity: 0.35;
+  stroke: #7d8694;
+  stroke-dasharray: 4 3;
+}
+.rack-faceplate-vent { stroke: #2f353d; stroke-width: 1; }
+.rack-led-verified { fill: var(--accent); stroke: #1b1f24; stroke-width: 1.5; }
+.rack-led-unverified { fill: none; stroke: #8b93a0; stroke-width: 1; }
 .rack-block-label {
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  fill: var(--text-dark);
+  font-size: 8.5px;
+  fill: #e8ebef;
 }
-.rack-block-position {
-  font-family: var(--font-mono);
-  font-size: 8px;
-  fill: var(--text-mute);
-}
+.rack-block-label-unverified { fill: #aab1bb; }

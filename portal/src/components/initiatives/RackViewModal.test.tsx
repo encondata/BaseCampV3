@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { assignLanes, laneGeometry } from './RackViewModal';
+import { assignLanes, laneGeometry, rackLabel } from './RackViewModal';
 
 /* ── rack view collision layout (Task 6 fix-round) — laneGeometry is the
       pure geometry math behind the SVG's overlapping-block handling; tested
@@ -59,5 +59,42 @@ describe('laneGeometry', () => {
     const lanes = assignLanes(blocks);
     expect(lanes.get('a')).toBe(0);
     expect(lanes.get('b')).toBe(0);
+  });
+});
+
+/* ── rack faceplate label format (redesign) — one line, `name (position)`
+      when the side has a position note, else just the name, truncated to
+      fit the faceplate's lane width. ─────────────────────────────────── */
+
+describe('rackLabel', () => {
+  it('returns just the name when there is no position note', () => {
+    expect(rackLabel('w1-hs4-m0407', undefined, 200)).toBe('w1-hs4-m0407');
+    expect(rackLabel('w1-hs4-m0407', null, 200)).toBe('w1-hs4-m0407');
+  });
+
+  it('appends the position in parens on one line when present', () => {
+    expect(rackLabel('w1-hs4-m0407', 'rear', 200)).toBe('w1-hs4-m0407 (rear)');
+  });
+
+  it('leaves short labels untouched when they fit the lane width', () => {
+    expect(rackLabel('short', 'rear', 200)).toBe('short (rear)');
+  });
+
+  it('truncates with an ellipsis to fit a narrow lane width', () => {
+    // laneWidth 40 / 5.2px per char -> budget of 7 chars, so the full
+    // "very-long-name-here (rear)" string must be cut down.
+    const result = rackLabel('very-long-name-here', 'rear', 40);
+    expect(result.endsWith('…')).toBe(true);
+    expect(result.length).toBe(7); // floor(40 / 5.2) === 7 char budget
+  });
+
+  it('returns the untruncated label when given an unbounded lane width', () => {
+    expect(rackLabel('very-long-name-here', 'rear', Infinity))
+      .toBe('very-long-name-here (rear)');
+  });
+
+  it('never returns an empty string, even for a near-zero lane width', () => {
+    const result = rackLabel('anything', 'rear', 0);
+    expect(result.length).toBeGreaterThan(0);
   });
 });

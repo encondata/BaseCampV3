@@ -5,6 +5,13 @@
  * Assets table (InitiativeDetail.tsx); the placement math itself lives in
  * lib/initiatives.ts's `rackLayout` so it's unit-testable without jsdom —
  * this component only turns those blocks into SVG geometry.
+ *
+ * Redesigned (visual-only pass) to read as a physical server cabinet
+ * instead of a bare outline chart: dark posts with an EIA square-hole rail
+ * down each inner edge, per-U hairlines across the interior, and gradient
+ * equipment faceplates with a status LED and vent lines. The palette below
+ * is intentionally hardcoded (real hardware doesn't take on the app's
+ * light/dark theme) — only the verified LED borrows `var(--accent)`.
  */
 import { useEffect } from 'react';
 
@@ -12,12 +19,31 @@ import { rackLayout } from '../../lib/initiatives';
 import type { InitiativeAssetRow } from '../../lib/api';
 
 const RU_COUNT = 54;
-const RU_PX = 18;
-const FRAME_LEFT = 56; // room for the RU scale down the left edge
-const FRAME_RIGHT = 16;
-const FRAME_WIDTH = 320;
-const RACK_HEIGHT = RU_COUNT * RU_PX;
+const U_PX = 16;
+const POST_WIDTH = 26; // left/right cabinet posts
+const CAP_HEIGHT = 10; // top/bottom caps closing the cabinet
+const FRAME_WIDTH = 400;
+
+const INTERIOR_HEIGHT = RU_COUNT * U_PX; // 864
+const TOTAL_HEIGHT = INTERIOR_HEIGHT + CAP_HEIGHT * 2;
+const INTERIOR_TOP = CAP_HEIGHT;
+const INTERIOR_BOTTOM = INTERIOR_TOP + INTERIOR_HEIGHT;
+const INTERIOR_LEFT = POST_WIDTH;
+const INTERIOR_RIGHT = FRAME_WIDTH - POST_WIDTH;
+const INTERIOR_WIDTH = INTERIOR_RIGHT - INTERIOR_LEFT;
+
+const FACEPLATE_INSET = 4; // each side, within the interior
+const FACEPLATE_USABLE_WIDTH = INTERIOR_WIDTH - FACEPLATE_INSET * 2;
 const LANE_PX = 14; // horizontal offset step for overlapping blocks
+
+const HOLE_SIZE = 4;
+const HOLE_INSET = 6; // from each post's interior-facing edge
+const LEFT_HOLE_X = POST_WIDTH - HOLE_INSET - HOLE_SIZE;
+const RIGHT_HOLE_X = FRAME_WIDTH - POST_WIDTH + HOLE_INSET;
+const U_LABEL_X = LEFT_HOLE_X - 3; // right-aligned against the rail holes
+
+const RU_LIST = Array.from({ length: RU_COUNT }, (_, i) => i + 1);
+const HOLE_FRACTIONS = [0.2, 0.5, 0.8];
 
 /** Greedy interval-graph "lane" assignment for blocks that overlap in RU
  *  range — same idea as calendar-view event columns: walk blocks lowest-RU
@@ -67,9 +93,26 @@ export function laneGeometry(
   });
 }
 
+/** One-line faceplate label — `${name} (${position})` when the side has a
+ *  position note, else just the name — truncated with an ellipsis to fit
+ *  `laneWidth` on a simple char-budget (laneWidth / 5.2px per mono char is
+ *  a fine approximation for 8.5px var(--font-mono), no canvas measurement
+ *  needed). Pass `laneWidth: Infinity` to get the untruncated label back
+ *  (used for the <title> hover tooltip) without duplicating the format. */
+export function rackLabel(
+  name: string, position: string | null | undefined, laneWidth: number,
+): string {
+  const full = position ? `${name} (${position})` : name;
+  const maxChars = Math.max(1, Math.floor(laneWidth / 5.2));
+  if (full.length <= maxChars) return full;
+  return maxChars === 1 ? '…' : `${full.slice(0, maxChars - 1)}…`;
+}
+
 /** y (SVG, top-down) for the bottom edge of RU `ru` — RU 1 sits at the
  *  bottom of the elevation, so higher RU numbers move up (smaller y). */
-const yForRu = (ru: number) => RACK_HEIGHT - (ru - 1) * RU_PX;
+const yForRu = (ru: number) => INTERIOR_BOTTOM - (ru - 1) * U_PX;
+/** y for the top edge of RU `ru` (used for the rail hole/number rows). */
+const ruTop = (ru: number) => INTERIOR_BOTTOM - ru * U_PX;
 
 export default function RackViewModal({ rackName, side, rows, onClose }: {
   rackName: string;
@@ -86,11 +129,9 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   }, [onClose]);
 
   const blocks = rackLayout(rows, rackName, side);
-  const usableWidth = FRAME_WIDTH - FRAME_LEFT - FRAME_RIGHT;
-  const geometry = new Map(laneGeometry(blocks, usableWidth).map((g) => [g.id, g]));
-
-  const scaleMarks: number[] = [];
-  for (let ru = 5; ru < RU_COUNT; ru += 5) scaleMarks.push(ru);
+  const geometry = new Map(
+    laneGeometry(blocks, FACEPLATE_USABLE_WIDTH).map((g) => [g.id, g]),
+  );
 
   const sideLabel = side === 'source' ? 'Source' : 'Destination';
 
@@ -100,59 +141,119 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
     }}>
       <div className="modal-card rack-modal-card">
         <div className="modal-head">
-          <h3>Rack {rackName} — {sideLabel}</h3>
+          <div className="rack-modal-title">
+            <h3>Rack {rackName} — {sideLabel}</h3>
+            <div className="rack-legend" aria-hidden="true">
+              <span className="rack-legend-item">
+                <span className="rack-legend-swatch rack-legend-swatch-verified" />
+                Verified
+              </span>
+              <span className="rack-legend-item">
+                <span className="rack-legend-swatch rack-legend-swatch-planned" />
+                Planned
+              </span>
+            </div>
+          </div>
           <button className="modal-close" aria-label="Close" onClick={onClose}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
                  strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
           </button>
         </div>
         <div className="modal-body rack-modal-body">
-          {blocks.length === 0
-            ? <p className="page-hint">No assets on this move are racked here.</p>
-            : (
-              <div className="rack-svg-wrap">
-                <svg viewBox={`0 0 ${FRAME_WIDTH} ${RACK_HEIGHT}`} className="rack-svg"
-                     role="img" aria-label={`Rack ${rackName} elevation, ${sideLabel.toLowerCase()}`}>
-                  <rect x={FRAME_LEFT} y={0} width={usableWidth} height={RACK_HEIGHT}
-                        className="rack-frame" />
-                  {scaleMarks.map((ru) => (
-                    <g key={ru}>
-                      <line x1={FRAME_LEFT} y1={yForRu(ru)} x2={FRAME_LEFT + usableWidth}
-                            y2={yForRu(ru)} className="rack-scale-tick" />
-                      <text x={FRAME_LEFT - 8} y={yForRu(ru)} textAnchor="end"
-                            dominantBaseline="middle" className="rack-scale-label">
-                        {ru}
-                      </text>
-                    </g>
-                  ))}
-                  {blocks.map((b) => {
-                    const g = geometry.get(b.id);
-                    const x = FRAME_LEFT + (g?.x ?? 0);
-                    const width = g?.width ?? usableWidth;
-                    const height = b.height * RU_PX;
-                    const y = yForRu(b.ru + b.height);
-                    return (
-                      <g key={b.id}>
-                        <rect x={x} y={y} width={width} height={height}
-                              rx={3}
-                              className={`rack-block ${b.verified ? 'rack-block-verified'
-                                : 'rack-block-outline'}`} />
-                        <text x={x + 6} y={y + height / 2 - (b.position ? 6 : 0)}
-                              dominantBaseline="middle" className="rack-block-label">
-                          {b.label}
-                        </text>
-                        {b.position && (
-                          <text x={x + 6} y={y + height / 2 + 10}
-                                dominantBaseline="middle" className="rack-block-position">
-                            {b.position}
-                          </text>
-                        )}
-                      </g>
-                    );
-                  })}
-                </svg>
-              </div>
-            )}
+          <div className="rack-svg-wrap">
+            <svg viewBox={`0 0 ${FRAME_WIDTH} ${TOTAL_HEIGHT}`} className="rack-svg"
+                 role="img" aria-label={`Rack ${rackName} elevation, ${sideLabel.toLowerCase()}`}>
+              <defs>
+                <linearGradient id="rackFaceplateGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#454c57" />
+                  <stop offset="100%" stopColor="#383e47" />
+                </linearGradient>
+              </defs>
+
+              {/* cabinet frame: full-height posts + top/bottom caps */}
+              <rect x={0} y={0} width={POST_WIDTH} height={TOTAL_HEIGHT} className="rack-post" />
+              <rect x={FRAME_WIDTH - POST_WIDTH} y={0} width={POST_WIDTH} height={TOTAL_HEIGHT}
+                    className="rack-post" />
+              <rect x={0} y={0} width={FRAME_WIDTH} height={CAP_HEIGHT} className="rack-cap" />
+              <rect x={0} y={TOTAL_HEIGHT - CAP_HEIGHT} width={FRAME_WIDTH} height={CAP_HEIGHT}
+                    className="rack-cap" />
+
+              {/* interior + per-U hairlines */}
+              <rect x={INTERIOR_LEFT} y={INTERIOR_TOP} width={INTERIOR_WIDTH}
+                    height={INTERIOR_HEIGHT} className="rack-interior" />
+              {Array.from({ length: RU_COUNT + 1 }, (_, i) => i).map((i) => (
+                <line key={i} x1={INTERIOR_LEFT} x2={INTERIOR_RIGHT}
+                      y1={INTERIOR_TOP + i * U_PX} y2={INTERIOR_TOP + i * U_PX}
+                      className="rack-u-hairline" />
+              ))}
+
+              {/* EIA rail holes, one <g> per post — cheap flat rects, no filters */}
+              <g className="rack-rail-holes">
+                {RU_LIST.flatMap((ru) => HOLE_FRACTIONS.map((frac, i) => (
+                  <rect key={`l-${ru}-${i}`} x={LEFT_HOLE_X}
+                        y={ruTop(ru) + frac * U_PX - HOLE_SIZE / 2}
+                        width={HOLE_SIZE} height={HOLE_SIZE} className="rack-rail-hole" />
+                )))}
+              </g>
+              <g className="rack-rail-holes">
+                {RU_LIST.flatMap((ru) => HOLE_FRACTIONS.map((frac, i) => (
+                  <rect key={`r-${ru}-${i}`} x={RIGHT_HOLE_X}
+                        y={ruTop(ru) + frac * U_PX - HOLE_SIZE / 2}
+                        width={HOLE_SIZE} height={HOLE_SIZE} className="rack-rail-hole" />
+                )))}
+              </g>
+
+              {/* U numbering, left post only */}
+              <g className="rack-u-labels">
+                {RU_LIST.map((ru) => (
+                  <text key={ru} x={U_LABEL_X} y={ruTop(ru) + U_PX / 2} textAnchor="end"
+                        dominantBaseline="middle"
+                        className={ru % 5 === 0 ? 'rack-u-label rack-u-label-major' : 'rack-u-label'}>
+                    {ru}
+                  </text>
+                ))}
+              </g>
+
+              {blocks.length === 0 ? (
+                <text x={INTERIOR_LEFT + INTERIOR_WIDTH / 2} y={INTERIOR_TOP + INTERIOR_HEIGHT / 2}
+                      textAnchor="middle" dominantBaseline="middle" className="rack-empty-label">
+                  No assets recorded at this rack
+                </text>
+              ) : blocks.map((b) => {
+                const g = geometry.get(b.id);
+                const x = INTERIOR_LEFT + FACEPLATE_INSET + (g?.x ?? 0);
+                const width = g?.width ?? FACEPLATE_USABLE_WIDTH;
+                const fullHeight = b.height * U_PX;
+                const y = yForRu(b.ru + b.height) + 1;
+                const height = fullHeight - 2;
+                const showVents = height >= 12;
+                const label = rackLabel(b.label, b.position, width);
+                const fullLabel = rackLabel(b.label, b.position, Infinity);
+                const ledCx = x + width - 10;
+                const ledCy = y + height / 2;
+                return (
+                  <g key={b.id}>
+                    <rect x={x} y={y} width={width} height={height} rx={2}
+                          className={`rack-faceplate ${b.verified ? ''
+                            : 'rack-faceplate-unverified'}`} />
+                    {showVents && [0.6, 0.75, 0.9].map((frac) => (
+                      <line key={frac} x1={x + 8} x2={x + 8 + width * 0.6}
+                            y1={y + height * frac} y2={y + height * frac}
+                            className="rack-faceplate-vent" />
+                    ))}
+                    <circle cx={ledCx} cy={ledCy} r={3}
+                            className={b.verified ? 'rack-led-verified' : 'rack-led-unverified'} />
+                    <text x={x + 8} y={y + height / 2} dominantBaseline="middle"
+                          className={`rack-block-label ${b.verified ? ''
+                            : 'rack-block-label-unverified'}`}>
+                      {label}
+                      <title>{fullLabel}</title>
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
         </div>
       </div>
     </div>
