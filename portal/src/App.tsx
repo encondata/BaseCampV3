@@ -10,6 +10,7 @@ import Audit from './pages/Audit';
 import Clients from './pages/Clients';
 import Containers from './pages/Containers';
 import Dev from './pages/Dev';
+import DevDatabase from './pages/DevDatabase';
 import External from './pages/External';
 import Home from './pages/Home';
 import Initiatives from './pages/Initiatives';
@@ -56,6 +57,9 @@ export default function App() {
             } />
             <Route path="/admin/audit" element={<ProtectedRoute resource="audit"><Audit /></ProtectedRoute>} />
             <Route path="/dev" element={<ProtectedRoute resource="devtools"><Dev /></ProtectedRoute>} />
+            <Route path="/dev/database" element={
+              <ProtectedRoute resource="devtools"><DevDatabase /></ProtectedRoute>
+            } />
             <Route path="/dev/database/variables" element={
               <ProtectedRoute resource="devtools"><Variables /></ProtectedRoute>
             } />

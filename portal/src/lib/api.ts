@@ -1612,3 +1612,25 @@ export async function unmarkPendingDelete(markerId: string): Promise<void> {
   const resp = await apiFetch(`/devtools/pending-deletes/${markerId}`, { method: 'DELETE' });
   if (!resp.ok) throw await errorFrom(resp);
 }
+
+export interface PendingDeleteFailure {
+  entity_type: string;
+  entity_id: string;
+  label: string;
+  reason: string;
+}
+
+export interface PendingDeleteReconcileOut {
+  deleted: number;
+  failed: PendingDeleteFailure[];
+}
+
+/** Hard-deletes every marked target. Each target runs in its own server-side
+ *  savepoint, so a handful of FK violations don't block the rest of the
+ *  batch — see routes/devtools.py:reconcile_pending_deletes. Failed rows
+ *  keep their marker (for a later retry) and come back in `failed`. */
+export async function reconcilePendingDeletes(): Promise<PendingDeleteReconcileOut> {
+  const resp = await apiFetch('/devtools/pending-deletes/reconcile', { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}

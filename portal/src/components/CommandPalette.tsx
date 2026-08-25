@@ -85,6 +85,7 @@ export default function CommandPalette() {
       ...navGated('Access control', '/access', 'access'),
       ...navGated('Settings', '/settings', 'settings'),
       ...navGated('Developer tools', '/dev', 'devtools', true),
+      ...navGated('Database', '/dev/database', 'devtools', true),
       ...navGated('Variables', '/dev/database/variables', 'devtools', true),
       { group: 'Navigate', label: 'View my profile', icon: NAV_ICON, run: () => navigate('/me') },
       ...(can('users', 'add') ? [{

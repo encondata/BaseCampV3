@@ -28,6 +28,7 @@ export const ROUTE_RESOURCE: Record<string, string> = {
   '/admin/asset-models': 'asset_models',
   '/audit': 'audit',
   '/dev': 'devtools',
+  '/dev/database': 'devtools',
   '/dev/database/variables': 'devtools',
 };
 

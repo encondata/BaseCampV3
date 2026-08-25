@@ -244,8 +244,8 @@ export const NAV_SECTIONS: NavSection[] = [
         ),
       },
       {
-        to: '/dev/database/variables',
-        label: 'Variables',
+        to: '/dev/database',
+        label: 'Database',
         resource: 'devtools',
         godOnly: true,
         icon: (
@@ -254,6 +254,18 @@ export const NAV_SECTIONS: NavSection[] = [
             <ellipse cx="12" cy="6" rx="8" ry="3" />
             <path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6" />
             <path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" />
+          </svg>
+        ),
+      },
+      {
+        to: '/dev/database/variables',
+        label: 'Variables',
+        resource: 'devtools',
+        godOnly: true,
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 6h16M4 12h16M4 18h10" />
           </svg>
         ),
       },
