@@ -150,7 +150,7 @@ export default function InitiativeEditModal({
     <div className="modal-scrim" onMouseDown={(e) => {
       if (e.target === e.currentTarget && !saving) onClose();
     }}>
-      <div className="modal-card">
+      <div className="modal-card init-modal-card">
         <div className="modal-head">
           <h3>{title}</h3>
           <button className="modal-close" aria-label="Close" onClick={onClose}
@@ -211,15 +211,19 @@ export default function InitiativeEditModal({
                   onChange={(v) => setField('client_id', v)}
                   options={orgOptions(clients)}
                 /></div>
-              <div><label>Site</label>
-                <ComboBox
-                  placeholder="Type to search sites…"
-                  value={form.site_id}
-                  clearable
-                  disabled={locked}
-                  onChange={(v) => setField('site_id', v)}
-                  options={siteOptions(form.site_id)}
-                /></div>
+              {/* moves carry origin/destination instead — a third generic
+                  site dropdown would be a duplicate */}
+              {!sections.move && (
+                <div><label>Site</label>
+                  <ComboBox
+                    placeholder="Type to search sites…"
+                    value={form.site_id}
+                    clearable
+                    disabled={locked}
+                    onChange={(v) => setField('site_id', v)}
+                    options={siteOptions(form.site_id)}
+                  /></div>
+              )}
               <div><label>Location (free text)</label>
                 <input value={form.location} disabled={locked}
                        onChange={(e) => setField('location', e.target.value)} /></div>
@@ -273,10 +277,9 @@ export default function InitiativeEditModal({
                            onChange={(e) => setField('real_end_at', e.target.value)} /></div>
                   <div style={{ gridColumn: '1 / -1' }}>
                     <label>Shipping types</label>
-                    <div className="chips">
+                    <div className="init-checks">
                       {shippingTypes.map((s) => (
-                        <label key={s.key} className="chip tag"
-                               style={{ cursor: 'pointer' }}>
+                        <label key={s.key} className="init-check">
                           <input type="checkbox"
                                  checked={form.shipping_types.includes(s.key)}
                                  disabled={locked}
@@ -286,33 +289,42 @@ export default function InitiativeEditModal({
                       ))}
                     </div></div>
                   {partnerCombo('Shipping partner', 'shipping_partner_id')}
-                  <div><label>Priority devices</label>
-                    <input type="checkbox" checked={form.priority_devices}
-                           disabled={locked}
-                           onChange={(e) =>
-                             setFlag('priority_devices', e.target.checked)} /></div>
+                  <div style={{ alignSelf: 'end' }}>
+                    <label className="init-check">
+                      <input type="checkbox" checked={form.priority_devices}
+                             disabled={locked}
+                             onChange={(e) =>
+                               setFlag('priority_devices', e.target.checked)} />
+                      Priority devices
+                    </label></div>
                   {partnerCombo('Origin tech partner', 'origin_tech_partner_id')}
                   {partnerCombo('Origin cable partner', 'origin_cable_partner_id')}
                   {partnerCombo('Origin logistics partner',
                                 'origin_logistics_partner_id')}
-                  <div><label>Origin vendor involved</label>
-                    <input type="checkbox" checked={form.origin_vendor_involved}
-                           disabled={locked}
-                           onChange={(e) =>
-                             setFlag('origin_vendor_involved', e.target.checked)} /></div>
+                  <div style={{ alignSelf: 'end' }}>
+                    <label className="init-check">
+                      <input type="checkbox" checked={form.origin_vendor_involved}
+                             disabled={locked}
+                             onChange={(e) =>
+                               setFlag('origin_vendor_involved', e.target.checked)} />
+                      Origin vendor involved
+                    </label></div>
                   {partnerCombo('Destination tech partner',
                                 'destination_tech_partner_id')}
                   {partnerCombo('Destination cable partner',
                                 'destination_cable_partner_id')}
                   {partnerCombo('Destination logistics partner',
                                 'destination_logistics_partner_id')}
-                  <div><label>Destination vendor involved</label>
-                    <input type="checkbox"
-                           checked={form.destination_vendor_involved}
-                           disabled={locked}
-                           onChange={(e) =>
-                             setFlag('destination_vendor_involved',
-                                     e.target.checked)} /></div>
+                  <div style={{ alignSelf: 'end' }}>
+                    <label className="init-check">
+                      <input type="checkbox"
+                             checked={form.destination_vendor_involved}
+                             disabled={locked}
+                             onChange={(e) =>
+                               setFlag('destination_vendor_involved',
+                                       e.target.checked)} />
+                      Destination vendor involved
+                    </label></div>
                 </div>
               </>
             )}

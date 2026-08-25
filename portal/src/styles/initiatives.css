@@ -1,0 +1,120 @@
+/**
+ * Initiatives — row-detail section cards and the wide edit modal.
+ * Tokens come from chrome.css / directory.css (--surface, --paper-line, …).
+ */
+
+/* ── row detail: defined section cards ────────────────────────────── */
+.init-panel {
+  background: var(--surface);
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  padding: 16px 18px;
+  min-width: 0;
+}
+/* directory.css scopes .eyebrow-sm to .detail-block — mirror it here */
+.init-panel .eyebrow-sm {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  margin: 0 0 14px;
+}
+.init-panel .pf-error { display: block; margin-top: 10px; }
+
+/* one person / link per row; controls share one height, actions right */
+.init-rows .init-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px 0;
+}
+.init-rows .init-row + .init-row { border-top: 1px solid var(--paper-line); }
+.init-row .init-name { font-size: 13px; font-weight: 500; color: var(--text-dark); }
+.init-row .init-sub { font-size: 12.5px; color: var(--text-mute); }
+.init-row .spacer { margin-left: auto; }
+.init-tag {
+  flex: 0 0 76px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.init-name-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--c-blue);
+  cursor: pointer;
+}
+.init-name-btn:hover { text-decoration: underline; }
+
+/* small button variant sized to sit beside 24px chips */
+.mini-btn.sm { height: 26px; padding: 0 10px; font-size: 11.5px; border-radius: 7px; }
+
+/* add-forms inside panels — separated from the rows above */
+.init-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--paper-line);
+}
+.init-field { display: flex; flex-direction: column; flex: 0 1 280px; min-width: 240px; }
+.init-field label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  margin-bottom: 6px;
+}
+/* the action button matches the combo input's rendered height */
+.init-add .mini-btn { height: 40px; border-radius: 9px; }
+
+/* ── check pills (shipping types, boolean flags) ──────────────────── */
+.init-checks { display: flex; flex-wrap: wrap; gap: 8px; }
+/* .pf-form label.init-check outranks .pf-form label's mono/uppercase/block
+   styling — reset those here so the pill keeps its own typography */
+.init-check,
+.pf-form label.init-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  margin: 0;
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  background: var(--surface-2, #f5f7fa);
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--text-dark);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.init-check input { margin: 0; accent-color: var(--c-blue); }
+.init-check:has(input:checked) {
+  color: var(--c-blue);
+  background: var(--c-blue-bg);
+  border-color: var(--c-blue-bd);
+}
+.init-check:has(input:disabled) { opacity: 0.6; cursor: default; }
+
+/* ── wide edit modal — dynamic with the viewport ──────────────────── */
+.modal-card.init-modal-card { width: min(980px, 94vw); overflow-x: hidden; }
+.init-modal-card .pf-form {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}

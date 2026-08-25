@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
+import ComboBox from '../components/ComboBox';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import {
@@ -53,6 +54,7 @@ import {
   type ColumnDef,
 } from '../lib/listTools';
 import '../styles/directory.css';
+import '../styles/initiatives.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
 import '../styles/assets.css';
@@ -530,15 +532,24 @@ function InitiativeRowDetail({
     <><dt>{label}</dt><dd>{value || '—'}</dd></>
   );
 
+  const typeChip = (label: string, color: string) => (
+    <span className="chip custom" style={{ '--chip': color } as CSSProperties}>
+      <span className="dot" />{label}
+    </span>
+  );
+
   return (
     <div className="detail-grid">
-      <div className="detail-block">
+      <div className="init-panel"
+           style={initiative.initiative_type !== 'move'
+             ? { gridColumn: '1 / -1' } : undefined}>
         <p className="eyebrow-sm">Overview</p>
         <dl className="kv">
           {kv('Type', initiative.type_label)}
           {kv('Sub-type', initiative.sub_type_label)}
           {kv('Client', initiative.client_name)}
-          {kv('Site', initiative.site_name)}
+          {initiative.initiative_type !== 'move'
+            && kv('Site', initiative.site_name)}
           {kv('Location', initiative.location)}
           {kv('Scheduled', [initiativeCellText(initiative, 'start'),
                             initiativeCellText(initiative, 'end')]
@@ -548,7 +559,7 @@ function InitiativeRowDetail({
         </dl>
       </div>
       {initiative.initiative_type === 'move' && (
-        <div className="detail-block">
+        <div className="init-panel">
           <p className="eyebrow-sm">Move</p>
           <dl className="kv">
             {kv('Origin', initiative.origin_site_name)}
@@ -562,73 +573,7 @@ function InitiativeRowDetail({
         </div>
       )}
 
-      <div className="detail-block" style={{ gridColumn: '1 / -1' }}>
-        <p className="eyebrow-sm">People{detail ? ` — ${detail.people.length}` : ''}</p>
-        {detail === null && <p className="page-hint">Loading…</p>}
-        {detail?.people.length === 0
-          && <p className="page-hint">No one assigned yet.</p>}
-        {detail && detail.people.length > 0 && (
-          <dl className="kv">
-            {detail.people.map((p) => (
-              <span key={p.id} style={{ display: 'contents' }}>
-                <dt>{p.person_name}</dt>
-                <dd>
-                  {p.work_type_label && p.work_type_color && (
-                    <span className="chip custom"
-                          style={{ '--chip': p.work_type_color } as CSSProperties}>
-                      <span className="dot" />{p.work_type_label}
-                    </span>
-                  )}
-                  {p.rating != null && ` ★${p.rating}`}
-                  {canEdit && (
-                    <button type="button" className="mini-btn danger"
-                            disabled={busy}
-                            onClick={() => void run(
-                              () => removeInitiativePerson(p.id))}>
-                      Remove
-                    </button>
-                  )}
-                </dd>
-              </span>
-            ))}
-          </dl>
-        )}
-        {canEdit && (
-          <div className="pf-form">
-            <div><label>Add person</label>
-              <select value={pendingPerson} disabled={busy}
-                      onChange={(e) => setPendingPerson(e.target.value)}>
-                <option value="">Pick a person…</option>
-                {personOptions.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select></div>
-            <div><label>Work type</label>
-              <select value={pendingWorkType} disabled={busy}
-                      onChange={(e) => setPendingWorkType(e.target.value)}>
-                <option value="">(none)</option>
-                {workTypes.map((w) => (
-                  <option key={w.key} value={w.key}>{w.label}</option>
-                ))}
-              </select></div>
-            <div><label>&nbsp;</label>
-              <button type="button" className="mini-btn"
-                      disabled={busy || !pendingPerson}
-                      onClick={() => void run(async () => {
-                        await addInitiativePerson(initiative.id, {
-                          person_id: pendingPerson,
-                          work_type: pendingWorkType || null,
-                        });
-                        setPendingPerson('');
-                        setPendingWorkType('');
-                      })}>
-                Add
-              </button></div>
-          </div>
-        )}
-      </div>
-
-      <div className="detail-block" style={{ gridColumn: '1 / -1' }}>
+      <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
         <p className="eyebrow-sm">Linked initiatives</p>
         {detail === null && <p className="page-hint">Loading…</p>}
         {detail && detail.links_children.length === 0
@@ -636,76 +581,134 @@ function InitiativeRowDetail({
           && <p className="page-hint">No linked initiatives.</p>}
         {detail && (detail.links_children.length > 0
           || detail.links_parents.length > 0) && (
-          <dl className="kv">
+          <div className="init-rows">
             {detail.links_children.map((l) => (
-              <span key={l.id} style={{ display: 'contents' }}>
-                <dt>Contains</dt>
-                <dd>
-                  <button type="button" className="mini-btn"
-                          onClick={() => onNavigate(l.other_id)}>
-                    {l.other_name}
+              <div key={l.id} className="init-row">
+                <span className="init-tag">Contains</span>
+                <button type="button" className="init-name-btn"
+                        onClick={() => onNavigate(l.other_id)}>
+                  {l.other_name}
+                </button>
+                {typeChip(l.other_type_label, l.other_type_color)}
+                {l.role && <span className="init-sub">{l.role}</span>}
+                {canEdit && (
+                  <button type="button" className="mini-btn sm danger spacer"
+                          disabled={busy}
+                          onClick={() => void run(
+                            () => removeInitiativeLink(l.id))}>
+                    Unlink
                   </button>
-                  <span className="chip custom"
-                        style={{ '--chip': l.other_type_color } as CSSProperties}>
-                    <span className="dot" />{l.other_type_label}
-                  </span>
-                  {l.role && ` · ${l.role}`}
-                  {canEdit && (
-                    <button type="button" className="mini-btn danger"
-                            disabled={busy}
-                            onClick={() => void run(
-                              () => removeInitiativeLink(l.id))}>
-                      Unlink
-                    </button>
-                  )}
-                </dd>
-              </span>
+                )}
+              </div>
             ))}
             {detail.links_parents.map((l) => (
-              <span key={l.id} style={{ display: 'contents' }}>
-                <dt>Part of</dt>
-                <dd>
-                  <button type="button" className="mini-btn"
-                          onClick={() => onNavigate(l.other_id)}>
-                    {l.other_name}
-                  </button>
-                  <span className="chip custom"
-                        style={{ '--chip': l.other_type_color } as CSSProperties}>
-                    <span className="dot" />{l.other_type_label}
-                  </span>
-                </dd>
-              </span>
+              <div key={l.id} className="init-row">
+                <span className="init-tag">Part of</span>
+                <button type="button" className="init-name-btn"
+                        onClick={() => onNavigate(l.other_id)}>
+                  {l.other_name}
+                </button>
+                {typeChip(l.other_type_label, l.other_type_color)}
+              </div>
             ))}
-          </dl>
+          </div>
         )}
         {canEdit && (
-          <div className="pf-form">
-            <div><label>Link an initiative (as child)</label>
-              <select value={pendingChild} disabled={busy}
-                      onChange={(e) => setPendingChild(e.target.value)}>
-                <option value="">Pick an initiative…</option>
-                {childOptions.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label} ({o.sub})</option>
-                ))}
-              </select></div>
-            <div><label>&nbsp;</label>
-              <button type="button" className="mini-btn"
-                      disabled={busy || !pendingChild}
-                      onClick={() => void run(async () => {
-                        await addInitiativeLink(initiative.id,
-                                                { child_id: pendingChild });
-                        setPendingChild('');
-                      })}>
-                Link
-              </button></div>
+          <div className="init-add">
+            <div className="init-field">
+              <label>Link an initiative (as child)</label>
+              <ComboBox
+                placeholder="Type to search initiatives…"
+                value={pendingChild}
+                disabled={busy}
+                onChange={setPendingChild}
+                options={childOptions}
+              />
+            </div>
+            <button type="button" className="mini-btn"
+                    disabled={busy || !pendingChild}
+                    onClick={() => void run(async () => {
+                      await addInitiativeLink(initiative.id,
+                                              { child_id: pendingChild });
+                      setPendingChild('');
+                    })}>
+              Link
+            </button>
           </div>
         )}
         {panelError && <span className="pf-error">{panelError}</span>}
       </div>
 
-      <NotesFilesPanel entityType="initiative" entityId={initiative.id}
-                       canWrite={canEdit} />
+      <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
+        <NotesFilesPanel entityType="initiative" entityId={initiative.id}
+                         canWrite={canEdit} />
+      </div>
+
+      <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
+        <p className="eyebrow-sm">People{detail ? ` — ${detail.people.length}` : ''}</p>
+        {detail === null && <p className="page-hint">Loading…</p>}
+        {detail?.people.length === 0
+          && <p className="page-hint">No one assigned yet.</p>}
+        {detail && detail.people.length > 0 && (
+          <div className="init-rows">
+            {detail.people.map((p) => (
+              <div key={p.id} className="init-row">
+                <span className="init-name">{p.person_name}</span>
+                {p.work_type_label && p.work_type_color
+                  && typeChip(p.work_type_label, p.work_type_color)}
+                {p.rating != null
+                  && <span className="init-sub">★ {p.rating}</span>}
+                {canEdit && (
+                  <button type="button" className="mini-btn sm danger spacer"
+                          disabled={busy}
+                          onClick={() => void run(
+                            () => removeInitiativePerson(p.id))}>
+                    Remove
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {canEdit && (
+          <div className="init-add">
+            <div className="init-field">
+              <label>Add person</label>
+              <ComboBox
+                placeholder="Type to search people…"
+                value={pendingPerson}
+                disabled={busy}
+                onChange={setPendingPerson}
+                options={personOptions}
+              />
+            </div>
+            <div className="init-field">
+              <label>Work type</label>
+              <ComboBox
+                placeholder="Type to search work types…"
+                value={pendingWorkType}
+                clearable
+                disabled={busy}
+                onChange={setPendingWorkType}
+                options={workTypes.map((w) => ({ value: w.key, label: w.label }))}
+              />
+            </div>
+            <button type="button" className="mini-btn"
+                    disabled={busy || !pendingPerson}
+                    onClick={() => void run(async () => {
+                      await addInitiativePerson(initiative.id, {
+                        person_id: pendingPerson,
+                        work_type: pendingWorkType || null,
+                      });
+                      setPendingPerson('');
+                      setPendingWorkType('');
+                    })}>
+              Add
+            </button>
+          </div>
+        )}
+      </div>
+
       {canEdit && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
           <button className="btn-solid" onClick={onEdit}>Edit</button>
