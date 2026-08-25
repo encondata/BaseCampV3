@@ -215,3 +215,23 @@
   border-radius: 5px 0 0 5px;
   transition: width 0.2s ease;
 }
+
+/* row actions (Task 4) — same treatment as .idet-people-actions */
+.idet-assets-actions { display: flex; gap: 8px; white-space: nowrap; }
+
+/* ── asset edit dialog (Task 4) — a bit wider than the plain modal-card
+   default to give the source/destination pairs room to breathe. ────── */
+.modal-card.idet-asset-modal-card { width: min(680px, 96vw); }
+.idet-asset-pair-labels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin: -4px 0 6px;
+}
+.idet-asset-pair-labels span {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
