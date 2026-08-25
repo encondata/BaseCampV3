@@ -180,7 +180,9 @@ routes above `/{id}`.
 | `POST /initiatives/{id}/links` | change | 422 `self_link` / `circular_link`, 409 `duplicate_link` |
 | `PATCH /initiatives/links/{link_id}` | change | role / sort_order / notes |
 | `DELETE /initiatives/links/{link_id}` | change | hard delete of the link row |
-| `GET /initiatives/{id}/audit` | view | paginated (limit ≤ 500) |
+Audit history: no per-entity endpoint — every mutation writes
+`entity_type="initiative"` audit rows, which the existing global `/audit`
+page already serves (same as containers).
 
 Error codes: `initiative_not_found`, `client_not_found`, `site_not_found`,
 `partner_not_found`, `person_not_found`, `unknown_status`,
