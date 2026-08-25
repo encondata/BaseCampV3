@@ -274,9 +274,18 @@ export default function InitiativeDetail() {
         (c) => moveAssetCellText(a, c.key).toLowerCase().includes(q));
     });
     return filtered.sort((a, b) => {
-      const primary = naturalCompare(
-        moveAssetCellText(a, assetsSortKey), moveAssetCellText(b, assetsSortKey))
-        * assetsSortDir;
+      const aText = moveAssetCellText(a, assetsSortKey);
+      const bText = moveAssetCellText(b, assetsSortKey);
+      // Wave column: blank ('—', unwaved) always sorts last regardless of
+      // sort direction — matches v2/spec's NULLS LAST intent. This is a
+      // deliberate simplification scoped to 'wave' only, not a general
+      // "blanks always last for every column" rule.
+      if (assetsSortKey === 'wave') {
+        const aBlank = aText === '—';
+        const bBlank = bText === '—';
+        if (aBlank !== bBlank) return aBlank ? 1 : -1;
+      }
+      const primary = naturalCompare(aText, bText) * assetsSortDir;
       if (primary !== 0) return primary;
       // Default sort is wave; break ties by serial (v2 parity) — a
       // secondary key only meaningful while wave is still the active sort.

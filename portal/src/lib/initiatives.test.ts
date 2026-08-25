@@ -289,7 +289,7 @@ describe('MOVE_ASSET_EDIT_FIELDS', () => {
   const fields = MOVE_ASSET_EDIT_FIELDS(lookups);
   const fieldFor = (column: string) => fields.find((f) => f.column === column)!;
 
-  it('covers exactly the 13 per-move fields, none of the asset-identity columns', () => {
+  it('covers exactly the 14 per-move fields, none of the asset-identity columns', () => {
     expect(fields.map((f) => f.column).sort()).toEqual([
       'cable_info', 'destination_position', 'destination_rack', 'destination_ru',
       'destination_verified', 'disposition', 'owner', 'source_position',
