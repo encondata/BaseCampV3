@@ -387,7 +387,7 @@ describe('usePersistentListState', () => {
     });
     expect(saved.list_prefs.sites).toEqual({
       visible: ['name', 'status'], sortKey: 'name', sortDir: 1,
-      filters: { status: { values: ['active'] } },
+      filters: { status: { values: ['active'] } }, order: [],
     });
   });
 
@@ -404,7 +404,7 @@ describe('usePersistentListState', () => {
     expect(auth.updatePreferences).toHaveBeenCalledTimes(1);
     const saved = auth.updatePreferences.mock.calls[0][0] as UiPreferences;
     expect(saved.list_prefs.sites).toEqual({
-      visible: ['status'], sortKey: 'status', sortDir: -1, filters: {},
+      visible: ['status'], sortKey: 'status', sortDir: -1, filters: {}, order: [],
     });
   });
 
@@ -421,7 +421,7 @@ describe('usePersistentListState', () => {
     const saved = auth.updatePreferences.mock.calls[0][0] as UiPreferences;
     expect(saved.list_prefs.sites).toEqual({
       visible: ['name', 'status'], sortKey: 'name', sortDir: 1,
-      filters: { status: { values: ['active'] } },
+      filters: { status: { values: ['active'] } }, order: [],
     });
 
     // The cancelled timer must not also fire later.
@@ -453,5 +453,44 @@ describe('usePersistentListState', () => {
     act(() => { result.current.setFilter('name', { text: 'a' }); });
     act(() => { result.current.clearFilters(); });
     expect(result.current.filters).toEqual({});
+  });
+
+  it('hydrates order from stored prefs, dropping unknown keys and junk', () => {
+    auth.preferences.list_prefs = {
+      sites: { order: ['site', 'ghost', 42, 'name'] },
+    };
+    const { result } = renderHook(() => usePersistentListState('sites', {
+      visible: new Set(['name', 'site']), sortKey: 'name', sortDir: 1,
+    }));
+    expect(result.current.colOrder).toEqual(['site', 'name']);
+  });
+
+  it('dedupes a stored order, keeping the first occurrence of each key', () => {
+    auth.preferences.list_prefs = {
+      sites: { order: ['site', 'site', 'name'] },
+    };
+    const { result } = renderHook(() => usePersistentListState('sites', {
+      visible: new Set(['name', 'site']), sortKey: 'name', sortDir: 1,
+    }));
+    expect(result.current.colOrder).toEqual(['site', 'name']);
+  });
+
+  it('hydrates an empty order when none is stored', () => {
+    auth.preferences.list_prefs = { sites: { visible: ['name'] } };
+    const { result } = renderHook(() => usePersistentListState('sites', {
+      visible: new Set(['name', 'site']), sortKey: 'name', sortDir: 1,
+    }));
+    expect(result.current.colOrder).toEqual([]);
+  });
+
+  it('saves order changes through the debounced merge-save', () => {
+    const { result } = renderHook(() => usePersistentListState('sites', {
+      visible: new Set(['name', 'site']), sortKey: 'name', sortDir: 1,
+    }));
+    act(() => { result.current.setColOrder(['site', 'name']); });
+    act(() => { vi.advanceTimersByTime(600); });
+    expect(auth.updatePreferences).toHaveBeenCalledTimes(1);
+    const saved = auth.updatePreferences.mock.calls[0][0] as UiPreferences;
+    expect((saved.list_prefs.sites as { order?: string[] }).order).toEqual(['site', 'name']);
   });
 });

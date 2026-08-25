@@ -294,6 +294,7 @@ interface StoredListPrefs {
   sortKey?: unknown;
   sortDir?: unknown;
   filters?: unknown;
+  order?: unknown;
 }
 
 const SAVE_DEBOUNCE_MS = 600;
@@ -305,7 +306,7 @@ const SAVE_DEBOUNCE_MS = 600;
  *  malformed value written by an older shape, never survives hydration. */
 function sanitize(
   stored: StoredListPrefs, known: Set<string>, defaults: PersistentListDefaults,
-): { visible: Set<string>; sortKey: string; sortDir: 1 | -1; filters: ColumnFilters } {
+): { visible: Set<string>; sortKey: string; sortDir: 1 | -1; filters: ColumnFilters; order: string[] } {
   let visible = defaults.visible;
   if (Array.isArray(stored.visible)) {
     const kept = stored.visible.filter(
@@ -337,7 +338,13 @@ function sanitize(
     }
   }
 
-  return { visible, sortKey, sortDir, filters };
+  let order: string[] = [];
+  if (Array.isArray(stored.order)) {
+    const kept = stored.order.filter((k): k is string => typeof k === 'string' && known.has(k));
+    order = Array.from(new Set(kept)); // first occurrence wins — a duplicated key would render twice
+  }
+
+  return { visible, sortKey, sortDir, filters, order };
 }
 
 /** Per-page persistent list state: visible columns, sort, and column
@@ -381,6 +388,14 @@ export function usePersistentListState(
     return sanitize(stored as StoredListPrefs, known, defaults).filters;
   });
 
+  // Display order for the page's columns. Empty = the page's default
+  // (ColumnDef[] source order); applyColumnOrder treats it that way.
+  const [colOrder, setColOrderState] = useState<string[]>(() => {
+    const stored = preferences.list_prefs?.[pageKey];
+    if (!stored || typeof stored !== 'object') return [];
+    return sanitize(stored as StoredListPrefs, known, defaults).order;
+  });
+
   // Latest preferences, read (not depended-on) by the debounced save so a
   // change elsewhere (e.g. a Settings-page save) between scheduling and
   // firing still gets merged onto correctly, without resetting our timer.
@@ -409,6 +424,7 @@ export function usePersistentListState(
             sortKey: sort.key,
             sortDir: sort.dir,
             filters,
+            order: colOrder,
           },
         },
       });
@@ -423,7 +439,7 @@ export function usePersistentListState(
     // there's nothing to flush here. The unmount-only effect below is what
     // flushes a save that's still pending when the component goes away.
     return () => clearTimeout(timer);
-  }, [pageKey, updatePreferences, visibleCols, sort, filters]);
+  }, [pageKey, updatePreferences, visibleCols, sort, filters, colOrder]);
 
   // Runs its cleanup exactly once, on unmount (empty deps) — never on a
   // dependency change — so a debounced save still pending at navigation
@@ -466,9 +482,14 @@ export function usePersistentListState(
 
   const clearFilters = useCallback(() => setFiltersState({}), []);
 
+  const setColOrder = useCallback((next: string[]) => {
+    setColOrderState(next);
+  }, []);
+
   return {
     visibleCols, setVisibleCols,
     sortKey: sort.key, sortDir: sort.dir, setSort, toggleSort,
     filters, setFilter, clearFilters,
+    colOrder, setColOrder,
   };
 }
