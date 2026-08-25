@@ -153,7 +153,32 @@ def _item(i: Initiative, vocab: dict, sites: dict, clients: dict,
 
 async def _people_rows(db: DbSession,
                        initiative_id: uuid.UUID) -> list[InitiativePersonRow]:
-    return []  # implemented in the people task
+    rows = (await db.execute(
+        select(InitiativePerson, Person)
+        .join(Person, Person.id == InitiativePerson.person_id)
+        .where(InitiativePerson.initiative_id == initiative_id)
+        .order_by(InitiativePerson.created_at))).all()
+    work_types = {s.key: (s.label, s.color) for s in await db.scalars(
+        select(StatusValue).where(
+            StatusValue.record_type == "initiative_work_type"))}
+    site_ids = {m.site_worked_id for m, _ in rows if m.site_worked_id}
+    sites = dict((await db.execute(
+        select(Site.id, Site.name).where(Site.id.in_(site_ids))
+    )).all()) if site_ids else {}
+    out = []
+    for m, person in rows:
+        wt_label, wt_color = (work_types.get(m.work_type,
+                                             (m.work_type, "#51606f"))
+                              if m.work_type is not None else (None, None))
+        out.append(InitiativePersonRow(
+            id=m.id, person_id=person.id,
+            person_name=f"{person.first_name} {person.last_name}",
+            work_type=m.work_type,
+            work_type_label=wt_label, work_type_color=wt_color,
+            site_worked_id=m.site_worked_id,
+            site_worked_name=sites.get(m.site_worked_id),
+            rating=m.rating, created_at=m.created_at))
+    return out
 
 
 async def _link_rows(
@@ -299,4 +324,101 @@ async def unarchive_initiative(
     initiative.updated_at = datetime.now(UTC)
     audit(db, actor_id=actor.person.id, entity_type="initiative",
           entity_id=str(initiative_id), action="restore")
+    await db.commit()
+
+
+async def _check_person_refs(db: DbSession, data: dict) -> None:
+    if data.get("work_type") is not None and await db.scalar(
+        select(StatusValue).where(
+            StatusValue.record_type == "initiative_work_type",
+            StatusValue.key == data["work_type"])) is None:
+        raise _err(422, "unknown_work_type")
+    if data.get("site_worked_id") is not None and \
+            await db.get(Site, data["site_worked_id"]) is None:
+        raise _err(422, "site_not_found", field="site_worked_id")
+    if data.get("rating") is not None and not 1 <= data["rating"] <= 5:
+        raise _err(422, "rating_out_of_range")
+
+
+@router.get("/{initiative_id}/people",
+            response_model=list[InitiativePersonRow])
+async def list_initiative_people(
+    initiative_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "view"),
+) -> list[InitiativePersonRow]:
+    await _get_initiative(db, initiative_id)
+    return await _people_rows(db, initiative_id)
+
+
+@router.post("/{initiative_id}/people",
+             response_model=list[InitiativePersonRow], status_code=201)
+async def add_initiative_person(
+    initiative_id: uuid.UUID,
+    body: InitiativePersonAddIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> list[InitiativePersonRow]:
+    initiative = await _get_initiative(db, initiative_id)
+    data = body.model_dump(exclude_none=True)
+    if await db.get(Person, data["person_id"]) is None:
+        raise _err(422, "person_not_found")
+    await _check_person_refs(db, data)
+    if await db.scalar(select(InitiativePerson.id).where(
+            InitiativePerson.initiative_id == initiative_id,
+            InitiativePerson.person_id == data["person_id"])) is not None:
+        raise _err(409, "duplicate_person")
+    db.add(InitiativePerson(initiative_id=initiative_id, **data))
+    initiative.updated_at = datetime.now(UTC)
+    audit(db, actor_id=actor.person.id, entity_type="initiative",
+          entity_id=str(initiative_id), action="person_add",
+          changes={"person_id": {"from": None,
+                                 "to": str(data["person_id"])}})
+    await db.commit()
+    return await _people_rows(db, initiative_id)
+
+
+async def _get_assignment(db: DbSession,
+                          assoc_id: uuid.UUID) -> InitiativePerson:
+    assoc = await db.get(InitiativePerson, assoc_id)
+    if assoc is None:
+        raise _err(404, "assignment_not_found")
+    return assoc
+
+
+@router.patch("/people/{assoc_id}", response_model=InitiativePersonRow)
+async def update_initiative_person(
+    assoc_id: uuid.UUID,
+    body: InitiativePersonUpdateIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> InitiativePersonRow:
+    assoc = await _get_assignment(db, assoc_id)
+    data = body.model_dump(exclude_unset=True)
+    await _check_person_refs(db, data)
+    for field, value in data.items():
+        setattr(assoc, field, value)
+    assoc.updated_at = datetime.now(UTC)
+    audit(db, actor_id=actor.person.id, entity_type="initiative",
+          entity_id=str(assoc.initiative_id), action="person_update",
+          changes={field: {"from": None, "to": str(value)}
+                   for field, value in data.items()})
+    await db.commit()
+    rows = await _people_rows(db, assoc.initiative_id)
+    return next(r for r in rows if r.id == assoc_id)
+
+
+@router.delete("/people/{assoc_id}", status_code=204)
+async def remove_initiative_person(
+    assoc_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> None:
+    assoc = await _get_assignment(db, assoc_id)
+    initiative_id = assoc.initiative_id
+    person_id = assoc.person_id
+    await db.delete(assoc)
+    audit(db, actor_id=actor.person.id, entity_type="initiative",
+          entity_id=str(initiative_id), action="person_remove",
+          changes={"person_id": {"from": str(person_id), "to": None}})
     await db.commit()
