@@ -36,3 +36,6 @@ portal/tsconfig.tsbuildinfo
 
 # Other sessions' scratch worktrees
 .claude/worktrees/
+
+# Local DB dumps (prod backups for import/reference — never commit)
+api/backups/
