@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import type { InitiativeItem } from './api';
 import {
   formFromInitiative, initiativeCellText, initiativePayload,
-  initiativeSearchText, sectionsForType, siteOptionsForClient,
+  initiativeSearchText, partnerOptionsForRole, sectionsForType,
+  siteOptionsForClient,
 } from './initiatives';
 
 const row: InitiativeItem = {
@@ -124,5 +125,41 @@ describe('siteOptionsForClient', () => {
     const opts = siteOptionsForClient(sites, 'globex');
     expect(opts.map((o) => o.value)).toEqual(['s1', 's2', 's3']);
     expect(opts.every((o) => o.sub === undefined)).toBe(true);
+  });
+});
+
+describe('partnerOptionsForRole', () => {
+  const partner = (id: string, name: string, tags: string[],
+                   archived = false) => ({
+    id, name, archived_at: archived ? '2026-01-01T00:00:00Z' : null,
+    partner_types: tags,
+  });
+
+  const partners = [
+    partner('p1', 'CableCo', ['Cable', 'Staffing']),
+    partner('p2', 'FreightFast', ['Logistics']),
+    partner('p3', 'GeneralCo', []),
+    partner('p4', 'OldCable', ['Cable'], true),
+  ];
+
+  it('lists role-matching partners first, tagged with the matching function', () => {
+    const opts = partnerOptionsForRole(partners, ['cable']);
+    expect(opts.map((o) => o.value)).toEqual(['p1', 'p2', 'p3']);
+    expect(opts[0].sub).toBe('Cable');
+    expect(opts[1].sub).toBeUndefined();
+  });
+
+  it('shipping matches logistics-tagged partners too', () => {
+    const opts = partnerOptionsForRole(partners, ['shipping', 'logistics']);
+    expect(opts[0].value).toBe('p2');
+    expect(opts[0].sub).toBe('Logistics');
+  });
+
+  it('plain list when nothing matches; archived hidden unless current', () => {
+    const opts = partnerOptionsForRole(partners, ['tech']);
+    expect(opts.map((o) => o.value)).toEqual(['p1', 'p2', 'p3']);
+    expect(opts.every((o) => o.sub === undefined)).toBe(true);
+    expect(partnerOptionsForRole(partners, ['cable'], 'p4').map((o) => o.value))
+      .toContain('p4');
   });
 });

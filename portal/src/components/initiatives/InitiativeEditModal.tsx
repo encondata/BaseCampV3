@@ -20,8 +20,9 @@ import {
   type StatusValue,
 } from '../../lib/api';
 import {
-  formFromInitiative, INITIATIVE_ERRORS, initiativePayload, sectionsForType,
-  siteOptionsForClient, type InitiativeFormState,
+  formFromInitiative, INITIATIVE_ERRORS, initiativePayload,
+  partnerOptionsForRole, sectionsForType, siteOptionsForClient,
+  type InitiativeFormState,
 } from '../../lib/initiatives';
 import ComboBox from '../ComboBox';
 
@@ -130,8 +131,10 @@ export default function InitiativeEditModal({
     }
   };
 
+  // role-aware: partners tagged with a matching function list first, but
+  // any partner remains typeable/selectable
   const partnerCombo = (
-    label: string, key: keyof InitiativeFormState,
+    label: string, key: keyof InitiativeFormState, roleKeywords: string[],
   ) => (
     <div><label>{label}</label>
       <ComboBox
@@ -140,7 +143,8 @@ export default function InitiativeEditModal({
         clearable
         disabled={locked}
         onChange={(v) => setField(key, v)}
-        options={orgOptions(partners)}
+        options={partnerOptionsForRole(partners, roleKeywords,
+                                       form[key] as string)}
       /></div>
   );
 
@@ -284,10 +288,11 @@ export default function InitiativeEditModal({
                       Vendor involved
                     </label></div>
                   <div className="init-partner-row">
-                    {partnerCombo('Tech partner', 'origin_tech_partner_id')}
-                    {partnerCombo('Cable partner', 'origin_cable_partner_id')}
+                    {partnerCombo('Tech partner', 'origin_tech_partner_id', ['tech'])}
+                    {partnerCombo('Cable partner', 'origin_cable_partner_id', ['cable'])}
                     {partnerCombo('Logistics partner',
-                                  'origin_logistics_partner_id')}
+                                  'origin_logistics_partner_id',
+                                  ['logistics'])}
                   </div>
                 </div>
 
@@ -313,10 +318,12 @@ export default function InitiativeEditModal({
                       Vendor involved
                     </label></div>
                   <div className="init-partner-row">
-                    {partnerCombo('Tech partner', 'destination_tech_partner_id')}
-                    {partnerCombo('Cable partner', 'destination_cable_partner_id')}
+                    {partnerCombo('Tech partner', 'destination_tech_partner_id', ['tech'])}
+                    {partnerCombo('Cable partner', 'destination_cable_partner_id',
+                                  ['cable'])}
                     {partnerCombo('Logistics partner',
-                                  'destination_logistics_partner_id')}
+                                  'destination_logistics_partner_id',
+                                  ['logistics'])}
                   </div>
                 </div>
 
@@ -335,7 +342,8 @@ export default function InitiativeEditModal({
                         </label>
                       ))}
                     </div></div>
-                  {partnerCombo('Shipping partner', 'shipping_partner_id')}
+                  {partnerCombo('Shipping partner', 'shipping_partner_id',
+                                ['shipping', 'logistics'])}
                   <div style={{ alignSelf: 'end' }}>
                     <label className="init-check">
                       <input type="checkbox" checked={form.priority_devices}

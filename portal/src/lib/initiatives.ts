@@ -3,7 +3,7 @@
  * (the lib/containers.ts pattern), unit-testable without jsdom.
  */
 import type { ComboOption } from '../components/ComboBox';
-import type { InitiativeItem, SiteItem } from './api';
+import type { InitiativeItem, OrgRef, SiteItem } from './api';
 import type { GodField } from './godEdit';
 
 const day = (iso: string | null) =>
@@ -91,6 +91,29 @@ export function siteOptionsForClient(
       .map((s) => ({ value: s.id, label: s.name, sub: 'Client site' })),
     ...usable.filter((s) => !isAssigned(s))
       .map((s) => ({ value: s.id, label: s.name })),
+  ];
+}
+
+/** Partner options for a role-specific picker (tech / cable / logistics /
+ *  shipping). Partners whose free-form function tags match the role's
+ *  keywords list first — tagged with the matching function — but every
+ *  partner stays typeable/selectable. Archived partners are hidden unless
+ *  one is the field's current value (`keepId`). */
+export function partnerOptionsForRole(
+  partners: OrgRef[], roleKeywords: string[], keepId?: string,
+): ComboOption[] {
+  const usable = partners.filter((p) => !p.archived_at || p.id === keepId);
+  const matchTag = (p: OrgRef) =>
+    (p.partner_types ?? []).find((t) =>
+      roleKeywords.some((k) => t.toLowerCase().includes(k.toLowerCase())));
+  if (!usable.some((p) => matchTag(p) !== undefined)) {
+    return usable.map((p) => ({ value: p.id, label: p.name }));
+  }
+  return [
+    ...usable.filter((p) => matchTag(p) !== undefined)
+      .map((p) => ({ value: p.id, label: p.name, sub: matchTag(p) })),
+    ...usable.filter((p) => matchTag(p) === undefined)
+      .map((p) => ({ value: p.id, label: p.name })),
   ];
 }
 

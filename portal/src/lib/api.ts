@@ -611,7 +611,11 @@ export async function getEffective(personId: string): Promise<EffectiveOut> {
  *  `archived_at` rides along on the raw /clients and /partners payloads
  *  (see External.tsx's loadAllOrgs) so callers that need to exclude
  *  archived orgs — e.g. a filter facet — don't need a second fetch. */
-export interface OrgRef { id: string; name: string; archived_at?: string | null }
+export interface OrgRef {
+  id: string; name: string; archived_at?: string | null;
+  /** partners only: free-form function tags ("Logistics", "Cable", …) */
+  partner_types?: string[];
+}
 
 export async function listClients(): Promise<OrgRef[]> {
   const resp = await apiFetch('/clients');
