@@ -174,7 +174,11 @@
 /* .dir-list clips overflow for its 16px corner radius (directory.css), but
    that also clips the per-column filter popover (.pop-menu, chrome.css),
    which is a common case here since the People list is often only a few
-   rows tall. Let it overflow, and round the last row's own corners instead
-   so the card still reads as rounded at the bottom. */
+   rows tall. Let it overflow — but .list-head (the first child) paints its
+   own opaque background, so without the clip it now squares off the card's
+   top corners; round it back to match. The bottom-corner rule below is a
+   no-op today (.row-main has no visible background to round) but is kept
+   for parity in case that changes. */
 .idet-people-list { overflow: visible; }
+.idet-people-list .list-head { border-radius: 15px 15px 0 0; }
 .idet-people-list .dir-row:last-child .row-main { border-radius: 0 0 15px 15px; }
