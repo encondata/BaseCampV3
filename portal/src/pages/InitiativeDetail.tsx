@@ -456,7 +456,7 @@ export default function InitiativeDetail() {
 
                   {visiblePeople.length === 0 && (
                     <div className="dir-empty">
-                      <b>No matches</b>
+                      <b>No matches</b>Try a different search or filter.
                       <EmptyClearFilters filters={peopleFilters} onClear={clearPeopleFilters} />
                     </div>
                   )}

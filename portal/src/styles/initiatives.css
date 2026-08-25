@@ -170,3 +170,11 @@
 .idet-people-list .row-main { cursor: default; }
 .idet-people-list .row-main:hover { background: none; }
 .idet-people-actions { display: flex; gap: 8px; white-space: nowrap; }
+
+/* .dir-list clips overflow for its 16px corner radius (directory.css), but
+   that also clips the per-column filter popover (.pop-menu, chrome.css),
+   which is a common case here since the People list is often only a few
+   rows tall. Let it overflow, and round the last row's own corners instead
+   so the card still reads as rounded at the bottom. */
+.idet-people-list { overflow: visible; }
+.idet-people-list .dir-row:last-child .row-main { border-radius: 0 0 15px 15px; }
