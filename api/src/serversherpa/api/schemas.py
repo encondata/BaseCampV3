@@ -964,3 +964,157 @@ class NoteUpdateIn(BaseModel):
 
 class GodModeIn(BaseModel):
     word: str
+
+
+# ── initiatives ────────────────────────────────────────────────────
+
+
+class InitiativeItem(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str | None = None
+    initiative_type: str
+    type_label: str
+    type_color: str
+    sub_type: str | None = None
+    sub_type_label: str | None = None
+    sub_type_color: str | None = None
+    status: str
+    status_label: str
+    status_color: str
+    client_id: uuid.UUID | None = None
+    client_name: str | None = None
+    site_id: uuid.UUID | None = None
+    site_name: str | None = None
+    location: str | None = None
+    scheduled_start: datetime | None = None
+    scheduled_end: datetime | None = None
+    sky_command_project_id: str | None = None
+    origin_site_id: uuid.UUID | None = None
+    origin_site_name: str | None = None
+    destination_site_id: uuid.UUID | None = None
+    destination_site_name: str | None = None
+    real_start_at: datetime | None = None
+    real_end_at: datetime | None = None
+    priority_devices: bool | None = None
+    shipping_types: list[str] = []
+    shipping_partner_id: uuid.UUID | None = None
+    shipping_partner_name: str | None = None
+    origin_tech_partner_id: uuid.UUID | None = None
+    origin_cable_partner_id: uuid.UUID | None = None
+    origin_logistics_partner_id: uuid.UUID | None = None
+    destination_tech_partner_id: uuid.UUID | None = None
+    destination_cable_partner_id: uuid.UUID | None = None
+    destination_logistics_partner_id: uuid.UUID | None = None
+    origin_vendor_involved: bool | None = None
+    destination_vendor_involved: bool | None = None
+    people_count: int = 0
+    links_count: int = 0
+    archived_at: datetime | None = None
+    created_at: datetime
+
+
+class InitiativePersonRow(BaseModel):
+    id: uuid.UUID
+    person_id: uuid.UUID
+    person_name: str
+    work_type: str | None = None
+    work_type_label: str | None = None
+    work_type_color: str | None = None
+    site_worked_id: uuid.UUID | None = None
+    site_worked_name: str | None = None
+    rating: int | None = None
+    created_at: datetime
+
+
+class InitiativeLinkRow(BaseModel):
+    """One link, described from one side: `other_*` is the initiative at
+    the far end (the child when listed under links_children, the parent
+    when under links_parents)."""
+
+    id: uuid.UUID
+    other_id: uuid.UUID
+    other_name: str
+    other_type: str
+    other_type_label: str
+    other_type_color: str
+    other_status_label: str
+    other_status_color: str
+    role: str | None = None
+    sort_order: int | None = None
+    notes: str | None = None
+    created_at: datetime
+
+
+class InitiativeDetailOut(InitiativeItem):
+    people: list[InitiativePersonRow] = []
+    links_children: list[InitiativeLinkRow] = []
+    links_parents: list[InitiativeLinkRow] = []
+
+
+class InitiativeCreateIn(BaseModel):
+    name: str
+    initiative_type: str
+    description: str | None = None
+    sub_type: str | None = None
+    status: str | None = None
+    client_id: uuid.UUID | None = None
+    site_id: uuid.UUID | None = None
+    location: str | None = None
+    scheduled_start: datetime | None = None
+    scheduled_end: datetime | None = None
+    sky_command_project_id: str | None = None
+    origin_site_id: uuid.UUID | None = None
+    destination_site_id: uuid.UUID | None = None
+    real_start_at: datetime | None = None
+    real_end_at: datetime | None = None
+    priority_devices: bool | None = None
+    shipping_types: list[str] | None = None
+    shipping_partner_id: uuid.UUID | None = None
+    origin_tech_partner_id: uuid.UUID | None = None
+    origin_cable_partner_id: uuid.UUID | None = None
+    origin_logistics_partner_id: uuid.UUID | None = None
+    destination_tech_partner_id: uuid.UUID | None = None
+    destination_cable_partner_id: uuid.UUID | None = None
+    destination_logistics_partner_id: uuid.UUID | None = None
+    origin_vendor_involved: bool | None = None
+    destination_vendor_involved: bool | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class InitiativeUpdateIn(InitiativeCreateIn):
+    """PATCH body — same fields, everything optional."""
+
+    name: str | None = None
+    initiative_type: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class InitiativePersonAddIn(BaseModel):
+    person_id: uuid.UUID
+    work_type: str | None = None
+    site_worked_id: uuid.UUID | None = None
+    rating: int | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class InitiativePersonUpdateIn(BaseModel):
+    work_type: str | None = None
+    site_worked_id: uuid.UUID | None = None
+    rating: int | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class InitiativeLinkAddIn(BaseModel):
+    child_id: uuid.UUID
+    role: str | None = None
+    sort_order: int | None = None
+    notes: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class InitiativeLinkUpdateIn(BaseModel):
+    role: str | None = None
+    sort_order: int | None = None
+    notes: str | None = None
+    model_config = ConfigDict(extra="forbid")
