@@ -991,6 +991,9 @@ class PendingDeleteReference(BaseModel):
     table: str
     column: str
     nullable: bool
+    # True for pure association tables (PURGE_ROW_TABLES): force mode
+    # deletes these rows outright instead of nulling the column
+    purgeable: bool = False
     count: int
     labels: list[str] = []
 

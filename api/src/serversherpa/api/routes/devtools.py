@@ -14,7 +14,7 @@ import secrets
 import uuid
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import String, cast, func, select, update
+from sqlalchemy import String, cast, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.schema import Table
 
@@ -151,6 +151,20 @@ async def unmark_pending_delete(
 # row's own primary key, stringified — never blank.
 _NAME_LABELED = {"initiatives", "sites", "containers", "clients", "partners"}
 
+# Pure association tables: rows here carry no data of their own beyond the
+# link, so force mode may DELETE them outright (a non-nullable FK on a join
+# row can never be nulled). Frozen — never derived from the schema, because
+# "looks like a join table" is not a safe heuristic for rows that might
+# carry real data (e.g. user_accounts also references people).
+PURGE_ROW_TABLES = frozenset({
+    "site_clients", "initiative_people", "initiative_links",
+    "container_assets",
+})
+
+# Actor/audit-ish columns that make poor label joins on association rows.
+_ACTOR_COLUMNS = frozenset({"created_by", "marked_by", "added_by", "granted_by",
+                            "audit_by", "revoked_by", "linked_by"})
+
 
 def _label_expr(table: Table):
     if table.name in _NAME_LABELED:
@@ -176,6 +190,16 @@ def _references_to(model: type):
                 yield table, fk.parent
 
 
+def _other_fk(table: Table, matching_col):
+    """On an association row, the FK that ISN'T the one pointing at the
+    delete target — the side whose label a human actually recognises
+    (site_clients row blocking a client delete → the site's name)."""
+    for fk in table.foreign_keys:
+        if fk.parent is not matching_col and fk.parent.name not in _ACTOR_COLUMNS:
+            return fk
+    return None
+
+
 async def _find_references(
     db: DbSession, model: type, entity_id: uuid.UUID,
 ) -> list[PendingDeleteReference]:
@@ -188,31 +212,48 @@ async def _find_references(
             select(func.count()).select_from(table).where(col == entity_id))
         if not count:
             continue
-        labels = list(await db.scalars(
-            select(_label_expr(table)).select_from(table)
-            .where(col == entity_id).limit(3)))
+        label_query = (select(_label_expr(table)).select_from(table)
+                       .where(col == entity_id).limit(3))
+        if table.name in PURGE_ROW_TABLES:
+            # a join row's own PK means nothing to a human — label it by
+            # the other side of the association instead
+            other = _other_fk(table, col)
+            if other is not None:
+                label_query = (
+                    select(_label_expr(other.column.table))
+                    .select_from(table.join(
+                        other.column.table, other.parent == other.column))
+                    .where(col == entity_id).limit(3))
+        labels = list(await db.scalars(label_query))
         refs.append(PendingDeleteReference(
             table=table.name, column=col.name, nullable=col.nullable,
+            purgeable=table.name in PURGE_ROW_TABLES,
             count=count, labels=[str(v) for v in labels]))
     return refs
 
 
-async def _null_references(
+async def _detach_references(
     db: DbSession, model: type, entity_id: uuid.UUID,
-) -> dict[str, int]:
-    """Force-mode mechanics: nulls out every NULLABLE column anywhere that
-    references `entity_id`, ahead of the delete. Non-nullable references are
-    left untouched — if one still blocks the delete, the IntegrityError path
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Force-mode mechanics, ahead of the delete: association rows in
+    PURGE_ROW_TABLES are deleted outright (their FK is non-nullable by
+    design — a link with a nulled end is meaningless), and every other
+    NULLABLE referencing column is nulled. Anything else is left
+    untouched — if it still blocks the delete, the IntegrityError path
     below reports it as a reference like any other failure."""
     nulled: dict[str, int] = {}
+    removed: dict[str, int] = {}
     for table, col in _references_to(model):
-        if not col.nullable:
-            continue
-        result = await db.execute(
-            update(table).where(col == entity_id).values({col.name: None}))
-        if result.rowcount:
-            nulled[f"{table.name}.{col.name}"] = result.rowcount
-    return nulled
+        if table.name in PURGE_ROW_TABLES:
+            result = await db.execute(delete(table).where(col == entity_id))
+            if result.rowcount:
+                removed[table.name] = removed.get(table.name, 0) + result.rowcount
+        elif col.nullable:
+            result = await db.execute(
+                update(table).where(col == entity_id).values({col.name: None}))
+            if result.rowcount:
+                nulled[f"{table.name}.{col.name}"] = result.rowcount
+    return nulled, removed
 
 
 async def _reconcile_markers(
@@ -232,18 +273,32 @@ async def _reconcile_markers(
     failed: list[PendingDeleteFailure] = []
     for marker in markers:
         model = DELETABLE[marker.entity_type]
+        target_table = model.__table__
+        target_pk = next(iter(target_table.primary_key.columns))
         try:
             async with db.begin_nested():
-                target = await db.get(model, marker.entity_id)
-                if target is not None:
-                    nulled = (await _null_references(db, model, marker.entity_id)
-                              if force else {})
-                    await db.delete(target)
+                exists = await db.scalar(
+                    select(target_pk).where(target_pk == marker.entity_id))
+                if exists is not None:
+                    nulled, removed = (
+                        await _detach_references(db, model, marker.entity_id)
+                        if force else ({}, {}))
+                    # Core DELETE, deliberately not db.delete(orm_obj): the ORM
+                    # path runs relationship dependency rules that can raise a
+                    # plain AssertionError (e.g. person ↔ user_account) instead
+                    # of letting Postgres report the FK violation we catch below.
+                    await db.execute(
+                        delete(target_table).where(target_pk == marker.entity_id))
                     await db.flush()
+                    changes = {}
+                    if nulled:
+                        changes["nulled_references"] = nulled
+                    if removed:
+                        changes["removed_association_rows"] = removed
                     audit(db, actor_id=actor.person.id,
                           entity_type=marker.entity_type,
                           entity_id=str(marker.entity_id), action="hard_delete",
-                          changes={"nulled_references": nulled} if nulled else None)
+                          changes=changes or None)
                 # a target already gone is a success too — clear the marker
                 await db.delete(marker)
                 await db.flush()

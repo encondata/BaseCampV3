@@ -121,11 +121,11 @@ export default function DevDatabase() {
   const handleForceDelete = async (failure: PendingDeleteFailure) => {
     const markerId = markerIdFor(failure);
     if (!markerId) return;
-    const summary = failure.references
-      .map((r) => `${r.table}.${r.column} (${r.count} row${r.count === 1 ? '' : 's'})`)
-      .join(', ');
+    const parts = failure.references.map((r) => r.purgeable
+      ? `remove ${r.count} ${r.table} row${r.count === 1 ? '' : 's'}`
+      : `clear ${r.table}.${r.column} on ${r.count} row${r.count === 1 ? '' : 's'}`);
     if (!confirm(
-      `Force delete "${failure.label || failure.entity_type}"? This will null out ${summary}, `
+      `Force delete "${failure.label || failure.entity_type}"? This will ${parts.join(', ')}, `
       + 'then permanently delete the record. This cannot be undone.',
     )) {
       return;
@@ -205,8 +205,8 @@ export default function DevDatabase() {
           {result.failed.length > 0 && (
             <ul style={{ margin: '8px 0 0', paddingLeft: 18, textAlign: 'left' }}>
               {result.failed.map((f) => {
-                const allNullable = f.references.length > 0
-                  && f.references.every((r) => r.nullable);
+                const canForce = f.references.length > 0
+                  && f.references.every((r) => r.nullable || r.purgeable);
                 return (
                   <li key={`${f.entity_type}:${f.entity_id}`} style={{ marginBottom: 8 }}>
                     <b>{f.label}</b> — {humanizeReason(f.reason)}
@@ -224,7 +224,7 @@ export default function DevDatabase() {
                         ))}
                       </ul>
                     )}
-                    {f.references.length > 0 && (allNullable ? (
+                    {f.references.length > 0 && (canForce ? (
                       <button
                         type="button"
                         className="mini-btn sm danger"
@@ -232,7 +232,7 @@ export default function DevDatabase() {
                         disabled={busyId !== null}
                         onClick={() => void handleForceDelete(f)}
                       >
-                        Force delete — null references
+                        Force delete — detach references
                       </button>
                     ) : (
                       <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-mute)' }}>

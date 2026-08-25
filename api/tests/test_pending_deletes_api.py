@@ -156,7 +156,7 @@ async def test_reconcile_reports_fk_violation_and_retains_marker(
     assert failure["reason"] == "fk_violation"
     assert failure["references"] == [{
         "table": "initiatives", "column": "site_id", "nullable": True,
-        "count": 1, "labels": ["Uses Site"],
+        "purgeable": False, "count": 1, "labels": ["Uses Site"],
     }]
 
     db.expire_all()
@@ -333,7 +333,7 @@ async def test_single_reconcile_failure_lists_referencing_records(
     assert failure["reason"] == "fk_violation"
     assert failure["references"] == [{
         "table": "initiatives", "column": "site_id", "nullable": True,
-        "count": 1, "labels": ["Vegas to Zurich migration"],
+        "purgeable": False, "count": 1, "labels": ["Vegas to Zurich migration"],
     }]
 
 
@@ -377,17 +377,27 @@ async def test_single_reconcile_force_nulls_nullable_reference_and_deletes(
 
 async def test_single_reconcile_force_still_fails_on_nonnullable_reference(
         client, db, seeded_user):
-    """A non-nullable reference (initiative_people.person_id has no
-    ondelete) can't be forced away — force only nulls nullable columns, so
-    this still fails and the person survives."""
+    """A non-nullable, non-purgeable reference (user_accounts.person_id —
+    real data, not an association row) can't be forced away, so this still
+    fails and the person survives. initiative_people no longer qualifies
+    here: it's a purgeable association table, so force removes those rows
+    (covered by the purge test)."""
+    from datetime import UTC, datetime
+
+    from serversherpa.config import get_settings
+    from serversherpa.db.models import UserAccount
+    from serversherpa.security.passwords import hash_password
+
     hdrs = await _developer(db, client, seeded_user)
     worker = Person(first_name="Bob", last_name="Botched")
     db.add(worker)
     await db.flush()
-    initiative = Initiative(name="Holder", initiative_type="project")
-    db.add(initiative)
-    await db.flush()
-    db.add(InitiativePerson(initiative_id=initiative.id, person_id=worker.id))
+    db.add(UserAccount(
+        person_id=worker.id, email="bob.botched@test.example.com",
+        password_hash=hash_password(
+            "CorrectHorse9!",
+            pepper=get_settings().password_pepper.get_secret_value()),
+        password_updated_at=datetime.now(UTC)))
     await db.commit()
     worker_id = worker.id
 
@@ -404,9 +414,60 @@ async def test_single_reconcile_force_still_fails_on_nonnullable_reference(
     failure = body["failed"][0]
     assert failure["reason"] == "fk_violation"
     refs = {(r["table"], r["column"]): r for r in failure["references"]}
-    assert refs[("initiative_people", "person_id")]["nullable"] is False
-    assert refs[("initiative_people", "person_id")]["count"] == 1
+    account_ref = refs[("user_accounts", "person_id")]
+    assert account_ref["nullable"] is False
+    assert account_ref["purgeable"] is False
+    assert account_ref["count"] == 1
 
     db.expire_all()
     assert await db.get(Person, worker_id) is not None
     assert await db.get(PendingDelete, uuid.UUID(marker_id)) is not None
+
+
+async def test_force_purges_association_rows_and_labels_by_other_side(
+        client, db, seeded_user):
+    from serversherpa.db.models import Client, SiteClient
+
+    hdrs = await _developer(db, client, seeded_user)
+    org = Client(name="Linked Org")
+    east = Site(name="East Hall")
+    west = Site(name="West Hall")
+    db.add_all([org, east, west])
+    await db.flush()
+    db.add_all([SiteClient(site_id=east.id, client_id=org.id),
+                SiteClient(site_id=west.id, client_id=org.id)])
+    await db.commit()
+    org_id, east_id, west_id = org.id, east.id, west.id
+
+    resp = await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "client", "entity_id": str(org_id),
+        "entity_label": "Linked Org"})
+    marker_id = resp.json()["id"]
+
+    # plain reconcile fails, and the reference is purgeable + labeled by
+    # the sites on the other side of the join, not by row UUIDs
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/reconcile", headers=hdrs)
+    failure = resp.json()["failed"][0]
+    ref = next(r for r in failure["references"] if r["table"] == "site_clients")
+    assert ref["purgeable"] is True
+    assert ref["count"] == 2
+    assert set(ref["labels"]) == {"East Hall", "West Hall"}
+
+    # force removes the association rows, then deletes the client
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/reconcile?force=true",
+        headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["deleted"] == 1
+
+    db.expire_all()
+    assert await db.get(Client, org_id) is None
+    assert await db.get(Site, east_id) is not None
+    assert await db.get(Site, west_id) is not None
+    assert (await db.execute(select(SiteClient).where(
+        SiteClient.client_id == org_id))).first() is None
+    audit_row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "client", AuditLog.action == "hard_delete"))
+    assert audit_row is not None
+    assert audit_row.changes["removed_association_rows"] == {"site_clients": 2}

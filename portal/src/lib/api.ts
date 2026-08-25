@@ -1617,6 +1617,8 @@ export interface PendingDeleteReference {
   table: string;
   column: string;
   nullable: boolean;
+  /** pure association table: force deletes these rows instead of nulling */
+  purgeable: boolean;
   count: number;
   labels: string[];
 }
