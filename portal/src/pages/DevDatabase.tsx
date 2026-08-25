@@ -18,7 +18,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   ApiError,
   listPendingDeletes,
-  reconcilePendingDeletes,
+  reconcilePendingDelete, reconcilePendingDeletes,
   unmarkPendingDelete,
   type PendingDeleteItem,
   type PendingDeleteReconcileOut,
@@ -43,7 +43,7 @@ function typeLabel(entityType: string): string {
   return entityType.replace(/_/g, ' ');
 }
 
-const GRID = { gridTemplateColumns: '2fr 1fr 1fr 1.3fr 90px' };
+const GRID = { gridTemplateColumns: '2fr 1fr 1fr 1.3fr 150px' };
 
 export default function DevDatabase() {
   const [items, setItems] = useState<PendingDeleteItem[] | null>(null);
@@ -85,6 +85,24 @@ export default function DevDatabase() {
       setItems((cur) => (cur ?? []).filter((i) => i.id !== item.id));
     } catch {
       setError('Could not undo — try again.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleDeleteOne = async (item: PendingDeleteItem) => {
+    if (!confirm(`Permanently delete "${item.entity_label || item.entity_type}"? This cannot be undone.`)) {
+      return;
+    }
+    setBusyId(item.id);
+    setError('');
+    setResult(null);
+    try {
+      const out = await reconcilePendingDelete(item.id);
+      setResult(out);
+      await load(); // resolved markers are gone server-side; failures stay
+    } catch {
+      setError('Delete failed — try again.');
     } finally {
       setBusyId(null);
     }
@@ -187,14 +205,22 @@ export default function DevDatabase() {
                 <div className="cell">
                   <span className="cell-top">{item.marked_by_name ?? 'Unknown'}</span>
                 </div>
-                <div className="cell">
+                <div className="cell" style={{ display: 'flex', gap: 8 }}>
                   <button
                     type="button"
                     className="mini-btn sm"
                     disabled={busyId === item.id}
                     onClick={() => void handleUndo(item)}
                   >
-                    {busyId === item.id ? 'Undoing…' : 'Undo'}
+                    Undo
+                  </button>
+                  <button
+                    type="button"
+                    className="mini-btn sm danger"
+                    disabled={busyId === item.id}
+                    onClick={() => void handleDeleteOne(item)}
+                  >
+                    Delete
                   </button>
                 </div>
               </div>

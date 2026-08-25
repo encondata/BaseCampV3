@@ -145,16 +145,12 @@ async def unmark_pending_delete(
     await db.commit()
 
 
-@router.post("/pending-deletes/reconcile", response_model=PendingDeleteReconcileOut)
-async def reconcile_pending_deletes(
-    db: DbSession,
-    actor: AuthContext = require_permission("devtools", "change"),
+async def _reconcile_markers(
+    db: DbSession, actor: AuthContext, markers: list[PendingDelete],
 ) -> PendingDeleteReconcileOut:
-    """Hard-delete every marked target. Each target runs inside its own
+    """Hard-delete the given marked targets. Each target runs inside its own
     savepoint so one FK violation rolls back only that row, not the batch:
     a poisoned marker further down the list still gets its chance."""
-    markers = list(await db.scalars(
-        select(PendingDelete).order_by(PendingDelete.marked_at)))
     deleted = 0
     failed: list[PendingDeleteFailure] = []
     for marker in markers:
@@ -182,3 +178,28 @@ async def reconcile_pending_deletes(
         deleted += 1
     await db.commit()
     return PendingDeleteReconcileOut(deleted=deleted, failed=failed)
+
+
+@router.post("/pending-deletes/reconcile", response_model=PendingDeleteReconcileOut)
+async def reconcile_pending_deletes(
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> PendingDeleteReconcileOut:
+    markers = list(await db.scalars(
+        select(PendingDelete).order_by(PendingDelete.marked_at)))
+    return await _reconcile_markers(db, actor, markers)
+
+
+@router.post("/pending-deletes/{marker_id}/reconcile",
+             response_model=PendingDeleteReconcileOut)
+async def reconcile_pending_delete(
+    marker_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> PendingDeleteReconcileOut:
+    """Hard-delete a single marked target — same semantics and summary
+    shape as the bulk reconcile, scoped to one marker."""
+    marker = await db.get(PendingDelete, marker_id)
+    if marker is None:
+        raise _err(404, "marker_not_found")
+    return await _reconcile_markers(db, actor, [marker])

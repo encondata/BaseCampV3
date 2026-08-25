@@ -1634,3 +1634,13 @@ export async function reconcilePendingDeletes(): Promise<PendingDeleteReconcileO
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
+
+/** Single-marker variant — same semantics and summary shape, one target. */
+export async function reconcilePendingDelete(
+  markerId: string,
+): Promise<PendingDeleteReconcileOut> {
+  const resp = await apiFetch(
+    `/devtools/pending-deletes/${markerId}/reconcile`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
