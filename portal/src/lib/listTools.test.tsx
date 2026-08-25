@@ -4,9 +4,23 @@
  * the useReorderDrag drag-and-drop hook, and ColumnsButton's reorder mode.
  */
 
-import { describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { applyColumnOrder, moveKey, type ColumnDef } from './listTools';
+import { applyColumnOrder, moveKey, useReorderDrag, type ColumnDef } from './listTools';
+
+// The pinned jsdom here has no DragEvent constructor, so @testing-library/dom's
+// generic Event fallback silently drops clientX/clientY from fireEvent.dragOver
+// inits. Polyfill it as a thin MouseEvent subclass so drag-position math under
+// test actually receives coordinates; dataTransfer is patched on separately by
+// RTL itself and needs no help here.
+if (typeof DragEvent === 'undefined') {
+  class DragEventPolyfill extends MouseEvent {}
+  // @ts-expect-error -- test-only jsdom polyfill
+  globalThis.DragEvent = DragEventPolyfill;
+}
+
+afterEach(cleanup);
 
 const col = (key: string): ColumnDef => ({ key, label: key, width: '1fr', default: true });
 const COLS: ColumnDef[] = [col('a'), col('b'), col('c'), col('d')];
@@ -44,5 +58,75 @@ describe('moveKey', () => {
     expect(moveKey(['a', 'b'], 'a', 'a', true)).toEqual(['a', 'b']);
     expect(moveKey(['a', 'b'], 'zzz', 'b', true)).toEqual(['a', 'b']);
     expect(moveKey(['a', 'b'], 'a', 'zzz', true)).toEqual(['a', 'b']);
+  });
+});
+
+/** Renders one span per key wired to useReorderDrag, so tests can fire
+ *  real drag events. jsdom rects are all-zero, so tests stub
+ *  getBoundingClientRect and steer before/after with clientX/clientY. */
+function DragHarness({ onMove, axis }: {
+  onMove: (src: string, dst: string, before: boolean) => void;
+  axis: 'x' | 'y';
+}) {
+  const { dragProps, dropClass } = useReorderDrag(onMove, axis, { ignoreFrom: '.pop-menu' });
+  return (
+    <div>
+      {['a', 'b', 'c'].map((k) => (
+        <span key={k} data-testid={k} className={dropClass(k)} {...dragProps(k)}>{k}</span>
+      ))}
+    </div>
+  );
+}
+
+const dt = () => ({ setData: vi.fn(), effectAllowed: '', dropEffect: '' });
+
+describe('useReorderDrag', () => {
+  it('drops before the target left half (x axis) and reports before=true', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(
+      { left: 100, top: 0, width: 50, height: 20, right: 150, bottom: 20, x: 100, y: 0, toJSON: () => ({}) } as DOMRect,
+    );
+    const onMove = vi.fn();
+    render(<DragHarness onMove={onMove} axis="x" />);
+    fireEvent.dragStart(screen.getByTestId('c'), { dataTransfer: dt() });
+    fireEvent.dragOver(screen.getByTestId('a'), { clientX: 110, dataTransfer: dt() }); // left half
+    fireEvent.drop(screen.getByTestId('a'), { dataTransfer: dt() });
+    expect(onMove).toHaveBeenCalledWith('c', 'a', true);
+    vi.restoreAllMocks();
+  });
+
+  it('drops after the target bottom half (y axis) and reports before=false', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(
+      { left: 0, top: 100, width: 50, height: 20, right: 50, bottom: 120, x: 0, y: 100, toJSON: () => ({}) } as DOMRect,
+    );
+    const onMove = vi.fn();
+    render(<DragHarness onMove={onMove} axis="y" />);
+    fireEvent.dragStart(screen.getByTestId('a'), { dataTransfer: dt() });
+    fireEvent.dragOver(screen.getByTestId('b'), { clientY: 115, dataTransfer: dt() }); // bottom half
+    fireEvent.drop(screen.getByTestId('b'), { dataTransfer: dt() });
+    expect(onMove).toHaveBeenCalledWith('a', 'b', false);
+    vi.restoreAllMocks();
+  });
+
+  it('marks the source and the hovered drop side via dropClass', () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(
+      { left: 100, top: 0, width: 50, height: 20, right: 150, bottom: 20, x: 100, y: 0, toJSON: () => ({}) } as DOMRect,
+    );
+    render(<DragHarness onMove={vi.fn()} axis="x" />);
+    fireEvent.dragStart(screen.getByTestId('b'), { dataTransfer: dt() });
+    expect(screen.getByTestId('b').className).toBe('drag-src');
+    fireEvent.dragOver(screen.getByTestId('c'), { clientX: 140, dataTransfer: dt() }); // right half
+    expect(screen.getByTestId('c').className).toBe('drop-after');
+    fireEvent.dragEnd(screen.getByTestId('b'), { dataTransfer: dt() });
+    expect(screen.getByTestId('b').className).toBe('');
+    expect(screen.getByTestId('c').className).toBe('');
+    vi.restoreAllMocks();
+  });
+
+  it('never calls onMove when the drop target is the source itself', () => {
+    const onMove = vi.fn();
+    render(<DragHarness onMove={onMove} axis="x" />);
+    fireEvent.dragStart(screen.getByTestId('a'), { dataTransfer: dt() });
+    fireEvent.drop(screen.getByTestId('a'), { dataTransfer: dt() });
+    expect(onMove).not.toHaveBeenCalled();
   });
 });

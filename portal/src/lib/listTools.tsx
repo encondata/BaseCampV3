@@ -4,7 +4,7 @@
  * controls look and behave identically. Ref: fibertrace directory pattern.
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
 
 /* ── CSV export ─────────────────────────────────────────────────── */
 
@@ -74,6 +74,69 @@ export function moveKey(keys: string[], src: string, dst: string, before: boolea
   const next = [...without];
   next.splice(before ? at : at + 1, 0, src);
   return next;
+}
+
+/** HTML5 drag-and-drop reordering shared by both reorder surfaces: rows in
+ *  the Columns popover (axis 'y') and the list header cells (axis 'x').
+ *  The hook only tracks the gesture and reports (src, dst, before) on
+ *  drop — callers commit via moveKey over their full ordered key list.
+ *
+ *  `opts.ignoreFrom`: a CSS selector; a drag starting inside a matching
+ *  ancestor is cancelled. Headers pass '.pop-menu' so dragging inside an
+ *  open column-funnel popover (rendered within the header span) never
+ *  hijacks the pointer. Plain clicks are untouched either way — HTML5
+ *  drag only engages on actual drag movement. */
+export function useReorderDrag(
+  onMove: (src: string, dst: string, before: boolean) => void,
+  axis: 'x' | 'y',
+  opts?: { ignoreFrom?: string },
+) {
+  const [drag, setDrag] = useState<string | null>(null);
+  const [over, setOver] = useState<{ key: string; before: boolean } | null>(null);
+
+  const dragProps = (key: string) => ({
+    draggable: true,
+    onDragStart: (e: DragEvent<HTMLElement>) => {
+      if (opts?.ignoreFrom && (e.target as HTMLElement).closest?.(opts.ignoreFrom)) {
+        e.preventDefault();
+        return;
+      }
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', key); // Firefox refuses to start a drag with no data
+      setDrag(key);
+    },
+    onDragOver: (e: DragEvent<HTMLElement>) => {
+      if (!drag || drag === key) return;
+      e.preventDefault(); // required for the element to be a drop target
+      e.dataTransfer.dropEffect = 'move';
+      const rect = e.currentTarget.getBoundingClientRect();
+      const before = axis === 'x'
+        ? e.clientX < rect.left + rect.width / 2
+        : e.clientY < rect.top + rect.height / 2;
+      setOver((prev) => (prev?.key === key && prev.before === before ? prev : { key, before }));
+    },
+    onDragLeave: () => {
+      setOver((prev) => (prev?.key === key ? null : prev));
+    },
+    onDrop: (e: DragEvent<HTMLElement>) => {
+      e.preventDefault();
+      if (drag && drag !== key && over?.key === key) onMove(drag, key, over.before);
+      setDrag(null);
+      setOver(null);
+    },
+    onDragEnd: () => {
+      setDrag(null);
+      setOver(null);
+    },
+  });
+
+  const dropClass = (key: string) => {
+    if (key === drag) return 'drag-src';
+    if (over?.key === key) return over.before ? 'drop-before' : 'drop-after';
+    return '';
+  };
+
+  return { dragProps, dropClass };
 }
 
 /* ── advanced filters (facets) ──────────────────────────────────── */
