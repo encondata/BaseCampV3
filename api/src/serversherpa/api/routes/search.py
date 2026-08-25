@@ -16,6 +16,7 @@ from serversherpa.db.models import (
     AssetModelAlias,
     Client,
     Container,
+    Initiative,
     Partner,
     Person,
     Site,
@@ -138,6 +139,21 @@ async def global_search(
             SearchResult(kind="container", id=c.id, label=c.name,
                          sub=c.rfid_tag or "Container")
             for c in containers
+        )
+
+    # initiatives — name / location / sky-command ref; internal-only resource
+    if user.access.can("initiatives", "view"):
+        query = select(Initiative).where(or_(
+            Initiative.name.ilike(needle),
+            Initiative.location.ilike(needle),
+            Initiative.sky_command_project_id.ilike(needle),
+        ))
+        initiatives = (await db.scalars(
+            query.order_by(Initiative.name).limit(LIMIT_PER_KIND))).all()
+        results.extend(
+            SearchResult(kind="initiative", id=i.id, label=i.name,
+                         sub=i.initiative_type)
+            for i in initiatives
         )
 
     return SearchOut(results=results)
