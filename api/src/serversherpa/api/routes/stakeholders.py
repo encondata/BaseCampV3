@@ -36,6 +36,7 @@ from serversherpa.db.models import (
     Person,
     PersonRole,
     Role,
+    StatusValue,
     UserAccount,
     WorkerProfile,
 )
@@ -46,8 +47,8 @@ from serversherpa.status.labels import (
 )
 
 
-def _err(status: int, code: str) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code})
+def _err(status: int, code: str, **extra) -> HTTPException:
+    return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
 def _normalize_functions(raw: list[str]) -> list[str]:
@@ -207,6 +208,11 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             data.pop("partner_types", None)
         elif data.get("partner_types") is None:
             data.pop("partner_types", None)
+        elif data["partner_types"]:
+            keys = set(await db.scalars(select(StatusValue.key).where(
+                StatusValue.record_type == "partner_type")))
+            if unknown := [t for t in data["partner_types"] if t not in keys]:
+                raise _err(422, "unknown_partner_type", values=unknown)
         for field, value in data.items():
             setattr(org, field, value)
         org.updated_at = datetime.now(UTC)

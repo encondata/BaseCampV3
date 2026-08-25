@@ -851,3 +851,52 @@ async def test_client_contact_sees_only_their_org(client, db, seeded_user):
     assert resp.status_code == 404                 # out-of-scope detail = 404
     resp = await client.get("/partners", headers=hdrs)
     assert resp.status_code == 403                 # no partners:view
+
+
+async def test_partner_type_vocabulary(client, seeded_user, db):
+    """partner_types is now an admin-editable status_values vocabulary,
+    not a hardcoded Literal — validated against status_values on write."""
+    headers = await _headers(client)
+
+    resp = await client.post("/partners", headers=headers, json={
+        "name": "Tech Co", "partner_types": ["tech"]})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["partner_types"] == ["tech"]
+    pid = resp.json()["id"]
+
+    resp = await client.post("/partners", headers=headers, json={
+        "name": "Bad Co", "partner_types": ["hovercraft"]})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "unknown_partner_type"
+    assert resp.json()["detail"]["values"] == ["hovercraft"]
+
+    # the five keys that already existed before this migration still work
+    resp = await client.post("/partners", headers=headers, json={
+        "name": "Legacy Co",
+        "partner_types": ["staffing", "logistics", "subcontractor",
+                          "consultant", "other"]})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["partner_types"] == [
+        "staffing", "logistics", "subcontractor", "consultant", "other"]
+
+    resp = await client.patch(f"/partners/{pid}", headers=headers, json={
+        "partner_types": ["hovercraft"]})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "unknown_partner_type"
+
+    # the Variables page usage counter must see partner_types the same way
+    # it sees initiatives.shipping_types — via unnest() on a text[] column
+    dev = Person(first_name="D", last_name="Dev")
+    db.add(dev)
+    await db.flush()
+    db.add(PersonRole(person_id=dev.id, role="developer"))
+    await db.commit()
+    dev_headers = await make_login(db, client, dev, "dev@test.example.com")
+
+    resp = await client.get("/status-values", headers=dev_headers)
+    assert resp.status_code == 200, resp.text
+    by_key = {r["key"]: r for r in resp.json() if r["record_type"] == "partner_type"}
+    assert len(by_key) == 7
+    assert by_key["tech"]["usage_count"] == 1
+    assert by_key["cable"]["usage_count"] == 0
+    assert by_key["staffing"]["usage_count"] == 1

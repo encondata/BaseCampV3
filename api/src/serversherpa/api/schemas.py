@@ -317,7 +317,6 @@ class UserCreateIn(BaseModel):
 
 ORG_STATUSES = {"prospect", "active", "dormant"}
 ORG_TIERS = {"standard", "preferred", "strategic"}
-PARTNER_TYPES = {"staffing", "logistics", "subcontractor", "consultant", "other"}
 
 
 class ManagerRef(BaseModel):
@@ -355,8 +354,8 @@ class OrgCreateIn(BaseModel):
 
     name: str = Field(min_length=1)
     code: str | None = None
-    partner_types: list[Literal["staffing", "logistics", "subcontractor",
-                               "consultant", "other"]] = []
+    partner_types: list[str] = []   # partners only; API-validated against
+                                     # status_values record_type=partner_type
     status: Literal["prospect", "active", "dormant"] = "active"
     tier: Literal["standard", "preferred", "strategic"] = "standard"
     phone: str | None = None
@@ -376,8 +375,7 @@ class OrgUpdateIn(BaseModel):
 
     name: str | None = Field(None, min_length=1)
     code: str | None = None
-    partner_types: list[Literal["staffing", "logistics", "subcontractor",
-                               "consultant", "other"]] | None = None
+    partner_types: list[str] | None = None   # partners only; API-validated
     status: Literal["prospect", "active", "dormant"] | None = None
     tier: Literal["standard", "preferred", "strategic"] | None = None
     phone: str | None = None

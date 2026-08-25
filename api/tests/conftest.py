@@ -194,6 +194,21 @@ async def clean_db():
               ('shipping_type','rail','Rail','Rail freight.','#a36207',3),
               ('shipping_type','ferry','Ferry','Sea / ferry.','#6d4fc4',4)
         """))
+        # partner type vocabulary — restore canonical seeds (0017)
+        await session.execute(text(
+            "DELETE FROM status_values WHERE record_type = 'partner_type'"))
+        await session.execute(text("""
+            INSERT INTO status_values
+              (record_type, key, label, description, color, sort_order)
+            VALUES
+              ('partner_type','staffing','Staffing','Contract labour.','#1668a7',1),
+              ('partner_type','logistics','Logistics','Transport & freight.','#a36207',2),
+              ('partner_type','tech','Tech','Hands-on technical services.','#178a4c',3),
+              ('partner_type','cable','Cable','Structured cabling.','#0f7c86',4),
+              ('partner_type','subcontractor','Subcontractor','General subcontracting.','#6d4fc4',5),
+              ('partner_type','consultant','Consultant','Advisory services.','#51606f',6),
+              ('partner_type','other','Other','Anything else.','#c03540',7)
+        """))
         await session.execute(text("DELETE FROM asset_categories"))
         await session.execute(text("""
             INSERT INTO asset_categories (key, label, description, sort_order, color)

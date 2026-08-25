@@ -45,6 +45,9 @@ STATUS_RECORD_TYPES: list[StatusRecordType] = [
     StatusRecordType("shipping_type", "Shipping type", table="initiatives",
                      column="shipping_types", resource="initiatives",
                      array=True),
+    StatusRecordType("partner_type", "Partner type", table="partners",
+                     column="partner_types", resource="partners",
+                     array=True),
 ]
 
 STATUS_REGISTRY: dict[str, StatusRecordType] = {

@@ -13,7 +13,7 @@ def test_launch_types_are_site_worker_asset_and_container():
     assert set(STATUS_REGISTRY) == {
         "site", "worker", "asset", "container", "container_type",
         "initiative", "initiative_type", "initiative_sub_type",
-        "initiative_work_type", "shipping_type"}
+        "initiative_work_type", "shipping_type", "partner_type"}
 
 
 def test_every_record_type_points_at_a_real_resource():

@@ -126,8 +126,10 @@ class Partner(OrgColumns, Base):
         primary_key=True, server_default=text("gen_random_uuid()"))
     name: Mapped[str] = mapped_column(CITEXT)
     code: Mapped[str | None] = mapped_column(CITEXT)
-    partner_types: Mapped[list] = mapped_column(
-        JSONB, server_default=text("'[]'::jsonb"))
+    # keys under status_values record_type='partner_type'; API-validated
+    # (composite FK can't cover arrays) — see initiatives.shipping_types
+    partner_types: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("'{}'::text[]"))
     notes: Mapped[str | None]
     source: Mapped[str] = mapped_column(server_default="manual")
     source_ref: Mapped[str | None]
