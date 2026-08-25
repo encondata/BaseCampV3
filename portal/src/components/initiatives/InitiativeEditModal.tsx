@@ -249,32 +249,8 @@ export default function InitiativeEditModal({
 
             {sections.move && (
               <>
-                <div className="modal-section">Move</div>
+                <div className="modal-section">Shipping</div>
                 <div className="pf-form">
-                  <div><label>Origin site</label>
-                    <ComboBox
-                      placeholder="Type to search sites…"
-                      value={form.origin_site_id}
-                      clearable
-                      disabled={locked}
-                      onChange={(v) => setField('origin_site_id', v)}
-                      options={siteOptions(form.origin_site_id)}
-                    /></div>
-                  <div><label>Destination site</label>
-                    <ComboBox
-                      placeholder="Type to search sites…"
-                      value={form.destination_site_id}
-                      clearable
-                      disabled={locked}
-                      onChange={(v) => setField('destination_site_id', v)}
-                      options={siteOptions(form.destination_site_id)}
-                    /></div>
-                  <div><label>Actual start</label>
-                    <input type="date" value={form.real_start_at} disabled={locked}
-                           onChange={(e) => setField('real_start_at', e.target.value)} /></div>
-                  <div><label>Actual end</label>
-                    <input type="date" value={form.real_end_at} disabled={locked}
-                           onChange={(e) => setField('real_end_at', e.target.value)} /></div>
                   <div style={{ gridColumn: '1 / -1' }}>
                     <label>Shipping types</label>
                     <div className="init-checks">
@@ -297,24 +273,54 @@ export default function InitiativeEditModal({
                                setFlag('priority_devices', e.target.checked)} />
                       Priority devices
                     </label></div>
-                  {partnerCombo('Origin tech partner', 'origin_tech_partner_id')}
-                  {partnerCombo('Origin cable partner', 'origin_cable_partner_id')}
-                  {partnerCombo('Origin logistics partner',
+                </div>
+
+                <div className="modal-section">Origin</div>
+                <div className="pf-form">
+                  <div><label>Site</label>
+                    <ComboBox
+                      placeholder="Type to search sites…"
+                      value={form.origin_site_id}
+                      clearable
+                      disabled={locked}
+                      onChange={(v) => setField('origin_site_id', v)}
+                      options={siteOptions(form.origin_site_id)}
+                    /></div>
+                  {partnerCombo('Tech partner', 'origin_tech_partner_id')}
+                  {partnerCombo('Cable partner', 'origin_cable_partner_id')}
+                  {partnerCombo('Logistics partner',
                                 'origin_logistics_partner_id')}
+                  <div><label>Actual start</label>
+                    <input type="date" value={form.real_start_at} disabled={locked}
+                           onChange={(e) => setField('real_start_at', e.target.value)} /></div>
                   <div style={{ alignSelf: 'end' }}>
                     <label className="init-check">
                       <input type="checkbox" checked={form.origin_vendor_involved}
                              disabled={locked}
                              onChange={(e) =>
                                setFlag('origin_vendor_involved', e.target.checked)} />
-                      Origin vendor involved
+                      Vendor involved
                     </label></div>
-                  {partnerCombo('Destination tech partner',
-                                'destination_tech_partner_id')}
-                  {partnerCombo('Destination cable partner',
-                                'destination_cable_partner_id')}
-                  {partnerCombo('Destination logistics partner',
+                </div>
+
+                <div className="modal-section">Destination</div>
+                <div className="pf-form">
+                  <div><label>Site</label>
+                    <ComboBox
+                      placeholder="Type to search sites…"
+                      value={form.destination_site_id}
+                      clearable
+                      disabled={locked}
+                      onChange={(v) => setField('destination_site_id', v)}
+                      options={siteOptions(form.destination_site_id)}
+                    /></div>
+                  {partnerCombo('Tech partner', 'destination_tech_partner_id')}
+                  {partnerCombo('Cable partner', 'destination_cable_partner_id')}
+                  {partnerCombo('Logistics partner',
                                 'destination_logistics_partner_id')}
+                  <div><label>Actual end</label>
+                    <input type="date" value={form.real_end_at} disabled={locked}
+                           onChange={(e) => setField('real_end_at', e.target.value)} /></div>
                   <div style={{ alignSelf: 'end' }}>
                     <label className="init-check">
                       <input type="checkbox"
@@ -323,7 +329,7 @@ export default function InitiativeEditModal({
                              onChange={(e) =>
                                setFlag('destination_vendor_involved',
                                        e.target.checked)} />
-                      Destination vendor involved
+                      Vendor involved
                     </label></div>
                 </div>
               </>
