@@ -4,6 +4,7 @@
  *  so it's shared with this module without a component import, plus the
  *  org-PATCH error map and the god-edit descriptor table. */
 
+import type { StatusValue } from './api';
 import type { GodField } from './godEdit';
 import { longDate } from './format';
 
@@ -50,23 +51,52 @@ export const STATUS_META: Record<string, { label: string; cls: string }> = {
   archived: { label: 'Archived', cls: 'c-red' },
 };
 
-/** Partner-type label map (the Type column, partners only) — moved out of
- *  OrgDirectory.tsx so orgCellText and the OrgFormModal type picker share
- *  one copy. */
+/** Partner-type label map (the Type column, partners only). Partner types
+ *  now come from the `partner_type` status-values vocabulary (GET
+ *  /status-values?record_type=partner_type — see OrgDirectory.tsx, which
+ *  fetches it and builds the `Map<string, StatusValue>` passed to
+ *  `partnerTypeLabel`/`partnerTypeColor`/`orgCellText` below). This map is
+ *  a last-resort fallback only, for a key the vocabulary no longer knows
+ *  about (predates the vocab, or was renamed) — it is never the primary
+ *  source again. */
 export const TYPE_LABEL: Record<string, string> = {
   staffing: 'Staffing', logistics: 'Logistics', subcontractor: 'Subcontractor',
   consultant: 'Consultant', other: 'Other',
 };
+
+/** Resolve one partner_type key's display label: the live vocabulary first,
+ *  then TYPE_LABEL, then the raw key itself — so a retired or otherwise
+ *  unknown key still renders (by key) instead of vanishing. Pure: the
+ *  vocab map is passed in, never fetched here. */
+export function partnerTypeLabel(key: string, vocab: Map<string, StatusValue>): string {
+  return vocab.get(key)?.label ?? TYPE_LABEL[key] ?? key;
+}
+
+/** Resolve one partner_type key's chip colour from the vocabulary. Returns
+ *  undefined for a retired/unknown key so callers can leave the `--chip`
+ *  inline style unset — directory.css's `@property --chip` then supplies
+ *  the `#51606f` fallback automatically. */
+export function partnerTypeColor(key: string, vocab: Map<string, StatusValue>): string | undefined {
+  return vocab.get(key)?.color;
+}
 
 /** Column-menu accessor (lib/columnMenu.tsx's `CellText<T>`) — one row's
  *  display text for a given column key. Mirrors exactly what the page's own
  *  cell renderer shows: 'status' reads effectiveStatus through STATUS_META
  *  (so 'Archived' is a selectable value, same as the pill), 'tier' shows
  *  the raw key (the cell renders it unlabeled), and 'type' joins the
- *  partner-types chip list. 'primary' is the always-shown name+code/city
- *  cell — no archived pseudo-column is needed since archived already lives
- *  inside 'status'. */
-export function orgCellText(o: OrgItem, colKey: string): string {
+ *  partner-types chip list, resolved through `typeVocab` (see
+ *  `partnerTypeLabel`). 'primary' is the always-shown name+code/city cell —
+ *  no archived pseudo-column is needed since archived already lives inside
+ *  'status'.
+ *
+ *  `typeVocab` defaults to an empty map so this still satisfies
+ *  columnMenu's `CellText<OrgItem>` (a 2-arg callback) wherever the vocab
+ *  isn't relevant or hasn't loaded yet — callers that care (OrgDirectory)
+ *  bind it via a small wrapper before handing the function to ColumnMenu. */
+export function orgCellText(
+  o: OrgItem, colKey: string, typeVocab: Map<string, StatusValue> = new Map(),
+): string {
   switch (colKey) {
     case 'primary': {
       const secondary = [o.code, [o.city, o.region].filter(Boolean).join(', ')]
@@ -74,7 +104,7 @@ export function orgCellText(o: OrgItem, colKey: string): string {
       return `${o.name} ${secondary}`.trim();
     }
     case 'type': return o.partner_types.length
-      ? o.partner_types.map((t) => TYPE_LABEL[t] ?? t).join(', ') : '—';
+      ? o.partner_types.map((t) => partnerTypeLabel(t, typeVocab)).join(', ') : '—';
     case 'tier': return o.tier;
     case 'status': return STATUS_META[effectiveStatus(o)]?.label ?? effectiveStatus(o);
     case 'manager': return o.account_manager?.display_name ?? '—';

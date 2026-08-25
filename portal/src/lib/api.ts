@@ -1494,6 +1494,10 @@ export const listInitiativeWorkTypes = () =>
   statusValuesFor('initiative_work_type');
 export const listShippingTypes = () => statusValuesFor('shipping_type');
 
+/** The Partners picker's type vocabulary (Clients/Partners share OrgDirectory,
+ *  but only Partners has a Type column/picker — see cfg.hasType). */
+export const listPartnerTypes = () => statusValuesFor('partner_type');
+
 export async function addInitiativePerson(
   id: string, body: Record<string, unknown>,
 ): Promise<InitiativePersonRow[]> {

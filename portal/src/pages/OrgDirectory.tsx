@@ -13,7 +13,7 @@ import AvatarUpload from '../components/AvatarUpload';
 import ComboBox from '../components/ComboBox';
 import TierSelect, { TIER_LABEL } from '../components/TierSelect';
 import {
-  addContactLink, apiFetch, ApiError, type ContactTier,
+  addContactLink, apiFetch, ApiError, listPartnerTypes, type ContactTier, type StatusValue,
 } from '../lib/api';
 import {
   afterLinkFailure, buildNewContactPersonPayload, planAddContact,
@@ -35,8 +35,8 @@ import {
 } from '../lib/listTools';
 import { naturalCompare } from '../lib/sites';
 import {
-  effectiveStatus, ORG_ERRORS, ORG_GOD_FIELDS, orgCellText, STATUS_META, TYPE_LABEL,
-  type OrgItem,
+  effectiveStatus, ORG_ERRORS, ORG_GOD_FIELDS, orgCellText, partnerTypeColor, partnerTypeLabel,
+  STATUS_META, type OrgItem,
 } from '../lib/orgs';
 import '../styles/directory.css';
 import '../styles/profile.css';
@@ -190,6 +190,10 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
 
   const [orgs, setOrgs] = useState<OrgItem[] | null>(null);
   const [error, setError] = useState('');
+  // partner_type vocabulary (Partners only — cfg.hasType). Active values
+  // only, per /status-values?record_type=; a retired key still on some org's
+  // partner_types just falls through orgs.ts's TYPE_LABEL/raw-key fallback.
+  const [partnerTypes, setPartnerTypes] = useState<StatusValue[]>([]);
   const [pill, setPill] = useState('all');
   const [query, setQuery] = useState('');
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
@@ -235,6 +239,18 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
 
   useEffect(() => { void load(); /* eslint-disable-next-line */ }, [cfg.apiBase]);
 
+  useEffect(() => {
+    if (!cfg.hasType) return;
+    void listPartnerTypes().then(setPartnerTypes).catch(() => {});
+  }, [cfg.hasType]);
+
+  const typeVocab = useMemo(
+    () => new Map(partnerTypes.map((t) => [t.key, t])), [partnerTypes]);
+  // orgCellText's `typeVocab` param defaults to an empty map so it still
+  // satisfies columnMenu's 2-arg `CellText<OrgItem>` — bind the loaded
+  // vocab here once, rather than re-deriving it at every call site.
+  const cellText = (o: OrgItem, colKey: string) => orgCellText(o, colKey, typeVocab);
+
   // global-search / palette handoff now lives in useRecordFocus
   // (expands AND filters the row to the top)
 
@@ -266,7 +282,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
     const q = query.trim().toLowerCase();
     const rows = orgs.filter((o) => {
       if (pill !== 'all' && effectiveStatus(o) !== pill) return false;
-      if (!passesColumnFilters(o, filters, orgCellText)) return false;
+      if (!passesColumnFilters(o, filters, cellText)) return false;
       if (!q) return true;
       const hay = `${o.name} ${o.code ?? ''} ${o.city ?? ''} ${o.region ?? ''} ` +
         `${o.partner_types.join(' ')} ${o.account_manager?.display_name ?? ''}`.toLowerCase();
@@ -276,7 +292,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
       const va = sortValueFor(a, sortKey), vb = sortValueFor(b, sortKey);
       return naturalCompare(String(va), String(vb)) * sortDir;
     });
-  }, [orgs, pill, query, filters, sortKey, sortDir]);
+  }, [orgs, pill, query, filters, sortKey, sortDir, typeVocab]);
 
   // Auto-close the open row when it drops out of `visible` — EXCEPT the one
   // case where it just arrived via a deep link and the reason it's missing
@@ -287,13 +303,13 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
     if (openId === deepLinkTarget.current && clearedDeepLink.current !== openId) {
       clearedDeepLink.current = openId;
       const target = orgs.find((o) => o.id === openId);
-      if (target && !passesColumnFilters(target, filters, orgCellText)) {
+      if (target && !passesColumnFilters(target, filters, cellText)) {
         clearFilters();
         return;
       }
     }
     setOpenId(null);
-  }, [orgs, visible, openId, filters, clearFilters]);
+  }, [orgs, visible, openId, filters, clearFilters, typeVocab]);
 
   // Release the deep-link guard once the target row is first confirmed
   // visible — see Assets.tsx for the full rationale.
@@ -354,7 +370,10 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
           <div className="chips">
             {o.partner_types.length === 0 && <span className="chip tag">—</span>}
             {o.partner_types.map((t) => (
-              <span key={t} className="chip tag">{TYPE_LABEL[t] ?? t}</span>
+              <span key={t} className="chip custom"
+                    style={{ '--chip': partnerTypeColor(t, typeVocab) } as CSSProperties}>
+                <span className="dot" />{partnerTypeLabel(t, typeVocab)}
+              </span>
             ))}
           </div>
         );
@@ -446,7 +465,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
             </button>
             <ColumnMenu colKey="primary" label="Name"
                         allRows={orgs ?? []} filters={filters}
-                        text={orgCellText}
+                        text={cellText}
                         filter={filters.primary} onFilter={setFilter}
                         sortDir={sortKey === 'primary' ? sortDir : null}
                         onSort={(dir) => setSort('primary', dir)} />
@@ -458,7 +477,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
               </button>
               <ColumnMenu colKey={c.key} label={c.label}
                           allRows={orgs ?? []} filters={filters}
-                          text={orgCellText}
+                          text={cellText}
                           filter={filters[c.key]} onFilter={setFilter}
                           sortDir={sortKey === c.key ? sortDir : null}
                           onSort={(dir) => setSort(c.key, dir)} />
@@ -603,6 +622,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
         <OrgFormModal
           cfg={cfg}
           org={editing === 'new' ? null : editing}
+          partnerTypes={partnerTypes}
           onClose={() => setEditing(null)}
           onSaved={(id) => {
             setEditing(null);
@@ -1052,9 +1072,10 @@ function AddContactModal({ cfg, orgId, linkedIds, onClose, onAdded }: {
 /* ── create / edit modal ────────────────────────────────────────── */
 /* ORG_ERRORS now lives in lib/orgs.ts, shared with GodCell's error map. */
 
-function OrgFormModal({ cfg, org, onClose, onSaved }: {
+function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
   cfg: OrgConfig;
   org: OrgItem | null;
+  partnerTypes: StatusValue[];
   onClose: () => void;
   onSaved: (id: string) => void;
 }) {
@@ -1140,15 +1161,15 @@ function OrgFormModal({ cfg, org, onClose, onSaved }: {
               {cfg.hasType && (
                 <div className="full"><label>Types (a partner can do several)</label>
                   <div className="role-picks">
-                    {Object.entries(TYPE_LABEL).map(([v, l]) => (
-                      <button key={v} type="button"
-                              className={`role-pick ${types.has(v) ? 'on' : ''}`}
+                    {partnerTypes.map((t) => (
+                      <button key={t.key} type="button"
+                              className={`role-pick ${types.has(t.key) ? 'on' : ''}`}
                               onClick={() => setTypes((prev) => {
                                 const next = new Set(prev);
-                                if (next.has(v)) next.delete(v); else next.add(v);
+                                if (next.has(t.key)) next.delete(t.key); else next.add(t.key);
                                 return next;
                               })}>
-                        {l}
+                        {t.label}
                       </button>
                     ))}
                   </div>

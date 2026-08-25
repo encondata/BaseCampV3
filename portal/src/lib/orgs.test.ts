@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { effectiveStatus, ORG_ERRORS, ORG_GOD_FIELDS, orgCellText, type OrgItem } from './orgs';
+import type { StatusValue } from './api';
+import {
+  effectiveStatus, ORG_ERRORS, ORG_GOD_FIELDS, orgCellText, partnerTypeColor, partnerTypeLabel,
+  type OrgItem,
+} from './orgs';
+
+function statusValue(key: string, label: string, color: string): StatusValue {
+  return {
+    record_type: 'partner_type', key, label, description: '', color,
+    sort_order: 0, is_active: true, usage_count: null,
+  };
+}
 
 const org: OrgItem = {
   id: 'o1', name: 'Acme Co', code: 'ACME',
@@ -101,6 +112,20 @@ describe('orgCellText', () => {
     expect(orgCellText(blank, 'type')).toBe('—');
   });
 
+  it('type resolves labels from a supplied vocab map over the TYPE_LABEL fallback', () => {
+    const vocab = new Map([['staffing', statusValue('staffing', 'Staffing Crew', '#123456')]]);
+    expect(orgCellText(org, 'type', vocab)).toBe('Staffing Crew');
+  });
+
+  it('type falls back to TYPE_LABEL, then the raw key, for a key missing from the vocab', () => {
+    const vocab = new Map([['tech', statusValue('tech', 'Tech', '#123456')]]);
+    // 'staffing' isn't in this vocab map, so it falls to TYPE_LABEL's 'Staffing'.
+    expect(orgCellText(org, 'type', vocab)).toBe('Staffing');
+    // A retired/unknown key that TYPE_LABEL also doesn't know renders by its raw key.
+    expect(orgCellText({ ...org, partner_types: ['retired_key'] }, 'type', vocab))
+      .toBe('retired_key');
+  });
+
   it('tier reads the raw key, unlabeled — matching the cell', () => {
     expect(orgCellText(org, 'tier')).toBe('preferred');
   });
@@ -133,6 +158,32 @@ describe('orgCellText', () => {
 
   it('unknown column keys return empty string', () => {
     expect(orgCellText(org, 'nonsense')).toBe('');
+  });
+});
+
+describe('partnerTypeLabel', () => {
+  it('prefers the vocab label when the key is present', () => {
+    const vocab = new Map([['tech', statusValue('tech', 'Tech', '#123456')]]);
+    expect(partnerTypeLabel('tech', vocab)).toBe('Tech');
+  });
+
+  it('falls back to TYPE_LABEL when the key is missing from the vocab', () => {
+    expect(partnerTypeLabel('consultant', new Map())).toBe('Consultant');
+  });
+
+  it('falls back to the raw key when neither the vocab nor TYPE_LABEL know it', () => {
+    expect(partnerTypeLabel('retired_key', new Map())).toBe('retired_key');
+  });
+});
+
+describe('partnerTypeColor', () => {
+  it('reads the color from the vocab when the key is present', () => {
+    const vocab = new Map([['tech', statusValue('tech', 'Tech', '#123456')]]);
+    expect(partnerTypeColor('tech', vocab)).toBe('#123456');
+  });
+
+  it('is undefined for a retired/unknown key, so callers leave --chip unset and directory.css supplies #51606f', () => {
+    expect(partnerTypeColor('retired_key', new Map())).toBeUndefined();
   });
 });
 
