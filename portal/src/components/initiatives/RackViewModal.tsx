@@ -23,17 +23,30 @@ const U_PX = 16;
 const POST_WIDTH = 26; // left/right cabinet posts
 const CAP_HEIGHT = 10; // top/bottom caps closing the cabinet
 const FRAME_WIDTH = 400;
+const HEADER_HEIGHT = 14; // FRONT/REAR column-label band above the RU grid
 
-const INTERIOR_HEIGHT = RU_COUNT * U_PX; // 864
+const RU_AREA_HEIGHT = RU_COUNT * U_PX; // 864
+const INTERIOR_HEIGHT = HEADER_HEIGHT + RU_AREA_HEIGHT;
 const TOTAL_HEIGHT = INTERIOR_HEIGHT + CAP_HEIGHT * 2;
 const INTERIOR_TOP = CAP_HEIGHT;
 const INTERIOR_BOTTOM = INTERIOR_TOP + INTERIOR_HEIGHT;
+const RU_AREA_TOP = INTERIOR_TOP + HEADER_HEIGHT;
+const RU_AREA_BOTTOM = INTERIOR_BOTTOM; // RU grid ends where the interior does
 const INTERIOR_LEFT = POST_WIDTH;
 const INTERIOR_RIGHT = FRAME_WIDTH - POST_WIDTH;
 const INTERIOR_WIDTH = INTERIOR_RIGHT - INTERIOR_LEFT;
 
-const FACEPLATE_INSET = 4; // each side, within the interior
-const FACEPLATE_USABLE_WIDTH = INTERIOR_WIDTH - FACEPLATE_INSET * 2;
+/* Front/rear split: a vertical separator down the interior's midline turns
+   it into two equal-width columns, each laid out independently (its own
+   lane-collision pass) so a front and a rear device at the same RU no
+   longer fight for the same lanes. */
+const HALF_WIDTH = INTERIOR_WIDTH / 2;
+const SEPARATOR_X = INTERIOR_LEFT + HALF_WIDTH;
+
+const FACEPLATE_INSET = 4; // each side, within a half
+export const FACEPLATE_HALF_USABLE_WIDTH = HALF_WIDTH - FACEPLATE_INSET * 2;
+const FRONT_X0 = INTERIOR_LEFT + FACEPLATE_INSET;
+const REAR_X0 = SEPARATOR_X + FACEPLATE_INSET;
 const LANE_PX = 14; // horizontal offset step for overlapping blocks
 
 const HOLE_SIZE = 4;
@@ -108,11 +121,19 @@ export function rackLabel(
   return maxChars === 1 ? '…' : `${full.slice(0, maxChars - 1)}…`;
 }
 
+/** Front/rear column assignment: a side position note that mentions "rear"
+ *  (case-insensitively, substring match — "rear-left" counts) places the
+ *  block in the REAR half; everything else (front, left/right, blank)
+ *  lands in FRONT. Exported for testing without mounting the SVG. */
+export function isRearPosition(position: string | null | undefined): boolean {
+  return !!position && position.toLowerCase().includes('rear');
+}
+
 /** y (SVG, top-down) for the bottom edge of RU `ru` — RU 1 sits at the
  *  bottom of the elevation, so higher RU numbers move up (smaller y). */
-const yForRu = (ru: number) => INTERIOR_BOTTOM - (ru - 1) * U_PX;
+const yForRu = (ru: number) => RU_AREA_BOTTOM - (ru - 1) * U_PX;
 /** y for the top edge of RU `ru` (used for the rail hole/number rows). */
-const ruTop = (ru: number) => INTERIOR_BOTTOM - ru * U_PX;
+const ruTop = (ru: number) => RU_AREA_BOTTOM - ru * U_PX;
 
 export default function RackViewModal({ rackName, side, rows, onClose }: {
   rackName: string;
@@ -129,9 +150,18 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   }, [onClose]);
 
   const blocks = rackLayout(rows, rackName, side);
-  const geometry = new Map(
-    laneGeometry(blocks, FACEPLATE_USABLE_WIDTH).map((g) => [g.id, g]),
+  const frontBlocks = blocks.filter((b) => !isRearPosition(b.position));
+  const rearBlocks = blocks.filter((b) => isRearPosition(b.position));
+  const frontGeometry = new Map(
+    laneGeometry(frontBlocks, FACEPLATE_HALF_USABLE_WIDTH).map((g) => [g.id, g]),
   );
+  const rearGeometry = new Map(
+    laneGeometry(rearBlocks, FACEPLATE_HALF_USABLE_WIDTH).map((g) => [g.id, g]),
+  );
+  const facadeBlocks = [
+    ...frontBlocks.map((b) => ({ b, x0: FRONT_X0, geometry: frontGeometry })),
+    ...rearBlocks.map((b) => ({ b, x0: REAR_X0, geometry: rearGeometry })),
+  ];
 
   const sideLabel = side === 'source' ? 'Source' : 'Destination';
 
@@ -183,9 +213,22 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
                     height={INTERIOR_HEIGHT} className="rack-interior" />
               {Array.from({ length: RU_COUNT + 1 }, (_, i) => i).map((i) => (
                 <line key={i} x1={INTERIOR_LEFT} x2={INTERIOR_RIGHT}
-                      y1={INTERIOR_TOP + i * U_PX} y2={INTERIOR_TOP + i * U_PX}
+                      y1={RU_AREA_TOP + i * U_PX} y2={RU_AREA_TOP + i * U_PX}
                       className="rack-u-hairline" />
               ))}
+
+              {/* front/rear split: separator down the interior's midline,
+                  plus column labels in the header band above the RU grid */}
+              <line x1={SEPARATOR_X} x2={SEPARATOR_X} y1={INTERIOR_TOP} y2={INTERIOR_BOTTOM}
+                    className="rack-separator" />
+              <text x={INTERIOR_LEFT + HALF_WIDTH / 2} y={INTERIOR_TOP + HEADER_HEIGHT / 2}
+                    textAnchor="middle" dominantBaseline="middle" className="rack-half-label">
+                FRONT
+              </text>
+              <text x={SEPARATOR_X + HALF_WIDTH / 2} y={INTERIOR_TOP + HEADER_HEIGHT / 2}
+                    textAnchor="middle" dominantBaseline="middle" className="rack-half-label">
+                REAR
+              </text>
 
               {/* EIA rail holes, one <g> per post — cheap flat rects, no filters */}
               <g className="rack-rail-holes">
@@ -215,14 +258,14 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
               </g>
 
               {blocks.length === 0 ? (
-                <text x={INTERIOR_LEFT + INTERIOR_WIDTH / 2} y={INTERIOR_TOP + INTERIOR_HEIGHT / 2}
+                <text x={INTERIOR_LEFT + INTERIOR_WIDTH / 2} y={RU_AREA_TOP + RU_AREA_HEIGHT / 2}
                       textAnchor="middle" dominantBaseline="middle" className="rack-empty-label">
                   No assets recorded at this rack
                 </text>
-              ) : blocks.map((b) => {
+              ) : facadeBlocks.map(({ b, x0, geometry }) => {
                 const g = geometry.get(b.id);
-                const x = INTERIOR_LEFT + FACEPLATE_INSET + (g?.x ?? 0);
-                const width = g?.width ?? FACEPLATE_USABLE_WIDTH;
+                const x = x0 + (g?.x ?? 0);
+                const width = g?.width ?? FACEPLATE_HALF_USABLE_WIDTH;
                 const fullHeight = b.height * U_PX;
                 const y = yForRu(b.ru + b.height) + 1;
                 const height = fullHeight - 2;

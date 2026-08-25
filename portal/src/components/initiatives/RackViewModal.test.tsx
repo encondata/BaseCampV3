@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { assignLanes, laneGeometry, rackLabel } from './RackViewModal';
+import {
+  assignLanes, FACEPLATE_HALF_USABLE_WIDTH, isRearPosition, laneGeometry, rackLabel,
+} from './RackViewModal';
 
 /* ── rack view collision layout (Task 6 fix-round) — laneGeometry is the
       pure geometry math behind the SVG's overlapping-block handling; tested
@@ -96,5 +98,63 @@ describe('rackLabel', () => {
   it('never returns an empty string, even for a near-zero lane width', () => {
     const result = rackLabel('anything', 'rear', 0);
     expect(result.length).toBeGreaterThan(0);
+  });
+});
+
+/* ── front/rear column assignment (follow-up) — a side position note
+      mentioning "rear" (case-insensitive substring) sends the block to the
+      REAR half; everything else (front, left/right, blank) stays FRONT. ── */
+
+describe('isRearPosition', () => {
+  it('matches "Rear" case-insensitively', () => {
+    expect(isRearPosition('Rear')).toBe(true);
+  });
+
+  it('matches lowercase "rear"', () => {
+    expect(isRearPosition('rear')).toBe(true);
+  });
+
+  it('matches "rear" as a substring (e.g. "rear-left")', () => {
+    expect(isRearPosition('rear-left')).toBe(true);
+  });
+
+  it('treats "left" (and other non-rear notes) as front', () => {
+    expect(isRearPosition('left')).toBe(false);
+  });
+
+  it('treats "front", blank, null, and undefined as front', () => {
+    expect(isRearPosition('front')).toBe(false);
+    expect(isRearPosition('')).toBe(false);
+    expect(isRearPosition(null)).toBe(false);
+    expect(isRearPosition(undefined)).toBe(false);
+  });
+});
+
+/* ── half-width lane geometry (follow-up) — the front/rear split scopes
+      laneGeometry to each half's own (narrower) usable width, so a front
+      and a rear device at the same RU land in different halves instead of
+      colliding into shrunk side-by-side lanes. ─────────────────────────── */
+
+describe('laneGeometry with FACEPLATE_HALF_USABLE_WIDTH (front/rear split)', () => {
+  it('gives a single block the full half width, not the old full-interior width', () => {
+    const blocks = [{ id: 'a', ru: 10, height: 2 }];
+    const [g] = laneGeometry(blocks, FACEPLATE_HALF_USABLE_WIDTH);
+    expect(g.x).toBe(0);
+    expect(g.width).toBe(FACEPLATE_HALF_USABLE_WIDTH);
+  });
+
+  it('tiles two overlapping blocks within one half without exceeding it', () => {
+    const blocks = [
+      { id: 'a', ru: 10, height: 2 },
+      { id: 'b', ru: 10, height: 2 },
+    ];
+    const rects = laneGeometry(blocks, FACEPLATE_HALF_USABLE_WIDTH);
+    expect(rects).toHaveLength(2);
+    for (const r of rects) {
+      expect(r.x).toBeGreaterThanOrEqual(0);
+      expect(r.x + r.width).toBeLessThanOrEqual(FACEPLATE_HALF_USABLE_WIDTH);
+    }
+    const [first, second] = [...rects].sort((a, b) => a.x - b.x);
+    expect(first.x + first.width).toBeLessThanOrEqual(second.x);
   });
 });

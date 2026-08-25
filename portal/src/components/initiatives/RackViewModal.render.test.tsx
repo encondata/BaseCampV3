@@ -3,13 +3,15 @@
  * Smoke-mounts the actual RackViewModal (not just its pure helpers) so a
  * runtime SVG-rendering bug — bad JSX nesting, a NaN geometry value, a
  * missing key — fails a test instead of only showing up visually. Covers
- * the redesign's three render branches: populated rack, empty rack, and a
- * decimal-RU / overlapping-lane rack (the collision-lane path).
+ * the redesign's three render branches (populated rack, empty rack,
+ * decimal-RU / overlapping-lane rack) plus the front/rear split follow-up:
+ * same-half collisions still squeeze into lanes, but a front device and a
+ * rear device at the same RU land in separate, full-width halves instead.
  */
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import RackViewModal from './RackViewModal';
+import RackViewModal, { FACEPLATE_HALF_USABLE_WIDTH } from './RackViewModal';
 import type { InitiativeAssetRow, InitiativeAssetSummary } from '../../lib/api';
 
 afterEach(cleanup);
@@ -58,19 +60,48 @@ describe('RackViewModal (render smoke)', () => {
     expect(screen.getByText('No assets recorded at this rack')).toBeTruthy();
   });
 
-  it('renders overlapping decimal-RU blocks (collision lanes) without crashing', () => {
+  it('renders overlapping decimal-RU blocks in the same half (collision lanes) without crashing', () => {
     const rows: InitiativeAssetRow[] = [
       makeRow({
-        id: 'row-a', source_ru: 10.5,
+        id: 'row-a', source_ru: 10.5, // both "rear" -> same half -> must share lanes
         asset: makeAsset({ id: 'asset-a', name: 'server-a', ru_size: 2 }),
       }),
       makeRow({
-        id: 'row-b', source_ru: 10.5, source_verified: false, source_position: null,
+        id: 'row-b', source_ru: 10.5, source_verified: false,
         asset: makeAsset({ id: 'asset-b', name: null, serial_number: 'SN-B', ru_size: 2 }),
       }),
     ];
     render(<RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />);
     expect(screen.getAllByText('server-a (rear)').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('SN-B').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('SN-B (rear)').length).toBeGreaterThan(0);
+  });
+
+  it('splits front/rear devices at the same RU into separate, full-width halves', () => {
+    const rows: InitiativeAssetRow[] = [
+      makeRow({
+        id: 'row-front', source_ru: 20, source_position: 'front',
+        asset: makeAsset({ id: 'asset-front', name: 'front-box', ru_size: 1 }),
+      }),
+      makeRow({
+        id: 'row-rear', source_ru: 20, source_position: 'rear',
+        asset: makeAsset({ id: 'asset-rear', name: 'rear-box', ru_size: 1 }),
+      }),
+    ];
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+    );
+
+    // Column chrome from the follow-up request.
+    expect(screen.getByText('FRONT')).toBeTruthy();
+    expect(screen.getByText('REAR')).toBeTruthy();
+    expect(container.querySelector('.rack-separator')).toBeTruthy();
+
+    // Same RU, opposite halves -> neither should be squeezed by the other's
+    // lane-collision pass; each faceplate gets the full half width.
+    const faceplates = Array.from(container.querySelectorAll('.rack-faceplate'));
+    expect(faceplates).toHaveLength(2);
+    for (const el of faceplates) {
+      expect(Number(el.getAttribute('width'))).toBe(FACEPLATE_HALF_USABLE_WIDTH);
+    }
   });
 });

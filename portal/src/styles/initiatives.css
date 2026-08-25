@@ -309,6 +309,13 @@
   fill: #8b93a0;
 }
 .rack-u-label-major { font-size: 8px; fill: #c7cdd6; font-weight: 600; }
+.rack-separator { stroke: #3a404a; stroke-width: 1.5; }
+.rack-half-label {
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  letter-spacing: 0.08em;
+  fill: #8b93a0;
+}
 .rack-empty-label {
   font-family: var(--font-mono);
   font-size: 10px;
