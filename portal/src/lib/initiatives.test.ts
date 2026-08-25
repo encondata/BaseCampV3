@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { InitiativeAssetRow, InitiativeItem } from './api';
 import {
   formFromInitiative, initiativeCellText, initiativePayload,
-  initiativeSearchText, moveAssetCellText, moveAssetProgress,
+  initiativeSearchText, MOVE_ASSET_EDIT_FIELDS, moveAssetCellText, moveAssetProgress,
   partnerOptionsForRole, sectionsForType, siteOptionsForClient,
 } from './initiatives';
 
@@ -281,5 +281,63 @@ describe('moveAssetCellText', () => {
 
   it('returns empty string for an unknown column key', () => {
     expect(moveAssetCellText(assetRow(), 'nonsense')).toBe('');
+  });
+});
+
+describe('MOVE_ASSET_EDIT_FIELDS', () => {
+  const lookups = { statuses: () => [{ value: 'racked', label: 'Racked' }] };
+  const fields = MOVE_ASSET_EDIT_FIELDS(lookups);
+  const fieldFor = (column: string) => fields.find((f) => f.column === column)!;
+
+  it('covers exactly the 13 per-move fields, none of the asset-identity columns', () => {
+    expect(fields.map((f) => f.column).sort()).toEqual([
+      'cable_info', 'destination_position', 'destination_rack', 'destination_ru',
+      'destination_verified', 'disposition', 'owner', 'source_position',
+      'source_rack', 'source_ru', 'source_verified', 'status', 'vendor_involved',
+      'wave',
+    ].sort());
+  });
+
+  it('maps tri-state booleans to yes/no/blank for fromRow, and back via toPatch', () => {
+    const verified = fieldFor('source_verified');
+    expect(verified.fromRow(assetRow({ source_verified: true }))).toBe('yes');
+    expect(verified.fromRow(assetRow({ source_verified: false }))).toBe('no');
+    expect(verified.fromRow(assetRow({ source_verified: null }))).toBe('');
+    expect(verified.toPatch?.('yes')).toBe(true);
+    expect(verified.toPatch?.('no')).toBe(false);
+    expect(verified.toPatch?.('')).toBeNull();
+
+    const vendor = fieldFor('vendor_involved');
+    expect(vendor.fromRow(assetRow({ vendor_involved: null }))).toBe('');
+    expect(vendor.fromRow(assetRow({ vendor_involved: true }))).toBe('yes');
+  });
+
+  it('round-trips RU numbers as plain strings, blank for null, rejects non-numbers', () => {
+    const ru = fieldFor('source_ru');
+    expect(ru.fromRow(assetRow({ source_ru: 8.5 }))).toBe('8.5');
+    expect(ru.fromRow(assetRow({ source_ru: null }))).toBe('');
+    expect(ru.toPatch?.('12')).toBe(12);
+    expect(ru.toPatch?.('')).toBeNull();
+    expect(() => ru.toPatch?.('abc')).toThrow();
+  });
+
+  it('status is a select field sourced from the passed-in lookup', () => {
+    const status = fieldFor('status');
+    expect(status.kind).toBe('select');
+    expect(status.fromRow(assetRow({ status: 'complete' }))).toBe('complete');
+    expect(status.options?.()).toEqual([{ value: 'racked', label: 'Racked' }]);
+  });
+
+  it('plain text fields pass row values straight through, blank for null', () => {
+    expect(fieldFor('wave').fromRow(assetRow({ priority_wave: 'Wave 2' }))).toBe('Wave 2');
+    expect(fieldFor('wave').fromRow(assetRow({ priority_wave: null }))).toBe('');
+    expect(fieldFor('owner').fromRow(assetRow({ owner: null }))).toBe('');
+    expect(fieldFor('disposition').fromRow(assetRow({ disposition: null }))).toBe('');
+    expect(fieldFor('source_rack').fromRow(assetRow({ source_rack: null }))).toBe('');
+    expect(fieldFor('destination_rack').fromRow(assetRow({ destination_rack: null }))).toBe('');
+    expect(fieldFor('source_position').fromRow(assetRow({ source_position: null }))).toBe('');
+    expect(fieldFor('destination_position')
+      .fromRow(assetRow({ destination_position: null }))).toBe('');
+    expect(fieldFor('cable_info').fromRow(assetRow({ cable_info: null }))).toBe('');
   });
 });

@@ -4,7 +4,7 @@
  */
 import type { ComboOption } from '../components/ComboBox';
 import type { InitiativeAssetRow, InitiativeItem, OrgRef, SiteItem } from './api';
-import type { GodField } from './godEdit';
+import { boolTriToPatch, numberToPatch, type GodField } from './godEdit';
 import type { ColumnDef } from './listTools';
 
 const day = (iso: string | null) =>
@@ -349,3 +349,55 @@ export const MOVE_ASSET_ERRORS: Record<string, string> = {
   unknown_status: 'Pick a status from the list.',
   forbidden: 'You do not have permission to change this move.',
 };
+
+/* ── move assets — inline edit-table mode (Task 5b). Every field here is a
+      per-move field on the join row; the asset-identity columns (Asset ID/
+      Name/Serial/Make-Model/RFID/Location/Client/Asset Status/Added/
+      Updated) have no descriptor and stay read-only under GodCell's normal
+      "no gf -> fall through to the plain renderer" convention. */
+
+export interface MoveAssetGodLookups {
+  statuses: () => ComboOption[];
+}
+
+/** boolean|null -> 'yes'/'no'/'' for the tri-state bool GodField kind
+ *  (ASSET_GOD_FIELDS' has_rails inline pattern, pulled out here since three
+ *  fields below share it). */
+const triFromBool = (v: boolean | null): string => (v == null ? '' : v ? 'yes' : 'no');
+
+export function MOVE_ASSET_EDIT_FIELDS(
+  lookups: MoveAssetGodLookups,
+): GodField<InitiativeAssetRow>[] {
+  return [
+    { column: 'wave', field: 'priority_wave', kind: 'text',
+      fromRow: (r) => r.priority_wave ?? '' },
+    { column: 'disposition', field: 'disposition', kind: 'text',
+      fromRow: (r) => r.disposition ?? '' },
+    { column: 'owner', field: 'owner', kind: 'text',
+      fromRow: (r) => r.owner ?? '' },
+    { column: 'source_rack', field: 'source_rack', kind: 'text',
+      fromRow: (r) => r.source_rack ?? '' },
+    { column: 'source_ru', field: 'source_ru', kind: 'number',
+      fromRow: (r) => (r.source_ru != null ? String(r.source_ru) : ''),
+      toPatch: numberToPatch },
+    { column: 'source_position', field: 'source_position', kind: 'text',
+      fromRow: (r) => r.source_position ?? '' },
+    { column: 'source_verified', field: 'source_verified', kind: 'bool',
+      fromRow: (r) => triFromBool(r.source_verified), toPatch: boolTriToPatch },
+    { column: 'destination_rack', field: 'destination_rack', kind: 'text',
+      fromRow: (r) => r.destination_rack ?? '' },
+    { column: 'destination_ru', field: 'destination_ru', kind: 'number',
+      fromRow: (r) => (r.destination_ru != null ? String(r.destination_ru) : ''),
+      toPatch: numberToPatch },
+    { column: 'destination_position', field: 'destination_position', kind: 'text',
+      fromRow: (r) => r.destination_position ?? '' },
+    { column: 'destination_verified', field: 'destination_verified', kind: 'bool',
+      fromRow: (r) => triFromBool(r.destination_verified), toPatch: boolTriToPatch },
+    { column: 'cable_info', field: 'cable_info', kind: 'text',
+      fromRow: (r) => r.cable_info ?? '' },
+    { column: 'vendor_involved', field: 'vendor_involved', kind: 'bool',
+      fromRow: (r) => triFromBool(r.vendor_involved), toPatch: boolTriToPatch },
+    { column: 'status', field: 'status', kind: 'select',
+      fromRow: (r) => r.status, options: lookups.statuses },
+  ];
+}

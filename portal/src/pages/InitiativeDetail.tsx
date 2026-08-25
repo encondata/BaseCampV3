@@ -48,8 +48,8 @@ import {
 } from '../lib/api';
 import { ADMIN_RANK } from '../lib/access';
 import {
-  INITIATIVE_ERRORS, MOVE_ASSET_COLUMNS, MOVE_ASSET_ERRORS, initiativeCellText,
-  moveAssetCellText, moveAssetProgress,
+  INITIATIVE_ERRORS, MOVE_ASSET_COLUMNS, MOVE_ASSET_EDIT_FIELDS, MOVE_ASSET_ERRORS,
+  initiativeCellText, moveAssetCellText, moveAssetProgress,
 } from '../lib/initiatives';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
@@ -237,6 +237,10 @@ export default function InitiativeDetail() {
   const [editingAsset, setEditingAsset] = useState<InitiativeAssetRow | null>(null);
   const [assetsBusy, setAssetsBusy] = useState(false);
   const [assetsActionError, setAssetsActionError] = useState('');
+  // Inline edit-table mode for Assets — a separate toggle from the People
+  // section's god.editing (Task 5b): gated on maxRank/canChange, not
+  // godMode, so it isn't tied to useGodEdit()'s godMode-derived `editing`.
+  const [assetsEditing, setAssetsEditing] = useState(false);
   const {
     visibleCols: assetsVisibleCols, setVisibleCols: setAssetsVisibleCols,
     sortKey: assetsSortKey, sortDir: assetsSortDir, setSort: setAssetsSort,
@@ -278,6 +282,14 @@ export default function InitiativeDetail() {
       return 0;
     });
   }, [assets, assetsFilters, assetsQuery, assetsSortKey, assetsSortDir]);
+  const assetGodFields = useMemo(() => MOVE_ASSET_EDIT_FIELDS({
+    statuses: () => moveStatuses.map((s) => ({ value: s.key, label: s.label })),
+  }), [moveStatuses]);
+  const assetGodFieldFor = (column: string) => assetGodFields.find((f) => f.column === column);
+  // Direct state splice, not a runAssets()/refetch — mirrors People's
+  // replacePerson: the freshly-patched row comes back from PATCH already.
+  const replaceAsset = (u: InitiativeAssetRow) =>
+    setAssets((cur) => cur.map((a) => (a.id === u.id ? u : a)));
 
   // Linked initiatives section
   const [pendingChild, setPendingChild] = useState('');
@@ -490,6 +502,16 @@ export default function InitiativeDetail() {
    *  status, respectively); every other column reuses moveAssetCellText's
    *  display text verbatim — it already carries the '—' blank convention. */
   const assetCellFor = (a: InitiativeAssetRow, key: string) => {
+    if (assetsEditing) {
+      const gf = assetGodFieldFor(key);
+      if (gf) {
+        return (
+          <GodCell row={a} gf={gf} patch={(id, body) => updateInitiativeAsset(id, body)}
+                   onRowSaved={replaceAsset} errorMap={MOVE_ASSET_ERRORS}
+                   disabled={!canChange} />
+        );
+      }
+    }
     if (key === 'status') {
       return chip(a.status_label, a.status_color)
         ?? <span className="cell-top">{a.status_label}</span>;
@@ -612,21 +634,26 @@ export default function InitiativeDetail() {
               )}
 
               <div className="dir-toolbar idet-assets-toolbar">
-                <div className="dir-search" style={{ marginLeft: 0 }}>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                       strokeWidth="2" strokeLinecap="round">
-                    <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
-                  <input placeholder="Filter assets…" value={assetsQuery}
-                         onChange={(e) => setAssetsQuery(e.target.value)} />
+                <div className="toolbar-right">
+                  <div className="dir-search" style={{ marginLeft: 0 }}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         strokeWidth="2" strokeLinecap="round">
+                      <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                    <input placeholder="Filter assets…" value={assetsQuery}
+                           onChange={(e) => setAssetsQuery(e.target.value)} />
+                  </div>
+                  <span className="result-count">
+                    {visibleAssets.length} of {assets.length} shown</span>
+                  <FilterSummaryChip filters={assetsFilters} onClear={clearAssetsFilters} />
+                  <ColumnsButton columns={assetsOrderedCols} visible={assetsVisibleCols}
+                                 onChange={setAssetsVisibleCols}
+                                 onReorder={setAssetsColOrder} />
+                  <ExportButton onExport={() =>
+                    exportCsv('move-assets', ASSET_CSV_COLUMNS, visibleAssets)} />
+                  <GodEditToggle editing={assetsEditing}
+                                 onToggle={() => setAssetsEditing((e) => !e)}
+                                 visible={maxRank >= ADMIN_RANK && canChange} />
                 </div>
-                <span className="result-count">
-                  {visibleAssets.length} of {assets.length} shown</span>
-                <FilterSummaryChip filters={assetsFilters} onClear={clearAssetsFilters} />
-                <ColumnsButton columns={assetsOrderedCols} visible={assetsVisibleCols}
-                               onChange={setAssetsVisibleCols}
-                               onReorder={setAssetsColOrder} />
-                <ExportButton onExport={() =>
-                  exportCsv('move-assets', ASSET_CSV_COLUMNS, visibleAssets)} />
               </div>
 
               <div className="dir-list idet-assets-list">
@@ -685,6 +712,75 @@ export default function InitiativeDetail() {
               {assetsActionError && <span className="pf-error">{assetsActionError}</span>}
             </>
           )}
+        </div>
+
+        <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
+          <p className="eyebrow-sm">Linked initiatives</p>
+          {initiative.links_children.length === 0
+            && initiative.links_parents.length === 0
+            ? <p className="page-hint">No linked initiatives.</p>
+            : (
+              <div className="init-rows">
+                {initiative.links_children.map((l) => (
+                  <div key={l.id} className="init-row">
+                    <span className="init-tag">Contains</span>
+                    <button type="button" className="init-name-btn"
+                            onClick={() => navigate(`/initiatives/${l.other_id}`)}>
+                      {l.other_name}
+                    </button>
+                    {chip(l.other_type_label, l.other_type_color)}
+                    {l.role && <span className="init-sub">{l.role}</span>}
+                    {canChange && (
+                      <button type="button" className="mini-btn sm danger spacer"
+                              disabled={linksBusy}
+                              onClick={() => void runLinks(
+                                () => removeInitiativeLink(l.id))}>
+                        Unlink
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {initiative.links_parents.map((l) => (
+                  <div key={l.id} className="init-row">
+                    <span className="init-tag">Part of</span>
+                    <button type="button" className="init-name-btn"
+                            onClick={() => navigate(`/initiatives/${l.other_id}`)}>
+                      {l.other_name}
+                    </button>
+                    {chip(l.other_type_label, l.other_type_color)}
+                  </div>
+                ))}
+              </div>
+            )}
+          {canChange && (
+            <div className="init-add">
+              <div className="init-field">
+                <label>Link an initiative (as child)</label>
+                <ComboBox
+                  placeholder="Type to search initiatives…"
+                  value={pendingChild}
+                  disabled={linksBusy}
+                  onChange={setPendingChild}
+                  options={childOptions}
+                />
+              </div>
+              <button type="button" className="mini-btn"
+                      disabled={linksBusy || !pendingChild}
+                      onClick={() => void runLinks(async () => {
+                        await addInitiativeLink(initiative.id,
+                                                { child_id: pendingChild });
+                        setPendingChild('');
+                      })}>
+                Link
+              </button>
+            </div>
+          )}
+          {linksError && <span className="pf-error">{linksError}</span>}
+        </div>
+
+        <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
+          <NotesFilesPanel entityType="initiative" entityId={initiative.id}
+                           canWrite={canChange} />
         </div>
 
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
@@ -806,75 +902,6 @@ export default function InitiativeDetail() {
             </div>
           )}
           {peopleError && <span className="pf-error">{peopleError}</span>}
-        </div>
-
-        <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
-          <p className="eyebrow-sm">Linked initiatives</p>
-          {initiative.links_children.length === 0
-            && initiative.links_parents.length === 0
-            ? <p className="page-hint">No linked initiatives.</p>
-            : (
-              <div className="init-rows">
-                {initiative.links_children.map((l) => (
-                  <div key={l.id} className="init-row">
-                    <span className="init-tag">Contains</span>
-                    <button type="button" className="init-name-btn"
-                            onClick={() => navigate(`/initiatives/${l.other_id}`)}>
-                      {l.other_name}
-                    </button>
-                    {chip(l.other_type_label, l.other_type_color)}
-                    {l.role && <span className="init-sub">{l.role}</span>}
-                    {canChange && (
-                      <button type="button" className="mini-btn sm danger spacer"
-                              disabled={linksBusy}
-                              onClick={() => void runLinks(
-                                () => removeInitiativeLink(l.id))}>
-                        Unlink
-                      </button>
-                    )}
-                  </div>
-                ))}
-                {initiative.links_parents.map((l) => (
-                  <div key={l.id} className="init-row">
-                    <span className="init-tag">Part of</span>
-                    <button type="button" className="init-name-btn"
-                            onClick={() => navigate(`/initiatives/${l.other_id}`)}>
-                      {l.other_name}
-                    </button>
-                    {chip(l.other_type_label, l.other_type_color)}
-                  </div>
-                ))}
-              </div>
-            )}
-          {canChange && (
-            <div className="init-add">
-              <div className="init-field">
-                <label>Link an initiative (as child)</label>
-                <ComboBox
-                  placeholder="Type to search initiatives…"
-                  value={pendingChild}
-                  disabled={linksBusy}
-                  onChange={setPendingChild}
-                  options={childOptions}
-                />
-              </div>
-              <button type="button" className="mini-btn"
-                      disabled={linksBusy || !pendingChild}
-                      onClick={() => void runLinks(async () => {
-                        await addInitiativeLink(initiative.id,
-                                                { child_id: pendingChild });
-                        setPendingChild('');
-                      })}>
-                Link
-              </button>
-            </div>
-          )}
-          {linksError && <span className="pf-error">{linksError}</span>}
-        </div>
-
-        <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
-          <NotesFilesPanel entityType="initiative" entityId={initiative.id}
-                           canWrite={canChange} />
         </div>
       </div>
 
