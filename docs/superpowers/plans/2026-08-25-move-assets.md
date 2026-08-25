@@ -62,6 +62,14 @@ All gated `initiatives` change (GET: view), audited like people/links.
 
 - [ ] Controller: create a move initiative in the dev DB, attach ~10 real assets via the POST endpoint (curl with dev token or a tiny script), verify the full flow in the browser (columns, filters, order persistence, progress, edit round-trip, remove, CSV). Fix-forward findings. Record in ledger.
 
+### Task 5b (user feedback): toolbar alignment + inline edit-table mode
+
+**Files:** Modify `portal/src/pages/InitiativeDetail.tsx`, `portal/src/lib/initiatives.ts`, `portal/src/styles/initiatives.css` (if needed).
+
+User feedback after first live look: (1) the assets toolbar controls (search, count, filter chip, Columns, Export) sit left-aligned — wrap them in the standard `.toolbar-right` div exactly as Initiatives.tsx's toolbar does so they right-align; (2) add an "edit table" mode for admin- and developer-level accounts (`maxRank >= ADMIN_RANK && can('initiatives','change')`): a `GodEditToggle` in the assets toolbar (visible on that gate, NOT gated on godMode) that flips the table into inline per-cell editing via the existing `GodCell` machinery — define `MOVE_ASSET_EDIT_FIELDS` in lib/initiatives.ts as `GodField<InitiativeAssetRow>[]` covering: priority_wave (text), disposition (text), owner (text), source_rack (text), source_ru (number), source_position (text), source_verified (bool), destination_rack (text), destination_ru (number), destination_position (text), destination_verified (bool), cable_info (text), vendor_involved (bool), status (select over move-asset statuses). `patch = (id, body) => updateInitiativeAsset(id, body)`, `onRowSaved` replaces the row in state, `errorMap = MOVE_ASSET_ERRORS`. Asset-identity columns (Asset ID/Name/Serial/Make-Model/RFID/Location/Client/Asset Status/Added/Updated) stay read-only in edit mode. People-section reorder to last is handled separately by the controller.
+
+- [ ] Implement, verify `npx tsc -b`/`npm test`/build, commit `feat(portal): move assets toolbar alignment + inline edit table`.
+
 ### Task 6: rack view modal
 
 **Files:** Create `portal/src/components/initiatives/RackViewModal.tsx`; Modify `portal/src/pages/InitiativeDetail.tsx` (clickable rack cells), `portal/src/styles/initiatives.css`; Test: placement math as a pure helper (`rackLayout(rows, rackName, side) -> blocks`) in a lib test.
