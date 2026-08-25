@@ -678,6 +678,12 @@ button.combo-caret:hover { color: var(--text-dark); }
 .combo-menu .kbar-item { font-size: 13px; padding: 7px 9px; }
 .combo-menu .kbar-item.selected { font-weight: 600; }
 
+.combo-menu.drop-up {
+  top: auto;
+  bottom: calc(100% + 6px);
+  box-shadow: 0 -18px 50px -18px rgba(12, 17, 23, 0.35);
+}
+
 /* ── tag input (free-text tags + suggestions) ─────────────── */
 
 .tag-input-wrap { position: relative; flex: 1; min-width: 0; }

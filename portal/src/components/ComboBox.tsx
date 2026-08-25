@@ -5,12 +5,30 @@
  * native <select> is only for tiny fixed enums.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 export interface ComboOption {
   value: string;
   label: string;
   sub?: string | null;
+}
+
+/** Height (px) reserved for the menu when there's no room to measure it yet — mirrors .combo-menu's max-height. */
+const MENU_NEEDED_HEIGHT = 260;
+
+/**
+ * Pure flip decision: open the menu upward only when there isn't enough
+ * room below the trigger AND there's more room above than below. Keeping
+ * this pure (no DOM reads) makes it directly unit-testable.
+ */
+export function shouldDropUp({
+  spaceBelow, spaceAbove, neededHeight = MENU_NEEDED_HEIGHT,
+}: {
+  spaceBelow: number;
+  spaceAbove: number;
+  neededHeight?: number;
+}): boolean {
+  return spaceBelow < neededHeight && spaceAbove > spaceBelow;
 }
 
 interface Props {
@@ -30,6 +48,7 @@ export default function ComboBox({
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
   const [active, setActive] = useState(0);
+  const [dropUp, setDropUp] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -44,6 +63,18 @@ export default function ComboBox({
   }, [options, filter]);
 
   useEffect(() => { setActive(0); }, [filter, open]);
+
+  // Decide drop direction on open, and re-check whenever the filter changes
+  // while open (fewer/more matches can change the menu's natural height).
+  useLayoutEffect(() => {
+    if (!open) return;
+    const el = wrapRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    setDropUp(shouldDropUp({ spaceBelow, spaceAbove }));
+  }, [open, filter]);
 
   useEffect(() => {
     listRef.current
@@ -128,7 +159,7 @@ export default function ComboBox({
       )}
 
       {open && (
-        <div className="combo-menu" ref={listRef}>
+        <div className={`combo-menu ${dropUp ? 'drop-up' : ''}`} ref={listRef}>
           {visible.length === 0 && (
             <div className="pop-empty">No matches{filter ? ` for “${filter.trim()}”` : ''}.</div>
           )}
