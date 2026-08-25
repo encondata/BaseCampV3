@@ -178,11 +178,11 @@ export default function DevDatabase() {
               <div className="row-main" style={GRID}>
                 <div className="cell"><span className="cell-top">{item.entity_label || '—'}</span></div>
                 <div className="cell"><span className="chip tag">{typeLabel(item.entity_type)}</span></div>
-                <div className="cell">
-                  <span className="cell-top" title={longDate(item.marked_at)}>
-                    {relativeTime(item.marked_at)}
-                  </span>
-                  <span className="cell-sub">{item.marked_by_name ?? 'Unknown'}</span>
+                <div className="cell cell-primary">
+                  <div className="pn">
+                    <b title={longDate(item.marked_at)}>{relativeTime(item.marked_at)}</b>
+                    <span>{item.marked_by_name ?? 'Unknown'}</span>
+                  </div>
                 </div>
                 <div className="cell">
                   <button
