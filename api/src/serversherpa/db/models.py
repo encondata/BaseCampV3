@@ -642,6 +642,8 @@ class InitiativeAsset(Base):
     cable_info: Mapped[str | None]
     vendor_involved: Mapped[bool | None] = mapped_column(Boolean)
     status: Mapped[str] = mapped_column(server_default="loaded_in_system")
+    status_record_type: Mapped[str] = mapped_column(
+        server_default=text("'move_asset_status'"))  # GENERATED column; never written
     added_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
