@@ -11,6 +11,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
 import ComboBox from '../components/ComboBox';
+import TagInput from '../components/TagInput';
 import TierSelect, { TIER_LABEL } from '../components/TierSelect';
 import {
   addContactLink, apiFetch, ApiError, listPartnerTypes, type ContactTier, type StatusValue,
@@ -1160,19 +1161,12 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
                 <input value={form.code} onChange={set('code')} placeholder="ACME" /></div>
               {cfg.hasType && (
                 <div className="full"><label>Types (a partner can do several)</label>
-                  <div className="role-picks">
-                    {partnerTypes.map((t) => (
-                      <button key={t.key} type="button"
-                              className={`role-pick ${types.has(t.key) ? 'on' : ''}`}
-                              onClick={() => setTypes((prev) => {
-                                const next = new Set(prev);
-                                if (next.has(t.key)) next.delete(t.key); else next.add(t.key);
-                                return next;
-                              })}>
-                        {t.label}
-                      </button>
-                    ))}
-                  </div>
+                  <TagInput
+                    value={[...types]}
+                    onChange={(tags) => setTypes(new Set(tags))}
+                    options={partnerTypes.map((t) => ({ value: t.key, label: t.label }))}
+                    placeholder="Type to add a type…"
+                  />
                 </div>
               )}
               <div><label>Status</label>
