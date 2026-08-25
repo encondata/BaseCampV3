@@ -1170,3 +1170,68 @@ class InitiativeLinkUpdateIn(BaseModel):
     sort_order: int | None = None
     notes: str | None = None
     model_config = ConfigDict(extra="forbid")
+
+
+class InitiativeAssetSummary(BaseModel):
+    """Embedded read-only asset summary on a move-asset row."""
+
+    id: uuid.UUID
+    legacy_id: int | None = None
+    serial_number: str | None = None
+    name: str | None = None
+    rfid_tag: str | None = None
+    model_make: str | None = None
+    model_name: str | None = None
+    ru_size: int | None = None
+    location_detail: str | None = None
+    client_name: str | None = None
+    status: str
+    status_label: str
+    status_color: str
+
+
+class InitiativeAssetOut(BaseModel):
+    id: uuid.UUID
+    asset_id: uuid.UUID
+    priority_wave: str | None = None
+    disposition: str | None = None
+    owner: str | None = None
+    source_rack: str | None = None
+    source_ru: float | None = None
+    source_verified: bool | None = None
+    source_position: str | None = None
+    destination_rack: str | None = None
+    destination_ru: float | None = None
+    destination_verified: bool | None = None
+    destination_position: str | None = None
+    cable_info: str | None = None
+    vendor_involved: bool | None = None
+    status: str
+    status_label: str
+    status_color: str
+    created_at: datetime
+    updated_at: datetime
+    asset: InitiativeAssetSummary
+
+
+class InitiativeAssetsAddIn(BaseModel):
+    asset_ids: list[uuid.UUID]
+    model_config = ConfigDict(extra="forbid")
+
+
+class InitiativeAssetUpdateIn(BaseModel):
+    priority_wave: str | None = None
+    disposition: str | None = None
+    owner: str | None = None
+    source_rack: str | None = None
+    source_ru: str | float | int | None = None
+    source_verified: bool | None = None
+    source_position: str | None = None
+    destination_rack: str | None = None
+    destination_ru: str | float | int | None = None
+    destination_verified: bool | None = None
+    destination_position: str | None = None
+    cable_info: str | None = None
+    vendor_involved: bool | None = None
+    status: str | None = None
+    model_config = ConfigDict(extra="forbid")

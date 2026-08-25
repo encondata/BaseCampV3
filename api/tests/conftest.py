@@ -209,6 +209,39 @@ async def clean_db():
               ('partner_type','consultant','Consultant','Advisory services.','#51606f',6),
               ('partner_type','other','Other','Anything else.','#c03540',7)
         """))
+        # move asset status vocabulary — restore canonical seeds (0019/0020;
+        # colors lowercased per test_vocabulary_colors_model.py's invariant)
+        await session.execute(text(
+            "DELETE FROM status_values WHERE record_type = 'move_asset_status'"))
+        await session.execute(text("""
+            INSERT INTO status_values
+              (record_type, key, label, description, color, sort_order)
+            VALUES
+              ('move_asset_status','loaded_in_system','Loaded In System','','#808080',1),
+              ('move_asset_status','pre_stage','Pre-Stage','','#caa0a0',2),
+              ('move_asset_status','racked','Racked','','#273ff5',3),
+              ('move_asset_status','labeled','Labeled','','#f5be27',4),
+              ('move_asset_status','pack_logistics','Pack / Logistics','','#31f527',5),
+              ('move_asset_status','in_container','In Container','','#31f527',6),
+              ('move_asset_status','on_truck','On Truck','','#31f527',7),
+              ('move_asset_status','received','Received','','#31f527',8),
+              ('move_asset_status','un_pack','Un-Pack','','#31f527',9),
+              ('move_asset_status','staged','Staged','','#27f5ad',10),
+              ('move_asset_status','re_racked','Re-Racked','','#31f527',11),
+              ('move_asset_status','cabling','Cabling','','#31f527',12),
+              ('move_asset_status','qa','QA','','#31f527',13),
+              ('move_asset_status','complete','Complete','','#8e27f5',14),
+              ('move_asset_status','rfid_1_cage_exit','RFID 1 - Cage Exit','','#31f527',20),
+              ('move_asset_status','rfid_2_loading_dock','RFID 2 - Loading Dock','','#29d3f5',21),
+              ('move_asset_status','rfid_3_staging','RFID 3 - Staging','','#f58b29',22),
+              ('move_asset_status','rfid_4_into_cage','RFID 4 - Into Cage','','#f5297a',23),
+              ('move_asset_status','rfid_10_dock_to_truck','RFID 10 - Dock to Truck (Auto Container Pack)','','#1890ff',24),
+              ('move_asset_status','in_transit','In Transit','','#f52727',50),
+              ('move_asset_status','e_waste','e-waste','','#ee27f5',51),
+              ('move_asset_status','pending_client_handover','Pending Client Handover','','#00ff00',96),
+              ('move_asset_status','historical','Historical','','#27f5f2',99),
+              ('move_asset_status','location_collision','Location Collision','','#ff0000',100)
+        """))
         await session.execute(text("DELETE FROM asset_categories"))
         await session.execute(text("""
             INSERT INTO asset_categories (key, label, description, sort_order, color)

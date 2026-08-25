@@ -6,6 +6,7 @@ initiative is the aggregate root)."""
 
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
@@ -14,14 +15,15 @@ from sqlalchemy.exc import IntegrityError
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    InitiativeCreateIn, InitiativeDetailOut, InitiativeItem,
-    InitiativeLinkAddIn, InitiativeLinkRow, InitiativeLinksOut,
-    InitiativeLinkUpdateIn, InitiativePersonAddIn, InitiativePersonRow,
-    InitiativePersonUpdateIn, InitiativeUpdateIn,
+    InitiativeAssetOut, InitiativeAssetsAddIn, InitiativeAssetSummary,
+    InitiativeAssetUpdateIn, InitiativeCreateIn, InitiativeDetailOut,
+    InitiativeItem, InitiativeLinkAddIn, InitiativeLinkRow,
+    InitiativeLinksOut, InitiativeLinkUpdateIn, InitiativePersonAddIn,
+    InitiativePersonRow, InitiativePersonUpdateIn, InitiativeUpdateIn,
 )
 from serversherpa.db.models import (
-    Client, Initiative, InitiativeLink, InitiativePerson, Partner, Person,
-    Site, StatusValue,
+    Asset, AssetModel, Client, Initiative, InitiativeAsset, InitiativeLink,
+    InitiativePerson, Partner, Person, Site, StatusValue,
 )
 from serversherpa.services.audit import audit, diff, snapshot
 
@@ -583,4 +585,206 @@ async def remove_initiative_link(
     audit(db, actor_id=actor.person.id, entity_type="initiative",
           entity_id=str(parent_id), action="link_remove",
           changes={"child_id": {"from": str(child_id), "to": None}})
+    await db.commit()
+
+
+# ── move assets ────────────────────────────────────────────────────
+# Per-move asset roster (V2 moves_assets_list parity). Assets reach a move
+# only via the future bulk-import script or dev seeding — no interactive
+# picker, ever (design decision). This route exposes the attach endpoint
+# for that script plus the roster CRUD the Full Details page needs.
+
+NULLABLE_TEXT_ASSET_FIELDS = (
+    "priority_wave", "disposition", "owner", "source_rack",
+    "source_position", "destination_rack", "destination_position",
+    "cable_info",
+)
+
+
+async def _initiative_asset_rows(
+    db: DbSession, initiative_id: uuid.UUID,
+) -> list[InitiativeAssetOut]:
+    rows = (await db.execute(
+        select(InitiativeAsset, Asset)
+        .join(Asset, Asset.id == InitiativeAsset.asset_id)
+        .where(InitiativeAsset.initiative_id == initiative_id)
+        .order_by(InitiativeAsset.priority_wave.nullslast(),
+                  Asset.serial_number))).all()
+    move_statuses = {s.key: (s.label, s.color) for s in await db.scalars(
+        select(StatusValue).where(
+            StatusValue.record_type == "move_asset_status"))}
+    asset_statuses = {s.key: (s.label, s.color) for s in await db.scalars(
+        select(StatusValue).where(StatusValue.record_type == "asset"))}
+    model_ids = {a.model_id for _, a in rows if a.model_id}
+    models = {m.id: m for m in await db.scalars(
+        select(AssetModel).where(AssetModel.id.in_(model_ids)))} \
+        if model_ids else {}
+    client_ids = {a.client_id for _, a in rows if a.client_id}
+    clients = dict((await db.execute(
+        select(Client.id, Client.name).where(Client.id.in_(client_ids))
+    )).all()) if client_ids else {}
+
+    out = []
+    for ia, asset in rows:
+        s_label, s_color = move_statuses.get(ia.status, (ia.status, "#51606f"))
+        a_label, a_color = asset_statuses.get(asset.status,
+                                              (asset.status, "#51606f"))
+        model = models.get(asset.model_id)
+        out.append(InitiativeAssetOut(
+            id=ia.id, asset_id=ia.asset_id,
+            priority_wave=ia.priority_wave, disposition=ia.disposition,
+            owner=ia.owner, source_rack=ia.source_rack,
+            source_ru=ia.source_ru, source_verified=ia.source_verified,
+            source_position=ia.source_position,
+            destination_rack=ia.destination_rack,
+            destination_ru=ia.destination_ru,
+            destination_verified=ia.destination_verified,
+            destination_position=ia.destination_position,
+            cable_info=ia.cable_info, vendor_involved=ia.vendor_involved,
+            status=ia.status, status_label=s_label, status_color=s_color,
+            created_at=ia.created_at, updated_at=ia.updated_at,
+            asset=InitiativeAssetSummary(
+                id=asset.id, legacy_id=asset.legacy_id,
+                serial_number=asset.serial_number, name=asset.name,
+                rfid_tag=asset.rfid_tag,
+                model_make=model.make if model else None,
+                model_name=model.model if model else None,
+                ru_size=model.ru_size if model else None,
+                location_detail=asset.location_detail,
+                client_name=clients.get(asset.client_id),
+                status=asset.status, status_label=a_label,
+                status_color=a_color)))
+    return out
+
+
+@router.get("/{initiative_id}/assets", response_model=list[InitiativeAssetOut])
+async def list_initiative_assets(
+    initiative_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "view"),
+) -> list[InitiativeAssetOut]:
+    await _get_initiative(db, initiative_id)
+    return await _initiative_asset_rows(db, initiative_id)
+
+
+async def _already_attached(
+    db: DbSession, initiative_id: uuid.UUID, asset_ids: list[uuid.UUID],
+) -> set[uuid.UUID]:
+    return set(await db.scalars(select(InitiativeAsset.asset_id).where(
+        InitiativeAsset.initiative_id == initiative_id,
+        InitiativeAsset.asset_id.in_(asset_ids))))
+
+
+@router.post("/{initiative_id}/assets", response_model=list[InitiativeAssetOut],
+             status_code=201)
+async def add_initiative_assets(
+    initiative_id: uuid.UUID,
+    body: InitiativeAssetsAddIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> list[InitiativeAssetOut]:
+    initiative = await _get_initiative(db, initiative_id)
+    if initiative.initiative_type != "move":
+        raise _err(422, "not_a_move")
+    ids = list(dict.fromkeys(body.asset_ids))  # dedupe, keep order
+    if not ids:
+        raise _err(422, "asset_ids_required")
+    found = set(await db.scalars(select(Asset.id).where(Asset.id.in_(ids))))
+    if missing := [i for i in ids if i not in found]:
+        raise _err(422, "assets_not_found",
+                   asset_ids=[str(i) for i in missing])
+
+    already = await _already_attached(db, initiative_id, ids)
+    if already:
+        raise _err(409, "assets_already_on_initiative",
+                   asset_ids=[str(i) for i in ids if i in already])
+
+    for asset_id in ids:
+        db.add(InitiativeAsset(initiative_id=initiative_id, asset_id=asset_id,
+                               added_by=actor.person.id))
+    initiative.updated_at = datetime.now(UTC)
+    audit(db, actor_id=actor.person.id, entity_type="initiative",
+          entity_id=str(initiative_id), action="asset_add",
+          changes={"asset_ids": {"from": None,
+                                 "to": [str(i) for i in ids]}})
+    try:
+        await db.commit()
+    except IntegrityError:
+        # lost the check-then-insert race against a concurrent attach of
+        # the same (initiative, asset) pair — initiative_assets_uniq fired
+        await db.rollback()
+        raise _err(409, "assets_already_on_initiative") from None
+    return await _initiative_asset_rows(db, initiative_id)
+
+
+async def _get_initiative_asset(db: DbSession,
+                                assoc_id: uuid.UUID) -> InitiativeAsset:
+    assoc = await db.get(InitiativeAsset, assoc_id)
+    if assoc is None:
+        raise _err(404, "asset_assignment_not_found")
+    return assoc
+
+
+def _parse_ru(value: object) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        raise _err(422, "invalid_ru") from None
+
+
+async def _check_asset_status(db: DbSession, data: dict) -> None:
+    if "status" in data and (data["status"] is None or await db.scalar(
+        select(StatusValue).where(
+            StatusValue.record_type == "move_asset_status",
+            StatusValue.key == data["status"])) is None):
+        raise _err(422, "unknown_status")
+
+
+@router.patch("/assets/{assoc_id}", response_model=InitiativeAssetOut)
+async def update_initiative_asset(
+    assoc_id: uuid.UUID,
+    body: InitiativeAssetUpdateIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> InitiativeAssetOut:
+    assoc = await _get_initiative_asset(db, assoc_id)
+    data = body.model_dump(exclude_unset=True)
+    for field in ("source_ru", "destination_ru"):
+        if field in data:
+            data[field] = _parse_ru(data[field])
+    for field in NULLABLE_TEXT_ASSET_FIELDS:
+        if data.get(field) == "":
+            data[field] = None
+    await _check_asset_status(db, data)
+
+    fields = list(data.keys())
+    before = snapshot(assoc, fields)
+    for field, value in data.items():
+        setattr(assoc, field, value)
+    changes = diff(before, snapshot(assoc, fields))
+    if changes:
+        assoc.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor.person.id, entity_type="initiative",
+              entity_id=str(assoc.initiative_id), action="asset_update",
+              changes=changes)
+    await db.commit()
+    rows = await _initiative_asset_rows(db, assoc.initiative_id)
+    return next(r for r in rows if r.id == assoc_id)
+
+
+@router.delete("/assets/{assoc_id}", status_code=204)
+async def remove_initiative_asset(
+    assoc_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> None:
+    assoc = await _get_initiative_asset(db, assoc_id)
+    initiative_id = assoc.initiative_id
+    asset_id = assoc.asset_id
+    await db.delete(assoc)
+    audit(db, actor_id=actor.person.id, entity_type="initiative",
+          entity_id=str(initiative_id), action="asset_remove",
+          changes={"asset_id": {"from": str(asset_id), "to": None}})
     await db.commit()
