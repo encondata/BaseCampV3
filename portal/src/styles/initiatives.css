@@ -296,13 +296,21 @@
   justify-content: center;
 }
 .rack-svg-wrap { width: 100%; max-width: 400px; }
-.rack-svg { width: 100%; height: auto; display: block; }
+/* overflow:hidden is the SVG-spec default for a root <svg>, but stated
+   explicitly here: at this element's small on-screen size, anything that
+   ever crept past the viewBox (or an anti-aliased edge bleeding past it)
+   must be guaranteed clipped rather than relying on a UA default. */
+.rack-svg { width: 100%; height: auto; display: block; overflow: hidden; }
 
 .rack-post { fill: #2b3038; }
 .rack-cap { fill: #2b3038; }
 .rack-interior { fill: #23272e; }
-.rack-u-hairline { stroke: #2c313a; stroke-width: 1; }
-.rack-rail-hole { fill: #1b1f24; }
+.rack-u-hairline { stroke: #2c313a; stroke-width: 1; shape-rendering: crispEdges; }
+/* crispEdges: these are 4x4 (SVG-unit) squares repeated 54 times down a
+   ~16px-tall column; at the modal's small render size, ordinary
+   anti-aliasing on a shape this small can blur/fringe its edges enough to
+   read as a smeared or doubled column instead of one crisp square. */
+.rack-rail-hole { fill: #1b1f24; shape-rendering: crispEdges; }
 .rack-u-label {
   font-family: var(--font-mono);
   font-size: 7px;

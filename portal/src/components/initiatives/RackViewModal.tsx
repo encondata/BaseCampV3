@@ -89,21 +89,59 @@ export function assignLanes(
 
 export interface LaneRect { id: string; x: number; width: number; }
 
+/** Splits `blocks` into groups that are mutually reachable through RU-range
+ *  overlap ("connected components" of the overlap graph) — e.g. A overlaps
+ *  B and B overlaps C puts all three in one group even if A and C don't
+ *  directly overlap. Sorting by `ru` first and tracking only the running
+ *  max top makes this a single linear sweep: the well-known technique for
+ *  merging overlapping intervals produces exactly the connected components
+ *  here, since a sorted-by-start interval graph's components are precisely
+ *  the maximal runs where each interval starts before the running max end. */
+function clusterOverlappingBlocks<T extends { ru: number; height: number }>(
+  blocks: T[],
+): T[][] {
+  const sorted = [...blocks].sort((a, b) => a.ru - b.ru);
+  const clusters: T[][] = [];
+  let current: T[] = [];
+  let currentTop = -Infinity;
+  for (const b of sorted) {
+    if (current.length > 0 && b.ru >= currentTop) {
+      clusters.push(current);
+      current = [];
+    }
+    current.push(b);
+    currentTop = Math.max(currentTop, b.ru + b.height);
+  }
+  if (current.length > 0) clusters.push(current);
+  return clusters;
+}
+
 /** Turns lane indices into actual x/width geometry within `usableWidth` —
  *  pulled out from the render so it's testable without mounting the SVG.
- *  `usableWidth` must be divided ACROSS the lanes (not just have the gap
- *  gutters subtracted off the front) or extra lanes push later blocks past
- *  the right edge of the frame instead of tiling inside it. */
+ *  Width is computed PER OVERLAP CLUSTER, not once globally across the
+ *  whole `blocks` array: a lone, non-colliding block must fill the full
+ *  `usableWidth` (minus the lane gutter) even when some unrelated pair of
+ *  blocks elsewhere in the same rack half happens to collide and need two
+ *  lanes — otherwise every block in the array gets squeezed to whatever
+ *  the single busiest cluster needs, which is the bug this guards against.
+ *  Within a cluster, `usableWidth` is still divided ACROSS the lanes (not
+ *  just had the gap gutters subtracted off the front) or extra lanes push
+ *  later blocks past the right edge of the frame instead of tiling inside
+ *  it. */
 export function laneGeometry(
   blocks: { id: string; ru: number; height: number }[], usableWidth: number,
 ): LaneRect[] {
-  const lanes = assignLanes(blocks);
-  const laneCount = Math.max(1, ...blocks.map((b) => (lanes.get(b.id) ?? 0) + 1));
-  const width = Math.max(40, (usableWidth - (laneCount - 1) * LANE_PX) / laneCount);
-  return blocks.map((b) => {
-    const lane = lanes.get(b.id) ?? 0;
-    return { id: b.id, x: lane * (width + LANE_PX), width };
-  });
+  const result: LaneRect[] = [];
+  for (const cluster of clusterOverlappingBlocks(blocks)) {
+    const lanes = assignLanes(cluster);
+    const laneCount = Math.max(1, ...cluster.map((b) => (lanes.get(b.id) ?? 0) + 1));
+    const width = Math.max(40, (usableWidth - (laneCount - 1) * LANE_PX) / laneCount);
+    for (const b of cluster) {
+      const lane = lanes.get(b.id) ?? 0;
+      result.push({ id: b.id, x: lane * (width + LANE_PX), width });
+    }
+  }
+  return result;
 }
 
 /** One-line faceplate label — `${name} (${position})` when the side has a

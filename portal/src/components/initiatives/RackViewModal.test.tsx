@@ -62,6 +62,26 @@ describe('laneGeometry', () => {
     expect(lanes.get('a')).toBe(0);
     expect(lanes.get('b')).toBe(0);
   });
+
+  it('does not let an unrelated collision elsewhere squeeze a lone non-colliding block (per-cluster width, not global)', () => {
+    // Regression for the visual-review bug: a single-lane-case block must
+    // fill the full usable width minus its lane gutter, even when some
+    // OTHER pair of blocks in the same array happens to collide and need
+    // two lanes. Width used to be computed once globally from the busiest
+    // cluster in the whole array, so this lone block (ru 40, clear of the
+    // ru-10 pair below) was wrongly squeezed to the two-lane width too.
+    const blocks = [
+      { id: 'lone', ru: 40, height: 4 },
+      { id: 'a', ru: 10, height: 1 },
+      { id: 'b', ru: 10, height: 1 }, // a and b collide with each other only
+    ];
+    const usableWidth = 248;
+    const rects = laneGeometry(blocks, usableWidth);
+    const byId = new Map(rects.map((r) => [r.id, r]));
+    expect(byId.get('lone')!.width).toBe(usableWidth);
+    expect(byId.get('a')!.width).toBeLessThan(usableWidth);
+    expect(byId.get('b')!.width).toBeLessThan(usableWidth);
+  });
 });
 
 /* ── rack faceplate label format (redesign) — one line, `name (position)`

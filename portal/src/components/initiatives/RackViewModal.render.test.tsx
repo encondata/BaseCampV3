@@ -104,4 +104,56 @@ describe('RackViewModal (render smoke)', () => {
       expect(Number(el.getAttribute('width'))).toBe(FACEPLATE_HALF_USABLE_WIDTH);
     }
   });
+
+  it('does not let an unrelated collision squeeze an unrelated lone faceplate in the same half (visual-review regression)', () => {
+    // Mirrors the exact bug reported from a rendered screenshot: a single
+    // isolated device (san-arr-04-like, ru 40) shared its half with a real
+    // collision elsewhere (two devices at ru 20) and was wrongly squeezed
+    // to the two-lane width even though nothing overlapped it.
+    const rows: InitiativeAssetRow[] = [
+      makeRow({
+        id: 'row-lone', source_ru: 40, source_position: 'front',
+        asset: makeAsset({ id: 'asset-lone', name: 'san-arr-04', ru_size: 4 }),
+      }),
+      makeRow({
+        id: 'row-c1', source_ru: 20, source_position: 'front',
+        asset: makeAsset({ id: 'asset-c1', name: 'net-sw-01', ru_size: 1 }),
+      }),
+      makeRow({
+        id: 'row-c2', source_ru: 20, source_position: 'front',
+        asset: makeAsset({ id: 'asset-c2', name: 'net-sw-02', ru_size: 1 }),
+      }),
+    ];
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+    );
+    const faceplates = Array.from(container.querySelectorAll('.rack-faceplate'));
+    expect(faceplates).toHaveLength(3);
+    const widths = faceplates.map((el) => Number(el.getAttribute('width')));
+    // The lone block must get the full half width...
+    expect(widths).toContain(FACEPLATE_HALF_USABLE_WIDTH);
+    // ...while the two that actually collide are still squeezed narrower.
+    const squeezed = widths.filter((w) => w < FACEPLATE_HALF_USABLE_WIDTH);
+    expect(squeezed).toHaveLength(2);
+  });
+
+  it('renders exactly one rail-hole column per post, fully inside the viewBox', () => {
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={[makeRow()]} onClose={() => {}} />,
+    );
+    const svg = container.querySelector('svg.rack-svg')!;
+    const viewBoxWidth = Number(svg.getAttribute('viewBox')!.split(' ')[2]);
+    const holes = Array.from(container.querySelectorAll('.rack-rail-hole'));
+    expect(holes).toHaveLength(54 * 3 * 2); // 54 RUs x 3 holes x 2 posts
+    const leftXs = new Set(holes.map((h) => h.getAttribute('x')).filter((x) => Number(x) < viewBoxWidth / 2));
+    const rightXs = new Set(holes.map((h) => h.getAttribute('x')).filter((x) => Number(x) >= viewBoxWidth / 2));
+    expect(leftXs.size).toBe(1); // exactly one hole column on the left post
+    expect(rightXs.size).toBe(1); // exactly one hole column on the right post
+    for (const h of holes) {
+      const x = Number(h.getAttribute('x'));
+      const width = Number(h.getAttribute('width'));
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(x + width).toBeLessThanOrEqual(viewBoxWidth);
+    }
+  });
 });
