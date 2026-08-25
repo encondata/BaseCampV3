@@ -118,3 +118,14 @@
 .init-modal-card .pf-form {
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
+/* schedule section: four narrow date fields share one row when wide */
+.init-modal-card .pf-form.init-dates {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+/* origin/destination partner trio on a single row (wraps when narrow) */
+.init-partner-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}

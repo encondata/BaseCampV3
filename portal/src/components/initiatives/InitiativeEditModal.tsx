@@ -228,12 +228,26 @@ export default function InitiativeEditModal({
               <div><label>Location (free text)</label>
                 <input value={form.location} disabled={locked}
                        onChange={(e) => setField('location', e.target.value)} /></div>
+            </div>
+
+            <div className="modal-section">Schedule</div>
+            <div className="pf-form init-dates">
               <div><label>Scheduled start</label>
                 <input type="date" value={form.scheduled_start} disabled={locked}
                        onChange={(e) => setField('scheduled_start', e.target.value)} /></div>
               <div><label>Scheduled end</label>
                 <input type="date" value={form.scheduled_end} disabled={locked}
                        onChange={(e) => setField('scheduled_end', e.target.value)} /></div>
+              {sections.move && (
+                <>
+                  <div><label>Actual start</label>
+                    <input type="date" value={form.real_start_at} disabled={locked}
+                           onChange={(e) => setField('real_start_at', e.target.value)} /></div>
+                  <div><label>Actual end</label>
+                    <input type="date" value={form.real_end_at} disabled={locked}
+                           onChange={(e) => setField('real_end_at', e.target.value)} /></div>
+                </>
+              )}
             </div>
 
             {sections.project && (
@@ -261,13 +275,6 @@ export default function InitiativeEditModal({
                       onChange={(v) => setField('origin_site_id', v)}
                       options={siteOptions(form.origin_site_id)}
                     /></div>
-                  {partnerCombo('Tech partner', 'origin_tech_partner_id')}
-                  {partnerCombo('Cable partner', 'origin_cable_partner_id')}
-                  {partnerCombo('Logistics partner',
-                                'origin_logistics_partner_id')}
-                  <div><label>Actual start</label>
-                    <input type="date" value={form.real_start_at} disabled={locked}
-                           onChange={(e) => setField('real_start_at', e.target.value)} /></div>
                   <div style={{ alignSelf: 'end' }}>
                     <label className="init-check">
                       <input type="checkbox" checked={form.origin_vendor_involved}
@@ -276,6 +283,12 @@ export default function InitiativeEditModal({
                                setFlag('origin_vendor_involved', e.target.checked)} />
                       Vendor involved
                     </label></div>
+                  <div className="init-partner-row">
+                    {partnerCombo('Tech partner', 'origin_tech_partner_id')}
+                    {partnerCombo('Cable partner', 'origin_cable_partner_id')}
+                    {partnerCombo('Logistics partner',
+                                  'origin_logistics_partner_id')}
+                  </div>
                 </div>
 
                 <div className="modal-section">Destination</div>
@@ -289,13 +302,6 @@ export default function InitiativeEditModal({
                       onChange={(v) => setField('destination_site_id', v)}
                       options={siteOptions(form.destination_site_id)}
                     /></div>
-                  {partnerCombo('Tech partner', 'destination_tech_partner_id')}
-                  {partnerCombo('Cable partner', 'destination_cable_partner_id')}
-                  {partnerCombo('Logistics partner',
-                                'destination_logistics_partner_id')}
-                  <div><label>Actual end</label>
-                    <input type="date" value={form.real_end_at} disabled={locked}
-                           onChange={(e) => setField('real_end_at', e.target.value)} /></div>
                   <div style={{ alignSelf: 'end' }}>
                     <label className="init-check">
                       <input type="checkbox"
@@ -306,6 +312,12 @@ export default function InitiativeEditModal({
                                        e.target.checked)} />
                       Vendor involved
                     </label></div>
+                  <div className="init-partner-row">
+                    {partnerCombo('Tech partner', 'destination_tech_partner_id')}
+                    {partnerCombo('Cable partner', 'destination_cable_partner_id')}
+                    {partnerCombo('Logistics partner',
+                                  'destination_logistics_partner_id')}
+                  </div>
                 </div>
 
                 <div className="modal-section">Shipping</div>
