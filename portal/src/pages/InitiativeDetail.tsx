@@ -8,7 +8,7 @@
  * pattern as InitiativeRowDetail in Initiatives.tsx).
  */
 
-import { useEffect, useState, type CSSProperties, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -43,6 +43,16 @@ import {
 } from '../lib/api';
 import { ADMIN_RANK } from '../lib/access';
 import { INITIATIVE_ERRORS, initiativeCellText } from '../lib/initiatives';
+import {
+  ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
+  usePersistentListState,
+} from '../lib/columnMenu';
+import {
+  applyColumnOrder,
+  ColumnsButton, moveKey, useReorderDrag, visibleColumnsFor,
+  type ColumnDef,
+} from '../lib/listTools';
+import { naturalCompare } from '../lib/sites';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
@@ -51,6 +61,47 @@ import '../styles/profile.css';
  *  — slicing the ISO string (rather than toLocaleDateString) avoids the
  *  day-west-of-UTC shift documented on lib/initiatives.ts's dateOnly. */
 const dateOnly = (iso: string | null) => (iso ? iso.slice(0, 10) : null);
+
+/* ── People section — standard list machinery (mirrors Initiatives.tsx's
+      COLUMNS/sortValueFor pattern; see lib/columnMenu.tsx + lib/listTools.tsx
+      for the shared sort/filter/columns/search plumbing). ────────────── */
+
+const PEOPLE_COLUMNS: ColumnDef[] = [
+  { key: 'name', label: 'Name', width: '1.4fr', default: true },
+  { key: 'work_type', label: 'Work type', width: '1fr', default: true },
+  { key: 'site_worked', label: 'Site worked', width: '1fr', default: true },
+  { key: 'rating', label: 'Rating', width: '0.7fr', default: true },
+  { key: 'added', label: 'Added', width: '0.9fr', default: false },
+];
+
+const PEOPLE_ALL_COLUMN_KEYS = new Set<string>(PEOPLE_COLUMNS.map((c) => c.key));
+const PEOPLE_DEFAULT_VISIBLE = new Set<string>(
+  PEOPLE_COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/** Same date formatting `initiativeCellText`'s 'created' column uses
+ *  elsewhere on this page (toLocaleDateString) — `created_at` here is a
+ *  full timestamp, not a date-only field like real_start_at/real_end_at
+ *  above, so it doesn't need the UTC-slice treatment `dateOnly` exists for. */
+const personAddedText = (iso: string) => new Date(iso).toLocaleDateString();
+
+/** One row's display text per column key — feeds both the per-column
+ *  filter menus (via `passesColumnFilters`) and the toolbar search box. */
+function personCellText(row: InitiativePersonRow, colKey: string): string {
+  switch (colKey) {
+    case 'name': return row.person_name;
+    case 'work_type': return row.work_type_label ?? '';
+    case 'site_worked': return row.site_worked_name ?? '';
+    case 'rating': return row.rating != null ? String(row.rating) : '';
+    case 'added': return personAddedText(row.created_at);
+    default: return '';
+  }
+}
+
+/** Rating sorts numerically (1–5), not as text — everything else sorts via
+ *  `naturalCompare` over `personCellText`. Unrated rows sort lowest. */
+function personRatingValue(row: InitiativePersonRow): number {
+  return row.rating ?? -1;
+}
 
 export default function InitiativeDetail() {
   const { id } = useParams<{ id: string }>();
@@ -84,6 +135,39 @@ export default function InitiativeDetail() {
   const [pendingWorkType, setPendingWorkType] = useState('');
   const [peopleBusy, setPeopleBusy] = useState(false);
   const [peopleError, setPeopleError] = useState('');
+  const [peopleQuery, setPeopleQuery] = useState('');
+  const {
+    visibleCols: peopleVisibleCols, setVisibleCols: setPeopleVisibleCols,
+    sortKey: peopleSortKey, sortDir: peopleSortDir, setSort: setPeopleSort,
+    toggleSort: togglePeopleSort,
+    filters: peopleFilters, setFilter: setPeopleFilter,
+    clearFilters: clearPeopleFilters,
+    colOrder: peopleColOrder, setColOrder: setPeopleColOrder,
+  } = usePersistentListState(
+    'initiative_people', { visible: PEOPLE_DEFAULT_VISIBLE, sortKey: 'name', sortDir: 1 },
+    PEOPLE_ALL_COLUMN_KEYS,
+  );
+  const peopleOrderedCols = applyColumnOrder(PEOPLE_COLUMNS, peopleColOrder);
+  const peopleShownCols = visibleColumnsFor(peopleOrderedCols, peopleVisibleCols, false);
+  const peopleHeaderDrag = useReorderDrag(
+    (src, dst, before) => setPeopleColOrder(
+      moveKey(peopleOrderedCols.map((c) => c.key), src, dst, before)),
+    'x', { ignoreFrom: '.pop-menu' },
+  );
+  const visiblePeople = useMemo(() => {
+    const rows = initiative?.people ?? [];
+    const q = peopleQuery.trim().toLowerCase();
+    const filtered = rows.filter((p) => {
+      if (!passesColumnFilters(p, peopleFilters, personCellText)) return false;
+      if (!q) return true;
+      return PEOPLE_COLUMNS.some(
+        (c) => personCellText(p, c.key).toLowerCase().includes(q));
+    });
+    return filtered.sort((a, b) => (peopleSortKey === 'rating'
+      ? (personRatingValue(a) - personRatingValue(b)) * peopleSortDir
+      : naturalCompare(personCellText(a, peopleSortKey), personCellText(b, peopleSortKey))
+        * peopleSortDir));
+  }, [initiative, peopleFilters, peopleQuery, peopleSortKey, peopleSortDir]);
 
   // Linked initiatives section
   const [pendingChild, setPendingChild] = useState('');
@@ -215,6 +299,31 @@ export default function InitiativeDetail() {
     .filter((i) => !linked.has(i.id) && !i.archived_at)
     .map((i) => ({ value: i.id, label: i.name, sub: i.type_label }));
 
+  const peopleGrid = { gridTemplateColumns:
+    `${peopleShownCols.map((c) => c.width).join(' ')}${canChange ? ' 132px' : ''}` };
+
+  const peopleCaret = (key: string) =>
+    peopleSortKey === key
+      ? <span className="caret">{peopleSortDir === 1 ? '▲' : '▼'}</span> : null;
+
+  const personCellFor = (p: InitiativePersonRow, key: string) => {
+    switch (key) {
+      case 'name': return <span className="cell-top">{p.person_name}</span>;
+      case 'work_type':
+        return p.work_type_label
+          ? (chip(p.work_type_label, p.work_type_color)
+             ?? <span className="cell-top">{p.work_type_label}</span>)
+          : <span className="cell-top">—</span>;
+      case 'site_worked':
+        return <span className="cell-top">{p.site_worked_name || '—'}</span>;
+      case 'rating':
+        return <span className="cell-top">{p.rating != null ? `★ ${p.rating}` : '—'}</span>;
+      case 'added':
+        return <span className="cell-top">{personCellText(p, 'added')}</span>;
+      default: return null;
+    }
+  };
+
   return (
     <div className="portal-page">
       <Link to="/initiatives" className="idet-back">← Initiatives</Link>
@@ -307,31 +416,59 @@ export default function InitiativeDetail() {
           {initiative.people.length === 0
             ? <p className="page-hint">No one assigned yet.</p>
             : (
-              <div className="idet-table-wrap">
-                <table className="idet-table">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Work type</th>
-                      <th>Site worked</th>
-                      <th>Rating</th>
-                      {canChange && <th>Actions</th>}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {initiative.people.map((p) => (
-                      <tr key={p.id}>
-                        <td>{p.person_name}</td>
-                        <td>
-                          {p.work_type_label
-                            ? (chip(p.work_type_label, p.work_type_color)
-                               ?? p.work_type_label)
-                            : '—'}
-                        </td>
-                        <td>{p.site_worked_name || '—'}</td>
-                        <td>{p.rating != null ? `★ ${p.rating}` : '—'}</td>
+              <>
+                <div className="dir-toolbar idet-people-toolbar">
+                  <div className="dir-search" style={{ marginLeft: 0 }}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         strokeWidth="2" strokeLinecap="round">
+                      <circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                    <input placeholder="Filter people…" value={peopleQuery}
+                           onChange={(e) => setPeopleQuery(e.target.value)} />
+                  </div>
+                  <span className="result-count">
+                    {visiblePeople.length} of {initiative.people.length} shown</span>
+                  <FilterSummaryChip filters={peopleFilters} onClear={clearPeopleFilters} />
+                  <ColumnsButton columns={peopleOrderedCols} visible={peopleVisibleCols}
+                                 onChange={setPeopleVisibleCols}
+                                 onReorder={setPeopleColOrder} />
+                </div>
+
+                <div className="dir-list idet-people-list">
+                  <div className="list-head" style={peopleGrid}>
+                    {peopleShownCols.map((c) => (
+                      <span key={c.key}
+                            className={`col-head ${peopleHeaderDrag.dropClass(c.key)}`}
+                            {...peopleHeaderDrag.dragProps(c.key)}>
+                        <button type="button" className="sortable"
+                                onClick={() => togglePeopleSort(c.key)}>
+                          {c.label} {peopleCaret(c.key)}
+                        </button>
+                        <ColumnMenu colKey={c.key} label={c.label}
+                                    allRows={initiative.people} filters={peopleFilters}
+                                    text={personCellText}
+                                    filter={peopleFilters[c.key]} onFilter={setPeopleFilter}
+                                    sortDir={peopleSortKey === c.key ? peopleSortDir : null}
+                                    onSort={(dir) => setPeopleSort(c.key, dir)} />
+                      </span>
+                    ))}
+                    {canChange && <span className="col-head" />}
+                  </div>
+
+                  {visiblePeople.length === 0 && (
+                    <div className="dir-empty">
+                      <b>No matches</b>
+                      <EmptyClearFilters filters={peopleFilters} onClear={clearPeopleFilters} />
+                    </div>
+                  )}
+
+                  {visiblePeople.map((p) => (
+                    <div key={p.id} className="dir-row">
+                      <div className="row-main" style={peopleGrid}>
+                        {peopleShownCols.map((c) => (
+                          <div className="cell" key={c.key}>{personCellFor(p, c.key)}</div>
+                        ))}
                         {canChange && (
-                          <td className="idet-table-actions">
+                          <div className="cell idet-people-actions">
                             <button type="button" className="mini-btn sm"
                                     disabled={peopleBusy}
                                     onClick={() => setEditingPerson(p)}>
@@ -343,13 +480,13 @@ export default function InitiativeDetail() {
                                       () => removeInitiativePerson(p.id))}>
                               Remove
                             </button>
-                          </td>
+                          </div>
                         )}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
             )}
           {canChange && (
             <div className="init-add">
