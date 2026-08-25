@@ -124,6 +124,13 @@ const CSV_COLUMNS: [string, (i: InitiativeItem) => string][] = [
   ['Created', (i) => i.created_at],
 ];
 
+const TYPE_PILLS = [
+  { key: 'all', label: 'All' },
+  { key: 'project', label: 'Projects' },
+  { key: 'event', label: 'Events' },
+  { key: 'move', label: 'Moves' },
+];
+
 export default function Initiatives() {
   const { can, godMode, maxRank } = useAuth();
   const canAdd = can('initiatives', 'add');
@@ -148,6 +155,7 @@ export default function Initiatives() {
   const [workers, setWorkers] = useState<WorkerOption[]>([]);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
+  const [typePill, setTypePill] = useState('all');
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
   const deepLinkTarget = useRef<string | null>(initialOpenId());
   const focusOpenId = (id: string | null) => {
@@ -210,19 +218,29 @@ export default function Initiatives() {
   const replaceRow = (u: InitiativeItem) =>
     setInitiatives((xs) => xs?.map((x) => (x.id === u.id ? u : x)) ?? xs);
 
+  const typeCounts = useMemo(() => {
+    const c: Record<string, number> = { all: initiatives?.length ?? 0 };
+    for (const pl of TYPE_PILLS.slice(1)) c[pl.key] = 0;
+    for (const i of initiatives ?? []) {
+      c[i.initiative_type] = (c[i.initiative_type] ?? 0) + 1;
+    }
+    return c;
+  }, [initiatives]);
+
   const visible = useMemo(() => {
     if (!initiatives) return [];
     const q = query.trim().toLowerCase();
     const showArchived = filters.archived?.values?.includes('Yes') ?? false;
     const rows = initiatives.filter((i) => {
       if (!showArchived && i.archived_at) return false;
+      if (typePill !== 'all' && i.initiative_type !== typePill) return false;
       if (!passesColumnFilters(i, filters, initiativeCellText)) return false;
       if (!q) return true;
       return initiativeSearchText(i).includes(q);
     });
     return rows.sort((a, b) =>
       naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
-  }, [initiatives, filters, query, sortKey, sortDir]);
+  }, [initiatives, filters, query, sortKey, sortDir, typePill]);
 
   // Deep-link vs persisted-filter interplay — cloned from Containers.tsx.
   useEffect(() => {
@@ -230,13 +248,20 @@ export default function Initiatives() {
     if (openId === deepLinkTarget.current && clearedDeepLink.current !== openId) {
       clearedDeepLink.current = openId;
       const target = initiatives.find((i) => i.id === openId);
-      if (target && !passesColumnFilters(target, filters, initiativeCellText)) {
-        clearFilters();
-        return;
+      if (target) {
+        // a deep link must win over whatever view state hides its row
+        if (typePill !== 'all' && target.initiative_type !== typePill) {
+          setTypePill('all');
+          return;
+        }
+        if (!passesColumnFilters(target, filters, initiativeCellText)) {
+          clearFilters();
+          return;
+        }
       }
     }
     setOpenId(null);
-  }, [initiatives, visible, openId, filters, clearFilters]);
+  }, [initiatives, visible, openId, filters, clearFilters, typePill]);
 
   useEffect(() => {
     if (deepLinkTarget.current
@@ -320,6 +345,14 @@ export default function Initiatives() {
       </div>
 
       <div className="dir-toolbar">
+        <div className="segmented" role="tablist">
+          {TYPE_PILLS.map((pl) => (
+            <button key={pl.key} className={typePill === pl.key ? 'on' : ''}
+                    onClick={() => setTypePill(pl.key)}>
+              {pl.label} <span className="n">{typeCounts[pl.key] ?? 0}</span>
+            </button>
+          ))}
+        </div>
         <div className="toolbar-right">
           <div className="dir-search" style={{ marginLeft: 0 }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
