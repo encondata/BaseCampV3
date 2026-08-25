@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  assignLanes, FACEPLATE_USABLE_WIDTH, isRearPosition, laneGeometry, rackLabel,
+  assignLanes, FACEPLATE_USABLE_WIDTH, ghostBlocksFor, isRearPosition, laneGeometry,
+  rackLabel, tooltipRows,
 } from './RackViewModal';
 
 /* ── rack view collision layout (Task 6 fix-round) — laneGeometry is the
@@ -173,8 +174,10 @@ describe('isRearPosition', () => {
 /* ── per-elevation lane geometry (follow-up) — each of the two split
       elevations lays out its own blocks with FACEPLATE_USABLE_WIDTH (the
       one elevation's own interior width, not half of a shared one now
-      that FRONT/REAR are two independent frames), so a front and a rear
-      device at the same RU never share a lane-collision pass at all. ──── */
+      that FRONT/REAR are two independent frames). A front and a rear
+      device at the same RU are never in the SAME array of real blocks —
+      each elevation instead sees the other's device as its own ghost (see
+      `ghostBlocksFor` below), which still lane-splits against it locally. */
 
 describe('laneGeometry with FACEPLATE_USABLE_WIDTH (per-elevation)', () => {
   it('gives a single block the elevation-interior width, not squeezed by anything', () => {
@@ -197,5 +200,81 @@ describe('laneGeometry with FACEPLATE_USABLE_WIDTH (per-elevation)', () => {
     }
     const [first, second] = [...rects].sort((a, b) => a.x - b.x);
     expect(first.x + first.width).toBeLessThanOrEqual(second.x);
+  });
+});
+
+/* ── cross-side ghost blocks (round 3) — every elevation shows a blank
+      "ghost" for each asset actually mounted on the OPPOSITE physical
+      side, same RU/height, so occupied space reads correctly from both
+      faces. `ghostBlocksFor` is the pure mapping from "the other side's
+      real blocks" to "this elevation's ghost blocks" — id-preserving (so
+      hovering a ghost resolves the same underlying row) and tagged so the
+      renderer can style/skip-label them differently from real blocks. ── */
+
+describe('ghostBlocksFor', () => {
+  it('returns an empty list for an empty source (nothing on the opposite side)', () => {
+    expect(ghostBlocksFor([])).toEqual([]);
+  });
+
+  it('mirrors each source block with the same id/ru/height/position, tagged isGhost', () => {
+    const source = [
+      { id: 'a', label: 'server-a', ru: 12, height: 2, verified: true, position: 'rear' },
+    ];
+    const ghosts = ghostBlocksFor(source);
+    expect(ghosts).toHaveLength(1);
+    expect(ghosts[0]).toMatchObject({
+      id: 'a', ru: 12, height: 2, position: 'rear', isGhost: true,
+    });
+  });
+
+  it('preserves the source array length and each id 1:1 for multiple blocks', () => {
+    const source = [
+      { id: 'a', label: 'x', ru: 1, height: 1, verified: false, position: null },
+      { id: 'b', label: 'y', ru: 5, height: 1, verified: true, position: 'front' },
+    ];
+    const ghosts = ghostBlocksFor(source);
+    expect(ghosts.map((g) => g.id)).toEqual(['a', 'b']);
+    expect(ghosts.every((g) => g.isGhost)).toBe(true);
+  });
+});
+
+/* ── hover tooltip rows (round 3) — Serial/Make-Model/RU always show;
+      Position is omitted when the note is blank or just "front", since
+      that's the unmarked default and wouldn't add information a plain
+      faceplate on the FRONT elevation doesn't already convey. ────────── */
+
+describe('tooltipRows', () => {
+  const base = { serial: 'SN-1', makeModel: 'Dell R640', ru: 12 };
+
+  it('always includes Serial, Make/Model, and RU, in that order', () => {
+    const rows = tooltipRows({ ...base, position: null });
+    expect(rows.map((r) => r.label)).toEqual(['Serial', 'Make/Model', 'RU']);
+    expect(rows.find((r) => r.label === 'RU')!.value).toBe('12');
+  });
+
+  it('omits the Position row when the note is null, undefined, or blank/whitespace', () => {
+    expect(tooltipRows({ ...base, position: null }).some((r) => r.label === 'Position')).toBe(false);
+    expect(tooltipRows({ ...base, position: undefined }).some((r) => r.label === 'Position')).toBe(false);
+    expect(tooltipRows({ ...base, position: '' }).some((r) => r.label === 'Position')).toBe(false);
+    expect(tooltipRows({ ...base, position: '   ' }).some((r) => r.label === 'Position')).toBe(false);
+  });
+
+  it('omits the Position row when the note is "front", case-insensitively', () => {
+    expect(tooltipRows({ ...base, position: 'front' }).some((r) => r.label === 'Position')).toBe(false);
+    expect(tooltipRows({ ...base, position: 'Front' }).some((r) => r.label === 'Position')).toBe(false);
+    expect(tooltipRows({ ...base, position: 'FRONT' }).some((r) => r.label === 'Position')).toBe(false);
+  });
+
+  it('includes the Position row with the raw note for anything else (rear, left, etc.)', () => {
+    const rear = tooltipRows({ ...base, position: 'rear' }).find((r) => r.label === 'Position');
+    expect(rear?.value).toBe('rear');
+    const left = tooltipRows({ ...base, position: 'left' }).find((r) => r.label === 'Position');
+    expect(left?.value).toBe('left');
+  });
+
+  it('falls back to an em dash for missing serial/make-model rather than a blank value', () => {
+    const rows = tooltipRows({ serial: null, makeModel: '', ru: 1, position: null });
+    expect(rows.find((r) => r.label === 'Serial')!.value).toBe('—');
+    expect(rows.find((r) => r.label === 'Make/Model')!.value).toBe('—');
   });
 });

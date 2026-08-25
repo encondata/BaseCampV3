@@ -7,13 +7,19 @@
  * this component only turns those blocks into SVG geometry.
  *
  * Print-friendly redesign: two independent, self-contained rack frames
- * (FRONT and REAR) side by side, each with its own posts/rails/caps and
- * U numbering, rendered in a light, high-contrast, grayscale-safe palette
- * (no gradients, no color-only distinctions) so it holds up printed on
- * paper. The REAR frame is omitted entirely — not just emptied — when no
- * asset in this rack/side carries a "rear" position note. Hover detail
- * (name/serial/make-model/RU/position) is a real HTML tooltip positioned
- * off each faceplate's bounding rect, not a native `<title>` tooltip.
+ * (FRONT and REAR) side by side, each with its own posts/caps and U
+ * numbering (clean outlined rails — no cage-nut hole pattern), rendered in
+ * a light, high-contrast, grayscale-safe palette (no gradients, no
+ * color-only distinctions) so it holds up printed on paper. The REAR
+ * frame is omitted entirely — not just emptied — when no asset in this
+ * rack/side carries a "rear" position note. Each elevation also shows a
+ * blank "ghost" box for every asset actually mounted on the OPPOSITE
+ * physical side at the same RU/height, so occupied space reads correctly
+ * from both faces of the rack (see `ghostBlocksFor`). Hover detail
+ * (name/serial/make-model/RU/position, the last omitted when it wouldn't
+ * add information — see `tooltipRows`) is a real HTML tooltip positioned
+ * off each faceplate's (or ghost's) bounding rect, not a native `<title>`
+ * tooltip.
  */
 import { useRef, useState, useEffect } from 'react';
 
@@ -43,14 +49,13 @@ export const FACEPLATE_USABLE_WIDTH = INTERIOR_WIDTH - FACEPLATE_INSET * 2;
 const FACEPLATE_X0 = INTERIOR_LEFT + FACEPLATE_INSET;
 const LANE_PX = 14; // horizontal offset step for overlapping blocks
 
-const HOLE_SIZE = 4;
-const HOLE_INSET = 6; // from each post's interior-facing edge
-const LEFT_HOLE_X = POST_WIDTH - HOLE_INSET - HOLE_SIZE;
-const RIGHT_HOLE_X = ELEV_FRAME_WIDTH - POST_WIDTH + HOLE_INSET;
-const U_LABEL_X = LEFT_HOLE_X - 3; // right-aligned against the rail holes
+// U_LABEL_X keeps the exact x the numbers held when they were right-aligned
+// against the (now-removed) EIA rail holes — round 3 dropped the cage-nut
+// hole pattern entirely (posts are clean outlined rails now) but the
+// numbers stay put rather than re-centering in the freed-up space.
+const U_LABEL_X = 13;
 
 const RU_LIST = Array.from({ length: RU_COUNT }, (_, i) => i + 1);
-const HOLE_FRACTIONS = [0.2, 0.5, 0.8];
 
 /** Greedy interval-graph "lane" assignment for blocks that overlap in RU
  *  range — same idea as calendar-view event columns: walk blocks lowest-RU
@@ -161,25 +166,72 @@ export function isRearPosition(position: string | null | undefined): boolean {
   return !!position && position.toLowerCase().includes('rear');
 }
 
+/** A block placed in an elevation it doesn't actually belong to, standing
+ *  in for "something is mounted here from the other physical side" — no
+ *  label, no verified/unverified styling, just a blank outlined box at the
+ *  same RU/height so the occupied space reads correctly from both faces of
+ *  the rack. Still a real `RackBlock` (same id as the real block it
+ *  mirrors — see `ghostBlocksFor`) so it flows through the same
+ *  `laneGeometry` call and hover lookup as everything else. */
+export interface DisplayBlock extends RackBlock { isGhost?: boolean; }
+
+/** Mirrors every block in `sourceBlocks` (the OPPOSITE elevation's real
+ *  blocks) into ghost boxes for the elevation being rendered — same id
+ *  (so a hover on the ghost resolves to the same underlying row as the
+ *  real block), ru, and height, tagged `isGhost: true`. Pure and exported
+ *  for testing without mounting either elevation. */
+export function ghostBlocksFor(sourceBlocks: RackBlock[]): DisplayBlock[] {
+  return sourceBlocks.map((b) => ({ ...b, isGhost: true }));
+}
+
+export interface TooltipRow { label: string; value: string; }
+
+/** Assembles the hover tooltip's detail rows below the name header: Serial,
+ *  Make/Model, and RU always show; Position is omitted entirely when the
+ *  side has no position note, or when it's just "front" (case-insensitive)
+ *  — "front" is the unmarked default for most devices and would tell the
+ *  viewer nothing a plain faceplate on the FRONT elevation doesn't already
+ *  say, whereas "rear", "left", etc. are worth surfacing. Pure and
+ *  exported so the suppression rule is testable without a hover/mount. */
+export function tooltipRows(info: {
+  serial: string | null | undefined;
+  makeModel: string | null | undefined;
+  ru: number;
+  position: string | null | undefined;
+}): TooltipRow[] {
+  const rows: TooltipRow[] = [
+    { label: 'Serial', value: info.serial ?? '—' },
+    { label: 'Make/Model', value: info.makeModel || '—' },
+    { label: 'RU', value: String(info.ru) },
+  ];
+  const position = info.position?.trim();
+  if (position && position.toLowerCase() !== 'front') {
+    rows.push({ label: 'Position', value: position });
+  }
+  return rows;
+}
+
 /** y (SVG, top-down) for the bottom edge of RU `ru` — RU 1 sits at the
  *  bottom of the elevation, so higher RU numbers move up (smaller y). */
 const yForRu = (ru: number) => INTERIOR_BOTTOM - (ru - 1) * U_PX;
-/** y for the top edge of RU `ru` (used for the rail hole/number rows). */
+/** y for the top edge of RU `ru` (used for the left-post number rows). */
 const ruTop = (ru: number) => INTERIOR_BOTTOM - ru * U_PX;
 
-interface HoverState { block: RackBlock; x: number; y: number; }
+interface HoverState { block: DisplayBlock; x: number; y: number; }
 
 /** One complete, self-contained rack frame — posts, top/bottom caps,
- *  interior, per-U hairlines, EIA rail holes on both posts, U numbering on
- *  the left post, and this elevation's own faceplates. Rendered twice by
- *  the modal below (FRONT always, REAR only when it has blocks) rather
- *  than as two halves of one shared frame, so each reads as a complete
- *  elevation on its own — including when only one of the two is shown. */
+ *  interior, per-U hairlines, U numbering on the left post, and this
+ *  elevation's own faceplates (real devices mounted on this physical side,
+ *  plus blank ghost boxes for devices mounted on the opposite side at the
+ *  same RU — see `ghostBlocksFor`). Rendered twice by the modal below
+ *  (FRONT always, REAR only when it has real blocks) rather than as two
+ *  halves of one shared frame, so each reads as a complete elevation on
+ *  its own — including when only one of the two is shown. */
 function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock }: {
   heading: string;
   ariaLabel: string;
-  blocks: RackBlock[];
-  onHoverBlock: (block: RackBlock, e: React.MouseEvent<SVGGElement>) => void;
+  blocks: DisplayBlock[];
+  onHoverBlock: (block: DisplayBlock, e: React.MouseEvent<SVGGElement>) => void;
   onLeaveBlock: () => void;
 }) {
   const geometry = new Map(
@@ -208,23 +260,8 @@ function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock 
                 className="rack-u-hairline" />
         ))}
 
-        {/* EIA rail holes, one <g> per post — cheap flat rects, no filters */}
-        <g className="rack-rail-holes">
-          {RU_LIST.flatMap((ru) => HOLE_FRACTIONS.map((frac, i) => (
-            <rect key={`l-${ru}-${i}`} x={LEFT_HOLE_X}
-                  y={ruTop(ru) + frac * U_PX - HOLE_SIZE / 2}
-                  width={HOLE_SIZE} height={HOLE_SIZE} className="rack-rail-hole" />
-          )))}
-        </g>
-        <g className="rack-rail-holes">
-          {RU_LIST.flatMap((ru) => HOLE_FRACTIONS.map((frac, i) => (
-            <rect key={`r-${ru}-${i}`} x={RIGHT_HOLE_X}
-                  y={ruTop(ru) + frac * U_PX - HOLE_SIZE / 2}
-                  width={HOLE_SIZE} height={HOLE_SIZE} className="rack-rail-hole" />
-          )))}
-        </g>
-
-        {/* U numbering, left post */}
+        {/* U numbering, left post — posts otherwise stay clean outlined
+            rails (round 3 dropped the cage-nut hole pattern entirely) */}
         <g className="rack-u-labels">
           {RU_LIST.map((ru) => (
             <text key={ru} x={U_LABEL_X} y={ruTop(ru) + U_PX / 2} textAnchor="end"
@@ -247,6 +284,16 @@ function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock 
           const fullHeight = b.height * U_PX;
           const y = yForRu(b.ru + b.height) + 1;
           const height = fullHeight - 2;
+          if (b.isGhost) {
+            // Blank box: no label, no vents, no LED — just the outline
+            // marking the space as occupied from the opposite side.
+            return (
+              <g key={b.id} onMouseEnter={(e) => onHoverBlock(b, e)} onMouseLeave={onLeaveBlock}>
+                <rect x={x} y={y} width={width} height={height} rx={2}
+                      className="rack-faceplate-ghost" />
+              </g>
+            );
+          }
           const showVents = height >= 12;
           const label = rackLabel(b.label, b.position, width);
           const ledCx = x + width - 10;
@@ -296,10 +343,15 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   const blocks = rackLayout(rows, rackName, side);
   const frontBlocks = blocks.filter((b) => !isRearPosition(b.position));
   const rearBlocks = blocks.filter((b) => isRearPosition(b.position));
+  // REAR renders only when a REAL rear-mounted asset exists — unaffected
+  // by ghosts, per the spec: a rack with only front devices never shows a
+  // rear elevation full of nothing but their ghosts.
   const showRear = rearBlocks.length > 0;
+  const frontDisplay: DisplayBlock[] = [...frontBlocks, ...ghostBlocksFor(rearBlocks)];
+  const rearDisplay: DisplayBlock[] = [...rearBlocks, ...ghostBlocksFor(frontBlocks)];
   const rowsById = new Map(rows.map((r) => [r.id, r]));
 
-  const handleHover = (block: RackBlock, e: React.MouseEvent<SVGGElement>) => {
+  const handleHover = (block: DisplayBlock, e: React.MouseEvent<SVGGElement>) => {
     const container = containerRef.current;
     if (!container) return;
     const targetRect = e.currentTarget.getBoundingClientRect();
@@ -318,6 +370,12 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   const hoveredMakeModel = hoveredAsset
     ? [hoveredAsset.model_make, hoveredAsset.model_name].filter(Boolean).join(' ')
     : '';
+  const hoveredRows = hover ? tooltipRows({
+    serial: hoveredAsset?.serial_number,
+    makeModel: hoveredMakeModel,
+    ru: hover.block.ru,
+    position: hover.block.position,
+  }) : [];
 
   return (
     <div className="modal-scrim" onMouseDown={(e) => {
@@ -346,13 +404,13 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
         <div className="modal-body rack-modal-body">
           <div className="rack-elevations" ref={containerRef}>
             <RackElevation
-              heading="FRONT" blocks={frontBlocks}
+              heading="FRONT" blocks={frontDisplay}
               ariaLabel={`Rack ${rackName} — ${sideLabel} — front elevation`}
               onHoverBlock={handleHover} onLeaveBlock={handleLeave}
             />
             {showRear && (
               <RackElevation
-                heading="REAR" blocks={rearBlocks}
+                heading="REAR" blocks={rearDisplay}
                 ariaLabel={`Rack ${rackName} — ${sideLabel} — rear elevation`}
                 onHoverBlock={handleHover} onLeaveBlock={handleLeave}
               />
@@ -363,10 +421,10 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
                   {hoveredAsset?.name ?? hoveredAsset?.serial_number ?? '—'}
                 </div>
                 <dl className="rack-tooltip-kv">
-                  <dt>Serial</dt><dd>{hoveredAsset?.serial_number ?? '—'}</dd>
-                  <dt>Make/Model</dt><dd>{hoveredMakeModel || '—'}</dd>
-                  <dt>RU</dt><dd>{hover.block.ru}</dd>
-                  <dt>Position</dt><dd>{hover.block.position ?? '—'}</dd>
+                  {hoveredRows.flatMap((row) => [
+                    <dt key={`${row.label}-dt`}>{row.label}</dt>,
+                    <dd key={`${row.label}-dd`}>{row.value}</dd>,
+                  ])}
                 </dl>
               </div>
             )}

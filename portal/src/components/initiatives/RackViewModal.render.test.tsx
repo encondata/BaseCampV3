@@ -7,7 +7,8 @@
  * decimal-RU / overlapping-lane blocks), the front/rear SPLIT-ELEVATIONS
  * follow-up (two independent frames, REAR omitted entirely when nothing is
  * rear-mounted, per-elevation lane collisions), the per-cluster width fix,
- * the single-rail-hole-column fix, and the light-theme hover tooltip.
+ * the light-theme hover tooltip, and round 3 (cage-nut holes removed,
+ * cross-side ghost blocks, tooltip Position-row suppression).
  */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -94,7 +95,7 @@ describe('RackViewModal (render smoke)', () => {
     expect(screen.getByText(/^SN-B/)).toBeTruthy();
   });
 
-  it('splits front/rear devices at the same RU into two independent, full-width elevations', () => {
+  it('splits front/rear devices at the same RU into two independent elevations, each showing a ghost of the other', () => {
     const rows: InitiativeAssetRow[] = [
       makeRow({
         id: 'row-front', source_ru: 20, source_position: 'front',
@@ -114,11 +115,43 @@ describe('RackViewModal (render smoke)', () => {
     expect(container.querySelectorAll('.rack-elevation')).toHaveLength(2);
     expect(container.querySelectorAll('svg.rack-svg')).toHaveLength(2);
 
-    // Same RU, opposite elevations -> neither should be squeezed by the
-    // other's lane-collision pass; each faceplate gets the full width.
-    const faceplates = Array.from(container.querySelectorAll('.rack-faceplate'));
-    expect(faceplates).toHaveLength(2);
-    for (const el of faceplates) {
+    // Both real devices AND both ghosts (front-box's ghost on REAR,
+    // rear-box's ghost on FRONT) now share the same RU within their own
+    // elevation, so each must lane-split against the other -> no longer
+    // full width, per the round-3 "ghosts participate in lane collision
+    // like real blocks" requirement.
+    const realFaceplates = Array.from(container.querySelectorAll('.rack-faceplate'));
+    const ghostFaceplates = Array.from(container.querySelectorAll('.rack-faceplate-ghost'));
+    expect(realFaceplates).toHaveLength(2);
+    expect(ghostFaceplates).toHaveLength(2);
+    const squeezedWidth = Math.max(40, (FACEPLATE_USABLE_WIDTH - 14) / 2);
+    for (const el of [...realFaceplates, ...ghostFaceplates]) {
+      expect(Number(el.getAttribute('width'))).toBe(squeezedWidth);
+    }
+  });
+
+  it('gives a lone real block the full width again once it has no opposite-side ghost to lane-split against', () => {
+    // Same setup as above but at DIFFERENT RUs, so nothing collides: each
+    // elevation's real block and its opposite-side ghost sit apart and
+    // both get the full elevation width.
+    const rows: InitiativeAssetRow[] = [
+      makeRow({
+        id: 'row-front', source_ru: 20, source_position: 'front',
+        asset: makeAsset({ id: 'asset-front', name: 'front-box', ru_size: 1 }),
+      }),
+      makeRow({
+        id: 'row-rear', source_ru: 40, source_position: 'rear',
+        asset: makeAsset({ id: 'asset-rear', name: 'rear-box', ru_size: 1 }),
+      }),
+    ];
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+    );
+    const realFaceplates = Array.from(container.querySelectorAll('.rack-faceplate'));
+    const ghostFaceplates = Array.from(container.querySelectorAll('.rack-faceplate-ghost'));
+    expect(realFaceplates).toHaveLength(2);
+    expect(ghostFaceplates).toHaveLength(2);
+    for (const el of [...realFaceplates, ...ghostFaceplates]) {
       expect(Number(el.getAttribute('width'))).toBe(FACEPLATE_USABLE_WIDTH);
     }
   });
@@ -155,25 +188,16 @@ describe('RackViewModal (render smoke)', () => {
     expect(squeezed).toHaveLength(2);
   });
 
-  it('renders exactly one rail-hole column per post per elevation, fully inside each viewBox', () => {
+  it('renders posts as clean outlined rails with no cage-nut hole pattern (round 3)', () => {
     const { container } = render(
       <RackViewModal rackName="R1" side="source" rows={[makeRow()]} onClose={() => {}} />,
     );
-    for (const svg of Array.from(container.querySelectorAll('svg.rack-svg'))) {
-      const viewBoxWidth = Number(svg.getAttribute('viewBox')!.split(' ')[2]);
-      const holes = Array.from(svg.querySelectorAll('.rack-rail-hole'));
-      expect(holes).toHaveLength(54 * 3 * 2); // 54 RUs x 3 holes x 2 posts
-      const leftXs = new Set(holes.map((h) => h.getAttribute('x')).filter((x) => Number(x) < viewBoxWidth / 2));
-      const rightXs = new Set(holes.map((h) => h.getAttribute('x')).filter((x) => Number(x) >= viewBoxWidth / 2));
-      expect(leftXs.size).toBe(1); // exactly one hole column on the left post
-      expect(rightXs.size).toBe(1); // exactly one hole column on the right post
-      for (const h of holes) {
-        const x = Number(h.getAttribute('x'));
-        const width = Number(h.getAttribute('width'));
-        expect(x).toBeGreaterThanOrEqual(0);
-        expect(x + width).toBeLessThanOrEqual(viewBoxWidth);
-      }
-    }
+    expect(container.querySelectorAll('.rack-rail-hole')).toHaveLength(0);
+    // makeRow's default row renders both elevations (FRONT always, REAR
+    // because it's rear-mounted) -> 2 elevations x 2 posts each.
+    expect(container.querySelectorAll('.rack-post')).toHaveLength(4);
+    // U numbers are the only thing left "inside" the rails, still present.
+    expect(container.querySelectorAll('.rack-u-label').length).toBe(54 * 2);
   });
 
   it('shows an HTML hover tooltip with name/serial/make-model/RU/position on mouseEnter, hides it on mouseLeave', () => {
@@ -206,5 +230,52 @@ describe('RackViewModal (render smoke)', () => {
 
     fireEvent.mouseLeave(faceplateGroup);
     expect(container.querySelector('.rack-tooltip')).toBeNull();
+  });
+
+  it('omits the tooltip Position row when the position note is blank or "front"', () => {
+    const rows: InitiativeAssetRow[] = [
+      makeRow({
+        id: 'row-1', source_ru: 12, source_position: 'front',
+        asset: makeAsset({ id: 'asset-1', name: 'db-primary-01', serial_number: 'SN-XYZ-99' }),
+      }),
+    ];
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+    );
+    const faceplateGroup = container.querySelector('.rack-faceplate')!.parentElement!;
+    fireEvent.mouseEnter(faceplateGroup);
+    const tooltip = container.querySelector('.rack-tooltip')!;
+    expect(tooltip.textContent).toContain('Serial');
+    expect(tooltip.textContent).not.toContain('Position');
+  });
+
+  it('shows a blank, unlabeled ghost box on FRONT for a rear-mounted device, hoverable with the same detail plus its "rear" position', () => {
+    const rows: InitiativeAssetRow[] = [
+      makeRow({
+        id: 'row-1', source_ru: 30, source_position: 'rear', source_verified: true,
+        asset: makeAsset({
+          id: 'asset-1', name: 'kvm-rear-01', serial_number: 'SN-KVM-1',
+          model_make: 'Raritan', model_name: 'DKX3',
+        }),
+      }),
+    ];
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+    );
+    // FRONT always renders; with a rear-mounted asset, it shows that
+    // asset's ghost (blank box, no visible label) rather than staying empty.
+    const frontElevation = screen.getByText('FRONT').closest('.rack-elevation')!;
+    expect(frontElevation.querySelector('.rack-empty-label')).toBeNull();
+    const ghost = frontElevation.querySelector('.rack-faceplate-ghost');
+    expect(ghost).toBeTruthy();
+    expect(frontElevation.querySelector('.rack-block-label')).toBeNull();
+
+    fireEvent.mouseEnter(ghost!.parentElement!);
+    const tooltip = container.querySelector('.rack-tooltip')!;
+    expect(tooltip.textContent).toContain('kvm-rear-01');
+    expect(tooltip.textContent).toContain('SN-KVM-1');
+    expect(tooltip.textContent).toContain('Raritan DKX3');
+    expect(tooltip.textContent).toContain('30');
+    expect(tooltip.textContent).toContain('rear');
   });
 });
