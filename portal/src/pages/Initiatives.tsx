@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
@@ -541,6 +542,7 @@ function InitiativeRowDetail({
   onMark: () => Promise<void>;
   onUnmark: () => Promise<void>;
 }) {
+  const navigate = useNavigate();
   const [detail, setDetail] = useState<InitiativeDetail | null>(null);
   const [pendingPerson, setPendingPerson] = useState('');
   const [pendingWorkType, setPendingWorkType] = useState('');
@@ -763,16 +765,18 @@ function InitiativeRowDetail({
         )}
       </div>
 
-      {(canEdit || godVisible) && (
-        <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
-          {canEdit && (
-            <button className="btn-solid" onClick={onEdit}>Edit</button>
-          )}
-          <GodDeleteButton visible={godVisible} entityType="initiative" entityId={initiative.id}
-                           label={initiative.name} pending={pending}
-                           onChange={pending ? onUnmark : onMark} />
-        </div>
-      )}
+      <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
+        <button className="btn-ghost"
+                onClick={() => navigate(`/initiatives/${initiative.id}`)}>
+          Full details
+        </button>
+        {canEdit && (
+          <button className="btn-solid" onClick={onEdit}>Edit</button>
+        )}
+        <GodDeleteButton visible={godVisible} entityType="initiative" entityId={initiative.id}
+                         label={initiative.name} pending={pending}
+                         onChange={pending ? onUnmark : onMark} />
+      </div>
     </div>
   );
 }

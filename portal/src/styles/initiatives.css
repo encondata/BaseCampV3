@@ -129,3 +129,35 @@
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 14px;
 }
+
+/* ── Full Details page (/initiatives/:id) ─────────────────────────── */
+.idet-back {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--text-mute);
+  text-decoration: none;
+}
+.idet-back:hover { color: var(--c-blue); }
+
+.idet-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin: 14px 0 20px;
+}
+.idet-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.idet-title-row .page-title { margin: 0; }
+.idet-desc { max-width: 68ch; }
+
+/* the two info cards stack to one column below the same width the
+   row-detail's .detail-grid already collapses at (directory.css) */
+.idet-grid { margin-bottom: 20px; }
