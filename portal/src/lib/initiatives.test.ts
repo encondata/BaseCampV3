@@ -4,7 +4,7 @@ import type { InitiativeAssetRow, InitiativeItem } from './api';
 import {
   formFromInitiative, initiativeCellText, initiativePayload,
   initiativeSearchText, MOVE_ASSET_EDIT_FIELDS, moveAssetCellText, moveAssetProgress,
-  partnerOptionsForRole, sectionsForType, siteOptionsForClient,
+  partnerOptionsForRole, rackLayout, sectionsForType, siteOptionsForClient,
 } from './initiatives';
 
 const row: InitiativeItem = {
@@ -339,5 +339,80 @@ describe('MOVE_ASSET_EDIT_FIELDS', () => {
     expect(fieldFor('destination_position')
       .fromRow(assetRow({ destination_position: null }))).toBe('');
     expect(fieldFor('cable_info').fromRow(assetRow({ cable_info: null }))).toBe('');
+  });
+});
+
+/* ── rack view (Task 6) — pure placement math the RackViewModal renders
+      from; TDD'd here per the plan since pages stay thin. ────────────── */
+
+describe('rackLayout', () => {
+  it('matches only rows whose rack+side equals the requested name, with a non-null RU', () => {
+    const rows = [
+      assetRow({ id: 'a', source_rack: 'BJ08', source_ru: 10 }),
+      assetRow({ id: 'b', source_rack: 'BJ08', source_ru: null }), // no RU — excluded
+      assetRow({ id: 'c', source_rack: 'OTHER', source_ru: 5 }), // wrong rack — excluded
+      assetRow({ id: 'd', source_rack: null, source_ru: null,
+                 destination_rack: 'BJ08', destination_ru: 3 }), // wrong side
+    ];
+    expect(rackLayout(rows, 'BJ08', 'source').map((b) => b.id)).toEqual(['a']);
+  });
+
+  it('reads the matching side\'s rack/RU (not the other side\'s)', () => {
+    const rows = [
+      assetRow({ id: 'a', source_rack: 'BJ08', source_ru: 10,
+                 destination_rack: 'BJ08', destination_ru: 20 }),
+    ];
+    expect(rackLayout(rows, 'BJ08', 'destination').map((b) => b.ru)).toEqual([20]);
+  });
+
+  it('passes decimal RU values through unchanged', () => {
+    const rows = [assetRow({ id: 'a', source_rack: 'BJ08', source_ru: 8.5 })];
+    expect(rackLayout(rows, 'BJ08', 'source')[0].ru).toBe(8.5);
+  });
+
+  it('defaults block height to 1 when the asset model has no ru_size', () => {
+    const rows = [assetRow({
+      id: 'a', source_rack: 'BJ08', source_ru: 10,
+      asset: { ...assetRow().asset, ru_size: null },
+    })];
+    expect(rackLayout(rows, 'BJ08', 'source')[0].height).toBe(1);
+  });
+
+  it('uses the asset model ru_size as block height when present', () => {
+    const rows = [assetRow({
+      id: 'a', source_rack: 'BJ08', source_ru: 10,
+      asset: { ...assetRow().asset, ru_size: 4 },
+    })];
+    expect(rackLayout(rows, 'BJ08', 'source')[0].height).toBe(4);
+  });
+
+  it('maps the matching side\'s verified flag and position note', () => {
+    const rows = [assetRow({
+      id: 'a', source_rack: 'BJ08', source_ru: 10,
+      source_verified: true, source_position: 'front',
+      destination_verified: false, destination_position: 'rear',
+    })];
+    const [block] = rackLayout(rows, 'BJ08', 'source');
+    expect(block.verified).toBe(true);
+    expect(block.position).toBe('front');
+  });
+
+  it('treats a null verified flag as unverified (not throwing)', () => {
+    const rows = [assetRow({
+      id: 'a', source_rack: 'BJ08', source_ru: 10, source_verified: null,
+    })];
+    expect(rackLayout(rows, 'BJ08', 'source')[0].verified).toBe(false);
+  });
+
+  it('labels a block with the asset name, falling back to serial when unnamed', () => {
+    const rows = [
+      assetRow({ id: 'a', source_rack: 'BJ08', source_ru: 10,
+                 asset: { ...assetRow().asset, name: 'Server A' } }),
+      assetRow({ id: 'b', source_rack: 'BJ08', source_ru: 11,
+                 asset: { ...assetRow().asset, name: null, serial_number: 'SN-9' } }),
+    ];
+    const blocks = rackLayout(rows, 'BJ08', 'source');
+    expect(blocks.find((b) => b.id === 'a')?.label).toBe('Server A');
+    expect(blocks.find((b) => b.id === 'b')?.label).toBe('SN-9');
   });
 });

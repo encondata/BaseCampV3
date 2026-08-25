@@ -14,6 +14,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import ComboBox, { type ComboOption } from '../components/ComboBox';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
+import RackViewModal from '../components/initiatives/RackViewModal';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import {
   ApiError,
@@ -241,6 +242,10 @@ export default function InitiativeDetail() {
   // section's god.editing (Task 5b): gated on maxRank/canChange, not
   // godMode, so it isn't tied to useGodEdit()'s godMode-derived `editing`.
   const [assetsEditing, setAssetsEditing] = useState(false);
+  // Rack elevation modal (Task 6) — opened from a Source/Destination Rack
+  // cell button in read-only display mode; null when closed.
+  const [rackView, setRackView] = useState<
+    { rackName: string; side: 'source' | 'destination' } | null>(null);
   const {
     visibleCols: assetsVisibleCols, setVisibleCols: setAssetsVisibleCols,
     sortKey: assetsSortKey, sortDir: assetsSortDir, setSort: setAssetsSort,
@@ -519,6 +524,22 @@ export default function InitiativeDetail() {
     if (key === 'asset_status') {
       return chip(a.asset.status_label, a.asset.status_color)
         ?? <span className="cell-top">{a.asset.status_label}</span>;
+    }
+    // Rack view (Task 6) — non-empty Source/Destination Rack cells open the
+    // elevation modal for that rack; edit-table mode is handled above via
+    // assetGodFieldFor, so this only ever renders in read-only display mode.
+    if (key === 'source_rack' || key === 'destination_rack') {
+      const side: 'source' | 'destination' =
+        key === 'source_rack' ? 'source' : 'destination';
+      const rackName = side === 'source' ? a.source_rack : a.destination_rack;
+      if (rackName) {
+        return (
+          <button type="button" className="idet-rack-cell-btn"
+                  onClick={() => setRackView({ rackName, side })}>
+            {rackName}
+          </button>
+        );
+      }
     }
     return <span className="cell-top">{moveAssetCellText(a, key)}</span>;
   };
@@ -937,6 +958,15 @@ export default function InitiativeDetail() {
             const rows = await listInitiativeAssets(id);
             setAssets(rows);
           }}
+        />
+      )}
+
+      {rackView && (
+        <RackViewModal
+          rackName={rackView.rackName}
+          side={rackView.side}
+          rows={assets}
+          onClose={() => setRackView(null)}
         />
       )}
     </div>

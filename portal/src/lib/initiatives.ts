@@ -401,3 +401,44 @@ export function MOVE_ASSET_EDIT_FIELDS(
       fromRow: (r) => r.status, options: lookups.statuses },
   ];
 }
+
+/* ── rack view (Task 6) — placement math for RackViewModal's SVG
+      elevation, pulled out as a pure helper per repo convention (pages/
+      components stay thin; TDD'd in initiatives.test.ts). ────────────── */
+
+/** One asset's block in a rack elevation. `ru` is the RU the asset's slot
+ *  starts at (decimal-aware — v2 allowed half-RU placements); `height` is
+ *  the number of RUs it occupies. */
+export interface RackBlock {
+  id: string; label: string; ru: number; height: number;
+  verified: boolean; position: string | null;
+}
+
+/** Filters a move's asset rows down to the ones racked in `rackName` on the
+ *  given side, and maps each to its elevation block. A row without an RU
+ *  recorded on that side has nothing to place, so it's excluded outright
+ *  (matches the spec's "clicked side ... equals the clicked rack name").
+ *  `ru_size` defaults to 1 RU, same as the rest of the move-assets slice. */
+export function rackLayout(
+  rows: InitiativeAssetRow[], rackName: string, side: 'source' | 'destination',
+): RackBlock[] {
+  const rackOf = (r: InitiativeAssetRow) =>
+    (side === 'source' ? r.source_rack : r.destination_rack);
+  const ruOf = (r: InitiativeAssetRow) =>
+    (side === 'source' ? r.source_ru : r.destination_ru);
+  const verifiedOf = (r: InitiativeAssetRow) =>
+    !!(side === 'source' ? r.source_verified : r.destination_verified);
+  const positionOf = (r: InitiativeAssetRow) =>
+    (side === 'source' ? r.source_position : r.destination_position);
+
+  return rows
+    .filter((r) => rackOf(r) === rackName && ruOf(r) != null)
+    .map((r) => ({
+      id: r.id,
+      label: r.asset.name ?? r.asset.serial_number ?? BLANK,
+      ru: ruOf(r) as number,
+      height: r.asset.ru_size ?? 1,
+      verified: verifiedOf(r),
+      position: positionOf(r),
+    }));
+}

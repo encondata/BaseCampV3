@@ -235,3 +235,65 @@
   text-transform: uppercase;
   color: var(--text-mute);
 }
+
+/* rack cell buttons (Task 6) — Source/Destination Rack cells become
+   clickable when non-empty, read-only mode only (inline edit mode keeps
+   GodCell's plain text input for these columns). Styled like the
+   init-name-btn link buttons already used for linked-initiative rows. */
+.idet-rack-cell-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.idet-rack-cell-btn:hover { color: var(--accent-soft); }
+
+/* ── rack elevation modal (Task 6) — SVG rack view opened from a rack
+   cell button above. A bit narrower than the plain modal-card default;
+   tall since the SVG itself is fixed-aspect (54 RU) and scrolls within
+   the body rather than being squashed to fit. ────────────────────── */
+.modal-card.rack-modal-card { width: min(420px, 94vw); }
+.rack-modal-body {
+  max-height: 78vh;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+}
+.rack-svg-wrap { width: 100%; max-width: 320px; }
+.rack-svg { width: 100%; height: auto; display: block; }
+
+.rack-frame {
+  fill: var(--surface-2, #f5f7fa);
+  stroke: var(--paper-line);
+  stroke-width: 1;
+}
+.rack-scale-tick { stroke: var(--paper-line); stroke-width: 1; }
+.rack-scale-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  fill: var(--text-mute);
+}
+
+/* verified = filled accent block; unverified = outlined only, per spec.
+   Both keep the same accent-colored border so the distinction reads at a
+   glance without relying on color alone. */
+.rack-block {
+  stroke: var(--accent);
+  stroke-width: 1.4;
+}
+.rack-block-verified { fill: rgba(var(--accent-rgb), 0.32); }
+.rack-block-outline { fill: var(--paper, #fff); }
+.rack-block-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  fill: var(--text-dark);
+}
+.rack-block-position {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  fill: var(--text-mute);
+}
