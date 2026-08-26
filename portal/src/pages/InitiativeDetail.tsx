@@ -674,7 +674,16 @@ export default function InitiativeDetail() {
         )}
 
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
-          <p className="eyebrow-sm">Assets{isMove ? ` — ${assets.length}` : ''}</p>
+          <div style={{ display: 'flex', alignItems: 'center',
+                        justifyContent: 'space-between' }}>
+            <p className="eyebrow-sm">Assets{isMove ? ` — ${assets.length}` : ''}</p>
+            {isMove && canChange && (
+              <Link className="mini-btn"
+                    to={`/initiatives/${initiative.id}/import-assets`}>
+                Import assets
+              </Link>
+            )}
+          </div>
           {!isMove && <p className="page-hint">Asset tracking lands here next.</p>}
           {isMove && assetsError && (
             <div className="dir-empty" style={{ marginBottom: 12 }}>
