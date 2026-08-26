@@ -145,3 +145,66 @@
   text-align: right;
 }
 .sysconf-saved { color: var(--c-green, #178a4c); font-size: 12.5px; }
+
+/* ── ENV tab: masked .env editor ──────────────────────────────────── */
+/* Looks like .sys-log-search (same height/border/radius, inherited from
+   the .sysconf-tab-body input rule above) but is its OWN class:
+   .sys-log-search's `flex: 1 1 220px` sets a 220px flex-basis, which is
+   a WIDTH in that class's row toolbar but becomes a HEIGHT here since
+   sysconf-tab-body is a column flex container — reusing it blew the
+   search box up to ~220px tall. Just cap the width instead. */
+.envtab-search { max-width: 360px; }
+.envtab-rows { display: flex; flex-direction: column; }
+.envtab-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) 1fr auto;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 4px 10px 13px;
+  border-bottom: 1px solid var(--paper-line);
+  border-left: 3px solid transparent;
+}
+.envtab-rows .envtab-row:last-child { border-bottom: none; }
+.envtab-row.changed {
+  border-left-color: var(--amber);
+  background: var(--c-amber-bg, rgba(163, 98, 7, 0.06));
+}
+.envtab-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-dark);
+  overflow-wrap: anywhere;
+}
+.envtab-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--paper-line);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.envtab-chip-set {
+  color: var(--c-green, #178a4c);
+  background: var(--c-green-bg, rgba(61, 220, 132, 0.12));
+  border-color: var(--c-green-bd, rgba(61, 220, 132, 0.25));
+}
+.envtab-chip-unset {
+  color: var(--c-slate, #51606f);
+  background: var(--c-slate-bg, rgba(138, 151, 170, 0.12));
+  border-color: var(--c-slate-bd, rgba(138, 151, 170, 0.25));
+}
+.envtab-restart-banner {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 9px;
+  border: 1px solid var(--c-amber-bd, rgba(255, 184, 77, 0.25));
+  background: var(--c-amber-bg, rgba(255, 184, 77, 0.12));
+  color: var(--c-amber, #a36207);
+  font-size: 12.5px;
+}

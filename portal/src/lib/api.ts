@@ -1941,3 +1941,38 @@ export async function testLoggingConfig(): Promise<{
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
+
+// ── system config: env tab ──────────────────────────────────────────
+
+/** One row of the repo .env, DB/Spaces keys hidden server-side. Secrets
+ *  never carry `value` — only whether one is currently `set`. */
+export interface EnvEntry {
+  key: string;
+  secret: boolean;
+  set?: boolean;
+  value?: string;
+}
+
+export async function getEnvEntries(): Promise<{ entries: EnvEntry[] }> {
+  const resp = await apiFetch('/system/env');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function putEnvValues(
+  values: Record<string, string>,
+): Promise<{ changed: string[] }> {
+  const resp = await apiFetch('/system/env', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function restartProcesses(): Promise<{ restarting: boolean }> {
+  const resp = await apiFetch('/system/env/restart', { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
