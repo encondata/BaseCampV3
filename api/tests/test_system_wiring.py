@@ -47,21 +47,22 @@ async def test_import_worker_logs_job_lifecycle(db):
 
     assert await run_once(get_sessionmaker()) is True
 
-    count = await db.scalar(
-        select(func.count()).select_from(LogEntry)
-        .where(LogEntry.process == "import-worker"))
-    # the DB handler flushes on a 1 s cadence — wait for it
+    # the DB handler flushes on a 1 s cadence — poll for the job's OWN
+    # lifecycle lines (in the shared test interpreter, handlers from other
+    # tests can tag stray root-logger records as import-worker, so a bare
+    # row-count check would pass early on noise)
     import asyncio
+
+    async def _messages() -> str:
+        return " ".join((await db.scalars(select(LogEntry.message).where(
+            LogEntry.process == "import-worker"))).all())
+
+    messages = await _messages()
     for _ in range(30):
-        if count:
+        if str(job.id) in messages:
             break
         await asyncio.sleep(0.2)
-        count = await db.scalar(
-            select(func.count()).select_from(LogEntry)
-            .where(LogEntry.process == "import-worker"))
-    assert count >= 1
-    messages = " ".join((await db.scalars(select(LogEntry.message).where(
-        LogEntry.process == "import-worker"))).all())
+        messages = await _messages()
     assert str(job.id) in messages               # lifecycle mentions the job
 
 

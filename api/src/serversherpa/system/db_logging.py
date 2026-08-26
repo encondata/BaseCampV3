@@ -161,5 +161,9 @@ def install(process: str) -> DbLogHandler:
     handler = DbLogHandler(process)
     root.addHandler(handler)
     logging.getLogger("uvicorn.error").propagate = True
+    # httpx/httpcore log one INFO line per request — the log-service's own
+    # 10 s web probe alone would flood log_entries with them
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     _installed[process] = handler
     return handler
