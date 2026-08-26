@@ -367,7 +367,7 @@ class StatusValue(Base):
     is_active: Mapped[bool] = mapped_column(server_default=text("true"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     # 0-100 or null (excluded from the weighted-progress calc); generic
-    # column, currently seeded/exposed only for move_asset_status
+    # column, seeded for the asset vocabulary's workflow statuses
     progress_weight: Mapped[int | None] = mapped_column(Integer)
 
 
@@ -646,7 +646,7 @@ class InitiativeAsset(Base):
     vendor_involved: Mapped[bool | None] = mapped_column(Boolean)
     status: Mapped[str] = mapped_column(server_default="loaded_in_system")
     status_record_type: Mapped[str] = mapped_column(
-        server_default=text("'move_asset_status'"))  # GENERATED column; never written
+        server_default=text("'asset'"))  # GENERATED column; never written
     added_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

@@ -2,7 +2,7 @@
 reference a worker status."""
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 
 from serversherpa.db.models import Site, StatusValue
@@ -97,21 +97,25 @@ async def test_site_statuses_table_is_dropped(db):
     assert row is None
 
 
-async def test_move_asset_status_weights_seeded_verbatim(db):
-    """0021's seed UPDATEs, per the weighted-progress design doc's table
-    (docs/superpowers/specs/2026-08-25-weighted-progress-design.md). Every
-    key/weight pair here is a verbatim transcription of that table
-    (all 24 keys), including the two explicit nulls
-    (historical, location_collision). in_container=38 is a mid-pipeline
-    state, not excluded — an earlier draft of this migration wrongly left
-    it null because the doc's table was missing the row; pinned as a
-    literal map so a future drift in either the doc or the seed fails
-    loudly here."""
+async def test_merged_asset_weights_seeded_verbatim(db):
+    """0021 seeded the move workflow weights; 0022 merged those rows into
+    the asset vocabulary (docs/superpowers/specs/
+    2026-08-25-merge-asset-status-design.md) with weights VERBATIM, plus
+    the five original lifecycle keys at null (excluded from progress —
+    an asset parked on a lifecycle status must not drag a move's number).
+    in_transit is the one collision: the asset row keeps its key and
+    sort_order but takes move's weight (50). Pinned as a literal map so
+    drift in the migration, the conftest seeds, or the doc fails loudly."""
     rows = (await db.execute(
         select(StatusValue.key, StatusValue.progress_weight)
-        .where(StatusValue.record_type == "move_asset_status"))).all()
+        .where(StatusValue.record_type == "asset"))).all()
     weights = dict(rows)
     assert weights == {
+        "active": None,
+        "in_transit": 50,
+        "in_storage": None,
+        "decommissioned": None,
+        "unknown": None,
         "loaded_in_system": 0,
         "pre_stage": 8,
         "racked": 15,
@@ -131,12 +135,19 @@ async def test_move_asset_status_weights_seeded_verbatim(db):
         "rfid_3_staging": 65,
         "rfid_4_into_cage": 72,
         "rfid_10_dock_to_truck": 44,
-        "in_transit": 50,
         "e_waste": 100,
         "pending_client_handover": 95,
         "historical": None,
         "location_collision": None,
     }
+
+
+async def test_move_asset_status_record_type_is_gone(db):
+    """0022 deletes the old vocabulary outright — nothing may linger."""
+    n = await db.scalar(
+        select(func.count()).select_from(StatusValue)
+        .where(StatusValue.record_type == "move_asset_status"))
+    assert n == 0
 
 
 async def test_progress_weight_defaults_to_null_for_other_record_types(db):
