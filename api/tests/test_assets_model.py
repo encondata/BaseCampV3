@@ -15,8 +15,13 @@ async def test_seeds_present(db):
     assert {c.key for c in cats} == {"server", "storage", "network", "power", "other"}
     statuses = (await db.scalars(
         select(StatusValue).where(StatusValue.record_type == "asset"))).all()
-    assert {s.key for s in statuses} == {
-        "active", "in_transit", "in_storage", "decommissioned", "unknown"}
+    keys = {s.key for s in statuses}
+    # lifecycle keys (0014) plus the workflow keys merged in by 0022; the
+    # full 28-key map is pinned in test_status_values_model.py
+    assert keys >= {
+        "active", "in_transit", "in_storage", "decommissioned", "unknown",
+        "loaded_in_system", "complete", "historical"}
+    assert len(statuses) == 28
     assert all(s.color.startswith("#") for s in statuses)
 
 
