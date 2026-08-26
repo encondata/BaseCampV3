@@ -13,10 +13,23 @@ site's notes) rather than silently dropped.
 
 import json
 import re
+from collections import defaultdict
 from decimal import Decimal
 from typing import Iterator
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from serversherpa.db.models import Client, Partner, Site, SiteClient, SiteType
+
 _VALUES_MARKER = "VALUES ("
+
+# v2 status_options id -> V3 site status key (status_values record_type
+# 'site'); NULL and anything unrecognized default to "active".
+_STATUS_MAP = {40: "active", 41: "decommissioned"}
+
+# Identifies this dump for source_ref traceability; see Global Constraints.
+_SOURCE = "backup_20260825_193157"
 
 
 def parse_values_tuple(raw: str) -> list[str | int | float | None]:
@@ -134,17 +147,33 @@ def insert_rows(dump_path: str, table: str) -> Iterator[list]:
     `\\s*\\(` right after the name means a longer table sharing the prefix
     (e.g. `sites_locations` when asked for `sites`) never matches, since
     the character right after `sites` there is `_`, not whitespace/`(`.
+
+    `buf` holds either nothing, or exactly one in-progress target-table
+    statement — never content from other tables' INSERT statements. Real
+    dumps interleave many unrelated tables, and a target table's rows can
+    sit far from the start of the file; lines belonging to other tables
+    are skipped without ever touching `buf`, so the buffer (and therefore
+    the re-scan `_pop_statement` does internally) stays bounded to the
+    size of one statement instead of growing to the size of the whole
+    file. That keeps this function O(n) over the file instead of O(n^2).
     """
     prefix_re = re.compile(rf"INSERT INTO {re.escape(table)}\s*\(")
     with open(dump_path, encoding="utf-8", errors="replace") as fh:
         buf = ""
         for line in fh:
-            buf += line
+            if buf:
+                buf += line
+            elif prefix_re.match(line):
+                buf = line
+            else:
+                continue  # not our table's statement — never buffered, O(1) skip
             while True:
                 row, buf = _pop_statement(buf, prefix_re)
                 if row is None:
                     break
                 yield row
+            if buf and not buf.strip():
+                buf = ""
 
 
 def slugify(label: str) -> str:
@@ -161,7 +190,7 @@ def split_address(address: str | None) -> tuple[str | None, str | None, str | No
         return None, None, None
     lines = [line.strip() for line in address.split("\n")]
     line1 = lines[0]
-    line2 = lines[1] if len(lines) > 1 else None
+    line2 = (lines[1] or None) if len(lines) > 1 else None
     note = f"V2 address (full): {' / '.join(lines)}"
     return line1, line2, note
 
@@ -236,3 +265,162 @@ def format_locations_note(locations: list[tuple[str, str]]) -> str | None:
 def assemble_notes(parts: list[str | None]) -> str | None:
     cleaned = [p for p in parts if p and p.strip()]
     return "\n".join(cleaned) if cleaned else None
+
+
+async def import_sites(db: AsyncSession, dump_path: str, limit: int) -> dict:
+    """Import up to `limit` new sites (+ resolved SiteType/client/partner
+    links) from a legacy BaseCamp V2 dump. Additive: re-runs skip rows whose
+    source_ref or name already exist in V3, and reuse any SiteType created
+    by an earlier run."""
+
+    all_rows = list(insert_rows(dump_path, "sites"))
+    candidate_rows = [row for row in all_rows if row[5] != "Template"]
+    skipped_template = len(all_rows) - len(candidate_rows)
+
+    existing_refs = set(await db.scalars(
+        select(Site.source_ref).where(Site.source_ref.is_not(None))))
+    existing_names = {n.casefold() for n in await db.scalars(select(Site.name))}
+
+    pending: list[tuple[str, list]] = []
+    pre_existing = 0
+    skipped_invalid: list[str] = []
+    for row in candidate_rows:
+        v2_id, name = row[0], row[1]
+        if name is None:
+            skipped_invalid.append(f"v2 id {v2_id}: missing name")
+            continue
+        source_ref = f"{_SOURCE}:sites/{v2_id}"
+        if source_ref in existing_refs or name.casefold() in existing_names:
+            pre_existing += 1
+            continue
+        pending.append((source_ref, row))
+
+    pending.sort(key=lambda item: item[1][0])
+    picked = pending[:limit]
+
+    site_type_rows = list(await db.scalars(select(SiteType)))
+    site_types = {st.label.casefold(): st for st in site_type_rows}
+    running_sort_order = max((st.sort_order for st in site_type_rows), default=0)
+
+    clients_v2 = {row[0]: row[1] for row in insert_rows(dump_path, "clients")}
+    clients_v3 = {c.name.casefold(): c for c in await db.scalars(select(Client))}
+    partners_v2 = {row[0]: row[1] for row in insert_rows(dump_path, "partners")}
+    partners_v3 = {p.name.casefold(): p for p in await db.scalars(select(Partner))}
+
+    raw_locations: dict[int, list[tuple[int, str, str]]] = defaultdict(list)
+    for loc_id, site_id, loc_name, description in insert_rows(
+            dump_path, "sites_locations"):
+        raw_locations[site_id].append((loc_id, loc_name, description))
+    locations_by_site = {
+        site_id: [(n, d) for _, n, d in sorted(entries, key=lambda e: e[0])]
+        for site_id, entries in raw_locations.items()
+    }
+
+    types_created: list[str] = []
+    unmatched_clients: list[str] = []
+    unmatched_partners: list[str] = []
+    gps_parsed = 0
+    gps_unparsed = 0
+    created = 0
+
+    for source_ref, row in picked:
+        (v2_id, name, address, gps_coordinates, metadata, site_type,
+         site_status, client, survey_data, partner_id) = row
+
+        if name.casefold() in existing_names:
+            pre_existing += 1
+            continue
+
+        address_line1, address_line2, address_note = split_address(address)
+
+        latitude, longitude, gps_note = parse_gps(gps_coordinates)
+        if gps_coordinates is not None and gps_coordinates.strip():
+            if latitude is not None:
+                gps_parsed += 1
+            else:
+                gps_unparsed += 1
+
+        if site_type is None:
+            resolved_type = None
+        else:
+            resolved_type = site_types.get(site_type.casefold())
+            if resolved_type is None:
+                running_sort_order += 10
+                resolved_type = SiteType(
+                    key=slugify(site_type), label=site_type, color="#808080",
+                    sort_order=running_sort_order, description="")
+                db.add(resolved_type)
+                await db.flush()  # Site.site_type FK needs the row to exist
+                site_types[site_type.casefold()] = resolved_type
+                types_created.append(site_type)
+
+        status = _STATUS_MAP.get(site_status, "active")
+
+        matched_client = None
+        client_note = None
+        if client is not None:
+            client_name = clients_v2.get(client)
+            if client_name is not None:
+                matched_client = clients_v3.get(client_name.casefold())
+                if matched_client is None:
+                    client_note = f"V2 client: {client_name}"
+                    if client_name not in unmatched_clients:
+                        unmatched_clients.append(client_name)
+            else:
+                client_note = f"V2 client: id {client} (not in dump)"
+                if client_note not in unmatched_clients:
+                    unmatched_clients.append(client_note)
+
+        resolved_partner_id = None
+        partner_note = None
+        if partner_id is not None:
+            partner_name = partners_v2.get(partner_id)
+            if partner_name is not None:
+                matched_partner = partners_v3.get(partner_name.casefold())
+                if matched_partner is not None:
+                    resolved_partner_id = matched_partner.id
+                else:
+                    partner_note = f"V2 partner: {partner_name}"
+                    if partner_name not in unmatched_partners:
+                        unmatched_partners.append(partner_name)
+            else:
+                partner_note = f"V2 partner: id {partner_id} (not in dump)"
+                if partner_note not in unmatched_partners:
+                    unmatched_partners.append(partner_note)
+
+        dc_provider, survey_note = summarize_metadata(metadata, survey_data)
+        locations_note = format_locations_note(locations_by_site.get(v2_id, []))
+        notes = assemble_notes([
+            address_note, gps_note, survey_note, locations_note,
+            client_note, partner_note,
+        ])
+
+        site = Site(
+            name=name,
+            site_type=resolved_type.key if resolved_type is not None else None,
+            status=status,
+            address_line1=address_line1, address_line2=address_line2,
+            latitude=latitude, longitude=longitude,
+            dc_provider=dc_provider, partner_id=resolved_partner_id,
+            notes=notes, source="v2_import", source_ref=source_ref,
+        )
+        db.add(site)
+        await db.flush()
+        existing_names.add(name.casefold())
+
+        if matched_client is not None:
+            db.add(SiteClient(site_id=site.id, client_id=matched_client.id))
+
+        created += 1
+
+    return {
+        "created": created,
+        "skipped_template": skipped_template,
+        "pre_existing": pre_existing,
+        "types_created": types_created,
+        "unmatched_clients": unmatched_clients,
+        "unmatched_partners": unmatched_partners,
+        "gps_parsed": gps_parsed,
+        "gps_unparsed": gps_unparsed,
+        "skipped_invalid": skipped_invalid,
+    }

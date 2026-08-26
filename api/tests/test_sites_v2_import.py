@@ -109,6 +109,20 @@ def test_insert_rows_empty_file(tmp_path):
     assert list(insert_rows(str(dump), "sites")) == []
 
 
+def test_insert_rows_target_after_large_volume_of_other_tables(tmp_path):
+    """Adversarial shape matching the real dump: the target table's rows
+    appear only after a large volume of unrelated tables' INSERT
+    statements. Proves unrelated lines are never buffered (the fix for
+    the O(n^2) bug) while correctness of what gets yielded is preserved."""
+    dump = tmp_path / "dump.sql"
+    filler = "INSERT INTO other_table (id) VALUES (1);\n" * 5000
+    dump.write_text(
+        filler + "INSERT INTO sites (id, name) VALUES (1, 'Alpha');\n"
+    )
+    rows = list(insert_rows(str(dump), "sites"))
+    assert rows == [[1, "Alpha"]]
+
+
 # ── slugify ─────────────────────────────────────────────────────────
 
 def test_slugify_variants():
@@ -138,6 +152,14 @@ def test_split_address_none_or_blank():
     assert split_address(None) == (None, None, None)
     assert split_address("") == (None, None, None)
     assert split_address("   ") == (None, None, None)
+
+
+def test_split_address_blank_second_line_becomes_none():
+    address = "123 Main St\n \nSpringfield, IL"
+    line1, line2, note = split_address(address)
+    assert line1 == "123 Main St"
+    assert line2 is None
+    assert note == "V2 address (full): 123 Main St /  / Springfield, IL"
 
 
 # ── parse_gps ───────────────────────────────────────────────────────
