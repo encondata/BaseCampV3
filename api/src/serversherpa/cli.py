@@ -98,6 +98,35 @@ def import_v2_assets(
 
 
 @app.command()
+def import_v2_sites(
+    dump: str = typer.Option(..., help="Path to the V2 pg_dump .sql file"),
+    limit: int = typer.Option(100, help="Max sites to import this run"),
+    dry_run: bool = typer.Option(False, help="Parse and report; write nothing"),
+) -> None:
+    """Seed real sites (+ resolved SiteType/client/partner links) from a
+    legacy BaseCamp V2 dump. Additive: re-runs skip already-imported
+    source_refs/names."""
+
+    async def _run() -> None:
+        from serversherpa.services.audit import audit
+        from serversherpa.sites.v2_import import import_sites
+
+        async with get_sessionmaker()() as db:
+            stats = await import_sites(db, dump, limit)
+            if dry_run:
+                await db.rollback()
+                typer.secho(f"[dry-run] would import: {stats}", fg="yellow")
+            else:
+                audit(db, actor_id=None, entity_type="site", entity_id=None,
+                      action="import", changes=stats)
+                await db.commit()
+                typer.secho(f"Imported: {stats}", fg="green")
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def set_password(
     email: str = typer.Option(..., help="Login email of the existing account"),
     password: str = typer.Option(
