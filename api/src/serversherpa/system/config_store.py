@@ -1,7 +1,7 @@
 """system_config readers. Defaults mirror migration 0024's seeds so a
 missing row never breaks a caller; the DB row's keys win on conflict."""
 
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 DEFAULTS: dict[str, dict] = {
@@ -11,6 +11,9 @@ DEFAULTS: dict[str, dict] = {
         "local_max_age_days": 14,
         "remote_buffer_rows": 10000,
         "min_level": "INFO",
+        "transport": "loki",
+        "loki": {"url": "", "username": "", "password": "",
+                 "tenant_id": ""},
         "syslog": {"host": "", "port": 514, "protocol": "udp"},
     },
 }
