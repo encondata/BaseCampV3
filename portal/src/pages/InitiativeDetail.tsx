@@ -613,26 +613,28 @@ export default function InitiativeDetail() {
         <div className="init-panel"
              style={!isMove ? { gridColumn: '1 / -1' } : undefined}>
           <p className="eyebrow-sm">Overview</p>
-          <dl className="kv">
-            {kv('Type', initiative.type_label)}
-            {kv('Sub-type', initiative.sub_type_label)}
-            {kv('Status', initiative.status_label)}
-            {kv('Client', initiative.client_name)}
-            {!isMove && kv('Site', initiative.site_name)}
-            {kv('Location', initiative.location)}
-            {kv('Scheduled', [initiativeCellText(initiative, 'start'),
-                              initiativeCellText(initiative, 'end')]
-              .filter((s) => s !== '—').join(' → ') || '—')}
-            {kv('Actual', [dateOnly(initiative.real_start_at),
-                           dateOnly(initiative.real_end_at)]
-              .filter((s): s is string => !!s).join(' → ') || '—')}
-            {initiative.initiative_type === 'project'
-              && kv('Sky Command ID', initiative.sky_command_project_id)}
-            {kv('Created', initiativeCellText(initiative, 'created'))}
-          </dl>
-          {isMove && assets.length > 0 && (
-            <AssetStatusDonut rows={assets} statuses={moveStatuses} />
-          )}
+          <div className="idet-overview-row">
+            <dl className="kv">
+              {kv('Type', initiative.type_label)}
+              {kv('Sub-type', initiative.sub_type_label)}
+              {kv('Status', initiative.status_label)}
+              {kv('Client', initiative.client_name)}
+              {!isMove && kv('Site', initiative.site_name)}
+              {kv('Location', initiative.location)}
+              {kv('Scheduled', [initiativeCellText(initiative, 'start'),
+                                initiativeCellText(initiative, 'end')]
+                .filter((s) => s !== '—').join(' → ') || '—')}
+              {kv('Actual', [dateOnly(initiative.real_start_at),
+                             dateOnly(initiative.real_end_at)]
+                .filter((s): s is string => !!s).join(' → ') || '—')}
+              {initiative.initiative_type === 'project'
+                && kv('Sky Command ID', initiative.sky_command_project_id)}
+              {kv('Created', initiativeCellText(initiative, 'created'))}
+            </dl>
+            {isMove && assets.length > 0 && (
+              <AssetStatusDonut rows={assets} statuses={moveStatuses} />
+            )}
+          </div>
         </div>
 
         {isMove && (

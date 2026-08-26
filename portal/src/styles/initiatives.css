@@ -216,21 +216,41 @@
   transition: width 0.2s ease;
 }
 
+/* ── Overview card — dl + donut side-by-side row (Task: donut-task-2) ──
+   Always wraps the Overview card's <dl> (plain markup otherwise — the
+   wrapper is a no-op div when nothing else is inside it, so initiatives
+   without the donut render exactly as before). Only when the asset status
+   donut is also present (`:has()`, already used elsewhere in this file —
+   see `.init-check:has(...)` above) does the row switch to a flex layout:
+   dl keeps its intrinsic width on the left, the donut+legend block fills
+   the leftover width on the right, vertically centered against the row,
+   wrapping back below the dl on narrow viewports instead of squishing.
+   Scoped to `.kv` as a direct child so it doesn't affect `.kv`'s many
+   other uses across the app (Users, Sites, client/partner detail pages,
+   the Move card just below this one, etc. — `.kv` itself is defined in
+   directory.css and is shared, not page-specific). */
+.idet-overview-row:has(.idet-donut-row) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+.idet-overview-row:has(.idet-donut-row) > .kv {
+  flex: 0 0 auto;
+}
+
 /* ── Overview card — move asset status donut (Task: donut-task-1) ──────
-   Fills the Overview card's leftover whitespace on Move initiatives with
-   assets: a small SVG donut + text legend below the existing <dl>. Hover
-   tooltip is a real HTML element positioned off the hovered segment/legend
-   row's bounding rect (same technique as .rack-tooltip below), anchored to
-   this row via `position: relative`. */
+   Small SVG donut + text legend, placed by `.idet-overview-row` above.
+   Hover tooltip is a real HTML element positioned off the hovered
+   segment/legend row's bounding rect (same technique as .rack-tooltip
+   below), anchored to this row via `position: relative`. */
 .idet-donut-row {
   position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 18px;
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--paper-line);
 }
 .idet-donut {
   width: 120px;
