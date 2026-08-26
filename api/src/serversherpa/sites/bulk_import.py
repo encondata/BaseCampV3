@@ -125,11 +125,10 @@ def parse_upload(filename: str, content: bytes) -> list[tuple[int, dict]]:
         ws = wb["Sites"] if "Sites" in wb.sheetnames else wb.worksheets[0]
         lines = ws.iter_rows(values_only=True)
         header = [_cell(h) for h in (next(lines, None) or tuple())]
-        header = [h for h in header if h]
-        if not header:
+        if not any(header):
             raise BulkImportError("invalid_xlsx")
-        _check_columns(header)
-        rows = [dict(zip(header, line)) for line in lines]
+        _check_columns([h for h in header if h])
+        rows = [{h: v for h, v in zip(header, line) if h} for line in lines]
         return _numbered(rows, first_row=2)
     raise BulkImportError("unsupported_file")
 

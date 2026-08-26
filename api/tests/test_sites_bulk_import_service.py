@@ -46,6 +46,22 @@ def test_csv_bom_and_numeric_cells():
     assert rows[0][1]["postal_code"] == "89501"
 
 
+def test_xlsx_blank_header_cell_does_not_shift_columns():
+    import io
+
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sites"
+    ws.append(["name", "", "city"])
+    ws.append(["Blank DC", "spacer", "Reno"])
+    buf = io.BytesIO()
+    wb.save(buf)
+    [(_, row)] = bi.parse_upload("b.xlsx", buf.getvalue())
+    assert row["name"] == "Blank DC"
+    assert row["city"] == "Reno"          # not shifted into the spacer
+
+
 def test_unknown_column_rejected():
     with pytest.raises(bi.BulkImportError) as exc:
         bi.number_json_rows([{"name": "A", "citty": "Reno"}])
