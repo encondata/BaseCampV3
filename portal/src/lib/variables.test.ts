@@ -15,8 +15,8 @@ const value: StatusValue = {
   sort_order: 2, is_active: true, usage_count: 3, progress_weight: null,
 };
 
-const moveStatus: StatusValue = {
-  record_type: 'move_asset_status', key: 'racked', label: 'Racked',
+const assetStatus: StatusValue = {
+  record_type: 'asset', key: 'racked', label: 'Racked',
   description: '', color: '#273FF5',
   sort_order: 3, is_active: true, usage_count: 12, progress_weight: 15,
 };
@@ -90,30 +90,30 @@ describe('statusUpdatePayload', () => {
   });
 
   it('includes progress_weight when it changed', () => {
-    const form = { ...statusFormFromValue(moveStatus), progress_weight: '92' };
-    expect(statusUpdatePayload(form, moveStatus)).toEqual({ progress_weight: 92 });
+    const form = { ...statusFormFromValue(assetStatus), progress_weight: '92' };
+    expect(statusUpdatePayload(form, assetStatus)).toEqual({ progress_weight: 92 });
   });
 
   it('clears progress_weight to null when the field is emptied', () => {
-    const form = { ...statusFormFromValue(moveStatus), progress_weight: '' };
-    expect(statusUpdatePayload(form, moveStatus)).toEqual({ progress_weight: null });
+    const form = { ...statusFormFromValue(assetStatus), progress_weight: '' };
+    expect(statusUpdatePayload(form, assetStatus)).toEqual({ progress_weight: null });
   });
 
   it('omits progress_weight when unchanged', () => {
-    expect(statusUpdatePayload(statusFormFromValue(moveStatus), moveStatus)).toEqual({});
+    expect(statusUpdatePayload(statusFormFromValue(assetStatus), assetStatus)).toEqual({});
   });
 
   it('omits progress_weight when the field holds an invalid value', () => {
     // The submit handler is responsible for blocking save on an invalid
     // value before this ever runs; the payload builder itself just leaves
     // it out rather than sending garbage.
-    const form = { ...statusFormFromValue(moveStatus), progress_weight: '101' };
-    expect(statusUpdatePayload(form, moveStatus)).toEqual({});
+    const form = { ...statusFormFromValue(assetStatus), progress_weight: '101' };
+    expect(statusUpdatePayload(form, assetStatus)).toEqual({});
   });
 
-  it('never touches progress_weight for a non-move_asset_status row', () => {
+  it('never touches progress_weight for a row whose editor hides the field', () => {
     // `value` is a `site` row; its form seeds progress_weight to '' (the
-    // field isn't rendered for site/worker rows, so the form state stays
+    // field only renders for asset rows, so the form state stays
     // whatever statusFormFromValue seeded). A stale/irrelevant value here
     // must never leak into the patch for an unrelated field edit.
     const form = { ...statusFormFromValue(value), label: 'Scheduled' };

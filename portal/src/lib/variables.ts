@@ -86,7 +86,7 @@ export interface StatusForm {
   color: string;
   sort_order: string;   // form state is a string; coerced on the way out
   is_active: boolean;
-  // move_asset_status only (editor gates on record_type); form state is a
+  // asset only (editor gates on record_type); form state is a
   // string, and unlike sort_order an EMPTY string is a *valid* input here
   // (it means "null" — the status is excluded from progress). See
   // parseProgressWeight.
@@ -173,7 +173,7 @@ export function statusCreatePayload(form: StatusForm): Record<string, unknown> {
     color: form.color,
     sort_order: Number(form.sort_order),
     // progress_weight is never editable in create mode (the field only
-    // renders when editing an existing move_asset_status row, and this
+    // renders when editing an existing asset row, and this
     // dropdown never creates one), so it's intentionally omitted here.
   };
 }
@@ -193,7 +193,7 @@ export function statusUpdatePayload(
     out.sort_order = Number(form.sort_order);
   }
   if (form.is_active !== original.is_active) out.is_active = form.is_active;
-  // Only move_asset_status rows render this field; for any other record
+  // Only asset rows render this field; for any other record
   // type form.progress_weight stays at whatever statusFormFromValue seeded
   // it to, so it diffs to "unchanged" and never affects unrelated saves.
   const weight = parseProgressWeight(form.progress_weight);

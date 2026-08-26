@@ -95,7 +95,7 @@ export default function StatusEditModal({ value, canChange, onClose, onSaved }: 
       setError('Sort order must be zero or a positive whole number.');
       return;
     }
-    if (original?.record_type === 'move_asset_status'
+    if (original?.record_type === 'asset'
         && parseProgressWeight(form.progress_weight) === undefined) {
       setError('Progress weight must be between 0 and 100, or left blank.');
       return;
@@ -210,7 +210,7 @@ export default function StatusEditModal({ value, canChange, onClose, onSaved }: 
                        onChange={(e) => setField('sort_order', e.target.value)} />
               </div>
 
-              {original?.record_type === 'move_asset_status' && (
+              {original?.record_type === 'asset' && (
                 <div>
                   <label>Progress weight</label>
                   <input type="number" min="0" max="100" step="1"
