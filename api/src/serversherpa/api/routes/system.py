@@ -4,10 +4,12 @@ audited clear. Config endpoints arrive with Plan 2."""
 
 import asyncio
 import contextlib
+import logging
+import socket as _socket
 from datetime import UTC, datetime
 
 from fastapi import (
-    APIRouter, HTTPException, WebSocket, WebSocketDisconnect,
+    APIRouter, Body, HTTPException, WebSocket, WebSocketDisconnect,
 )
 from sqlalchemy import delete, func, select
 
@@ -18,8 +20,17 @@ from serversherpa.api.schemas import (
     LogEntryOut, LogPageOut, SystemProcessOut,
 )
 from serversherpa.db.engine import get_sessionmaker
-from serversherpa.db.models import AuthSession, LogEntry, SystemProcess
+from serversherpa.db.models import (
+    AuthSession, LogEntry, SystemConfig, SystemProcess,
+)
 from serversherpa.services.audit import audit
+from serversherpa.system.config_store import read_section
+from serversherpa.system.forwarders import (
+    send_loki, send_syslog, transport_configured,
+)
+from serversherpa.system.logging_config import (
+    apply_password_rule, mask_logging, validate_logging,
+)
 from serversherpa.system.registry import derive_status
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -202,3 +213,70 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
     finally:
         with contextlib.suppress(Exception):
             await ws.close()
+
+
+# ── logging config (Plan 2) ────────────────────────────────────────
+
+_config_logger = logging.getLogger("serversherpa.system.config")
+
+
+@router.get("/config/logging")
+async def get_logging_config(
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> dict:
+    return mask_logging(await read_section(db, "logging"))
+
+
+@router.put("/config/logging")
+async def put_logging_config(
+    db: DbSession,
+    body: dict = Body(...),
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> dict:
+    stored = await read_section(db, "logging")
+    data = apply_password_rule(body, stored)
+    errors = validate_logging(data)
+    if errors:
+        raise _err(422, "invalid_logging_config", fields=errors)
+
+    row = await db.get(SystemConfig, "logging")
+    if row is None:
+        row = SystemConfig(section="logging")
+        db.add(row)
+    row.data = data
+    row.updated_at = datetime.now(UTC)
+    row.updated_by = actor.person.id
+    before, after = mask_logging(stored), mask_logging(data)
+    changes = {key: {"from": before.get(key), "to": after.get(key)}
+               for key in after if before.get(key) != after.get(key)}
+    audit(db, actor_id=actor.person.id, entity_type="system",
+          entity_id="logging", action="logging_config_update",
+          changes=changes)
+    await db.commit()
+    return mask_logging(data)
+
+
+@router.post("/config/logging/test")
+async def test_logging_config(
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> dict:
+    _config_logger.warning("Test event from System Config")
+    cfg = await read_section(db, "logging")
+    forwarded, error = False, None
+    if transport_configured(cfg):
+        row = {"process": "api", "level": "WARNING", "levelno": 30,
+               "logger": "serversherpa.system.config",
+               "message": "Test event from System Config", "extra": {},
+               "at": datetime.now(UTC)}
+        try:
+            if cfg.get("transport", "loki") == "loki":
+                await send_loki(cfg["loki"], [row], _socket.gethostname())
+            else:
+                await send_syslog(cfg["syslog"], [row],
+                                  _socket.gethostname())
+            forwarded = True
+        except Exception as exc:
+            error = str(exc)
+    return {"logged": True, "forwarded": forwarded, "error": error}
