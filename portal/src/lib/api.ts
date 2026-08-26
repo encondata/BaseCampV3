@@ -1598,6 +1598,103 @@ export async function removeInitiativeAsset(assocId: string): Promise<void> {
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+// ── move-assets bulk import jobs ─────────────────────────────────────
+// The API queues the job; a separate worker process runs it. The portal
+// polls getImportJob until the job reaches a terminal status.
+
+export type ImportJobPhase = 'validate' | 'commit';
+export type ImportJobStatus =
+  'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export interface ImportRowDetail {
+  row: number;
+  serial_number: string;
+  status: 'created' | 'updated' | 'review' | 'error';
+  message: string;
+  asset_id?: string | null;
+  asset_created?: boolean;
+  serial_generated?: boolean;
+  match_method?: string;
+  make_model_final?: string;
+}
+
+export interface ImportJobResults {
+  summary: Record<string, number>;
+  details: ImportRowDetail[];
+}
+
+export interface ImportJobOut {
+  id: string;
+  initiative_id: string;
+  kind: string;
+  filename: string;
+  options: { make_model_mode?: string; generate_serials?: boolean };
+  phase: ImportJobPhase;
+  status: ImportJobStatus;
+  total_rows: number;
+  processed_rows: number;
+  created_count: number;
+  updated_count: number;
+  error_count: number;
+  results: ImportJobResults | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export async function createMoveAssetImportJob(
+  initiativeId: string, file: File,
+  opts: { makeModelMode: string; generateSerials: boolean },
+): Promise<ImportJobOut> {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('make_model_mode', opts.makeModelMode);
+  form.append('generate_serials', String(opts.generateSerials));
+  const resp = await apiFetch(
+    `/initiatives/${initiativeId}/assets/import-jobs`,
+    { method: 'POST', body: form });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getImportJob(jobId: string): Promise<ImportJobOut> {
+  const resp = await apiFetch(`/initiatives/assets/import-jobs/${jobId}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function commitImportJob(jobId: string): Promise<ImportJobOut> {
+  const resp = await apiFetch(
+    `/initiatives/assets/import-jobs/${jobId}/commit`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function cancelImportJob(jobId: string): Promise<ImportJobOut> {
+  const resp = await apiFetch(
+    `/initiatives/assets/import-jobs/${jobId}/cancel`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function downloadMoveAssetTemplate(
+  format: 'csv' | 'xlsx',
+): Promise<void> {
+  const resp = await apiFetch(
+    `/initiatives/assets/import-template?format=${format}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `move-assets-template.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export async function addInitiativeLink(
   id: string, body: Record<string, unknown>,
 ): Promise<InitiativeDetail> {
