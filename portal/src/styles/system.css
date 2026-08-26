@@ -121,15 +121,23 @@
 .sysconf-hint { color: var(--text-mute); font-size: 12px; }
 .sysconf-card .sysconf-row .pf-error { margin-top: 0; }
 /* text-like fields only — radio/checkbox inputs belong to the imp-radio
-   cards and must keep their natural size */
-.sysconf-tab-body input:not([type="radio"]):not([type="checkbox"]),
-.sysconf-tab-body select { height: 34px; padding: 0 10px;
+   cards and must keep their natural size. Scoped to .sysconf-card (the
+   Logging tab's group cards) so it does NOT reach the ENV tab's toolbar
+   search box or list inputs — those have their own .dir-search / .envtab
+   styling, and the broad rule was clobbering the search box's icon
+   padding. */
+.sysconf-card input:not([type="radio"]):not([type="checkbox"]),
+.sysconf-card select { height: 34px; padding: 0 10px;
   border-radius: 9px; border: 1px solid var(--paper-line);
   background: var(--surface, #fff); font-size: 13px; width: 100%;
   color: var(--text-dark); }
-.sysconf-tab-body input:focus-visible, .sysconf-tab-body select:focus-visible {
+.sysconf-card input:focus-visible, .sysconf-card select:focus-visible {
   outline: 2px solid var(--amber); outline-offset: 1px; border-color: var(--amber);
 }
+/* ENV tab read-only cells (shown until "Edit table" is toggled on) */
+.envtab-readonly { font-size: 13px; color: var(--text-dark);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.envtab-readonly.envtab-muted { color: var(--text-mute); }
 /* number inputs read as small numeric fields, not full-bleed text inputs */
 .sysconf-row input[type="number"] { max-width: 140px; }
 

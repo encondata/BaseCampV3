@@ -13,6 +13,7 @@ import {
 import {
   changedDescriptions, changedValues, describeEntry, filterEntries,
 } from '../../lib/envConfig';
+import { GodEditToggle } from '../../lib/godEdit';
 import { ColumnsButton, visibleColumnsFor, type ColumnDef } from '../../lib/listTools';
 import '../../styles/directory.css';
 
@@ -34,6 +35,9 @@ export default function EnvTab() {
   const [error, setError] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
   const [restartBusy, setRestartBusy] = useState(false);
+  // The list is read-only until "Edit table" is toggled on (matches the
+  // other directory lists). Leaving edit mode discards unsaved edits.
+  const [editing, setEditing] = useState(false);
   // Visible-column set. Persistence is optional per spec; a plain
   // useState is enough here since (unlike Sites) there's no sort/filter
   // state to persist alongside it.
@@ -59,6 +63,17 @@ export default function EnvTab() {
   const setDescEdit = useCallback((key: string, value: string) => {
     setDescEdits((prev) => ({ ...prev, [key]: value }));
     setSavedKeys(null);
+  }, []);
+
+  const toggleEditing = useCallback(() => {
+    setEditing((on) => {
+      if (on) {                     // leaving edit mode: discard pending
+        setEdits({});
+        setDescEdits({});
+        setSavedKeys(null);
+      }
+      return !on;
+    });
   }, []);
 
   // pending = changedValues(entries, edits) + changedDescriptions(entries,
@@ -125,6 +140,18 @@ export default function EnvTab() {
       case 'key':
         return <span className="envtab-key">{entry.key}</span>;
       case 'value': {
+        if (!editing) {
+          const shown = entry.secret
+            ? (entry.set ? '••••••••' : '—')
+            : (entry.value || '—');
+          const muted = entry.secret || !entry.value;
+          return (
+            <span className={`envtab-readonly${muted ? ' envtab-muted' : ''}`}
+                  title={entry.secret ? undefined : (entry.value || '')}>
+              {shown}
+            </span>
+          );
+        }
         const { placeholder } = describeEntry(entry);
         const value = edits[entry.key] ?? (entry.secret ? '' : (entry.value ?? ''));
         return (
@@ -148,6 +175,14 @@ export default function EnvTab() {
         ) : null;
       }
       case 'description': {
+        if (!editing) {
+          return (
+            <span className={`envtab-readonly${entry.description ? '' : ' envtab-muted'}`}
+                  title={entry.description}>
+              {entry.description || '—'}
+            </span>
+          );
+        }
         const desc = descEdits[entry.key] ?? entry.description;
         return (
           <input
@@ -184,7 +219,8 @@ export default function EnvTab() {
         ),
       });
     }
-    const changed = entry.key in pendingValues || entry.key in pendingDescriptions;
+    const changed = editing
+      && (entry.key in pendingValues || entry.key in pendingDescriptions);
     rows.push({
       node: (
         <div key={entry.key} className={`list-row envtab-grid${changed ? ' changed' : ''}`} style={grid}>
@@ -217,6 +253,7 @@ export default function EnvTab() {
           </div>
           <span className="result-count">{visibleEntries.length} of {entries.length} shown</span>
           <ColumnsButton columns={COLUMNS} visible={visible} onChange={setVisible} />
+          <GodEditToggle editing={editing} onToggle={toggleEditing} visible />
         </div>
       </div>
 
@@ -235,10 +272,12 @@ export default function EnvTab() {
       </div>
 
       <div className="sysconf-actionbar">
-        <button type="button" className="btn-solid" disabled={busy || pendingCount === 0}
-                onClick={() => void save()}>
-          {busy ? 'Saving…' : `Save ${pendingCount} change${pendingCount === 1 ? '' : 's'}`}
-        </button>
+        {editing && (
+          <button type="button" className="btn-solid" disabled={busy || pendingCount === 0}
+                  onClick={() => void save()}>
+            {busy ? 'Saving…' : `Save ${pendingCount} change${pendingCount === 1 ? '' : 's'}`}
+          </button>
+        )}
         <button type="button" className="mini-btn danger" disabled={restartBusy}
                 onClick={() => void doRestart()}>
           {restartBusy ? 'Restarting…' : 'Restart processes'}

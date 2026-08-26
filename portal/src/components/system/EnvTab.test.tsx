@@ -41,9 +41,28 @@ afterEach(cleanup);
 
 const { default: EnvTab } = await import('./EnvTab');
 
-it('renders the set/unset chip in its own Status column, not inside Value', async () => {
+/** The list is read-only until "Edit table" is toggled on. */
+async function enterEditMode(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: /Edit table/ }));
+}
+
+it('is read-only until Edit table is toggled on', async () => {
+  const user = userEvent.setup();
   render(<EnvTab />);
-  const row = await screen.findByText('SS_JWT_SECRET');
+  await screen.findByText('SS_ENV');
+  // no value/description inputs before entering edit mode
+  expect(screen.queryByLabelText('SS_ENV')).toBeNull();
+  expect(screen.queryByDisplayValue('Deployment environment name')).toBeNull();
+  await enterEditMode(user);
+  expect(screen.getByLabelText('SS_ENV')).not.toBeNull();
+});
+
+it('renders the set/unset chip in its own Status column, not inside Value', async () => {
+  const user = userEvent.setup();
+  render(<EnvTab />);
+  await screen.findByText('SS_JWT_SECRET');
+  await enterEditMode(user);
+  const row = screen.getByText('SS_JWT_SECRET');
   const rowEl = row.closest('.list-row') as HTMLElement;
   const valueCell = within(rowEl).getByLabelText('SS_JWT_SECRET').closest('.cell') as HTMLElement;
   expect(within(valueCell).queryByText('set')).toBeNull();
@@ -51,8 +70,10 @@ it('renders the set/unset chip in its own Status column, not inside Value', asyn
 });
 
 it('renders an editable Description input seeded from entry.description', async () => {
+  const user = userEvent.setup();
   render(<EnvTab />);
   await screen.findByText('SS_ENV');
+  await enterEditMode(user);
   const descInput = screen.getByDisplayValue('Deployment environment name');
   expect(descInput.tagName).toBe('INPUT');
 });
@@ -61,6 +82,7 @@ it('counts a changed description toward pending and sends it on save', async () 
   const user = userEvent.setup();
   render(<EnvTab />);
   await screen.findByText('SS_ENV');
+  await enterEditMode(user);
 
   const descInput = screen.getByDisplayValue('Deployment environment name');
   await user.clear(descInput);
@@ -80,6 +102,7 @@ it('combines value and description edits into one pending count', async () => {
   const user = userEvent.setup();
   render(<EnvTab />);
   await screen.findByText('SS_ENV');
+  await enterEditMode(user);
 
   const valueInput = screen.getByLabelText('SS_ENV');
   await user.clear(valueInput);
