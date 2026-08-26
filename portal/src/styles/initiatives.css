@@ -405,13 +405,34 @@
 }
 
 /* ── move assets — center-aligned columns (status/verify-style fields) ──
- * .col-head is blockified to flex by the grid + stretches to fill its
- * column (column-menu.css), so justify-content centers the label+menu
- * cluster; .cell is a plain block grid item, so text-align centers its
- * inline content — including the GodCell edit-mode <select>, which stays
- * inline-level without needing any change in lib/godEdit.tsx. */
+ * .col-head is inline-flex directly (column-menu.css); .list-head is a
+ * grid whose default justify-items (stretch) still fills it to the full
+ * column width, so justify-content centers the label+menu cluster inside
+ * it. .cell is a plain block grid item, so text-align centers its inline
+ * content in display mode (chips, plain .cell-top text).
+ *
+ * In edit mode, GodCell's <input>/<select> are NOT inline-level — god-edit
+ * .god-cell/.god-cell input/.god-cell select are all `display: block;
+ * width: 100%`, so text-align on an ancestor has no effect on them (it
+ * only centers text *inside* a box, and these boxes already span the full
+ * cell). The override below shrinks just those two control types back to
+ * their content width and centers the box itself, scoped to this page's
+ * centered cells only — lib/godEdit.tsx and god-edit.css are untouched, so
+ * every other page's god-cells keep the normal edge-to-edge layout. The
+ * six centered columns with a god-field are source_ru/destination_ru
+ * (kind 'number' → <input>), source_position/destination_position (kind
+ * 'text' → <input>), and source_verified/destination_verified (kind
+ * 'bool' → <select>); `status` has no god-field and always renders its
+ * chip, so it never reaches GodCell. */
 .list-head .col-head.idet-col-center { justify-content: center; }
 .cell.idet-col-center { text-align: center; }
+.cell.idet-col-center .god-cell input,
+.cell.idet-col-center .god-cell select {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  margin: 0 auto;
+}
 
 /* ── move assets — verified-Yes green check (display mode only; CSV export
  *  and moveAssetCellText stay text-only) ── */
