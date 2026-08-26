@@ -247,8 +247,8 @@
   gap: 20px;
 }
 .idet-donut {
-  width: 180px;
-  height: 180px;
+  width: 196px;
+  height: 196px;
   flex: none;
 }
 .idet-donut-seg {
@@ -258,31 +258,43 @@
 }
 .idet-donut-total {
   font-family: var(--font-display);
-  font-size: 34px;
+  font-size: 37px;
   font-weight: 600;
   fill: var(--text-dark);
 }
 .idet-donut-caption {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 14px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   fill: var(--text-mute);
 }
+/* Two-column grid (Task: donut-task-4) — was a single column of full-width
+   rows; the grid keeps each row's own swatch/label/count layout intact and
+   just changes how rows flow, freeing vertical space under the donut. An
+   odd entry count leaves the last cell of the final row empty for free
+   (default grid auto-placement — no filler element needed). Drops back to
+   one column at the same 768px breakpoint `.idet-grid-3col` already
+   collapses at, above. */
 .idet-donut-legend {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 180px;
-  max-width: 260px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 16px;
+  row-gap: 6px;
+  min-width: 220px;
+  max-width: 320px;
+}
+@media (max-width: 768px) {
+  .idet-donut-legend { grid-template-columns: 1fr; }
 }
 .idet-donut-legend-row {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   transition: opacity 0.15s ease;
 }
 .idet-donut-swatch {

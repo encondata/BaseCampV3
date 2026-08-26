@@ -1299,10 +1299,10 @@ function AssetEditDialog({ asset, moveStatuses, onClose, onSaved }: {
       hovered element's bounding rect within a `position: relative`
       container, not a CSS-only or native-title-only tooltip (though every
       segment also carries an SVG <title> as a non-JS fallback). ────────── */
-const DONUT_CX = 90;
-const DONUT_CY = 90;
-const DONUT_OUTER_R = 84;
-const DONUT_RING_THICKNESS = 26;
+const DONUT_CX = 98;
+const DONUT_CY = 98;
+const DONUT_OUTER_R = 92;
+const DONUT_RING_THICKNESS = 28;
 const DONUT_INNER_R = DONUT_OUTER_R - DONUT_RING_THICKNESS;
 
 function polarToPoint(angleDeg: number, r: number): { x: number; y: number } {
@@ -1394,7 +1394,7 @@ function AssetStatusDonut({ rows, statuses }: {
 
   return (
     <div className="idet-donut-panel" ref={containerRef} onMouseLeave={handleLeave}>
-      <svg className="idet-donut" viewBox="0 0 180 180" role="img"
+      <svg className="idet-donut" viewBox="0 0 196 196" role="img"
            aria-label={`Asset status breakdown — ${total} assets`}>
         {segments.map((seg, i) => (
           <path key={`${seg.key}-${i}`} d={seg.d} fill={seg.color}
@@ -1404,11 +1404,11 @@ function AssetStatusDonut({ rows, statuses }: {
             <title>{donutTooltipText(entryByKey.get(seg.key)!)}</title>
           </path>
         ))}
-        <text x={DONUT_CX} y={DONUT_CY - 6} textAnchor="middle" dominantBaseline="middle"
+        <text x={DONUT_CX} y={DONUT_CY - 7} textAnchor="middle" dominantBaseline="middle"
               className="idet-donut-total">
           {total}
         </text>
-        <text x={DONUT_CX} y={DONUT_CY + 21} textAnchor="middle" dominantBaseline="middle"
+        <text x={DONUT_CX} y={DONUT_CY + 23} textAnchor="middle" dominantBaseline="middle"
               className="idet-donut-caption">
           assets
         </text>
@@ -1420,7 +1420,7 @@ function AssetStatusDonut({ rows, statuses }: {
               onMouseEnter={(e) => handleHover(entry.key, e)}>
             <span className="idet-donut-swatch" style={{ background: entry.color }}
                   aria-hidden="true" />
-            <span className="idet-donut-legend-label">{entry.label}</span>
+            <span className="idet-donut-legend-label" title={entry.label}>{entry.label}</span>
             <span className="idet-donut-legend-count">{entry.count}</span>
           </li>
         ))}
