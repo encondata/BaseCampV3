@@ -11,7 +11,7 @@
 
 import { type ReactNode } from 'react';
 
-export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean }
+export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number }
 export interface NavSection { label: string; items: NavItem[] }
 
 export const NAV_SECTIONS: NavSection[] = [
@@ -211,6 +211,20 @@ export const NAV_SECTIONS: NavSection[] = [
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
                strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+          </svg>
+        ),
+      },
+      {
+        to: '/system/processes',
+        label: 'Processes',
+        resource: 'dashboard',
+        minRank: 80,
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="4" y="4" width="16" height="16" rx="2" />
+            <path d="M9 9h6v6H9z" />
+            <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3" />
           </svg>
         ),
       },

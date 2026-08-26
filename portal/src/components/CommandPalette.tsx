@@ -38,7 +38,7 @@ const ACTION_ICON = (
 
 export default function CommandPalette() {
   const { paletteOpen, setPaletteOpen } = useTopbar();
-  const { can, preferences, updatePreferences, godMode, enableGodMode } = useAuth();
+  const { can, preferences, updatePreferences, godMode, enableGodMode, maxRank } = useAuth();
   const navigate = useNavigate();
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
@@ -69,7 +69,7 @@ export default function CommandPalette() {
     });
     const navGated = (label: string, to: string, resource: string,
                       godOnly = false): Command[] =>
-      isNavItemVisible({ resource, godOnly }, can, godMode) ? [nav(label, to)] : [];
+      isNavItemVisible({ resource, godOnly }, can, godMode, maxRank) ? [nav(label, to)] : [];
     const cmds: Command[] = [
       ...navGated('Dashboard', '/', 'dashboard'),
       ...navGated('Sites', '/sites', 'sites'),
@@ -120,7 +120,7 @@ export default function CommandPalette() {
       });
     }
     return cmds;
-  }, [users, navigate, preferences, updatePreferences, can, godMode]);
+  }, [users, navigate, preferences, updatePreferences, can, godMode, maxRank]);
 
   const results = useMemo(() => {
     const needle = q.trim().toLowerCase();

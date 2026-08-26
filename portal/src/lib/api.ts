@@ -1825,3 +1825,78 @@ export async function reconcilePendingDelete(
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
+
+// ── system: process registry + logs ─────────────────────────────────
+
+export interface SystemProcessOut {
+  name: string;
+  kind: 'service' | 'worker' | 'probe';
+  status: 'running' | 'stopped' | 'failed';
+  pid: number | null;
+  hostname: string;
+  started_at: string | null;
+  heartbeat_at: string | null;
+  stopped_at: string | null;
+  uptime_seconds: number | null;
+  meta: Record<string, unknown>;
+}
+
+export async function listSystemProcesses(): Promise<SystemProcessOut[]> {
+  const resp = await apiFetch('/system/processes');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export interface SystemLogEntry {
+  id: number;
+  level: string;
+  levelno: number;
+  logger: string;
+  message: string;
+  at: string;
+}
+
+export interface SystemLogPage {
+  entries: SystemLogEntry[];
+  has_more: boolean;
+}
+
+export async function getProcessLogs(
+  name: string,
+  opts: { minLevel?: string; q?: string; beforeId?: number; limit?: number } = {},
+): Promise<SystemLogPage> {
+  const params = new URLSearchParams();
+  if (opts.minLevel) params.set('min_level', opts.minLevel);
+  if (opts.q) params.set('q', opts.q);
+  if (opts.beforeId !== undefined) params.set('before_id', String(opts.beforeId));
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const suffix = params.size ? `?${params}` : '';
+  const resp = await apiFetch(`/system/processes/${name}/logs${suffix}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function clearProcessLogs(
+  name: string,
+): Promise<{ deleted: number }> {
+  const resp = await apiFetch(`/system/processes/${name}/logs`,
+    { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** The live-tail WebSocket URL. Browsers cannot set Authorization on
+ *  WebSockets, so the current access token rides a query param. */
+export function logStreamUrl(
+  name: string, token: string,
+  opts: { minLevel?: string; q?: string } = {},
+): string {
+  const params = new URLSearchParams({ token });
+  if (opts.minLevel) params.set('min_level', opts.minLevel);
+  if (opts.q) params.set('q', opts.q);
+  return `${apiUrl().replace(/^http/, 'ws')}/system/processes/${name}/logs/stream?${params}`;
+}
+
+export function getAccessTokenForStream(): string | null {
+  return accessToken;
+}

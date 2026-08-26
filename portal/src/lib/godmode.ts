@@ -5,13 +5,16 @@
 export interface GodGatedItem {
   resource: string;
   godOnly?: boolean;
+  minRank?: number;
 }
 
 export function isNavItemVisible(
   item: GodGatedItem,
   can: (resource: string, action: 'view') => boolean,
   godMode: boolean,
+  maxRank: number,
 ): boolean {
+  if (item.minRank !== undefined && maxRank < item.minRank) return false;
   if (!can(item.resource, 'view')) return false;
   return !item.godOnly || godMode;
 }

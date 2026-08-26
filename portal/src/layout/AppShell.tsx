@@ -40,11 +40,11 @@ function ChipAvatar({ name, url }: { name?: string; url?: string | null }) {
 }
 
 export default function AppShell({ children }: { children: ReactNode }) {
-  const { person, roles, logout, preferences, can, godMode, godNavColor, exitGodMode } = useAuth();
+  const { person, roles, logout, preferences, can, godMode, godNavColor, exitGodMode, maxRank } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const visibleSections = NAV_SECTIONS
-    .map((s) => ({ ...s, items: s.items.filter((i) => isNavItemVisible(i, can, godMode)) }))
+    .map((s) => ({ ...s, items: s.items.filter((i) => isNavItemVisible(i, can, godMode, maxRank)) }))
     .filter((s) => s.items.length > 0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [openSection, setOpenSection] = useState(() => sectionForPath(visibleSections, location.pathname));

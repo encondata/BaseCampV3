@@ -1,0 +1,14 @@
+/* System pages: processes list + log viewer */
+.sys-proc-grid { grid-template-columns: 170px 1.2fr 110px 1fr 80px 110px 140px; }
+.sys-status { display: flex; align-items: center; gap: 8px; }
+.sys-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+.sys-dot-running { background: var(--c-green, #178a4c); animation: sys-pulse 2s infinite; }
+.sys-dot-stopped { background: var(--c-slate, #51606f); }
+.sys-dot-failed { background: var(--c-red, #c03540); }
+@keyframes sys-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(23, 138, 76, 0.4); }
+  50% { box-shadow: 0 0 0 5px rgba(23, 138, 76, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sys-dot-running { animation: none; }
+}

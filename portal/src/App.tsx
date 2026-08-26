@@ -21,6 +21,7 @@ import Login from './pages/Login';
 import Profile from './pages/Profile';
 import Settings from './pages/Settings';
 import Sites from './pages/Sites';
+import SystemProcesses from './pages/SystemProcesses';
 import Users from './pages/Users';
 import Variables from './pages/Variables';
 import Workers from './pages/Workers';
@@ -59,6 +60,9 @@ export default function App() {
             <Route path="/stakeholders/clients" element={<ProtectedRoute resource="clients"><Clients /></ProtectedRoute>} />
             <Route path="/stakeholders/partners" element={<ProtectedRoute resource="partners"><Partners /></ProtectedRoute>} />
             <Route path="/settings" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
+            <Route path="/system/processes" element={
+              <ProtectedRoute minRank={80}><SystemProcesses /></ProtectedRoute>
+            } />
             <Route path="/access" element={<ProtectedRoute resource="access"><Access /></ProtectedRoute>} />
             <Route path="/admin/asset-models" element={
               <ProtectedRoute resource="asset_models"><AssetModels /></ProtectedRoute>
