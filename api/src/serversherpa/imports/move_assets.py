@@ -2,10 +2,8 @@
 
 Pure of HTTP and job-queue concerns: callers hand in parsed rows and
 options and get back the report dict that lands in import_jobs.results.
-This module grows in three stages: row helpers (done), the
-validate/commit pipeline (this slice — validate path only; write=True
-commit batching/collisions/audit land in the next slice), and collision
-detection.
+Contains the complete pipeline: row helpers, the shared validate/commit
+pipeline (run_import), and collision detection (flag_collisions).
 """
 
 import json

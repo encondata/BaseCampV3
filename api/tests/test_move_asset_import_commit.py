@@ -206,3 +206,19 @@ async def test_batch_checkpoint_fires_when_boundary_is_error_row(db, monkeypatch
     # boundary at processed=2 lands on the error row — checkpoint must still fire
     assert (2, 1) in seen
     assert result["summary"]["created"] == 3
+
+
+async def test_review_row_keeps_rfid_skip_note(db):
+    ini = await _move(db)
+    holder = Asset(serial_number="sn-holder", rfid_tag="TAG-R")
+    db.add(holder)
+    await db.commit()
+    # fuzzy mode + unmatched make/model -> review row; conflicting RFID -> note
+    rows = [_row(2, serial_number="SN-REV", asset_make="Nope",
+                 asset_model="NX", rfid_tag="TAG-R")]
+    result = await run_import(db, initiative_id=ini.id, added_by=None,
+                              rows=rows, write=True)
+    [d] = result["details"]
+    assert d["status"] == "review"
+    assert "not found" in d["message"]
+    assert "TAG-R" in d["message"] and "skipped" in d["message"]
