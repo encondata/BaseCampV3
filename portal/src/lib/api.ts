@@ -1900,3 +1900,44 @@ export function logStreamUrl(
 export function getAccessTokenForStream(): string | null {
   return accessToken;
 }
+
+// ── system config: logging section ──────────────────────────────────
+
+export interface LoggingConfig {
+  mode: 'local' | 'local_remote' | 'remote';
+  local_max_rows_per_process: number;
+  local_max_age_days: number;
+  remote_buffer_rows: number;
+  min_level: string;
+  transport: 'loki' | 'syslog';
+  loki: { url: string; username: string; password?: string;
+          password_set?: boolean; tenant_id: string };
+  syslog: { host: string; port: number; protocol: 'udp' | 'tcp' | 'tls' };
+}
+
+export async function getLoggingConfig(): Promise<LoggingConfig> {
+  const resp = await apiFetch('/system/config/logging');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function putLoggingConfig(
+  cfg: LoggingConfig,
+): Promise<LoggingConfig> {
+  const resp = await apiFetch('/system/config/logging', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cfg),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function testLoggingConfig(): Promise<{
+  logged: boolean; forwarded: boolean; error: string | null;
+}> {
+  const resp = await apiFetch('/system/config/logging/test',
+    { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}

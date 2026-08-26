@@ -22,6 +22,7 @@ import Profile from './pages/Profile';
 import ProcessLogs from './pages/ProcessLogs';
 import Settings from './pages/Settings';
 import Sites from './pages/Sites';
+import SystemConfig from './pages/SystemConfig';
 import SystemProcesses from './pages/SystemProcesses';
 import Users from './pages/Users';
 import Variables from './pages/Variables';
@@ -73,6 +74,9 @@ export default function App() {
             } />
             <Route path="/admin/audit" element={<ProtectedRoute resource="audit"><Audit /></ProtectedRoute>} />
             <Route path="/dev" element={<ProtectedRoute resource="devtools"><Dev /></ProtectedRoute>} />
+            <Route path="/dev/system-config" element={
+              <ProtectedRoute resource="devtools"><SystemConfig /></ProtectedRoute>
+            } />
             <Route path="/dev/database" element={
               <ProtectedRoute resource="devtools"><DevDatabase /></ProtectedRoute>
             } />
