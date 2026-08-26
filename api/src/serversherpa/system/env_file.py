@@ -20,6 +20,9 @@ from serversherpa.config import _REPO_ROOT, Settings
 HIDDEN_PREFIXES = ("SS_DATABASE_", "SS_SPACES_", "POSTGRES_", "MINIO_")
 _SECRET_HINT = re.compile(r"SECRET|PASSWORD|KEY|TOKEN|DSN|PEPPER|WORDS")
 _LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+# A standalone full-line comment — NOT a trailing " # ..." description on a
+# KEY=... line (those match _LINE instead, since they start with the key).
+_COMMENT = re.compile(r"^\s*#\s?(.*)$")
 
 SENTINEL_PATH = Path(__file__).resolve().parents[1] / "_dev_reload.py"
 
@@ -44,15 +47,25 @@ def is_secret(key: str) -> bool:
     return key in _secret_keys() or bool(_SECRET_HINT.search(key))
 
 
-def _parse(path: Path) -> tuple[list[str], dict[str, int]]:
-    """(raw lines, key -> line index) — comments/blank lines untouched."""
+def _parse(path: Path) -> tuple[list[str], dict[str, int], dict[str, str]]:
+    """(raw lines, key -> line index, key -> section) — comments/blank
+    lines untouched. `section` is the text of the nearest preceding
+    standalone-comment line (leading "#" and one optional space stripped,
+    rstripped), or "" if none precedes the key."""
     lines = path.read_text().splitlines()
     index: dict[str, int] = {}
+    sections: dict[str, str] = {}
+    current_section = ""
     for i, line in enumerate(lines):
         match = _LINE.match(line)
         if match:
             index[match.group(1)] = i
-    return lines, index
+            sections[match.group(1)] = current_section
+            continue
+        comment = _COMMENT.match(line)
+        if comment:
+            current_section = comment.group(1).rstrip()
+    return lines, index, sections
 
 
 def _split_value_comment(rest: str) -> tuple[str, str]:
@@ -67,19 +80,21 @@ def _split_value_comment(rest: str) -> tuple[str, str]:
 
 
 def read_entries(path: Path) -> list[dict]:
-    lines, index = _parse(path)
+    lines, index, sections = _parse(path)
     entries = []
     for key, i in index.items():
         if is_hidden(key):
             continue
         rest = _LINE.match(lines[i]).group(2)
         value, description = _split_value_comment(rest)
+        section = sections.get(key, "")
         if is_secret(key):
             entries.append({"key": key, "secret": True,
-                            "set": value != "", "description": description})
+                            "set": value != "", "description": description,
+                            "section": section})
         else:
             entries.append({"key": key, "secret": False, "value": value,
-                            "description": description})
+                            "description": description, "section": section})
     return entries
 
 
@@ -90,11 +105,21 @@ class EnvUpdateError(Exception):
 
 
 def apply_updates(path: Path, values: dict[str, str]) -> list[str]:
-    lines, index = _parse(path)
+    lines, index, _sections = _parse(path)
     unknown = [k for k in values
                if k not in index or is_hidden(k)]
     if unknown:
         raise EnvUpdateError(sorted(unknown))
+
+    # Defense-in-depth: a value containing a raw newline/carriage-return
+    # would splice a new physical line into .env on rewrite below,
+    # letting a value smuggle in an arbitrary extra KEY=... line (e.g. a
+    # hidden SS_DATABASE_URL) past the classification gate. The route
+    # also rejects this before calling in; guard here too so this
+    # function stays safe to call directly.
+    invalid = [k for k, v in values.items() if "\n" in v or "\r" in v]
+    if invalid:
+        raise EnvUpdateError(sorted(invalid))
 
     changed: list[str] = []
     for key, new_value in values.items():

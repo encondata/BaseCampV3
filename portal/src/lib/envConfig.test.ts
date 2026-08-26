@@ -3,10 +3,10 @@ import { describe, expect, it } from 'vitest';
 import type { EnvEntry } from './api';
 import { changedValues, describeEntry, filterEntries } from './envConfig';
 
-const plain = (key: string, value: string, description = ''): EnvEntry =>
-  ({ key, secret: false, value, description });
-const secret = (key: string, set = true, description = ''): EnvEntry =>
-  ({ key, secret: true, set, description });
+const plain = (key: string, value: string, description = '', section = ''): EnvEntry =>
+  ({ key, secret: false, value, description, section });
+const secret = (key: string, set = true, description = '', section = ''): EnvEntry =>
+  ({ key, secret: true, set, description, section });
 
 describe('filterEntries', () => {
   const entries = [

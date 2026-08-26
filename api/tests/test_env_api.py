@@ -35,11 +35,14 @@ async def test_env_read_and_update(client, db, seeded_user, monkeypatch,
     entries = {e["key"]: e for e in resp.json()["entries"]}
     assert entries["SS_JWT_SECRET"] == {"key": "SS_JWT_SECRET",
                                         "secret": True, "set": True,
-                                        "description": ""}
+                                        "description": "", "section": ""}
     assert "abc" not in resp.text
     # every entry carries a description field (empty when the .env line
     # has no trailing " # ..." comment)
     assert all("description" in e for e in entries.values())
+    # every entry also carries a section field (empty when no standalone
+    # comment precedes it)
+    assert all("section" in e for e in entries.values())
 
     resp = await client.put("/system/env", headers=dev,
                             json={"values": {"SS_LOG_LEVEL": "DEBUG"}})
@@ -55,6 +58,29 @@ async def test_env_read_and_update(client, db, seeded_user, monkeypatch,
                             json={"values": {"SS_DATABASE_URL": "x"}})
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "invalid_env_update"
+
+
+async def test_env_update_rejects_newline_injection(client, db, seeded_user,
+                                                     monkeypatch, tmp_path):
+    """A value containing \\n could splice a new physical line into .env
+    on rewrite, letting a devtools user inject a hidden key (e.g.
+    SS_DATABASE_URL) past the classification gate. Must be rejected
+    before the file is ever touched."""
+    path = _use_tmp_env(monkeypatch, tmp_path)
+    dev = await _developer_headers(db, client)
+    before = path.read_text()
+
+    resp = await client.put("/system/env", headers=dev, json={
+        "values": {"SS_LOG_LEVEL": "INFO\nSS_DATABASE_URL=evil"}})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_env_update"
+    assert path.read_text() == before          # nothing written
+
+    resp = await client.put("/system/env", headers=dev, json={
+        "values": {"SS_LOG_LEVEL": "INFO\rSS_DATABASE_URL=evil"}})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_env_update"
+    assert path.read_text() == before
 
 
 async def test_env_restart_touches_sentinel(client, db, seeded_user):

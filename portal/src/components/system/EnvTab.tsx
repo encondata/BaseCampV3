@@ -1,6 +1,9 @@
 /** ENV tab: the repo .env, DB/Spaces hidden server-side, secrets
  *  masked. Save rewrites the file; Restart bounces every --reload
- *  process so changes take effect. */
+ *  process so changes take effect. Rendered as a standard directory
+ *  list (toolbar + Columns picker + result count), matching Sites and
+ *  Processes, with section-header rows sourced from the .env file's own
+ *  standalone comments. */
 
 import { useCallback, useEffect, useState } from 'react';
 
@@ -8,7 +11,15 @@ import {
   getEnvEntries, putEnvValues, restartProcesses, type EnvEntry,
 } from '../../lib/api';
 import { changedValues, describeEntry, filterEntries } from '../../lib/envConfig';
+import { ColumnsButton, visibleColumnsFor, type ColumnDef } from '../../lib/listTools';
 import '../../styles/directory.css';
+
+const COLUMNS: ColumnDef[] = [
+  { key: 'key', label: 'Key', width: 'minmax(200px, 260px)', default: true },
+  { key: 'value', label: 'Value', width: 'minmax(240px, 1fr)', default: true },
+  { key: 'description', label: 'Description', width: '1.4fr', default: true },
+];
+const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
 export default function EnvTab() {
   const [entries, setEntries] = useState<EnvEntry[] | null>(null);
@@ -19,6 +30,10 @@ export default function EnvTab() {
   const [error, setError] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
   const [restartBusy, setRestartBusy] = useState(false);
+  // Visible-column set. Persistence is optional per spec; a plain
+  // useState is enough here since (unlike Sites) there's no sort/filter
+  // state to persist alongside it.
+  const [visible, setVisible] = useState<Set<string>>(DEFAULT_VISIBLE);
 
   // mount: getEnvEntries
   const load = useCallback(async () => {
@@ -86,10 +101,74 @@ export default function EnvTab() {
     return <p className="page-hint">Loading…</p>;
   }
 
-  const visible = filterEntries(entries, q);
+  const visibleEntries = filterEntries(entries, q);
+  const shownCols = visibleColumnsFor(COLUMNS, visible, false);
+  const grid = { gridTemplateColumns: shownCols.map((c) => c.width).join(' ') };
+
+  const cellFor = (entry: EnvEntry, key: string) => {
+    switch (key) {
+      case 'key':
+        return <span className="envtab-key">{entry.key}</span>;
+      case 'value': {
+        const { placeholder, chip } = describeEntry(entry);
+        const value = edits[entry.key] ?? (entry.secret ? '' : (entry.value ?? ''));
+        return (
+          <span className="envtab-value-cell">
+            <input
+              type={entry.secret ? 'password' : 'text'}
+              value={value}
+              placeholder={placeholder}
+              disabled={busy}
+              aria-label={entry.key}
+              onChange={(e) => setEdit(entry.key, e.target.value)}
+            />
+            {chip && (
+              <span className={`envtab-chip envtab-chip-${chip === 'set' ? 'set' : 'unset'}`}>
+                {chip}
+              </span>
+            )}
+          </span>
+        );
+      }
+      case 'description':
+        return <span className="envtab-desc">{entry.description || '—'}</span>;
+      default:
+        return null;
+    }
+  };
+
+  // Section-header rows: iterate the FILTERED list in file order and emit
+  // a full-width header whenever the section changes to a new non-empty
+  // value — so a header only appears when at least one entry under it
+  // survives the search filter, and no header repeats for a section
+  // that's already showing.
+  let lastRenderedSection = '';
+  const rows: { node: JSX.Element }[] = [];
+  for (const entry of visibleEntries) {
+    if (entry.section !== '' && entry.section !== lastRenderedSection) {
+      lastRenderedSection = entry.section;
+      rows.push({
+        node: (
+          <div key={`section-${entry.key}`} className="envtab-section-row">
+            {entry.section}
+          </div>
+        ),
+      });
+    }
+    const changed = entry.key in pending;
+    rows.push({
+      node: (
+        <div key={entry.key} className={`list-row envtab-grid${changed ? ' changed' : ''}`} style={grid}>
+          {shownCols.map((c) => (
+            <span key={c.key} className="cell">{cellFor(entry, c.key)}</span>
+          ))}
+        </div>
+      ),
+    });
+  }
 
   return (
-    <div className="sysconf-tab-body">
+    <div className="sysconf-tab-body sysconf-wide">
       {error && <p className="pf-error">{error}</p>}
       {restarting && (
         <p className="envtab-restart-banner">
@@ -97,63 +176,31 @@ export default function EnvTab() {
         </p>
       )}
 
-      <input
-        type="text"
-        className="envtab-search"
-        placeholder="Search keys or descriptions…"
-        aria-label="Search environment keys and descriptions"
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-      />
-
-      <div className="init-panel sysconf-card">
-        <div className="sysconf-card-head">
-          <p className="eyebrow-sm">Environment variables</p>
-          <p className="sysconf-card-desc">
-            The repo .env file. Database and object-storage keys are hidden
-            server-side; secrets are masked and only overwritten when you
-            type a new value.
-          </p>
-        </div>
-
-        <div className="dir-list envtab-list">
-          <div className="list-head envtab-grid">
-            <span className="col-head">Key</span>
-            <span className="col-head">Value</span>
-            <span className="col-head">Description</span>
+      <div className="dir-toolbar">
+        <div className="toolbar-right">
+          <div className="dir-search" style={{ marginLeft: 0 }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                 strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+            <input placeholder="Filter variables…" aria-label="Filter environment variables"
+                   value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
-          {visible.map((entry) => {
-            const { placeholder, chip } = describeEntry(entry);
-            const changed = entry.key in pending;
-            const value = edits[entry.key] ?? (entry.secret ? '' : (entry.value ?? ''));
-            return (
-              <div key={entry.key} className={`list-row envtab-grid${changed ? ' changed' : ''}`}>
-                <span className="envtab-key">{entry.key}</span>
-                <span className="envtab-value-cell">
-                  <input
-                    type={entry.secret ? 'password' : 'text'}
-                    value={value}
-                    placeholder={placeholder}
-                    disabled={busy}
-                    aria-label={entry.key}
-                    onChange={(e) => setEdit(entry.key, e.target.value)}
-                  />
-                  {chip && (
-                    <span className={`envtab-chip envtab-chip-${chip === 'set' ? 'set' : 'unset'}`}>
-                      {chip}
-                    </span>
-                  )}
-                </span>
-                <span className="envtab-desc">{entry.description || '—'}</span>
-              </div>
-            );
-          })}
-          {visible.length === 0 && (
-            <p className="sysconf-hint" style={{ padding: 16 }}>
-              No keys match &quot;{q}&quot;.
-            </p>
-          )}
+          <span className="result-count">{visibleEntries.length} of {entries.length} shown</span>
+          <ColumnsButton columns={COLUMNS} visible={visible} onChange={setVisible} />
         </div>
+      </div>
+
+      <div className="dir-list envtab-list">
+        <div className="list-head envtab-grid" style={grid}>
+          {shownCols.map((c) => (
+            <span key={c.key} className="col-head">{c.label}</span>
+          ))}
+        </div>
+        {rows.map((r) => r.node)}
+        {visibleEntries.length === 0 && (
+          <p className="sysconf-hint" style={{ padding: 16 }}>
+            No keys match &quot;{q}&quot;.
+          </p>
+        )}
       </div>
 
       <div className="sysconf-actionbar">

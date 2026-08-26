@@ -98,6 +98,11 @@
   flex-direction: column;
   gap: 18px;
 }
+/* ENV tab needs the standard directory-list layout (toolbar + wide list),
+   so it opts out of the narrow single-column form width other tabs use.
+   Kept as a modifier on the same wrapper class (not a replacement) so the
+   input/select styling below still applies. */
+.sysconf-tab-body.sysconf-wide { max-width: none; }
 
 /* ── group cards ───────────────────────────────────────────────── */
 .sysconf-card { display: flex; flex-direction: column; gap: 18px; }
@@ -146,19 +151,15 @@
 }
 .sysconf-saved { color: var(--c-green, #178a4c); font-size: 12.5px; }
 
-/* ── ENV tab: masked .env editor ──────────────────────────────────── */
-/* Looks like .sys-log-search (same height/border/radius, inherited from
-   the .sysconf-tab-body input rule above) but is its OWN class:
-   .sys-log-search's `flex: 1 1 220px` sets a 220px flex-basis, which is
-   a WIDTH in that class's row toolbar but becomes a HEIGHT here since
-   sysconf-tab-body is a column flex container — reusing it blew the
-   search box up to ~220px tall. Just cap the width instead. */
-.envtab-search { max-width: 360px; }
-
-/* standard dir-list table (see .sys-proc-list): list-head + list-row grid,
-   with the changed-row amber rail bolted onto the row instead of a chip
-   column — Key | Value (input + chip) | Description. */
-.envtab-grid { grid-template-columns: minmax(200px, 260px) minmax(220px, 1fr) 1.2fr; }
+/* ── ENV tab: masked .env editor, standard directory-list chrome ────── */
+/* Reuses .dir-toolbar/.dir-search/.result-count/.dir-list/.list-head/
+   .col-head from directory.css (see Sites.tsx) — this file only adds the
+   env-specific bits: the value input cell, the changed-row amber rail
+   (bolted onto .list-row instead of a chip column), and section-header
+   rows. .envtab-grid's own grid-template-columns is a static fallback;
+   the component always sets the live one inline from the shown columns'
+   ColumnDef widths (same pattern as Sites' `grid`). */
+.envtab-grid { grid-template-columns: minmax(200px, 260px) minmax(240px, 1fr) 1.4fr; }
 .envtab-list .list-row {
   display: grid;
   align-items: center;
@@ -172,6 +173,20 @@
 .envtab-list .list-row.changed {
   border-left-color: var(--amber);
   background: var(--c-amber-bg, rgba(163, 98, 7, 0.06));
+}
+/* section-header row: sourced from the .env file's own standalone
+   comments (env_file.py's `section`). Deliberately NOT given the row
+   grid — a plain block spans the full list width, "above" the columns. */
+.envtab-section-row {
+  padding: 8px 20px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--paper-line);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
 }
 .envtab-key {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

@@ -49,10 +49,11 @@ def test_read_entries_masks_and_hides(env_path):
     assert "POSTGRES_PASSWORD" not in entries
     assert entries["SS_LOG_LEVEL"] == {
         "key": "SS_LOG_LEVEL", "secret": False, "value": "INFO",
-        "description": "Minimum level for process logs"}
+        "description": "Minimum level for process logs",
+        "section": "ServerSherpa dev environment"}
     jwt = entries["SS_JWT_SECRET"]
     assert jwt == {"key": "SS_JWT_SECRET", "secret": True, "set": True,
-                    "description": "Signs  session JWTs"}
+                    "description": "Signs  session JWTs", "section": "auth"}
     assert "supersecret123" not in str(entries)
     assert entries["SS_SMTP_HOST"]["value"] == ""
     # file order preserved
@@ -140,3 +141,65 @@ def test_hash_in_value_without_space_is_not_a_comment(tmp_path):
     assert entry["description"] == ""
     apply_updates(path, {"SS_COOKIE_DOMAIN": "new#value"})
     assert path.read_text() == "SS_COOKIE_DOMAIN=new#value\n"
+
+
+# ── Mandate A: reject newline injection (security) ──────────────────
+
+
+def test_apply_updates_rejects_newline_value(env_path):
+    before = env_path.read_text()
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates(env_path, {
+            "SS_LOG_LEVEL": "INFO\nSS_DATABASE_URL=evil"})
+    assert exc.value.unknown == ["SS_LOG_LEVEL"]
+    assert env_path.read_text() == before      # nothing written
+
+
+def test_apply_updates_rejects_carriage_return_value(env_path):
+    before = env_path.read_text()
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates(env_path, {"SS_LOG_LEVEL": "INFO\rSS_ENV=evil"})
+    assert exc.value.unknown == ["SS_LOG_LEVEL"]
+    assert env_path.read_text() == before
+
+
+# ── Mandate B: section labels from standalone comments ───────────────
+
+SECTION_SAMPLE = """SS_ENV=development
+
+# E-Mail
+SS_SMTP_HOST=smtp.example.com  # SMTP relay host
+SS_SMTP_PORT=587
+
+# Grafana
+SS_GRAFANA_URL=https://grafana.example
+"""
+
+
+@pytest.fixture
+def section_env_path(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text(SECTION_SAMPLE)
+    return path
+
+
+def test_read_entries_tags_section_from_standalone_comment(section_env_path):
+    entries = {e["key"]: e for e in read_entries(section_env_path)}
+    # no standalone comment precedes SS_ENV -> ""
+    assert entries["SS_ENV"]["section"] == ""
+    # both keys under "# E-Mail" carry that section
+    assert entries["SS_SMTP_HOST"]["section"] == "E-Mail"
+    assert entries["SS_SMTP_PORT"]["section"] == "E-Mail"
+    # a new standalone comment starts a new section
+    assert entries["SS_GRAFANA_URL"]["section"] == "Grafana"
+    # the trailing same-line comment (description) is a separate concern
+    # from the standalone-comment section label
+    assert entries["SS_SMTP_HOST"]["description"] == "SMTP relay host"
+
+
+def test_apply_updates_preserves_standalone_comments(section_env_path):
+    apply_updates(section_env_path, {"SS_SMTP_HOST": "smtp2.example.com"})
+    text = section_env_path.read_text()
+    assert "# E-Mail" in text
+    assert "# Grafana" in text
+    assert "SS_SMTP_HOST=smtp2.example.com  # SMTP relay host" in text

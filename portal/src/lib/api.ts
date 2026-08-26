@@ -1952,6 +1952,9 @@ export interface EnvEntry {
   set?: boolean;
   value?: string;
   description: string;
+  /** The nearest preceding standalone-comment line's text, or "" if none
+   *  precedes this key. Groups entries into ENV-tab section headers. */
+  section: string;
 }
 
 export async function getEnvEntries(): Promise<{ entries: EnvEntry[] }> {
