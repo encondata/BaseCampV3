@@ -27,34 +27,40 @@ async def _count(db, process):
                            .where(LogEntry.process == process))
 
 
+# Retention tests use process names no live log handler writes ("ret-*"):
+# in the shared pytest interpreter, handlers installed by earlier tests
+# (api / import-worker) keep flushing stray rows between truncation and
+# our assertions, so counts on those names — and the global deleted
+# total — are not stable.
+
 async def test_retention_row_cap(db):
     await _set_logging(db, local_max_rows_per_process=10)
-    await _fill(db, "api", 25)
-    await _fill(db, "import-worker", 5)
+    await _fill(db, "ret-a", 25)
+    await _fill(db, "ret-b", 5)
     result = await log_service.enforce_retention(db)
-    assert result["deleted"] == 15
-    assert await _count(db, "api") == 10
-    assert await _count(db, "import-worker") == 5     # under cap: untouched
+    assert result["deleted"] >= 15                    # ours, + any strays
+    assert await _count(db, "ret-a") == 10
+    assert await _count(db, "ret-b") == 5             # under cap: untouched
     # newest survive
     newest = (await db.scalars(select(LogEntry.message).where(
-        LogEntry.process == "api").order_by(LogEntry.id.desc()))).first()
+        LogEntry.process == "ret-a").order_by(LogEntry.id.desc()))).first()
     assert newest == "m24"
 
 
 async def test_retention_age_cap(db):
     await _set_logging(db, local_max_age_days=7)
-    await _fill(db, "api", 3, age_days=10)
-    await _fill(db, "api", 2, age_days=0)
+    await _fill(db, "ret-age", 3, age_days=10)
+    await _fill(db, "ret-age", 2, age_days=0)
     await log_service.enforce_retention(db)
-    assert await _count(db, "api") == 2
+    assert await _count(db, "ret-age") == 2
 
 
 async def test_remote_mode_uses_buffer_cap(db):
     await _set_logging(db, mode="remote", remote_buffer_rows=4,
                        local_max_rows_per_process=10000)
-    await _fill(db, "api", 10)
+    await _fill(db, "ret-buf", 10)
     await log_service.enforce_retention(db)
-    assert await _count(db, "api") == 4
+    assert await _count(db, "ret-buf") == 4
 
 
 async def test_probe_web_up_and_down(db, monkeypatch):
