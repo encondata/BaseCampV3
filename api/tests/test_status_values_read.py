@@ -110,3 +110,29 @@ async def test_unknown_record_type_is_422(client, db, seeded_user):
     resp = await client.get("/status-values?record_type=invoice", headers=hdrs)
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "unknown_record_type"
+
+
+async def test_every_row_includes_progress_weight(client, db, seeded_user):
+    """Read schemas must carry the field on every record type — null where
+    it is unset (everything but move_asset_status, for now)."""
+    hdrs = await login(client)
+    resp = await client.get("/status-values?record_type=site", headers=hdrs)
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert all("progress_weight" in r for r in rows)
+    active = next(r for r in rows if r["key"] == "active")
+    assert active["progress_weight"] is None
+
+
+async def test_move_asset_status_reads_carry_seeded_weights(client, db, seeded_user):
+    """Spot-checks a live weighted, a zero weight, and an excluded (null)
+    status from the design doc's seed table, straight off the wire."""
+    dev = await _make(db, client, "developer", "devweights@test.example.com")
+    rows = (await client.get("/status-values?record_type=move_asset_status",
+                             headers=dev)).json()
+    by_key = {r["key"]: r["progress_weight"] for r in rows}
+    assert by_key["loaded_in_system"] == 0
+    assert by_key["complete"] == 100
+    assert by_key["staged"] == 69
+    assert by_key["historical"] is None
+    assert by_key["location_collision"] is None

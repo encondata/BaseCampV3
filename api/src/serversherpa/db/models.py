@@ -366,6 +366,9 @@ class StatusValue(Base):
     sort_order: Mapped[int] = mapped_column(Integer, server_default="0")
     is_active: Mapped[bool] = mapped_column(server_default=text("true"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    # 0-100 or null (excluded from the weighted-progress calc); generic
+    # column, currently seeded/exposed only for move_asset_status
+    progress_weight: Mapped[int | None] = mapped_column(Integer)
 
 
 class Site(Base):

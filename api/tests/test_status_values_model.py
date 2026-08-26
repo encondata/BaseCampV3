@@ -95,3 +95,75 @@ async def test_old_status_check_is_gone(db):
 async def test_site_statuses_table_is_dropped(db):
     row = await db.scalar(text("SELECT to_regclass('public.site_statuses')"))
     assert row is None
+
+
+async def test_move_asset_status_weights_seeded_verbatim(db):
+    """0021's seed UPDATEs, per the weighted-progress design doc's table
+    (docs/superpowers/specs/2026-08-25-weighted-progress-design.md). Every
+    key/weight pair here is a verbatim transcription of that table,
+    including the two explicit nulls. in_container is absent from the
+    doc's table entirely and stays null by default."""
+    rows = (await db.execute(
+        select(StatusValue.key, StatusValue.progress_weight)
+        .where(StatusValue.record_type == "move_asset_status"))).all()
+    weights = dict(rows)
+    assert weights == {
+        "loaded_in_system": 0,
+        "pre_stage": 8,
+        "racked": 15,
+        "labeled": 23,
+        "pack_logistics": 31,
+        "in_container": None,
+        "on_truck": 46,
+        "received": 54,
+        "un_pack": 62,
+        "staged": 69,
+        "re_racked": 77,
+        "cabling": 85,
+        "qa": 92,
+        "complete": 100,
+        "rfid_1_cage_exit": 35,
+        "rfid_2_loading_dock": 40,
+        "rfid_3_staging": 65,
+        "rfid_4_into_cage": 72,
+        "rfid_10_dock_to_truck": 44,
+        "in_transit": 50,
+        "e_waste": 100,
+        "pending_client_handover": 95,
+        "historical": None,
+        "location_collision": None,
+    }
+
+
+async def test_progress_weight_defaults_to_null_for_other_record_types(db):
+    """The column is generic — only move_asset_status is seeded. A site
+    status must come back null, not some inherited default."""
+    weight = await db.scalar(
+        select(StatusValue.progress_weight)
+        .where(StatusValue.record_type == "site", StatusValue.key == "active"))
+    assert weight is None
+
+
+async def test_progress_weight_check_constraint_rejects_out_of_range(db):
+    db.add(StatusValue(record_type="site", key="probe_high", label="Probe",
+                       color="#178a4c", progress_weight=101))
+    with pytest.raises(IntegrityError):
+        await db.flush()
+    await db.rollback()
+
+    db.add(StatusValue(record_type="site", key="probe_low", label="Probe",
+                       color="#178a4c", progress_weight=-1))
+    with pytest.raises(IntegrityError):
+        await db.flush()
+    await db.rollback()
+
+
+async def test_progress_weight_check_constraint_allows_bounds_and_null(db):
+    db.add(StatusValue(record_type="site", key="probe_zero", label="Probe",
+                       color="#178a4c", progress_weight=0))
+    db.add(StatusValue(record_type="site", key="probe_hundred", label="Probe",
+                       color="#178a4c", progress_weight=100))
+    db.add(StatusValue(record_type="site", key="probe_null", label="Probe",
+                       color="#178a4c", progress_weight=None))
+    await db.flush()
+    await db.rollback()

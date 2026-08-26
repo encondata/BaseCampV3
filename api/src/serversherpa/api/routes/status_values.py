@@ -17,7 +17,8 @@ from serversherpa.status.registry import STATUS_REGISTRY, StatusRecordType
 
 router = APIRouter(prefix="/status-values", tags=["status-values"])
 
-STATUS_FIELDS = ["label", "description", "color", "sort_order", "is_active"]
+STATUS_FIELDS = ["label", "description", "color", "sort_order", "is_active",
+                  "progress_weight"]
 
 # every mutable column is NOT NULL (0012_status_values.py:33-38), but the
 # update schema types them `X | None` and exclude_unset INCLUDES an explicitly
@@ -38,6 +39,21 @@ def _record_type(record_type: str) -> StatusRecordType:
     if rt is None:
         raise _err(422, "unknown_record_type")
     return rt
+
+
+def _validate_progress_weight(value: object) -> int | None:
+    """None (excluded) or an int 0-100; anything else — out of range, a
+    float, a numeric string, a bool — is `invalid_progress_weight`. Typed
+    loosely (schemas.py: `Any`) so every bad shape lands here instead of
+    pydantic's own coercion error."""
+    if value is None:
+        return None
+    # bool is an int subclass — True/False must not slip through as 1/0
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _err(422, "invalid_progress_weight")
+    if not (0 <= value <= 100):
+        raise _err(422, "invalid_progress_weight")
+    return value
 
 
 async def _usage_counts(db: DbSession, rt: StatusRecordType) -> dict[str, int]:
@@ -100,10 +116,12 @@ async def create_status_value(
     existing = await db.get(StatusValue, (rt.id, body.key))
     if existing is not None:
         raise _err(409, "status_value_exists")
+    weight = _validate_progress_weight(body.progress_weight)
     row = StatusValue(
         record_type=rt.id, key=body.key, label=body.label,
         description=body.description, color=body.color,
         sort_order=body.sort_order, is_active=True,
+        progress_weight=weight,
         updated_at=datetime.now(UTC),
     )
     db.add(row)
@@ -131,6 +149,10 @@ async def update_status_value(
     for field in NON_NULLABLE_STATUS_FIELDS:
         if field in data and data[field] is None:
             raise _err(422, f"{field}_required")
+    # progress_weight IS nullable (null = excluded) — validate shape/range
+    # rather than reject null outright, unlike the fields above
+    if "progress_weight" in data:
+        data["progress_weight"] = _validate_progress_weight(data["progress_weight"])
     before = snapshot(row, STATUS_FIELDS)
     # no in-loop guard: `value is not None` would silently DROP is_active=False
     # (the whole retirement mechanism). exclude_unset already means "the caller

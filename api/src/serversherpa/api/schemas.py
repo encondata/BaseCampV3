@@ -3,7 +3,7 @@
 import re
 import uuid
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
@@ -611,6 +611,8 @@ class StatusValueOut(BaseModel):
     color: str
     sort_order: int
     is_active: bool
+    # 0-100 or null (excluded from the weighted-progress calc)
+    progress_weight: int | None = None
     # populated only on the devtools-gated listing — an entity-scoped read
     # has no business paying for the count query
     usage_count: int | None = None
@@ -626,6 +628,11 @@ class StatusValueCreateIn(BaseModel):
     description: str = ""
     color: HexColor
     sort_order: int = 0
+    # Any, not `int | None` — an out-of-range OR non-int value must reach the
+    # route's manual 0-100 check and come back as the `invalid_progress_weight`
+    # code (the routes' _err convention), not pydantic's own type-coercion
+    # error shape.
+    progress_weight: Any = None
 
 
 class StatusValueUpdateIn(BaseModel):
@@ -638,6 +645,9 @@ class StatusValueUpdateIn(BaseModel):
     color: HexColor | None = None
     sort_order: int | None = None
     is_active: bool | None = None
+    # see StatusValueCreateIn.progress_weight — Any so validation stays in
+    # the route with the shared error code
+    progress_weight: Any = None
 
 
 class SiteLookupOut(BaseModel):

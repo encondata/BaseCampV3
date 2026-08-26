@@ -302,3 +302,116 @@ async def test_patch_writes_an_audit_row(client, db, seeded_user):
     assert audit_row is not None
     assert audit_row.entity_id == "site:active"
     assert audit_row.changes["label"]["to"] == "Live"
+
+
+# ---------------------------------------------------------------------------
+# progress_weight — spec: docs/superpowers/specs/2026-08-25-weighted-progress-design.md
+# ---------------------------------------------------------------------------
+
+async def test_create_accepts_a_valid_progress_weight(client, db, seeded_user):
+    hdrs = await _make(db, client, "developer", "devw1@test.example.com")
+    resp = await client.post("/status-values", headers=hdrs, json={
+        "record_type": "site", "key": "weighted_probe", "label": "Probe",
+        "color": "#178a4c", "progress_weight": 42,
+    })
+    assert resp.status_code == 201
+    assert resp.json()["progress_weight"] == 42
+
+
+async def test_create_without_progress_weight_defaults_to_null(client, db, seeded_user):
+    hdrs = await _make(db, client, "developer", "devw2@test.example.com")
+    resp = await client.post("/status-values", headers=hdrs, json={
+        "record_type": "site", "key": "unweighted_probe", "label": "Probe",
+        "color": "#178a4c",
+    })
+    assert resp.status_code == 201
+    assert resp.json()["progress_weight"] is None
+
+
+async def test_create_boundary_weights_0_and_100_are_accepted(client, db, seeded_user):
+    hdrs = await _make(db, client, "developer", "devw3@test.example.com")
+    resp = await client.post("/status-values", headers=hdrs, json={
+        "record_type": "site", "key": "probe_zero", "label": "Probe",
+        "color": "#178a4c", "progress_weight": 0,
+    })
+    assert resp.status_code == 201
+    assert resp.json()["progress_weight"] == 0
+
+    resp = await client.post("/status-values", headers=hdrs, json={
+        "record_type": "site", "key": "probe_hundred", "label": "Probe",
+        "color": "#178a4c", "progress_weight": 100,
+    })
+    assert resp.status_code == 201
+    assert resp.json()["progress_weight"] == 100
+
+
+async def test_create_out_of_range_progress_weight_is_422(client, db, seeded_user):
+    hdrs = await _make(db, client, "developer", "devw4@test.example.com")
+    for i, bad in enumerate((101, -1)):
+        resp = await client.post("/status-values", headers=hdrs, json={
+            "record_type": "site", "key": f"probe_oor_{i}", "label": "Probe",
+            "color": "#178a4c", "progress_weight": bad,
+        })
+        assert resp.status_code == 422, bad
+        assert resp.json()["detail"]["code"] == "invalid_progress_weight"
+
+
+async def test_create_non_int_progress_weight_is_422(client, db, seeded_user):
+    hdrs = await _make(db, client, "developer", "devw5@test.example.com")
+    for bad in ("abc", 12.5, True, [1]):
+        resp = await client.post("/status-values", headers=hdrs, json={
+            "record_type": "site", "key": "probe_nonint", "label": "Probe",
+            "color": "#178a4c", "progress_weight": bad,
+        })
+        assert resp.status_code == 422, bad
+        assert resp.json()["detail"]["code"] == "invalid_progress_weight"
+
+
+async def test_update_progress_weight_round_trips(client, db, seeded_user):
+    hdrs = await _make(db, client, "developer", "devw6@test.example.com")
+    resp = await client.patch("/status-values/move_asset_status/racked",
+                              headers=hdrs, json={"progress_weight": 33})
+    assert resp.status_code == 200
+    assert resp.json()["progress_weight"] == 33
+
+    resp = await client.get("/status-values?record_type=move_asset_status",
+                            headers=hdrs)
+    row = next(r for r in resp.json() if r["key"] == "racked")
+    assert row["progress_weight"] == 33
+
+
+async def test_update_progress_weight_to_null_excludes_it(client, db, seeded_user):
+    """Unlike label/color/etc., an explicit null here is a legal edit — it
+    parks the status out of the weighted-progress calculation."""
+    hdrs = await _make(db, client, "developer", "devw7@test.example.com")
+    resp = await client.patch("/status-values/move_asset_status/racked",
+                              headers=hdrs, json={"progress_weight": None})
+    assert resp.status_code == 200
+    assert resp.json()["progress_weight"] is None
+
+
+async def test_update_out_of_range_or_non_int_progress_weight_is_422(
+        client, db, seeded_user):
+    hdrs = await _make(db, client, "developer", "devw8@test.example.com")
+    for bad in (101, -1, "abc"):
+        resp = await client.patch("/status-values/move_asset_status/racked",
+                                  headers=hdrs, json={"progress_weight": bad})
+        assert resp.status_code == 422, bad
+        assert resp.json()["detail"]["code"] == "invalid_progress_weight"
+    # the rejected writes must not have partially applied
+    row = (await client.get("/status-values?record_type=move_asset_status",
+                            headers=hdrs)).json()
+    racked = next(r for r in row if r["key"] == "racked")
+    assert racked["progress_weight"] == 15
+
+
+async def test_progress_weight_edit_is_audited(client, db, seeded_user):
+    hdrs = await _make(db, client, "developer", "devw9@test.example.com")
+    await client.patch("/status-values/move_asset_status/racked",
+                       headers=hdrs, json={"progress_weight": 50})
+    audit_row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "status_value", AuditLog.action == "update",
+        AuditLog.entity_id == "move_asset_status:racked"))
+    assert audit_row is not None
+    assert audit_row.changes["progress_weight"]["to"] == 50
+    assert audit_row.changes["progress_weight"]["from"] == 15
