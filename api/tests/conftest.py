@@ -58,6 +58,7 @@ async def clean_db():
             "resource_group_gates, permission_overrides, audit_log, "
             "contact_profiles, sites, site_clients, notes, assets, "
             "asset_model_aliases, asset_models, container_assets, "
+            "log_entries, processes, "
             "initiative_links, initiative_people, initiatives, import_jobs, "
             "containers, pending_deletes CASCADE"))
         # role matrix is editable seed data — restore defaults & drop customs
@@ -246,6 +247,17 @@ async def clean_db():
               ('network','Network','Switches, routers, firewalls.',3,'#0f7c86'),
               ('power','Power','PDUs, UPSes.',4,'#a36207'),
               ('other','Other','Anything that does not fit the other categories.',5,'#51606f')
+        """))
+        # system_config is editable seed data — restore 0024 defaults
+        await session.execute(text("DELETE FROM system_config"))
+        await session.execute(text("""
+            INSERT INTO system_config (section, data) VALUES
+              ('logging', '{"mode": "local",
+                "local_max_rows_per_process": 20000,
+                "local_max_age_days": 14, "remote_buffer_rows": 10000,
+                "min_level": "INFO",
+                "syslog": {"host": "", "port": 514, "protocol": "udp"}}'::jsonb),
+              ('logging_cursor', '{"last_forwarded_id": 0}'::jsonb)
         """))
         await session.commit()
     yield

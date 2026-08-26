@@ -6,7 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, Date, ForeignKey, Integer, Numeric, SmallInteger, String, Text, text,
+    BigInteger, Boolean, Date, ForeignKey, Identity, Integer, Numeric, SmallInteger, String, Text, text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, BYTEA, CITEXT, INET, JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -686,6 +686,57 @@ class ImportJob(Base):
     started_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class SystemProcess(Base):
+    """Heartbeat registry — one row per process name, upserted at
+    startup (a restart overwrites; no run history). Status is derived
+    at read time in system/registry.py, never stored here."""
+
+    __tablename__ = "processes"
+
+    name: Mapped[str] = mapped_column(primary_key=True)
+    kind: Mapped[str]                    # 'service' | 'worker' | 'probe'
+    pid: Mapped[int | None] = mapped_column(Integer)
+    hostname: Mapped[str] = mapped_column(server_default="")
+    started_at: Mapped[datetime | None]
+    heartbeat_at: Mapped[datetime | None]
+    stopped_at: Mapped[datetime | None]
+    meta: Mapped[dict] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"))
+
+
+class LogEntry(Base):
+    """One log record from any process; id is the ordering + streaming
+    cursor. Size is bounded by the log-service's retention pass."""
+
+    __tablename__ = "log_entries"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(),
+                                    primary_key=True)
+    process: Mapped[str]
+    level: Mapped[str]
+    levelno: Mapped[int] = mapped_column(Integer)
+    logger: Mapped[str] = mapped_column(server_default="")
+    message: Mapped[str]
+    extra: Mapped[dict] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"))
+    at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class SystemConfig(Base):
+    """Section-keyed JSONB config. 'logging' is seeded by 0024;
+    'logging_cursor' is written only by the log-service."""
+
+    __tablename__ = "system_config"
+
+    section: Mapped[str] = mapped_column(primary_key=True)
+    data: Mapped[dict] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"))
+    updated_at: Mapped[datetime] = mapped_column(
+        server_default=text("now()"))
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id"))
 
 
 class Note(Base):
