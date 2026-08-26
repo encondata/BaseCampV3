@@ -55,18 +55,31 @@ def _parse(path: Path) -> tuple[list[str], dict[str, int]]:
     return lines, index
 
 
+def _split_value_comment(rest: str) -> tuple[str, str]:
+    """Split a KEY=rest line's right-hand side on the first " #" into
+    (value, description). The description is the raw comment text with
+    the leading "#" and its surrounding whitespace trimmed; inner
+    spacing is left alone. No " #" -> description is ""."""
+    value, sep, comment = rest.partition(" #")
+    if not sep:
+        return value, ""
+    return value.rstrip(), comment.lstrip()
+
+
 def read_entries(path: Path) -> list[dict]:
     lines, index = _parse(path)
     entries = []
     for key, i in index.items():
         if is_hidden(key):
             continue
-        value = _LINE.match(lines[i]).group(2)
+        rest = _LINE.match(lines[i]).group(2)
+        value, description = _split_value_comment(rest)
         if is_secret(key):
             entries.append({"key": key, "secret": True,
-                            "set": value != ""})
+                            "set": value != "", "description": description})
         else:
-            entries.append({"key": key, "secret": False, "value": value})
+            entries.append({"key": key, "secret": False, "value": value,
+                            "description": description})
     return entries
 
 
@@ -88,10 +101,17 @@ def apply_updates(path: Path, values: dict[str, str]) -> list[str]:
         if is_secret(key) and new_value == "":
             continue                       # keep the stored secret
         i = index[key]
-        current = _LINE.match(lines[i]).group(2)
+        rest = _LINE.match(lines[i]).group(2)
+        current, _description = _split_value_comment(rest)
         if current == new_value:
             continue
-        lines[i] = f"{key}={new_value}"
+        _value, sep, comment = rest.partition(" #")
+        if sep:
+            # preserve the original raw comment text verbatim, always
+            # with exactly two spaces before "#"
+            lines[i] = f"{key}={new_value}  #{comment}"
+        else:
+            lines[i] = f"{key}={new_value}"
         changed.append(key)
 
     if changed:

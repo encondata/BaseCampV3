@@ -8,10 +8,10 @@ from serversherpa.system.env_file import (
 
 SAMPLE = """# ServerSherpa dev environment
 SS_ENV=development
-SS_LOG_LEVEL=INFO
+SS_LOG_LEVEL=INFO  # Minimum level for process logs
 
 # auth
-SS_JWT_SECRET=supersecret123
+SS_JWT_SECRET=supersecret123  # Signs  session JWTs
 SS_PASSWORD_PEPPER=pepperpepper
 
 # db (hidden)
@@ -48,14 +48,36 @@ def test_read_entries_masks_and_hides(env_path):
     assert "SS_DATABASE_URL" not in entries
     assert "POSTGRES_PASSWORD" not in entries
     assert entries["SS_LOG_LEVEL"] == {
-        "key": "SS_LOG_LEVEL", "secret": False, "value": "INFO"}
+        "key": "SS_LOG_LEVEL", "secret": False, "value": "INFO",
+        "description": "Minimum level for process logs"}
     jwt = entries["SS_JWT_SECRET"]
-    assert jwt == {"key": "SS_JWT_SECRET", "secret": True, "set": True}
+    assert jwt == {"key": "SS_JWT_SECRET", "secret": True, "set": True,
+                    "description": "Signs  session JWTs"}
     assert "supersecret123" not in str(entries)
     assert entries["SS_SMTP_HOST"]["value"] == ""
     # file order preserved
     keys = [e["key"] for e in read_entries(env_path)]
     assert keys.index("SS_ENV") < keys.index("SS_JWT_SECRET")
+
+
+def test_read_entries_includes_descriptions(env_path):
+    entries = {e["key"]: e for e in read_entries(env_path)}
+    # trailing " # ..." comment is parsed into a separate description field
+    assert entries["SS_LOG_LEVEL"]["description"] == \
+        "Minimum level for process logs"
+    # the value itself must not swallow the comment text
+    assert entries["SS_LOG_LEVEL"]["value"] == "INFO"
+    assert "#" not in entries["SS_LOG_LEVEL"]["value"]
+    # no trailing comment -> description defaults to ""
+    assert entries["SS_ENV"]["description"] == ""
+    assert entries["SS_PASSWORD_PEPPER"]["description"] == ""
+
+
+def test_read_entries_secret_description_without_value(env_path):
+    entries = {e["key"]: e for e in read_entries(env_path)}
+    jwt = entries["SS_JWT_SECRET"]
+    assert jwt["description"] == "Signs  session JWTs"
+    assert "value" not in jwt
 
 
 def test_apply_updates_rewrites_preserving_layout(env_path):
@@ -66,7 +88,8 @@ def test_apply_updates_rewrites_preserving_layout(env_path):
     })
     assert sorted(changed) == ["SS_LOG_LEVEL", "SS_SMTP_HOST"]
     text = env_path.read_text()
-    assert "SS_LOG_LEVEL=DEBUG" in text
+    # value updates AND the trailing description comment is preserved
+    assert "SS_LOG_LEVEL=DEBUG  # Minimum level for process logs" in text
     assert "SS_JWT_SECRET=supersecret123" in text     # kept
     assert "SS_SMTP_HOST=smtp.local" in text
     assert text.startswith("# ServerSherpa dev environment")
@@ -80,6 +103,18 @@ def test_apply_updates_replaces_secret(env_path):
     changed = apply_updates(env_path, {"SS_JWT_SECRET": "newsecret"})
     assert changed == ["SS_JWT_SECRET"]
     assert "SS_JWT_SECRET=newsecret" in env_path.read_text()
+
+
+def test_apply_updates_preserves_trailing_comment_verbatim(env_path):
+    # rewriting a commented key keeps exactly two spaces before "#" and
+    # preserves the original comment text byte-for-byte (including the
+    # double space inside "Signs  session JWTs" — no re-normalizing).
+    apply_updates(env_path, {"SS_JWT_SECRET": "rotated"})
+    text = env_path.read_text()
+    assert "SS_JWT_SECRET=rotated  # Signs  session JWTs" in text
+    # a key with no description rewrites to a plain KEY=value line
+    apply_updates(env_path, {"SS_SMTP_HOST": "smtp.local"})
+    assert "SS_SMTP_HOST=smtp.local\n" in env_path.read_text()
 
 
 def test_apply_updates_rejects_unknown_and_hidden(env_path):

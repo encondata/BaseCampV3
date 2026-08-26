@@ -3,17 +3,24 @@ import { describe, expect, it } from 'vitest';
 import type { EnvEntry } from './api';
 import { changedValues, describeEntry, filterEntries } from './envConfig';
 
-const plain = (key: string, value: string): EnvEntry =>
-  ({ key, secret: false, value });
-const secret = (key: string, set = true): EnvEntry =>
-  ({ key, secret: true, set });
+const plain = (key: string, value: string, description = ''): EnvEntry =>
+  ({ key, secret: false, value, description });
+const secret = (key: string, set = true, description = ''): EnvEntry =>
+  ({ key, secret: true, set, description });
 
 describe('filterEntries', () => {
-  const entries = [plain('SS_ENV', 'development'), secret('SS_JWT_SECRET')];
+  const entries = [
+    plain('SS_ENV', 'development', 'Deployment environment name'),
+    secret('SS_JWT_SECRET', true, 'Signs session JWTs'),
+  ];
   it('matches case-insensitively on key', () => {
     expect(filterEntries(entries, 'jwt')).toHaveLength(1);
     expect(filterEntries(entries, '')).toHaveLength(2);
     expect(filterEntries(entries, 'nope')).toHaveLength(0);
+  });
+  it('also matches case-insensitively on description', () => {
+    expect(filterEntries(entries, 'session')).toEqual([entries[1]]);
+    expect(filterEntries(entries, 'DEPLOYMENT')).toEqual([entries[0]]);
   });
 });
 

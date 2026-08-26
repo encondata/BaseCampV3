@@ -154,18 +154,22 @@
    sysconf-tab-body is a column flex container — reusing it blew the
    search box up to ~220px tall. Just cap the width instead. */
 .envtab-search { max-width: 360px; }
-.envtab-rows { display: flex; flex-direction: column; }
-.envtab-row {
+
+/* standard dir-list table (see .sys-proc-list): list-head + list-row grid,
+   with the changed-row amber rail bolted onto the row instead of a chip
+   column — Key | Value (input + chip) | Description. */
+.envtab-grid { grid-template-columns: minmax(200px, 260px) minmax(220px, 1fr) 1.2fr; }
+.envtab-list .list-row {
   display: grid;
-  grid-template-columns: minmax(220px, 280px) 1fr auto;
   align-items: center;
-  gap: 14px;
-  padding: 10px 4px 10px 13px;
+  gap: 16px;
+  padding: 10px 20px 10px 13px;
   border-bottom: 1px solid var(--paper-line);
   border-left: 3px solid transparent;
+  font-size: 13px;
 }
-.envtab-rows .envtab-row:last-child { border-bottom: none; }
-.envtab-row.changed {
+.envtab-list .list-row:last-child { border-bottom: none; }
+.envtab-list .list-row.changed {
   border-left-color: var(--amber);
   background: var(--c-amber-bg, rgba(163, 98, 7, 0.06));
 }
@@ -176,6 +180,9 @@
   color: var(--text-dark);
   overflow-wrap: anywhere;
 }
+.envtab-value-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.envtab-value-cell input { flex: 1 1 auto; min-width: 0; }
+.envtab-desc { color: var(--text-mute); font-size: 12.5px; overflow-wrap: anywhere; }
 .envtab-chip {
   display: inline-flex;
   align-items: center;

@@ -1951,6 +1951,7 @@ export interface EnvEntry {
   secret: boolean;
   set?: boolean;
   value?: string;
+  description: string;
 }
 
 export async function getEnvEntries(): Promise<{ entries: EnvEntry[] }> {

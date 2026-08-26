@@ -7,7 +7,8 @@ export function filterEntries(
 ): EnvEntry[] {
   const needle = q.trim().toLowerCase();
   if (!needle) return entries;
-  return entries.filter((e) => e.key.toLowerCase().includes(needle));
+  return entries.filter((e) => e.key.toLowerCase().includes(needle)
+    || e.description.toLowerCase().includes(needle));
 }
 
 export function changedValues(

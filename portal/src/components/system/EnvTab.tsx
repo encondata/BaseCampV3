@@ -8,6 +8,7 @@ import {
   getEnvEntries, putEnvValues, restartProcesses, type EnvEntry,
 } from '../../lib/api';
 import { changedValues, describeEntry, filterEntries } from '../../lib/envConfig';
+import '../../styles/directory.css';
 
 export default function EnvTab() {
   const [entries, setEntries] = useState<EnvEntry[] | null>(null);
@@ -99,29 +100,35 @@ export default function EnvTab() {
       <input
         type="text"
         className="envtab-search"
-        placeholder="Search keys…"
+        placeholder="Search keys or descriptions…"
         aria-label="Search environment keys"
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
 
-      <div className="init-panel sysconf-card">
-        <div className="sysconf-card-head">
-          <p className="eyebrow-sm">Environment variables</p>
-          <p className="sysconf-card-desc">
-            The repo .env file. Database and object-storage keys are hidden
-            server-side; secrets are masked and only overwritten when you
-            type a new value.
-          </p>
+      <div className="sysconf-card-head">
+        <p className="eyebrow-sm">Environment variables</p>
+        <p className="sysconf-card-desc">
+          The repo .env file. Database and object-storage keys are hidden
+          server-side; secrets are masked and only overwritten when you
+          type a new value.
+        </p>
+      </div>
+
+      <div className="dir-list envtab-list">
+        <div className="list-head envtab-grid">
+          <span className="col-head">Key</span>
+          <span className="col-head">Value</span>
+          <span className="col-head">Description</span>
         </div>
-        <div className="envtab-rows">
-          {visible.map((entry) => {
-            const { placeholder, chip } = describeEntry(entry);
-            const changed = entry.key in pending;
-            const value = edits[entry.key] ?? (entry.secret ? '' : (entry.value ?? ''));
-            return (
-              <div key={entry.key} className={`envtab-row${changed ? ' changed' : ''}`}>
-                <span className="envtab-key">{entry.key}</span>
+        {visible.map((entry) => {
+          const { placeholder, chip } = describeEntry(entry);
+          const changed = entry.key in pending;
+          const value = edits[entry.key] ?? (entry.secret ? '' : (entry.value ?? ''));
+          return (
+            <div key={entry.key} className={`list-row envtab-grid${changed ? ' changed' : ''}`}>
+              <span className="envtab-key">{entry.key}</span>
+              <span className="envtab-value-cell">
                 <input
                   type={entry.secret ? 'password' : 'text'}
                   value={value}
@@ -135,13 +142,16 @@ export default function EnvTab() {
                     {chip}
                   </span>
                 )}
-              </div>
-            );
-          })}
-          {visible.length === 0 && (
-            <p className="sysconf-hint">No keys match &quot;{q}&quot;.</p>
-          )}
-        </div>
+              </span>
+              <span className="envtab-desc">{entry.description || '—'}</span>
+            </div>
+          );
+        })}
+        {visible.length === 0 && (
+          <p className="sysconf-hint" style={{ padding: 16 }}>
+            No keys match &quot;{q}&quot;.
+          </p>
+        )}
       </div>
 
       <div className="sysconf-actionbar">

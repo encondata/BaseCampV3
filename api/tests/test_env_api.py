@@ -34,8 +34,12 @@ async def test_env_read_and_update(client, db, seeded_user, monkeypatch,
     assert resp.status_code == 200
     entries = {e["key"]: e for e in resp.json()["entries"]}
     assert entries["SS_JWT_SECRET"] == {"key": "SS_JWT_SECRET",
-                                        "secret": True, "set": True}
+                                        "secret": True, "set": True,
+                                        "description": ""}
     assert "abc" not in resp.text
+    # every entry carries a description field (empty when the .env line
+    # has no trailing " # ..." comment)
+    assert all("description" in e for e in entries.values())
 
     resp = await client.put("/system/env", headers=dev,
                             json={"values": {"SS_LOG_LEVEL": "DEBUG"}})
