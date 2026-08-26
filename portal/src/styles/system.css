@@ -154,17 +154,23 @@
 /* ── ENV tab: masked .env editor, standard directory-list chrome ────── */
 /* Reuses .dir-toolbar/.dir-search/.result-count/.dir-list/.list-head/
    .col-head from directory.css (see Sites.tsx) — this file only adds the
-   env-specific bits: the value input cell, the changed-row amber rail
-   (bolted onto .list-row instead of a chip column), and section-header
-   rows. .envtab-grid's own grid-template-columns is a static fallback;
-   the component always sets the live one inline from the shown columns'
-   ColumnDef widths (same pattern as Sites' `grid`). */
-.envtab-grid { grid-template-columns: minmax(200px, 260px) minmax(240px, 1fr) 1.4fr; }
+   env-specific bits: the value/description inputs, the Status chip cell,
+   the changed-row amber rail, and section-header rows. .envtab-grid's own
+   grid-template-columns is a static fallback; the component always sets
+   the live one inline from the shown columns' ColumnDef widths (same
+   pattern as Sites' `grid`), and applies that SAME style object to
+   .list-head, every .list-row, AND the section-header row so the four
+   columns (Key / Value / Status / Description) actually line up —
+   nothing here should reintroduce a second, disagreeing column layout. */
+.envtab-grid {
+  grid-template-columns:
+    minmax(200px, 240px) minmax(240px, 1.4fr) 90px minmax(220px, 1.6fr);
+}
 .envtab-list .list-row {
   display: grid;
   align-items: center;
   gap: 16px;
-  padding: 10px 20px 10px 13px;
+  padding: 12px 20px 12px 17px;
   border-bottom: 1px solid var(--paper-line);
   border-left: 3px solid transparent;
   font-size: 13px;
@@ -175,12 +181,20 @@
   background: var(--c-amber-bg, rgba(163, 98, 7, 0.06));
 }
 /* section-header row: sourced from the .env file's own standalone
-   comments (env_file.py's `section`). Deliberately NOT given the row
-   grid — a plain block spans the full list width, "above" the columns. */
+   comments (env_file.py's `section`). It gets the SAME grid template as
+   the rows above/below it (so its left edge lines up with the Key
+   column), but its label spans every column via grid-column: 1 / -1 so
+   the header still reads as one full-width band. */
 .envtab-section-row {
-  padding: 8px 20px;
+  display: grid;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 20px 8px 17px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--paper-line);
+}
+.envtab-section-label {
+  grid-column: 1 / -1;
   font-family: var(--font-mono);
   font-size: 10.5px;
   font-weight: 600;
@@ -195,9 +209,44 @@
   color: var(--text-dark);
   overflow-wrap: anywhere;
 }
-.envtab-value-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.envtab-value-cell input { flex: 1 1 auto; min-width: 0; }
-.envtab-desc { color: var(--text-mute); font-size: 12.5px; overflow-wrap: anywhere; }
+
+/* Every input in the list — the Value cell's text/password field and the
+   Description cell's text field alike — shares one look: same border,
+   radius, padding, and font no matter the column or type. width: 100% of
+   the owning .cell (itself sized by the shared grid-template above) is
+   what actually keeps every column's edges aligned row to row. */
+.envtab-list input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-display);
+  font-size: 13px;
+  color: var(--text-dark);
+  background: var(--surface);
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  padding: 7px 10px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.envtab-list input:focus {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 4px rgba(var(--accent-rgb), 0.16);
+}
+.envtab-list input:disabled { opacity: 0.6; }
+.envtab-list input::placeholder { color: var(--text-mute); }
+/* Suppress native reveal/clear/autofill decorations so a password input
+   renders at the exact same width as a text input — no browser-injected
+   button eating into the box and throwing columns out of line. */
+.envtab-list input::-ms-reveal, .envtab-list input::-ms-clear { display: none; }
+.envtab-list input::-webkit-credentials-auto-fill-button,
+.envtab-list input::-webkit-contacts-auto-fill-button {
+  visibility: hidden;
+  display: none !important;
+  pointer-events: none;
+}
+
+.envtab-col-center { display: flex; align-items: center; justify-content: center; }
 .envtab-chip {
   display: inline-flex;
   align-items: center;

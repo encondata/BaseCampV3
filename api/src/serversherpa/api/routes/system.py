@@ -303,15 +303,24 @@ async def put_env(
     if not isinstance(values, dict) or not all(
             isinstance(v, str) for v in values.values()):
         raise _err(422, "invalid_env_update", unknown=[])
-    # A value containing any line-break character (as defined by
-    # str.splitlines(), not just \n/\r) would splice a new physical line
-    # into .env on rewrite, letting a devtools user inject a hidden key
-    # (e.g. SS_DATABASE_URL) past the classification gate. Reject up front.
-    if any(env_file.has_linebreak(v) for v in values.values()):
+    descriptions = body.get("descriptions")
+    if descriptions is None:
+        descriptions = {}
+    elif not isinstance(descriptions, dict) or not all(
+            isinstance(v, str) for v in descriptions.values()):
+        raise _err(422, "invalid_env_update", unknown=[])
+    # A value or description containing any line-break character (as
+    # defined by str.splitlines(), not just \n/\r) would splice a new
+    # physical line into .env on rewrite, letting a devtools user inject a
+    # hidden key (e.g. SS_DATABASE_URL) past the classification gate.
+    # Reject up front — descriptions land in the same trailing-comment
+    # slot as values, so they get the identical guard.
+    if any(env_file.has_linebreak(v) for v in values.values()) or any(
+            env_file.has_linebreak(v) for v in descriptions.values()):
         raise _err(422, "invalid_env_update", unknown=[])
     try:
         changed = env_file.apply_updates(
-            env_file.default_env_path(), values)
+            env_file.default_env_path(), values, descriptions)
     except env_file.EnvUpdateError as exc:
         raise _err(422, "invalid_env_update", unknown=exc.unknown) from None
     if changed:

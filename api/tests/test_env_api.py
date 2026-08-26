@@ -101,6 +101,53 @@ async def test_env_update_rejects_all_linebreak_separators(client, db,
     assert path.read_text() == before
 
 
+async def test_env_update_descriptions(client, db, seeded_user, monkeypatch,
+                                       tmp_path):
+    path = _use_tmp_env(monkeypatch, tmp_path)
+    dev = await _developer_headers(db, client)
+
+    resp = await client.put("/system/env", headers=dev, json={
+        "values": {}, "descriptions": {"SS_ENV": "Deployment mode"}})
+    assert resp.status_code == 200
+    assert resp.json() == {"changed": ["SS_ENV"]}
+    assert "SS_ENV=development  # Deployment mode" in path.read_text()
+
+    entry = await db.scalar(select(AuditLog).where(
+        AuditLog.action == "env_update").order_by(AuditLog.id.desc()))
+    assert entry.changes == {"changed": ["SS_ENV"]}
+
+    # empty description removes the trailing comment
+    resp = await client.put("/system/env", headers=dev, json={
+        "values": {}, "descriptions": {"SS_ENV": ""}})
+    assert resp.status_code == 200
+    assert resp.json() == {"changed": ["SS_ENV"]}
+    assert "SS_ENV=development\n" in path.read_text()
+    assert "Deployment mode" not in path.read_text()
+
+    # value + description on the same key in one call -> both applied
+    resp = await client.put("/system/env", headers=dev, json={
+        "values": {"SS_LOG_LEVEL": "DEBUG"},
+        "descriptions": {"SS_LOG_LEVEL": "Verbosity"}})
+    assert resp.status_code == 200
+    assert resp.json() == {"changed": ["SS_LOG_LEVEL"]}
+    assert "SS_LOG_LEVEL=DEBUG  # Verbosity" in path.read_text()
+
+
+async def test_env_update_descriptions_rejects_linebreak(client, db,
+                                                          seeded_user,
+                                                          monkeypatch,
+                                                          tmp_path):
+    path = _use_tmp_env(monkeypatch, tmp_path)
+    dev = await _developer_headers(db, client)
+    before = path.read_text()
+
+    resp = await client.put("/system/env", headers=dev, json={
+        "values": {}, "descriptions": {"SS_ENV": "bad\ndescription"}})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_env_update"
+    assert path.read_text() == before
+
+
 async def test_env_restart_touches_sentinel(client, db, seeded_user):
     dev = await _developer_headers(db, client)
     from serversherpa.system.env_file import SENTINEL_PATH

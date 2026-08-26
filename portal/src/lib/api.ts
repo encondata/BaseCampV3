@@ -1963,13 +1963,14 @@ export async function getEnvEntries(): Promise<{ entries: EnvEntry[] }> {
   return resp.json();
 }
 
-export async function putEnvValues(
-  values: Record<string, string>,
-): Promise<{ changed: string[] }> {
+export async function putEnvConfig(config: {
+  values: Record<string, string>;
+  descriptions: Record<string, string>;
+}): Promise<{ changed: string[] }> {
   const resp = await apiFetch('/system/env', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ values }),
+    body: JSON.stringify(config),
   });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();

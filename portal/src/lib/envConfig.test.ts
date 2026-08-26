@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { EnvEntry } from './api';
-import { changedValues, describeEntry, filterEntries } from './envConfig';
+import { changedDescriptions, changedValues, describeEntry, filterEntries } from './envConfig';
 
 const plain = (key: string, value: string, description = '', section = ''): EnvEntry =>
   ({ key, secret: false, value, description, section });
@@ -35,6 +35,31 @@ describe('changedValues', () => {
     expect(changedValues(entries, { SS_JWT_SECRET: '' })).toEqual({});
     expect(changedValues(entries, { SS_JWT_SECRET: 'new' }))
       .toEqual({ SS_JWT_SECRET: 'new' });
+  });
+});
+
+describe('changedDescriptions', () => {
+  const entries = [
+    plain('SS_ENV', 'development', 'Deployment environment name'),
+    secret('SS_JWT_SECRET', true, 'Signs session JWTs'),
+    plain('SS_SMTP_HOST', 'smtp.example.com'),
+  ];
+  it('counts only descriptions that differ from the entry', () => {
+    expect(changedDescriptions(entries, { SS_ENV: 'Deployment environment name' }))
+      .toEqual({});
+    expect(changedDescriptions(entries, { SS_ENV: 'New description' }))
+      .toEqual({ SS_ENV: 'New description' });
+  });
+  it('counts a new description on a key that had none', () => {
+    expect(changedDescriptions(entries, { SS_SMTP_HOST: 'SMTP relay host' }))
+      .toEqual({ SS_SMTP_HOST: 'SMTP relay host' });
+  });
+  it('counts clearing a description down to empty', () => {
+    expect(changedDescriptions(entries, { SS_JWT_SECRET: '' }))
+      .toEqual({ SS_JWT_SECRET: '' });
+  });
+  it('ignores edits for keys not present in entries', () => {
+    expect(changedDescriptions(entries, { SS_NOPE: 'x' })).toEqual({});
   });
 });
 

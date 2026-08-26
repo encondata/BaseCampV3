@@ -221,3 +221,70 @@ def test_apply_updates_preserves_standalone_comments(section_env_path):
     assert "# E-Mail" in text
     assert "# Grafana" in text
     assert "SS_SMTP_HOST=smtp2.example.com  # SMTP relay host" in text
+
+
+# ── Mandate A (round 3): editable descriptions ───────────────────────
+
+
+def test_apply_updates_sets_description_on_key_with_none(env_path):
+    changed = apply_updates(env_path, {}, descriptions={
+        "SS_ENV": "Deployment environment name"})
+    assert changed == ["SS_ENV"]
+    text = env_path.read_text()
+    assert "SS_ENV=development  # Deployment environment name" in text
+
+
+def test_apply_updates_edits_existing_description(env_path):
+    changed = apply_updates(env_path, {}, descriptions={
+        "SS_LOG_LEVEL": "New description"})
+    assert changed == ["SS_LOG_LEVEL"]
+    text = env_path.read_text()
+    assert "SS_LOG_LEVEL=INFO  # New description" in text
+    assert "Minimum level for process logs" not in text
+
+
+def test_apply_updates_empty_description_removes_comment(env_path):
+    changed = apply_updates(env_path, {}, descriptions={
+        "SS_LOG_LEVEL": ""})
+    assert changed == ["SS_LOG_LEVEL"]
+    text = env_path.read_text()
+    assert "SS_LOG_LEVEL=INFO\n" in text
+    assert "Minimum level for process logs" not in text
+
+
+def test_apply_updates_description_rejects_linebreak(env_path):
+    before = env_path.read_text()
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates(env_path, {}, descriptions={
+            "SS_LOG_LEVEL": "bad\ndescription"})
+    assert exc.value.unknown == ["SS_LOG_LEVEL"]
+    assert env_path.read_text() == before
+
+    with pytest.raises(EnvUpdateError):
+        apply_updates(env_path, {}, descriptions={
+            "SS_LOG_LEVEL": "bad description"})
+    assert env_path.read_text() == before
+
+
+def test_apply_updates_value_and_description_same_key_one_line(env_path):
+    changed = apply_updates(env_path, {"SS_LOG_LEVEL": "DEBUG"}, descriptions={
+        "SS_LOG_LEVEL": "Level for logs"})
+    assert changed == ["SS_LOG_LEVEL"]
+    text = env_path.read_text()
+    assert "SS_LOG_LEVEL=DEBUG  # Level for logs" in text
+    # exactly one line for the key
+    assert text.count("SS_LOG_LEVEL=") == 1
+
+
+def test_apply_updates_description_rejects_unknown_and_hidden(env_path):
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates(env_path, {}, descriptions={
+            "SS_DATABASE_URL": "x", "SS_NOT_A_KEY": "y"})
+    assert sorted(exc.value.unknown) == ["SS_DATABASE_URL", "SS_NOT_A_KEY"]
+    assert "SS_DATABASE_URL=postgresql+asyncpg://u:p@h/db" \
+        in env_path.read_text()
+
+
+def test_apply_updates_description_no_change_not_reported(env_path):
+    assert apply_updates(env_path, {}, descriptions={
+        "SS_LOG_LEVEL": "Minimum level for process logs"}) == []

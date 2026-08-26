@@ -28,6 +28,19 @@ export function changedValues(
   return out;
 }
 
+export function changedDescriptions(
+  entries: EnvEntry[], descEdits: Record<string, string>,
+): Record<string, string> {
+  const byKey = new Map(entries.map((e) => [e.key, e]));
+  const out: Record<string, string> = {};
+  for (const [key, description] of Object.entries(descEdits)) {
+    const entry = byKey.get(key);
+    if (!entry) continue;
+    if (description !== entry.description) out[key] = description;
+  }
+  return out;
+}
+
 export function describeEntry(
   e: EnvEntry,
 ): { placeholder: string; chip: string | null } {

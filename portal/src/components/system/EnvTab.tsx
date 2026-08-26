@@ -8,22 +8,26 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import {
-  getEnvEntries, putEnvValues, restartProcesses, type EnvEntry,
+  getEnvEntries, putEnvConfig, restartProcesses, type EnvEntry,
 } from '../../lib/api';
-import { changedValues, describeEntry, filterEntries } from '../../lib/envConfig';
+import {
+  changedDescriptions, changedValues, describeEntry, filterEntries,
+} from '../../lib/envConfig';
 import { ColumnsButton, visibleColumnsFor, type ColumnDef } from '../../lib/listTools';
 import '../../styles/directory.css';
 
 const COLUMNS: ColumnDef[] = [
-  { key: 'key', label: 'Key', width: 'minmax(200px, 260px)', default: true },
-  { key: 'value', label: 'Value', width: 'minmax(240px, 1fr)', default: true },
-  { key: 'description', label: 'Description', width: '1.4fr', default: true },
+  { key: 'key', label: 'Key', width: 'minmax(200px, 240px)', default: true },
+  { key: 'value', label: 'Value', width: 'minmax(240px, 1.4fr)', default: true },
+  { key: 'status', label: 'Status', width: '90px', default: true },
+  { key: 'description', label: 'Description', width: 'minmax(220px, 1.6fr)', default: true },
 ];
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
 export default function EnvTab() {
   const [entries, setEntries] = useState<EnvEntry[] | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
+  const [descEdits, setDescEdits] = useState<Record<string, string>>({});
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(false);
   const [savedKeys, setSavedKeys] = useState<string[] | null>(null);
@@ -52,28 +56,39 @@ export default function EnvTab() {
     setSavedKeys(null);
   }, []);
 
-  // pending = changedValues(entries, edits); Save disabled when empty
-  const pending = entries ? changedValues(entries, edits) : {};
-  const pendingCount = Object.keys(pending).length;
+  const setDescEdit = useCallback((key: string, value: string) => {
+    setDescEdits((prev) => ({ ...prev, [key]: value }));
+    setSavedKeys(null);
+  }, []);
 
-  // on save: putEnvValues(pending) -> refetch entries, clear edits, show
-  // "Saved N value(s). Changes take effect after a restart."
+  // pending = changedValues(entries, edits) + changedDescriptions(entries,
+  // descEdits); Save disabled when both are empty
+  const pendingValues = entries ? changedValues(entries, edits) : {};
+  const pendingDescriptions = entries ? changedDescriptions(entries, descEdits) : {};
+  const pendingCount = Object.keys(pendingValues).length + Object.keys(pendingDescriptions).length;
+
+  // on save: putEnvConfig({ values, descriptions }) -> refetch entries,
+  // clear edits, show "Saved N value(s). Changes take effect after a
+  // restart."
   const save = useCallback(async () => {
     if (pendingCount === 0) return;
     setBusy(true);
     setError(null);
     try {
-      const { changed } = await putEnvValues(pending);
+      const { changed } = await putEnvConfig({
+        values: pendingValues, descriptions: pendingDescriptions,
+      });
       const { entries: reloaded } = await getEnvEntries();
       setEntries(reloaded);
       setEdits({});
+      setDescEdits({});
       setSavedKeys(changed);
     } catch {
       setError('Could not save the environment configuration.');
     } finally {
       setBusy(false);
     }
-  }, [pending, pendingCount]);
+  }, [pendingValues, pendingDescriptions, pendingCount]);
 
   // Restart: confirm dialog -> restartProcesses() -> banner; the page
   // itself may briefly lose the API.
@@ -110,28 +125,43 @@ export default function EnvTab() {
       case 'key':
         return <span className="envtab-key">{entry.key}</span>;
       case 'value': {
-        const { placeholder, chip } = describeEntry(entry);
+        const { placeholder } = describeEntry(entry);
         const value = edits[entry.key] ?? (entry.secret ? '' : (entry.value ?? ''));
         return (
-          <span className="envtab-value-cell">
-            <input
-              type={entry.secret ? 'password' : 'text'}
-              value={value}
-              placeholder={placeholder}
-              disabled={busy}
-              aria-label={entry.key}
-              onChange={(e) => setEdit(entry.key, e.target.value)}
-            />
-            {chip && (
-              <span className={`envtab-chip envtab-chip-${chip === 'set' ? 'set' : 'unset'}`}>
-                {chip}
-              </span>
-            )}
-          </span>
+          <input
+            type={entry.secret ? 'password' : 'text'}
+            value={value}
+            placeholder={placeholder}
+            disabled={busy}
+            aria-label={entry.key}
+            autoComplete={entry.secret ? 'new-password' : 'off'}
+            onChange={(e) => setEdit(entry.key, e.target.value)}
+          />
         );
       }
-      case 'description':
-        return <span className="envtab-desc">{entry.description || '—'}</span>;
+      case 'status': {
+        const { chip } = describeEntry(entry);
+        return chip ? (
+          <span className={`envtab-chip envtab-chip-${chip === 'set' ? 'set' : 'unset'}`}>
+            {chip}
+          </span>
+        ) : null;
+      }
+      case 'description': {
+        const desc = descEdits[entry.key] ?? entry.description;
+        return (
+          <input
+            type="text"
+            className="envtab-desc-input"
+            value={desc}
+            placeholder="—"
+            disabled={busy}
+            aria-label={`${entry.key} description`}
+            autoComplete="off"
+            onChange={(e) => setDescEdit(entry.key, e.target.value)}
+          />
+        );
+      }
       default:
         return null;
     }
@@ -149,18 +179,20 @@ export default function EnvTab() {
       lastRenderedSection = entry.section;
       rows.push({
         node: (
-          <div key={`section-${entry.key}`} className="envtab-section-row">
-            {entry.section}
+          <div key={`section-${entry.key}`} className="envtab-section-row" style={grid}>
+            <span className="envtab-section-label">{entry.section}</span>
           </div>
         ),
       });
     }
-    const changed = entry.key in pending;
+    const changed = entry.key in pendingValues || entry.key in pendingDescriptions;
     rows.push({
       node: (
         <div key={entry.key} className={`list-row envtab-grid${changed ? ' changed' : ''}`} style={grid}>
           {shownCols.map((c) => (
-            <span key={c.key} className="cell">{cellFor(entry, c.key)}</span>
+            <span key={c.key} className={`cell${c.key === 'status' ? ' envtab-col-center' : ''}`}>
+              {cellFor(entry, c.key)}
+            </span>
           ))}
         </div>
       ),

@@ -111,12 +111,16 @@ class EnvUpdateError(Exception):
         self.unknown = unknown
 
 
-def apply_updates(path: Path, values: dict[str, str]) -> list[str]:
+def apply_updates(
+    path: Path, values: dict[str, str],
+    descriptions: dict[str, str] | None = None,
+) -> list[str]:
+    descriptions = descriptions or {}
     lines, index, _sections = _parse(path)
-    unknown = [k for k in values
+    unknown = [k for k in list(values) + list(descriptions)
                if k not in index or is_hidden(k)]
     if unknown:
-        raise EnvUpdateError(sorted(unknown))
+        raise EnvUpdateError(sorted(set(unknown)))
 
     # Defense-in-depth: a value containing any line-break character (as
     # defined by str.splitlines(), not just \n/\r) would splice a new
@@ -124,11 +128,14 @@ def apply_updates(path: Path, values: dict[str, str]) -> list[str]:
     # an arbitrary extra KEY=... line (e.g. a hidden SS_DATABASE_URL) past
     # the classification gate. The route also rejects this before calling
     # in; guard here too so this function stays safe to call directly.
+    # Descriptions get the same guard — they land in the same trailing-
+    # comment slot and could splice a line just as easily.
     invalid = [k for k, v in values.items() if has_linebreak(v)]
+    invalid += [k for k, v in descriptions.items() if has_linebreak(v)]
     if invalid:
-        raise EnvUpdateError(sorted(invalid))
+        raise EnvUpdateError(sorted(set(invalid)))
 
-    changed: list[str] = []
+    changed: set[str] = set()
     for key, new_value in values.items():
         if is_secret(key) and new_value == "":
             continue                       # keep the stored secret
@@ -144,8 +151,21 @@ def apply_updates(path: Path, values: dict[str, str]) -> list[str]:
             lines[i] = f"{key}={new_value}  #{comment}"
         else:
             lines[i] = f"{key}={new_value}"
-        changed.append(key)
+        changed.add(key)
 
+    for key, new_description in descriptions.items():
+        i = index[key]
+        rest = _LINE.match(lines[i]).group(2)
+        current_value, current_description = _split_value_comment(rest)
+        if current_description == new_description:
+            continue
+        if new_description == "":
+            lines[i] = f"{key}={current_value}"
+        else:
+            lines[i] = f"{key}={current_value}  # {new_description}"
+        changed.add(key)
+
+    changed = sorted(changed)
     if changed:
         shutil.copy2(path, path.with_suffix(".bak"))
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".env.tmp")
