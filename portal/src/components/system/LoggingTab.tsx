@@ -126,11 +126,14 @@ export default function LoggingTab() {
   const remote = cfg.mode !== 'local';
 
   return (
-    <div className="init-panel sysconf-form">
+    <div className="sysconf-tab-body">
       {errors._form && <p className="pf-error">{errors._form}</p>}
 
-      <div className="sysconf-group">
-        <label>Mode</label>
+      <div className="init-panel sysconf-card">
+        <div className="sysconf-card-head">
+          <p className="eyebrow-sm">Mode</p>
+          <p className="sysconf-card-desc">How log records are kept and shipped.</p>
+        </div>
         <div className="imp-radio-group" role="radiogroup" aria-label="Logging mode">
           {MODE_OPTIONS.map((opt) => (
             <label key={opt.value} className="imp-radio">
@@ -146,38 +149,44 @@ export default function LoggingTab() {
         </div>
       </div>
 
-      <div className="sysconf-group">
-        <label>Storage limits</label>
+      <div className="init-panel sysconf-card">
+        <div className="sysconf-card-head">
+          <p className="eyebrow-sm">Storage limits</p>
+          <p className="sysconf-card-desc">Caps on the local Postgres store.</p>
+        </div>
         <div className="sysconf-row">
-          <div>
-            <span className="sysconf-hint">Max rows per process</span>
-            <input type="number" value={cfg.local_max_rows_per_process} disabled={busy}
+          <div className="sysconf-field">
+            <label className="sysconf-label" htmlFor="sc-local-max-rows">Max rows per process</label>
+            <input id="sc-local-max-rows" type="number"
+                   value={cfg.local_max_rows_per_process} disabled={busy}
                    onChange={(e) => setField('local_max_rows_per_process', Number(e.target.value))} />
             {errors.local_max_rows_per_process && (
               <p className="pf-error">{errors.local_max_rows_per_process}</p>
             )}
           </div>
-          <div>
-            <span className="sysconf-hint">Max age (days)</span>
-            <input type="number" value={cfg.local_max_age_days} disabled={busy}
+          <div className="sysconf-field">
+            <label className="sysconf-label" htmlFor="sc-local-max-age">Max age (days)</label>
+            <input id="sc-local-max-age" type="number"
+                   value={cfg.local_max_age_days} disabled={busy}
                    onChange={(e) => setField('local_max_age_days', Number(e.target.value))} />
             {errors.local_max_age_days && (
               <p className="pf-error">{errors.local_max_age_days}</p>
             )}
           </div>
           {cfg.mode === 'remote' && (
-            <div>
-              <span className="sysconf-hint">Buffer rows</span>
-              <input type="number" value={cfg.remote_buffer_rows} disabled={busy}
+            <div className="sysconf-field">
+              <label className="sysconf-label" htmlFor="sc-remote-buffer-rows">Buffer rows</label>
+              <input id="sc-remote-buffer-rows" type="number"
+                     value={cfg.remote_buffer_rows} disabled={busy}
                      onChange={(e) => setField('remote_buffer_rows', Number(e.target.value))} />
               {errors.remote_buffer_rows && (
                 <p className="pf-error">{errors.remote_buffer_rows}</p>
               )}
             </div>
           )}
-          <div>
-            <span className="sysconf-hint">Minimum level</span>
-            <select value={cfg.min_level} disabled={busy}
+          <div className="sysconf-field">
+            <label className="sysconf-label" htmlFor="sc-min-level">Minimum level</label>
+            <select id="sc-min-level" value={cfg.min_level} disabled={busy}
                     onChange={(e) => setField('min_level', e.target.value)}>
               {LEVEL_OPTIONS.map((lvl) => (
                 <option key={lvl} value={lvl}>{lvl}</option>
@@ -189,8 +198,11 @@ export default function LoggingTab() {
       </div>
 
       {remote && (
-        <div className="sysconf-group">
-          <label>Remote transport</label>
+        <div className="init-panel sysconf-card">
+          <div className="sysconf-card-head">
+            <p className="eyebrow-sm">Remote transport</p>
+            <p className="sysconf-card-desc">Where forwarded records go.</p>
+          </div>
           <div className="imp-radio-group" role="radiogroup" aria-label="Remote transport">
             <label className="imp-radio">
               <input type="radio" name="logging-transport" value="loki"
@@ -212,29 +224,29 @@ export default function LoggingTab() {
 
           {cfg.transport === 'loki' && (
             <div className="sysconf-row">
-              <div>
-                <span className="sysconf-hint">URL</span>
-                <input type="text" value={cfg.loki.url} disabled={busy}
+              <div className="sysconf-field">
+                <label className="sysconf-label" htmlFor="sc-loki-url">URL</label>
+                <input id="sc-loki-url" type="text" value={cfg.loki.url} disabled={busy}
                        placeholder="http://loki:3100"
                        onChange={(e) => setField('loki.url', e.target.value)} />
                 {errors['loki.url'] && <p className="pf-error">{errors['loki.url']}</p>}
               </div>
-              <div>
-                <span className="sysconf-hint">Username (optional)</span>
-                <input type="text" value={cfg.loki.username} disabled={busy}
+              <div className="sysconf-field">
+                <label className="sysconf-label" htmlFor="sc-loki-username">Username (optional)</label>
+                <input id="sc-loki-username" type="text" value={cfg.loki.username} disabled={busy}
                        onChange={(e) => setField('loki.username', e.target.value)} />
                 {errors['loki.username'] && <p className="pf-error">{errors['loki.username']}</p>}
               </div>
-              <div>
-                <span className="sysconf-hint">Password</span>
-                <input type="password" value={cfg.loki.password ?? ''} disabled={busy}
+              <div className="sysconf-field">
+                <label className="sysconf-label" htmlFor="sc-loki-password">Password</label>
+                <input id="sc-loki-password" type="password" value={cfg.loki.password ?? ''} disabled={busy}
                        placeholder={cfg.loki.password_set ? '••••••••  (unchanged)' : ''}
                        onChange={(e) => setField('loki.password', e.target.value)} />
                 {errors['loki.password'] && <p className="pf-error">{errors['loki.password']}</p>}
               </div>
-              <div>
-                <span className="sysconf-hint">Tenant ID (optional)</span>
-                <input type="text" value={cfg.loki.tenant_id} disabled={busy}
+              <div className="sysconf-field">
+                <label className="sysconf-label" htmlFor="sc-loki-tenant">Tenant ID (optional)</label>
+                <input id="sc-loki-tenant" type="text" value={cfg.loki.tenant_id} disabled={busy}
                        onChange={(e) => setField('loki.tenant_id', e.target.value)} />
                 {errors['loki.tenant_id'] && <p className="pf-error">{errors['loki.tenant_id']}</p>}
               </div>
@@ -243,21 +255,21 @@ export default function LoggingTab() {
 
           {cfg.transport === 'syslog' && (
             <div className="sysconf-row">
-              <div>
-                <span className="sysconf-hint">Host</span>
-                <input type="text" value={cfg.syslog.host} disabled={busy}
+              <div className="sysconf-field">
+                <label className="sysconf-label" htmlFor="sc-syslog-host">Host</label>
+                <input id="sc-syslog-host" type="text" value={cfg.syslog.host} disabled={busy}
                        onChange={(e) => setField('syslog.host', e.target.value)} />
                 {errors['syslog.host'] && <p className="pf-error">{errors['syslog.host']}</p>}
               </div>
-              <div>
-                <span className="sysconf-hint">Port</span>
-                <input type="number" value={cfg.syslog.port} disabled={busy}
+              <div className="sysconf-field">
+                <label className="sysconf-label" htmlFor="sc-syslog-port">Port</label>
+                <input id="sc-syslog-port" type="number" value={cfg.syslog.port} disabled={busy}
                        onChange={(e) => setField('syslog.port', Number(e.target.value))} />
                 {errors['syslog.port'] && <p className="pf-error">{errors['syslog.port']}</p>}
               </div>
-              <div>
-                <span className="sysconf-hint">Protocol</span>
-                <select value={cfg.syslog.protocol} disabled={busy}
+              <div className="sysconf-field">
+                <label className="sysconf-label" htmlFor="sc-syslog-protocol">Protocol</label>
+                <select id="sc-syslog-protocol" value={cfg.syslog.protocol} disabled={busy}
                         onChange={(e) => setField('syslog.protocol', e.target.value)}>
                   <option value="udp">udp</option>
                   <option value="tcp">tcp</option>
@@ -270,15 +282,17 @@ export default function LoggingTab() {
         </div>
       )}
 
-      <div className="sysconf-actions">
+      <div className="sysconf-actionbar">
         <button type="button" className="btn-solid" disabled={busy} onClick={() => void save()}>
           {busy ? 'Saving…' : 'Save changes'}
         </button>
         <button type="button" className="mini-btn" disabled={testBusy} onClick={() => void test()}>
           {testBusy ? 'Sending…' : 'Send test event'}
         </button>
-        {saved && <span className="sysconf-saved">Saved.</span>}
-        {testResult && <span className="sysconf-hint">{testResult}</span>}
+        <span className="sysconf-actionbar-status">
+          {saved && <span className="sysconf-saved">Saved.</span>}
+          {testResult && <span className="sysconf-hint">{testResult}</span>}
+        </span>
       </div>
     </div>
   );

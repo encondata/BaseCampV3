@@ -65,20 +65,83 @@
 .log-ERROR, .log-CRITICAL { color: var(--c-red, #c03540); }
 
 /* System Config */
-.sysconf-tabs { display: flex; gap: 8px; margin: 14px 0 18px; }
-.sysconf-form { max-width: 640px; display: flex; flex-direction: column;
-  gap: 18px; }
-.sysconf-group { display: flex; flex-direction: column; gap: 8px; }
-.sysconf-group > label { font-weight: 600; font-size: 13px; }
+
+/* ── tab bar — underline style; sits under the page hint and stays
+   readable once a second (Environment) tab lands ─────────────────── */
+.sysconf-tabbar {
+  display: flex;
+  gap: 24px;
+  margin: 18px 0 24px;
+  border-bottom: 1px solid var(--paper-line);
+}
+.sysconf-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px; /* sit flush on the row's hairline */
+  background: transparent;
+  padding: 0 0 12px;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-mute);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.sysconf-tab:hover { color: var(--text-dark); }
+.sysconf-tab:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.sysconf-tab.active { color: var(--text-dark); border-bottom-color: var(--amber); }
+
+/* ── tab body: stack of group cards + the persistent action bar ──── */
+.sysconf-tab-body {
+  max-width: 760px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* ── group cards ───────────────────────────────────────────────── */
+.sysconf-card { display: flex; flex-direction: column; gap: 18px; }
+.sysconf-card-head { display: flex; flex-direction: column; gap: 4px; }
+.sysconf-card .sysconf-card-head .eyebrow-sm { margin: 0; }
+.sysconf-card-desc { margin: 0; font-size: 12.5px; font-weight: 300; color: var(--text-mute); }
+
+/* ── field grid: label above input, hint/error below, equal columns ── */
+.sysconf-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 16px;
+}
+.sysconf-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sysconf-label { font-size: 12.5px; font-weight: 500; color: var(--text-mute); }
 .sysconf-hint { color: var(--text-mute); font-size: 12px; }
-.sysconf-row { display: flex; gap: 12px; flex-wrap: wrap; }
-.sysconf-row > div { flex: 1 1 180px; }
+.sysconf-card .sysconf-row .pf-error { margin-top: 0; }
 /* text-like fields only — radio/checkbox inputs belong to the imp-radio
    cards and must keep their natural size */
-.sysconf-form input:not([type="radio"]):not([type="checkbox"]),
-.sysconf-form select { height: 34px; padding: 0 10px;
+.sysconf-tab-body input:not([type="radio"]):not([type="checkbox"]),
+.sysconf-tab-body select { height: 34px; padding: 0 10px;
   border-radius: 9px; border: 1px solid var(--paper-line);
   background: var(--surface, #fff); font-size: 13px; width: 100%;
   color: var(--text-dark); }
-.sysconf-actions { display: flex; align-items: center; gap: 12px; }
+.sysconf-tab-body input:focus-visible, .sysconf-tab-body select:focus-visible {
+  outline: 2px solid var(--amber); outline-offset: 1px; border-color: var(--amber);
+}
+/* number inputs read as small numeric fields, not full-bleed text inputs */
+.sysconf-row input[type="number"] { max-width: 140px; }
+
+/* ── action bar: one persistent row at the bottom of the tab ─────── */
+.sysconf-actionbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 18px;
+  border-top: 1px solid var(--paper-line);
+}
+.sysconf-actionbar-status {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  text-align: right;
+}
 .sysconf-saved { color: var(--c-green, #178a4c); font-size: 12.5px; }

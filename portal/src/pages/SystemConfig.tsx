@@ -17,10 +17,11 @@ export default function SystemConfig() {
     <div className="portal-page">
       <div className="eyebrow">Developer</div>
       <h1 className="page-title">System Config</h1>
-      <div className="sysconf-tabs">
+      <p className="page-hint">Runtime settings for the ServerSherpa processes.</p>
+      <div className="sysconf-tabbar" role="tablist">
         {TABS.map((t) => (
-          <button key={t.key} type="button"
-                  className={`mini-btn${active === t.key ? ' active' : ''}`}
+          <button key={t.key} type="button" role="tab" aria-selected={active === t.key}
+                  className={`sysconf-tab${active === t.key ? ' active' : ''}`}
                   onClick={() => setActive(t.key)}>
             {t.label}
           </button>
