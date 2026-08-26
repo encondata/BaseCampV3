@@ -73,7 +73,10 @@
 .sysconf-hint { color: var(--text-mute); font-size: 12px; }
 .sysconf-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .sysconf-row > div { flex: 1 1 180px; }
-.sysconf-form input, .sysconf-form select { height: 34px; padding: 0 10px;
+/* text-like fields only — radio/checkbox inputs belong to the imp-radio
+   cards and must keep their natural size */
+.sysconf-form input:not([type="radio"]):not([type="checkbox"]),
+.sysconf-form select { height: 34px; padding: 0 10px;
   border-radius: 9px; border: 1px solid var(--paper-line);
   background: var(--surface, #fff); font-size: 13px; width: 100%;
   color: var(--text-dark); }
