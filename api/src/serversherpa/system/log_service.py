@@ -17,7 +17,10 @@ from serversherpa.system.config_store import read_section
 
 logger = logging.getLogger("serversherpa.system.log_service")
 
-PROBE_EVERY_TICKS = 3
+# Probe every tick: the probe stamps the web row's heartbeat, and the
+# registry derives "failed" after 15 s of silence — a 30 s cadence (the
+# spec's every-3rd-tick) made a healthy web row flip-flop to failed.
+PROBE_EVERY_TICKS = 1
 
 
 async def enforce_retention(db: AsyncSession) -> dict:
