@@ -158,6 +158,10 @@
 .idet-title-row .page-title { margin: 0; }
 .idet-desc { max-width: 68ch; }
 
+/* header actions — Import assets (secondary, moves only) sits beside Edit
+   (primary); Edit stays visually dominant since it alone uses .btn-solid. */
+.idet-header-actions { display: flex; align-items: center; gap: 10px; flex: none; }
+
 /* the info cards stack to one column below the same width the
    row-detail's .detail-grid already collapses at (directory.css) */
 .idet-grid { margin-bottom: 20px; }
@@ -568,3 +572,274 @@
   color: var(--c-green);
   flex: 0 0 auto;
 }
+
+/* ── move-assets import page (/initiatives/:id/import-assets) — a real
+   three-step flow (Upload / Review / Import) instead of one flat card with
+   a native file input. Tokens all come from directory.css/portal-theme.css
+   (--surface, --surface-2, --paper-line, --amber/--accent, --text-dark,
+   --text-mute, --c-*), same as the rest of this stylesheet — nothing here
+   introduces a new hardcoded colour. ─────────────────────────────────── */
+
+/* one card at a time (upload / progress / report) — same footprint as
+   .init-panel, just a shared hook for this page's own spacing tweaks. */
+.imp-card { margin-top: 16px; }
+.imp-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.imp-card-head .eyebrow-sm { margin: 0; }
+.imp-card-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 20px;
+}
+.imp-card-foot .page-hint { margin: 0; }
+
+/* quiet inline text action — template downloads, "Start over", "Back to
+   move" — the link-style counterpart to .mini-btn's bordered button. */
+.imp-template-links {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+}
+.imp-link-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--c-blue);
+  text-decoration: none;
+  cursor: pointer;
+}
+.imp-link-btn:hover:not(:disabled) { text-decoration: underline; }
+.imp-link-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ── stepper — numbered dots joined by hairlines; active step accented,
+   done steps checked. Purely a readout of `currentStep(job)`, no state of
+   its own. ─────────────────────────────────────────────────────────── */
+.imp-stepper {
+  display: flex;
+  align-items: center;
+  margin: 18px 0 10px;
+}
+.imp-stepper-item { display: flex; align-items: center; }
+.imp-stepper-dot {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1.5px solid var(--paper-line);
+  background: var(--surface);
+  display: grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  flex: none;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.imp-stepper-dot.active {
+  border-color: var(--amber);
+  color: var(--amber);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+.imp-stepper-dot.done {
+  border-color: var(--c-green);
+  background: var(--c-green-bg);
+  color: var(--c-green);
+}
+.imp-stepper-dot svg { width: 12px; height: 12px; }
+.imp-stepper-label {
+  margin-left: 8px;
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.imp-stepper-label.active { color: var(--text-dark); font-weight: 600; }
+.imp-stepper-line {
+  width: 40px;
+  height: 1px;
+  background: var(--paper-line);
+  margin: 0 14px;
+  flex: none;
+}
+@media (max-width: 560px) {
+  .imp-stepper-line { width: 20px; margin: 0 8px; }
+  .imp-stepper-label { display: none; }
+}
+
+/* ── dropzone — a real click-to-browse + drag/drop target. The <input> is
+   visually hidden (not display:none) so it stays in the tab order and
+   keeps native Enter/Space activation; the focus ring is painted on the
+   dropzone itself via :has(), the same technique .init-check already uses
+   above for its checked state. ───────────────────────────────────────── */
+.imp-dropzone {
+  position: relative;
+  display: block;
+  border: 1.5px dashed var(--paper-line);
+  border-radius: 12px;
+  padding: 28px 20px;
+  text-align: center;
+  cursor: pointer;
+  background: var(--surface-2, #f5f7fa);
+  transition: border-color 0.15s, background 0.15s;
+}
+.imp-dropzone:hover { border-color: var(--accent-soft); }
+.imp-dropzone.drag { border-color: var(--amber); background: rgba(var(--accent-rgb), 0.08); }
+.imp-dropzone.has-file { cursor: default; padding: 16px 20px; text-align: left; }
+.imp-dropzone:has(.imp-dropzone-input:focus-visible) {
+  outline: 2px solid var(--amber);
+  outline-offset: 3px;
+}
+.imp-dropzone-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.imp-dropzone-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-mute);
+}
+.imp-dropzone-empty svg { width: 30px; height: 30px; color: var(--text-mute); }
+.imp-dropzone-title { font-size: 13.5px; color: var(--text-dark); font-weight: 500; margin: 0; }
+.imp-dropzone-hint {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  margin: 0;
+}
+.imp-dropzone-file { display: flex; align-items: center; gap: 12px; }
+.imp-dropzone-file > svg { width: 24px; height: 24px; color: var(--amber); flex: none; }
+.imp-dropzone-file-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.imp-dropzone-file-name {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-dark);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.imp-dropzone-file-size { font-family: var(--font-mono); font-size: 11px; color: var(--text-mute); }
+.imp-dropzone-remove {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--paper-line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-mute);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.imp-dropzone-remove:hover:not(:disabled) { border-color: var(--c-red-bd); color: var(--c-red); }
+.imp-dropzone-remove:disabled { opacity: 0.5; cursor: default; }
+
+/* ── options — vertical radio group + checkbox, each row a title + a
+   one-line muted description instead of the old cramped all-caps pills. */
+.imp-options { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; }
+.imp-options-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  margin: 0 0 2px;
+}
+.imp-radio-group { display: flex; flex-direction: column; gap: 8px; }
+.imp-radio,
+.imp-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  background: var(--surface-2, #f5f7fa);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.imp-radio:has(input:checked),
+.imp-checkbox:has(input:checked) {
+  border-color: var(--amber);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+.imp-radio:has(input:focus-visible),
+.imp-checkbox:has(input:focus-visible) {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+.imp-radio:has(input:disabled),
+.imp-checkbox:has(input:disabled) { opacity: 0.6; cursor: default; }
+.imp-radio input,
+.imp-checkbox input { margin-top: 2px; accent-color: var(--amber); flex: none; }
+.imp-radio-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.imp-radio-title {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-dark);
+}
+.imp-radio-desc { font-size: 12px; font-weight: 300; color: var(--text-mute); }
+
+/* ── progress card ─────────────────────────────────────────────────── */
+.imp-progress-hint { margin: 10px 0 2px; }
+.imp-progress-meta { margin: 0; }
+
+/* ── report card — headline + chips + a dir-list-styled details table
+   (same list-head/row-main/cell grid as the Assets table on the detail
+   page) instead of a bare HTML <table>. The ≤768px directory.css rule that
+   turns .list-head/.row-main into stacked cards applies here for free. */
+.imp-report-headline {
+  margin: 0 0 14px;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-dark);
+}
+.imp-report-chips { margin-bottom: 16px; }
+.imp-report-list { overflow: visible; margin-bottom: 4px; }
+.imp-report-list .list-head { border-radius: 15px 15px 0 0; }
+.imp-report-list .dir-row:last-child .row-main { border-radius: 0 0 15px 15px; }
+.imp-report-list .row-main {
+  cursor: default;
+  min-height: auto;
+  padding: 10px 20px;
+}
+.imp-report-list .row-main:hover { background: none; }
+.imp-report-grid { grid-template-columns: 70px 160px 130px 1fr; }
+
+.imp-pagination {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.imp-pagination .page-hint { margin: 0 0 0 4px; }

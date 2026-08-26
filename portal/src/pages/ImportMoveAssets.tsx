@@ -1,8 +1,15 @@
 /** Move-assets bulk import: upload -> validate report -> commit -> results.
  *  All state renders from the polled import job, so a refresh mid-import
- *  loses nothing. The heavy lifting happens in the separate API worker. */
+ *  loses nothing. The heavy lifting happens in the separate API worker.
+ *
+ *  The page reads as a true three-step sequence — Upload, Review, Import —
+ *  and the stepper at the top plus every card below it are driven purely
+ *  by the polled `job`, never by separate "which screen am I on" UI state
+ *  (see `currentStep` below). */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback, useEffect, useRef, useState, type DragEvent,
+} from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import {
@@ -17,21 +24,25 @@ import {
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
-import '../styles/sites.css';
 
 const POLL_MS = 2000;
 const PAGE_SIZE = 500;
 
-/** make/model mode descriptions — verbatim from the template's Reference
- *  sheet (api/src/serversherpa/imports/parsing.py's build_template_xlsx). */
-const MODE_OPTIONS: { value: string; label: string }[] = [
-  { value: 'fuzzy', label: 'fuzzy — match catalog + aliases; unmatched rows need review' },
-  { value: 'force', label: 'force — always create missing make/models' },
-  { value: 'hybrid', label: 'hybrid — match first, create when unmatched' },
+/** make/model mode descriptions — verbatim intent from the template's
+ *  Reference sheet (api/src/serversherpa/imports/parsing.py's
+ *  build_template_xlsx), reworded here as a title + one-line description
+ *  instead of one cramped all-caps pill label. */
+const MODE_OPTIONS: { value: string; title: string; desc: string }[] = [
+  { value: 'fuzzy', title: 'Match only',
+    desc: 'Unmatched make/models are flagged for review.' },
+  { value: 'force', title: 'Always create',
+    desc: 'Missing make/models are created automatically.' },
+  { value: 'hybrid', title: 'Match, then create',
+    desc: 'Try to match first; create when nothing matches.' },
 ];
 
 /** row-status -> chip class, shared by the summary chips and the details
- *  table (SiteBulkImport.tsx's report-table idiom: a span with a class). */
+ *  list (matches the c-* chip idiom used across the portal). */
 const STATUS_CHIP: Record<string, string> = {
   created: 'c-green', updated: 'c-amber', review: 'c-slate', error: 'c-red',
 };
@@ -46,10 +57,64 @@ const PHASE_LABELS: Record<'validate' | 'commit',
             review: 'review skipped', error: 'errors' },
 };
 
+const STEPS: { n: 1 | 2 | 3; label: string }[] = [
+  { n: 1, label: 'Upload' },
+  { n: 2, label: 'Review' },
+  { n: 3, label: 'Import' },
+];
+
+/** Which of the three steps is current, derived purely from the polled
+ *  job — never separate UI state, so a page refresh mid-import shows the
+ *  right step immediately.
+ *  - no job, or the validate phase hasn't finished successfully yet
+ *    (queued/running/failed/cancelled): step 1 — there's nothing usable to
+ *    review until validation actually completes.
+ *  - validate completed: step 2, the report card is showing.
+ *  - any commit-phase status (queued/running/completed/failed/cancelled):
+ *    step 3 — once a commit job exists the user has moved on to
+ *    importing, whether it's still running, finished, or ended badly. */
+function currentStep(job: ImportJobOut | null): 1 | 2 | 3 {
+  if (!job) return 1;
+  if (job.phase === 'commit') return 3;
+  return job.status === 'completed' ? 2 : 1;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+function ImportStepper({ step }: { step: 1 | 2 | 3 }) {
+  return (
+    <div className="imp-stepper">
+      {STEPS.map((s, i) => (
+        <div key={s.n} className="imp-stepper-item">
+          <span className={`imp-stepper-dot${
+            s.n < step ? ' done' : s.n === step ? ' active' : ''}`}>
+            {s.n < step ? (
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"
+                   strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 6.5 4.8 9.5 10 2.8" />
+              </svg>
+            ) : s.n}
+          </span>
+          <span className={`imp-stepper-label${s.n === step ? ' active' : ''}`}>
+            {s.label}
+          </span>
+          {i < STEPS.length - 1 && <span className="imp-stepper-line" />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function ImportMoveAssets() {
   const { id } = useParams<{ id: string }>();
   const [initiative, setInitiative] = useState<InitiativeDetail | null>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [dragOver, setDragOver] = useState(false);
   const [mode, setMode] = useState('fuzzy');
   const [generateSerials, setGenerateSerials] = useState(false);
   const [job, setJob] = useState<ImportJobOut | null>(null);
@@ -58,6 +123,7 @@ export default function ImportMoveAssets() {
   const [page, setPage] = useState(0);
   const samplesRef = useRef<SpeedSample[]>([]);
   const [speed, setSpeed] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -95,9 +161,27 @@ export default function ImportMoveAssets() {
     }
   }, []);
 
+  // Clears the file-input's DOM value along with the file/job state — a
+  // browser won't re-fire onChange for the same path unless the element's
+  // value is cleared first, so re-picking the exact same file after
+  // "Import another file" / "Start over" would otherwise silently no-op.
+  const resetImport = useCallback(() => {
+    setJob(null);
+    setFile(null);
+    setPage(0);
+    setError(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, []);
+
+  const removeFile = useCallback(() => {
+    setFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, []);
+
   const isMove = !initiative || initiative.initiative_type === 'move';
   const active = job !== null && jobIsActive(job);
   const eta = job && active ? etaSeconds(job, speed) : null;
+  const step = currentStep(job);
 
   return (
     <div className="portal-page">
@@ -120,55 +204,107 @@ export default function ImportMoveAssets() {
 
       {isMove && (
         <>
-          {error && <p className="pf-error" style={{ marginTop: 16 }}>{error}</p>}
+          <ImportStepper step={step} />
+
+          {error && <p className="pf-error" style={{ marginTop: -6, marginBottom: 16 }}>{error}</p>}
 
           {!active && (
-            <div className="init-panel" style={{ marginTop: 16 }}>
-              <p className="eyebrow-sm">Upload</p>
-
-              <div className="bulk-templates">
-                <span className="page-hint" style={{ margin: 0 }}>
-                  Start from a template:
-                </span>
-                <button className="mini-btn" type="button" disabled={busy}
-                        onClick={() => void downloadMoveAssetTemplate('xlsx')}>
-                  Template (.xlsx)
-                </button>
-                <button className="mini-btn" type="button" disabled={busy}
-                        onClick={() => void downloadMoveAssetTemplate('csv')}>
-                  Template (.csv)
-                </button>
-              </div>
-
-              <div className="bulk-file-row" style={{ marginTop: 14 }}>
-                <label>File (.csv, .xlsx, .xls)</label>
-                <input type="file" accept=".csv,.xlsx,.xls" disabled={busy}
-                       onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-              </div>
-
-              <div className="init-field" style={{ marginTop: 14, flex: '1 1 100%' }}>
-                <label>Make/model mode</label>
-                <div className="init-checks">
-                  {MODE_OPTIONS.map((opt) => (
-                    <label key={opt.value} className="init-check">
-                      <input type="radio" name="make-model-mode" value={opt.value}
-                             checked={mode === opt.value} disabled={busy}
-                             onChange={() => setMode(opt.value)} />
-                      {opt.label}
-                    </label>
-                  ))}
+            <div className="init-panel imp-card">
+              <div className="imp-card-head">
+                <p className="eyebrow-sm">Upload the facility tracker</p>
+                <div className="imp-template-links">
+                  <span>Template:</span>
+                  <button type="button" className="imp-link-btn" disabled={busy}
+                          onClick={() => void downloadMoveAssetTemplate('xlsx')}>
+                    .xlsx
+                  </button>
+                  <span>·</span>
+                  <button type="button" className="imp-link-btn" disabled={busy}
+                          onClick={() => void downloadMoveAssetTemplate('csv')}>
+                    .csv
+                  </button>
                 </div>
               </div>
 
-              <div className="init-checks" style={{ marginTop: 12 }}>
-                <label className="init-check">
+              <label
+                className={`imp-dropzone${dragOver ? ' drag' : ''}${file ? ' has-file' : ''}`}
+                onDragOver={(e: DragEvent<HTMLLabelElement>) => {
+                  e.preventDefault();
+                  if (!busy) setDragOver(true);
+                }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e: DragEvent<HTMLLabelElement>) => {
+                  e.preventDefault();
+                  setDragOver(false);
+                  if (busy) return;
+                  const dropped = e.dataTransfer.files?.[0];
+                  if (dropped) setFile(dropped);
+                }}
+              >
+                <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls"
+                       disabled={busy} className="imp-dropzone-input"
+                       onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+                {file ? (
+                  <div className="imp-dropzone-file">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+                      <path d="M14 2v6h6" />
+                    </svg>
+                    <div className="imp-dropzone-file-meta">
+                      <span className="imp-dropzone-file-name">{file.name}</span>
+                      <span className="imp-dropzone-file-size">{formatBytes(file.size)}</span>
+                    </div>
+                    <button type="button" className="imp-dropzone-remove"
+                            aria-label="Remove file" disabled={busy}
+                            onClick={(e) => { e.preventDefault(); removeFile(); }}>
+                      ×
+                    </button>
+                  </div>
+                ) : (
+                  <div className="imp-dropzone-empty">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M7 18a4.5 4.5 0 0 1-1.2-8.84A5.5 5.5 0 0 1 16.5 8H17a4 4 0 0 1 1 7.87" />
+                      <path d="M12 12v7" />
+                      <path d="M9.5 14.5 12 12l2.5 2.5" />
+                    </svg>
+                    <p className="imp-dropzone-title">Drop your file here, or click to browse</p>
+                    <p className="imp-dropzone-hint">.csv, .xlsx, or .xls</p>
+                  </div>
+                )}
+              </label>
+
+              <div className="imp-options">
+                <p className="imp-options-label">Options</p>
+                <div className="imp-radio-group" role="radiogroup"
+                     aria-label="Make/model handling">
+                  {MODE_OPTIONS.map((opt) => (
+                    <label key={opt.value} className="imp-radio">
+                      <input type="radio" name="make-model-mode" value={opt.value}
+                             checked={mode === opt.value} disabled={busy}
+                             onChange={() => setMode(opt.value)} />
+                      <span className="imp-radio-body">
+                        <span className="imp-radio-title">{opt.title}</span>
+                        <span className="imp-radio-desc">{opt.desc}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+
+                <label className="imp-checkbox">
                   <input type="checkbox" checked={generateSerials} disabled={busy}
                          onChange={(e) => setGenerateSerials(e.target.checked)} />
-                  Generate serial numbers for blank rows
+                  <span className="imp-radio-body">
+                    <span className="imp-radio-title">Generate serial numbers</span>
+                    <span className="imp-radio-desc">
+                      Blank serial-number rows get one generated automatically.
+                    </span>
+                  </span>
                 </label>
               </div>
 
-              <div className="bulk-actions" style={{ marginTop: 14 }}>
+              <div className="imp-card-foot">
                 <button className="btn-solid" type="button"
                         disabled={busy || !file}
                         onClick={() => {
@@ -176,16 +312,16 @@ export default function ImportMoveAssets() {
                           void run(() => createMoveAssetImportJob(
                             id, file, { makeModelMode: mode, generateSerials }));
                         }}>
-                  {busy ? 'Working…' : 'Validate'}
+                  {busy ? 'Validating…' : 'Validate file'}
                 </button>
               </div>
             </div>
           )}
 
           {job && active && (
-            <div className="init-panel" style={{ marginTop: 16 }}>
+            <div className="init-panel imp-card">
               <p className="eyebrow-sm">
-                {job.phase === 'commit' ? 'Importing…' : 'Validating…'}
+                {job.phase === 'commit' ? 'Importing rows…' : 'Checking the file…'}
               </p>
 
               <div className="idet-assets-progress">
@@ -198,14 +334,18 @@ export default function ImportMoveAssets() {
                 </div>
               </div>
 
-              <p className="page-hint">
+              <p className="page-hint imp-progress-hint">
                 {job.processed_rows} of {job.total_rows} rows
-                {' — '}{Math.round(speed)} rows/s
-                {eta !== null && eta > 0 && ` — about ${eta}s remaining`}
               </p>
+              {speed > 0 && (
+                <p className="page-hint imp-progress-meta">
+                  ~{Math.round(speed)} rows/s
+                  {eta !== null && eta > 0 ? ` · about ${eta}s left` : ''}
+                </p>
+              )}
 
-              <div className="bulk-actions">
-                <button className="mini-btn danger" type="button" disabled={busy}
+              <div className="imp-card-foot">
+                <button className="mini-btn" type="button" disabled={busy}
                         onClick={() => void run(() => cancelImportJob(job.id))}>
                   Cancel
                 </button>
@@ -214,9 +354,7 @@ export default function ImportMoveAssets() {
           )}
 
           {job && !active && (
-            <div className="init-panel" style={{ marginTop: 16 }}>
-              <p className="eyebrow-sm">Results</p>
-
+            <div className="init-panel imp-card">
               {job.status === 'failed' && (
                 <div className="dir-empty">
                   <b>Import failed</b>
@@ -243,10 +381,25 @@ export default function ImportMoveAssets() {
                 const collisions = job.results.summary.collisions_flagged ?? 0;
                 const committable = counts.created + counts.updated;
                 const skippable = counts.review + counts.error;
+                const headline = job.phase === 'validate'
+                  ? (committable > 0 ? `Ready to import ${committable} rows` : 'Nothing to import')
+                  : `Imported: ${counts.created} created, ${counts.updated} updated`;
 
                 return (
                   <>
-                    <div className="chips">
+                    <div className="imp-card-head">
+                      <p className="eyebrow-sm">
+                        {job.phase === 'commit' ? 'Import complete' : 'Review'}
+                      </p>
+                      {job.phase === 'validate' && (
+                        <button type="button" className="imp-link-btn" onClick={resetImport}>
+                          Start over
+                        </button>
+                      )}
+                    </div>
+                    <h2 className="imp-report-headline">{headline}</h2>
+
+                    <div className="chips imp-report-chips">
                       <span className="chip c-green">
                         <span className="dot" />{counts.created} {labels.created}
                       </span>
@@ -266,27 +419,32 @@ export default function ImportMoveAssets() {
                       )}
                     </div>
 
-                    <table className="bulk-preview" style={{ marginTop: 14 }}>
-                      <thead>
-                        <tr><th>Row</th><th>Serial</th><th>Status</th><th>Message</th></tr>
-                      </thead>
-                      <tbody>
-                        {pageRows.map((d) => (
-                          <tr key={d.row}>
-                            <td>{d.row}</td>
-                            <td>{d.serial_number || '—'}</td>
-                            <td>
+                    <div className="dir-list imp-report-list">
+                      <div className="list-head imp-report-grid">
+                        <span className="col-head">Row</span>
+                        <span className="col-head">Serial</span>
+                        <span className="col-head">Status</span>
+                        <span className="col-head">Message</span>
+                      </div>
+                      {pageRows.map((d) => (
+                        <div key={d.row} className="dir-row">
+                          <div className="row-main imp-report-grid">
+                            <div className="cell"><span className="cell-top">{d.row}</span></div>
+                            <div className="cell">
+                              <span className="cell-top">{d.serial_number || '—'}</span>
+                            </div>
+                            <div className="cell">
                               <span className={`chip ${STATUS_CHIP[d.status] ?? 'c-slate'}`}>
                                 <span className="dot" />{d.status}
                               </span>
-                            </td>
-                            <td>{d.message}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                            </div>
+                            <div className="cell"><span className="cell-top">{d.message}</span></div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
 
-                    <div className="bulk-actions" style={{ marginTop: 10 }}>
+                    <div className="imp-pagination">
                       <button className="mini-btn" type="button"
                               disabled={page === 0}
                               onClick={() => setPage((p) => p - 1)}>
@@ -297,38 +455,32 @@ export default function ImportMoveAssets() {
                               onClick={() => setPage((p) => p + 1)}>
                         Next
                       </button>
-                      <span className="page-hint" style={{ margin: 0 }}>
+                      <span className="page-hint">
                         showing {total === 0 ? 0 : start + 1}–{end} of {total}
                       </span>
                     </div>
 
                     {job.phase === 'validate' && (
-                      <div className="bulk-actions" style={{ marginTop: 14 }}>
+                      <div className="imp-card-foot">
                         <button className="btn-solid" type="button"
                                 disabled={busy || committable === 0}
                                 onClick={() => void run(() => commitImportJob(job.id))}>
-                          Import {committable} rows
+                          {busy ? 'Importing…' : `Import ${committable} rows`}
                         </button>
                         {skippable > 0 && (
-                          <span className="page-hint" style={{ margin: 0 }}>
-                            review and error rows will be skipped
+                          <span className="page-hint">
+                            Review and error rows will be skipped.
                           </span>
                         )}
                       </div>
                     )}
 
                     {job.phase === 'commit' && (
-                      <div className="bulk-actions" style={{ marginTop: 14 }}>
-                        <Link className="mini-btn" to={id ? `/initiatives/${id}` : '/initiatives'}>
+                      <div className="imp-card-foot">
+                        <Link className="imp-link-btn" to={id ? `/initiatives/${id}` : '/initiatives'}>
                           Back to move
                         </Link>
-                        <button className="btn-solid" type="button"
-                                onClick={() => {
-                                  setJob(null);
-                                  setFile(null);
-                                  setPage(0);
-                                  setError(null);
-                                }}>
+                        <button className="mini-btn" type="button" onClick={resetImport}>
                           Import another file
                         </button>
                       </div>

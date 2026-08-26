@@ -603,9 +603,17 @@ export default function InitiativeDetail() {
           )}
         </div>
         {canChange && (
-          <button className="btn-solid" onClick={() => setEditing(true)}>
-            Edit
-          </button>
+          <div className="idet-header-actions">
+            {isMove && (
+              <Link className="mini-btn"
+                    to={`/initiatives/${initiative.id}/import-assets`}>
+                Import assets
+              </Link>
+            )}
+            <button className="btn-solid" onClick={() => setEditing(true)}>
+              Edit
+            </button>
+          </div>
         )}
       </div>
 
@@ -674,16 +682,7 @@ export default function InitiativeDetail() {
         )}
 
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
-          <div style={{ display: 'flex', alignItems: 'center',
-                        justifyContent: 'space-between' }}>
-            <p className="eyebrow-sm">Assets{isMove ? ` — ${assets.length}` : ''}</p>
-            {isMove && canChange && (
-              <Link className="mini-btn"
-                    to={`/initiatives/${initiative.id}/import-assets`}>
-                Import assets
-              </Link>
-            )}
-          </div>
+          <p className="eyebrow-sm">Assets{isMove ? ` — ${assets.length}` : ''}</p>
           {!isMove && <p className="page-hint">Asset tracking lands here next.</p>}
           {isMove && assetsError && (
             <div className="dir-empty" style={{ marginBottom: 12 }}>
