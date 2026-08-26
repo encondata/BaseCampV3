@@ -610,10 +610,9 @@ async def _initiative_asset_rows(
         .where(InitiativeAsset.initiative_id == initiative_id)
         .order_by(InitiativeAsset.priority_wave.nullslast(),
                   Asset.serial_number))).all()
-    move_statuses = {s.key: (s.label, s.color) for s in await db.scalars(
-        select(StatusValue).where(
-            StatusValue.record_type == "move_asset_status"))}
-    asset_statuses = {s.key: (s.label, s.color) for s in await db.scalars(
+    # one merged vocabulary (0022) labels both the roster row's own
+    # status and the embedded asset's status
+    statuses = {s.key: (s.label, s.color) for s in await db.scalars(
         select(StatusValue).where(StatusValue.record_type == "asset"))}
     model_ids = {a.model_id for _, a in rows if a.model_id}
     models = {m.id: m for m in await db.scalars(
@@ -626,8 +625,8 @@ async def _initiative_asset_rows(
 
     out = []
     for ia, asset in rows:
-        s_label, s_color = move_statuses.get(ia.status, (ia.status, "#51606f"))
-        a_label, a_color = asset_statuses.get(asset.status,
+        s_label, s_color = statuses.get(ia.status, (ia.status, "#51606f"))
+        a_label, a_color = statuses.get(asset.status,
                                               (asset.status, "#51606f"))
         model = models.get(asset.model_id)
         out.append(InitiativeAssetOut(
@@ -740,7 +739,7 @@ def _parse_ru(value: object) -> Decimal | None:
 async def _check_asset_status(db: DbSession, data: dict) -> None:
     if "status" in data and (data["status"] is None or await db.scalar(
         select(StatusValue).where(
-            StatusValue.record_type == "move_asset_status",
+            StatusValue.record_type == "asset",
             StatusValue.key == data["status"])) is None):
         raise _err(422, "unknown_status")
 
