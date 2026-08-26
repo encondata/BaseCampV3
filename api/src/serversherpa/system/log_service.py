@@ -5,15 +5,22 @@ other worker. Retention failure modes never crash the loop."""
 
 import asyncio
 import logging
+import socket as _socket
+import time
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import SystemProcess
+from serversherpa.db.models import LogEntry, SystemConfig, SystemProcess
 from serversherpa.system.config_store import read_section
+from serversherpa.system.forwarders import (
+    send_loki,
+    send_syslog,
+    transport_configured,
+)
 
 logger = logging.getLogger("serversherpa.system.log_service")
 
@@ -66,6 +73,76 @@ async def probe_web(db: AsyncSession, url: str) -> None:
     await db.commit()
 
 
+FORWARD_BATCH = 500
+BACKOFF_START = 10.0
+BACKOFF_MAX = 300.0
+
+
+def _row_dict(entry: LogEntry) -> dict:
+    return {"process": entry.process, "level": entry.level,
+            "levelno": entry.levelno, "logger": entry.logger,
+            "message": entry.message, "extra": entry.extra or {},
+            "at": entry.at}
+
+
+async def forward_pending(db: AsyncSession) -> dict:
+    """Drain rows past the forwarding cursor via the configured
+    transport. Commits the cursor after each successful batch, so a
+    failure never re-sends what already landed. Raises on transport
+    failure — the caller owns backoff."""
+    cfg = await read_section(db, "logging")
+    if not transport_configured(cfg):
+        return {"forwarded": 0}
+    cursor_row = await db.get(SystemConfig, "logging_cursor")
+    if cursor_row is None:
+        cursor_row = SystemConfig(section="logging_cursor",
+                                  data={"last_forwarded_id": 0})
+        db.add(cursor_row)
+        await db.flush()
+    last = int((cursor_row.data or {}).get("last_forwarded_id", 0))
+    hostname = _socket.gethostname()
+    total = 0
+    while True:
+        rows = (await db.scalars(
+            select(LogEntry).where(LogEntry.id > last)
+            .order_by(LogEntry.id).limit(FORWARD_BATCH))).all()
+        if not rows:
+            break
+        dicts = [_row_dict(r) for r in rows]
+        if cfg.get("transport", "loki") == "loki":
+            await send_loki(cfg["loki"], dicts, hostname)
+        else:
+            await send_syslog(cfg["syslog"], dicts, hostname)
+        last = rows[-1].id
+        cursor_row.data = {"last_forwarded_id": last}
+        await db.commit()
+        total += len(rows)
+        if len(rows) < FORWARD_BATCH:
+            break
+    if total:
+        logger.info("forwarded %d log rows via %s", total,
+                    cfg.get("transport", "loki"))
+    return {"forwarded": total}
+
+
+async def set_forwarding_degraded(db: AsyncSession,
+                                  error: str | None) -> None:
+    row = await db.get(SystemProcess, "log-service")
+    if row is None:
+        return
+    meta = dict(row.meta or {})
+    if error is None:
+        if "forwarding_degraded" not in meta:
+            return
+        meta.pop("forwarding_degraded", None)
+        meta.pop("forwarding_error", None)
+    else:
+        meta["forwarding_degraded"] = True
+        meta["forwarding_error"] = error[:500]
+    row.meta = meta
+    await db.commit()
+
+
 async def run_once() -> None:
     from serversherpa.config import get_settings
     from serversherpa.db.engine import get_sessionmaker
@@ -73,6 +150,11 @@ async def run_once() -> None:
     async with get_sessionmaker()() as db:
         await enforce_retention(db)
         await probe_web(db, get_settings().portal_origin)
+        try:
+            await forward_pending(db)
+        except Exception:
+            await db.rollback()
+            logger.exception("forwarding failed")
 
 
 async def run_forever(poll_seconds: float = 10.0) -> None:
@@ -83,8 +165,10 @@ async def run_forever(poll_seconds: float = 10.0) -> None:
 
     install("log-service")
     heartbeat = start_heartbeat("log-service", "worker")
-    logger.info("log-service watching retention + web probe")
+    logger.info("log-service watching retention + probe + forwarding")
     tick = 0
+    backoff = BACKOFF_START
+    next_forward_at = 0.0
     try:
         while True:
             try:
@@ -94,6 +178,22 @@ async def run_forever(poll_seconds: float = 10.0) -> None:
                         await probe_web(db, get_settings().portal_origin)
             except Exception:
                 logger.exception("log-service tick failed")
+            if time.monotonic() >= next_forward_at:
+                try:
+                    async with get_sessionmaker()() as db:
+                        await forward_pending(db)
+                        await set_forwarding_degraded(db, None)
+                    backoff = BACKOFF_START
+                    next_forward_at = 0.0
+                except Exception as exc:
+                    logger.warning("forwarding failed: %s", exc)
+                    try:
+                        async with get_sessionmaker()() as db:
+                            await set_forwarding_degraded(db, str(exc))
+                    except Exception:
+                        pass
+                    next_forward_at = time.monotonic() + backoff
+                    backoff = min(backoff * 2, BACKOFF_MAX)
             tick += 1
             await asyncio.sleep(poll_seconds)
     finally:
