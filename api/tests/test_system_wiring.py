@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from starlette.testclient import TestClient
 
 from serversherpa.api.app import create_app
-from serversherpa.db.engine import get_sessionmaker
+from serversherpa.db.engine import dispose_engine, get_sessionmaker
 from serversherpa.db.models import (
     ImportJob, Initiative, LogEntry, SystemProcess,
 )
@@ -63,3 +63,27 @@ async def test_import_worker_logs_job_lifecycle(db):
     messages = " ".join((await db.scalars(select(LogEntry.message).where(
         LogEntry.process == "import-worker"))).all())
     assert str(job.id) in messages               # lifecycle mentions the job
+
+
+async def test_api_lifespan_marks_stop_despite_stale_prior_row():
+    # a previous run's row must not satisfy the startup freshness check
+    from datetime import UTC, datetime, timedelta
+    import os
+
+    await dispose_engine()
+    async with get_sessionmaker()() as db:
+        stale = datetime.now(UTC) - timedelta(minutes=10)
+        db.add(SystemProcess(name="api", kind="service", pid=1,
+                             hostname="oldbox", started_at=stale,
+                             heartbeat_at=stale, stopped_at=None))
+        await db.commit()
+    await dispose_engine()
+
+    with TestClient(create_app()) as tc:
+        assert tc.get("/healthz").json() == {"status": "ok"}
+
+    async with get_sessionmaker()() as db:
+        row = await db.get(SystemProcess, "api")
+        assert row.pid == os.getpid()             # updated to this run's pid
+        assert row.hostname != "oldbox"            # this run overwrote it
+        assert row.stopped_at is not None         # clean shutdown marked

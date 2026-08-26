@@ -1,5 +1,6 @@
 """FastAPI application factory."""
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -31,12 +32,16 @@ async def _lifespan(app: FastAPI):
     # A DB blip (or, in tests, an asyncpg pool bound to a different
     # event loop — see test_cors_dev's cross-loop TestClient usage) must
     # never block startup, matching heartbeat_loop's own blanket except.
+    # Verify the row is THIS process's fresh beat, by pid, not just existence.
     from serversherpa.db.engine import get_sessionmaker
     from serversherpa.db.models import SystemProcess
     for _ in range(50):
         try:
             async with get_sessionmaker()() as _check:
-                if (await _check.get(SystemProcess, "api")) is not None:
+                row = await _check.get(SystemProcess, "api")
+                if (row is not None and row.pid == os.getpid()
+                        and row.heartbeat_at is not None
+                        and row.stopped_at is None):
                     break
         except Exception:
             break
