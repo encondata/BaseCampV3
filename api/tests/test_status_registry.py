@@ -13,8 +13,7 @@ def test_launch_types_are_site_worker_asset_and_container():
     assert set(STATUS_REGISTRY) == {
         "site", "worker", "asset", "container", "container_type",
         "initiative", "initiative_type", "initiative_sub_type",
-        "initiative_work_type", "shipping_type", "partner_type",
-        "move_asset_status"}
+        "initiative_work_type", "shipping_type", "partner_type"}
 
 
 def test_every_record_type_points_at_a_real_resource():
@@ -24,35 +23,32 @@ def test_every_record_type_points_at_a_real_resource():
 
 def test_site_type_targets_the_sites_status_column():
     site = STATUS_REGISTRY["site"]
-    assert (site.table, site.column, site.resource) == ("sites", "status", "sites")
+    assert site.sources == (("sites", "status"),)
+    assert site.resource == "sites"
 
 
 def test_worker_type_targets_the_worker_profiles_status_column():
     worker = STATUS_REGISTRY["worker"]
-    assert (worker.table, worker.column, worker.resource) == (
-        "worker_profiles", "status", "workers")
-
-
-def test_asset_type_targets_the_assets_status_column():
-    asset = STATUS_REGISTRY["asset"]
-    assert (asset.table, asset.column, asset.resource) == (
-        "assets", "status", "assets")
+    assert worker.sources == (("worker_profiles", "status"),)
+    assert worker.resource == "workers"
 
 
 def test_container_type_targets_the_containers_status_column():
     container = STATUS_REGISTRY["container"]
-    assert (container.table, container.column, container.resource) == (
-        "containers", "status", "containers")
+    assert container.sources == (("containers", "status"),)
+    assert container.resource == "containers"
 
 
 def test_container_type_type_targets_the_containers_container_type_column():
     container_type = STATUS_REGISTRY["container_type"]
-    assert (container_type.table, container_type.column,
-             container_type.resource) == ("containers", "container_type", "containers")
+    assert container_type.sources == (("containers", "container_type"),)
+    assert container_type.resource == "containers"
 
 
-def test_move_asset_status_targets_the_initiative_assets_status_column():
-    move_asset_status = STATUS_REGISTRY["move_asset_status"]
-    assert (move_asset_status.table, move_asset_status.column,
-             move_asset_status.resource) == (
-        "initiative_assets", "status", "initiatives")
+def test_asset_type_counts_both_status_tables():
+    """The merged vocabulary is referenced from two tables — usage counts
+    must span assets.status AND initiative_assets.status."""
+    asset = STATUS_REGISTRY["asset"]
+    assert asset.sources == (("assets", "status"),
+                             ("initiative_assets", "status"))
+    assert asset.resource == "assets"

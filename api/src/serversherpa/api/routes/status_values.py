@@ -57,18 +57,24 @@ def _validate_progress_weight(value: object) -> int | None:
 
 
 async def _usage_counts(db: DbSession, rt: StatusRecordType) -> dict[str, int]:
-    """Count referencing rows per key. Table/column come from the frozen code
-    registry, never from user input."""
-    if rt.array:
-        rows = (await db.execute(sqla_text(
-            f"SELECT k, count(*) FROM {rt.table}, unnest({rt.column}) AS k "
-            f"GROUP BY k"))).all()
-    else:
-        t = table(rt.table, column(rt.column))
-        rows = (await db.execute(
-            select(t.c[rt.column], func.count())
-            .group_by(t.c[rt.column]))).all()
-    return {key: n for key, n in rows if key is not None}
+    """Count referencing rows per key, summed across every source table.
+    Table/column come from the frozen code registry, never from user
+    input."""
+    totals: dict[str, int] = {}
+    for tbl, col in rt.sources:
+        if rt.array:
+            rows = (await db.execute(sqla_text(
+                f"SELECT k, count(*) FROM {tbl}, unnest({col}) AS k "
+                f"GROUP BY k"))).all()
+        else:
+            t = table(tbl, column(col))
+            rows = (await db.execute(
+                select(t.c[col], func.count())
+                .group_by(t.c[col]))).all()
+        for key, n in rows:
+            if key is not None:
+                totals[key] = totals.get(key, 0) + n
+    return totals
 
 
 @router.get("", response_model=list[StatusValueOut])

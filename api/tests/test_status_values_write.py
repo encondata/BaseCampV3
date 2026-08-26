@@ -369,12 +369,12 @@ async def test_create_non_int_progress_weight_is_422(client, db, seeded_user):
 
 async def test_update_progress_weight_round_trips(client, db, seeded_user):
     hdrs = await _make(db, client, "developer", "devw6@test.example.com")
-    resp = await client.patch("/status-values/move_asset_status/racked",
+    resp = await client.patch("/status-values/asset/racked",
                               headers=hdrs, json={"progress_weight": 33})
     assert resp.status_code == 200
     assert resp.json()["progress_weight"] == 33
 
-    resp = await client.get("/status-values?record_type=move_asset_status",
+    resp = await client.get("/status-values?record_type=asset",
                             headers=hdrs)
     row = next(r for r in resp.json() if r["key"] == "racked")
     assert row["progress_weight"] == 33
@@ -384,7 +384,7 @@ async def test_update_progress_weight_to_null_excludes_it(client, db, seeded_use
     """Unlike label/color/etc., an explicit null here is a legal edit — it
     parks the status out of the weighted-progress calculation."""
     hdrs = await _make(db, client, "developer", "devw7@test.example.com")
-    resp = await client.patch("/status-values/move_asset_status/racked",
+    resp = await client.patch("/status-values/asset/racked",
                               headers=hdrs, json={"progress_weight": None})
     assert resp.status_code == 200
     assert resp.json()["progress_weight"] is None
@@ -394,12 +394,12 @@ async def test_update_out_of_range_or_non_int_progress_weight_is_422(
         client, db, seeded_user):
     hdrs = await _make(db, client, "developer", "devw8@test.example.com")
     for bad in (101, -1, "abc"):
-        resp = await client.patch("/status-values/move_asset_status/racked",
+        resp = await client.patch("/status-values/asset/racked",
                                   headers=hdrs, json={"progress_weight": bad})
         assert resp.status_code == 422, bad
         assert resp.json()["detail"]["code"] == "invalid_progress_weight"
     # the rejected writes must not have partially applied
-    row = (await client.get("/status-values?record_type=move_asset_status",
+    row = (await client.get("/status-values?record_type=asset",
                             headers=hdrs)).json()
     racked = next(r for r in row if r["key"] == "racked")
     assert racked["progress_weight"] == 15
@@ -407,11 +407,11 @@ async def test_update_out_of_range_or_non_int_progress_weight_is_422(
 
 async def test_progress_weight_edit_is_audited(client, db, seeded_user):
     hdrs = await _make(db, client, "developer", "devw9@test.example.com")
-    await client.patch("/status-values/move_asset_status/racked",
+    await client.patch("/status-values/asset/racked",
                        headers=hdrs, json={"progress_weight": 50})
     audit_row = await db.scalar(select(AuditLog).where(
         AuditLog.entity_type == "status_value", AuditLog.action == "update",
-        AuditLog.entity_id == "move_asset_status:racked"))
+        AuditLog.entity_id == "asset:racked"))
     assert audit_row is not None
     assert audit_row.changes["progress_weight"]["to"] == 50
     assert audit_row.changes["progress_weight"]["from"] == 15

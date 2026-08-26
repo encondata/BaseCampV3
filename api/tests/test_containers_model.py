@@ -56,8 +56,7 @@ async def test_registry_shape():
 
     assert REGISTRY["containers"].visible_to == frozenset({"global"})
     assert "/logistics/containers" in REGISTRY["containers"].routes
-    assert STATUS_REGISTRY["container"].table == "containers"
-    assert STATUS_REGISTRY["container"].column == "status"
-    assert STATUS_REGISTRY["container_type"].table == "containers"
-    assert STATUS_REGISTRY["container_type"].column == "container_type"
+    assert STATUS_REGISTRY["container"].sources == (("containers", "status"),)
+    assert STATUS_REGISTRY["container_type"].sources == (
+        ("containers", "container_type"),)
     assert STATUS_REGISTRY["container"].resource == "containers"

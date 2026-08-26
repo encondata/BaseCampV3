@@ -12,45 +12,50 @@ from dataclasses import dataclass
 class StatusRecordType:
     id: str
     label: str
-    # the table/column carrying this entity's status — used to count usage
-    table: str
-    column: str
+    # the (table, column) pairs carrying this entity's status — usage
+    # counting sums across all of them (asset spans two tables since the
+    # 0022 vocabulary merge)
+    sources: tuple[tuple[str, str], ...]
     # the resource whose "view" permission gates reading these values
     resource: str
-    # True when column is text[] — usage counting must unnest
+    # True when the columns are text[] — usage counting must unnest
     array: bool = False
 
 
 STATUS_RECORD_TYPES: list[StatusRecordType] = [
-    StatusRecordType("site", "Site", table="sites",
-                     column="status", resource="sites"),
-    StatusRecordType("worker", "Worker", table="worker_profiles",
-                     column="status", resource="workers"),
-    StatusRecordType("asset", "Asset", table="assets",
-                     column="status", resource="assets"),
-    StatusRecordType("container", "Container", table="containers",
-                     column="status", resource="containers"),
-    StatusRecordType("container_type", "Container type", table="containers",
-                     column="container_type", resource="containers"),
-    StatusRecordType("initiative", "Initiative", table="initiatives",
-                     column="status", resource="initiatives"),
-    StatusRecordType("initiative_type", "Initiative type", table="initiatives",
-                     column="initiative_type", resource="initiatives"),
+    StatusRecordType("site", "Site",
+                     sources=(("sites", "status"),), resource="sites"),
+    StatusRecordType("worker", "Worker",
+                     sources=(("worker_profiles", "status"),),
+                     resource="workers"),
+    StatusRecordType("asset", "Asset",
+                     sources=(("assets", "status"),
+                              ("initiative_assets", "status")),
+                     resource="assets"),
+    StatusRecordType("container", "Container",
+                     sources=(("containers", "status"),),
+                     resource="containers"),
+    StatusRecordType("container_type", "Container type",
+                     sources=(("containers", "container_type"),),
+                     resource="containers"),
+    StatusRecordType("initiative", "Initiative",
+                     sources=(("initiatives", "status"),),
+                     resource="initiatives"),
+    StatusRecordType("initiative_type", "Initiative type",
+                     sources=(("initiatives", "initiative_type"),),
+                     resource="initiatives"),
     StatusRecordType("initiative_sub_type", "Initiative sub-type",
-                     table="initiatives", column="sub_type",
+                     sources=(("initiatives", "sub_type"),),
                      resource="initiatives"),
     StatusRecordType("initiative_work_type", "Initiative work type",
-                     table="initiative_people", column="work_type",
+                     sources=(("initiative_people", "work_type"),),
                      resource="initiatives"),
-    StatusRecordType("shipping_type", "Shipping type", table="initiatives",
-                     column="shipping_types", resource="initiatives",
-                     array=True),
-    StatusRecordType("partner_type", "Partner type", table="partners",
-                     column="partner_types", resource="partners",
-                     array=True),
-    StatusRecordType("move_asset_status", "Move asset status",
-                     table="initiative_assets", column="status",
-                     resource="initiatives"),
+    StatusRecordType("shipping_type", "Shipping type",
+                     sources=(("initiatives", "shipping_types"),),
+                     resource="initiatives", array=True),
+    StatusRecordType("partner_type", "Partner type",
+                     sources=(("partners", "partner_types"),),
+                     resource="partners", array=True),
 ]
 
 STATUS_REGISTRY: dict[str, StatusRecordType] = {

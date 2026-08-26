@@ -87,8 +87,7 @@ async def test_developer_reads_everything_with_counts(client, db, seeded_user):
     assert {r["record_type"] for r in rows} == {
         "site", "worker", "asset", "container", "container_type",
         "initiative", "initiative_type", "initiative_sub_type",
-        "initiative_work_type", "shipping_type", "partner_type",
-        "move_asset_status"}
+        "initiative_work_type", "shipping_type", "partner_type"}
     active_site = next(
         r for r in rows if r["record_type"] == "site" and r["key"] == "active")
     assert active_site["usage_count"] == 0
@@ -114,7 +113,7 @@ async def test_unknown_record_type_is_422(client, db, seeded_user):
 
 async def test_every_row_includes_progress_weight(client, db, seeded_user):
     """Read schemas must carry the field on every record type — null where
-    it is unset (everything but move_asset_status, for now)."""
+    it is unset (everything but the asset workflow statuses)."""
     hdrs = await login(client)
     resp = await client.get("/status-values?record_type=site", headers=hdrs)
     assert resp.status_code == 200
@@ -124,15 +123,41 @@ async def test_every_row_includes_progress_weight(client, db, seeded_user):
     assert active["progress_weight"] is None
 
 
-async def test_move_asset_status_reads_carry_seeded_weights(client, db, seeded_user):
-    """Spot-checks a live weighted, a zero weight, and an excluded (null)
-    status from the design doc's seed table, straight off the wire."""
+async def test_asset_reads_carry_seeded_weights(client, db, seeded_user):
+    """Spot-checks a live weighted, a zero weight, an excluded (null)
+    workflow status, and a null lifecycle status from the merged asset
+    vocabulary, straight off the wire."""
     dev = await _make(db, client, "developer", "devweights@test.example.com")
-    rows = (await client.get("/status-values?record_type=move_asset_status",
+    rows = (await client.get("/status-values?record_type=asset",
                              headers=dev)).json()
     by_key = {r["key"]: r["progress_weight"] for r in rows}
     assert by_key["loaded_in_system"] == 0
     assert by_key["complete"] == 100
-    assert by_key["staged"] == 69
+    assert by_key["in_transit"] == 50
     assert by_key["historical"] is None
+    assert by_key["active"] is None
+    assert by_key["staged"] == 69
     assert by_key["location_collision"] is None
+
+
+async def test_asset_usage_counts_span_assets_and_initiative_assets(
+        client, db, seeded_user):
+    """The merged vocabulary is referenced from assets.status AND
+    initiative_assets.status — the Variables page count must be the sum,
+    or delete-protection undercounts move usage."""
+    from serversherpa.db.models import Asset, Initiative, InitiativeAsset
+
+    hdrs = await _make(db, client, "developer", "devusage@test.example.com")
+    a1 = Asset(serial_number="USG-1", name="usage-1", status="staged")
+    a2 = Asset(serial_number="USG-2", name="usage-2")
+    move = Initiative(name="Usage Move", initiative_type="move")
+    db.add_all([a1, a2, move])
+    await db.flush()
+    db.add(InitiativeAsset(initiative_id=move.id, asset_id=a2.id,
+                           status="staged"))
+    await db.commit()
+
+    rows = (await client.get("/status-values", headers=hdrs)).json()
+    staged = next(r for r in rows
+                  if r["record_type"] == "asset" and r["key"] == "staged")
+    assert staged["usage_count"] == 2
