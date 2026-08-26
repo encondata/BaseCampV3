@@ -259,7 +259,8 @@ def log_service(
 
         if once:
             await svc.run_once()
-            typer.secho("retention + probe pass complete", fg="green")
+            typer.secho("retention + probe + forwarding pass complete",
+                        fg="green")
         else:
             await svc.run_forever(poll_seconds)
         await dispose_engine()
