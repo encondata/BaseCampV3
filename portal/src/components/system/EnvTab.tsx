@@ -101,57 +101,59 @@ export default function EnvTab() {
         type="text"
         className="envtab-search"
         placeholder="Search keys or descriptions…"
-        aria-label="Search environment keys"
+        aria-label="Search environment keys and descriptions"
         value={q}
         onChange={(e) => setQ(e.target.value)}
       />
 
-      <div className="sysconf-card-head">
-        <p className="eyebrow-sm">Environment variables</p>
-        <p className="sysconf-card-desc">
-          The repo .env file. Database and object-storage keys are hidden
-          server-side; secrets are masked and only overwritten when you
-          type a new value.
-        </p>
-      </div>
-
-      <div className="dir-list envtab-list">
-        <div className="list-head envtab-grid">
-          <span className="col-head">Key</span>
-          <span className="col-head">Value</span>
-          <span className="col-head">Description</span>
-        </div>
-        {visible.map((entry) => {
-          const { placeholder, chip } = describeEntry(entry);
-          const changed = entry.key in pending;
-          const value = edits[entry.key] ?? (entry.secret ? '' : (entry.value ?? ''));
-          return (
-            <div key={entry.key} className={`list-row envtab-grid${changed ? ' changed' : ''}`}>
-              <span className="envtab-key">{entry.key}</span>
-              <span className="envtab-value-cell">
-                <input
-                  type={entry.secret ? 'password' : 'text'}
-                  value={value}
-                  placeholder={placeholder}
-                  disabled={busy}
-                  aria-label={entry.key}
-                  onChange={(e) => setEdit(entry.key, e.target.value)}
-                />
-                {chip && (
-                  <span className={`envtab-chip envtab-chip-${chip === 'set' ? 'set' : 'unset'}`}>
-                    {chip}
-                  </span>
-                )}
-              </span>
-              <span className="envtab-desc">{entry.description || '—'}</span>
-            </div>
-          );
-        })}
-        {visible.length === 0 && (
-          <p className="sysconf-hint" style={{ padding: 16 }}>
-            No keys match &quot;{q}&quot;.
+      <div className="init-panel sysconf-card">
+        <div className="sysconf-card-head">
+          <p className="eyebrow-sm">Environment variables</p>
+          <p className="sysconf-card-desc">
+            The repo .env file. Database and object-storage keys are hidden
+            server-side; secrets are masked and only overwritten when you
+            type a new value.
           </p>
-        )}
+        </div>
+
+        <div className="dir-list envtab-list">
+          <div className="list-head envtab-grid">
+            <span className="col-head">Key</span>
+            <span className="col-head">Value</span>
+            <span className="col-head">Description</span>
+          </div>
+          {visible.map((entry) => {
+            const { placeholder, chip } = describeEntry(entry);
+            const changed = entry.key in pending;
+            const value = edits[entry.key] ?? (entry.secret ? '' : (entry.value ?? ''));
+            return (
+              <div key={entry.key} className={`list-row envtab-grid${changed ? ' changed' : ''}`}>
+                <span className="envtab-key">{entry.key}</span>
+                <span className="envtab-value-cell">
+                  <input
+                    type={entry.secret ? 'password' : 'text'}
+                    value={value}
+                    placeholder={placeholder}
+                    disabled={busy}
+                    aria-label={entry.key}
+                    onChange={(e) => setEdit(entry.key, e.target.value)}
+                  />
+                  {chip && (
+                    <span className={`envtab-chip envtab-chip-${chip === 'set' ? 'set' : 'unset'}`}>
+                      {chip}
+                    </span>
+                  )}
+                </span>
+                <span className="envtab-desc">{entry.description || '—'}</span>
+              </div>
+            );
+          })}
+          {visible.length === 0 && (
+            <p className="sysconf-hint" style={{ padding: 16 }}>
+              No keys match &quot;{q}&quot;.
+            </p>
+          )}
+        </div>
       </div>
 
       <div className="sysconf-actionbar">

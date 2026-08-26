@@ -129,3 +129,14 @@ def test_apply_updates_rejects_unknown_and_hidden(env_path):
 
 def test_no_change_is_not_reported(env_path):
     assert apply_updates(env_path, {"SS_LOG_LEVEL": "INFO"}) == []
+
+
+def test_hash_in_value_without_space_is_not_a_comment(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("SS_COOKIE_DOMAIN=pass#word\n")
+    [entry] = [e for e in read_entries(path)
+               if e["key"] == "SS_COOKIE_DOMAIN"]
+    assert entry["value"] == "pass#word"
+    assert entry["description"] == ""
+    apply_updates(path, {"SS_COOKIE_DOMAIN": "new#value"})
+    assert path.read_text() == "SS_COOKIE_DOMAIN=new#value\n"
