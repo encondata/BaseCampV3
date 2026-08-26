@@ -29,11 +29,25 @@ process-run records (one row per process name, no run history).
    page). Probed by the log-service.
 5. **App logs only** — root logger + `uvicorn.error`; `uvicorn.access`
    excluded.
-6. **SIEM transport = syslog RFC 5424** (UDP/TCP/TLS), JSON payload.
+6. **Remote transports = Loki HTTP push AND syslog RFC 5424** (amended
+   2026-08-26 after Plan 1 landed: the user's remote collector will be
+   Grafana Loki, with Wazuh possible later for security auditing). Loki
+   does not ingest syslog natively — its native path is the HTTP push API
+   (`POST {url}/loki/api/v1/push`, JSON streams) — while Wazuh ingests
+   syslog. The logging config therefore carries a `transport` selector:
+   - `loki`: `url` (base URL), optional `username`/`password` (HTTP basic
+     auth — covers Grafana Cloud), optional `tenant_id` (sent as
+     `X-Scope-OrgID`). Stream labels stay low-cardinality:
+     `{app: "serversherpa", process, level, host}`; the line is
+     `"<logger>: <message>"`; timestamps are nanosecond strings from `at`.
+     One push per forwarding batch, streams grouped by (process, level).
+   - `syslog`: `host`, `port`, `protocol` (`udp` | `tcp` | `tls`) —
+     RFC 5424 frames, JSON structured payload, octet-counting on TCP/TLS.
 7. **One spec, two implementation plans:** Plan 1 = registry + pipeline +
    pages + wiring + log-service (hardcoded default retention, probe, no
-   remote). Plan 2 = system_config + config API + System Config page (Logging
-   tab) + syslog forwarding + remote modes.
+   remote) — SHIPPED. Plan 2 = system_config API + System Config page
+   (Logging tab with the transport selector) + Loki/syslog forwarding +
+   remote modes.
 
 ## 1. Data model (migration 0024, revises 0023)
 
@@ -67,10 +81,14 @@ Status is DERIVED at read time, never stored:
 **`system_config`**:
 
 - `section: text` PK, `data: jsonb`, `updated_at`, `updated_by` FK people.
-- Seeded `logging` section (migration): `{"mode": "local",
+- Seeded `logging` section (migration 0024): `{"mode": "local",
   "local_max_rows_per_process": 20000, "local_max_age_days": 14,
   "remote_buffer_rows": 10000, "min_level": "INFO",
   "syslog": {"host": "", "port": 514, "protocol": "udp"}}`.
+- Plan 2 extends the section IN CODE (config_store `DEFAULTS`), not by
+  migration — the defaults-merge supplies missing keys on old rows:
+  `"transport": "loki"` and `"loki": {"url": "", "username": "",
+  "password": "", "tenant_id": ""}` join the shape above.
 - `mode`: `local` | `local_remote` | `remote`. In `remote`, retention uses
   `remote_buffer_rows` as the per-process cap instead of
   `local_max_rows_per_process` (age cap still applies); rows are deleted
@@ -121,11 +139,18 @@ line in `Procfile.dev`. Registers as process `log-service`. Loop every 10 s:
    (`local_max_rows_per_process`, or `remote_buffer_rows` when mode =
    `remote`) and older than `local_max_age_days`. One DELETE per process
    using the `(process, id)` index.
-2. **Forwarding** (mode includes remote and `syslog.host` non-empty) — read
-   rows with `id > last_forwarded_id` (batches of 500), emit one RFC 5424
-   frame per row (facility 16/local0; severity mapped from levelno; APP-NAME
-   = `serversherpa-<process>`; MSG = JSON `{process, level, logger, message,
-   at, extra}`), over UDP datagrams or TCP/TLS with octet-counting framing.
+2. **Forwarding** (mode includes remote and the selected transport is
+   configured — `loki.url` or `syslog.host` non-empty) — read rows with
+   `id > last_forwarded_id` (batches of 500) and ship per the configured
+   `transport`:
+   - `loki`: one `POST {url}/loki/api/v1/push` per batch; streams grouped
+     by (process, level) with labels `{app: "serversherpa", process,
+     level, host}`; values `[ns-timestamp-string, "<logger>: <message>"]`;
+     optional basic auth and `X-Scope-OrgID` from config. Non-2xx = failure.
+   - `syslog`: one RFC 5424 frame per row (facility 16/local0; severity
+     mapped from levelno; APP-NAME = `serversherpa-<process>`; MSG = JSON
+     `{process, level, logger, message, at, extra}`), over UDP datagrams
+     or TCP/TLS with octet-counting framing.
    Advance the cursor only after successful send. On failure: exponential
    backoff (10 s → 5 min max), set `meta.forwarding_degraded = true` + the
    error on its own registry row (cleared on recovery); retention keeps
@@ -166,14 +191,21 @@ Rank gate helper `_require_super_admin(actor)`: global actor with
 - `GET /system/config/logging` — devtools. Returns the section (uncached).
 - `PUT /system/config/logging` — devtools. Full-section replace, validated:
   mode in the enum; caps positive ints (rows 1k–1M, days 1–365); min_level a
-  real level name; when mode includes remote, `syslog.host` required,
-  port 1–65535, protocol in udp/tcp/tls. 422 `invalid_logging_config` with
-  field errors. Audited with before/after diff.
+  real level name; `transport` in loki/syslog; when mode includes remote,
+  the SELECTED transport's requireds apply — loki: `loki.url` a valid
+  http(s) URL; syslog: `syslog.host` required, port 1–65535, protocol in
+  udp/tcp/tls. 422 `invalid_logging_config` with field errors. Audited with
+  before/after diff (secrets redacted in the audit changes: `loki.password`
+  never appears in plaintext). Password round-trip rule: GET never returns
+  the stored password (it returns `loki.password_set: bool` instead); a PUT
+  whose `loki.password` is empty keeps the stored password, a non-empty
+  value replaces it.
 - `POST /system/config/logging/test` — devtools. Emits one WARNING log line
   ("Test event from System Config") through the normal pipeline and, when
-  remote is configured, attempts one immediate syslog send; returns
+  remote is configured, attempts one immediate send via the selected
+  transport (Loki push or syslog); returns
   `{"logged": true, "forwarded": bool, "error": str | null}` so the user can
-  verify SIEM receipt without waiting for the cursor loop.
+  verify Loki/SIEM receipt without waiting for the cursor loop.
 
 Registry lists `web` like any process, but log routes 404
 (`process_has_no_logs`) for kind `probe`.
@@ -220,6 +252,11 @@ renders and the route resolves only when the actor's `maxRank >= 80`.
     buffer)" with one-line explainers.
   - Local limits: max rows per process, max age days; buffer rows field
     shown for remote mode.
+  - Transport radio (shown when mode includes remote): "Grafana Loki"
+    (URL, optional username/password, optional tenant id — password
+    rendered as a password field, never echoed back by GET, which returns
+    `password_set: bool` instead) / "Syslog (RFC 5424)" (host, port,
+    protocol) — one option set visible at a time.
   - Minimum level select.
   - Syslog fields (shown when mode includes remote): host, port, protocol
     (udp/tcp/tls).
@@ -255,8 +292,11 @@ API (pytest, real Postgres):
 - Registry: heartbeat upsert; derived status for fresh/stale/clean-stop rows.
 - Handler: batches land; level threshold honored; recursion guard (a failing
   flush must not emit new rows); bounded queue drops oldest.
-- Log-service: retention row/age caps per mode; forwarding frames captured by
-  an in-test UDP listener (RFC 5424 shape, severity mapping, cursor
+- Log-service: retention row/age caps per mode; Loki pushes captured by a
+  local HTTP test server (payload shape: streams grouped by process/level,
+  ns timestamps, labels, basic-auth + X-Scope-OrgID headers when
+  configured); syslog frames captured by an in-test UDP listener
+  (RFC 5424 shape, severity mapping, cursor
   advances); failure sets degraded meta + cursor holds; probe upserts web row
   (httpx mock/local server).
 - Routes: rank-80 gate vs devtools gate per endpoint; logs pagination/filter/
