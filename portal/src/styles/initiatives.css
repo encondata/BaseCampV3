@@ -158,9 +158,24 @@
 .idet-title-row .page-title { margin: 0; }
 .idet-desc { max-width: 68ch; }
 
-/* the two info cards stack to one column below the same width the
+/* the info cards stack to one column below the same width the
    row-detail's .detail-grid already collapses at (directory.css) */
 .idet-grid { margin-bottom: 20px; }
+
+/* ── top row: 3-across for Move initiatives with assets (Task: donut-
+   task-3) — Overview | Assets-by-status donut | Move. `.idet-grid`
+   otherwise inherits the shared 2-column `.detail-grid` template (1.2fr
+   1fr, directory.css) for every other initiative. This modifier class is
+   only added to the row (InitiativeDetail.tsx) when the new donut panel
+   is actually rendered, so it never produces an empty middle column.
+   Reuses `.detail-grid`'s own 768px collapse point (directory.css) rather
+   than inventing a new breakpoint. */
+.idet-grid.idet-grid-3col {
+  grid-template-columns: 1.15fr 0.85fr 1.15fr;
+}
+@media (max-width: 768px) {
+  .idet-grid.idet-grid-3col { grid-template-columns: 1fr; }
+}
 
 /* People section — standard list (dir-toolbar/dir-list from directory.css)
    embedded inside a panel card rather than the full page: tighter margins,
@@ -216,45 +231,24 @@
   transition: width 0.2s ease;
 }
 
-/* ── Overview card — dl + donut side-by-side row (Task: donut-task-2) ──
-   Always wraps the Overview card's <dl> (plain markup otherwise — the
-   wrapper is a no-op div when nothing else is inside it, so initiatives
-   without the donut render exactly as before). Only when the asset status
-   donut is also present (`:has()`, already used elsewhere in this file —
-   see `.init-check:has(...)` above) does the row switch to a flex layout:
-   dl keeps its intrinsic width on the left, the donut+legend block fills
-   the leftover width on the right, vertically centered against the row,
-   wrapping back below the dl on narrow viewports instead of squishing.
-   Scoped to `.kv` as a direct child so it doesn't affect `.kv`'s many
-   other uses across the app (Users, Sites, client/partner detail pages,
-   the Move card just below this one, etc. — `.kv` itself is defined in
-   directory.css and is shared, not page-specific). */
-.idet-overview-row:has(.idet-donut-row) {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-}
-.idet-overview-row:has(.idet-donut-row) > .kv {
-  flex: 0 0 auto;
-}
-
-/* ── Overview card — move asset status donut (Task: donut-task-1) ──────
-   Small SVG donut + text legend, placed by `.idet-overview-row` above.
-   Hover tooltip is a real HTML element positioned off the hovered
-   segment/legend row's bounding rect (same technique as .rack-tooltip
-   below), anchored to this row via `position: relative`. */
-.idet-donut-row {
+/* ── Assets-by-status panel — enlarged donut + legend below it (Task:
+   donut-task-3). Its own `init-panel` (see InitiativeDetail.tsx), shown
+   only for Move initiatives with assets, sitting between the Overview and
+   Move panels. Donut centered on top, legend centered below it — a
+   vertical stack instead of Task 1/2's side-by-side row. Hover tooltip is
+   a real HTML element positioned off the hovered segment/legend row's
+   bounding rect (same technique as .rack-tooltip below), anchored to this
+   panel via `position: relative`. */
+.idet-donut-panel {
   position: relative;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   align-items: center;
-  gap: 18px;
+  gap: 20px;
 }
 .idet-donut {
-  width: 120px;
-  height: 120px;
+  width: 180px;
+  height: 180px;
   flex: none;
 }
 .idet-donut-seg {
@@ -264,13 +258,13 @@
 }
 .idet-donut-total {
   font-family: var(--font-display);
-  font-size: 22px;
+  font-size: 34px;
   font-weight: 600;
   fill: var(--text-dark);
 }
 .idet-donut-caption {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 13px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   fill: var(--text-mute);
@@ -282,8 +276,8 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-width: 160px;
-  flex: 1 1 160px;
+  min-width: 180px;
+  max-width: 260px;
 }
 .idet-donut-legend-row {
   display: flex;
@@ -314,7 +308,7 @@
   min-width: 2.5ch;
 }
 /* same structure/positioning as .rack-tooltip below — small HTML tooltip
-   anchored off the hovered element's bounding rect within the row above. */
+   anchored off the hovered element's bounding rect within the panel above. */
 .idet-donut-tooltip {
   position: absolute;
   transform: translate(-50%, calc(-100% - 8px));

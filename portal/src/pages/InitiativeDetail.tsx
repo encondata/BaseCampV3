@@ -609,33 +609,35 @@ export default function InitiativeDetail() {
         )}
       </div>
 
-      <div className="detail-grid idet-grid">
+      <div className={`detail-grid idet-grid${isMove && assets.length > 0 ? ' idet-grid-3col' : ''}`}>
         <div className="init-panel"
              style={!isMove ? { gridColumn: '1 / -1' } : undefined}>
           <p className="eyebrow-sm">Overview</p>
-          <div className="idet-overview-row">
-            <dl className="kv">
-              {kv('Type', initiative.type_label)}
-              {kv('Sub-type', initiative.sub_type_label)}
-              {kv('Status', initiative.status_label)}
-              {kv('Client', initiative.client_name)}
-              {!isMove && kv('Site', initiative.site_name)}
-              {kv('Location', initiative.location)}
-              {kv('Scheduled', [initiativeCellText(initiative, 'start'),
-                                initiativeCellText(initiative, 'end')]
-                .filter((s) => s !== '—').join(' → ') || '—')}
-              {kv('Actual', [dateOnly(initiative.real_start_at),
-                             dateOnly(initiative.real_end_at)]
-                .filter((s): s is string => !!s).join(' → ') || '—')}
-              {initiative.initiative_type === 'project'
-                && kv('Sky Command ID', initiative.sky_command_project_id)}
-              {kv('Created', initiativeCellText(initiative, 'created'))}
-            </dl>
-            {isMove && assets.length > 0 && (
-              <AssetStatusDonut rows={assets} statuses={moveStatuses} />
-            )}
-          </div>
+          <dl className="kv">
+            {kv('Type', initiative.type_label)}
+            {kv('Sub-type', initiative.sub_type_label)}
+            {kv('Status', initiative.status_label)}
+            {kv('Client', initiative.client_name)}
+            {!isMove && kv('Site', initiative.site_name)}
+            {kv('Location', initiative.location)}
+            {kv('Scheduled', [initiativeCellText(initiative, 'start'),
+                              initiativeCellText(initiative, 'end')]
+              .filter((s) => s !== '—').join(' → ') || '—')}
+            {kv('Actual', [dateOnly(initiative.real_start_at),
+                           dateOnly(initiative.real_end_at)]
+              .filter((s): s is string => !!s).join(' → ') || '—')}
+            {initiative.initiative_type === 'project'
+              && kv('Sky Command ID', initiative.sky_command_project_id)}
+            {kv('Created', initiativeCellText(initiative, 'created'))}
+          </dl>
         </div>
+
+        {isMove && assets.length > 0 && (
+          <div className="init-panel">
+            <p className="eyebrow-sm">Assets by status</p>
+            <AssetStatusDonut rows={assets} statuses={moveStatuses} />
+          </div>
+        )}
 
         {isMove && (
           <div className="init-panel">
@@ -1297,10 +1299,10 @@ function AssetEditDialog({ asset, moveStatuses, onClose, onSaved }: {
       hovered element's bounding rect within a `position: relative`
       container, not a CSS-only or native-title-only tooltip (though every
       segment also carries an SVG <title> as a non-JS fallback). ────────── */
-const DONUT_CX = 60;
-const DONUT_CY = 60;
-const DONUT_OUTER_R = 56;
-const DONUT_RING_THICKNESS = 18;
+const DONUT_CX = 90;
+const DONUT_CY = 90;
+const DONUT_OUTER_R = 84;
+const DONUT_RING_THICKNESS = 26;
 const DONUT_INNER_R = DONUT_OUTER_R - DONUT_RING_THICKNESS;
 
 function polarToPoint(angleDeg: number, r: number): { x: number; y: number } {
@@ -1391,8 +1393,8 @@ function AssetStatusDonut({ rows, statuses }: {
   const hoveredEntry = hoverKey ? entryByKey.get(hoverKey) : undefined;
 
   return (
-    <div className="idet-donut-row" ref={containerRef} onMouseLeave={handleLeave}>
-      <svg className="idet-donut" viewBox="0 0 120 120" role="img"
+    <div className="idet-donut-panel" ref={containerRef} onMouseLeave={handleLeave}>
+      <svg className="idet-donut" viewBox="0 0 180 180" role="img"
            aria-label={`Asset status breakdown — ${total} assets`}>
         {segments.map((seg, i) => (
           <path key={`${seg.key}-${i}`} d={seg.d} fill={seg.color}
@@ -1402,11 +1404,11 @@ function AssetStatusDonut({ rows, statuses }: {
             <title>{donutTooltipText(entryByKey.get(seg.key)!)}</title>
           </path>
         ))}
-        <text x={DONUT_CX} y={DONUT_CY - 4} textAnchor="middle" dominantBaseline="middle"
+        <text x={DONUT_CX} y={DONUT_CY - 6} textAnchor="middle" dominantBaseline="middle"
               className="idet-donut-total">
           {total}
         </text>
-        <text x={DONUT_CX} y={DONUT_CY + 14} textAnchor="middle" dominantBaseline="middle"
+        <text x={DONUT_CX} y={DONUT_CY + 21} textAnchor="middle" dominantBaseline="middle"
               className="idet-donut-caption">
           assets
         </text>
