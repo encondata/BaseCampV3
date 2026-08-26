@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     env: Literal["development", "staging", "production"]
     log_level: str = "INFO"
     api_base_url: str
+    # portal origin probed by the log-service for the 'web' registry row
+    portal_origin: str = "http://localhost:5173"
 
     # ── Database ───────────────────────────────────────────
     database_url: SecretStr

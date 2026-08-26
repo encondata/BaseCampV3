@@ -9,4 +9,5 @@
 # worker's own --reload, and Vite HMR). Future workers get one line each.
 api:    api/.venv/bin/python -m uvicorn --factory serversherpa.api.app:create_app --app-dir api/src --reload --host 0.0.0.0 --port 8000
 worker: api/.venv/bin/serversherpa import-worker --reload
+logsvc: api/.venv/bin/serversherpa log-service --reload
 portal: npm --prefix portal run dev

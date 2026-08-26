@@ -18,13 +18,13 @@ dependencies = [
     "boto3>=1.34",
     "python-multipart>=0.0.9",
     "openpyxl>=3.1",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
-    "httpx>=0.27",
     "honcho>=2.0",   # Procfile.dev runner: whole dev stack in one terminal
 ]
 
