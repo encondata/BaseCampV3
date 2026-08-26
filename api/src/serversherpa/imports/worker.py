@@ -9,6 +9,7 @@ sits 'running' until the next worker start re-queues it via
 requeue_stale, and the re-run converges on the same result."""
 
 import asyncio
+import logging
 from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +19,8 @@ from serversherpa.imports.jobs import claim_next, requeue_stale
 from serversherpa.imports.move_assets import parse_row, run_import
 from serversherpa.imports.parsing import ImportFileError, parse_upload
 from serversherpa.services.storage import get_object
+
+logger = logging.getLogger("serversherpa.imports.worker")
 
 
 def _finish(job: ImportJob, status: str, error: str | None = None) -> None:
@@ -87,30 +90,46 @@ async def process_job(db: AsyncSession, job: ImportJob) -> None:
 
 async def run_once(sessionmaker) -> bool:
     """Claim and process at most one job. False when the queue is empty."""
+    from serversherpa.system.db_logging import install
+    install("import-worker")
+
     async with sessionmaker() as db:
         job = await claim_next(db)
         if job is None:
             return False
+        logger.info("claimed job %s (%s phase=%s)",
+                    job.id, job.filename, job.phase)
         try:
             await process_job(db, job)
         except Exception as exc:                       # job must terminate
+            logger.exception("job %s failed in worker: %s", job.id, exc)
             await db.rollback()
             _finish(job, "failed", f"worker_error: {exc}")
             await db.commit()
+        logger.info("job %s finished status=%s rows=%s",
+                    job.id, job.status, job.processed_rows)
         return True
 
 
 async def run_forever(poll_seconds: float = 2.0) -> None:
     from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.system.db_logging import install
+    from serversherpa.system.registry import start_heartbeat
+
+    install("import-worker")
+    heartbeat = start_heartbeat("import-worker", "worker")
 
     maker = get_sessionmaker()
-    async with maker() as db:
-        requeued = await requeue_stale(db)
-        if requeued:
-            print(f"[import-worker] re-queued {requeued} stale job(s)",
-                  flush=True)
-    print("[import-worker] watching the queue", flush=True)
-    while True:
-        worked = await run_once(maker)
-        if not worked:
-            await asyncio.sleep(poll_seconds)
+    try:
+        async with maker() as db:
+            requeued = await requeue_stale(db)
+            if requeued:
+                logger.info("re-queued %d stale job(s)", requeued)
+        logger.info("watching the queue")
+        while True:
+            worked = await run_once(maker)
+            if not worked:
+                await asyncio.sleep(poll_seconds)
+    finally:
+        heartbeat.cancel()
+        await asyncio.gather(heartbeat, return_exceptions=True)

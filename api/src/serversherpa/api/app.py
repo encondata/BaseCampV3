@@ -16,8 +16,38 @@ from serversherpa.db.engine import dispose_engine
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    yield
-    await dispose_engine()
+    import asyncio
+
+    from serversherpa.system.db_logging import install
+    from serversherpa.system.registry import start_heartbeat
+
+    handler = install("api")
+    heartbeat = start_heartbeat("api", "service")
+    # Wait for the first heartbeat to land before serving traffic: it's the
+    # write that creates the registry row (later ones just update it), and
+    # without this a process that starts, handles one request, and shuts
+    # down again (exactly what the wiring test below does) can race its own
+    # first heartbeat and shut down before the row ever exists.
+    # A DB blip (or, in tests, an asyncpg pool bound to a different
+    # event loop — see test_cors_dev's cross-loop TestClient usage) must
+    # never block startup, matching heartbeat_loop's own blanket except.
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.db.models import SystemProcess
+    for _ in range(50):
+        try:
+            async with get_sessionmaker()() as _check:
+                if (await _check.get(SystemProcess, "api")) is not None:
+                    break
+        except Exception:
+            break
+        await asyncio.sleep(0.05)
+    try:
+        yield
+    finally:
+        heartbeat.cancel()
+        await asyncio.gather(heartbeat, return_exceptions=True)
+        handler.close()
+        await dispose_engine()
 
 
 def create_app() -> FastAPI:
