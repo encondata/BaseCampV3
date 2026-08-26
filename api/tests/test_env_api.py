@@ -83,6 +83,24 @@ async def test_env_update_rejects_newline_injection(client, db, seeded_user,
     assert path.read_text() == before
 
 
+async def test_env_update_rejects_all_linebreak_separators(client, db,
+                                                            seeded_user,
+                                                            monkeypatch,
+                                                            tmp_path):
+    """Rejects values with any line-break char that str.splitlines() would
+    treat as a line break, including \\v \\f \\x1c \\x1d \\x1e \\x85, not
+    just \\n and \\r. File is byte-unchanged."""
+    path = _use_tmp_env(monkeypatch, tmp_path)
+    dev = await _developer_headers(db, client)
+    before = path.read_text()
+
+    resp = await client.put("/system/env", headers=dev, json={
+        "values": {"SS_LOG_LEVEL": "INFO\vSS_DATABASE_URL=evil"}})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_env_update"
+    assert path.read_text() == before
+
+
 async def test_env_restart_touches_sentinel(client, db, seeded_user):
     dev = await _developer_headers(db, client)
     from serversherpa.system.env_file import SENTINEL_PATH

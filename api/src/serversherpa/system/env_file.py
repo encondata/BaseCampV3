@@ -27,6 +27,13 @@ _COMMENT = re.compile(r"^\s*#\s?(.*)$")
 SENTINEL_PATH = Path(__file__).resolve().parents[1] / "_dev_reload.py"
 
 
+def has_linebreak(value: str) -> bool:
+    """True if value contains any character str.splitlines() (used by
+    _parse) would treat as a line break — the full set, not just \\n/\\r,
+    so a written value can never become extra physical lines on re-read."""
+    return value != "" and value.splitlines() != [value]
+
+
 def default_env_path() -> Path:
     return _REPO_ROOT / ".env"
 
@@ -111,13 +118,13 @@ def apply_updates(path: Path, values: dict[str, str]) -> list[str]:
     if unknown:
         raise EnvUpdateError(sorted(unknown))
 
-    # Defense-in-depth: a value containing a raw newline/carriage-return
-    # would splice a new physical line into .env on rewrite below,
-    # letting a value smuggle in an arbitrary extra KEY=... line (e.g. a
-    # hidden SS_DATABASE_URL) past the classification gate. The route
-    # also rejects this before calling in; guard here too so this
-    # function stays safe to call directly.
-    invalid = [k for k, v in values.items() if "\n" in v or "\r" in v]
+    # Defense-in-depth: a value containing any line-break character (as
+    # defined by str.splitlines(), not just \n/\r) would splice a new
+    # physical line into .env on rewrite below, letting a value smuggle in
+    # an arbitrary extra KEY=... line (e.g. a hidden SS_DATABASE_URL) past
+    # the classification gate. The route also rejects this before calling
+    # in; guard here too so this function stays safe to call directly.
+    invalid = [k for k, v in values.items() if has_linebreak(v)]
     if invalid:
         raise EnvUpdateError(sorted(invalid))
 

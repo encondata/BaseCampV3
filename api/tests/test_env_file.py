@@ -163,6 +163,23 @@ def test_apply_updates_rejects_carriage_return_value(env_path):
     assert env_path.read_text() == before
 
 
+@pytest.mark.parametrize("sep", ["\n", "\r", "\r\n", "\v", "\f",
+                                   "\x1c", "\x1d", "\x1e", "\x85"])
+def test_apply_updates_rejects_all_linebreak_separators(env_path, sep):
+    original = env_path.read_text()
+    value = f"INFO{sep}SS_DATABASE_URL=evil"
+    with pytest.raises(EnvUpdateError):
+        apply_updates(env_path, {"SS_LOG_LEVEL": value})
+    assert env_path.read_text() == original          # unmodified
+
+
+def test_apply_updates_allows_empty_and_plain(env_path):
+    # empty stays allowed (keep/clear); a plain value with a literal '#'
+    # in it is fine
+    apply_updates(env_path, {"SS_LOG_LEVEL": "DEBUG"})
+    assert "SS_LOG_LEVEL=DEBUG" in env_path.read_text()
+
+
 # ── Mandate B: section labels from standalone comments ───────────────
 
 SECTION_SAMPLE = """SS_ENV=development

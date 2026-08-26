@@ -303,10 +303,11 @@ async def put_env(
     if not isinstance(values, dict) or not all(
             isinstance(v, str) for v in values.values()):
         raise _err(422, "invalid_env_update", unknown=[])
-    # A value containing \n or \r would splice a new physical line into
-    # .env on rewrite, letting a devtools user inject a hidden key (e.g.
-    # SS_DATABASE_URL) past the classification gate. Reject up front.
-    if any("\n" in v or "\r" in v for v in values.values()):
+    # A value containing any line-break character (as defined by
+    # str.splitlines(), not just \n/\r) would splice a new physical line
+    # into .env on rewrite, letting a devtools user inject a hidden key
+    # (e.g. SS_DATABASE_URL) past the classification gate. Reject up front.
+    if any(env_file.has_linebreak(v) for v in values.values()):
         raise _err(422, "invalid_env_update", unknown=[])
     try:
         changed = env_file.apply_updates(
