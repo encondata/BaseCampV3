@@ -143,6 +143,43 @@ async def test_failed_push_holds_cursor(db):
         server.shutdown()
 
 
+async def test_permanent_4xx_skips_batch_instead_of_wedging(db):
+    _Capture.requests = []
+    _Capture.status = 400            # e.g. Loki reject_old_samples
+    server = _http_server()
+    try:
+        await _configure(db, loki={"url": f"http://127.0.0.1:{server.server_port}",
+                                   "username": "", "password": "",
+                                   "tenant_id": ""})
+        await _fill(db, 3)
+        result = await log_service.forward_pending(db)   # must NOT raise
+        assert result == {"forwarded": 0, "skipped": 3}
+        max_id = await db.scalar(
+            select(LogEntry.id).order_by(LogEntry.id.desc()).limit(1))
+        assert await _cursor(db) == max_id               # cursor moved past
+    finally:
+        _Capture.status = 204
+        server.shutdown()
+
+
+async def test_retryable_5xx_still_raises_and_holds(db):
+    _Capture.status = 503
+    server = _http_server()
+    try:
+        await _configure(db, loki={"url": f"http://127.0.0.1:{server.server_port}",
+                                   "username": "", "password": "",
+                                   "tenant_id": ""})
+        await _fill(db, 1)
+        before = await _cursor(db)
+        import pytest as _pytest
+        with _pytest.raises(Exception):
+            await log_service.forward_pending(db)
+        assert await _cursor(db) == before
+    finally:
+        _Capture.status = 204
+        server.shutdown()
+
+
 async def test_syslog_udp_forwarding(db):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("127.0.0.1", 0))
@@ -165,7 +202,7 @@ async def test_syslog_udp_forwarding(db):
 
 async def test_unconfigured_forwards_nothing(db):
     await _fill(db, 2)
-    assert (await log_service.forward_pending(db))["forwarded"] == 0
+    assert await log_service.forward_pending(db) == {"forwarded": 0, "skipped": 0}
 
 
 async def test_degraded_flag_set_and_cleared(db):

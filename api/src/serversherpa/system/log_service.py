@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import LogEntry, SystemConfig, SystemProcess
 from serversherpa.system.config_store import read_section
 from serversherpa.system.forwarders import (
+    NonRetryableTransportError,
     send_loki,
     send_syslog,
     transport_configured,
@@ -87,12 +88,13 @@ def _row_dict(entry: LogEntry) -> dict:
 
 async def forward_pending(db: AsyncSession) -> dict:
     """Drain rows past the forwarding cursor via the configured
-    transport. Commits the cursor after each successful batch, so a
-    failure never re-sends what already landed. Raises on transport
-    failure — the caller owns backoff."""
+    transport. Commits the cursor after each batch — sent or skipped —
+    so a failure never re-sends what already landed, and a permanent
+    4xx rejection never wedges the cursor on poison rows. Raises on
+    retryable transport failure — the caller owns backoff."""
     cfg = await read_section(db, "logging")
     if not transport_configured(cfg):
-        return {"forwarded": 0}
+        return {"forwarded": 0, "skipped": 0}
     cursor_row = await db.get(SystemConfig, "logging_cursor")
     if cursor_row is None:
         cursor_row = SystemConfig(section="logging_cursor",
@@ -102,6 +104,7 @@ async def forward_pending(db: AsyncSession) -> dict:
     last = int((cursor_row.data or {}).get("last_forwarded_id", 0))
     hostname = _socket.gethostname()
     total = 0
+    skipped = 0
     while True:
         rows = (await db.scalars(
             select(LogEntry).where(LogEntry.id > last)
@@ -109,20 +112,27 @@ async def forward_pending(db: AsyncSession) -> dict:
         if not rows:
             break
         dicts = [_row_dict(r) for r in rows]
-        if cfg.get("transport", "loki") == "loki":
-            await send_loki(cfg["loki"], dicts, hostname)
+        try:
+            if cfg.get("transport", "loki") == "loki":
+                await send_loki(cfg["loki"], dicts, hostname)
+            else:
+                await send_syslog(cfg["syslog"], dicts, hostname)
+        except NonRetryableTransportError as exc:
+            logger.warning(
+                "skipping %d unforwardable rows (ids %s-%s): %s",
+                len(rows), rows[0].id, rows[-1].id, exc)
+            skipped += len(rows)
         else:
-            await send_syslog(cfg["syslog"], dicts, hostname)
+            total += len(rows)
         last = rows[-1].id
         cursor_row.data = {"last_forwarded_id": last}
         await db.commit()
-        total += len(rows)
         if len(rows) < FORWARD_BATCH:
             break
-    if total:
-        logger.info("forwarded %d log rows via %s", total,
-                    cfg.get("transport", "loki"))
-    return {"forwarded": total}
+    if total or skipped:
+        logger.info("forwarded %d log rows via %s (%d skipped)", total,
+                    cfg.get("transport", "loki"), skipped)
+    return {"forwarded": total, "skipped": skipped}
 
 
 async def set_forwarding_degraded(db: AsyncSession,

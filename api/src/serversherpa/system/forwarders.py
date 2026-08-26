@@ -15,6 +15,11 @@ _FACILITY = 16                                     # local0
 _LOKI_PUSH_PATH = "/loki/api/v1/push"
 
 
+class NonRetryableTransportError(RuntimeError):
+    """The remote rejected the payload itself (4xx other than 429) —
+    retrying the same batch can never succeed."""
+
+
 def transport_configured(cfg: dict) -> bool:
     if cfg.get("mode") == "local":
         return False
@@ -59,8 +64,11 @@ async def send_loki(loki_cfg: dict, rows: list[dict],
         resp = await client.post(url, json=build_loki_payload(rows, hostname),
                                  headers=loki_headers(loki_cfg))
     if resp.status_code >= 300:
-        raise RuntimeError(
-            f"loki push failed: HTTP {resp.status_code}: {resp.text[:200]}")
+        message = (f"loki push failed: HTTP {resp.status_code}: "
+                   f"{resp.text[:200]}")
+        if 400 <= resp.status_code < 500 and resp.status_code != 429:
+            raise NonRetryableTransportError(message)
+        raise RuntimeError(message)
 
 
 # ── syslog RFC 5424 ─────────────────────────────────────────────────
