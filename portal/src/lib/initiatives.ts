@@ -3,7 +3,9 @@
  * (the lib/containers.ts pattern), unit-testable without jsdom.
  */
 import type { ComboOption } from '../components/ComboBox';
-import type { InitiativeAssetRow, InitiativeItem, OrgRef, SiteItem } from './api';
+import type {
+  InitiativeAssetRow, InitiativeItem, OrgRef, SiteItem, StatusValue,
+} from './api';
 import { boolTriToPatch, numberToPatch, type GodField } from './godEdit';
 import type { ColumnDef } from './listTools';
 
@@ -328,15 +330,35 @@ export function moveAssetCellText(row: InitiativeAssetRow, colKey: string): stri
   }
 }
 
-/** "N of M complete" progress — status key `complete` only (v2 rule).
- *  0 rows -> 0% rather than NaN. */
+/** Weighted move progress — each move_asset_status vocabulary value carries
+ *  an admin-editable progress_weight (0-100, or null = excluded). Per spec
+ *  (docs/superpowers/specs/2026-08-25-weighted-progress-design.md):
+ *
+ *    progress % = round( Σ weight(status(asset)) ÷ (countable × 100) × 100 )
+ *
+ *  - A null-weight status excludes its rows from BOTH numerator and
+ *    denominator (parked/error states must not drag the number).
+ *  - A row whose status key has no matching entry in `statuses` (stale
+ *    data) counts as weight 0 in the denominator — it IS countable, unlike
+ *    a null-weight status.
+ *  - Zero countable rows (including zero rows total) -> { pct: 0, countable: 0 },
+ *    an early return to avoid dividing by zero. */
 export function moveAssetProgress(
   rows: InitiativeAssetRow[],
-): { complete: number; total: number; pct: number } {
-  const total = rows.length;
-  const complete = rows.filter((r) => r.status === 'complete').length;
-  const pct = total === 0 ? 0 : Math.round((complete / total) * 100);
-  return { complete, total, pct };
+  statuses: StatusValue[],
+): { pct: number; countable: number } {
+  const weightByKey = new Map(statuses.map((s) => [s.key, s.progress_weight]));
+  let sum = 0;
+  let countable = 0;
+  for (const row of rows) {
+    const weight = weightByKey.has(row.status) ? weightByKey.get(row.status)! : 0;
+    if (weight === null) continue;   // null-weight status: excluded entirely
+    countable += 1;
+    sum += weight;
+  }
+  if (countable === 0) return { pct: 0, countable: 0 };
+  const pct = Math.round((sum / (countable * 100)) * 100);
+  return { pct, countable };
 }
 
 export const MOVE_ASSET_ERRORS: Record<string, string> = {

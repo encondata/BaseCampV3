@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { InitiativeAssetRow, InitiativeItem } from './api';
+import type { InitiativeAssetRow, InitiativeItem, StatusValue } from './api';
 import {
   formFromInitiative, initiativeCellText, initiativePayload,
   initiativeSearchText, MOVE_ASSET_EDIT_FIELDS, moveAssetCellText, moveAssetProgress,
@@ -187,24 +187,59 @@ function assetRow(overrides: Partial<InitiativeAssetRow> = {}): InitiativeAssetR
   };
 }
 
+function statusValue(key: string, progress_weight: number | null): StatusValue {
+  return {
+    record_type: 'move_asset_status', key, label: key, description: '',
+    color: '#000000', sort_order: 0, is_active: true, usage_count: null,
+    progress_weight,
+  };
+}
+
 describe('moveAssetProgress', () => {
   it('is all-zero for no rows', () => {
-    expect(moveAssetProgress([])).toEqual({ complete: 0, total: 0, pct: 0 });
+    expect(moveAssetProgress([], [])).toEqual({ pct: 0, countable: 0 });
   });
 
-  it('counts only status key "complete" across mixed statuses', () => {
+  it('averages weights across mixed statuses', () => {
+    const statuses = [statusValue('racked', 40), statusValue('staged', 60)];
+    const rows = [assetRow({ status: 'racked' }), assetRow({ status: 'staged' })];
+    expect(moveAssetProgress(rows, statuses)).toEqual({ pct: 50, countable: 2 });
+  });
+
+  it('excludes null-weight rows from BOTH numerator and denominator', () => {
+    // If the null-weight row were merely zero-weighted (not excluded), pct
+    // would be (50 + 0) / 2 = 25 and countable would be 2. Exclusion means
+    // the excluded row disappears entirely: pct = 50/1 = 50, countable = 1.
+    const statuses = [statusValue('racked', 50), statusValue('historical', null)];
+    const rows = [assetRow({ status: 'racked' }), assetRow({ status: 'historical' })];
+    expect(moveAssetProgress(rows, statuses)).toEqual({ pct: 50, countable: 1 });
+  });
+
+  it('counts a stale status key (absent from statuses) as weight 0, but countable', () => {
+    // Distinct from null-weight exclusion above: a stale key IS countable
+    // (contributes 0 to the sum, +1 to the denominator), so it drags the
+    // average down rather than disappearing from it.
+    const statuses = [statusValue('racked', 80)];
+    const rows = [assetRow({ status: 'racked' }), assetRow({ status: 'retired_v1' })];
+    expect(moveAssetProgress(rows, statuses)).toEqual({ pct: 40, countable: 2 });
+  });
+
+  it('is countable: 0 when every row has a null-weight status', () => {
+    const statuses = [statusValue('historical', null), statusValue('location_collision', null)];
     const rows = [
-      assetRow({ status: 'complete' }),
-      assetRow({ status: 'racked' }),
-      assetRow({ status: 'complete' }),
-      assetRow({ status: 'pre_stage' }),
+      assetRow({ status: 'historical' }),
+      assetRow({ status: 'location_collision' }),
     ];
-    expect(moveAssetProgress(rows)).toEqual({ complete: 2, total: 4, pct: 50 });
+    expect(moveAssetProgress(rows, statuses)).toEqual({ pct: 0, countable: 0 });
   });
 
-  it('is 100% when every row is complete', () => {
-    const rows = [assetRow({ status: 'complete' }), assetRow({ status: 'complete' })];
-    expect(moveAssetProgress(rows)).toEqual({ complete: 2, total: 2, pct: 100 });
+  it('rounds a non-integer average to the nearest percent', () => {
+    const statuses = [statusValue('a', 33), statusValue('b', 34), statusValue('c', 34)];
+    const rows = [
+      assetRow({ status: 'a' }), assetRow({ status: 'b' }), assetRow({ status: 'c' }),
+    ];
+    // (33 + 34 + 34) / 3 = 33.66... -> rounds to 34
+    expect(moveAssetProgress(rows, statuses)).toEqual({ pct: 34, countable: 3 });
   });
 });
 

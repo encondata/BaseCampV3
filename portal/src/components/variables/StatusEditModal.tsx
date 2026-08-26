@@ -20,6 +20,7 @@ import {
 import {
   PRESET_COLORS,
   needsStatusCreate,
+  parseProgressWeight,
   parseSortOrder,
   statusCreatePayload,
   statusFormFromValue,
@@ -47,6 +48,7 @@ const STATUS_ERRORS: Record<string, string> = {
   status_value_exists: 'That key already exists for this record type.',
   status_value_not_found: 'That status value no longer exists.',
   unknown_record_type: 'That record type is not recognised.',
+  invalid_progress_weight: 'Progress weight must be between 0 and 100, or left blank.',
   forbidden: 'You do not have permission to change the vocabulary.',
 };
 
@@ -66,6 +68,7 @@ export function ColorSwatch({ color, title }: { color: string; title?: string })
 const emptyForm: StatusForm = {
   record_type: '', key: '', label: '', description: '',
   color: PRESET_COLORS[0].value, sort_order: '0', is_active: true,
+  progress_weight: '',
 };
 
 export default function StatusEditModal({ value, canChange, onClose, onSaved }: Props) {
@@ -90,6 +93,11 @@ export default function StatusEditModal({ value, canChange, onClose, onSaved }: 
     e.preventDefault();
     if (parseSortOrder(form.sort_order) === null) {
       setError('Sort order must be zero or a positive whole number.');
+      return;
+    }
+    if (original?.record_type === 'move_asset_status'
+        && parseProgressWeight(form.progress_weight) === undefined) {
+      setError('Progress weight must be between 0 and 100, or left blank.');
       return;
     }
     setSaving(true);
@@ -201,6 +209,16 @@ export default function StatusEditModal({ value, canChange, onClose, onSaved }: 
                 <input type="number" min="0" step="1" value={form.sort_order} disabled={locked}
                        onChange={(e) => setField('sort_order', e.target.value)} />
               </div>
+
+              {original?.record_type === 'move_asset_status' && (
+                <div>
+                  <label>Progress weight</label>
+                  <input type="number" min="0" max="100" step="1"
+                         value={form.progress_weight} disabled={locked}
+                         placeholder="0-100, blank = excluded from progress"
+                         onChange={(e) => setField('progress_weight', e.target.value)} />
+                </div>
+              )}
 
               {original && (
                 <div className="full">

@@ -923,6 +923,7 @@ export interface StatusValue {
   sort_order: number;
   is_active: boolean;
   usage_count: number | null;
+  progress_weight: number | null;
 }
 
 /** The Workers page's status vocabulary — filter facet and edit select.

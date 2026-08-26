@@ -21,9 +21,11 @@ const levels: WorkerLevelLookup[] = [
 
 const statuses: StatusValue[] = [
   { record_type: 'worker', key: 'active', label: 'Active', description: '',
-    color: '#178a4c', sort_order: 1, is_active: true, usage_count: 5 },
+    color: '#178a4c', sort_order: 1, is_active: true, usage_count: 5,
+    progress_weight: null },
   { record_type: 'worker', key: 'bench', label: 'On the bench', description: '',
-    color: '#c9840e', sort_order: 2, is_active: true, usage_count: 1 },
+    color: '#c9840e', sort_order: 2, is_active: true, usage_count: 1,
+    progress_weight: null },
 ];
 
 // Fields upsert_profile (PUT /workers/{id}/profile, api/src/serversherpa/api/

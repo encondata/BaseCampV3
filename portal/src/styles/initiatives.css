@@ -195,7 +195,7 @@
 .idet-assets-progress { margin: 0 0 14px; }
 .idet-assets-progress-label {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.04em;

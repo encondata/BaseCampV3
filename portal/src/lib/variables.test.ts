@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  needsSiteTypeCreate, needsStatusCreate, needsWorkerLevelCreate, parseSortOrder,
+  needsSiteTypeCreate, needsStatusCreate, needsWorkerLevelCreate, parseProgressWeight,
+  parseSortOrder,
   recordTypeOptions, siteTypeCreatePayload, siteTypeFormFromValue,
   siteTypeUpdatePayload, statusCreatePayload, statusFormFromValue,
   statusSearchText, statusUpdatePayload, workerLevelCreatePayload,
@@ -11,7 +12,13 @@ import type { SiteLookup, StatusValue, WorkerLevel } from './api';
 const value: StatusValue = {
   record_type: 'site', key: 'planned', label: 'Planned',
   description: 'Not yet in service.', color: '#0f7c86',
-  sort_order: 2, is_active: true, usage_count: 3,
+  sort_order: 2, is_active: true, usage_count: 3, progress_weight: null,
+};
+
+const moveStatus: StatusValue = {
+  record_type: 'move_asset_status', key: 'racked', label: 'Racked',
+  description: '', color: '#273FF5',
+  sort_order: 3, is_active: true, usage_count: 12, progress_weight: 15,
 };
 
 const siteType: SiteLookup = {
@@ -81,6 +88,37 @@ describe('statusUpdatePayload', () => {
     const form = { ...statusFormFromValue(value), sort_order: '0' };
     expect(statusUpdatePayload(form, value)).toEqual({ sort_order: 0 });
   });
+
+  it('includes progress_weight when it changed', () => {
+    const form = { ...statusFormFromValue(moveStatus), progress_weight: '92' };
+    expect(statusUpdatePayload(form, moveStatus)).toEqual({ progress_weight: 92 });
+  });
+
+  it('clears progress_weight to null when the field is emptied', () => {
+    const form = { ...statusFormFromValue(moveStatus), progress_weight: '' };
+    expect(statusUpdatePayload(form, moveStatus)).toEqual({ progress_weight: null });
+  });
+
+  it('omits progress_weight when unchanged', () => {
+    expect(statusUpdatePayload(statusFormFromValue(moveStatus), moveStatus)).toEqual({});
+  });
+
+  it('omits progress_weight when the field holds an invalid value', () => {
+    // The submit handler is responsible for blocking save on an invalid
+    // value before this ever runs; the payload builder itself just leaves
+    // it out rather than sending garbage.
+    const form = { ...statusFormFromValue(moveStatus), progress_weight: '101' };
+    expect(statusUpdatePayload(form, moveStatus)).toEqual({});
+  });
+
+  it('never touches progress_weight for a non-move_asset_status row', () => {
+    // `value` is a `site` row; its form seeds progress_weight to '' (the
+    // field isn't rendered for site/worker rows, so the form state stays
+    // whatever statusFormFromValue seeded). A stale/irrelevant value here
+    // must never leak into the patch for an unrelated field edit.
+    const form = { ...statusFormFromValue(value), label: 'Scheduled' };
+    expect(statusUpdatePayload(form, value)).toEqual({ label: 'Scheduled' });
+  });
 });
 
 describe('statusCreatePayload', () => {
@@ -88,6 +126,7 @@ describe('statusCreatePayload', () => {
     const form = {
       record_type: 'site', key: 'mothballed', label: 'Mothballed',
       description: '', color: '#6d4fc4', sort_order: '5', is_active: true,
+      progress_weight: '',
     };
     expect(statusCreatePayload(form)).toEqual({
       record_type: 'site', key: 'mothballed', label: 'Mothballed',
@@ -145,6 +184,46 @@ describe('parseSortOrder', () => {
 
   it('tolerates surrounding whitespace on an otherwise valid value', () => {
     expect(parseSortOrder(' 4 ')).toBe(4);
+  });
+});
+
+describe('parseProgressWeight', () => {
+  it('treats an empty field as null — an explicit "excluded" clear', () => {
+    // Unlike parseSortOrder, empty is valid here, not an error.
+    expect(parseProgressWeight('')).toBeNull();
+  });
+
+  it('treats whitespace-only input the same as empty', () => {
+    expect(parseProgressWeight('   ')).toBeNull();
+  });
+
+  it('parses a valid weight in range', () => {
+    expect(parseProgressWeight('62')).toBe(62);
+  });
+
+  it('accepts the boundaries 0 and 100', () => {
+    expect(parseProgressWeight('0')).toBe(0);
+    expect(parseProgressWeight('100')).toBe(100);
+  });
+
+  it('rejects a value above 100', () => {
+    expect(parseProgressWeight('101')).toBeUndefined();
+  });
+
+  it('rejects a negative value', () => {
+    expect(parseProgressWeight('-1')).toBeUndefined();
+  });
+
+  it('rejects a non-integer', () => {
+    expect(parseProgressWeight('1.5')).toBeUndefined();
+  });
+
+  it('rejects non-numeric input', () => {
+    expect(parseProgressWeight('abc')).toBeUndefined();
+  });
+
+  it('tolerates surrounding whitespace on an otherwise valid value', () => {
+    expect(parseProgressWeight(' 40 ')).toBe(40);
   });
 });
 

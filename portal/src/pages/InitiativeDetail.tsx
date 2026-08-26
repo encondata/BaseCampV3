@@ -273,7 +273,8 @@ export default function InitiativeDetail() {
       moveKey(assetsOrderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const assetsProgress = useMemo(() => moveAssetProgress(assets), [assets]);
+  const assetsProgress = useMemo(
+    () => moveAssetProgress(assets, moveStatuses), [assets, moveStatuses]);
   const visibleAssets = useMemo(() => {
     const q = assetsQuery.trim().toLowerCase();
     const filtered = assets.filter((a) => {
@@ -677,10 +678,9 @@ export default function InitiativeDetail() {
           )}
           {isMove && !assetsError && assets.length > 0 && (
             <>
-              {assetsProgress.total > 0 && (
+              {assetsProgress.countable > 0 && (
                 <div className="idet-assets-progress">
                   <div className="idet-assets-progress-label">
-                    <span>{assetsProgress.complete} of {assetsProgress.total} complete</span>
                     <span>{assetsProgress.pct}%</span>
                   </div>
                   <div className="idet-assets-progress-track">

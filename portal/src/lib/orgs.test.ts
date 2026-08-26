@@ -8,7 +8,7 @@ import {
 function statusValue(key: string, label: string, color: string): StatusValue {
   return {
     record_type: 'partner_type', key, label, description: '', color,
-    sort_order: 0, is_active: true, usage_count: null,
+    sort_order: 0, is_active: true, usage_count: null, progress_weight: null,
   };
 }
 
