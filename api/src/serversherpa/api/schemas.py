@@ -1245,3 +1245,27 @@ class InitiativeAssetUpdateIn(BaseModel):
     vendor_involved: bool | None = None
     status: str | None = None
     model_config = ConfigDict(extra="forbid")
+
+
+class ImportJobOut(BaseModel):
+    """import_jobs row as served to the portal's polling loop."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    initiative_id: uuid.UUID
+    kind: str
+    filename: str
+    options: dict
+    phase: str
+    status: str
+    total_rows: int
+    processed_rows: int
+    created_count: int
+    updated_count: int
+    error_count: int
+    results: dict | None = None
+    error: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None

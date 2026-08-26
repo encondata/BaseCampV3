@@ -8,24 +8,29 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    InitiativeAssetOut, InitiativeAssetsAddIn, InitiativeAssetSummary,
-    InitiativeAssetUpdateIn, InitiativeCreateIn, InitiativeDetailOut,
-    InitiativeItem, InitiativeLinkAddIn, InitiativeLinkRow,
-    InitiativeLinksOut, InitiativeLinkUpdateIn, InitiativePersonAddIn,
-    InitiativePersonRow, InitiativePersonUpdateIn, InitiativeUpdateIn,
+    ImportJobOut, InitiativeAssetOut, InitiativeAssetsAddIn,
+    InitiativeAssetSummary, InitiativeAssetUpdateIn, InitiativeCreateIn,
+    InitiativeDetailOut, InitiativeItem, InitiativeLinkAddIn,
+    InitiativeLinkRow, InitiativeLinksOut, InitiativeLinkUpdateIn,
+    InitiativePersonAddIn, InitiativePersonRow, InitiativePersonUpdateIn,
+    InitiativeUpdateIn,
 )
 from serversherpa.db.models import (
-    Asset, AssetModel, Client, Initiative, InitiativeAsset, InitiativeLink,
-    InitiativePerson, Partner, Person, Site, StatusValue,
+    Asset, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
+    InitiativeLink, InitiativePerson, Partner, Person, Site, StatusValue,
+)
+from serversherpa.imports.parsing import (
+    MAX_BYTES, build_template_csv, build_template_xlsx,
 )
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.storage import put_object
 
 router = APIRouter(prefix="/initiatives", tags=["initiatives"])
 
@@ -790,3 +795,136 @@ async def remove_initiative_asset(
           entity_id=str(initiative_id), action="asset_remove",
           changes={"asset_id": {"from": str(asset_id), "to": None}})
     await db.commit()
+
+
+# ── move-assets bulk import jobs ───────────────────────────────────
+# The API only creates job rows and serves status; the separate
+# import-worker process (serversherpa import-worker) claims queued rows
+# and does all parsing and writing — imports never affect API readiness.
+
+IMPORT_EXTENSIONS = (".csv", ".xlsx", ".xls")
+MAKE_MODEL_MODES = ("fuzzy", "force", "hybrid")
+
+
+async def _get_import_job(db: DbSession, job_id: uuid.UUID) -> ImportJob:
+    job = await db.get(ImportJob, job_id)
+    if job is None or job.kind != "move_assets":
+        raise _err(404, "import_job_not_found")
+    return job
+
+
+@router.post("/{initiative_id}/assets/import-jobs",
+             response_model=ImportJobOut, status_code=201)
+async def create_move_asset_import_job(
+    initiative_id: uuid.UUID,
+    db: DbSession,
+    file: UploadFile = File(...),
+    make_model_mode: str = Form("fuzzy"),
+    generate_serials: bool = Form(False),
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> ImportJob:
+    initiative = await _get_initiative(db, initiative_id)
+    if initiative.initiative_type != "move":
+        raise _err(422, "not_a_move")
+    if make_model_mode not in MAKE_MODEL_MODES:
+        raise _err(422, "invalid_make_model_mode")
+    filename = file.filename or "upload.csv"
+    if not filename.lower().endswith(IMPORT_EXTENSIONS):
+        raise _err(422, "unsupported_file")
+    content = await file.read()
+    if len(content) > MAX_BYTES:
+        raise _err(422, "file_too_large", limit=MAX_BYTES)
+    if not content:
+        raise _err(422, "empty_file")
+
+    job = ImportJob(
+        kind="move_assets", initiative_id=initiative_id,
+        created_by=actor.person.id, filename=filename,
+        options={"make_model_mode": make_model_mode,
+                 "generate_serials": generate_serials})
+    db.add(job)
+    await db.flush()
+    key = f"import-jobs/{initiative_id}/{job.id}/{filename}"
+    await put_object(key, content,
+                     file.content_type or "application/octet-stream")
+    job.file_key = key
+    audit(db, actor_id=actor.person.id, entity_type="initiative",
+          entity_id=str(initiative_id), action="asset_import_job_create",
+          changes={"job_id": {"from": None, "to": str(job.id)},
+                   "filename": {"from": None, "to": filename}})
+    await db.commit()
+    return job
+
+
+@router.get("/assets/import-jobs/{job_id}", response_model=ImportJobOut)
+async def get_move_asset_import_job(
+    job_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> ImportJob:
+    return await _get_import_job(db, job_id)
+
+
+@router.post("/assets/import-jobs/{job_id}/commit",
+             response_model=ImportJobOut)
+async def commit_move_asset_import_job(
+    job_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> ImportJob:
+    job = await _get_import_job(db, job_id)
+    if job.phase != "validate" or job.status != "completed":
+        raise _err(409, "job_not_ready")
+    job.phase = "commit"
+    job.status = "queued"
+    job.processed_rows = 0
+    job.created_count = 0
+    job.updated_count = 0
+    job.error_count = 0
+    job.results = None
+    job.cancel_requested = False
+    job.started_at = None
+    job.finished_at = None
+    audit(db, actor_id=actor.person.id, entity_type="initiative",
+          entity_id=str(job.initiative_id), action="asset_import_commit",
+          changes={"job_id": {"from": None, "to": str(job.id)}})
+    await db.commit()
+    return job
+
+
+@router.post("/assets/import-jobs/{job_id}/cancel",
+             response_model=ImportJobOut)
+async def cancel_move_asset_import_job(
+    job_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> ImportJob:
+    job = await _get_import_job(db, job_id)
+    if job.status in ("completed", "failed", "cancelled"):
+        raise _err(409, "job_already_finished")
+    job.cancel_requested = True
+    if job.status == "queued":       # never claimed — cancel immediately
+        job.status = "cancelled"
+        job.finished_at = datetime.now(UTC)
+    await db.commit()
+    return job
+
+
+@router.get("/assets/import-template")
+async def move_asset_import_template(
+    format: str = "csv",
+    actor: AuthContext = require_permission("initiatives", "change"),
+):
+    if format == "csv":
+        return Response(
+            build_template_csv(), media_type="text/csv",
+            headers={"Content-Disposition":
+                     'attachment; filename="move-assets-template.csv"'})
+    if format == "xlsx":
+        return Response(
+            build_template_xlsx(),
+            media_type="application/vnd.openxmlformats-officedocument"
+                       ".spreadsheetml.sheet",
+            headers={"Content-Disposition":
+                     'attachment; filename="move-assets-template.xlsx"'})
+    raise _err(422, "unknown_format")
