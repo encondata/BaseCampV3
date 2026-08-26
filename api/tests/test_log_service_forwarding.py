@@ -15,13 +15,19 @@ from serversherpa.system import log_service
 
 
 @pytest.fixture(autouse=True)
-def _quiet_pipeline():
+async def _quiet_pipeline(db):
     """Close any live DB log handlers left installed by earlier tests in
     this interpreter — their background flushes would add stray rows and
-    break this file's exact forwarded-count assertions."""
+    break this file's exact forwarded-count assertions. close() itself
+    DRAINS each handler's pending queue into log_entries (by design), so
+    purge the table afterwards for a truly clean slate."""
+    from sqlalchemy import text as sql_text
+
     from serversherpa.system import db_logging
     for name in list(db_logging._installed):
         db_logging._installed[name].close()
+    await db.execute(sql_text("DELETE FROM log_entries"))
+    await db.commit()
     yield
 
 
