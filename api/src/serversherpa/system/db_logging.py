@@ -127,6 +127,8 @@ class DbLogHandler(logging.Handler):
                 print(f"[db_logging] flush failed: {exc}", file=sys.stderr)
 
     def close(self) -> None:
+        logging.getLogger().removeHandler(self)
+        _installed.pop(self.process_name, None)
         self._stop.set()
         self._thread.join(timeout=5)
         if self._engine is not None:
@@ -141,8 +143,13 @@ def install(process: str) -> DbLogHandler:
     """Attach the pipeline for this process. Idempotent. Root goes to
     DEBUG (the handler applies the configured min level itself);
     uvicorn.error propagates in; uvicorn.access is never touched."""
-    if process in _installed:
-        return _installed[process]
+    cached = _installed.get(process)
+    if cached is not None:
+        if cached._thread.is_alive():
+            return cached
+        # stale handler from a closed pipeline — discard the corpse
+        logging.getLogger().removeHandler(cached)
+        _installed.pop(process, None)
     root = logging.getLogger()
     if not root.handlers:                   # keep terminals readable
         stderr = logging.StreamHandler()

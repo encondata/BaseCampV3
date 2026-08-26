@@ -18,7 +18,7 @@ from serversherpa.api.schemas import (
     LogEntryOut, LogPageOut, SystemProcessOut,
 )
 from serversherpa.db.engine import get_sessionmaker
-from serversherpa.db.models import LogEntry, SystemProcess
+from serversherpa.db.models import AuthSession, LogEntry, SystemProcess
 from serversherpa.services.audit import audit
 from serversherpa.system.registry import derive_status
 
@@ -31,6 +31,7 @@ _KIND_ORDER = {"service": 0, "worker": 1, "probe": 2}
 STREAM_POLL_SECONDS = 1.0
 STREAM_BATCH_CAP = 500
 STREAM_PING_SECONDS = 30.0
+STREAM_REAUTH_POLLS = 60
 
 
 def _err(status: int, code: str, **extra) -> HTTPException:
@@ -157,9 +158,20 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
 
     await ws.accept()
     idle = 0.0
+    poll_count = 0
     try:
         while True:
             async with maker() as db:
+                poll_count += 1
+                if poll_count % STREAM_REAUTH_POLLS == 0:
+                    session = await db.get(AuthSession, actor.session.id)
+                    if (
+                        session is None
+                        or session.revoked_at is not None
+                        or session.expires_at <= datetime.now(UTC)
+                    ):
+                        await ws.close(code=4401)
+                        return
                 stmt = _logs_query(name, min_level, q).where(
                     LogEntry.id > cursor
                 ).order_by(LogEntry.id).limit(STREAM_BATCH_CAP)

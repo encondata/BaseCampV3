@@ -110,6 +110,29 @@ async def test_bounded_queue_drops_oldest(db):
     assert msgs[-1] == "msg 19"             # newest kept, oldest dropped
 
 
+async def test_close_detaches_from_root_and_registry(db):
+    import logging as _logging
+
+    from serversherpa.system import db_logging
+    handler = db_logging.install("t-close-detach")
+    assert handler in _logging.getLogger().handlers
+    handler.close()
+    assert handler not in _logging.getLogger().handlers
+    assert "t-close-detach" not in db_logging._installed
+
+
+async def test_reinstall_after_close_returns_live_handler(db):
+    from serversherpa.system import db_logging
+    first = db_logging.install("t-reinstall")
+    first.close()
+    second = db_logging.install("t-reinstall")
+    try:
+        assert second is not first
+        assert second._thread.is_alive()
+    finally:
+        second.close()
+
+
 async def test_close_drains_every_pending_batch(db):
     handler = DbLogHandler("t-drain", batch_size=3, flush_seconds=60.0)
     logger = logging.getLogger("serversherpa.test.drain")

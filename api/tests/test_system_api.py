@@ -172,6 +172,40 @@ async def test_ws_stream_and_auth(client, db, seeded_user):
     sync.dispose()
 
 
+async def test_ws_closes_when_session_revoked(
+        client, db, seeded_user, monkeypatch):
+    from serversherpa.api.routes import system as system_routes
+    monkeypatch.setattr(system_routes, "STREAM_REAUTH_POLLS", 1)
+
+    dev = await _developer_headers(db, client)
+    token = dev["Authorization"].removeprefix("Bearer ")
+
+    from serversherpa.db.engine import dispose_engine
+    await db.close()
+    await dispose_engine()
+
+    from sqlalchemy import create_engine, text as sql_text
+
+    from serversherpa.config import get_settings
+    sync = create_engine(get_settings().sync_database_url)
+
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+
+    with TestClient(create_app()) as tc:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with tc.websocket_connect(
+                    f"/system/processes/api/logs/stream?token={token}"
+                    ) as ws:
+                with sync.begin() as conn:
+                    conn.execute(sql_text(
+                        "UPDATE auth_sessions SET revoked_at = now(), "
+                        "revoke_reason = 'admin'"))
+                ws.receive_json()            # next poll must close 4401
+        assert exc.value.code == 4401
+    sync.dispose()
+
+
 async def test_ws_stream_survives_bursts_beyond_batch_cap(
         client, db, seeded_user, monkeypatch):
     from serversherpa.api.routes import system as system_routes
