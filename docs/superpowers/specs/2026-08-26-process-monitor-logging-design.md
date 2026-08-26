@@ -265,6 +265,61 @@ renders and the route resolves only when the actor's `maxRank >= 80`.
 - Nav: new Developer item "System Config" between Developer tools and
   Database.
 
+### 5b. System Config addendum (amended 2026-08-26, post-Plan-2)
+
+**Design pass (user feedback: first cut "looks like crap").** The page
+gets a real visual treatment: a proper underline-style tab bar (not
+button chips); each settings group in its own card with an eyebrow
+title + one-line description; a consistent labeled field grid; a
+persistent actions row (Save + secondary actions + status text) per tab.
+Copy stays sentence-case/active.
+
+**ENV tab** (second tab, devtools-gated like everything here):
+
+- Server module `system/env_file.py` reads the repo `.env` (same path
+  Settings loads), preserving line order and comments. Classification:
+  - HIDDEN — never returned or writable via the API: keys matching the
+    DB/Spaces surface plus their compose-only companions
+    (`SS_DATABASE_*`, `SS_SPACES_*`, `POSTGRES_*`, `MINIO_*`).
+  - SECRET — introspected from `Settings`: every field typed `SecretStr`
+    maps to its `SS_<UPPER>` env name (JWT secret, password pepper, TOTP
+    key, god-mode words, SMTP password — and any future SecretStr
+    automatically). Returned as `{key, secret: true, set: bool}`, value
+    NEVER returned.
+  - Everything else returns `{key, value}` plainly.
+- `GET /system/env` → ordered list of visible entries.
+- `PUT /system/env` body `{values: {KEY: "..."}}` — existing visible
+  keys only (unknown or hidden key → 422 `invalid_env_update` listing
+  offenders). Secret keys: empty string = keep, non-empty = replace.
+  Writes atomically (temp file + rename) after copying the previous file
+  to `.env.bak`; comments, ordering, and untouched lines preserved.
+  Audited (`action="env_update"`, changed key NAMES only — never
+  values).
+- `POST /system/env/restart` — touch-triggered dev restart: rewrites the
+  sentinel module `api/src/serversherpa/_dev_reload.py` (a tracked .py
+  whose body is a timestamp comment) so uvicorn `--reload` and every
+  watchfiles `--reload` worker restart and re-read `.env`. Audited.
+  Returns `{"restarting": true}`. Production later maps this to a
+  supervisor restart — documented, not built.
+- Tab UI: searchable key/value rows (mono keys), secrets shown as
+  password inputs with a set/unset chip and "leave blank to keep",
+  changed-row count, Save, and Restart (confirm dialog; banner
+  "Processes are restarting — they reappear on the Processes page within
+  ~15 s"). A note when saved-but-not-restarted: "Changes take effect
+  after a restart."
+
+**Grafana as the Loki front end (dev stack).** Loki has no UI of its
+own; Grafana is the viewer. `docker-compose.dev.yml` gains BOTH:
+- `loki` (grafana/loki:3.x, port 127.0.0.1:3100) — replaces the
+  manually-run container; the portal logging config keeps pointing at
+  `http://localhost:3100`.
+- `grafana` (grafana/grafana, port 127.0.0.1:3000) — provisioned
+  datasource file mounting Loki at `http://loki:3100` as the default
+  datasource, admin credentials from `.env`
+  (`GRAFANA_ADMIN_USER`/`GRAFANA_ADMIN_PASSWORD`, documented in
+  `.env.example`), persistent volume. Browsing/searching logs happens in
+  Grafana Explore at `http://localhost:3000`.
+
 ## 6. Wiring existing processes
 
 - **API**: lifespan calls `system.attach("api", "service")` → installs the
