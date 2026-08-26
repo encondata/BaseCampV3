@@ -301,17 +301,29 @@ Copy stays sentence-case/active.
   watchfiles `--reload` worker restart and re-read `.env`. Audited.
   Returns `{"restarting": true}`. Production later maps this to a
   supervisor restart — documented, not built.
-- Tab UI (amended per user feedback): the portal's STANDARD table idiom
-  (list-head + grid rows, like the Processes page) with columns
-  Key (mono) | Value (input; secrets as password fields with the
-  set/unset chip) | Description. Description is read from a trailing
-  same-line comment in the .env (`KEY=value  # description text`) —
-  parsed on read (value splits from the first " #"), PRESERVED verbatim
-  on rewrite, read-only in the UI. Searchable (key + description),
-  changed-row rail, Save, and Restart (confirm dialog; banner
-  "Processes are restarting — they reappear on the Processes page within
-  ~15 s"). A note when saved-but-not-restarted: "Changes take effect
-  after a restart."
+- Tab UI (amended twice per user feedback): the portal's STANDARD rich-
+  list idiom — a `dir-toolbar` (search box styled `dir-search` + result
+  count + `ColumnsButton`) above a full-width `dir-list` (`list-head` +
+  grid rows). Columns Key (mono) | Value (input; secrets as password
+  fields with the set/unset chip) | Description, all toggleable via the
+  columns menu; the table spans the full content width (the ENV tab lifts
+  the System Config max-width cap).
+- Description is a trailing same-line comment (`KEY=value  # description`)
+  — value splits from the first " #", preserved verbatim on rewrite,
+  read-only in the UI.
+- **Section separators:** a standalone full-line comment (`# Email`,
+  `# Grafana`) becomes a section. `read_entries` tags every entry with
+  the nearest preceding standalone-comment `section` label; the portal
+  renders a section-header row whenever the label changes and has at
+  least one visible entry. Standalone comments are preserved verbatim on
+  rewrite.
+- **Value safety:** a value containing a newline (`\n`/`\r`) is rejected
+  422 `invalid_env_update` — a newline would otherwise splice extra lines
+  into `.env` and could inject a hidden key past the classification gate.
+- Searchable (key + description), changed-row rail, Save, and Restart
+  (confirm dialog; banner "Processes are restarting — they reappear on
+  the Processes page within ~15 s"). A note when saved-but-not-restarted:
+  "Changes take effect after a restart."
 
 **Grafana as the Loki front end (dev stack).** Loki has no UI of its
 own; Grafana is the viewer. `docker-compose.dev.yml` gains BOTH:
