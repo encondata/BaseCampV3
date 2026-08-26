@@ -1522,10 +1522,6 @@ export const listInitiativeWorkTypes = () =>
   statusValuesFor('initiative_work_type');
 export const listShippingTypes = () => statusValuesFor('shipping_type');
 
-/** Move-asset status vocabulary (record type `move_asset_status`) — feeds
- *  the per-row Status ComboBox on a move's Assets table edit dialog. */
-export const listMoveAssetStatuses = () => statusValuesFor('move_asset_status');
-
 /** The Partners picker's type vocabulary (Clients/Partners share OrgDirectory,
  *  but only Partners has a Type column/picker — see cfg.hasType). */
 export const listPartnerTypes = () => statusValuesFor('partner_type');

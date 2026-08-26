@@ -330,7 +330,7 @@ export function moveAssetCellText(row: InitiativeAssetRow, colKey: string): stri
   }
 }
 
-/** Weighted move progress — each move_asset_status vocabulary value carries
+/** Weighted move progress — each asset vocabulary value carries
  *  an admin-editable progress_weight (0-100, or null = excluded). Per spec
  *  (docs/superpowers/specs/2026-08-25-weighted-progress-design.md):
  *

@@ -24,6 +24,7 @@ import {
   addInitiativeLink,
   addInitiativePerson,
   getInitiative,
+  listAssetStatuses,
   listClients,
   listInitiativeAssets,
   listInitiativeStatuses,
@@ -31,7 +32,6 @@ import {
   listInitiativeTypes,
   listInitiativeWorkTypes,
   listInitiatives,
-  listMoveAssetStatuses,
   listPartners,
   listShippingTypes,
   listSites,
@@ -350,11 +350,11 @@ export default function InitiativeDetail() {
       .finally(() => setAssetsLoaded(true));
   }, [initiative?.id, initiative?.initiative_type]);
 
-  // Move-status vocabulary (record type `move_asset_status`) — only needed
-  // for moves, feeds the edit dialog's Status ComboBox below.
+  // Asset status vocabulary (merged: lifecycle + move workflow keys) —
+  // only needed for moves, feeds the edit dialog's Status ComboBox below.
   useEffect(() => {
     if (!initiative || initiative.initiative_type !== 'move') return;
-    void listMoveAssetStatuses().then(setMoveStatuses).catch(() => {});
+    void listAssetStatuses().then(setMoveStatuses).catch(() => {});
   }, [initiative?.id, initiative?.initiative_type]);
 
   useEffect(() => {

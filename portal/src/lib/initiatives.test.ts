@@ -190,7 +190,7 @@ function assetRow(overrides: Partial<InitiativeAssetRow> = {}): InitiativeAssetR
 
 function statusValue(key: string, progress_weight: number | null): StatusValue {
   return {
-    record_type: 'move_asset_status', key, label: key, description: '',
+    record_type: 'asset', key, label: key, description: '',
     color: '#000000', sort_order: 0, is_active: true, usage_count: null,
     progress_weight,
   };
