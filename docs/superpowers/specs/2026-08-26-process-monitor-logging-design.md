@@ -301,9 +301,14 @@ Copy stays sentence-case/active.
   watchfiles `--reload` worker restart and re-read `.env`. Audited.
   Returns `{"restarting": true}`. Production later maps this to a
   supervisor restart — documented, not built.
-- Tab UI: searchable key/value rows (mono keys), secrets shown as
-  password inputs with a set/unset chip and "leave blank to keep",
-  changed-row count, Save, and Restart (confirm dialog; banner
+- Tab UI (amended per user feedback): the portal's STANDARD table idiom
+  (list-head + grid rows, like the Processes page) with columns
+  Key (mono) | Value (input; secrets as password fields with the
+  set/unset chip) | Description. Description is read from a trailing
+  same-line comment in the .env (`KEY=value  # description text`) —
+  parsed on read (value splits from the first " #"), PRESERVED verbatim
+  on rewrite, read-only in the UI. Searchable (key + description),
+  changed-row rail, Save, and Restart (confirm dialog; banner
   "Processes are restarting — they reappear on the Processes page within
   ~15 s"). A note when saved-but-not-restarted: "Changes take effect
   after a restart."
