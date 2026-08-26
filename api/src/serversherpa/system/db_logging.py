@@ -109,7 +109,8 @@ class DbLogHandler(logging.Handler):
         while not self._stop.is_set():
             self._stop.wait(self._flush_seconds)
             self._flush_once()
-        self._flush_once()                  # final drain on close
+        while not self._queue.empty():      # final drain: every batch, not one
+            self._flush_once()
 
     def _flush_once(self) -> None:
         self._refresh_config()

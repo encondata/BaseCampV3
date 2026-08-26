@@ -108,3 +108,17 @@ async def test_bounded_queue_drops_oldest(db):
     engine.dispose()
     assert len(msgs) == 5
     assert msgs[-1] == "msg 19"             # newest kept, oldest dropped
+
+
+async def test_close_drains_every_pending_batch(db):
+    handler = DbLogHandler("t-drain", batch_size=3, flush_seconds=60.0)
+    logger = logging.getLogger("serversherpa.test.drain")
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    try:
+        for i in range(10):
+            logger.info("drain %d", i)
+    finally:
+        logger.removeHandler(handler)
+        handler.close()          # must flush all 4 batches, not just one
+    assert _count("t-drain") == 10
