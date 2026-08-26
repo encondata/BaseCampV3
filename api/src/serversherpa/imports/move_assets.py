@@ -2,13 +2,31 @@
 
 Pure of HTTP and job-queue concerns: callers hand in parsed rows and
 options and get back the report dict that lands in import_jobs.results.
-This module grows in three stages: row helpers (this slice), the
-validate/commit pipeline, and collision detection.
+This module grows in three stages: row helpers (done), the
+validate/commit pipeline (this slice — validate path only; write=True
+commit batching/collisions/audit land in the next slice), and collision
+detection.
 """
 
+import json
 import random
+import uuid
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from decimal import Decimal
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from serversherpa.db.models import (
+    Asset, AssetModel, AssetModelAlias, InitiativeAsset,
+)
 
 PRIORITY_MAX = 30
+BATCH_SIZE = 500
+
+ProgressFn = Callable[[int, int, int, int], Awaitable[None]]
+CancelledFn = Callable[[], Awaitable[bool]]
 
 
 def resolve_make_model_for_creation(asset_make: str,
@@ -108,3 +126,252 @@ def parse_row(n: int, canonical: dict, raw: dict, *,
         "raw_ft": raw,
         "notes": notes,
     }
+
+
+class _SimAsset:
+    """Stand-in for an Asset that validate mode 'created' — later rows
+    with the same serial resolve as existing without any DB write."""
+
+    id = None
+
+    def __init__(self, serial: str) -> None:
+        self.serial_number = serial
+        self.rfid_tag: str | None = None
+
+
+_SIM_ASSOC = object()   # roster marker for validate-mode attachments
+
+
+async def _lookups(db: AsyncSession, initiative_id: uuid.UUID,
+                   rows: list[dict]) -> tuple[dict, dict, dict, dict]:
+    """Batch lookups for the whole file: assets by serial, RFID holders,
+    make/model exact + alias fuzzy, current roster rows by serial."""
+    serials = list({r["serial_number"] for r in rows})
+    assets: dict[str, Asset] = {}
+    if serials:
+        for a in await db.scalars(
+                select(Asset).where(Asset.serial_number.in_(serials))):
+            assets[(a.serial_number or "").lower()] = a
+
+    tags = list({r["rfid_tag"] for r in rows if r["rfid_tag"]})
+    rfid: dict[str, Asset] = {}
+    if tags:
+        for a in await db.scalars(
+                select(Asset).where(Asset.rfid_tag.in_(tags))):
+            rfid[(a.rfid_tag or "").lower()] = a
+
+    models: dict[str, tuple] = {}
+    for m in await db.scalars(select(AssetModel)):
+        display = f"{m.make} {m.model}".strip()
+        models[display.lower()] = (m, "exact", display)
+    alias_rows = (await db.execute(
+        select(AssetModelAlias.alias, AssetModel)
+        .join(AssetModel, AssetModel.id == AssetModelAlias.model_id))).all()
+    for alias, m in alias_rows:                # exact wins over alias
+        models.setdefault(
+            alias.lower(), (m, "fuzzy", f"{m.make} {m.model}".strip()))
+
+    roster: dict[str, object] = {}
+    ids = [a.id for a in assets.values()]
+    if ids:
+        by_id = {a.id: s for s, a in assets.items()}
+        for assoc in await db.scalars(select(InitiativeAsset).where(
+                InitiativeAsset.initiative_id == initiative_id,
+                InitiativeAsset.asset_id.in_(ids))):
+            roster[by_id[assoc.asset_id]] = assoc
+    return assets, rfid, models, roster
+
+
+def _apply_row(assoc: InitiativeAsset, r: dict, now: datetime) -> None:
+    assoc.priority_wave = r["priority_wave"]
+    assoc.disposition = r["disposition"]
+    assoc.owner = r["owner"]
+    assoc.source_rack = r["source_rack"]
+    assoc.source_ru = (Decimal(str(r["source_ru"]))
+                       if r["source_ru"] is not None else None)
+    assoc.destination_rack = r["destination_rack"]
+    assoc.destination_ru = (Decimal(str(r["destination_ru"]))
+                            if r["destination_ru"] is not None else None)
+    assoc.cable_info = (json.dumps(r["cable_info"])
+                        if r["cable_info"] else None)
+    assoc.vendor_involved = r["vendor_involved"]
+    assoc.status = "loaded_in_system"   # V2 parity: re-upload resets status
+    assoc.raw_ft = r["raw_ft"]
+    assoc.updated_at = now
+
+
+async def run_import(
+    db: AsyncSession, *,
+    initiative_id: uuid.UUID,
+    added_by: uuid.UUID | None,
+    rows: list[dict],
+    make_model_mode: str = "fuzzy",
+    write: bool,
+    source_label: str = "",
+    progress: ProgressFn | None = None,
+    is_cancelled: CancelledFn | None = None,
+) -> dict:
+    """The shared pipeline. write=False (validate) runs the identical
+    decision path with every DB write suppressed — created assets/models
+    are simulated in-memory so later rows in the same file resolve exactly
+    as they will at commit. write=True commits in BATCH_SIZE batches
+    (progress + cancel checks ride the batch boundary), then flags
+    destination collisions and writes ONE audit summary row."""
+    from serversherpa.services.audit import audit
+
+    ok_rows = [r for r in rows if r["status"] == "ok"]
+    assets, rfid_map, model_map, roster = await _lookups(
+        db, initiative_id, ok_rows)
+    force = make_model_mode in ("force", "hybrid")
+
+    details: list[dict] = []
+    created = updated = review = errors = processed = 0
+    created_models: list[str] = []
+    cancelled = False
+    now = datetime.now(UTC)
+
+    for r in rows:
+        processed += 1
+        if r["status"] == "error":
+            errors += 1
+            details.append({"row": r["row"],
+                            "serial_number": r["serial_number"],
+                            "status": "error", "message": r["message"]})
+            continue
+
+        serial = r["serial_number"]
+        notes = list(r["notes"])
+
+        # RFID skip-and-flag: a tag held by a DIFFERENT asset (DB or an
+        # earlier row of this file) is not written; the row still imports.
+        rfid_to_write = r["rfid_tag"] or None
+        if rfid_to_write:
+            holder = rfid_map.get(rfid_to_write.lower())
+            if holder is not None and \
+                    (holder.serial_number or "").lower() != serial:
+                notes.append(
+                    f"RFID tag '{rfid_to_write}' skipped: already assigned "
+                    f"to serial '{holder.serial_number}'")
+                rfid_to_write = None
+
+        asset = assets.get(serial)
+        asset_created = False
+        match_method = "existing_asset" if asset is not None else "none"
+        make_model_final = ""
+
+        if asset is None:
+            model_obj = None
+            if r["make_model_str"]:
+                mm_key = r["make_model_str"].lower()
+                matched = model_map.get(mm_key)
+                if matched is not None:
+                    model_obj, match_method, make_model_final = matched
+                elif force:
+                    mk, md = resolve_make_model_for_creation(
+                        r["asset_make"], r["asset_model"])
+                    note = ("FORCED: hybrid mode creation (fuzzy match not "
+                            "found) for move F-T"
+                            if make_model_mode == "hybrid"
+                            else "FORCED: make model creation for move F-T")
+                    make_model_final = f"{mk} {md}".strip()
+                    if write:
+                        model_obj = AssetModel(make=mk, model=md,
+                                               knowledge=note)
+                        db.add(model_obj)
+                        await db.flush()
+                    match_method = "force_created"
+                    model_map[mm_key] = (model_obj, "force_created",
+                                         make_model_final)
+                    created_models.append(make_model_final)
+                else:
+                    review += 1
+                    details.append({
+                        "row": r["row"], "serial_number": serial,
+                        "status": "review",
+                        "message": f"Make/Model '{r['make_model_str']}' "
+                                   "not found — needs review",
+                        "match_method": "review",
+                        "serial_generated": r["serial_generated"]})
+                    continue
+            if write:
+                asset = Asset(
+                    serial_number=serial, name=r["asset_name"],
+                    rfid_tag=rfid_to_write,
+                    model_id=model_obj.id if model_obj is not None else None,
+                    source="import", source_ref=source_label or None,
+                    created_by=added_by)
+                db.add(asset)
+                await db.flush()
+            else:
+                asset = _SimAsset(serial)
+            asset_created = True
+            assets[serial] = asset
+            if rfid_to_write:
+                rfid_map[rfid_to_write.lower()] = asset
+        elif rfid_to_write:
+            if write:
+                asset.rfid_tag = rfid_to_write
+                asset.updated_at = now
+            rfid_map[rfid_to_write.lower()] = asset
+
+        if serial in roster:
+            assoc = roster[serial]
+            if write and isinstance(assoc, InitiativeAsset):
+                _apply_row(assoc, r, now)
+            updated += 1
+            status, message = "updated", "Asset updated in move"
+        else:
+            if write:
+                assoc = InitiativeAsset(initiative_id=initiative_id,
+                                        asset_id=asset.id,
+                                        added_by=added_by)
+                _apply_row(assoc, r, now)
+                db.add(assoc)
+                roster[serial] = assoc
+            else:
+                roster[serial] = _SIM_ASSOC
+            created += 1
+            status, message = "created", "Asset added to move"
+
+        if notes:
+            message = f"{message}. " + "; ".join(notes)
+        details.append({
+            "row": r["row"], "serial_number": serial, "status": status,
+            "message": message,
+            "asset_id": str(asset.id) if getattr(asset, "id", None) else None,
+            "asset_created": asset_created,
+            "serial_generated": r["serial_generated"],
+            "match_method": match_method,
+            "make_model_final": make_model_final})
+
+        if write and processed % BATCH_SIZE == 0:
+            if progress is not None:
+                await progress(processed, created, updated, errors)
+            await db.commit()
+            if is_cancelled is not None and await is_cancelled():
+                cancelled = True
+                break
+
+    summary = {"total_rows": len(rows), "processed_rows": processed,
+               "created": created, "updated": updated, "review": review,
+               "errors": errors}
+    if created_models:
+        summary["models_created"] = len(created_models)
+
+    if write and not cancelled:
+        summary["collisions_flagged"] = await flag_collisions(
+            db, initiative_id)
+        audit(db, actor_id=added_by, entity_type="initiative",
+              entity_id=str(initiative_id), action="asset_import",
+              changes={**summary, "source": source_label})
+    if write:
+        if progress is not None:
+            await progress(processed, created, updated, errors)
+        await db.commit()
+    return {"summary": summary, "details": details, "cancelled": cancelled}
+
+
+async def flag_collisions(db: AsyncSession,
+                          initiative_id: uuid.UUID) -> int:
+    """Implemented in the commit slice (Task 5)."""
+    return 0
