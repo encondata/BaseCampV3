@@ -1,0 +1,116 @@
+"""The import worker loop — a separate process from the API
+(`serversherpa import-worker`). Claims queued import_jobs rows and runs
+the pipeline; the API process never parses files or writes import rows.
+
+Shutdown story: no signal handling on purpose. Commit-phase work is
+committed every BATCH_SIZE rows and the update path is idempotent, so
+killing the worker mid-job loses at most one uncommitted batch; the job
+sits 'running' until the next worker start re-queues it via
+requeue_stale, and the re-run converges on the same result."""
+
+import asyncio
+from datetime import UTC, datetime
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from serversherpa.db.models import ImportJob
+from serversherpa.imports.jobs import claim_next, requeue_stale
+from serversherpa.imports.move_assets import parse_row, run_import
+from serversherpa.imports.parsing import ImportFileError, parse_upload
+from serversherpa.services.storage import get_object
+
+
+def _finish(job: ImportJob, status: str, error: str | None = None) -> None:
+    job.status = status
+    job.error = error
+    job.finished_at = datetime.now(UTC)
+
+
+async def process_job(db: AsyncSession, job: ImportJob) -> None:
+    """Run one claimed (status='running') job to a terminal status."""
+    if job.cancel_requested:
+        _finish(job, "cancelled")
+        await db.commit()
+        return
+    try:
+        content = await get_object(job.file_key)
+    except Exception:
+        _finish(job, "failed", "file_unreadable")
+        await db.commit()
+        return
+    try:
+        numbered = parse_upload(job.filename, content)
+    except ImportFileError as exc:
+        _finish(job, "failed", exc.code)
+        await db.commit()
+        return
+
+    opts = job.options or {}
+    parsed = [parse_row(n, canonical, raw,
+                        generate_serials=bool(opts.get("generate_serials")))
+              for n, canonical, raw in numbered]
+    job.total_rows = len(parsed)
+
+    async def _progress(processed: int, created: int, updated: int,
+                        errors: int) -> None:
+        job.processed_rows = processed
+        job.created_count = created
+        job.updated_count = updated
+        job.error_count = errors
+        job.progress_at = datetime.now(UTC)
+        # the pipeline commits right after each progress call
+
+    async def _cancelled() -> bool:
+        await db.refresh(job, ["cancel_requested"])
+        return job.cancel_requested
+
+    write = job.phase == "commit"
+    result = await run_import(
+        db, initiative_id=job.initiative_id, added_by=job.created_by,
+        rows=parsed,
+        make_model_mode=str(opts.get("make_model_mode") or "fuzzy"),
+        write=write,
+        source_label=f"import-job {job.id} ({job.filename})",
+        progress=_progress if write else None,
+        is_cancelled=_cancelled if write else None)
+
+    summary = result["summary"]
+    job.processed_rows = summary["processed_rows"]
+    job.created_count = summary["created"]
+    job.updated_count = summary["updated"]
+    job.error_count = summary["errors"]
+    job.results = {"summary": summary, "details": result["details"]}
+    job.progress_at = datetime.now(UTC)
+    _finish(job, "cancelled" if result["cancelled"] else "completed")
+    await db.commit()
+
+
+async def run_once(sessionmaker) -> bool:
+    """Claim and process at most one job. False when the queue is empty."""
+    async with sessionmaker() as db:
+        job = await claim_next(db)
+        if job is None:
+            return False
+        try:
+            await process_job(db, job)
+        except Exception as exc:                       # job must terminate
+            await db.rollback()
+            _finish(job, "failed", f"worker_error: {exc}")
+            await db.commit()
+        return True
+
+
+async def run_forever(poll_seconds: float = 2.0) -> None:
+    from serversherpa.db.engine import get_sessionmaker
+
+    maker = get_sessionmaker()
+    async with maker() as db:
+        requeued = await requeue_stale(db)
+        if requeued:
+            print(f"[import-worker] re-queued {requeued} stale job(s)",
+                  flush=True)
+    print("[import-worker] watching the queue", flush=True)
+    while True:
+        worked = await run_once(maker)
+        if not worked:
+            await asyncio.sleep(poll_seconds)

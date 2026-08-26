@@ -54,3 +54,15 @@ async def put_object(key: str, data: bytes, content_type: str) -> None:
         Body=data,
         ContentType=content_type,
     ))
+
+
+async def get_object(key: str) -> bytes:
+    """Read a private object's bytes (blocking boto3 moved off the loop).
+    Used by the import worker to fetch uploaded files."""
+    s = get_settings()
+    resp = await asyncio.to_thread(partial(
+        _client().get_object,
+        Bucket=s.spaces_bucket,
+        Key=key,
+    ))
+    return await asyncio.to_thread(resp["Body"].read)

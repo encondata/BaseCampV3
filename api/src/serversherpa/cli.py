@@ -154,5 +154,30 @@ def set_password(
     asyncio.run(_run())
 
 
+@app.command()
+def import_worker(
+    poll_seconds: float = typer.Option(
+        2.0, help="Idle sleep between queue polls"),
+    once: bool = typer.Option(
+        False, help="Process at most one job, then exit"),
+) -> None:
+    """Run the bulk-import worker loop — a separate process from the API,
+    so imports never affect API readiness or response times."""
+
+    async def _run() -> None:
+        from serversherpa.db.engine import get_sessionmaker
+        from serversherpa.imports import worker
+
+        if once:
+            worked = await worker.run_once(get_sessionmaker())
+            typer.secho("processed 1 job" if worked else "queue empty",
+                        fg="green" if worked else "yellow")
+        else:
+            await worker.run_forever(poll_seconds)
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     app()
