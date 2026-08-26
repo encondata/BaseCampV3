@@ -4,13 +4,30 @@
     {
       "name": "portal",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "portal", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "portal",
+        "run",
+        "dev"
+      ],
       "port": 5173
     },
     {
       "name": "api",
       "runtimeExecutable": "api/.venv/bin/python",
-      "runtimeArgs": ["-m", "uvicorn", "--factory", "serversherpa.api.app:create_app", "--app-dir", "api/src", "--host", "0.0.0.0", "--port", "8000"],
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "--reload",
+        "--factory",
+        "serversherpa.api.app:create_app",
+        "--app-dir",
+        "api/src",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000"
+      ],
       "port": 8000
     }
   ]
