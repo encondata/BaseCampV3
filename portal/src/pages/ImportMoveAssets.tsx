@@ -211,9 +211,9 @@ export default function ImportMoveAssets() {
           {!active && (
             <div className="init-panel imp-card">
               <div className="imp-card-head">
-                <p className="eyebrow-sm">Upload the facility tracker</p>
+                <p className="eyebrow-sm">Upload</p>
                 <div className="imp-template-links">
-                  <span>Template:</span>
+                  <span>Download template:</span>
                   <button type="button" className="imp-link-btn" disabled={busy}
                           onClick={() => void downloadMoveAssetTemplate('xlsx')}>
                     .xlsx
@@ -270,38 +270,50 @@ export default function ImportMoveAssets() {
                       <path d="M9.5 14.5 12 12l2.5 2.5" />
                     </svg>
                     <p className="imp-dropzone-title">Drop your file here, or click to browse</p>
-                    <p className="imp-dropzone-hint">.csv, .xlsx, or .xls</p>
+                    <p className="imp-dropzone-hint">
+                      CSV or Excel spreadsheet — .csv, .xlsx, or .xls
+                    </p>
                   </div>
                 )}
               </label>
 
               <div className="imp-options">
                 <p className="imp-options-label">Options</p>
-                <div className="imp-radio-group" role="radiogroup"
-                     aria-label="Make/model handling">
-                  {MODE_OPTIONS.map((opt) => (
-                    <label key={opt.value} className="imp-radio">
-                      <input type="radio" name="make-model-mode" value={opt.value}
-                             checked={mode === opt.value} disabled={busy}
-                             onChange={() => setMode(opt.value)} />
-                      <span className="imp-radio-body">
-                        <span className="imp-radio-title">{opt.title}</span>
-                        <span className="imp-radio-desc">{opt.desc}</span>
-                      </span>
-                    </label>
-                  ))}
+
+                <div className="imp-options-group">
+                  <p className="imp-options-sublabel">Make / model matching</p>
+                  <p className="imp-options-explainer">
+                    How makes and models in your file are matched against the catalog.
+                  </p>
+                  <div className="imp-radio-group" role="radiogroup"
+                       aria-label="Make/model handling">
+                    {MODE_OPTIONS.map((opt) => (
+                      <label key={opt.value} className="imp-radio">
+                        <input type="radio" name="make-model-mode" value={opt.value}
+                               checked={mode === opt.value} disabled={busy}
+                               onChange={() => setMode(opt.value)} />
+                        <span className="imp-radio-body">
+                          <span className="imp-radio-title">{opt.title}</span>
+                          <span className="imp-radio-desc">{opt.desc}</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
 
-                <label className="imp-checkbox">
-                  <input type="checkbox" checked={generateSerials} disabled={busy}
-                         onChange={(e) => setGenerateSerials(e.target.checked)} />
-                  <span className="imp-radio-body">
-                    <span className="imp-radio-title">Generate serial numbers</span>
-                    <span className="imp-radio-desc">
-                      Blank serial-number rows get one generated automatically.
+                <div className="imp-options-group">
+                  <p className="imp-options-sublabel">Serial numbers</p>
+                  <label className="imp-checkbox">
+                    <input type="checkbox" checked={generateSerials} disabled={busy}
+                           onChange={(e) => setGenerateSerials(e.target.checked)} />
+                    <span className="imp-radio-body">
+                      <span className="imp-radio-title">Generate serial numbers</span>
+                      <span className="imp-radio-desc">
+                        Blank serial-number rows get one generated automatically.
+                      </span>
                     </span>
-                  </span>
-                </label>
+                  </label>
+                </div>
               </div>
 
               <div className="imp-card-foot">

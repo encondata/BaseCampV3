@@ -159,8 +159,19 @@
 .idet-desc { max-width: 68ch; }
 
 /* header actions — Import assets (secondary, moves only) sits beside Edit
-   (primary); Edit stays visually dominant since it alone uses .btn-solid. */
+   (primary); Edit stays visually dominant via .btn-solid's amber fill.
+   Import assets keeps .mini-btn's neutral bordered look but is resized here
+   to match .btn-solid's box model (height/padding/font-size/weight) so the
+   two buttons read as same-size siblings instead of a smaller secondary
+   link beside a taller primary button. Scoped to this header row only —
+   .mini-btn's shared size elsewhere (row actions, toolbars) is untouched. */
 .idet-header-actions { display: flex; align-items: center; gap: 10px; flex: none; }
+.idet-header-actions .mini-btn {
+  height: auto;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 600;
+}
 
 /* the info cards stack to one column below the same width the
    row-detail's .detail-grid already collapses at (directory.css) */
@@ -771,6 +782,25 @@
   text-transform: uppercase;
   color: var(--text-mute);
   margin: 0 0 2px;
+}
+/* sub-groups within Options — each names WHAT is being chosen (a plain
+   sub-label, not the tiny all-caps mono of .imp-options-label above it)
+   and, for the radio group, a one-line muted explainer of WHY it matters
+   before the choices themselves. */
+.imp-options-group { display: flex; flex-direction: column; gap: 8px; }
+.imp-options-group + .imp-options-group { margin-top: 6px; }
+.imp-options-sublabel {
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-dark);
+  margin: 0;
+}
+.imp-options-explainer {
+  font-size: 12px;
+  font-weight: 300;
+  color: var(--text-mute);
+  margin: -4px 0 0;
 }
 .imp-radio-group { display: flex; flex-direction: column; gap: 8px; }
 .imp-radio,
