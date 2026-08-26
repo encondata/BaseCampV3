@@ -212,8 +212,8 @@ async def clean_db():
         """))
         # move asset status vocabulary — restore canonical seeds (0019/0020/
         # 0021; colors lowercased per test_vocabulary_colors_model.py's
-        # invariant; weights VERBATIM from the weighted-progress design doc.
-        # in_container has no weight in that doc's table and stays null.
+        # invariant; weights VERBATIM from the weighted-progress design doc
+        # (all 24 keys, including in_container=38, a mid-pipeline state).
         await session.execute(text(
             "DELETE FROM status_values WHERE record_type = 'move_asset_status'"))
         await session.execute(text("""
@@ -225,7 +225,7 @@ async def clean_db():
               ('move_asset_status','racked','Racked','','#273ff5',3,15),
               ('move_asset_status','labeled','Labeled','','#f5be27',4,23),
               ('move_asset_status','pack_logistics','Pack / Logistics','','#31f527',5,31),
-              ('move_asset_status','in_container','In Container','','#31f527',6,NULL),
+              ('move_asset_status','in_container','In Container','','#31f527',6,38),
               ('move_asset_status','on_truck','On Truck','','#31f527',7,46),
               ('move_asset_status','received','Received','','#31f527',8,54),
               ('move_asset_status','un_pack','Un-Pack','','#31f527',9,62),

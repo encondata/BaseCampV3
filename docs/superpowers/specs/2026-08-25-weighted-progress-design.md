@@ -44,9 +44,11 @@ progress % = round( Σ weight(status(asset)) ÷ (countable_assets × 100) × 100
 | on_truck | 46 | | e_waste | 100 |
 | in_transit | 50 | | historical | null (excluded) |
 | received | 54 | | location_collision | null (excluded) |
-| un_pack | 62 | | | |
+| un_pack | 62 | | in_container | 38 |
 
-  (e-waste = 100: the device's journey on this move is finished.)
+  (e-waste = 100: the device's journey on this move is finished. in_container
+  = 38: a mid-pipeline state — v2 process order 6, between pack_logistics
+  (31) and on_truck (46) — not an off-pipeline/excluded one.)
 - Downgrade drops the column.
 
 ## API

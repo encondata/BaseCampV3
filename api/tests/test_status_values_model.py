@@ -100,9 +100,13 @@ async def test_site_statuses_table_is_dropped(db):
 async def test_move_asset_status_weights_seeded_verbatim(db):
     """0021's seed UPDATEs, per the weighted-progress design doc's table
     (docs/superpowers/specs/2026-08-25-weighted-progress-design.md). Every
-    key/weight pair here is a verbatim transcription of that table,
-    including the two explicit nulls. in_container is absent from the
-    doc's table entirely and stays null by default."""
+    key/weight pair here is a verbatim transcription of that table
+    (all 24 keys), including the two explicit nulls
+    (historical, location_collision). in_container=38 is a mid-pipeline
+    state, not excluded — an earlier draft of this migration wrongly left
+    it null because the doc's table was missing the row; pinned as a
+    literal map so a future drift in either the doc or the seed fails
+    loudly here."""
     rows = (await db.execute(
         select(StatusValue.key, StatusValue.progress_weight)
         .where(StatusValue.record_type == "move_asset_status"))).all()
@@ -113,7 +117,7 @@ async def test_move_asset_status_weights_seeded_verbatim(db):
         "racked": 15,
         "labeled": 23,
         "pack_logistics": 31,
-        "in_container": None,
+        "in_container": 38,
         "on_truck": 46,
         "received": 54,
         "un_pack": 62,

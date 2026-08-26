@@ -5,10 +5,11 @@ vocabulary table; only move_asset_status is seeded/exposed for now. A
 null weight excludes the status from the progress calculation entirely
 (parked/error states must not drag the number).
 
-Seed weights are VERBATIM from the design doc's table. Two keys are
-explicitly nulled to match the doc (historical, location_collision);
-in_container is not in the doc's table at all and is simply left at its
-already-null default.
+Seed weights are VERBATIM from the design doc's table, which lists all 24
+move_asset_status keys (in_container included, as a mid-pipeline state —
+v2 process order 6, between pack_logistics (31) and on_truck (46) — weight
+38). Two keys are explicitly nulled to match the doc (historical,
+location_collision).
 
 Revision ID: 0021
 Revises: 0020
@@ -24,14 +25,14 @@ down_revision: str | None = "0020"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-# key -> weight, VERBATIM from the design doc's seed table. Keys absent from
-# this dict (in_container) are left null.
+# key -> weight, VERBATIM from the design doc's seed table (all 24 keys).
 MOVE_ASSET_STATUS_WEIGHTS: dict[str, int | None] = {
     "loaded_in_system": 0,
     "pre_stage": 8,
     "racked": 15,
     "labeled": 23,
     "pack_logistics": 31,
+    "in_container": 38,
     "rfid_1_cage_exit": 35,
     "rfid_2_loading_dock": 40,
     "rfid_10_dock_to_truck": 44,
