@@ -152,7 +152,6 @@ export default function EnvTab() {
         return (
           <input
             type="text"
-            className="envtab-desc-input"
             value={desc}
             placeholder="—"
             disabled={busy}
