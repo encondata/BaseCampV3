@@ -1269,3 +1269,34 @@ class ImportJobOut(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+
+
+# ── system ────────────────────────────────────────────────────────
+
+class SystemProcessOut(BaseModel):
+    name: str
+    kind: str
+    status: str                      # derived: running | stopped | failed
+    pid: int | None = None
+    hostname: str
+    started_at: datetime | None = None
+    heartbeat_at: datetime | None = None
+    stopped_at: datetime | None = None
+    uptime_seconds: int | None = None
+    meta: dict
+
+
+class LogEntryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    level: str
+    levelno: int
+    logger: str
+    message: str
+    at: datetime
+
+
+class LogPageOut(BaseModel):
+    entries: list[LogEntryOut]
+    has_more: bool

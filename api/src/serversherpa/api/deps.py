@@ -36,17 +36,14 @@ def _unauthorized(code: str) -> HTTPException:
                          headers={"WWW-Authenticate": "Bearer"})
 
 
-async def get_current_user(
-    db: DbSession,
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
-) -> AuthContext:
-    if credentials is None:
-        raise _unauthorized("missing_token")
-
+async def authenticate_token(db: AsyncSession, token: str) -> AuthContext:
+    """Validate an access token end-to-end (JWT, live session, active
+    account) and build the AuthContext. Raises the same 401s as
+    get_current_user — the WS route maps them to close codes."""
     settings = get_settings()
     try:
         claims = decode_access_token(
-            credentials.credentials, secret=settings.jwt_secret.get_secret_value())
+            token, secret=settings.jwt_secret.get_secret_value())
     except TokenError:
         raise _unauthorized("invalid_token") from None
 
@@ -74,12 +71,18 @@ async def get_current_user(
 
     access = await resolve_access(db, account.person_id)
     return AuthContext(
-        person=account.person,
-        account=account,
-        roles=access.role_names,
-        session=session,
-        access=access,
+        person=account.person, account=account, roles=access.role_names,
+        session=session, access=access,
     )
+
+
+async def get_current_user(
+    db: DbSession,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> AuthContext:
+    if credentials is None:
+        raise _unauthorized("missing_token")
+    return await authenticate_token(db, credentials.credentials)
 
 
 CurrentUser = Annotated[AuthContext, Depends(get_current_user)]
