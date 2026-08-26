@@ -644,12 +644,48 @@ class InitiativeAsset(Base):
     destination_position: Mapped[str | None]
     cable_info: Mapped[str | None]
     vendor_involved: Mapped[bool | None] = mapped_column(Boolean)
+    raw_ft: Mapped[dict | None] = mapped_column(JSONB)
+    label_info: Mapped[dict | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(server_default="loaded_in_system")
     status_record_type: Mapped[str] = mapped_column(
         server_default=text("'asset'"))  # GENERATED column; never written
     added_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class ImportJob(Base):
+    """Queued background import work. The API only creates rows and serves
+    status; the separate import-worker process claims queued rows
+    (FOR UPDATE SKIP LOCKED) and does all parsing and writing — an import
+    can never affect API readiness or response times."""
+
+    __tablename__ = "import_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    kind: Mapped[str]                       # 'move_assets' (only kind yet)
+    initiative_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="CASCADE"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    filename: Mapped[str]
+    file_key: Mapped[str] = mapped_column(server_default="")
+    options: Mapped[dict] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"))
+    phase: Mapped[str] = mapped_column(server_default="validate")
+    status: Mapped[str] = mapped_column(server_default="queued")
+    total_rows: Mapped[int] = mapped_column(Integer, server_default="0")
+    processed_rows: Mapped[int] = mapped_column(Integer, server_default="0")
+    created_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    updated_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    error_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    results: Mapped[dict | None] = mapped_column(JSONB)
+    cancel_requested: Mapped[bool] = mapped_column(server_default=text("false"))
+    error: Mapped[str | None]
+    progress_at: Mapped[datetime | None]
+    started_at: Mapped[datetime | None]
+    finished_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
 class Note(Base):
