@@ -627,7 +627,7 @@ async def _initiative_asset_rows(
     for ia, asset in rows:
         s_label, s_color = statuses.get(ia.status, (ia.status, "#51606f"))
         a_label, a_color = statuses.get(asset.status,
-                                              (asset.status, "#51606f"))
+                                        (asset.status, "#51606f"))
         model = models.get(asset.model_id)
         out.append(InitiativeAssetOut(
             id=ia.id, asset_id=ia.asset_id,

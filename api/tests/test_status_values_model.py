@@ -151,7 +151,7 @@ async def test_move_asset_status_record_type_is_gone(db):
 
 
 async def test_progress_weight_defaults_to_null_for_other_record_types(db):
-    """The column is generic — only move_asset_status is seeded. A site
+    """The column is generic — only the asset vocabulary's workflow statuses are seeded. A site
     status must come back null, not some inherited default."""
     weight = await db.scalar(
         select(StatusValue.progress_weight)

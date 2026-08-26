@@ -11,7 +11,8 @@ the asset row (and its sort_order 2) but takes move's look and weight
 
 Downgrade note: it fails (FK violation) if any assets.status row uses a
 moved workflow key by then — loud failure beats silently corrupting
-asset statuses.
+asset statuses. It likewise fails if any initiative_assets.status sits on a
+lifecycle key, which cannot re-key to the move vocabulary.
 
 Revision ID: 0022
 Revises: 0021

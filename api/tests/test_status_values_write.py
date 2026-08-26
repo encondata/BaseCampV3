@@ -238,7 +238,7 @@ async def test_falsy_but_legal_values_are_accepted(client, db, seeded_user):
 
 async def test_unknown_record_type_on_write_is_422(client, db, seeded_user):
     """_record_type() is the registry chokepoint on both write paths — it is
-    what keeps rt.table/rt.column out of user control."""
+    what keeps rt.sources out of user control."""
     hdrs = await _make(db, client, "developer", "dev11@test.example.com")
     resp = await client.post("/status-values", headers=hdrs, json={
         "record_type": "invoice", "key": "paid", "label": "Paid",
