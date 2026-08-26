@@ -95,3 +95,12 @@ def test_template_xlsx_has_reference_sheet():
     assert header == TEMPLATE_HEADERS
     rows = parse_upload("t.xlsx", build_template_xlsx())
     assert len(rows) == len(SAMPLE_ROWS)
+
+
+def test_xlsx_blank_header_cell_does_not_shift_columns():
+    content = _xlsx([["Serial Number", "", "Asset Name"],
+                     ["SN-1", "spacer", "web-01"]])
+    [(_, canonical, raw)] = parse_upload("ft.xlsx", content)
+    assert canonical["serial_number"] == "SN-1"
+    assert canonical["asset_name"] == "web-01"     # not shifted into the spacer
+    assert list(raw.values()) == ["SN-1", "web-01"]
