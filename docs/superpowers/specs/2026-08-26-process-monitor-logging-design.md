@@ -301,16 +301,24 @@ Copy stays sentence-case/active.
   watchfiles `--reload` worker restart and re-read `.env`. Audited.
   Returns `{"restarting": true}`. Production later maps this to a
   supervisor restart — documented, not built.
-- Tab UI (amended twice per user feedback): the portal's STANDARD rich-
+- Tab UI (amended per user feedback, r3): the portal's STANDARD rich-
   list idiom — a `dir-toolbar` (search box styled `dir-search` + result
   count + `ColumnsButton`) above a full-width `dir-list` (`list-head` +
-  grid rows). Columns Key (mono) | Value (input; secrets as password
-  fields with the set/unset chip) | Description, all toggleable via the
-  columns menu; the table spans the full content width (the ENV tab lifts
-  the System Config max-width cap).
+  grid rows). Columns: **Key** (mono) | **Value** (input; secrets as
+  password fields) | **Status** (its OWN column: the set/unset chip for
+  secrets, blank for plain) | **Description** (editable text input),
+  all toggleable via the columns menu; the grid is a single shared
+  `grid-template-columns` on both the head and every row so every cell
+  aligns; native password reveal controls suppressed so value inputs are
+  uniform width. Full content width (ENV tab lifts the max-width cap).
+- **Dynamic:** the list is whatever `.env` currently holds — read live on
+  every page load; adding a key to the file surfaces it on next load
+  (no restart needed to SEE it; restart only to make processes USE it).
 - Description is a trailing same-line comment (`KEY=value  # description`)
-  — value splits from the first " #", preserved verbatim on rewrite,
-  read-only in the UI.
+  — value splits from the first " #". Now EDITABLE: PUT also accepts a
+  `descriptions` map; setting one rewrites/append the trailing comment
+  for that key (empty removes it), byte-preserving everything else.
+  Descriptions are guarded by the same `has_linebreak` check as values.
 - **Section separators:** a standalone full-line comment (`# Email`,
   `# Grafana`) becomes a section. `read_entries` tags every entry with
   the nearest preceding standalone-comment `section` label; the portal
