@@ -25,6 +25,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "httpx>=0.27",
+    "honcho>=2.0",   # Procfile.dev runner: whole dev stack in one terminal
 ]
 
 [project.scripts]

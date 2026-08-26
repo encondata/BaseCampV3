@@ -1,0 +1,12 @@
+# Development process stack — API, import worker, and portal in one terminal:
+#
+#   api/.venv/bin/honcho start -f Procfile.dev
+#
+# Ctrl+C stops everything; `honcho start -f Procfile.dev worker` runs one
+# process alone. Infra (Postgres/MinIO/Mailpit) comes from
+# `docker compose -f docker-compose.dev.yml up -d` first.
+# Every process auto-restarts on source changes (uvicorn --reload, the
+# worker's own --reload, and Vite HMR). Future workers get one line each.
+api:    api/.venv/bin/python -m uvicorn --factory serversherpa.api.app:create_app --app-dir api/src --reload --host 0.0.0.0 --port 8000
+worker: api/.venv/bin/serversherpa import-worker --reload
+portal: npm --prefix portal run dev

@@ -8,6 +8,7 @@ never as standalone scripts with their own DB code.
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 
 import typer
 from sqlalchemy import select
@@ -154,15 +155,48 @@ def set_password(
     asyncio.run(_run())
 
 
+def _run_worker_process(poll_seconds: float) -> None:
+    """Reload-mode child entry point. Module-level (picklable) so
+    watchfiles can re-spawn it in a fresh process after every change;
+    hard restarts are safe by the worker's design (batched commits +
+    stale-job requeue on startup)."""
+
+    async def _run() -> None:
+        from serversherpa.imports import worker
+
+        await worker.run_forever(poll_seconds)
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass    # watchfiles stops the old process with SIGINT on reload
+
+
 @app.command()
 def import_worker(
     poll_seconds: float = typer.Option(
         2.0, help="Idle sleep between queue polls"),
     once: bool = typer.Option(
         False, help="Process at most one job, then exit"),
+    reload: bool = typer.Option(
+        False, help="Dev mode: restart the worker whenever api/src "
+                    "changes (uvicorn-style)"),
 ) -> None:
     """Run the bulk-import worker loop — a separate process from the API,
     so imports never affect API readiness or response times."""
+
+    if reload and once:
+        typer.secho("--once cannot be combined with --reload", fg="red")
+        raise typer.Exit(code=1)
+    if reload:
+        import watchfiles
+
+        src_dir = Path(__file__).resolve().parents[1]   # …/api/src
+        typer.secho(f"[import-worker] dev reload — watching {src_dir}",
+                    fg="cyan")
+        watchfiles.run_process(src_dir, target=_run_worker_process,
+                               args=(poll_seconds,))
+        return
 
     async def _run() -> None:
         from serversherpa.db.engine import get_sessionmaker

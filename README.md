@@ -60,6 +60,19 @@ npm install
 npm run dev                  # http://localhost:5173
 ```
 
+Or, after the one-time setup above, run the whole dev stack (API +
+import worker + portal, all auto-reloading) in a single terminal:
+
+```bash
+api/.venv/bin/honcho start -f Procfile.dev
+```
+
+Background workers also reload standalone, uvicorn-style:
+
+```bash
+api/.venv/bin/serversherpa import-worker --reload
+```
+
 Tests (spin up a dedicated `serversherpa_test` database automatically):
 
 ```bash
@@ -75,7 +88,7 @@ Portal typecheck: `cd portal && npx tsc -b`
 ## Repository layout
 
 ```
-api/                  FastAPI app, worker-to-be, CLI (`serversherpa`)
+api/                  FastAPI app, import worker, CLI (`serversherpa`)
   src/serversherpa/   routers → services → db (no SQL outside repositories)
   migrations/         Alembic — every schema change is a migration
   tests/              integration tests against real Postgres + MinIO
