@@ -230,14 +230,14 @@ async def run_import(
     cancelled = False
     now = datetime.now(UTC)
 
-    for r in rows:
-        processed += 1
+    async def _one_row(r: dict) -> None:
+        nonlocal created, updated, review, errors
         if r["status"] == "error":
             errors += 1
             details.append({"row": r["row"],
                             "serial_number": r["serial_number"],
                             "status": "error", "message": r["message"]})
-            continue
+            return
 
         serial = r["serial_number"]
         notes = list(r["notes"])
@@ -285,14 +285,17 @@ async def run_import(
                     created_models.append(make_model_final)
                 else:
                     review += 1
+                    message = (f"Make/Model '{r['make_model_str']}' "
+                               "not found — needs review")
+                    if notes:
+                        message = f"{message}. " + "; ".join(notes)
                     details.append({
                         "row": r["row"], "serial_number": serial,
                         "status": "review",
-                        "message": f"Make/Model '{r['make_model_str']}' "
-                                   "not found — needs review",
+                        "message": message,
                         "match_method": "review",
                         "serial_generated": r["serial_generated"]})
-                    continue
+                    return
             if write:
                 asset = Asset(
                     serial_number=serial, name=r["asset_name"],
@@ -344,6 +347,9 @@ async def run_import(
             "match_method": match_method,
             "make_model_final": make_model_final})
 
+    for r in rows:
+        processed += 1
+        await _one_row(r)
         if write and processed % BATCH_SIZE == 0:
             if progress is not None:
                 await progress(processed, created, updated, errors)
@@ -373,5 +379,41 @@ async def run_import(
 
 async def flag_collisions(db: AsyncSession,
                           initiative_id: uuid.UUID) -> int:
-    """Implemented in the commit slice (Task 5)."""
-    return 0
+    """Destination rack/RU collision detection (V2 parity, run after a
+    commit pass): expand every roster row with a destination to its
+    occupied RU range (start = int(destination_ru), height = model
+    ru_size, default 1) and flag every member of an overlapping pair
+    with status 'location_collision'. Returns rows flagged. The caller
+    owns the commit."""
+    from collections import defaultdict
+
+    rows = (await db.execute(
+        select(InitiativeAsset, AssetModel.ru_size)
+        .join(Asset, Asset.id == InitiativeAsset.asset_id)
+        .outerjoin(AssetModel, AssetModel.id == Asset.model_id)
+        .where(InitiativeAsset.initiative_id == initiative_id,
+               InitiativeAsset.destination_rack.is_not(None),
+               InitiativeAsset.destination_ru.is_not(None)))).all()
+
+    racks: dict[str, list[tuple[InitiativeAsset, set[int]]]] = defaultdict(list)
+    for assoc, ru_size in rows:
+        try:
+            start = int(float(assoc.destination_ru))
+            size = int(ru_size) if ru_size else 1
+        except (TypeError, ValueError):
+            continue
+        racks[assoc.destination_rack].append(
+            (assoc, set(range(start, start + size))))
+
+    colliding: set[uuid.UUID] = set()
+    by_id: dict[uuid.UUID, InitiativeAsset] = {}
+    for entries in racks.values():
+        for i in range(len(entries)):
+            for j in range(i + 1, len(entries)):
+                if entries[i][1] & entries[j][1]:
+                    for assoc, _ in (entries[i], entries[j]):
+                        colliding.add(assoc.id)
+                        by_id[assoc.id] = assoc
+    for assoc in by_id.values():
+        assoc.status = "location_collision"
+    return len(colliding)
