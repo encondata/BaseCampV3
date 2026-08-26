@@ -4,7 +4,6 @@ audited clear. Config endpoints arrive with Plan 2."""
 
 import asyncio
 import contextlib
-import uuid as _uuid
 from datetime import UTC, datetime
 
 from fastapi import (
@@ -147,6 +146,11 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
         if row is not None and row.kind == "probe":
             await ws.close(code=4404)
             return
+        try:
+            _logs_query(name, min_level, q)      # validates min_level
+        except HTTPException:
+            await ws.close(code=4400)
+            return
         cursor = await db.scalar(
             select(func.max(LogEntry.id)).where(
                 LogEntry.process == name)) or 0
@@ -166,8 +170,9 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
                         LogEntry.process == name,
                         LogEntry.id > cursor))
             if rows:
-                # advance past filtered-out rows too (latest >= rows[-1].id)
-                cursor = max(cursor, rows[-1].id, latest or 0)
+                cursor = max(cursor, rows[-1].id)
+                if len(rows) < STREAM_BATCH_CAP and latest is not None:
+                    cursor = max(cursor, latest)   # remainder was filtered out
                 await ws.send_json({"entries": [
                     LogEntryOut.model_validate(r).model_dump(mode="json")
                     for r in rows]})
