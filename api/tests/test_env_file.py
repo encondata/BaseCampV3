@@ -288,3 +288,33 @@ def test_apply_updates_description_rejects_unknown_and_hidden(env_path):
 def test_apply_updates_description_no_change_not_reported(env_path):
     assert apply_updates(env_path, {}, descriptions={
         "SS_LOG_LEVEL": "Minimum level for process logs"}) == []
+
+
+def test_empty_value_with_description_is_quoted(tmp_path):
+    """python-dotenv reads `KEY=  # desc` (empty value) as the comment
+    TEXT, corrupting config. Writing a description onto an empty value
+    must quote it (`KEY=""  # desc`) so the parser sees "" — and it must
+    round-trip back to value "" for display."""
+    path = tmp_path / ".env"
+    path.write_text("SS_COOKIE_DOMAIN=\n")
+    apply_updates(path, {}, descriptions={
+        "SS_COOKIE_DOMAIN": "Cookie domain for auth session"})
+    text = path.read_text()
+    assert 'SS_COOKIE_DOMAIN=""  # Cookie domain for auth session' in text
+    # dotenv/pydantic now parse the value as empty, not the comment
+    from dotenv import dotenv_values
+    assert dotenv_values(str(path))["SS_COOKIE_DOMAIN"] == ""
+    # round-trips for the UI
+    [entry] = [e for e in read_entries(path)
+               if e["key"] == "SS_COOKIE_DOMAIN"]
+    assert entry["value"] == ""
+    assert entry["description"] == "Cookie domain for auth session"
+
+
+def test_clearing_value_that_has_description_quotes_it(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("SS_COOKIE_DOMAIN=example.com  # Cookie domain\n")
+    apply_updates(path, {"SS_COOKIE_DOMAIN": ""})
+    from dotenv import dotenv_values
+    assert dotenv_values(str(path))["SS_COOKIE_DOMAIN"] == ""
+    assert 'SS_COOKIE_DOMAIN=""  # Cookie domain' in path.read_text()

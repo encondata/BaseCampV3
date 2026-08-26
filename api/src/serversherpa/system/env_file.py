@@ -75,15 +75,32 @@ def _parse(path: Path) -> tuple[list[str], dict[str, int], dict[str, str]]:
     return lines, index, sections
 
 
+def _value_token(value: str, has_comment: bool) -> str:
+    """Render a value for writing. An EMPTY value followed by a trailing
+    comment (`KEY=  # desc`) is misread by python-dotenv / pydantic-
+    settings as the comment TEXT (they only strip inline comments after a
+    non-empty value), so quote the empty so the parser sees "". Non-empty
+    values and comment-less empties need no quoting."""
+    if value == "" and has_comment:
+        return '""'
+    return value
+
+
 def _split_value_comment(rest: str) -> tuple[str, str]:
     """Split a KEY=rest line's right-hand side on the first " #" into
     (value, description). The description is the raw comment text with
     the leading "#" and its surrounding whitespace trimmed; inner
-    spacing is left alone. No " #" -> description is ""."""
+    spacing is left alone. No " #" -> description is "". An empty-quote
+    token (`""`/`''`, the form we write for empty+comment) unwraps to ""
+    so it round-trips for display/edit."""
     value, sep, comment = rest.partition(" #")
     if not sep:
-        return value, ""
-    return value.rstrip(), comment.lstrip()
+        value, comment = value, ""
+    else:
+        value, comment = value.rstrip(), comment.lstrip()
+    if value in ('""', "''"):
+        value = ""
+    return value, comment
 
 
 def read_entries(path: Path) -> list[dict]:
@@ -148,7 +165,7 @@ def apply_updates(
         if sep:
             # preserve the original raw comment text verbatim, always
             # with exactly two spaces before "#"
-            lines[i] = f"{key}={new_value}  #{comment}"
+            lines[i] = f"{key}={_value_token(new_value, True)}  #{comment}"
         else:
             lines[i] = f"{key}={new_value}"
         changed.add(key)
@@ -162,7 +179,8 @@ def apply_updates(
         if new_description == "":
             lines[i] = f"{key}={current_value}"
         else:
-            lines[i] = f"{key}={current_value}  # {new_description}"
+            lines[i] = (f"{key}={_value_token(current_value, True)}"
+                        f"  # {new_description}")
         changed.add(key)
 
     changed = sorted(changed)
