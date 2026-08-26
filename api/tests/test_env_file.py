@@ -164,7 +164,8 @@ def test_apply_updates_rejects_carriage_return_value(env_path):
 
 
 @pytest.mark.parametrize("sep", ["\n", "\r", "\r\n", "\v", "\f",
-                                   "\x1c", "\x1d", "\x1e", "\x85"])
+                                   "\x1c", "\x1d", "\x1e", "\x85",
+                                   " ", " "])
 def test_apply_updates_rejects_all_linebreak_separators(env_path, sep):
     original = env_path.read_text()
     value = f"INFO{sep}SS_DATABASE_URL=evil"
