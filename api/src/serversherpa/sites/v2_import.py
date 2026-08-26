@@ -134,17 +134,33 @@ def insert_rows(dump_path: str, table: str) -> Iterator[list]:
     `\\s*\\(` right after the name means a longer table sharing the prefix
     (e.g. `sites_locations` when asked for `sites`) never matches, since
     the character right after `sites` there is `_`, not whitespace/`(`.
+
+    `buf` holds either nothing, or exactly one in-progress target-table
+    statement — never content from other tables' INSERT statements. Real
+    dumps interleave many unrelated tables, and a target table's rows can
+    sit far from the start of the file; lines belonging to other tables
+    are skipped without ever touching `buf`, so the buffer (and therefore
+    the re-scan `_pop_statement` does internally) stays bounded to the
+    size of one statement instead of growing to the size of the whole
+    file. That keeps this function O(n) over the file instead of O(n^2).
     """
     prefix_re = re.compile(rf"INSERT INTO {re.escape(table)}\s*\(")
     with open(dump_path, encoding="utf-8", errors="replace") as fh:
         buf = ""
         for line in fh:
-            buf += line
+            if buf:
+                buf += line
+            elif prefix_re.match(line):
+                buf = line
+            else:
+                continue  # not our table's statement — never buffered, O(1) skip
             while True:
                 row, buf = _pop_statement(buf, prefix_re)
                 if row is None:
                     break
                 yield row
+            if buf and not buf.strip():
+                buf = ""
 
 
 def slugify(label: str) -> str:
@@ -161,7 +177,7 @@ def split_address(address: str | None) -> tuple[str | None, str | None, str | No
         return None, None, None
     lines = [line.strip() for line in address.split("\n")]
     line1 = lines[0]
-    line2 = lines[1] if len(lines) > 1 else None
+    line2 = (lines[1] or None) if len(lines) > 1 else None
     note = f"V2 address (full): {' / '.join(lines)}"
     return line1, line2, note
 
