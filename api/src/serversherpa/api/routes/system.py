@@ -31,6 +31,7 @@ from serversherpa.system.forwarders import (
 from serversherpa.system.logging_config import (
     apply_password_rule, mask_logging, validate_logging,
 )
+from serversherpa.system import env_file
 from serversherpa.system.registry import derive_status
 
 router = APIRouter(prefix="/system", tags=["system"])
@@ -280,3 +281,48 @@ async def test_logging_config(
         except Exception as exc:
             error = str(exc)
     return {"logged": True, "forwarded": forwarded, "error": error}
+
+
+# ── environment file (System Config ENV tab) ───────────────────────
+
+
+@router.get("/env")
+async def get_env(
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> dict:
+    return {"entries": env_file.read_entries(env_file.default_env_path())}
+
+
+@router.put("/env")
+async def put_env(
+    db: DbSession,
+    body: dict = Body(...),
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> dict:
+    values = body.get("values")
+    if not isinstance(values, dict) or not all(
+            isinstance(v, str) for v in values.values()):
+        raise _err(422, "invalid_env_update", unknown=[])
+    try:
+        changed = env_file.apply_updates(
+            env_file.default_env_path(), values)
+    except env_file.EnvUpdateError as exc:
+        raise _err(422, "invalid_env_update", unknown=exc.unknown) from None
+    if changed:
+        audit(db, actor_id=actor.person.id, entity_type="system",
+              entity_id="env", action="env_update",
+              changes={"changed": sorted(changed)})
+        await db.commit()
+    return {"changed": sorted(changed)}
+
+
+@router.post("/env/restart")
+async def restart_processes(
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> dict:
+    env_file.touch_sentinel()
+    audit(db, actor_id=actor.person.id, entity_type="system",
+          entity_id="env", action="env_restart", changes={})
+    await db.commit()
+    return {"restarting": True}
