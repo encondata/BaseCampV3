@@ -15,7 +15,8 @@ MAX_BYTES = 20 * 1024 * 1024
 CANONICAL = [
     "serial_number", "asset_name", "asset_make", "asset_model", "rfid_tag",
     "priority", "disposition", "owner", "source_rack", "source_ru",
-    "destination_rack", "destination_ru",
+    "source_position", "destination_rack", "destination_ru",
+    "destination_position",
     "data_1", "data_2", "data_3", "data_4", "data_5", "data_6",
     "mgmt_1", "mgmt_2", "vendor_involvement",
 ]
@@ -26,8 +27,10 @@ HEADER_MAP = {
     "rfid tag": "rfid_tag", "priority": "priority",
     "disposition": "disposition", "owner": "owner",
     "source rack": "source_rack", "source ru": "source_ru",
+    "source position": "source_position",
     "destination rack": "destination_rack",
     "destination ru": "destination_ru",
+    "destination position": "destination_position",
     "data 1": "data_1", "data 2": "data_2", "data 3": "data_3",
     "data 4": "data_4", "data 5": "data_5", "data 6": "data_6",
     "mgmt 1": "mgmt_1", "mgmt 2": "mgmt_2",
@@ -38,7 +41,8 @@ HEADER_MAP = {
 TEMPLATE_HEADERS = [
     "Serial Number", "Asset Name", "Asset Make", "Asset Model", "RFID Tag",
     "Priority", "Disposition", "Owner", "Source Rack", "Source RU",
-    "Destination Rack", "Destination RU", "Data 1", "Data 2", "Data 3",
+    "Source Position", "Destination Rack", "Destination RU",
+    "Destination Position", "Data 1", "Data 2", "Data 3",
     "Data 4", "Data 5", "Data 6", "Mgmt 1", "Mgmt 2", "Vendor Involvement",
 ]
 
@@ -47,14 +51,18 @@ SAMPLE_ROWS: list[dict] = [
      "Asset Model": "PowerEdge R740", "RFID Tag": "", "Priority": "Wave 1",
      "Disposition": "Relocate", "Owner": "Platform",
      "Source Rack": "11.01.01.01A.02", "Source RU": "12",
+     "Source Position": "Front",
      "Destination Rack": "BJ08", "Destination RU": "24",
+     "Destination Position": "Rear",
      "Data 1": "sw1:eth1/1", "Data 2": "", "Data 3": "", "Data 4": "",
      "Data 5": "", "Data 6": "", "Mgmt 1": "mgmt-sw:1", "Mgmt 2": "",
      "Vendor Involvement": ""},
     {"Serial Number": "SN-0002", "Asset Name": "san-01", "Asset Make": "HPE",
      "Asset Model": "Nimble HF20", "RFID Tag": "", "Priority": "Wave 2",
      "Disposition": "", "Owner": "", "Source Rack": "BJ01",
-     "Source RU": "3.5", "Destination Rack": "", "Destination RU": "",
+     "Source RU": "3.5", "Source Position": "",
+     "Destination Rack": "", "Destination RU": "",
+     "Destination Position": "",
      "Data 1": "", "Data 2": "", "Data 3": "", "Data 4": "", "Data 5": "",
      "Data 6": "", "Mgmt 1": "", "Mgmt 2": "", "Vendor Involvement": "yes"},
 ]

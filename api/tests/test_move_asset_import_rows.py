@@ -57,6 +57,7 @@ def test_typed_fields_and_lowering():
         serial_number="SN-9", asset_make="Dell", asset_model="R740",
         source_ru="12", destination_ru="junk", priority="P" * 40,
         data_1="sw1", mgmt_2="m2", vendor_involvement="x",
+        source_position=" Front ", destination_position="",
     ), raw, generate_serials=False)
     assert out["status"] == "ok"
     assert out["serial_number"] == "sn-9"
@@ -69,6 +70,8 @@ def test_typed_fields_and_lowering():
     assert out["cable_info"] == {"data_1": "sw1", "mgmt_2": "m2"}
     assert out["vendor_involved"] is True
     assert out["raw_ft"] == raw
+    assert out["source_position"] == "Front"    # trimmed, NOT lowercased
+    assert out["destination_position"] is None  # blank -> None
 
 
 def test_make_model_str_single_half():

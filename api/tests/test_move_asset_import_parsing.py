@@ -53,6 +53,14 @@ def test_headers_case_insensitive():
     assert canonical["asset_name"] == "x"
 
 
+def test_source_and_destination_position_headers_map():
+    content = (b"Serial Number,Source Position,Destination Position\n"
+              b"sn-1,Front,Rear\n")
+    [(_, canonical, _)] = parse_upload("a.csv", content)
+    assert canonical["source_position"] == "Front"
+    assert canonical["destination_position"] == "Rear"
+
+
 def test_xlsx_matches_csv():
     content = _xlsx([["Serial Number", "Asset Name", "Source RU"],
                      ["SN-1", "web-01", 12]])

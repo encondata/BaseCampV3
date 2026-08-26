@@ -117,8 +117,11 @@ def parse_row(n: int, canonical: dict, raw: dict, *,
         "owner": canonical["owner"].strip() or None,
         "source_rack": canonical["source_rack"].strip() or None,
         "source_ru": _ru("source_ru"),
+        "source_position": canonical["source_position"].strip() or None,
         "destination_rack": canonical["destination_rack"].strip() or None,
         "destination_ru": _ru("destination_ru"),
+        "destination_position":
+            canonical["destination_position"].strip() or None,
         "vendor_involved": bool(canonical["vendor_involvement"].strip()),
         "cable_info": cable_info,
         "raw_ft": raw,
@@ -187,9 +190,11 @@ def _apply_row(assoc: InitiativeAsset, r: dict, now: datetime) -> None:
     assoc.source_rack = r["source_rack"]
     assoc.source_ru = (Decimal(str(r["source_ru"]))
                        if r["source_ru"] is not None else None)
+    assoc.source_position = r["source_position"]
     assoc.destination_rack = r["destination_rack"]
     assoc.destination_ru = (Decimal(str(r["destination_ru"]))
                             if r["destination_ru"] is not None else None)
+    assoc.destination_position = r["destination_position"]
     assoc.cable_info = (json.dumps(r["cable_info"])
                         if r["cable_info"] else None)
     assoc.vendor_involved = r["vendor_involved"]
@@ -262,24 +267,30 @@ async def run_import(
             if r["make_model_str"]:
                 mm_key = r["make_model_str"].lower()
                 matched = model_map.get(mm_key)
+                if matched is None:
+                    mk, md = resolve_make_model_for_creation(
+                        r["asset_make"], r["asset_model"])
+                    resolved_display = f"{mk} {md}".strip()
+                    resolved_key = resolved_display.lower()
+                    matched = model_map.get(resolved_key)
+                    if matched is not None:
+                        model_map[mm_key] = matched
                 if matched is not None:
                     model_obj, match_method, make_model_final = matched
                 elif force:
-                    mk, md = resolve_make_model_for_creation(
-                        r["asset_make"], r["asset_model"])
                     note = ("FORCED: hybrid mode creation (fuzzy match not "
                             "found) for move F-T"
                             if make_model_mode == "hybrid"
                             else "FORCED: make model creation for move F-T")
-                    make_model_final = f"{mk} {md}".strip()
+                    make_model_final = resolved_display
                     if write:
                         model_obj = AssetModel(make=mk, model=md,
                                                knowledge=note)
                         db.add(model_obj)
                         await db.flush()
                     match_method = "force_created"
-                    model_map[mm_key] = (model_obj, "force_created",
-                                         make_model_final)
+                    model_map[mm_key] = model_map[resolved_key] = (
+                        model_obj, "force_created", make_model_final)
                     created_models.append(make_model_final)
                 else:
                     review += 1

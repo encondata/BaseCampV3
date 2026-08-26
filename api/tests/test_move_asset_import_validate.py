@@ -117,3 +117,35 @@ async def test_no_make_model_at_all_still_creates(db):
     [d] = result["details"]
     assert d["status"] == "created"
     assert d["match_method"] == "none"
+
+
+async def test_prefix_duplicated_make_model_matches_existing(db):
+    # Catalog has Dell R640. The file supplies Make="Dell",
+    # Model="Dell R640" (model cell duplicates the make prefix) — the
+    # raw "dell dell r640" key must still resolve to the existing
+    # catalog entry instead of falling to review/force-create.
+    ini = await _move(db)
+    db.add(AssetModel(make="Dell", model="R640"))
+    await db.commit()
+
+    row = _row(2, serial_number="sn-p", asset_make="Dell",
+              asset_model="Dell R640")
+    result = await run_import(db, initiative_id=ini.id, added_by=None,
+                              rows=[row], make_model_mode="fuzzy",
+                              write=False)
+    [d] = result["details"]
+    assert d["status"] == "created"
+    assert d["match_method"] == "exact"
+    assert d["make_model_final"] == "Dell R640"
+
+    # A second hybrid commit run (different serial, same input) must not
+    # create a duplicate AssetModel — neither within nor across runs.
+    for serial in ("sn-p1", "sn-p2"):
+        await run_import(
+            db, initiative_id=ini.id, added_by=None,
+            rows=[_row(2, serial_number=serial, asset_make="Dell",
+                      asset_model="Dell R640")],
+            make_model_mode="hybrid", write=True)
+
+    model_count = await db.scalar(select(func.count()).select_from(AssetModel))
+    assert model_count == 1

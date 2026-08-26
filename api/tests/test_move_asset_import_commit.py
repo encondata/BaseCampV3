@@ -40,7 +40,9 @@ async def test_commit_creates_models_assets_and_roster(db):
     rows = [
         _row(2, serial_number="SN-1", asset_make="Dell", asset_model="R740",
              priority="Wave 1", source_rack="A1", source_ru="10",
-             destination_rack="B1", destination_ru="20", data_1="sw1",
+             source_position="Front",
+             destination_rack="B1", destination_ru="20",
+             destination_position="Rear", data_1="sw1",
              vendor_involvement="y"),
         _row(3, serial_number="SN-2", asset_make="Ghost", asset_model="GX-1"),
     ]
@@ -62,6 +64,8 @@ async def test_commit_creates_models_assets_and_roster(db):
         InitiativeAsset.asset_id == a1.id))
     assert assoc.priority_wave == "Wave 1"
     assert assoc.source_ru == Decimal("10")
+    assert assoc.source_position == "Front"
+    assert assoc.destination_position == "Rear"
     assert assoc.status == "loaded_in_system"
     assert assoc.vendor_involved is True
     assert json.loads(assoc.cable_info) == {"data_1": "sw1"}
