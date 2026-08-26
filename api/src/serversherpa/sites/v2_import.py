@@ -283,8 +283,12 @@ async def import_sites(db: AsyncSession, dump_path: str, limit: int) -> dict:
 
     pending: list[tuple[str, list]] = []
     pre_existing = 0
+    skipped_invalid: list[str] = []
     for row in candidate_rows:
         v2_id, name = row[0], row[1]
+        if name is None:
+            skipped_invalid.append(f"v2 id {v2_id}: missing name")
+            continue
         source_ref = f"{_SOURCE}:sites/{v2_id}"
         if source_ref in existing_refs or name.casefold() in existing_names:
             pre_existing += 1
@@ -323,6 +327,10 @@ async def import_sites(db: AsyncSession, dump_path: str, limit: int) -> dict:
         (v2_id, name, address, gps_coordinates, metadata, site_type,
          site_status, client, survey_data, partner_id) = row
 
+        if name.casefold() in existing_names:
+            pre_existing += 1
+            continue
+
         address_line1, address_line2, address_note = split_address(address)
 
         latitude, longitude, gps_note = parse_gps(gps_coordinates)
@@ -332,16 +340,19 @@ async def import_sites(db: AsyncSession, dump_path: str, limit: int) -> dict:
             else:
                 gps_unparsed += 1
 
-        resolved_type = site_types.get(site_type.casefold())
-        if resolved_type is None:
-            running_sort_order += 10
-            resolved_type = SiteType(
-                key=slugify(site_type), label=site_type, color="#808080",
-                sort_order=running_sort_order, description="")
-            db.add(resolved_type)
-            await db.flush()  # Site.site_type FK needs the row to exist
-            site_types[site_type.casefold()] = resolved_type
-            types_created.append(site_type)
+        if site_type is None:
+            resolved_type = None
+        else:
+            resolved_type = site_types.get(site_type.casefold())
+            if resolved_type is None:
+                running_sort_order += 10
+                resolved_type = SiteType(
+                    key=slugify(site_type), label=site_type, color="#808080",
+                    sort_order=running_sort_order, description="")
+                db.add(resolved_type)
+                await db.flush()  # Site.site_type FK needs the row to exist
+                site_types[site_type.casefold()] = resolved_type
+                types_created.append(site_type)
 
         status = _STATUS_MAP.get(site_status, "active")
 
@@ -355,6 +366,10 @@ async def import_sites(db: AsyncSession, dump_path: str, limit: int) -> dict:
                     client_note = f"V2 client: {client_name}"
                     if client_name not in unmatched_clients:
                         unmatched_clients.append(client_name)
+            else:
+                client_note = f"V2 client: id {client} (not in dump)"
+                if client_note not in unmatched_clients:
+                    unmatched_clients.append(client_note)
 
         resolved_partner_id = None
         partner_note = None
@@ -368,6 +383,10 @@ async def import_sites(db: AsyncSession, dump_path: str, limit: int) -> dict:
                     partner_note = f"V2 partner: {partner_name}"
                     if partner_name not in unmatched_partners:
                         unmatched_partners.append(partner_name)
+            else:
+                partner_note = f"V2 partner: id {partner_id} (not in dump)"
+                if partner_note not in unmatched_partners:
+                    unmatched_partners.append(partner_note)
 
         dc_provider, survey_note = summarize_metadata(metadata, survey_data)
         locations_note = format_locations_note(locations_by_site.get(v2_id, []))
@@ -377,7 +396,9 @@ async def import_sites(db: AsyncSession, dump_path: str, limit: int) -> dict:
         ])
 
         site = Site(
-            name=name, site_type=resolved_type.key, status=status,
+            name=name,
+            site_type=resolved_type.key if resolved_type is not None else None,
+            status=status,
             address_line1=address_line1, address_line2=address_line2,
             latitude=latitude, longitude=longitude,
             dc_provider=dc_provider, partner_id=resolved_partner_id,
@@ -385,6 +406,7 @@ async def import_sites(db: AsyncSession, dump_path: str, limit: int) -> dict:
         )
         db.add(site)
         await db.flush()
+        existing_names.add(name.casefold())
 
         if matched_client is not None:
             db.add(SiteClient(site_id=site.id, client_id=matched_client.id))
@@ -400,4 +422,5 @@ async def import_sites(db: AsyncSession, dump_path: str, limit: int) -> dict:
         "unmatched_partners": unmatched_partners,
         "gps_parsed": gps_parsed,
         "gps_unparsed": gps_unparsed,
+        "skipped_invalid": skipped_invalid,
     }
