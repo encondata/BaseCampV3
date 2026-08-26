@@ -70,6 +70,28 @@ services:
       MP_SMTP_AUTH_ACCEPT_ANY: "1"
       MP_SMTP_AUTH_ALLOW_INSECURE: "1"
 
+  loki:
+    image: grafana/loki:3.0.0
+    ports:
+      - "127.0.0.1:3100:3100"   # push target for the log-service
+    volumes:
+      - lokidata:/loki
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "127.0.0.1:3000:3000"   # log UI — Explore, Loki datasource
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./docker/grafana-datasources.yml:/etc/grafana/provisioning/datasources/loki.yml:ro
+    depends_on:
+      - loki
+
 volumes:
   pgdata:
   miniodata:
+  lokidata:
+  grafanadata:
