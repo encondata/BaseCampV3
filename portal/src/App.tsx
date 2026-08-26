@@ -19,6 +19,7 @@ import InitiativeDetailPage from './pages/InitiativeDetail';
 import Partners from './pages/Partners';
 import Login from './pages/Login';
 import Profile from './pages/Profile';
+import ProcessLogs from './pages/ProcessLogs';
 import Settings from './pages/Settings';
 import Sites from './pages/Sites';
 import SystemProcesses from './pages/SystemProcesses';
@@ -62,6 +63,9 @@ export default function App() {
             <Route path="/settings" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
             <Route path="/system/processes" element={
               <ProtectedRoute minRank={80}><SystemProcesses /></ProtectedRoute>
+            } />
+            <Route path="/system/processes/:name/logs" element={
+              <ProtectedRoute resource="devtools"><ProcessLogs /></ProtectedRoute>
             } />
             <Route path="/access" element={<ProtectedRoute resource="access"><Access /></ProtectedRoute>} />
             <Route path="/admin/asset-models" element={

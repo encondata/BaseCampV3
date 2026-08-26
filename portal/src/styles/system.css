@@ -12,3 +12,39 @@
 @media (prefers-reduced-motion: reduce) {
   .sys-dot-running { animation: none; }
 }
+
+/* Log viewer */
+.sys-log-header { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; }
+.sys-logs-page .mini-btn.sm { height: 26px; padding: 0 10px; font-size: 11.5px;
+  border-radius: 7px; }
+.sys-log-header .mini-btn.sm { margin-bottom: 8px; }
+.sys-log-header-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.sys-log-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 14px 0; }
+.sys-log-levels { display: flex; gap: 6px; }
+.sys-log-toolbar .mini-btn.active, .sys-log-header-actions .mini-btn.active {
+  border-color: var(--amber); background: var(--surface-2, #f5f7fa); color: var(--c-amber, #a36207); }
+.sys-log-search { height: 34px; padding: 0 12px; border-radius: 9px;
+  border: 1px solid var(--paper-line); background: var(--surface, #fff); font-size: 12.5px;
+  min-width: 220px; flex: 1 1 220px; color: var(--text-dark); }
+.sys-log-load-older { display: flex; justify-content: center; padding: 8px 0; }
+.sys-log-body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px; line-height: 1.5; overflow-y: auto;
+  max-height: calc(100vh - 260px); border: 1px solid var(--line, #e2e2e2);
+  border-radius: 12px; padding: 8px 0; background: var(--surface, #fff); }
+.sys-log-line { display: grid;
+  grid-template-columns: 70px 64px minmax(120px, 220px) 1fr;
+  gap: 10px; padding: 1px 14px; }
+.sys-log-line:hover { background: var(--surface-2, #f5f7fa); }
+.sys-log-line pre { grid-column: 4; white-space: pre-wrap; margin: 2px 0 6px; }
+.sys-log-level-tag { font-weight: 600; font-size: 10.5px; letter-spacing: 0.04em; }
+.sys-log-logger { color: var(--text-mute); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.sys-log-msg { white-space: pre-wrap; word-break: break-word; }
+.sys-log-expand { margin-left: 8px; border: none; background: none; cursor: pointer;
+  color: var(--amber); font-size: 11.5px; padding: 0; }
+.sys-log-expand:hover { text-decoration: underline; }
+.log-DEBUG { color: var(--c-slate, #51606f); }
+.log-WARNING { color: var(--c-amber, #a36207); }
+.log-ERROR, .log-CRITICAL { color: var(--c-red, #c03540); }
