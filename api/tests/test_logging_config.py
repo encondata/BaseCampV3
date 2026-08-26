@@ -67,3 +67,14 @@ def test_validate_rejects_bad_fields():
              syslog={"host": "x", "protocol": "smoke-signal"}))
     # local mode skips transport requireds
     assert validate_logging(_cfg(mode="local")) == {}
+
+
+def test_null_sections_do_not_crash():
+    stored = _cfg(loki={"password": "old"})
+    # PUT bodies where optional objects were serialized as null
+    data = apply_password_rule({**_cfg(), "loki": None}, stored)
+    assert data["loki"]["password"] == "old"
+    assert validate_logging({**_cfg(mode="local_remote"), "loki": None}) \
+        .get("loki.url")
+    assert validate_logging({**_cfg(mode="remote", transport="syslog"),
+                             "syslog": None}).get("syslog.host")

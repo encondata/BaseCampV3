@@ -117,3 +117,11 @@ async def test_test_endpoint(client, db, seeded_user, monkeypatch):
     body = resp.json()
     assert body["forwarded"] is False
     assert "refused" in body["error"]
+
+
+async def test_put_null_sections_return_422_not_500(client, db, seeded_user):
+    dev = await _developer_headers(db, client)
+    resp = await client.put("/system/config/logging", headers=dev,
+                            json={**_remote_body(), "loki": None})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_logging_config"

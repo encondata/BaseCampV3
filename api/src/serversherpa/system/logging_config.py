@@ -12,6 +12,12 @@ ROW_CAP_RANGE = (1000, 1_000_000)
 AGE_RANGE = (1, 365)
 
 
+def _section(cfg: dict, key: str) -> dict:
+    """Normalize nested config section: treat null/non-dict values as {}."""
+    value = cfg.get(key)
+    return value if isinstance(value, dict) else {}
+
+
 def mask_logging(cfg: dict) -> dict:
     masked = copy.deepcopy(cfg)
     loki = masked.setdefault("loki", {})
@@ -21,10 +27,12 @@ def mask_logging(cfg: dict) -> dict:
 
 def apply_password_rule(incoming: dict, stored: dict) -> dict:
     data = copy.deepcopy(incoming)
-    loki = data.setdefault("loki", {})
+    loki = _section(data, "loki")
+    data["loki"] = loki
     loki.pop("password_set", None)
     if not loki.get("password"):
         loki["password"] = stored.get("loki", {}).get("password", "")
+    data["syslog"] = _section(data, "syslog")
     return data
 
 
@@ -54,12 +62,12 @@ def validate_logging(cfg: dict) -> dict[str, str]:
     remote = cfg.get("mode") in ("local_remote", "remote")
     transport = cfg.get("transport", "loki")
     if remote and transport == "loki":
-        url = cfg.get("loki", {}).get("url", "")
+        url = _section(cfg, "loki").get("url", "")
         if not (isinstance(url, str)
                 and url.startswith(("http://", "https://"))):
             errors["loki.url"] = "must be an http(s) URL"
     if remote and transport == "syslog":
-        syslog = cfg.get("syslog", {})
+        syslog = _section(cfg, "syslog")
         if not syslog.get("host"):
             errors["syslog.host"] = "required for syslog forwarding"
         if not _int_in(syslog.get("port"), 1, 65535):
