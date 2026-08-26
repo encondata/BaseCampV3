@@ -4,6 +4,7 @@ import type { InitiativeAssetRow, InitiativeItem, StatusValue } from './api';
 import {
   formFromInitiative, initiativeCellText, initiativePayload,
   initiativeSearchText, MOVE_ASSET_EDIT_FIELDS, moveAssetCellText, moveAssetProgress,
+  moveAssetStatusBreakdown,
   partnerOptionsForRole, rackLayout, sectionsForType, siteOptionsForClient,
 } from './initiatives';
 
@@ -240,6 +241,67 @@ describe('moveAssetProgress', () => {
     ];
     // (33 + 34 + 34) / 3 = 33.66... -> rounds to 34
     expect(moveAssetProgress(rows, statuses)).toEqual({ pct: 34, countable: 3 });
+  });
+});
+
+/** Same StatusValue fixture as `statusValue` above, but with label/color/
+ *  sort_order overridable — the breakdown tests care about ordering and
+ *  vocab-sourced label/color, which `statusValue`'s plain (key, weight)
+ *  signature doesn't expose. */
+function vocabStatus(
+  key: string, label: string, color: string, sort_order: number,
+): StatusValue {
+  return { ...statusValue(key, null), label, color, sort_order };
+}
+
+describe('moveAssetStatusBreakdown', () => {
+  it('is empty for no rows', () => {
+    expect(moveAssetStatusBreakdown([], [])).toEqual([]);
+  });
+
+  it('orders entries by vocabulary sort_order, one per status with count > 0', () => {
+    // Vocab order is staged (0) then racked (1); rows arrive racked-first,
+    // so a naive row-order implementation would get this backwards.
+    const statuses = [
+      vocabStatus('staged', 'Staged', '#111111', 0),
+      vocabStatus('racked', 'Racked', '#222222', 1),
+    ];
+    const rows = [
+      assetRow({ status: 'racked' }),
+      assetRow({ status: 'staged' }),
+      assetRow({ status: 'staged' }),
+    ];
+    const result = moveAssetStatusBreakdown(rows, statuses);
+    expect(result).toEqual([
+      { key: 'staged', label: 'Staged', color: '#111111', count: 2, pct: (2 / 3) * 100 },
+      { key: 'racked', label: 'Racked', color: '#222222', count: 1, pct: (1 / 3) * 100 },
+    ]);
+  });
+
+  it('omits a vocab status with zero matching rows', () => {
+    const statuses = [
+      vocabStatus('racked', 'Racked', '#222222', 0),
+      vocabStatus('staged', 'Staged', '#111111', 1),
+    ];
+    const rows = [assetRow({ status: 'racked' }), assetRow({ status: 'racked' })];
+    const result = moveAssetStatusBreakdown(rows, statuses);
+    expect(result.map((e) => e.key)).toEqual(['racked']);
+    expect(result[0]).toEqual({ key: 'racked', label: 'Racked', color: '#222222', count: 2, pct: 100 });
+  });
+
+  it('a stale status key (absent from statuses) gets its own entry via row fallback, appended last', () => {
+    const statuses = [vocabStatus('racked', 'Racked', '#222222', 0)];
+    const rows = [
+      assetRow({ status: 'racked' }),
+      assetRow({
+        status: 'retired_v1', status_label: 'Retired V1', status_color: '#999999',
+      }),
+    ];
+    const result = moveAssetStatusBreakdown(rows, statuses);
+    expect(result).toEqual([
+      { key: 'racked', label: 'Racked', color: '#222222', count: 1, pct: 50 },
+      { key: 'retired_v1', label: 'Retired V1', color: '#999999', count: 1, pct: 50 },
+    ]);
   });
 });
 

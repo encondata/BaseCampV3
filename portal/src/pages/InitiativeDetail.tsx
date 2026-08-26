@@ -8,7 +8,10 @@
  * pattern as InitiativeRowDetail in Initiatives.tsx).
  */
 
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react';
+import {
+  useEffect, useMemo, useRef, useState,
+  type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent,
+} from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -50,7 +53,7 @@ import {
 import { ADMIN_RANK } from '../lib/access';
 import {
   INITIATIVE_ERRORS, MOVE_ASSET_COLUMNS, MOVE_ASSET_EDIT_FIELDS, MOVE_ASSET_ERRORS,
-  initiativeCellText, moveAssetCellText, moveAssetProgress,
+  initiativeCellText, moveAssetCellText, moveAssetProgress, moveAssetStatusBreakdown,
 } from '../lib/initiatives';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
@@ -627,6 +630,9 @@ export default function InitiativeDetail() {
               && kv('Sky Command ID', initiative.sky_command_project_id)}
             {kv('Created', initiativeCellText(initiative, 'created'))}
           </dl>
+          {isMove && assets.length > 0 && (
+            <AssetStatusDonut rows={assets} statuses={moveStatuses} />
+          )}
         </div>
 
         {isMove && (
@@ -1275,6 +1281,151 @@ function AssetEditDialog({ asset, moveStatuses, onClose, onSaved }: {
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+
+/* ── move asset status donut — Overview card, Move initiatives with assets
+      only (Task: donut-task-1). Pure SVG, no chart libraries; geometry
+      constants and the annular-sector path builder live here since they're
+      presentational, not testable-pure-function material like
+      `moveAssetStatusBreakdown` (lib/initiatives.ts) which supplies the
+      ordered entries this component just draws. Hover/tooltip follows
+      RackViewModal's pattern: a real HTML tooltip positioned off the
+      hovered element's bounding rect within a `position: relative`
+      container, not a CSS-only or native-title-only tooltip (though every
+      segment also carries an SVG <title> as a non-JS fallback). ────────── */
+const DONUT_CX = 60;
+const DONUT_CY = 60;
+const DONUT_OUTER_R = 56;
+const DONUT_RING_THICKNESS = 18;
+const DONUT_INNER_R = DONUT_OUTER_R - DONUT_RING_THICKNESS;
+
+function polarToPoint(angleDeg: number, r: number): { x: number; y: number } {
+  const rad = ((angleDeg - 90) * Math.PI) / 180;
+  return { x: DONUT_CX + r * Math.cos(rad), y: DONUT_CY + r * Math.sin(rad) };
+}
+
+/** One annular-sector "d" path from startAngle to endAngle (degrees,
+ *  clockwise from 12 o'clock). Never called with a span at/near 360° —
+ *  callers split a full ring into two 180° halves first (see
+ *  `donutSegments` below), since a start==end angle produces a
+ *  degenerate/broken path for a naive single-arc computation. */
+function donutSectorPath(startAngle: number, endAngle: number): string {
+  const largeArc = endAngle - startAngle > 180 ? 1 : 0;
+  const outerStart = polarToPoint(startAngle, DONUT_OUTER_R);
+  const outerEnd = polarToPoint(endAngle, DONUT_OUTER_R);
+  const innerEnd = polarToPoint(endAngle, DONUT_INNER_R);
+  const innerStart = polarToPoint(startAngle, DONUT_INNER_R);
+  return [
+    `M ${outerStart.x} ${outerStart.y}`,
+    `A ${DONUT_OUTER_R} ${DONUT_OUTER_R} 0 ${largeArc} 1 ${outerEnd.x} ${outerEnd.y}`,
+    `L ${innerEnd.x} ${innerEnd.y}`,
+    `A ${DONUT_INNER_R} ${DONUT_INNER_R} 0 ${largeArc} 0 ${innerStart.x} ${innerStart.y}`,
+    'Z',
+  ].join(' ');
+}
+
+interface DonutBreakdownEntry {
+  key: string; label: string; color: string; count: number; pct: number;
+}
+interface DonutSegment { key: string; color: string; d: string; }
+
+/** Walks the breakdown in order, turning each entry's pct into an angular
+ *  span. A single-entry breakdown always covers 100% (every counted row
+ *  falls under the one entry) — rendered as two 180° halves sharing that
+ *  entry's key/color rather than one 0→360° sector, per the full-ring
+ *  workaround called out in the task spec. */
+function donutSegments(entries: DonutBreakdownEntry[]): DonutSegment[] {
+  if (entries.length === 1) {
+    const { key, color } = entries[0];
+    return [
+      { key, color, d: donutSectorPath(0, 180) },
+      { key, color, d: donutSectorPath(180, 360) },
+    ];
+  }
+  const segments: DonutSegment[] = [];
+  let cursor = 0;
+  for (const entry of entries) {
+    const span = (entry.pct / 100) * 360;
+    segments.push({ key: entry.key, color: entry.color, d: donutSectorPath(cursor, cursor + span) });
+    cursor += span;
+  }
+  return segments;
+}
+
+function donutTooltipText(entry: DonutBreakdownEntry): string {
+  return `${entry.label} — ${entry.count} (${Math.round(entry.pct)}%)`;
+}
+
+function AssetStatusDonut({ rows, statuses }: {
+  rows: InitiativeAssetRow[];
+  statuses: StatusValue[];
+}) {
+  const entries = useMemo(() => moveAssetStatusBreakdown(rows, statuses), [rows, statuses]);
+  const segments = useMemo(() => donutSegments(entries), [entries]);
+  const entryByKey = useMemo(() => new Map(entries.map((e) => [e.key, e])), [entries]);
+  const total = rows.length;
+
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [hoverKey, setHoverKey] = useState<string | null>(null);
+  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
+
+  if (entries.length === 0) return null;
+
+  const handleHover = (key: string, e: ReactMouseEvent) => {
+    const container = containerRef.current;
+    if (!container) return;
+    const targetRect = e.currentTarget.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    setHoverKey(key);
+    setTooltipPos({
+      x: targetRect.left - containerRect.left + targetRect.width / 2,
+      y: targetRect.top - containerRect.top,
+    });
+  };
+  const handleLeave = () => { setHoverKey(null); setTooltipPos(null); };
+
+  const hoveredEntry = hoverKey ? entryByKey.get(hoverKey) : undefined;
+
+  return (
+    <div className="idet-donut-row" ref={containerRef} onMouseLeave={handleLeave}>
+      <svg className="idet-donut" viewBox="0 0 120 120" role="img"
+           aria-label={`Asset status breakdown — ${total} assets`}>
+        {segments.map((seg, i) => (
+          <path key={`${seg.key}-${i}`} d={seg.d} fill={seg.color}
+                className="idet-donut-seg"
+                style={{ opacity: hoverKey && hoverKey !== seg.key ? 0.45 : 1 }}
+                onMouseEnter={(e) => handleHover(seg.key, e)}>
+            <title>{donutTooltipText(entryByKey.get(seg.key)!)}</title>
+          </path>
+        ))}
+        <text x={DONUT_CX} y={DONUT_CY - 4} textAnchor="middle" dominantBaseline="middle"
+              className="idet-donut-total">
+          {total}
+        </text>
+        <text x={DONUT_CX} y={DONUT_CY + 14} textAnchor="middle" dominantBaseline="middle"
+              className="idet-donut-caption">
+          assets
+        </text>
+      </svg>
+      <ul className="idet-donut-legend">
+        {entries.map((entry) => (
+          <li key={entry.key} className="idet-donut-legend-row"
+              style={{ opacity: hoverKey && hoverKey !== entry.key ? 0.45 : 1 }}
+              onMouseEnter={(e) => handleHover(entry.key, e)}>
+            <span className="idet-donut-swatch" style={{ background: entry.color }}
+                  aria-hidden="true" />
+            <span className="idet-donut-legend-label">{entry.label}</span>
+            <span className="idet-donut-legend-count">{entry.count}</span>
+          </li>
+        ))}
+      </ul>
+      {hoveredEntry && tooltipPos && (
+        <div className="idet-donut-tooltip" style={{ left: tooltipPos.x, top: tooltipPos.y }}>
+          {donutTooltipText(hoveredEntry)}
+        </div>
+      )}
     </div>
   );
 }

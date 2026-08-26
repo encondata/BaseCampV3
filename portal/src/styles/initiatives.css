@@ -216,6 +216,101 @@
   transition: width 0.2s ease;
 }
 
+/* ── Overview card — move asset status donut (Task: donut-task-1) ──────
+   Fills the Overview card's leftover whitespace on Move initiatives with
+   assets: a small SVG donut + text legend below the existing <dl>. Hover
+   tooltip is a real HTML element positioned off the hovered segment/legend
+   row's bounding rect (same technique as .rack-tooltip below), anchored to
+   this row via `position: relative`. */
+.idet-donut-row {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--paper-line);
+}
+.idet-donut {
+  width: 120px;
+  height: 120px;
+  flex: none;
+}
+.idet-donut-seg {
+  stroke: var(--surface, #fff);
+  stroke-width: 2;
+  transition: opacity 0.15s ease;
+}
+.idet-donut-total {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  fill: var(--text-dark);
+}
+.idet-donut-caption {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  fill: var(--text-mute);
+}
+.idet-donut-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 160px;
+  flex: 1 1 160px;
+}
+.idet-donut-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: opacity 0.15s ease;
+}
+.idet-donut-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+.idet-donut-legend-label {
+  font-size: 12.5px;
+  color: var(--text-dark);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.idet-donut-legend-count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dark);
+  text-align: right;
+  min-width: 2.5ch;
+}
+/* same structure/positioning as .rack-tooltip below — small HTML tooltip
+   anchored off the hovered element's bounding rect within the row above. */
+.idet-donut-tooltip {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 8px));
+  z-index: 5;
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  box-shadow: 0 18px 50px -18px rgba(12, 17, 23, 0.35);
+  pointer-events: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dark);
+  white-space: nowrap;
+}
+
 /* row actions (Task 4) — same treatment as .idet-people-actions */
 .idet-assets-actions { display: flex; gap: 8px; white-space: nowrap; }
 

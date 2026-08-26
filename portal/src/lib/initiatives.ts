@@ -361,6 +361,45 @@ export function moveAssetProgress(
   return { pct, countable };
 }
 
+/** Move-asset status breakdown for the Overview card's donut chart — one
+ *  entry per status key with count > 0 among `rows`, ordered by the
+ *  vocabulary's sort_order (the `statuses` array's own order, mirroring how
+ *  the API already returns it — see `moveAssetProgress` above for the same
+ *  key-lookup convention). A row whose status key has no vocab match
+ *  (stale data) still counts — it gets its own entry sourced from that
+ *  row's own status_label/status_color, appended after every vocab-ordered
+ *  entry. `pct` is left unrounded; callers round it for display. */
+export function moveAssetStatusBreakdown(
+  rows: InitiativeAssetRow[],
+  statuses: StatusValue[],
+): { key: string; label: string; color: string; count: number; pct: number }[] {
+  if (rows.length === 0) return [];
+  const vocabByKey = new Map(statuses.map((s) => [s.key, s]));
+  const countByKey = new Map<string, number>();
+  const staleKeysInOrder: string[] = [];
+  for (const row of rows) {
+    countByKey.set(row.status, (countByKey.get(row.status) ?? 0) + 1);
+    if (!vocabByKey.has(row.status) && !staleKeysInOrder.includes(row.status)) {
+      staleKeysInOrder.push(row.status);
+    }
+  }
+  const total = rows.length;
+  const entries: { key: string; label: string; color: string; count: number; pct: number }[] = [];
+  for (const s of statuses) {
+    const count = countByKey.get(s.key) ?? 0;
+    if (count === 0) continue;
+    entries.push({ key: s.key, label: s.label, color: s.color, count, pct: (count / total) * 100 });
+  }
+  for (const key of staleKeysInOrder) {
+    const staleRow = rows.find((r) => r.status === key)!;
+    entries.push({
+      key, label: staleRow.status_label, color: staleRow.status_color,
+      count: countByKey.get(key)!, pct: (countByKey.get(key)! / total) * 100,
+    });
+  }
+  return entries;
+}
+
 export const MOVE_ASSET_ERRORS: Record<string, string> = {
   not_a_move: 'Assets can only be attached to move initiatives.',
   asset_ids_required: 'Pick at least one asset to attach.',
