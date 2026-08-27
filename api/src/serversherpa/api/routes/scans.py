@@ -174,7 +174,9 @@ async def list_asset_scans(
     scans carry an asset linkage; an unknown or never-scanned asset is
     an empty history, not an error."""
     scans = list(await db.scalars(
-        select(ProcessedScan).where(ProcessedScan.asset_id == asset_id)
+        select(ProcessedScan).where(
+            (ProcessedScan.asset_id == asset_id) &
+            ProcessedScan.archived_at.is_(None))
         .order_by(ProcessedScan.scanned_at.desc(), ProcessedScan.id)
         .limit(limit)))
     scan_types, _ = await _vocab(db)

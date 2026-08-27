@@ -276,6 +276,7 @@ async def test_asset_scan_history(client, db, seeded_user):
                 for i in range(20)])
     db.add(_scan(99, match_type="asset", asset_id=other.id))
     db.add(_scan(98, match_type="container", container_id=box.id))
+    db.add(_scan(97, match_type="asset", asset_id=target.id, archived_at=T0))
     await db.commit()
 
     resp = await client.get(f"/scans/asset/{target.id}", headers=hdrs)
@@ -286,6 +287,7 @@ async def test_asset_scan_history(client, db, seeded_user):
     assert values[0] == "EPC-H-019"
     assert values[-1] == "EPC-H-005"
     assert "EPC-H-099" not in values             # other asset excluded
+    assert "EPC-H-097" not in values             # archived scan excluded
     assert rows[0]["scan_type_label"] == "RFID"
 
     resp = await client.get(f"/scans/asset/{target.id}?limit=3", headers=hdrs)

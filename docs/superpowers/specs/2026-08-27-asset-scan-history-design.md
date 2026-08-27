@@ -18,6 +18,7 @@
 - Query: `ProcessedScan` where `asset_id == asset_id` (match_type='asset' rows are the only ones with asset_id set, enforced by the CHECK constraint — filtering on asset_id alone is sufficient), ordered `scanned_at desc, id`, limited.
 - Response: `list[AssetScanItem]` (new schema in api/schemas.py): `id`, `scanned_value`, `scan_type` + `scan_type_label`/`scan_type_color`, `scanned_at`, `processed_at`, `device_id`, `operator_id`/`operator_name`, `site_id`/`site_name`, `location_detail`, `source`. Batch lookups via the module's existing `_vocab`/`_people_names`/`_site_names` helpers — no per-row queries.
 - No existence check on the asset id: an unknown/unscanned asset returns `[]` (the UI treats both the same).
+- Archived scans (`archived_at` set) are excluded — matching the Processed tab's default view.
 
 ## 2. Portal
 
