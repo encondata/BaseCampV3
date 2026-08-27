@@ -873,3 +873,9 @@
   margin-top: 12px;
 }
 .imp-pagination .page-hint { margin: 0 0 0 4px; }
+
+/* asset expansion: tab bar left, page links right; nowrap timestamps */
+.idet-expand-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.idet-expand-bar .sysconf-tabbar { margin: 0; }
+.idet-expand-links { margin-left: auto; display: flex; gap: 8px; }
+.scan-history .scan-when { white-space: nowrap; }

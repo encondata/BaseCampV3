@@ -1459,9 +1459,10 @@ export interface AssetScanRow {
 }
 
 export async function listAssetScans(
-  assetId: string, limit = 15,
+  assetId: string, limit?: number,
 ): Promise<AssetScanRow[]> {
-  const resp = await apiFetch(`/scans/asset/${assetId}?limit=${limit}`);
+  const qs = limit !== undefined ? `?limit=${limit}` : '';
+  const resp = await apiFetch(`/scans/asset/${assetId}${qs}`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

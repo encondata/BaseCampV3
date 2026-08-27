@@ -16,10 +16,10 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import ComboBox, { type ComboOption } from '../components/ComboBox';
-import AssetScanHistory from '../components/initiatives/AssetScanHistory';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
 import RackViewModal from '../components/initiatives/RackViewModal';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import ScanHistoryTable from '../components/scans/ScanHistoryTable';
 import {
   ApiError,
   addInitiativeLink,
@@ -531,7 +531,7 @@ export default function InitiativeDetail() {
   };
 
   const assetsGrid = { gridTemplateColumns:
-    `${assetsShownCols.map((c) => c.width).join(' ')}${canChange ? ' 132px' : ''}${canViewScans ? ' 30px' : ''}` };
+    `${assetsShownCols.map((c) => c.width).join(' ')}${canChange ? ' 132px' : ''} 30px` };
 
   const assetsCaret = (key: string) =>
     assetsSortKey === key
@@ -763,7 +763,7 @@ export default function InitiativeDetail() {
                     </span>
                   ))}
                   {canChange && <span className="col-head" />}
-                  {canViewScans && <span className="col-head" />}
+                  <span className="col-head" />
                 </div>
 
                 {visibleAssets.length === 0 && (
@@ -779,9 +779,7 @@ export default function InitiativeDetail() {
                     return (
                       <div key={a.id} className={`dir-row ${open ? 'open' : ''}`} {...vp} style={vp?.style}>
                         <div className="row-main" style={assetsGrid}
-                             onClick={canViewScans
-                               ? () => setOpenAssetId(open ? null : a.id)
-                               : undefined}>
+                             onClick={() => setOpenAssetId(open ? null : a.id)}>
                           {assetsShownCols.map((c) => (
                             <div className={`cell${ASSET_CENTERED_COLS.has(c.key)
                               ? ' idet-col-center' : ''}`}
@@ -804,17 +802,18 @@ export default function InitiativeDetail() {
                               </button>
                             </div>
                           )}
-                          {canViewScans && (
-                            <div className="cell chevron-cell">
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                                   strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
-                            </div>
-                          )}
+                          <div className="cell chevron-cell">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                                 strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+                          </div>
                         </div>
                         <div className="detail">
                           <div className="detail-clip">
                             <div className="detail-inner">
-                              {open && <AssetScanHistory assetId={a.asset_id} />}
+                              {open && (
+                                <MoveAssetExpansion row={a} initiativeId={id!}
+                                                     canViewScans={canViewScans} />
+                              )}
                             </div>
                           </div>
                         </div>
@@ -1329,6 +1328,94 @@ function AssetEditDialog({ asset, moveStatuses, onClose, onSaved }: {
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+
+/** Roster expansion: Move Details / Scan History tabs + page links.
+ *  Remounts per open, so the tab resets to Move Details each expand. */
+function MoveAssetExpansion({ row, initiativeId, canViewScans }: {
+  row: InitiativeAssetRow; initiativeId: string; canViewScans: boolean;
+}) {
+  const [view, setView] = useState<'move' | 'scans'>('move');
+  const yesNo = (v: boolean | null) => (v === null ? '—' : v ? 'Yes' : 'No');
+  const chip = (label: string | null | undefined, color: string | null | undefined) =>
+    label && color
+      ? (
+        <span className="chip custom" style={{ '--chip': color } as CSSProperties}>
+          <span className="dot" />{label}
+        </span>
+      )
+      : null;
+  return (
+    <div>
+      <div className="idet-expand-bar">
+        <div className="sysconf-tabbar" role="tablist">
+          <button type="button" role="tab" aria-selected={view === 'move'}
+                  className={`sysconf-tab${view === 'move' ? ' active' : ''}`}
+                  onClick={() => setView('move')}>
+            Move Details
+          </button>
+          {canViewScans && (
+            <button type="button" role="tab" aria-selected={view === 'scans'}
+                    className={`sysconf-tab${view === 'scans' ? ' active' : ''}`}
+                    onClick={() => setView('scans')}>
+              Scan History
+            </button>
+          )}
+        </div>
+        <div className="idet-expand-links">
+          <Link className="mini-btn"
+                to={`/initiatives/${initiativeId}/assets/${row.id}`}>
+            Full Details ↗
+          </Link>
+          <Link className="mini-btn" to={`/assets/${row.asset_id}`}>
+            Parent Asset ↗
+          </Link>
+        </div>
+      </div>
+      {view === 'move' ? (
+        <div className="detail-grid">
+          <div className="detail-block">
+            <p className="eyebrow-sm">Placement</p>
+            <dl className="kv">
+              <dt>Source rack</dt><dd>{row.source_rack ?? '—'}</dd>
+              <dt>Source RU</dt><dd>{row.source_ru ?? '—'}</dd>
+              <dt>Source position</dt><dd>{row.source_position ?? '—'}</dd>
+              <dt>Source verified</dt><dd>{yesNo(row.source_verified)}</dd>
+              <dt>Destination rack</dt><dd>{row.destination_rack ?? '—'}</dd>
+              <dt>Destination RU</dt><dd>{row.destination_ru ?? '—'}</dd>
+              <dt>Destination position</dt><dd>{row.destination_position ?? '—'}</dd>
+              <dt>Destination verified</dt><dd>{yesNo(row.destination_verified)}</dd>
+            </dl>
+          </div>
+          <div className="detail-block">
+            <p className="eyebrow-sm">Logistics</p>
+            <dl className="kv">
+              <dt>Wave</dt><dd>{row.priority_wave ?? '—'}</dd>
+              <dt>Disposition</dt><dd>{row.disposition ?? '—'}</dd>
+              <dt>Owner</dt><dd>{row.owner ?? '—'}</dd>
+              <dt>Cable info</dt><dd>{row.cable_info ?? '—'}</dd>
+              <dt>Vendor involved</dt><dd>{yesNo(row.vendor_involved)}</dd>
+            </dl>
+          </div>
+          <div className="detail-block">
+            <p className="eyebrow-sm">Status</p>
+            <dl className="kv">
+              <dt>Move status</dt>
+              <dd>{chip(row.status_label, row.status_color)
+                ?? row.status_label}</dd>
+              <dt>Asset status</dt>
+              <dd>{chip(row.asset.status_label, row.asset.status_color)
+                ?? row.asset.status_label}</dd>
+              <dt>Added</dt><dd>{new Date(row.created_at).toLocaleDateString()}</dd>
+              <dt>Updated</dt><dd>{new Date(row.updated_at).toLocaleDateString()}</dd>
+            </dl>
+          </div>
+        </div>
+      ) : (
+        <ScanHistoryTable assetId={row.asset_id} limit={15} capHint={15} />
+      )}
     </div>
   );
 }
