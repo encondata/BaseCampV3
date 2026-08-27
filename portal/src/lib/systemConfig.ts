@@ -38,6 +38,21 @@ export function validateLoggingForm(
   return errors;
 }
 
+/** Errors whose field isn't currently on screen (e.g. a remote-only field
+ *  while in local mode) plus `_form`, which maps to no field. These would
+ *  otherwise block Save with no visible message, so the tab surfaces them
+ *  in a generic line above the action bar. */
+export function unclaimedErrors(
+  errors: Record<string, string>,
+  renderedKeys: ReadonlySet<string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, message] of Object.entries(errors)) {
+    if (!renderedKeys.has(key)) out[key] = message;
+  }
+  return out;
+}
+
 export function serverFieldErrors(e: unknown): Record<string, string> {
   if (e instanceof ApiError && e.code === 'invalid_logging_config') {
     const fields = (e.detail as { fields?: Record<string, string> } | null)

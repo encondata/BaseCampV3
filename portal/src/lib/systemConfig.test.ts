@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { ApiError, type LoggingConfig } from './api';
-import { serverFieldErrors, validateLoggingForm } from './systemConfig';
+import {
+  serverFieldErrors, unclaimedErrors, validateLoggingForm,
+} from './systemConfig';
 
 const base = (): LoggingConfig => ({
   mode: 'local', local_max_rows_per_process: 20000,
@@ -38,6 +40,29 @@ describe('validateLoggingForm', () => {
       ...base(), mode: 'remote', transport: 'syslog',
       syslog: { host: 'x', port: 70000, protocol: 'udp' },
     })).toHaveProperty(['syslog.port']);
+  });
+});
+
+describe('unclaimedErrors', () => {
+  it('returns errors whose keys are not currently rendered', () => {
+    const errors = {
+      local_max_age_days: 'bad age',
+      remote_buffer_rows: 'bad buffer',
+    };
+    const rendered = new Set(['local_max_age_days', 'local_max_rows_per_process']);
+    expect(unclaimedErrors(errors, rendered)).toEqual({
+      remote_buffer_rows: 'bad buffer',
+    });
+  });
+  it('always surfaces _form since it maps to no rendered field', () => {
+    const rendered = new Set(['local_max_age_days']);
+    expect(unclaimedErrors({ _form: 'save failed' }, rendered))
+      .toEqual({ _form: 'save failed' });
+  });
+  it('is empty when every error maps to a rendered field', () => {
+    const errors = { 'loki.url': 'bad url' };
+    const rendered = new Set(['loki.url']);
+    expect(unclaimedErrors(errors, rendered)).toEqual({});
   });
 });
 

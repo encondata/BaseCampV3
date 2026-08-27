@@ -4,11 +4,12 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import {
-  ApiError,
   getLoggingConfig, putLoggingConfig, testLoggingConfig,
   type LoggingConfig,
 } from '../../lib/api';
-import { serverFieldErrors, validateLoggingForm } from '../../lib/systemConfig';
+import {
+  serverFieldErrors, unclaimedErrors, validateLoggingForm,
+} from '../../lib/systemConfig';
 
 const MODE_OPTIONS: { value: LoggingConfig['mode']; title: string; desc: string }[] = [
   { value: 'local', title: 'Local only',
@@ -44,7 +45,8 @@ export default function LoggingTab() {
   }, []);
 
   // Immutable field setter: applies a partial update, clears that field's
-  // error, and clears the "Saved." tick since the form is dirty again.
+  // error plus any form-level (_form) error, and clears the "Saved." tick
+  // since the form is dirty again.
   const setField = useCallback(
     (path: string, value: unknown) => {
       setCfg((prev) => {
@@ -61,9 +63,10 @@ export default function LoggingTab() {
         return next;
       });
       setErrors((prev) => {
-        if (!(path in prev)) return prev;
+        if (!(path in prev) && !('_form' in prev)) return prev;
         const next = { ...prev };
         delete next[path];
+        delete next._form;
         return next;
       });
       setSaved(false);
@@ -86,8 +89,12 @@ export default function LoggingTab() {
       setCfg(updated);
       setSaved(true);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 422) {
-        setErrors(serverFieldErrors(e));
+      // A recognized 422 carries per-field messages; anything else (an
+      // unrecognized code, a 500, a network error) has none, so fall back to
+      // a form-level message rather than silently clearing the errors.
+      const fields = serverFieldErrors(e);
+      if (Object.keys(fields).length > 0) {
+        setErrors(fields);
       } else {
         setErrors({ _form: 'Could not save the logging configuration.' });
       }
@@ -125,9 +132,26 @@ export default function LoggingTab() {
 
   const remote = cfg.mode !== 'local';
 
+  // Field keys with an input on screen right now. Errors keyed to anything
+  // else — a remote-only field while in local mode, or the form-level `_form`
+  // — have no visible place to land, so we surface them above the action bar.
+  const renderedKeys = new Set<string>([
+    'local_max_rows_per_process', 'local_max_age_days', 'min_level',
+    ...(cfg.mode === 'remote' ? ['remote_buffer_rows'] : []),
+    ...(remote && cfg.transport === 'loki'
+      ? ['loki.url', 'loki.username', 'loki.password', 'loki.tenant_id'] : []),
+    ...(remote && cfg.transport === 'syslog'
+      ? ['syslog.host', 'syslog.port', 'syslog.protocol'] : []),
+  ]);
+  const orphans = Object.values(unclaimedErrors(errors, renderedKeys));
+
   return (
     <div className="sysconf-tab-body">
-      {errors._form && <p className="pf-error">{errors._form}</p>}
+      {orphans.length > 0 && (
+        <p className="pf-error">
+          {`Fix ${orphans.length} issue${orphans.length === 1 ? '' : 's'}: ${orphans.join(' ')}`}
+        </p>
+      )}
 
       <div className="init-panel sysconf-card">
         <div className="sysconf-card-head">
