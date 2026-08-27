@@ -254,3 +254,58 @@ async def test_processed_scan_god_deletable(client, db, seeded_user):
     from serversherpa.api.routes.devtools import DELETABLE
     from serversherpa.db.models import ProcessedScan as PS
     assert DELETABLE["processed_scan"] is PS
+
+
+async def test_asset_scan_history(client, db, seeded_user):
+    hdrs = await login(client)
+    target = Asset(name="hist-target")
+    other = Asset(name="hist-other")
+    box = Container(name="hist-crate")
+    db.add_all([target, other, box])
+    await db.flush()
+
+    def _scan(minutes, **kw):
+        ts = T0 + timedelta(minutes=minutes)
+        return ProcessedScan(
+            scanned_value=f"EPC-H-{minutes:03d}", scan_type="rfid",
+            scanned_at=ts, processed_at=ts, **kw)
+
+    # 20 scans for the target (exceeds the 15 cap), plus noise rows that
+    # must be excluded: another asset, and a container match.
+    db.add_all([_scan(i, match_type="asset", asset_id=target.id)
+                for i in range(20)])
+    db.add(_scan(99, match_type="asset", asset_id=other.id))
+    db.add(_scan(98, match_type="container", container_id=box.id))
+    await db.commit()
+
+    resp = await client.get(f"/scans/asset/{target.id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    assert len(rows) == 15                       # default cap
+    values = [r["scanned_value"] for r in rows]  # newest first: 19..5
+    assert values[0] == "EPC-H-019"
+    assert values[-1] == "EPC-H-005"
+    assert "EPC-H-099" not in values             # other asset excluded
+    assert rows[0]["scan_type_label"] == "RFID"
+
+    resp = await client.get(f"/scans/asset/{target.id}?limit=3", headers=hdrs)
+    assert [r["scanned_value"] for r in resp.json()] == [
+        "EPC-H-019", "EPC-H-018", "EPC-H-017"]
+
+    # unknown asset id -> empty list, not 404
+    resp = await client.get(
+        "/scans/asset/00000000-0000-0000-0000-000000000000", headers=hdrs)
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+async def test_asset_scan_history_gate(client, db, seeded_user):
+    w = Person(first_name="Wk", last_name="NoHist")
+    asset = Asset(name="hist-gate")
+    db.add_all([w, asset])
+    await db.flush()
+    db.add(PersonRole(person_id=w.id, role="worker"))
+    await db.commit()
+    hdrs = await make_login(db, client, w, "wk-nohist@test.example.com")
+    resp = await client.get(f"/scans/asset/{asset.id}", headers=hdrs)
+    assert resp.status_code == 403

@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    ProcessedScanItem, ProcessedScanPatch, RawScanItem,
+    AssetScanItem, ProcessedScanItem, ProcessedScanPatch, RawScanItem,
 )
 from serversherpa.db.models import (
     Asset, Container, Person, ProcessedScan, RawScan, Site, StatusValue,
@@ -161,6 +161,28 @@ async def list_processed_scans(
             created_at=s.created_at,
             **_raw_context(s, scan_types, people, sites)))
     return out
+
+
+@router.get("/asset/{asset_id}", response_model=list[AssetScanItem])
+async def list_asset_scans(
+    asset_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("scans", "view"),
+    limit: int = Query(15, ge=1, le=100),
+) -> list[AssetScanItem]:
+    """Per-asset scan history, newest first. Only matched (processed)
+    scans carry an asset linkage; an unknown or never-scanned asset is
+    an empty history, not an error."""
+    scans = list(await db.scalars(
+        select(ProcessedScan).where(ProcessedScan.asset_id == asset_id)
+        .order_by(ProcessedScan.scanned_at.desc(), ProcessedScan.id)
+        .limit(limit)))
+    scan_types, _ = await _vocab(db)
+    people = await _people_names(db, {s.operator_id for s in scans})
+    sites = await _site_names(db, {s.site_id for s in scans})
+    return [AssetScanItem(id=s.id, processed_at=s.processed_at,
+                          **_raw_context(s, scan_types, people, sites))
+            for s in scans]
 
 
 async def _processed_item(db: DbSession, s: ProcessedScan) -> ProcessedScanItem:

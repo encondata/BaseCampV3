@@ -1005,6 +1005,27 @@ class ProcessedScanPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AssetScanItem(BaseModel):
+    """One processed scan of a given asset — the per-asset history row
+    (initiative roster expansion). Match fields omitted: they are the
+    asset by construction."""
+
+    id: uuid.UUID
+    scanned_value: str
+    scan_type: str
+    scan_type_label: str
+    scan_type_color: str
+    scanned_at: datetime
+    processed_at: datetime
+    device_id: str
+    operator_id: uuid.UUID | None = None
+    operator_name: str | None = None
+    site_id: uuid.UUID | None = None
+    site_name: str | None = None
+    location_detail: str
+    source: str
+
+
 class NoteOut(BaseModel):
     id: uuid.UUID
     entity_type: str
