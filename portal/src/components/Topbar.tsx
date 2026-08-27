@@ -127,7 +127,9 @@ export default function Topbar() {
     } else if (hit.kind === 'container') {
       navigate('/logistics/containers', { state: { openRow: hit.id } });
     } else if (hit.kind === 'initiative') {
-      navigate('/initiatives', { state: { openRow: hit.id } });
+      // Initiatives have a full detail page — go straight there, not the
+      // list. Other kinds follow as their detail pages get built.
+      navigate(`/initiatives/${hit.id}`);
     } else if (hit.kind === 'asset_model') {
       navigate('/admin/asset-models', { state: { openRow: hit.id } });
     }
