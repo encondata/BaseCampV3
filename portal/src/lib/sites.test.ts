@@ -3,7 +3,7 @@ import {
   afterSiteClientsFailure, formFromSite, formatCoords,
   naturalCompare, needsSiteCreate, sameClientSet, siteCellText,
   SITE_CREATED_UNLINKED_MESSAGE, SITE_ERRORS,
-  SITE_GOD_FIELDS, siteSearchText, sitePayload, surveyChanged, surveyPayload, type SiteFormState,
+  SITE_GOD_FIELDS, siteSearchText, sitePayload, surveyPayload, type SiteFormState,
 } from './sites';
 import type { SiteItem, SurveySchema } from './api';
 
@@ -112,9 +112,6 @@ describe('sitePayload', () => {
     const out = sitePayload({ ...base, latitude: '', longitude: '-97.7431' });
     expect(out).toEqual({ country: 'US', latitude: null, longitude: -97.7431 });
   });
-  it('never includes survey_data', () => {
-    expect('survey_data' in sitePayload(base)).toBe(false);
-  });
 });
 
 describe('surveyPayload', () => {
@@ -145,29 +142,6 @@ describe('sameClientSet', () => {
   it('false when sizes or members differ', () => {
     expect(sameClientSet(['a'], ['a', 'b'])).toBe(false);
     expect(sameClientSet(['a', 'b'], ['a', 'c'])).toBe(false);
-  });
-});
-
-describe('surveyChanged', () => {
-  const schema: SurveySchema = { groups: [{ key: 'dock', label: 'Dock', fields: [
-    { key: 'dock_available', label: 'Dock available', kind: 'bool', options: [] },
-    { key: 'dock_hours', label: 'Dock hours', kind: 'text', options: [] },
-    { key: 'floor', label: 'Floor', kind: 'int', options: [] },
-  ] }] };
-  it('false when normalized answers are identical', () => {
-    expect(surveyChanged({ dock_hours: '9-5' }, { dock_hours: '9-5  ' }, schema)).toBe(false);
-  });
-  it('false when both are effectively unanswered', () => {
-    expect(surveyChanged({}, { dock_available: false, dock_hours: '' }, schema)).toBe(false);
-  });
-  it('true when a value actually changed', () => {
-    expect(surveyChanged({ dock_hours: '9-5' }, { dock_hours: '24/7' }, schema)).toBe(true);
-  });
-  it('true when a field is newly answered', () => {
-    expect(surveyChanged({}, { floor: '3' }, schema)).toBe(true);
-  });
-  it('ignores unknown keys on either side', () => {
-    expect(surveyChanged({ nope: 'x' }, { nope: 'y' }, schema)).toBe(false);
   });
 });
 

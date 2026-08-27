@@ -11,6 +11,7 @@ export const SITE_ERRORS: Record<string, string> = {
   unknown_status: 'That status no longer exists — pick another.',
   unknown_survey_field: 'A survey field is no longer valid — reload and retry.',
   invalid_survey_value: 'A survey answer has the wrong format.',
+  survey_value_not_found: 'That answer was already cleared — reload and retry.',
   client_not_found: 'One of the selected clients no longer exists.',
   site_not_found: 'This site no longer exists.',
   forbidden: 'You do not have permission to change sites.',
@@ -151,19 +152,6 @@ export function sameClientSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   const sa = new Set(a);
   return b.every((id) => sa.has(id));
-}
-
-/** Deep-compare two survey answer sets after normalizing both through
- *  surveyPayload (drops unknown keys, coerces by kind) — so re-rendering
- *  the same answers back never triggers a needless PUT. */
-export function surveyChanged(
-  original: Record<string, unknown>, next: Record<string, unknown>, schema: SurveySchema,
-): boolean {
-  const a = surveyPayload(original, schema);
-  const b = surveyPayload(next, schema);
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-  for (const key of keys) if (a[key] !== b[key]) return true;
-  return false;
 }
 
 /* ── create-mode save trap ───────────────────────────────────────────

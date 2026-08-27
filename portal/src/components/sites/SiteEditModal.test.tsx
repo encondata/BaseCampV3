@@ -21,9 +21,10 @@ const api = vi.hoisted(() => ({
   createSite: vi.fn(),
   updateSite: vi.fn(),
   setSiteClients: vi.fn(),
-  saveSiteSurvey: vi.fn(),
+  listSiteSurvey: vi.fn(),
+  putSiteSurveyValue: vi.fn(),
+  clearSiteSurveyValue: vi.fn(),
   archiveSite: vi.fn(),
-  getSite: vi.fn(),
   getSurveySchema: vi.fn(),
 }));
 
@@ -44,7 +45,7 @@ const TYPES = [lookup('depot', 'Depot')];
 beforeEach(() => {
   vi.clearAllMocks();
   api.getSurveySchema.mockResolvedValue({ groups: [] });
-  api.getSite.mockResolvedValue({ survey_data: {} });
+  api.listSiteSurvey.mockResolvedValue([]);
   api.createSite.mockResolvedValue({ id: 'site-99', archived_at: null });
   api.updateSite.mockResolvedValue({ id: 'site-99' });
 });

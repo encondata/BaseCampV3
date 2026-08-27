@@ -16,10 +16,11 @@ import ComboBox from '../ComboBox';
 import {
   ApiError,
   archiveSite,
+  clearSiteSurveyValue,
   createSite,
-  getSite,
   getSurveySchema,
-  saveSiteSurvey,
+  listSiteSurvey,
+  putSiteSurveyValue,
   setSiteClients,
   updateSite,
   type SiteItem,
@@ -34,7 +35,6 @@ import {
   SITE_CREATED_UNLINKED_MESSAGE,
   SITE_ERRORS,
   sitePayload,
-  surveyChanged,
   surveyPayload,
   type SiteFormState,
 } from '../../lib/sites';
@@ -88,14 +88,18 @@ export default function SiteEditModal({
   }, []);
 
   // Load survey answers once a record exists to load them for (an existing
-  // site being edited, or a site just created in this session).
+  // site being edited, or a site just created in this session). One row per
+  // registry field, in registry order — only the answered ones become
+  // form values; SurveyForm treats a missing key as unanswered.
   useEffect(() => {
     if (!editingId) return;
     let cancelled = false;
-    void getSite(editingId).then((detail) => {
+    void listSiteSurvey(editingId).then((rows) => {
       if (cancelled) return;
-      setSurveyValues(detail.survey_data ?? {});
-      setSurveyBaseline(detail.survey_data ?? {});
+      const values = Object.fromEntries(
+        rows.filter((r) => r.value !== null).map((r) => [r.field_key, r.value]));
+      setSurveyValues(values);
+      setSurveyBaseline(values);
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [editingId]);
@@ -144,8 +148,24 @@ export default function SiteEditModal({
           setClientBaseline(clientIds);
         }
 
-        if (schema && surveyChanged(surveyBaseline, surveyValues, schema)) {
-          await saveSiteSurvey(id, surveyPayload(surveyValues, schema));
+        if (schema) {
+          // One PUT/DELETE per changed field, not a blob save — cleaned
+          // through surveyPayload (single-key) so each kind's emptiness
+          // rule (false/blank/whitespace = unanswered) matches SurveyForm.
+          for (const group of schema.groups) {
+            for (const field of group.fields) {
+              const key = field.key;
+              if (surveyValues[key] === surveyBaseline[key]) continue;
+              const cleanedNew = surveyPayload({ [key]: surveyValues[key] }, schema)[key];
+              const hadBaseline =
+                surveyPayload({ [key]: surveyBaseline[key] }, schema)[key] !== undefined;
+              if (cleanedNew !== undefined) {
+                await putSiteSurveyValue(id, key, cleanedNew as boolean | number | string);
+              } else if (hadBaseline) {
+                await clearSiteSurveyValue(id, key);
+              }
+            }
+          }
           setSurveyBaseline(surveyValues);
         }
       } catch (err) {

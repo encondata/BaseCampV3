@@ -748,7 +748,27 @@ export interface SiteItem {
   clients: ClientRef[];
 }
 
-export interface SiteDetailOut extends SiteItem { survey_data: Record<string, unknown> }
+export type SiteDetailOut = SiteItem;
+
+export interface SiteSurveyRow {
+  field_key: string; label: string; group: string; group_label: string;
+  kind: 'text' | 'textarea' | 'bool' | 'int' | 'select';
+  options: string[];
+  value: boolean | number | string | null;
+  raw_id: number | null;
+  updated_by: string | null;
+  updated_by_name: string | null;
+  updated_at: string | null;
+}
+
+export interface RawSurveyRow {
+  id: number; field_key: string; registered: boolean;
+  value: boolean | number | string | null;
+  captured_at: string;
+  submitted_by: string | null;
+  submitted_by_name: string | null;
+  device_id: string; source: string; created_at: string;
+}
 
 export interface SiteLookup {
   key: string; label: string; description: string;
@@ -812,16 +832,33 @@ export async function setSiteClients(id: string, clientIds: string[]): Promise<v
   if (!resp.ok) throw await errorFrom(resp);
 }
 
-export async function saveSiteSurvey(
-  id: string, data: Record<string, unknown>,
-): Promise<SiteDetailOut> {
-  const resp = await apiFetch(`/sites/${id}/survey`, {
+export async function listSiteSurvey(siteId: string): Promise<SiteSurveyRow[]> {
+  const resp = await apiFetch(`/sites/${siteId}/survey`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listSiteSurveyRaw(siteId: string): Promise<RawSurveyRow[]> {
+  const resp = await apiFetch(`/sites/${siteId}/survey/raw`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function putSiteSurveyValue(
+  siteId: string, fieldKey: string, value: boolean | number | string | null,
+): Promise<SiteSurveyRow> {
+  const resp = await apiFetch(`/sites/${siteId}/survey/${fieldKey}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ survey_data: data }),
+    body: JSON.stringify({ value }),
   });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
+}
+
+export async function clearSiteSurveyValue(siteId: string, fieldKey: string): Promise<void> {
+  const resp = await apiFetch(`/sites/${siteId}/survey/${fieldKey}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
 }
 
 export async function getSurveySchema(): Promise<SurveySchema> {
