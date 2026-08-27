@@ -46,9 +46,9 @@ def test_container_type_type_targets_the_containers_container_type_column():
     assert container_type.resource == "containers"
 
 
-def test_asset_type_counts_both_status_tables():
-    """The merged vocabulary is referenced from two tables — usage counts
-    must span assets.status AND initiative_assets.status."""
+def test_asset_type_counts_all_status_sources():
+    """The merged vocabulary is referenced from four tables — usage counts
+    must span assets, initiative_assets, and both scans tables' status."""
     asset = STATUS_REGISTRY["asset"]
     assert asset.sources == (("assets", "status"),
                              ("initiative_assets", "status"),
