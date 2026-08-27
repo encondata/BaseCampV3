@@ -9,7 +9,9 @@ from collections import defaultdict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import Asset, AssetModel, Client, Partner, Person, Site
+from serversherpa.db.models import (
+    Asset, AssetModel, Client, Partner, Person, ProcessedScan, Site,
+)
 
 Ref = tuple[str, str]
 Resolved = dict[Ref, dict]
@@ -81,6 +83,15 @@ async def resolve_entity_refs(db: AsyncSession, refs: set[Ref]) -> Resolved:
             out[("asset_model", str(m.id))] = {
                 "name": f"{m.make} {m.model}",
                 "summary": {"Category": m.category or "—"},
+            }
+
+    if by_type.get("processed_scan"):
+        for s in await db.scalars(select(ProcessedScan).where(
+                ProcessedScan.id.in_(by_type["processed_scan"]))):
+            out[("processed_scan", str(s.id))] = {
+                "name": s.scanned_value,
+                "summary": {"Match": s.match_type,
+                            "Scanned": s.scanned_at.isoformat()},
             }
 
     return out

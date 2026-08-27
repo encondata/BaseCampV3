@@ -4,20 +4,29 @@ read-only by design: rows arrive from future kiosk/reader ingest and
 leave via the future matcher/pruner — nothing here mutates them."""
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
-from serversherpa.api.schemas import ProcessedScanItem, RawScanItem
+from serversherpa.api.schemas import (
+    ProcessedScanItem, ProcessedScanPatch, RawScanItem,
+)
 from serversherpa.db.models import (
     Asset, Container, Person, ProcessedScan, RawScan, Site, StatusValue,
 )
+from serversherpa.services.audit import audit, diff, snapshot
 
 router = APIRouter(prefix="/scans", tags=["scans"])
 
 FALLBACK_COLOR = "#51606f"
+
+PATCH_FIELDS = ["site_id", "location_detail", "operator_id"]
+
+
+def _err(status: int, code: str, **extra) -> HTTPException:
+    return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
 async def _vocab(db: DbSession) -> tuple[dict, dict]:
@@ -149,3 +158,60 @@ async def list_processed_scans(
             created_at=s.created_at,
             **_raw_context(s, scan_types, people, sites)))
     return out
+
+
+async def _processed_item(db: DbSession, s: ProcessedScan) -> ProcessedScanItem:
+    scan_types, match_types = await _vocab(db)
+    people = await _people_names(db, {s.operator_id, s.person_id})
+    sites = await _site_names(db, {s.site_id})
+    name = None
+    if s.match_type == "asset" and s.asset_id:
+        name = await db.scalar(select(Asset.name).where(Asset.id == s.asset_id))
+    elif s.match_type == "container" and s.container_id:
+        name = await db.scalar(
+            select(Container.name).where(Container.id == s.container_id))
+    elif s.match_type == "person":
+        name = people.get(s.person_id)
+    m_label, m_color = match_types.get(
+        s.match_type, (s.match_type, FALLBACK_COLOR))
+    return ProcessedScanItem(
+        id=s.id, raw_scan_id=s.raw_scan_id, match_type=s.match_type,
+        match_type_label=m_label, match_type_color=m_color,
+        asset_id=s.asset_id, container_id=s.container_id,
+        person_id=s.person_id, matched_name=name,
+        processed_at=s.processed_at, archived_at=s.archived_at,
+        created_at=s.created_at,
+        **_raw_context(s, scan_types, people, sites))
+
+
+@router.patch("/processed/{scan_id}", response_model=ProcessedScanItem)
+async def update_processed_scan(
+    scan_id: uuid.UUID,
+    body: ProcessedScanPatch,
+    db: DbSession,
+    actor: AuthContext = require_permission("scans", "change"),
+) -> ProcessedScanItem:
+    scan = await db.get(ProcessedScan, scan_id)
+    if scan is None:
+        raise _err(404, "processed_scan_not_found")
+    data = body.model_dump(exclude_unset=True)
+    if "location_detail" in data and data["location_detail"] is None:
+        raise _err(422, "location_detail_required")
+    if data.get("site_id") is not None and \
+            await db.get(Site, data["site_id"]) is None:
+        raise _err(422, "site_not_found")
+    if data.get("operator_id") is not None and \
+            await db.get(Person, data["operator_id"]) is None:
+        raise _err(422, "operator_not_found")
+
+    fields = list(data.keys())
+    before = snapshot(scan, fields)
+    for field, value in data.items():
+        setattr(scan, field, value)
+    changes = diff(before, snapshot(scan, fields))
+    if changes:
+        scan.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor.person.id, entity_type="processed_scan",
+              entity_id=str(scan_id), action="update", changes=changes)
+    await db.commit()
+    return await _processed_item(db, scan)

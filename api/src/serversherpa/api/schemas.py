@@ -995,6 +995,16 @@ class ProcessedScanItem(BaseModel):
     created_at: datetime
 
 
+class ProcessedScanPatch(BaseModel):
+    """God-edit surface — historical-context fixes only. Match fields
+    are deliberately absent: re-matching is the (future) processor's job."""
+
+    site_id: uuid.UUID | None = None
+    location_detail: str | None = None
+    operator_id: uuid.UUID | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
 class NoteOut(BaseModel):
     id: uuid.UUID
     entity_type: str

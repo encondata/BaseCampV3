@@ -123,3 +123,108 @@ async def test_scans_view_gate(client, db, seeded_user):
     for path in ("/scans/raw", "/scans/processed"):
         resp = await client.get(path, headers=hdrs)
         assert resp.status_code == 403, path
+
+
+async def test_processed_patch_whitelist_and_audit(client, db, seeded_user):
+    # login(client)'s default account (seeded_user) is role="staff", which
+    # per the scans grant matrix is view-only — bump to admin so the PATCH
+    # below (requires scans:change) doesn't 403 before reaching the route.
+    db.add(PersonRole(person_id=seeded_user.id, role="admin"))
+    await db.flush()
+    hdrs = await login(client)
+    asset = Asset(name="srv-p")
+    site = Site(name="DC-P")
+    op_ = Person(first_name="Fix", last_name="Er")
+    db.add_all([asset, site, op_])
+    await db.flush()
+    p = ProcessedScan(
+        scanned_value="EPC-P", scan_type="rfid", scanned_at=T0,
+        match_type="asset", asset_id=asset.id, processed_at=T0)
+    db.add(p)
+    await db.commit()
+
+    resp = await client.patch(f"/scans/processed/{p.id}", headers=hdrs, json={
+        "site_id": str(site.id), "location_detail": "Row 4",
+        "operator_id": str(op_.id),
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["site_name"] == "DC-P"
+    assert body["location_detail"] == "Row 4"
+    assert body["operator_name"] == "Fix Er"
+
+    # match fields are not accepted at all (extra=forbid -> FastAPI 422)
+    resp = await client.patch(f"/scans/processed/{p.id}", headers=hdrs,
+                              json={"match_type": "person"})
+    assert resp.status_code == 422
+
+    # the change was audited
+    resp = await client.get(
+        f"/audit?entity_type=processed_scan&entity_id={p.id}", headers=hdrs)
+    rows = resp.json()
+    assert rows and rows[0]["action"] == "update"
+    assert rows[0]["entity_name"]  # entity_refs resolves a display name
+    assert "location_detail" in rows[0]["changes"]
+
+
+async def test_processed_patch_validation(client, db, seeded_user):
+    # see test_processed_patch_whitelist_and_audit: PATCH needs scans:change
+    db.add(PersonRole(person_id=seeded_user.id, role="admin"))
+    await db.flush()
+    hdrs = await login(client)
+    asset = Asset(name="srv-v")
+    db.add(asset)
+    await db.flush()
+    p = ProcessedScan(
+        scanned_value="EPC-V", scan_type="rfid", scanned_at=T0,
+        match_type="asset", asset_id=asset.id, processed_at=T0)
+    db.add(p)
+    await db.commit()
+
+    resp = await client.patch(
+        "/scans/processed/00000000-0000-0000-0000-000000000000",
+        headers=hdrs, json={"location_detail": "x"})
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "processed_scan_not_found"
+
+    resp = await client.patch(f"/scans/processed/{p.id}", headers=hdrs, json={
+        "site_id": "00000000-0000-0000-0000-000000000000"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "site_not_found"
+
+    resp = await client.patch(f"/scans/processed/{p.id}", headers=hdrs, json={
+        "operator_id": "00000000-0000-0000-0000-000000000000"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "operator_not_found"
+
+    resp = await client.patch(f"/scans/processed/{p.id}", headers=hdrs,
+                              json={"location_detail": None})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "location_detail_required"
+
+
+async def test_processed_patch_requires_change(client, db, seeded_user):
+    # staff holds only scans:view — list succeeds, PATCH must 403
+    staff = Person(first_name="St", last_name="Aff")
+    db.add(staff)
+    await db.flush()
+    db.add(PersonRole(person_id=staff.id, role="staff"))
+    asset = Asset(name="srv-g")
+    db.add(asset)
+    await db.flush()
+    p = ProcessedScan(
+        scanned_value="EPC-G", scan_type="rfid", scanned_at=T0,
+        match_type="asset", asset_id=asset.id, processed_at=T0)
+    db.add(p)
+    await db.commit()
+    hdrs = await make_login(db, client, staff, "staff-scan@test.example.com")
+    assert (await client.get("/scans/processed", headers=hdrs)).status_code == 200
+    resp = await client.patch(f"/scans/processed/{p.id}", headers=hdrs,
+                              json={"location_detail": "nope"})
+    assert resp.status_code == 403
+
+
+async def test_processed_scan_god_deletable(client, db, seeded_user):
+    from serversherpa.api.routes.devtools import DELETABLE
+    from serversherpa.db.models import ProcessedScan as PS
+    assert DELETABLE["processed_scan"] is PS

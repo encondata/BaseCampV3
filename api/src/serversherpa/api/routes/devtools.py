@@ -26,7 +26,7 @@ from serversherpa.api.schemas import (
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Asset, AssetModel, Base, Client, Container, Initiative, Partner,
-    PendingDelete, Person, Site,
+    PendingDelete, Person, ProcessedScan, Site,
 )
 from serversherpa.services.audit import audit
 
@@ -44,6 +44,7 @@ DELETABLE: dict[str, type] = {
     "asset_model": AssetModel,
     "container": Container,
     "initiative": Initiative,
+    "processed_scan": ProcessedScan,
 }
 
 
