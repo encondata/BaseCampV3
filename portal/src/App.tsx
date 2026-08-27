@@ -5,6 +5,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import AppShell from './layout/AppShell';
 import Access from './pages/Access';
 import Assets from './pages/Assets';
+import AssetDetail from './pages/AssetDetail';
 import AssetModels from './pages/AssetModels';
 import Audit from './pages/Audit';
 import Clients from './pages/Clients';
@@ -47,6 +48,9 @@ export default function App() {
           >
             <Route path="/" element={<ProtectedRoute resource="dashboard"><Home /></ProtectedRoute>} />
             <Route path="/assets" element={<ProtectedRoute resource="assets"><Assets /></ProtectedRoute>} />
+            <Route path="/assets/:assetId" element={
+              <ProtectedRoute resource="assets"><AssetDetail /></ProtectedRoute>
+            } />
             <Route path="/logistics/containers" element={<ProtectedRoute resource="containers"><Containers /></ProtectedRoute>} />
             <Route path="/sites" element={<ProtectedRoute resource="sites"><Sites /></ProtectedRoute>} />
             <Route path="/initiatives" element={
