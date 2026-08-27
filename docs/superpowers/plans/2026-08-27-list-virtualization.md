@@ -40,9 +40,10 @@ export interface VirtualRowProps {
 export const VIRTUAL_THRESHOLD = 300;
 export function VirtualRows<T>(props: {
   rows: T[];
-  rowKey: (row: T) => string | number;
   renderRow: (row: T, vp?: VirtualRowProps) => ReactNode;
 }): ReactNode;
+// renderRow's returned .dir-row element must carry the React key itself
+// (key={row.id}) — VirtualRows returns it directly, with no wrapper element.
 ```
 
 ```tsx
@@ -179,7 +180,7 @@ In `portal/src/components/scans/RawScansTab.tsx`:
 - Replace the row loop:
 
 ```tsx
-<VirtualRows rows={visible} rowKey={(r) => r.id}
+<VirtualRows rows={visible}
   renderRow={(r, vp) => {
     const open = openId === r.id;
     return (
@@ -211,7 +212,7 @@ Re-run the generator from `/private/tmp/claude-501/-Users-jrh1812-Developer-Base
 
 **Files:** `portal/src/components/scans/ProcessedScansTab.tsx`
 
-Same recipe as Task 1 Step 5: `useSearchHaystacks(scans, processedScanSearchText)` in the `visible` memo; wrap the row loop in `VirtualRows` (`rowKey: (s) => s.id`), spreading `vp` onto the `.dir-row` div (keep the `archived`/`open` class logic intact). Verify in browser with god mode: expansion, god-edit combo dropdowns (they must not clip/mis-position inside transformed rows — if they do, report it, don't improvise), god-delete, `?open=` deep link. `npm test` + build clean. Commit: `feat(portal): virtualize processed scans list`.
+Same recipe as Task 1 Step 5: `useSearchHaystacks(scans, processedScanSearchText)` in the `visible` memo; wrap the row loop in `VirtualRows`, spreading `vp` onto the `.dir-row` div (keep the `archived`/`open` class logic intact). Verify in browser with god mode: expansion, god-edit combo dropdowns (they must not clip/mis-position inside transformed rows — if they do, report it, don't improvise), god-delete, `?open=` deep link. `npm test` + build clean. Commit: `feat(portal): virtualize processed scans list`.
 
 ---
 
