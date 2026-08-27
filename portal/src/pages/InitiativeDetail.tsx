@@ -95,6 +95,8 @@ const PEOPLE_ALL_COLUMN_KEYS = new Set<string>(PEOPLE_COLUMNS.map((c) => c.key))
 const PEOPLE_DEFAULT_VISIBLE = new Set<string>(
   PEOPLE_COLUMNS.filter((c) => c.default).map((c) => c.key));
 
+const NO_PEOPLE: InitiativePersonRow[] = [];
+
 /** God-edit descriptors for the People roster (lib/initiatives.ts
  *  INITIATIVE_GOD_FIELDS factory pattern) — name/added stay non-editable,
  *  so godFieldFor returns undefined for those and personCellFor's normal
@@ -218,12 +220,11 @@ export default function InitiativeDetail() {
   );
   const peopleHaystackText = useCallback((p: InitiativePersonRow) =>
     PEOPLE_COLUMNS.map((c) => personCellText(p, c.key)).join(' ').toLowerCase(), []);
-  const peopleRows = initiative?.people ?? [];
+  const peopleRows = initiative?.people ?? NO_PEOPLE;
   const peopleHaystack = useSearchHaystacks(peopleRows, peopleHaystackText);
   const visiblePeople = useMemo(() => {
-    const rows = initiative?.people ?? [];
     const q = peopleQuery.trim().toLowerCase();
-    const filtered = rows.filter((p) => {
+    const filtered = peopleRows.filter((p) => {
       if (!passesColumnFilters(p, peopleFilters, personCellText)) return false;
       if (!q) return true;
       return peopleHaystack(p).includes(q);
@@ -232,7 +233,7 @@ export default function InitiativeDetail() {
       ? (personRatingValue(a) - personRatingValue(b)) * peopleSortDir
       : naturalCompare(personCellText(a, peopleSortKey), personCellText(b, peopleSortKey))
         * peopleSortDir));
-  }, [initiative, peopleFilters, peopleQuery, peopleSortKey, peopleSortDir, peopleHaystack]);
+  }, [peopleRows, peopleFilters, peopleQuery, peopleSortKey, peopleSortDir, peopleHaystack]);
   const godFields = useMemo(() => PEOPLE_GOD_FIELDS({
     workTypes: () => workTypes.map((w) => ({ value: w.key, label: w.label })),
     sites: () => (canViewSites ? sites.map((s) => ({ value: s.id, label: s.name })) : []),

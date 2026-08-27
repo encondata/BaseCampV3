@@ -290,8 +290,8 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
   }, [orgs]);
 
   const orgsHaystackText = useCallback((o: OrgItem) =>
-    `${o.name} ${o.code ?? ''} ${o.city ?? ''} ${o.region ?? ''} ` +
-      `${o.partner_types.join(' ')} ${o.account_manager?.display_name ?? ''}`.toLowerCase(), []);
+    (`${o.name} ${o.code ?? ''} ${o.city ?? ''} ${o.region ?? ''} ` +
+      `${o.partner_types.join(' ')} ${o.account_manager?.display_name ?? ''}`).toLowerCase(), []);
   const haystack = useSearchHaystacks(orgs, orgsHaystackText);
 
   const visible = useMemo(() => {

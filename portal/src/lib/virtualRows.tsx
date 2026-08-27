@@ -32,12 +32,10 @@ export function VirtualRows<T>({ rows, renderRow }: {
 
   const virtual = rows.length > VIRTUAL_THRESHOLD;
 
-  // The list's offset from the top of the scroller's content — stable
-  // after mount (toolbar/header above it have fixed heights). Recomputed
-  // whenever the list crosses the virtualization threshold, since the
-  // plain branch below keeps `wrapRef` mounted too (unstyled) so this
-  // measurement is always available the moment a filter change flips
-  // `virtual` from false to true.
+  // The list's offset from the top of the scroller's content is re-measured
+  // when row counts change (e.g., filtering), since those changes shift the
+  // list's position. Other above-list height changes are absorbed by the
+  // virtualizer's overscan instead of an exact remeasure.
   useLayoutEffect(() => {
     const el = wrapRef.current;
     const scroller = el?.closest('.portal-main');
@@ -45,7 +43,7 @@ export function VirtualRows<T>({ rows, renderRow }: {
       setMargin(el.getBoundingClientRect().top
         - scroller.getBoundingClientRect().top + scroller.scrollTop);
     }
-  }, [virtual]);
+  }, [virtual, rows.length]);
 
   const virtualizer = useVirtualizer<HTMLElement, HTMLElement>({
     count: virtual ? rows.length : 0,

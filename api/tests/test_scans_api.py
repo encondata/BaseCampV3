@@ -35,6 +35,27 @@ async def test_raw_list_pages_newest_first(client, db, seeded_user):
     assert [r["scanned_value"] for r in resp.json()] == ["EPC-000"]
 
 
+async def test_raw_list_gzip_encoded(client, db, seeded_user):
+    """GZipMiddleware(minimum_size=1024) should actually engage once the
+    /scans/raw response body clears the threshold and the client advertises
+    gzip support."""
+    hdrs = await login(client)
+    db.add_all([_raw(f"EPC-{i:04d}", minutes=i) for i in range(60)])
+    await db.commit()
+
+    resp = await client.get(
+        "/scans/raw", headers={**hdrs, "Accept-Encoding": "gzip"})
+    assert resp.status_code == 200, resp.text
+
+    # Sanity check: the seeded response is genuinely above the middleware's
+    # threshold, so a missing content-encoding below is a real negative and
+    # not an artifact of an under-sized fixture.
+    assert len(resp.json()) == 60
+    assert len(resp.content) > 1024
+
+    assert resp.headers.get("content-encoding") == "gzip"
+
+
 async def test_raw_list_denormalizes(client, db, seeded_user):
     hdrs = await login(client)
     op_ = Person(first_name="Op", last_name="Erator")
