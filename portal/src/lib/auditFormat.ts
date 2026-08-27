@@ -46,6 +46,7 @@ export const ENTITY_LABELS: Record<string, string> = {
   asset: 'asset',
   asset_model: 'asset model',
   container: 'container',
+  processed_scan: 'processed scan',
 };
 
 export function actionLabel(row: AuditRowLike): string {
@@ -104,6 +105,7 @@ export function entityHref(row: AuditRowLike): string | null {
     asset: '/assets',
     asset_model: '/admin/asset-models',
     container: '/logistics/containers',
+    processed_scan: '/admin/scans',
   };
   const base = routes[row.entity_type];
   return base ? `${base}?open=${encodeURIComponent(row.entity_id)}` : null;

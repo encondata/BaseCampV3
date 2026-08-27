@@ -1383,6 +1383,71 @@ export async function downloadContainerTemplate(): Promise<Blob> {
   return resp.blob();
 }
 
+/* ── scans ────────────────────────────────────────────────────────── */
+
+export interface RawScanRow {
+  id: number; scanned_value: string;
+  scan_type: string; scan_type_label: string; scan_type_color: string;
+  scanned_at: string; device_id: string;
+  operator_id: string | null; operator_name: string | null;
+  site_id: string | null; site_name: string | null;
+  location_detail: string; source: string; created_at: string;
+}
+
+export interface ProcessedScanRow {
+  id: string; scanned_value: string;
+  scan_type: string; scan_type_label: string; scan_type_color: string;
+  scanned_at: string; device_id: string;
+  operator_id: string | null; operator_name: string | null;
+  site_id: string | null; site_name: string | null;
+  location_detail: string; source: string;
+  raw_scan_id: number | null;
+  match_type: string; match_type_label: string; match_type_color: string;
+  asset_id: string | null; container_id: string | null;
+  person_id: string | null; matched_name: string | null;
+  processed_at: string; archived_at: string | null; created_at: string;
+}
+
+export interface RawScanQuery {
+  device_id?: string;
+  operator_id?: string;
+  site_id?: string;
+  scan_type?: string;
+  since?: string;
+  until?: string;
+  value?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function listRawScans(query: RawScanQuery): Promise<RawScanRow[]> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== '') params.set(key, String(value));
+  }
+  const resp = await apiFetch(`/scans/raw?${params.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listProcessedScans(): Promise<ProcessedScanRow[]> {
+  const resp = await apiFetch('/scans/processed');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateProcessedScan(
+  id: string, body: Record<string, unknown>,
+): Promise<ProcessedScanRow> {
+  const resp = await apiFetch(`/scans/processed/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /* ── initiatives ──────────────────────────────────────────────────── */
 
 export interface InitiativeItem {
