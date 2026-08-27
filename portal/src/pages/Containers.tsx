@@ -44,9 +44,11 @@ import {
   exportCsv,
   moveKey,
   useReorderDrag,
+  useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
+import { VirtualRows } from '../lib/virtualRows';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
@@ -160,6 +162,8 @@ export default function Containers() {
   const replaceRow = (u: ContainerItem) =>
     setContainers((xs) => xs?.map((x) => (x.id === u.id ? u : x)) ?? xs);
 
+  const haystack = useSearchHaystacks(containers, containerSearchText);
+
   const visible = useMemo(() => {
     if (!containers) return [];
     const q = query.trim().toLowerCase();
@@ -168,11 +172,11 @@ export default function Containers() {
       if (!showArchived && c.archived_at) return false;
       if (!passesColumnFilters(c, filters, containerCellText)) return false;
       if (!q) return true;
-      return containerSearchText(c).includes(q);
+      return haystack(c).includes(q);
     });
     return rows.sort((a, b) =>
       naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
-  }, [containers, filters, query, sortKey, sortDir]);
+  }, [containers, filters, query, sortKey, sortDir, haystack]);
 
   // Deep-link vs persisted-filter interplay — cloned from Assets.tsx.
   useEffect(() => {
@@ -335,10 +339,12 @@ export default function Containers() {
             </div>
           )}
 
-          {visible.map((c) => {
+          <VirtualRows rows={visible}
+            renderRow={(c, vp) => {
             const open = openId === c.id;
             return (
-              <div key={c.id} className={`dir-row ${open ? 'open' : ''} ${c.archived_at ? 'archived' : ''}`}>
+              <div key={c.id} className={`dir-row ${open ? 'open' : ''} ${c.archived_at ? 'archived' : ''}`}
+                   {...vp} style={vp?.style}>
                 <div className="row-main" style={grid}
                      onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : c.id); }}>
                   <div className="cell cell-primary">
@@ -380,7 +386,7 @@ export default function Containers() {
                 </div>
               </div>
             );
-          })}
+          }} />
         </div>
       )}
 

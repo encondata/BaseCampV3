@@ -37,9 +37,11 @@ import {
   exportCsv,
   moveKey,
   useReorderDrag,
+  useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
+import { VirtualRows } from '../lib/virtualRows';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
@@ -177,16 +179,18 @@ export default function AssetModels() {
   const replaceRow = (u: AssetModelItem) =>
     setModels((xs) => xs?.map((x) => (x.id === u.id ? u : x)) ?? xs);
 
+  const haystack = useSearchHaystacks(models, modelSearchText);
+
   const visible = useMemo(() => {
     if (!models) return [];
     const q = query.trim().toLowerCase();
     const rows = models.filter((m) => {
       if (!passesColumnFilters(m, filters, modelCellText)) return false;
       if (!q) return true;
-      return modelSearchText(m).includes(q);
+      return haystack(m).includes(q);
     });
     return rows.sort((a, b) => naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
-  }, [models, filters, query, sortKey, sortDir]);
+  }, [models, filters, query, sortKey, sortDir, haystack]);
 
   // Auto-close the open row when it drops out of `visible` — EXCEPT the one
   // case where it just arrived via a deep link and the reason it's missing
@@ -362,10 +366,12 @@ export default function AssetModels() {
             </div>
           )}
 
-          {visible.map((m) => {
+          <VirtualRows rows={visible}
+            renderRow={(m, vp) => {
             const open = openId === m.id;
             return (
-              <div key={m.id} className={`dir-row ${open ? 'open' : ''}`}>
+              <div key={m.id} className={`dir-row ${open ? 'open' : ''}`}
+                   {...vp} style={vp?.style}>
                 <div className="row-main" style={grid}
                      onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : m.id); }}>
                   <div className="cell cell-primary">
@@ -408,7 +414,7 @@ export default function AssetModels() {
                 </div>
               </div>
             );
-          })}
+          }} />
         </div>
       )}
 

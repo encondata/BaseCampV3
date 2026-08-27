@@ -45,9 +45,11 @@ import {
   exportCsv,
   moveKey,
   useReorderDrag,
+  useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
+import { VirtualRows } from '../lib/virtualRows';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
@@ -196,6 +198,8 @@ export default function Assets() {
     (assets ?? []).map((a) => a.serial_number?.trim().toLowerCase()).filter((s): s is string => !!s),
   ), [assets]);
 
+  const haystack = useSearchHaystacks(assets, assetSearchText);
+
   const visible = useMemo(() => {
     if (!assets) return [];
     const q = query.trim().toLowerCase();
@@ -209,10 +213,10 @@ export default function Assets() {
       if (!showArchived && a.archived_at) return false;
       if (!passesColumnFilters(a, filters, assetCellText)) return false;
       if (!q) return true;
-      return assetSearchText(a).includes(q);
+      return haystack(a).includes(q);
     });
     return rows.sort((a, b) => naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
-  }, [assets, filters, query, sortKey, sortDir]);
+  }, [assets, filters, query, sortKey, sortDir, haystack]);
 
   // Auto-close the open row when it drops out of `visible` — EXCEPT the one
   // case where it just arrived via a deep link and the reason it's missing
@@ -398,11 +402,13 @@ export default function Assets() {
             </div>
           )}
 
-          {visible.map((a) => {
+          <VirtualRows rows={visible}
+            renderRow={(a, vp) => {
             const open = openId === a.id;
             const isDupe = !!a.serial_number && dupes.has(a.serial_number.toLowerCase());
             return (
-              <div key={a.id} className={`dir-row ${open ? 'open' : ''} ${a.archived_at ? 'archived' : ''}`}>
+              <div key={a.id} className={`dir-row ${open ? 'open' : ''} ${a.archived_at ? 'archived' : ''}`}
+                   {...vp} style={vp?.style}>
                 <div className="row-main" style={grid}
                      onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : a.id); }}>
                   <div className="cell cell-primary">
@@ -446,7 +452,7 @@ export default function Assets() {
                 </div>
               </div>
             );
-          })}
+          }} />
         </div>
       )}
 
