@@ -4,7 +4,9 @@
  * controls look and behave identically. Ref: fibertrace directory pattern.
  */
 
-import { useEffect, useRef, useState, type DragEvent, type ReactNode } from 'react';
+import {
+  useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode,
+} from 'react';
 
 /* ── CSV export ─────────────────────────────────────────────────── */
 
@@ -322,3 +324,18 @@ export function ExportButton({ onExport }: { onExport: () => void }) {
 
 /** Render a value cell node from an unknown-typed cell producer. */
 export type CellRenderer<T> = (row: T, key: string) => ReactNode;
+
+/* ── search memoization ─────────────────────────────────────────── */
+
+/** Precomputed lowercase search haystacks — one build per rows array
+ *  instead of one per row per keystroke (matters at 100k rows). */
+export function useSearchHaystacks<T>(
+  rows: T[] | null, text: (row: T) => string,
+): (row: T) => string {
+  return useMemo(() => {
+    const m = new Map<T, string>();
+    rows?.forEach((r) => m.set(r, text(r)));
+    return (row: T) => m.get(row) ?? text(row);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows]);
+}

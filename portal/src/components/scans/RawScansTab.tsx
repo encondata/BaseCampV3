@@ -24,9 +24,11 @@ import {
   exportCsv,
   moveKey,
   useReorderDrag,
+  useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef,
 } from '../../lib/listTools';
+import { VirtualRows } from '../../lib/virtualRows';
 
 const COLUMNS: ColumnDef[] = [
   { key: 'scan_type', label: 'Method', width: '0.9fr', default: true },
@@ -106,17 +108,19 @@ export default function RawScansTab({ onCount }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const haystack = useSearchHaystacks(scans, rawScanSearchText);
+
   const visible = useMemo(() => {
     if (!scans) return [];
     const q = query.trim().toLowerCase();
     const rows = scans.filter((r) => {
       if (!passesColumnFilters(r, filters, rawScanCellText)) return false;
       if (!q) return true;
-      return rawScanSearchText(r).includes(q);
+      return haystack(r).includes(q);
     });
     return rows.sort((a, b) =>
       naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
-  }, [scans, filters, query, sortKey, sortDir]);
+  }, [scans, filters, query, sortKey, sortDir, haystack]);
 
   const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
@@ -213,35 +217,37 @@ export default function RawScansTab({ onCount }: {
             </div>
           )}
 
-          {visible.map((r) => {
-            const open = openId === r.id;
-            return (
-              <div key={r.id} className={`dir-row ${open ? 'open' : ''}`}>
-                <div className="row-main" style={grid}
-                     onClick={() => setOpenId(open ? null : r.id)}>
-                  <div className="cell cell-primary">
-                    <div className="pn"><b className="mono">{r.scanned_value}</b>
-                      <span>{r.scan_type_label}</span></div>
+          <VirtualRows rows={visible} rowKey={(r) => r.id}
+            renderRow={(r, vp) => {
+              const open = openId === r.id;
+              return (
+                <div key={r.id} className={`dir-row ${open ? 'open' : ''}`}
+                     {...vp} style={vp?.style}>
+                  <div className="row-main" style={grid}
+                       onClick={() => setOpenId(open ? null : r.id)}>
+                    <div className="cell cell-primary">
+                      <div className="pn"><b className="mono">{r.scanned_value}</b>
+                        <span>{r.scan_type_label}</span></div>
+                    </div>
+                    {shownCols.map((col) => (
+                      <div className="cell" key={col.key}>{cellFor(r, col.key)}</div>
+                    ))}
+                    <div className="cell chevron-cell">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                           strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+                    </div>
                   </div>
-                  {shownCols.map((col) => (
-                    <div className="cell" key={col.key}>{cellFor(r, col.key)}</div>
-                  ))}
-                  <div className="cell chevron-cell">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                         strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
-                  </div>
-                </div>
 
-                <div className="detail">
-                  <div className="detail-clip">
-                    <div className="detail-inner">
-                      {open && <RawScanRowDetail scan={r} />}
+                  <div className="detail">
+                    <div className="detail-clip">
+                      <div className="detail-inner">
+                        {open && <RawScanRowDetail scan={r} />}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            }} />
         </div>
       )}
     </>
