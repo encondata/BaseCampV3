@@ -83,7 +83,7 @@ Migration seeds `role_permissions` for the `scans` resource and has a clean `dow
 - `GET /scans/raw` — Audit-style paging: `limit` (default 100, max 500), `offset`; optional scalar filters `device_id`, `operator_id`, `site_id`, `scan_type`, `since`, `until`, `value` (substring match on `scanned_value`). Bare JSON array, newest `scanned_at` first, rows denormalized (`scan_type_label`/`color`, `operator_name`, `site_name`) with batch lookups — never per-row queries. Read-only this phase.
 - `GET /scans/processed` — bare denormalized full array: everything above plus `match_type_label`/`color`, `matched_name` (asset name / container name / person name), `asset_id`/`container_id`/`person_id` for linking. Ordered `scanned_at desc`.
 - `PATCH /scans/processed/{id}` — god-edit only fields: `site_id`, `location_detail`, `operator_id` (fixing bad context on a historical record). **Match fields are not editable** — re-matching is the (future) processor's job. Snapshot → diff → `audit(...)`.
-- `DELETE /scans/processed/{id}` — god delete, audited.
+- God delete follows the house pending-delete flow (no custom DELETE endpoint): register `"processed_scan": ProcessedScan` in the `DELETABLE` map in `routes/devtools.py`; the portal wires `GodDeleteButton` + `usePendingDeletes` as on Containers.
 - Pydantic models `RawScanItem`, `ProcessedScanItem`, `ProcessedScanPatch` in `api/schemas.py`; errors via `_err()` with snake codes.
 - `services/entity_refs.py`: resolve `processed_scan` audit rows to a display name (scanned value + match label).
 - Register router in `api/app.py`.
@@ -117,7 +117,7 @@ One page, **Raw | Processed** tabs following the existing tab pattern. Standard 
 
 `processedScanSearchText`, `processedScanCellText` (mirrors cell rendering exactly, `—` for blanks), `SCANS_ERRORS` code→message map, god-field factory `PROCESSED_SCAN_GOD_FIELDS(lookups)`. The raw tab has no client-side text filter — the server `value` substring param covers it.
 
-`lib/api.ts`: `RawScanRow` / `ProcessedScanRow` interfaces, `listRawScans(params)`, `listProcessedScans()`, `updateProcessedScan()`, `deleteProcessedScan()`.
+`lib/api.ts`: `RawScanRow` / `ProcessedScanRow` interfaces, `listRawScans(params)`, `listProcessedScans()`, `updateProcessedScan()`. Deletion goes through the existing pending-deletes API.
 
 ## 5. Testing
 
