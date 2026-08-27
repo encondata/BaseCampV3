@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from serversherpa.api.routes import (
     access, asset_models, assets, attachments, audit, auth, containers,
-    devtools, initiatives, me, notes, search, sites, stakeholders,
+    devtools, initiatives, me, notes, scans, search, sites, stakeholders,
     status_values, system, users, workers,
 )
 from serversherpa.config import get_settings
@@ -104,6 +104,7 @@ def create_app() -> FastAPI:
     app.include_router(asset_models.categories_router)
     app.include_router(assets.router)
     app.include_router(containers.router)
+    app.include_router(scans.router)
     app.include_router(initiatives.router)
     app.include_router(notes.router)
     app.include_router(status_values.router)

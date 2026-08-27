@@ -947,6 +947,54 @@ class ContainerAssetsAddIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class RawScanItem(BaseModel):
+    """One raw (unprocessed) scan — the inbox row, read-only."""
+
+    id: int
+    scanned_value: str
+    scan_type: str
+    scan_type_label: str
+    scan_type_color: str
+    scanned_at: datetime
+    device_id: str
+    operator_id: uuid.UUID | None = None
+    operator_name: str | None = None
+    site_id: uuid.UUID | None = None
+    site_name: str | None = None
+    location_detail: str
+    source: str
+    created_at: datetime
+
+
+class ProcessedScanItem(BaseModel):
+    """One matched scan — raw context plus the match resolution."""
+
+    id: uuid.UUID
+    scanned_value: str
+    scan_type: str
+    scan_type_label: str
+    scan_type_color: str
+    scanned_at: datetime
+    device_id: str
+    operator_id: uuid.UUID | None = None
+    operator_name: str | None = None
+    site_id: uuid.UUID | None = None
+    site_name: str | None = None
+    location_detail: str
+    source: str
+    raw_scan_id: int | None = None
+    match_type: str
+    match_type_label: str
+    match_type_color: str
+    asset_id: uuid.UUID | None = None
+    container_id: uuid.UUID | None = None
+    person_id: uuid.UUID | None = None
+    matched_name: str | None = None
+    processed_at: datetime
+    archived_at: datetime | None = None
+    created_at: datetime
+
+
 class NoteOut(BaseModel):
     id: uuid.UUID
     entity_type: str
