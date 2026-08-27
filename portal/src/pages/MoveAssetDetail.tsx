@@ -156,6 +156,9 @@ export default function MoveAssetDetail() {
             <dl className="kv">
               <dt>Move status</dt>
               <dd>{chip(row.status_label, row.status_color) ?? row.status_label}</dd>
+              <dt>Asset status</dt>
+              <dd>{chip(row.asset.status_label, row.asset.status_color)
+                ?? row.asset.status_label}</dd>
               <dt>Added</dt><dd>{new Date(row.created_at).toLocaleDateString()}</dd>
               <dt>Updated</dt><dd>{new Date(row.updated_at).toLocaleDateString()}</dd>
             </dl>
