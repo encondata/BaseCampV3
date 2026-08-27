@@ -121,7 +121,8 @@ export default function Topbar() {
     } else if (hit.kind === 'partner') {
       navigate('/stakeholders/partners', { state: { openRow: hit.id } });
     } else if (hit.kind === 'site') {
-      navigate('/sites', { state: { openRow: hit.id } });
+      // Sites have a full detail page — go straight there, not the list.
+      navigate(`/sites/${hit.id}`);
     } else if (hit.kind === 'asset') {
       navigate('/assets', { state: { openRow: hit.id } });
     } else if (hit.kind === 'container') {

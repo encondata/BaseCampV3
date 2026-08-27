@@ -25,6 +25,7 @@ import ProcessLogs from './pages/ProcessLogs';
 import Scans from './pages/Scans';
 import Settings from './pages/Settings';
 import Sites from './pages/Sites';
+import SiteDetail from './pages/SiteDetail';
 import SystemConfig from './pages/SystemConfig';
 import SystemProcesses from './pages/SystemProcesses';
 import Users from './pages/Users';
@@ -53,6 +54,9 @@ export default function App() {
             } />
             <Route path="/logistics/containers" element={<ProtectedRoute resource="containers"><Containers /></ProtectedRoute>} />
             <Route path="/sites" element={<ProtectedRoute resource="sites"><Sites /></ProtectedRoute>} />
+            <Route path="/sites/:siteId" element={
+              <ProtectedRoute resource="sites"><SiteDetail /></ProtectedRoute>
+            } />
             <Route path="/initiatives" element={
               <ProtectedRoute resource="initiatives"><Initiatives /></ProtectedRoute>
             } />

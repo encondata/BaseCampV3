@@ -6,8 +6,10 @@ const row = (entity_type: string, entity_id: string | null) =>
   ({ action: 'update', entity_type, entity_id, changes: {} });
 
 describe('entityHref', () => {
+  it('sends sites straight to their full-details page', () => {
+    expect(entityHref(row('site', 's-1'))).toBe('/sites/s-1');
+  });
   it('maps linkable record types to their list page with ?open=', () => {
-    expect(entityHref(row('site', 's-1'))).toBe('/sites?open=s-1');
     expect(entityHref(row('worker', 'p-1'))).toBe('/people/workers?open=p-1');
     expect(entityHref(row('person', 'p-1'))).toBe('/people/users?open=p-1');
     expect(entityHref(row('user_account', 'p-1'))).toBe('/people/users?open=p-1');

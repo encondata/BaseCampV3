@@ -16,18 +16,20 @@ from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
 from serversherpa.api.schemas import AttachmentOut
 from serversherpa.db.models import (
-    Asset, Attachment, Client, Container, Initiative, Partner, Person,
+    Asset, Attachment, Client, Container, Initiative, Partner, Person, Site,
 )
 from serversherpa.services.audit import audit
 from serversherpa.services.storage import presign_get, put_object
 
 router = APIRouter(prefix="/attachments", tags=["attachments"])
 
-EntityType = Literal["person", "client", "partner", "asset", "container", "initiative"]
+EntityType = Literal[
+    "person", "client", "partner", "asset", "container", "initiative", "site",
+]
 
 ENTITY_MODEL = {
     "person": Person, "client": Client, "partner": Partner, "asset": Asset,
-    "container": Container, "initiative": Initiative,
+    "container": Container, "initiative": Initiative, "site": Site,
 }
 AVATAR_KEY_FIELD = {"person": "avatar_key", "client": "logo_key", "partner": "logo_key"}
 Kind = Literal["avatar", "photo", "document"]

@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Link } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import GodDeleteButton from '../components/GodDeleteButton';
@@ -610,16 +611,15 @@ function SiteRowDetail({
 
       {mapOpen && <SiteMapModal site={site} onClose={() => setMapOpen(false)} />}
 
-      {(canEdit || godVisible) && (
-        <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
-          {canEdit && (
-            <button className="btn-solid" onClick={onEdit}>Edit</button>
-          )}
-          <GodDeleteButton visible={godVisible} entityType="site" entityId={site.id}
-                           label={site.name} pending={pending}
-                           onChange={pending ? onUnmark : onMark} />
-        </div>
-      )}
+      <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
+        <Link className="mini-btn" to={`/sites/${site.id}`}>Full Details ↗</Link>
+        {canEdit && (
+          <button className="btn-solid" onClick={onEdit}>Edit</button>
+        )}
+        <GodDeleteButton visible={godVisible} entityType="site" entityId={site.id}
+                         label={site.name} pending={pending}
+                         onChange={pending ? onUnmark : onMark} />
+      </div>
     </div>
   );
 }

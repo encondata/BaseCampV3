@@ -95,8 +95,12 @@ export function recordTooltip(row: AuditRowLike): string {
  * which is exactly what Workers/Users rows are keyed by. */
 export function entityHref(row: AuditRowLike): string | null {
   if (!row.entity_id) return null;
+  if (row.entity_type === 'site') {
+    // Sites have a full detail page — go straight there, not the list
+    // with a deep-link param (mirrors the initiative pattern in Topbar).
+    return `/sites/${encodeURIComponent(row.entity_id)}`;
+  }
   const routes: Record<string, string> = {
-    site: '/sites',
     worker: '/people/workers',
     person: '/people/users',
     user_account: '/people/users',
