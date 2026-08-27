@@ -31,6 +31,7 @@ import {
 import { VirtualRows } from '../../lib/virtualRows';
 
 const COLUMNS: ColumnDef[] = [
+  { key: 'status', label: 'Scan status', width: '1.1fr', default: true },
   { key: 'scan_type', label: 'Method', width: '0.9fr', default: true },
   { key: 'scanned', label: 'Scanned', width: '1.1fr', default: true },
   { key: 'device', label: 'Device', width: '1fr', default: true },
@@ -48,6 +49,7 @@ const DEFAULT_VISIBLE = new Set<string>(
 function sortValueFor(r: RawScanRow, key: string): string {
   switch (key) {
     case 'primary': return r.scanned_value.toLowerCase();
+    case 'status': return (r.status_label ?? '').toLowerCase();
     case 'scan_type': return r.scan_type_label.toLowerCase();
     case 'scanned': return r.scanned_at;
     case 'device': return r.device_id.toLowerCase();
@@ -63,6 +65,7 @@ function sortValueFor(r: RawScanRow, key: string): string {
 const CSV_COLUMNS: [string, (r: RawScanRow) => string][] = [
   ['Scanned at', (r) => r.scanned_at],
   ['Value', (r) => r.scanned_value],
+  ['Scan status', (r) => r.status_label ?? ''],
   ['Method', (r) => r.scan_type_label],
   ['Device', (r) => r.device_id],
   ['Operator', (r) => r.operator_name ?? ''],
@@ -135,6 +138,12 @@ export default function RawScansTab({ onCount }: {
 
   const cellFor = (r: RawScanRow, key: string) => {
     switch (key) {
+      case 'status':
+        return r.status_label && r.status_color ? (
+          <span className="chip custom" style={{ '--chip': r.status_color } as CSSProperties}>
+            <span className="dot" />{r.status_label}
+          </span>
+        ) : <span className="cell-top">—</span>;
       case 'scan_type':
         return (
           <span className="chip custom" style={{ '--chip': r.scan_type_color } as CSSProperties}>

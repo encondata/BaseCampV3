@@ -1394,6 +1394,7 @@ export async function downloadContainerTemplate(): Promise<Blob> {
 export interface RawScanRow {
   id: number; scanned_value: string;
   scan_type: string; scan_type_label: string; scan_type_color: string;
+  status: string | null; status_label: string | null; status_color: string | null;
   scanned_at: string; device_id: string;
   operator_id: string | null; operator_name: string | null;
   site_id: string | null; site_name: string | null;
@@ -1403,6 +1404,7 @@ export interface RawScanRow {
 export interface ProcessedScanRow {
   id: string; scanned_value: string;
   scan_type: string; scan_type_label: string; scan_type_color: string;
+  status: string | null; status_label: string | null; status_color: string | null;
   scanned_at: string; device_id: string;
   operator_id: string | null; operator_name: string | null;
   site_id: string | null; site_name: string | null;
@@ -1457,6 +1459,7 @@ export async function updateProcessedScan(
 export interface AssetScanRow {
   id: string; scanned_value: string;
   scan_type: string; scan_type_label: string; scan_type_color: string;
+  status: string | null; status_label: string | null; status_color: string | null;
   scanned_at: string; processed_at: string;
   device_id: string;
   operator_id: string | null; operator_name: string | null;

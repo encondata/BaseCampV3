@@ -48,6 +48,7 @@ import { VirtualRows } from '../../lib/virtualRows';
 
 const COLUMNS: ColumnDef[] = [
   { key: 'match', label: 'Match', width: '1fr', default: true },
+  { key: 'status', label: 'Scan status', width: '1.1fr', default: true },
   { key: 'matched', label: 'Matched record', width: '1.3fr', default: true },
   { key: 'scanned', label: 'Scanned', width: '1.1fr', default: true },
   { key: 'processed', label: 'Processed', width: '1.1fr', default: false },
@@ -68,6 +69,7 @@ function sortValueFor(s: ProcessedScanRow, key: string): string {
   switch (key) {
     case 'primary': return s.scanned_value.toLowerCase();
     case 'match': return s.match_type_label.toLowerCase();
+    case 'status': return (s.status_label ?? '').toLowerCase();
     case 'matched': return (s.matched_name ?? '').toLowerCase();
     case 'scanned': return s.scanned_at;
     case 'processed': return s.processed_at;
@@ -86,6 +88,7 @@ const CSV_COLUMNS: [string, (s: ProcessedScanRow) => string][] = [
   ['ID', (s) => s.id],
   ['Value', (s) => s.scanned_value],
   ['Match', (s) => s.match_type_label],
+  ['Scan status', (s) => s.status_label ?? ''],
   ['Matched record', (s) => s.matched_name ?? ''],
   ['Scanned', (s) => s.scanned_at],
   ['Processed', (s) => s.processed_at],
@@ -229,6 +232,12 @@ export default function ProcessedScansTab({ onCount }: {
             {pd.pendingIds.has(s.id) && <span className="chip tag">Pending delete</span>}
           </div>
         );
+      case 'status':
+        return s.status_label && s.status_color ? (
+          <span className="chip custom" style={{ '--chip': s.status_color } as CSSProperties}>
+            <span className="dot" />{s.status_label}
+          </span>
+        ) : <span className="cell-top">—</span>;
       case 'matched':
         return matchedHref(s)
           ? (

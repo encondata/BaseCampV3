@@ -9,6 +9,7 @@ import {
 const row: ProcessedScanRow = {
   id: 'p1', scanned_value: 'EPC-001', scan_type: 'rfid',
   scan_type_label: 'RFID', scan_type_color: '#1668a7',
+  status: 'labeled', status_label: 'Labeled', status_color: '#178a4c',
   scanned_at: '2026-08-27T09:00:00Z', device_id: 'dock-1',
   operator_id: 'op1', operator_name: 'Op Erator',
   site_id: 's1', site_name: 'DC-East', location_detail: 'Dock 3',
@@ -28,6 +29,7 @@ describe('processedScanSearchText', () => {
     expect(t).toContain('dc-east');
     expect(t).toContain('op erator');
     expect(t).toContain('asset');
+    expect(t).toContain('labeled');
   });
 });
 
@@ -43,6 +45,8 @@ describe('processedScanCellText', () => {
     expect(processedScanCellText(row, 'location')).toBe('Dock 3');
     expect(processedScanCellText(row, 'source')).toBe('reader');
     expect(processedScanCellText(row, 'archived')).toBe('No');
+    expect(processedScanCellText(row, 'status')).toBe('Labeled');
+    expect(processedScanCellText({ ...row, status_label: null }, 'status')).toBe('—');
     expect(processedScanCellText(
       { ...row, matched_name: null }, 'matched')).toBe('—');
     expect(processedScanCellText(
@@ -87,6 +91,7 @@ describe('god fields', () => {
 const rawRow: RawScanRow = {
   id: 1, scanned_value: 'EPC-001', scan_type: 'rfid',
   scan_type_label: 'RFID', scan_type_color: '#1668a7',
+  status: 'labeled', status_label: 'Labeled', status_color: '#178a4c',
   scanned_at: '2026-08-27T09:00:00Z', device_id: 'dock-1',
   operator_id: 'op1', operator_name: 'Op Erator',
   site_id: 's1', site_name: 'DC-East', location_detail: 'Dock 3',
@@ -103,6 +108,7 @@ describe('rawScanSearchText', () => {
     expect(t).toContain('dc-east');
     expect(t).toContain('dock 3');
     expect(t).toContain('reader');
+    expect(t).toContain('labeled');
   });
 });
 
@@ -121,6 +127,8 @@ describe('rawScanCellText', () => {
     expect(rawScanCellText({ ...rawRow, location_detail: '' }, 'location'))
       .toBe('—');
     expect(rawScanCellText({ ...rawRow, source: '' }, 'source')).toBe('—');
+    expect(rawScanCellText(rawRow, 'status')).toBe('Labeled');
+    expect(rawScanCellText({ ...rawRow, status_label: null }, 'status')).toBe('—');
   });
   it('formats the timestamp columns as locale strings', () => {
     expect(rawScanCellText(rawRow, 'scanned'))

@@ -8,7 +8,7 @@ import type { GodField } from './godEdit';
 
 export function processedScanSearchText(s: ProcessedScanRow): string {
   return [s.scanned_value, s.matched_name, s.match_type_label,
-          s.scan_type_label, s.device_id, s.operator_name,
+          s.scan_type_label, s.status_label, s.device_id, s.operator_name,
           s.site_name, s.location_detail, s.source]
     .filter(Boolean).join(' ').toLowerCase();
 }
@@ -30,6 +30,7 @@ export function processedScanCellText(s: ProcessedScanRow, colKey: string): stri
     case 'location': return s.location_detail || '—';
     case 'source': return s.source || '—';
     case 'archived': return s.archived_at ? 'Yes' : 'No';
+    case 'status': return s.status_label ?? '—';
     default: return '';
   }
 }
@@ -50,7 +51,7 @@ export function matchedHref(s: ProcessedScanRow): string | null {
 }
 
 export function rawScanSearchText(r: RawScanRow): string {
-  return [r.scanned_value, r.scan_type_label, r.device_id,
+  return [r.scanned_value, r.scan_type_label, r.status_label, r.device_id,
           r.operator_name, r.site_name, r.location_detail, r.source]
     .filter(Boolean).join(' ').toLowerCase();
 }
@@ -69,6 +70,7 @@ export function rawScanCellText(r: RawScanRow, colKey: string): string {
     case 'location': return r.location_detail || '—';
     case 'source': return r.source || '—';
     case 'ingested': return new Date(r.created_at).toLocaleString();
+    case 'status': return r.status_label ?? '—';
     default: return '';
   }
 }

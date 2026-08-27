@@ -32,13 +32,21 @@ export default function ScanHistoryTable({ assetId, limit, capHint }: {
       <table className="activity-changes scan-history">
         <thead>
           <tr>
-            <th>Scanned</th><th>Method</th><th>Device</th>
+            <th>Status</th><th>Scanned</th><th>Method</th><th>Device</th>
             <th>Operator</th><th>Site</th><th>Location</th>
           </tr>
         </thead>
         <tbody>
           {scans.map((s) => (
             <tr key={s.id}>
+              <td>
+                {s.status_label && s.status_color ? (
+                  <span className="chip custom"
+                        style={{ '--chip': s.status_color } as CSSProperties}>
+                    <span className="dot" />{s.status_label}
+                  </span>
+                ) : '—'}
+              </td>
               <td className="mono scan-when">
                 {new Date(s.scanned_at).toLocaleString()}
               </td>
