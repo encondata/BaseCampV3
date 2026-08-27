@@ -21,6 +21,11 @@ async def test_raw_list_pages_newest_first(client, db, seeded_user):
     db.add_all([_raw(f"EPC-{i:03d}", minutes=i) for i in range(5)])
     await db.commit()
 
+    resp = await client.get("/scans/raw", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert [r["scanned_value"] for r in resp.json()] == [
+        "EPC-004", "EPC-003", "EPC-002", "EPC-001", "EPC-000"]
+
     resp = await client.get("/scans/raw?limit=2&offset=0", headers=hdrs)
     assert resp.status_code == 200, resp.text
     page = resp.json()

@@ -81,12 +81,17 @@ async def list_raw_scans(
     since: datetime | None = None,
     until: datetime | None = None,
     value: str | None = None,
-    limit: int = Query(100, ge=1, le=500),
+    # None = no cap: the portal loads the whole (pruned-bounded) list and
+    # filters client-side like every standard list; paging stays available
+    # for future kiosk/debug callers.
+    limit: int | None = Query(None, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ) -> list[RawScanItem]:
     query = (select(RawScan).order_by(RawScan.scanned_at.desc(),
                                       RawScan.id.desc())
-             .limit(limit).offset(offset))
+             .offset(offset))
+    if limit is not None:
+        query = query.limit(limit)
     if device_id is not None:
         query = query.where(RawScan.device_id == device_id)
     if operator_id is not None:

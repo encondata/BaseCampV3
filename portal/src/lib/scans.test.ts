@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ProcessedScanRow } from './api';
+import type { ProcessedScanRow, RawScanRow } from './api';
 import {
   matchedHref, processedScanCellText, processedScanSearchText,
-  PROCESSED_SCAN_GOD_FIELDS, SCANS_ERRORS,
+  PROCESSED_SCAN_GOD_FIELDS, rawScanCellText, rawScanSearchText, SCANS_ERRORS,
 } from './scans';
 
 const row: ProcessedScanRow = {
@@ -81,6 +81,52 @@ describe('god fields', () => {
     expect(site.column).toBe('site');
     expect(site.kind).toBe('combo');
     expect(site.fromRow(row)).toBe('s1');
+  });
+});
+
+const rawRow: RawScanRow = {
+  id: 1, scanned_value: 'EPC-001', scan_type: 'rfid',
+  scan_type_label: 'RFID', scan_type_color: '#1668a7',
+  scanned_at: '2026-08-27T09:00:00Z', device_id: 'dock-1',
+  operator_id: 'op1', operator_name: 'Op Erator',
+  site_id: 's1', site_name: 'DC-East', location_detail: 'Dock 3',
+  source: 'reader', created_at: '2026-08-27T09:01:00Z',
+};
+
+describe('rawScanSearchText', () => {
+  it('joins the searchable fields lowercased', () => {
+    const t = rawScanSearchText(rawRow);
+    expect(t).toContain('epc-001');
+    expect(t).toContain('rfid');
+    expect(t).toContain('dock-1');
+    expect(t).toContain('op erator');
+    expect(t).toContain('dc-east');
+    expect(t).toContain('dock 3');
+    expect(t).toContain('reader');
+  });
+});
+
+describe('rawScanCellText', () => {
+  it('mirrors cell rendering including dashes', () => {
+    expect(rawScanCellText(rawRow, 'primary')).toBe('EPC-001');
+    expect(rawScanCellText(rawRow, 'scan_type')).toBe('RFID');
+    expect(rawScanCellText(rawRow, 'device')).toBe('dock-1');
+    expect(rawScanCellText(rawRow, 'operator')).toBe('Op Erator');
+    expect(rawScanCellText(rawRow, 'site')).toBe('DC-East');
+    expect(rawScanCellText(rawRow, 'location')).toBe('Dock 3');
+    expect(rawScanCellText(rawRow, 'source')).toBe('reader');
+    expect(rawScanCellText({ ...rawRow, device_id: '' }, 'device')).toBe('—');
+    expect(rawScanCellText({ ...rawRow, operator_name: null }, 'operator'))
+      .toBe('—');
+    expect(rawScanCellText({ ...rawRow, location_detail: '' }, 'location'))
+      .toBe('—');
+    expect(rawScanCellText({ ...rawRow, source: '' }, 'source')).toBe('—');
+  });
+  it('formats the timestamp columns as locale strings', () => {
+    expect(rawScanCellText(rawRow, 'scanned'))
+      .toBe(new Date(rawRow.scanned_at).toLocaleString());
+    expect(rawScanCellText(rawRow, 'ingested'))
+      .toBe(new Date(rawRow.created_at).toLocaleString());
   });
 });
 

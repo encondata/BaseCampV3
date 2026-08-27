@@ -15,6 +15,7 @@ Scan surfaces were anticipated from the start: `assets.last_seen_at`, `container
 - Processing (future) matches a raw scan to an **asset, container, or person**. It is a **true move**: the processed row copies the raw data and the raw row is deleted. Unmatched scans simply remain in `raw_scans` — it is the inbox; `processed_scans` is the permanent record.
 - **Hybrid list architecture**: raw scans are a high-volume firehose → paged like the Audit log; processed scans are a curated record → full standard list (a pruning job will eventually cap growth, deferred).
 - **One Admin nav item** ("Scans", `/admin/scans`) with Raw / Processed tabs; one `scans` resource in access control.
+- Revised 2026-08-27 (user feedback): the Raw tab uses the same standard list layout as Processed — full client-side load is acceptable because pruning keeps raw_scans bounded; the API's paging/filter params remain for future kiosk/debug callers.
 
 ## Architecture
 
@@ -80,7 +81,7 @@ Migration seeds `role_permissions` for the `scans` resource and has a clean `dow
 
 ## 3. API — `api/routes/scans.py`, router prefix `/scans`
 
-- `GET /scans/raw` — Audit-style paging: `limit` (default 100, max 500), `offset`; optional scalar filters `device_id`, `operator_id`, `site_id`, `scan_type`, `since`, `until`, `value` (substring match on `scanned_value`). Bare JSON array, newest `scanned_at` first, rows denormalized (`scan_type_label`/`color`, `operator_name`, `site_name`) with batch lookups — never per-row queries. Read-only this phase.
+- `GET /scans/raw` — `limit` optional (`None` = all, else `1..500`), `offset` (default 0); optional scalar filters `device_id`, `operator_id`, `site_id`, `scan_type`, `since`, `until`, `value` (substring match on `scanned_value`). Bare JSON array, newest `scanned_at` first, rows denormalized (`scan_type_label`/`color`, `operator_name`, `site_name`) with batch lookups — never per-row queries. Read-only this phase. The portal loads the full list unpaged (client-side filter/sort, standard list); paging/filter params remain for future kiosk/debug callers.
 - `GET /scans/processed` — bare denormalized full array: everything above plus `match_type_label`/`color`, `matched_name` (asset name / container name / person name), `asset_id`/`container_id`/`person_id` for linking. Ordered `scanned_at desc`.
 - `PATCH /scans/processed/{id}` — god-edit only fields: `site_id`, `location_detail`, `operator_id` (fixing bad context on a historical record). **Match fields are not editable** — re-matching is the (future) processor's job. Snapshot → diff → `audit(...)`.
 - God delete follows the house pending-delete flow (no custom DELETE endpoint): register `"processed_scan": ProcessedScan` in the `DELETABLE` map in `routes/devtools.py`; the portal wires `GodDeleteButton` + `usePendingDeletes` as on Containers.
@@ -101,10 +102,12 @@ Migration seeds `role_permissions` for the `scans` resource and has a clean `dow
 
 One page, **Raw | Processed** tabs following the existing tab pattern. Standard `.dir-head` (eyebrow "Admin", title "Scans", live count badge for the active tab, one-line hint).
 
-**Raw tab** — cloned from `Audit.tsx`:
-- Server-side scalar filter controls (device, operator, site, scan type, since/until, value substring) + offset paging with "Load more" (page size 100).
-- Columns: scanned value (`mono`), scan type chip, scanned at, device (`mono`), operator, site, location detail, source, ingested at.
-- Read-only; no god-edit, no delete (pruning script deferred).
+**Raw tab** — cloned from `Containers.tsx`, matching the Processed tab's standard-list layout exactly:
+- Toolbar in house order: `.dir-search` "Filter this list…", `.result-count`, `FilterSummaryChip`, `ColumnsButton` (+ header drag reorder), `ExportButton` (CSV of visible rows). No god-edit, no god-delete, no Import/New — raw scans are read-only (rows arrive via ingest, leave via the future matcher/pruner).
+- Column model: primary = scanned value (`mono`); columns: scan type chip, scanned at, device, operator, site, location detail, source, ingested at. No archived pseudo-column (raw scans have no `archived_at`). `usePersistentListState(pageKey: 'raw_scans', ...)`.
+- Excel-style `ColumnMenu` on every visible column; `naturalCompare` sorting; `.dir-empty` + `EmptyClearFilters`; no deep-link focus (nothing links to raw rows).
+- Row expansion: read-only `.detail-grid`, no actions block.
+- Full client-side load (`listRawScans({})`, no limit/offset) — acceptable because the future pruning job keeps `raw_scans` bounded.
 
 **Processed tab** — cloned from `Containers.tsx` with the full standard kit:
 - Toolbar in house order: `.dir-search` "Filter this list…", `.result-count`, `FilterSummaryChip`, `ColumnsButton` (+ header drag reorder), `ExportButton` (CSV of visible rows), `GodEditToggle`. No New/Import buttons — rows are created only by the (future) processor.
@@ -115,7 +118,7 @@ One page, **Raw | Processed** tabs following the existing tab pattern. Standard 
 
 ### Pure-logic module — `lib/scans.ts` (+ `lib/scans.test.ts`)
 
-`processedScanSearchText`, `processedScanCellText` (mirrors cell rendering exactly, `—` for blanks), `SCANS_ERRORS` code→message map, god-field factory `PROCESSED_SCAN_GOD_FIELDS(lookups)`. The raw tab has no client-side text filter — the server `value` substring param covers it.
+`processedScanSearchText`, `processedScanCellText` (mirrors cell rendering exactly, `—` for blanks), `rawScanSearchText`, `rawScanCellText` (same shape, no archived pseudo-column), `SCANS_ERRORS` code→message map, god-field factory `PROCESSED_SCAN_GOD_FIELDS(lookups)`.
 
 `lib/api.ts`: `RawScanRow` / `ProcessedScanRow` interfaces, `listRawScans(params)`, `listProcessedScans()`, `updateProcessedScan()`. Deletion goes through the existing pending-deletes API.
 

@@ -3,7 +3,7 @@
  * (the lib/containers.ts pattern), unit-testable without jsdom.
  */
 import type { ComboOption } from '../components/ComboBox';
-import type { ProcessedScanRow } from './api';
+import type { ProcessedScanRow, RawScanRow } from './api';
 import type { GodField } from './godEdit';
 
 export function processedScanSearchText(s: ProcessedScanRow): string {
@@ -47,6 +47,30 @@ export function matchedHref(s: ProcessedScanRow): string | null {
     return `/people/users?open=${encodeURIComponent(s.person_id)}`;
   }
   return null;
+}
+
+export function rawScanSearchText(r: RawScanRow): string {
+  return [r.scanned_value, r.scan_type_label, r.device_id,
+          r.operator_name, r.site_name, r.location_detail, r.source]
+    .filter(Boolean).join(' ').toLowerCase();
+}
+
+/** Column-menu accessor for the raw list — mirrors RawScansTab's cell
+ *  renderer exactly (including '—' fallbacks). No 'archived' pseudo-column:
+ *  raw scans have no archived_at. */
+export function rawScanCellText(r: RawScanRow, colKey: string): string {
+  switch (colKey) {
+    case 'primary': return r.scanned_value;
+    case 'scan_type': return r.scan_type_label;
+    case 'scanned': return new Date(r.scanned_at).toLocaleString();
+    case 'device': return r.device_id || '—';
+    case 'operator': return r.operator_name ?? '—';
+    case 'site': return r.site_name ?? '—';
+    case 'location': return r.location_detail || '—';
+    case 'source': return r.source || '—';
+    case 'ingested': return new Date(r.created_at).toLocaleString();
+    default: return '';
+  }
 }
 
 export const SCANS_ERRORS: Record<string, string> = {
