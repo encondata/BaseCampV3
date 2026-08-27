@@ -5,6 +5,7 @@
 
 import { useState } from 'react';
 
+import ProcessedScansTab from '../components/scans/ProcessedScansTab';
 import RawScansTab from '../components/scans/RawScansTab';
 import { initialOpenId } from '../lib/auditFormat';
 import '../styles/directory.css';
@@ -13,7 +14,7 @@ import '../styles/system.css';
 
 const TABS = [
   { key: 'raw', label: 'Raw', component: RawScansTab },
-  // Task 7 adds: { key: 'processed', label: 'Processed', component: ProcessedScansTab },
+  { key: 'processed', label: 'Processed', component: ProcessedScansTab },
 ] as const;
 
 export default function Scans() {
