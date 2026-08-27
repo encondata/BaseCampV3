@@ -53,10 +53,12 @@ export default function AssetDetail() {
 
   useEffect(() => {
     void load();
-    void listAssetStatuses().then(setStatuses).catch(() => {});
-    void listClients().then(setClients).catch(() => {});
-    if (canViewSites) void listSites().then(setSites).catch(() => {});
-    void listAssets().then(setAllAssets).catch(() => {});
+    if (canChange) {
+      void listAssetStatuses().then(setStatuses).catch(() => {});
+      void listClients().then(setClients).catch(() => {});
+      if (canViewSites) void listSites().then(setSites).catch(() => {});
+      void listAssets().then(setAllAssets).catch(() => {});
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assetId]);
 

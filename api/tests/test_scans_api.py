@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from serversherpa.db.models import (
     Asset, Container, Person, PersonRole, ProcessedScan, RawScan, Site,
 )
@@ -323,7 +325,7 @@ async def test_asset_scan_history_gate(client, db, seeded_user):
 
 
 async def test_asset_scan_history_env_default(client, db, seeded_user, monkeypatch):
-    from serversherpa.config import get_settings
+    from serversherpa.config import Settings, get_settings
 
     hdrs = await login(client)
     asset = Asset(name="hist-env")
@@ -354,4 +356,12 @@ async def test_asset_scan_history_env_default(client, db, seeded_user, monkeypat
     resp = await client.get(f"/scans/asset/{asset.id}?limit=501", headers=hdrs)
     assert resp.status_code == 422
 
+    get_settings.cache_clear()
+
+    # ge=1 validation: a zero/negative env value must be rejected
+    from pydantic import ValidationError
+    monkeypatch.setenv("SS_SCANS_HISTORY_DEFAULT", "0")
+    with pytest.raises(ValidationError):
+        Settings()
+    monkeypatch.setenv("SS_SCANS_HISTORY_DEFAULT", "100")
     get_settings.cache_clear()

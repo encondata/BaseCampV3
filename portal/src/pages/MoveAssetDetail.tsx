@@ -35,15 +35,21 @@ export default function MoveAssetDetail() {
   const [asset, setAsset] = useState<AssetItem | null>(null);
   const [moveStatuses, setMoveStatuses] = useState<StatusValue[]>([]);
   const [missing, setMissing] = useState(false);
+  const [loadError, setLoadError] = useState(false);
   const [editing, setEditing] = useState(false);
 
   const load = useCallback(async () => {
     if (!id || !rowId) return;
-    const rows = await listInitiativeAssets(id);
-    const found = rows.find((r) => r.id === rowId) ?? null;
-    setRow(found);
-    setMissing(found === null);
-    if (found) void getAsset(found.asset_id).then(setAsset).catch(() => {});
+    try {
+      const rows = await listInitiativeAssets(id);
+      const found = rows.find((r) => r.id === rowId) ?? null;
+      setRow(found);
+      setMissing(found === null);
+      setLoadError(false);
+      if (found) void getAsset(found.asset_id).then(setAsset).catch(() => {});
+    } catch {
+      setLoadError(true);
+    }
   }, [id, rowId]);
 
   useEffect(() => {
@@ -68,6 +74,16 @@ export default function MoveAssetDetail() {
     </Link>
   );
 
+  if (loadError) {
+    return (
+      <div className="portal-page">
+        {back}
+        <div className="dir-empty" style={{ marginTop: 16 }}>
+          <b>Could not load this asset.</b>
+        </div>
+      </div>
+    );
+  }
   if (missing) {
     return (
       <div className="portal-page">

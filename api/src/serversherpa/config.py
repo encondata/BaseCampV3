@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # repo root = two levels up from api/src/serversherpa/config.py -> api/ -> root
@@ -53,8 +53,8 @@ class Settings(BaseSettings):
     max_failed_logins: int = 10       # failures before temporary lockout
     lockout_seconds: int = 900        # lockout duration (15 min)
 
-    # ── Scans ─────────────────────────────────────────────
-    scans_history_default: int = 100  # history rows when caller omits limit
+    # ── Scans ──────────────────────────────────────────────
+    scans_history_default: int = Field(100, ge=1)  # history rows when caller omits limit
 
     # ── God mode ───────────────────────────────────────────
     # Comma-separated secret words that reveal the developer nav section.
