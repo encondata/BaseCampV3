@@ -77,14 +77,16 @@ async def test_client_actor_is_hard_gated_out_of_sites(client, db, seeded_user):
     assert denied_detail.json()["detail"]["code"] == "forbidden"
 
 
-async def test_internal_actor_detail_includes_survey_data(client, db, seeded_user):
+async def test_internal_actor_can_view_detail(client, db, seeded_user):
+    """Contrast with the client-actor 403 above: an internal actor gets the
+    full site detail."""
     site = Site(name="Internal Site")
     db.add(site)
     await db.commit()
     hdrs = await login(client)
 
     ok = await client.get(f"/sites/{site.id}", headers=hdrs)
-    assert ok.status_code == 200 and "survey_data" in ok.json()
+    assert ok.status_code == 200 and ok.json()["name"] == "Internal Site"
 
 
 async def test_lookups_and_survey_schema(client, seeded_user):

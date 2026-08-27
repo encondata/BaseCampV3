@@ -12,7 +12,7 @@ from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     SiteClientsIn, SiteCreateIn, SiteDetail, SiteItem, SiteLookupOut,
-    SiteLookupUpdateIn, SiteSurveyIn, SiteTypeCreateIn, SiteUpdateIn,
+    SiteLookupUpdateIn, SiteTypeCreateIn, SiteUpdateIn,
 )
 from serversherpa.db.models import (
     Client, Partner, Site, SiteClient, SiteType, StatusValue,
@@ -20,7 +20,7 @@ from serversherpa.db.models import (
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.sites import bulk_import as bulk
-from serversherpa.sites.survey import SurveyError, survey_schema, validate_survey
+from serversherpa.sites.survey import survey_schema
 
 router = APIRouter(prefix="/sites", tags=["sites"])
 lookups_router = APIRouter(tags=["sites"])
@@ -226,7 +226,7 @@ async def bulk_import_commit(
 
 
 async def _detail(db: DbSession, site: Site) -> SiteDetail:
-    """One site with its labels, partner name, client links and survey.
+    """One site with its labels, partner name, and client links.
     Shared by get_site and every write endpoint's response."""
     types, statuses = await _labels(db)
     partners = {}
@@ -234,8 +234,7 @@ async def _detail(db: DbSession, site: Site) -> SiteDetail:
         name = await db.scalar(select(Partner.name).where(Partner.id == site.partner_id))
         partners = {site.partner_id: name}
     clients = await _clients_by_site(db, [site.id])
-    return SiteDetail(**_item(site, types, statuses, partners, clients),
-                      survey_data=site.survey_data or {})
+    return SiteDetail(**_item(site, types, statuses, partners, clients))
 
 
 @router.get("/{site_id}", response_model=SiteDetail)
@@ -482,30 +481,3 @@ async def set_site_clients(
     await db.commit()
     clients = await _clients_by_site(db, [site_id])
     return {"clients": clients.get(site_id, [])}
-
-
-@router.put("/{site_id}/survey", response_model=SiteDetail)
-async def set_site_survey(
-    site_id: uuid.UUID,
-    body: SiteSurveyIn,
-    db: DbSession,
-    actor: AuthContext = require_permission("sites", "change"),
-) -> SiteDetail:
-    _require_global(actor)
-    site = await _get_site(db, site_id, actor)
-    try:
-        cleaned = validate_survey(body.survey_data)
-    except SurveyError as exc:
-        raise _err(422, exc.code) from None
-    before = dict(site.survey_data or {})
-    site.survey_data = cleaned
-    changes = diff(before, cleaned)
-    # a key present before and absent now is a clear — diff() only walks `after`
-    for key in before.keys() - cleaned.keys():
-        changes[key] = {"from": before[key], "to": None}
-    if changes:
-        site.updated_at = datetime.now(UTC)
-        audit(db, actor_id=actor.person.id, entity_type="site",
-              entity_id=str(site_id), action="survey.update", changes=changes)
-    await db.commit()
-    return await _detail(db, site)

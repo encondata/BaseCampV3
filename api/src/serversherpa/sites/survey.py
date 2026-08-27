@@ -1,8 +1,8 @@
-"""Site survey field registry. The survey itself is a JSONB blob on
-sites.survey_data (flexible, no migration per field), but the fields are
-defined HERE so the API validates what it stores and the portal renders
-from the same source — the legacy version kept this list in a client-side
-JS file the server never checked."""
+"""Site survey field registry. Survey answers live in the site_survey_data /
+raw_survey_data tables (migration 0027); the fields themselves are defined
+HERE, code not DB, so the API validates what it stores and the portal
+renders from the same source — the legacy version kept this list in a
+client-side JS file the server never checked."""
 
 from dataclasses import dataclass
 
