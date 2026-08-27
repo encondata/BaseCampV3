@@ -1093,6 +1093,12 @@ export async function listAssets(): Promise<AssetItem[]> {
   return resp.json();
 }
 
+export async function getAsset(id: string): Promise<AssetItem> {
+  const resp = await apiFetch(`/assets/${id}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export async function createAsset(body: Record<string, unknown>): Promise<AssetItem> {
   const resp = await apiFetch('/assets', {
     method: 'POST',

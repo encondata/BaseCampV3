@@ -16,6 +16,7 @@ import Home from './pages/Home';
 import ImportMoveAssets from './pages/ImportMoveAssets';
 import Initiatives from './pages/Initiatives';
 import InitiativeDetailPage from './pages/InitiativeDetail';
+import MoveAssetDetail from './pages/MoveAssetDetail';
 import Partners from './pages/Partners';
 import Login from './pages/Login';
 import Profile from './pages/Profile';
@@ -56,6 +57,9 @@ export default function App() {
             } />
             <Route path="/initiatives/:id/import-assets" element={
               <ProtectedRoute resource="initiatives"><ImportMoveAssets /></ProtectedRoute>
+            } />
+            <Route path="/initiatives/:id/assets/:rowId" element={
+              <ProtectedRoute resource="initiatives"><MoveAssetDetail /></ProtectedRoute>
             } />
             <Route path="/people/users" element={<ProtectedRoute resource="users"><Users /></ProtectedRoute>} />
             <Route path="/people/workers" element={<ProtectedRoute resource="workers"><Workers /></ProtectedRoute>} />
