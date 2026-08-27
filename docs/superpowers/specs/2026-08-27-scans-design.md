@@ -136,7 +136,7 @@ One page, **Raw | Processed** tabs following the existing tab pattern. Standard 
 
 ## Deferred (explicitly out of scope)
 
-- Processing/matching script (raw → processed move; writes `assets.last_seen_at`, `containers.last_audit_at`/`audit_by`, `container_assets.last_validated_at`)
+- Processing/matching script (raw → processed move; writes `assets.last_seen_at`, `containers.last_audit_at`/`audit_by`, `container_assets.last_validated_at`). **The matcher phase must also decide a growth story for `processed_scans`** — either a retention/rollup policy or pagination of `GET /scans/processed` — since the full-load standard list has no cap once every matched read becomes a permanent row (final-review finding, 2026-08-27).
 - Ingest endpoint + device authentication
 - Raw-scan pruning/retention job
 - Global-search registration for scans
