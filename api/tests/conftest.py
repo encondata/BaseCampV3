@@ -238,6 +238,21 @@ async def clean_db():
               ('partner_type','consultant','Consultant','Advisory services.','#51606f',6),
               ('partner_type','other','Other','Anything else.','#c03540',7)
         """))
+        # scan vocabulary — restore canonical seeds (0025)
+        await session.execute(text(
+            "DELETE FROM status_values WHERE record_type IN "
+            "('scan', 'processed_scan')"))
+        await session.execute(text("""
+            INSERT INTO status_values
+              (record_type, key, label, description, color, sort_order)
+            VALUES
+              ('scan','rfid','RFID','Read from an RFID tag.','#1668a7',1),
+              ('scan','barcode','Barcode','Read from a barcode or QR label.','#6d4fc4',2),
+              ('scan','manual','Manual','Keyed in by hand.','#a36207',3),
+              ('processed_scan','asset','Asset','Matched to an asset.','#178a4c',1),
+              ('processed_scan','container','Container','Matched to a container.','#0f7c86',2),
+              ('processed_scan','person','Person','Matched to a person badge.','#6d4fc4',3)
+        """))
         await session.execute(text("DELETE FROM asset_categories"))
         await session.execute(text("""
             INSERT INTO asset_categories (key, label, description, sort_order, color)

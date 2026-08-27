@@ -529,6 +529,64 @@ class ContainerAsset(Base):
     last_validated_at: Mapped[datetime | None]
 
 
+class RawScan(Base):
+    """One unprocessed scan from a kiosk/reader — the inbox. The future
+    matcher moves rows to processed_scans (true move: copy + delete);
+    unmatched rows just stay here. Append-only, log_entries-style."""
+
+    __tablename__ = "raw_scans"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(),
+                                    primary_key=True)
+    scanned_value: Mapped[str] = mapped_column(CITEXT)
+    scan_type: Mapped[str]
+    scan_type_record_type: Mapped[str] = mapped_column(
+        server_default=text("'scan'"))  # GENERATED column; never written
+    scanned_at: Mapped[datetime]
+    device_id: Mapped[str] = mapped_column(server_default="")
+    operator_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id"))
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
+    location_detail: Mapped[str] = mapped_column(server_default="")
+    source: Mapped[str] = mapped_column(server_default="")
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class ProcessedScan(Base):
+    """A matched scan — the permanent record. Carries a copy of the raw
+    context; person_id is the MATCHED person (badge scan), operator_id
+    is who ran the scanner. CHECK enforces the match_type target FK."""
+
+    __tablename__ = "processed_scans"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    scanned_value: Mapped[str] = mapped_column(CITEXT)
+    scan_type: Mapped[str]
+    scan_type_record_type: Mapped[str] = mapped_column(
+        server_default=text("'scan'"))  # GENERATED column; never written
+    scanned_at: Mapped[datetime]
+    device_id: Mapped[str] = mapped_column(server_default="")
+    operator_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id"))
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
+    location_detail: Mapped[str] = mapped_column(server_default="")
+    source: Mapped[str] = mapped_column(server_default="")
+    raw_scan_id: Mapped[int | None] = mapped_column(BigInteger)
+    match_type: Mapped[str]
+    match_record_type: Mapped[str] = mapped_column(
+        server_default=text("'processed_scan'"))  # GENERATED; never written
+    asset_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("assets.id"))
+    container_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("containers.id"))
+    person_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id"))
+    processed_at: Mapped[datetime]
+    archived_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
 class Initiative(Base):
     """Unified V2 projects/events/moves. initiative_type discriminates;
     the move-only block stays NULL for the other types and is retained
