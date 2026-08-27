@@ -587,7 +587,7 @@ export default function InitiativeDetail() {
       if (rackName) {
         return (
           <button type="button" className="idet-rack-cell-btn"
-                  onClick={() => setRackView({ rackName, side })}>
+                  onClick={(e) => { e.stopPropagation(); setRackView({ rackName, side }); }}>
             {rackName}
           </button>
         );
