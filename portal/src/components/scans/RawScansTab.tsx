@@ -217,7 +217,7 @@ export default function RawScansTab({ onCount }: {
             </div>
           )}
 
-          <VirtualRows rows={visible} rowKey={(r) => r.id}
+          <VirtualRows rows={visible}
             renderRow={(r, vp) => {
               const open = openId === r.id;
               return (

@@ -23,9 +23,8 @@ export interface VirtualRowProps {
   'data-index': number;
 }
 
-export function VirtualRows<T>({ rows, rowKey, renderRow }: {
+export function VirtualRows<T>({ rows, renderRow }: {
   rows: T[];
-  rowKey: (row: T) => string | number;
   renderRow: (row: T, vp?: VirtualRowProps) => ReactNode;
 }) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -66,18 +65,14 @@ export function VirtualRows<T>({ rows, rowKey, renderRow }: {
          style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
       {virtualizer.getVirtualItems().map((vi) => {
         const row = rows[vi.index];
-        return (
-          <span key={rowKey(row)} style={{ display: 'contents' }}>
-            {renderRow(row, {
-              ref: virtualizer.measureElement,
-              'data-index': vi.index,
-              style: {
-                position: 'absolute', top: 0, left: 0, width: '100%',
-                transform: `translateY(${vi.start - virtualizer.options.scrollMargin}px)`,
-              },
-            })}
-          </span>
-        );
+        return renderRow(row, {
+          ref: virtualizer.measureElement,
+          'data-index': vi.index,
+          style: {
+            position: 'absolute', top: 0, left: 0, width: '100%',
+            transform: `translateY(${vi.start - virtualizer.options.scrollMargin}px)`,
+          },
+        });
       })}
     </div>
   );

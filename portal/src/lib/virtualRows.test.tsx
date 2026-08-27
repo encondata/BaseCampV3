@@ -42,7 +42,7 @@ function Harness({ rows }: { rows: number[] }) {
   return (
     <div className="portal-main">
       <div className="dir-list">
-        <VirtualRows<number> rows={rows} rowKey={(r) => r}
+        <VirtualRows<number> rows={rows}
           renderRow={(r, vp?: VirtualRowProps) => (
             <div key={r} className="dir-row" data-id={r} {...vp} style={vp?.style} />
           )} />
@@ -80,5 +80,14 @@ describe('VirtualRows', () => {
     const spacer = container.querySelector('.dir-list > div') as HTMLElement;
     expect(spacer).not.toBeNull();
     expect(spacer.style.height).toBe(`${total * ROW_ESTIMATE_PX}px`);
+
+    // Regression guard: rendered rows must be direct children of the
+    // spacer, with no per-row wrapper element between them. A wrapper
+    // (even a `display: contents` one) makes every row the sole child
+    // of its own parent, so it would match CSS `:last-child` and lose
+    // its border — see directory.css `.dir-row:last-child`.
+    const parents = new Set([...dirRows].map((el) => el.parentElement));
+    expect(parents.size).toBe(1);
+    expect(parents.has(spacer)).toBe(true);
   });
 });
