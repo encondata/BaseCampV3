@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     max_failed_logins: int = 10       # failures before temporary lockout
     lockout_seconds: int = 900        # lockout duration (15 min)
 
+    # ── Scans ─────────────────────────────────────────────
+    scans_history_default: int = 100  # history rows when caller omits limit
+
     # ── God mode ───────────────────────────────────────────
     # Comma-separated secret words that reveal the developer nav section.
     # MUST stay server-side: a VITE_* equivalent is inlined into the JS

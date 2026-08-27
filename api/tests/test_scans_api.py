@@ -256,7 +256,14 @@ async def test_processed_scan_god_deletable(client, db, seeded_user):
     assert DELETABLE["processed_scan"] is PS
 
 
-async def test_asset_scan_history(client, db, seeded_user):
+async def test_asset_scan_history(client, db, seeded_user, monkeypatch):
+    from serversherpa.config import get_settings
+
+    # Pin the env default to 15 so the cap assertions below stay meaningful
+    # regardless of what SS_SCANS_HISTORY_DEFAULT is set to elsewhere.
+    monkeypatch.setenv("SS_SCANS_HISTORY_DEFAULT", "15")
+    get_settings.cache_clear()
+
     hdrs = await login(client)
     target = Asset(name="hist-target")
     other = Asset(name="hist-other")
@@ -300,6 +307,8 @@ async def test_asset_scan_history(client, db, seeded_user):
     assert resp.status_code == 200
     assert resp.json() == []
 
+    get_settings.cache_clear()
+
 
 async def test_asset_scan_history_gate(client, db, seeded_user):
     w = Person(first_name="Wk", last_name="NoHist")
@@ -311,3 +320,38 @@ async def test_asset_scan_history_gate(client, db, seeded_user):
     hdrs = await make_login(db, client, w, "wk-nohist@test.example.com")
     resp = await client.get(f"/scans/asset/{asset.id}", headers=hdrs)
     assert resp.status_code == 403
+
+
+async def test_asset_scan_history_env_default(client, db, seeded_user, monkeypatch):
+    from serversherpa.config import get_settings
+
+    hdrs = await login(client)
+    asset = Asset(name="hist-env")
+    db.add(asset)
+    await db.flush()
+    db.add_all([ProcessedScan(
+        scanned_value=f"EPC-E-{i:03d}", scan_type="rfid",
+        scanned_at=T0 + timedelta(minutes=i),
+        processed_at=T0 + timedelta(minutes=i),
+        match_type="asset", asset_id=asset.id) for i in range(8)])
+    await db.commit()
+
+    # omitted limit -> settings default (patched small so the test is cheap)
+    # Settings is a frozen pydantic model (monkeypatch.setattr would raise a
+    # frozen_instance ValidationError), so patch via env + cache_clear like
+    # test_cors_dev.py does.
+    monkeypatch.setenv("SS_SCANS_HISTORY_DEFAULT", "5")
+    get_settings.cache_clear()
+    resp = await client.get(f"/scans/asset/{asset.id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert len(resp.json()) == 5
+
+    # explicit limit still wins over the setting
+    resp = await client.get(f"/scans/asset/{asset.id}?limit=2", headers=hdrs)
+    assert len(resp.json()) == 2
+
+    # bounds: le=500
+    resp = await client.get(f"/scans/asset/{asset.id}?limit=501", headers=hdrs)
+    assert resp.status_code == 422
+
+    get_settings.cache_clear()

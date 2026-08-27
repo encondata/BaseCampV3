@@ -13,6 +13,7 @@ from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     AssetScanItem, ProcessedScanItem, ProcessedScanPatch, RawScanItem,
 )
+from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Asset, Container, Person, ProcessedScan, RawScan, Site, StatusValue,
 )
@@ -168,11 +169,13 @@ async def list_asset_scans(
     asset_id: uuid.UUID,
     db: DbSession,
     actor: AuthContext = require_permission("scans", "view"),
-    limit: int = Query(15, ge=1, le=100),
+    limit: int | None = Query(None, ge=1, le=500),
 ) -> list[AssetScanItem]:
     """Per-asset scan history, newest first. Only matched (processed)
     scans carry an asset linkage; an unknown or never-scanned asset is
     an empty history, not an error."""
+    if limit is None:
+        limit = get_settings().scans_history_default
     scans = list(await db.scalars(
         select(ProcessedScan).where(
             (ProcessedScan.asset_id == asset_id) &
