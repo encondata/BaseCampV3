@@ -689,6 +689,39 @@ class SiteClientsIn(BaseModel):
     client_ids: list[uuid.UUID]
 
 
+class SiteSurveyRowOut(BaseModel):
+    field_key: str
+    label: str
+    group: str
+    group_label: str
+    kind: str
+    options: list[str]
+    value: bool | int | str | None = None
+    raw_id: int | None = None
+    updated_by: uuid.UUID | None = None
+    updated_by_name: str | None = None
+    updated_at: datetime | None = None
+
+
+class RawSurveyRowOut(BaseModel):
+    id: int
+    field_key: str
+    registered: bool
+    value: bool | int | str | None = None
+    captured_at: datetime
+    submitted_by: uuid.UUID | None = None
+    submitted_by_name: str | None = None
+    device_id: str
+    source: str
+    created_at: datetime
+
+
+class SiteSurveyValueIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: bool | int | str | None = None
+
+
 class SiteCreateIn(BaseModel):
     name: str = Field(min_length=1)
     code: str | None = None

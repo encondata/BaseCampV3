@@ -11,16 +11,21 @@ from sqlalchemy import select
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    SiteClientsIn, SiteCreateIn, SiteDetail, SiteItem, SiteLookupOut,
-    SiteLookupUpdateIn, SiteTypeCreateIn, SiteUpdateIn,
+    RawSurveyRowOut, SiteClientsIn, SiteCreateIn, SiteDetail, SiteItem,
+    SiteLookupOut, SiteLookupUpdateIn, SiteSurveyRowOut, SiteSurveyValueIn,
+    SiteTypeCreateIn, SiteUpdateIn,
 )
 from serversherpa.db.models import (
-    Client, Partner, Site, SiteClient, SiteType, StatusValue,
+    Client, Partner, Person, RawSurveyEntry, Site, SiteClient,
+    SiteSurveyEntry, SiteType, StatusValue,
 )
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.sites import bulk_import as bulk
-from serversherpa.sites.survey import survey_schema
+from serversherpa.sites.survey import (
+    FIELDS_BY_KEY, SURVEY_FIELDS, SURVEY_GROUPS, SurveyError, SurveyField,
+    survey_schema, validate_survey,
+)
 
 router = APIRouter(prefix="/sites", tags=["sites"])
 lookups_router = APIRouter(tags=["sites"])
@@ -481,3 +486,160 @@ async def set_site_clients(
     await db.commit()
     clients = await _clients_by_site(db, [site_id])
     return {"clients": clients.get(site_id, [])}
+
+
+GROUP_LABELS: dict[str, str] = dict(SURVEY_GROUPS)
+
+
+async def _people_names(db: DbSession, ids: set) -> dict:
+    ids = {i for i in ids if i}
+    if not ids:
+        return {}
+    return dict((await db.execute(
+        select(Person.id, Person.first_name + " " + Person.last_name)
+        .where(Person.id.in_(ids)))).all())
+
+
+def _survey_row(field: SurveyField, entry: SiteSurveyEntry | None,
+               people: dict) -> SiteSurveyRowOut:
+    return SiteSurveyRowOut(
+        field_key=field.key, label=field.label, group=field.group,
+        group_label=GROUP_LABELS.get(field.group, field.group),
+        kind=field.kind, options=list(field.options),
+        value=entry.value if entry is not None else None,
+        raw_id=entry.raw_id if entry is not None else None,
+        updated_by=entry.updated_by if entry is not None else None,
+        updated_by_name=(people.get(entry.updated_by)
+                         if entry is not None else None),
+        updated_at=entry.updated_at if entry is not None else None,
+    )
+
+
+@router.get("/{site_id}/survey", response_model=list[SiteSurveyRowOut])
+async def get_site_survey(
+    site_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("sites", "view"),
+) -> list[SiteSurveyRowOut]:
+    _require_global(actor)
+    await _get_site(db, site_id, actor)
+    entries = {e.field_key: e for e in await db.scalars(
+        select(SiteSurveyEntry).where(SiteSurveyEntry.site_id == site_id))}
+    people = await _people_names(db, {e.updated_by for e in entries.values()})
+    return [_survey_row(f, entries.get(f.key), people) for f in SURVEY_FIELDS]
+
+
+@router.get("/{site_id}/survey/raw", response_model=list[RawSurveyRowOut])
+async def get_site_survey_raw(
+    site_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("sites", "view"),
+) -> list[RawSurveyRowOut]:
+    _require_global(actor)
+    await _get_site(db, site_id, actor)
+    rows = list(await db.scalars(
+        select(RawSurveyEntry).where(RawSurveyEntry.site_id == site_id)
+        .order_by(RawSurveyEntry.id.desc())))
+    people = await _people_names(db, {r.submitted_by for r in rows})
+    return [RawSurveyRowOut(
+        id=r.id, field_key=r.field_key,
+        registered=r.field_key in FIELDS_BY_KEY,
+        value=r.value, captured_at=r.captured_at,
+        submitted_by=r.submitted_by,
+        submitted_by_name=people.get(r.submitted_by),
+        device_id=r.device_id, source=r.source, created_at=r.created_at,
+    ) for r in rows]
+
+
+async def _clear_curated_survey_field(
+    db: DbSession, site_id: uuid.UUID, field_key: str, actor: AuthContext,
+    *, require_existing: bool,
+) -> None:
+    """Appends a null raw entry and deletes the curated row (write-both,
+    clear direction). A no-op — no raw entry, no audit row — when nothing
+    is curated and `require_existing` is False (the PUT-with-empty-value
+    path); `require_existing=True` (DELETE) instead 404s."""
+    existing = await db.scalar(select(SiteSurveyEntry).where(
+        SiteSurveyEntry.site_id == site_id,
+        SiteSurveyEntry.field_key == field_key))
+    if existing is None:
+        if require_existing:
+            raise _err(404, "survey_value_not_found")
+        return
+    before = existing.value
+    db.add(RawSurveyEntry(
+        site_id=site_id, field_key=field_key, value=None,
+        captured_at=datetime.now(UTC), submitted_by=actor.person.id,
+        source="portal"))
+    await db.delete(existing)
+    audit(db, actor_id=actor.person.id, entity_type="site",
+          entity_id=str(site_id), action="survey.update",
+          changes={field_key: {"from": before, "to": None}})
+
+
+@router.put("/{site_id}/survey/{field_key}", response_model=SiteSurveyRowOut)
+async def put_site_survey_field(
+    site_id: uuid.UUID,
+    field_key: str,
+    body: SiteSurveyValueIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("sites", "change"),
+) -> SiteSurveyRowOut:
+    _require_global(actor)
+    await _get_site(db, site_id, actor)
+    try:
+        cleaned = validate_survey({field_key: body.value}).get(field_key)
+    except SurveyError as exc:
+        raise _err(422, exc.code, field=exc.field) from None
+    field = FIELDS_BY_KEY[field_key]
+
+    if cleaned is None:
+        await _clear_curated_survey_field(
+            db, site_id, field_key, actor, require_existing=False)
+        await db.commit()
+        return _survey_row(field, None, {})
+
+    now = datetime.now(UTC)
+    raw = RawSurveyEntry(site_id=site_id, field_key=field_key, value=cleaned,
+                         captured_at=now, submitted_by=actor.person.id,
+                         source="portal")
+    db.add(raw)
+    await db.flush()
+
+    existing = await db.scalar(select(SiteSurveyEntry).where(
+        SiteSurveyEntry.site_id == site_id,
+        SiteSurveyEntry.field_key == field_key))
+    before = existing.value if existing is not None else None
+    if existing is None:
+        existing = SiteSurveyEntry(
+            site_id=site_id, field_key=field_key, value=cleaned,
+            raw_id=raw.id, updated_by=actor.person.id)
+        db.add(existing)
+    else:
+        existing.value = cleaned
+        existing.raw_id = raw.id
+        existing.updated_by = actor.person.id
+        existing.updated_at = now
+    await db.flush()
+
+    audit(db, actor_id=actor.person.id, entity_type="site",
+          entity_id=str(site_id), action="survey.update",
+          changes={field_key: {"from": before, "to": cleaned}})
+    await db.commit()
+
+    people = await _people_names(db, {actor.person.id})
+    return _survey_row(field, existing, people)
+
+
+@router.delete("/{site_id}/survey/{field_key}", status_code=204)
+async def delete_site_survey_field(
+    site_id: uuid.UUID,
+    field_key: str,
+    db: DbSession,
+    actor: AuthContext = require_permission("sites", "change"),
+) -> None:
+    _require_global(actor)
+    await _get_site(db, site_id, actor)
+    await _clear_curated_survey_field(
+        db, site_id, field_key, actor, require_existing=True)
+    await db.commit()
