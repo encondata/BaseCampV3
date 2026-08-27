@@ -4,10 +4,12 @@
  * the useReorderDrag drag-and-drop hook, and ColumnsButton's reorder mode.
  */
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { applyColumnOrder, ColumnsButton, moveKey, useReorderDrag, type ColumnDef } from './listTools';
+import {
+  applyColumnOrder, ColumnsButton, moveKey, useReorderDrag, useSearchHaystacks, type ColumnDef,
+} from './listTools';
 
 // The pinned jsdom here has no DragEvent constructor, so @testing-library/dom's
 // generic Event fallback silently drops clientX/clientY from fireEvent.dragOver
@@ -128,6 +130,26 @@ describe('useReorderDrag', () => {
     fireEvent.dragStart(screen.getByTestId('a'), { dataTransfer: dt() });
     fireEvent.drop(screen.getByTestId('a'), { dataTransfer: dt() });
     expect(onMove).not.toHaveBeenCalled();
+  });
+});
+
+describe('useSearchHaystacks', () => {
+  it('rebuilds the haystack when `text` changes identity, even with the same `rows` array', () => {
+    const rows = [{ id: 1, name: 'alpha' }];
+    const textV1 = (r: { id: number; name: string }) => `${r.name}-v1`;
+    const textV2 = (r: { id: number; name: string }) => `${r.name}-v2`;
+
+    const { result, rerender } = renderHook(
+      ({ text }: { text: (r: { id: number; name: string }) => string }) =>
+        useSearchHaystacks(rows, text),
+      { initialProps: { text: textV1 } },
+    );
+    expect(result.current(rows[0])).toBe('alpha-v1');
+
+    // Same `rows` identity, new `text` function — the memo must rebuild
+    // and reflect the new function's output, not the stale cached one.
+    rerender({ text: textV2 });
+    expect(result.current(rows[0])).toBe('alpha-v2');
   });
 });
 

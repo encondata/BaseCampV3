@@ -5,7 +5,9 @@
  * Blacklisting kills login access (leaving blacklist restores it).
  */
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
+import {
+  useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent,
+} from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -212,7 +214,9 @@ export default function Workers() {
 
   // openRow handoff now lives in useRecordFocus (expands AND filters to top)
 
-  const haystack = useSearchHaystacks(workers, (w) => workerSearchText(w, levels));
+  const workerText = useCallback(
+    (w: WorkerItem) => workerSearchText(w, levels), [levels]);
+  const haystack = useSearchHaystacks(workers, workerText);
 
   const visible = useMemo(() => {
     if (!workers) return [];

@@ -328,7 +328,11 @@ export type CellRenderer<T> = (row: T, key: string) => ReactNode;
 /* ── search memoization ─────────────────────────────────────────── */
 
 /** Precomputed lowercase search haystacks — one build per rows array
- *  instead of one per row per keystroke (matters at 100k rows). */
+ *  instead of one per row per keystroke (matters at 100k rows).
+ *  `text` must be referentially stable (module-level function, or a
+ *  `useCallback`-wrapped lambda) — an inline lambda recreated every
+ *  render defeats the memoization and can also bake in stale closed-over
+ *  values if it changes identity without `rows` changing. */
 export function useSearchHaystacks<T>(
   rows: T[] | null, text: (row: T) => string,
 ): (row: T) => string {
@@ -336,6 +340,5 @@ export function useSearchHaystacks<T>(
     const m = new Map<T, string>();
     rows?.forEach((r) => m.set(r, text(r)));
     return (row: T) => m.get(row) ?? text(row);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows]);
+  }, [rows, text]);
 }

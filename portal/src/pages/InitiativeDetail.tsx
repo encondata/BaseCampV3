@@ -9,7 +9,7 @@
  */
 
 import {
-  useEffect, useMemo, useRef, useState,
+  useCallback, useEffect, useMemo, useRef, useState,
   type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -216,20 +216,23 @@ export default function InitiativeDetail() {
       moveKey(peopleOrderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
+  const peopleHaystackText = useCallback((p: InitiativePersonRow) =>
+    PEOPLE_COLUMNS.map((c) => personCellText(p, c.key)).join(' ').toLowerCase(), []);
+  const peopleRows = initiative?.people ?? [];
+  const peopleHaystack = useSearchHaystacks(peopleRows, peopleHaystackText);
   const visiblePeople = useMemo(() => {
     const rows = initiative?.people ?? [];
     const q = peopleQuery.trim().toLowerCase();
     const filtered = rows.filter((p) => {
       if (!passesColumnFilters(p, peopleFilters, personCellText)) return false;
       if (!q) return true;
-      return PEOPLE_COLUMNS.some(
-        (c) => personCellText(p, c.key).toLowerCase().includes(q));
+      return peopleHaystack(p).includes(q);
     });
     return filtered.sort((a, b) => (peopleSortKey === 'rating'
       ? (personRatingValue(a) - personRatingValue(b)) * peopleSortDir
       : naturalCompare(personCellText(a, peopleSortKey), personCellText(b, peopleSortKey))
         * peopleSortDir));
-  }, [initiative, peopleFilters, peopleQuery, peopleSortKey, peopleSortDir]);
+  }, [initiative, peopleFilters, peopleQuery, peopleSortKey, peopleSortDir, peopleHaystack]);
   const godFields = useMemo(() => PEOPLE_GOD_FIELDS({
     workTypes: () => workTypes.map((w) => ({ value: w.key, label: w.label })),
     sites: () => (canViewSites ? sites.map((s) => ({ value: s.id, label: s.name })) : []),
@@ -280,8 +283,9 @@ export default function InitiativeDetail() {
   );
   const assetsProgress = useMemo(
     () => moveAssetProgress(assets, moveStatuses), [assets, moveStatuses]);
-  const assetsHaystack = useSearchHaystacks(assets, (a) =>
-    MOVE_ASSET_COLUMNS.map((c) => moveAssetCellText(a, c.key)).join(' ').toLowerCase());
+  const assetsHaystackText = useCallback((a: InitiativeAssetRow) =>
+    MOVE_ASSET_COLUMNS.map((c) => moveAssetCellText(a, c.key)).join(' ').toLowerCase(), []);
+  const assetsHaystack = useSearchHaystacks(assets, assetsHaystackText);
 
   const visibleAssets = useMemo(() => {
     const q = assetsQuery.trim().toLowerCase();
@@ -920,8 +924,9 @@ export default function InitiativeDetail() {
                     </div>
                   )}
 
-                  {visiblePeople.map((p) => (
-                    <div key={p.id} className="dir-row">
+                  <VirtualRows rows={visiblePeople}
+                    renderRow={(p, vp) => (
+                    <div key={p.id} className="dir-row" {...vp} style={vp?.style}>
                       <div className="row-main" style={peopleGrid}>
                         {peopleShownCols.map((c) => (
                           <div className="cell" key={c.key}>{personCellFor(p, c.key)}</div>
@@ -943,7 +948,7 @@ export default function InitiativeDetail() {
                         )}
                       </div>
                     </div>
-                  ))}
+                  )} />
                 </div>
               </>
             )}

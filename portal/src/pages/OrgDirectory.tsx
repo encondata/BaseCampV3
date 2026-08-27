@@ -5,7 +5,9 @@
  * a contacts panel backed by scoped role grants.
  */
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
+import {
+  useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent,
+} from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -287,9 +289,10 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
     return c;
   }, [orgs]);
 
-  const haystack = useSearchHaystacks(orgs, (o) =>
+  const orgsHaystackText = useCallback((o: OrgItem) =>
     `${o.name} ${o.code ?? ''} ${o.city ?? ''} ${o.region ?? ''} ` +
-      `${o.partner_types.join(' ')} ${o.account_manager?.display_name ?? ''}`.toLowerCase());
+      `${o.partner_types.join(' ')} ${o.account_manager?.display_name ?? ''}`.toLowerCase(), []);
+  const haystack = useSearchHaystacks(orgs, orgsHaystackText);
 
   const visible = useMemo(() => {
     if (!orgs) return [];
