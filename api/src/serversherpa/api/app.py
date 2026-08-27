@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from serversherpa.api.routes import (
     access, asset_models, assets, attachments, audit, auth, containers,
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
     )
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     app.include_router(auth.router)
     app.include_router(access.router)
