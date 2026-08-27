@@ -31,8 +31,10 @@ import {
 } from '../lib/users';
 import { avatarGradient, initials, longDate, relativeTime } from '../lib/format';
 import {
-  applyColumnOrder, moveKey, useReorderDrag, visibleColumnsFor, type ColumnDef,
+  applyColumnOrder, moveKey, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
+  type ColumnDef,
 } from '../lib/listTools';
+import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
 import '../styles/directory.css';
 import '../styles/profile.css';   /* .pf-form, .btn-solid */
@@ -232,6 +234,8 @@ export default function Users() {
     return c;
   }, [users]);
 
+  const haystack = useSearchHaystacks(users, userSearchText);
+
   const visible = useMemo(() => {
     if (!users) return [];
     const q = query.trim().toLowerCase();
@@ -239,12 +243,12 @@ export default function Users() {
       if (pill !== 'all' && u.status !== pill) return false;
       if (!passesColumnFilters(u, filters, userCellText)) return false;
       if (!q) return true;
-      return userSearchText(u).includes(q);
+      return haystack(u).includes(q);
     });
     return rows.sort((a, b) => (
       naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir
     ));
-  }, [users, pill, filters, query, sortKey, sortDir]);
+  }, [users, pill, filters, query, sortKey, sortDir, haystack]);
 
   // Auto-close the open row when it drops out of `visible` — EXCEPT the one
   // case where it just arrived via a deep link and the reason it's missing
@@ -464,11 +468,13 @@ export default function Users() {
           </div>
         )}
 
-        {visible.map((u) => {
+        <VirtualRows rows={visible}
+          renderRow={(u, vp) => {
           const open = openId === u.person_id;
           const status = STATUS_META[u.status] ?? { label: u.status, cls: 'tag' };
           return (
-            <div key={u.person_id} className={`dir-row ${open ? 'open' : ''}`}>
+            <div key={u.person_id} className={`dir-row ${open ? 'open' : ''}`}
+                 {...vp} style={vp?.style}>
               <div className="row-main" style={grid}
                    onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : u.person_id); }}>
                 <div className="cell cell-primary">
@@ -608,7 +614,7 @@ export default function Users() {
               </div>
             </div>
           );
-        })}
+        }} />
       </div>
 
       {manage?.kind === 'edit' && (

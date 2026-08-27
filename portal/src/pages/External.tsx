@@ -63,9 +63,11 @@ import {
   exportCsv,
   moveKey,
   useReorderDrag,
+  useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
+import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
 import { USER_ERRORS } from '../lib/users';
 import '../styles/directory.css';
@@ -266,18 +268,20 @@ export default function External() {
     return c;
   }, [people]);
 
+  const haystack = useSearchHaystacks(people, externalSearchHay);
+
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     const rows = people.filter((p) => {
       if (pill !== 'all' && p.login_status !== pill) return false;
       if (!passesColumnFilters(p, filters, externalCellText)) return false;
       if (!q) return true;
-      return externalSearchHay(p).includes(q);
+      return haystack(p).includes(q);
     });
     return rows.sort((a, b) => (
       naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir
     ));
-  }, [people, pill, filters, query, sortKey, sortDir]);
+  }, [people, pill, filters, query, sortKey, sortDir, haystack]);
 
   // Auto-close the open row when it drops out of `visible` — EXCEPT the one
   // case where it just arrived via location.state.openRow and the reason
@@ -454,10 +458,12 @@ export default function External() {
           </div>
         )}
 
-        {visible.map((p) => {
+        <VirtualRows rows={visible}
+          renderRow={(p, vp) => {
           const open = openId === p.person_id;
           return (
-            <div key={p.person_id} className={`dir-row ${open ? 'open' : ''}`}>
+            <div key={p.person_id} className={`dir-row ${open ? 'open' : ''}`}
+                 {...vp} style={vp?.style}>
               <div className="row-main" style={grid}
                    onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : p.person_id); }}>
                 <div className="cell cell-primary">
@@ -498,7 +504,7 @@ export default function External() {
               </div>
             </div>
           );
-        })}
+        }} />
       </div>
 
       {editPerson && (

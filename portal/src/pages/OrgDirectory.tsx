@@ -36,9 +36,11 @@ import {
   exportCsv,
   moveKey,
   useReorderDrag,
+  useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
+import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
 import {
   effectiveStatus, ORG_ERRORS, ORG_GOD_FIELDS, orgCellText, partnerTypeColor, partnerTypeLabel,
@@ -285,6 +287,10 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
     return c;
   }, [orgs]);
 
+  const haystack = useSearchHaystacks(orgs, (o) =>
+    `${o.name} ${o.code ?? ''} ${o.city ?? ''} ${o.region ?? ''} ` +
+      `${o.partner_types.join(' ')} ${o.account_manager?.display_name ?? ''}`.toLowerCase());
+
   const visible = useMemo(() => {
     if (!orgs) return [];
     const q = query.trim().toLowerCase();
@@ -292,15 +298,13 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
       if (pill !== 'all' && effectiveStatus(o) !== pill) return false;
       if (!passesColumnFilters(o, filters, cellText)) return false;
       if (!q) return true;
-      const hay = `${o.name} ${o.code ?? ''} ${o.city ?? ''} ${o.region ?? ''} ` +
-        `${o.partner_types.join(' ')} ${o.account_manager?.display_name ?? ''}`.toLowerCase();
-      return hay.includes(q);
+      return haystack(o).includes(q);
     });
     return rows.sort((a, b) => {
       const va = sortValueFor(a, sortKey), vb = sortValueFor(b, sortKey);
       return naturalCompare(String(va), String(vb)) * sortDir;
     });
-  }, [orgs, pill, query, filters, sortKey, sortDir, typeVocab]);
+  }, [orgs, pill, query, filters, sortKey, sortDir, typeVocab, haystack]);
 
   // Auto-close the open row when it drops out of `visible` — EXCEPT the one
   // case where it just arrived via a deep link and the reason it's missing
@@ -514,10 +518,12 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
           </div>
         )}
 
-        {visible.map((o) => {
+        <VirtualRows rows={visible}
+          renderRow={(o, vp) => {
           const open = openId === o.id;
           return (
-            <div key={o.id} className={`dir-row ${open ? 'open' : ''}`}>
+            <div key={o.id} className={`dir-row ${open ? 'open' : ''}`}
+                 {...vp} style={vp?.style}>
               <div className="row-main" style={grid}
                    onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : o.id); }}>
                 <div className="cell cell-primary">
@@ -642,7 +648,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
               </div>
             </div>
           );
-        })}
+        }} />
       </div>
 
       {editing && (

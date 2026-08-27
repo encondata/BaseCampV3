@@ -64,9 +64,11 @@ import {
 } from '../lib/godEdit';
 import {
   applyColumnOrder,
-  ColumnsButton, ExportButton, exportCsv, moveKey, useReorderDrag, visibleColumnsFor,
+  ColumnsButton, ExportButton, exportCsv, moveKey, useReorderDrag, useSearchHaystacks,
+  visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
+import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
@@ -278,13 +280,15 @@ export default function InitiativeDetail() {
   );
   const assetsProgress = useMemo(
     () => moveAssetProgress(assets, moveStatuses), [assets, moveStatuses]);
+  const assetsHaystack = useSearchHaystacks(assets, (a) =>
+    MOVE_ASSET_COLUMNS.map((c) => moveAssetCellText(a, c.key)).join(' ').toLowerCase());
+
   const visibleAssets = useMemo(() => {
     const q = assetsQuery.trim().toLowerCase();
     const filtered = assets.filter((a) => {
       if (!passesColumnFilters(a, assetsFilters, moveAssetCellText)) return false;
       if (!q) return true;
-      return MOVE_ASSET_COLUMNS.some(
-        (c) => moveAssetCellText(a, c.key).toLowerCase().includes(q));
+      return assetsHaystack(a).includes(q);
     });
     return filtered.sort((a, b) => {
       const aText = moveAssetCellText(a, assetsSortKey);
@@ -308,7 +312,7 @@ export default function InitiativeDetail() {
       }
       return 0;
     });
-  }, [assets, assetsFilters, assetsQuery, assetsSortKey, assetsSortDir]);
+  }, [assets, assetsFilters, assetsQuery, assetsSortKey, assetsSortDir, assetsHaystack]);
   const assetGodFields = useMemo(() => MOVE_ASSET_EDIT_FIELDS({
     statuses: () => moveStatuses.map((s) => ({ value: s.key, label: s.label })),
   }), [moveStatuses]);
@@ -760,8 +764,9 @@ export default function InitiativeDetail() {
                   </div>
                 )}
 
-                {visibleAssets.map((a) => (
-                  <div key={a.id} className="dir-row">
+                <VirtualRows rows={visibleAssets}
+                  renderRow={(a, vp) => (
+                  <div key={a.id} className="dir-row" {...vp} style={vp?.style}>
                     <div className="row-main" style={assetsGrid}>
                       {assetsShownCols.map((c) => (
                         <div className={`cell${ASSET_CENTERED_COLS.has(c.key)
@@ -785,7 +790,7 @@ export default function InitiativeDetail() {
                       )}
                     </div>
                   </div>
-                ))}
+                )} />
               </div>
               {assetsActionError && <span className="pf-error">{assetsActionError}</span>}
             </>

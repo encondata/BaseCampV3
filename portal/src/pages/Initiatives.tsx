@@ -54,9 +54,11 @@ import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   applyColumnOrder,
-  ColumnsButton, ExportButton, exportCsv, moveKey, useReorderDrag, visibleColumnsFor,
+  ColumnsButton, ExportButton, exportCsv, moveKey, useReorderDrag, useSearchHaystacks,
+  visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
+import { VirtualRows } from '../lib/virtualRows';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
@@ -230,6 +232,8 @@ export default function Initiatives() {
     return c;
   }, [initiatives]);
 
+  const haystack = useSearchHaystacks(initiatives, initiativeSearchText);
+
   const visible = useMemo(() => {
     if (!initiatives) return [];
     const q = query.trim().toLowerCase();
@@ -239,11 +243,11 @@ export default function Initiatives() {
       if (typePill !== 'all' && i.initiative_type !== typePill) return false;
       if (!passesColumnFilters(i, filters, initiativeCellText)) return false;
       if (!q) return true;
-      return initiativeSearchText(i).includes(q);
+      return haystack(i).includes(q);
     });
     return rows.sort((a, b) =>
       naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
-  }, [initiatives, filters, query, sortKey, sortDir, typePill]);
+  }, [initiatives, filters, query, sortKey, sortDir, typePill, haystack]);
 
   // Deep-link vs persisted-filter interplay — cloned from Containers.tsx.
   useEffect(() => {
@@ -435,11 +439,13 @@ export default function Initiatives() {
             </div>
           )}
 
-          {visible.map((i) => {
+          <VirtualRows rows={visible}
+            renderRow={(i, vp) => {
             const open = openId === i.id;
             return (
               <div key={i.id}
-                   className={`dir-row ${open ? 'open' : ''} ${i.archived_at ? 'archived' : ''}`}>
+                   className={`dir-row ${open ? 'open' : ''} ${i.archived_at ? 'archived' : ''}`}
+                   {...vp} style={vp?.style}>
                 <div className="row-main" style={grid}
                      onClick={() => {
                        deepLinkTarget.current = null;
@@ -492,7 +498,7 @@ export default function Initiatives() {
                 </div>
               </div>
             );
-          })}
+          }} />
         </div>
       )}
 

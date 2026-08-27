@@ -29,9 +29,11 @@ import {
   exportCsv,
   moveKey,
   useReorderDrag,
+  useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
+import { VirtualRows } from '../lib/virtualRows';
 import {
   applyWorkerPatch, WORKER_ERRORS, WORKER_GOD_FIELDS, workerCellText, workerSearchText,
   type PartnerRef, type WorkerItem,
@@ -210,19 +212,21 @@ export default function Workers() {
 
   // openRow handoff now lives in useRecordFocus (expands AND filters to top)
 
+  const haystack = useSearchHaystacks(workers, (w) => workerSearchText(w, levels));
+
   const visible = useMemo(() => {
     if (!workers) return [];
     const q = query.trim().toLowerCase();
     const rows = workers.filter((w) => {
       if (!passesColumnFilters(w, filters, cellText)) return false;
       if (!q) return true;
-      return workerSearchText(w, levels).includes(q);
+      return haystack(w).includes(q);
     });
     return rows.sort((a, b) => {
       const va = sortValueFor(a, sortKey), vb = sortValueFor(b, sortKey);
       return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
     });
-  }, [workers, filters, cellText, levels, query, sortKey, sortDir]);
+  }, [workers, filters, cellText, levels, query, sortKey, sortDir, haystack]);
 
   // Auto-close the open row when it drops out of `visible` — EXCEPT the one
   // case where it just arrived via a deep link and the reason it's missing
@@ -374,10 +378,12 @@ export default function Workers() {
           </div>
         )}
 
-        {visible.map((w) => {
+        <VirtualRows rows={visible}
+          renderRow={(w, vp) => {
           const open = openId === w.person_id;
           return (
-            <div key={w.person_id} className={`dir-row ${open ? 'open' : ''}`}>
+            <div key={w.person_id} className={`dir-row ${open ? 'open' : ''}`}
+                 {...vp} style={vp?.style}>
               <div className="row-main" style={grid}
                    onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : w.person_id); }}>
                 {/* Primary cell has no god-edit descriptor: display_name comes from
@@ -424,7 +430,7 @@ export default function Workers() {
               </div>
             </div>
           );
-        })}
+        }} />
       </div>
     </div>
   );
