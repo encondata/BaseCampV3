@@ -955,6 +955,9 @@ class RawScanItem(BaseModel):
     scan_type: str
     scan_type_label: str
     scan_type_color: str
+    status: str | None = None
+    status_label: str | None = None
+    status_color: str | None = None
     scanned_at: datetime
     device_id: str
     operator_id: uuid.UUID | None = None
@@ -974,6 +977,9 @@ class ProcessedScanItem(BaseModel):
     scan_type: str
     scan_type_label: str
     scan_type_color: str
+    status: str | None = None
+    status_label: str | None = None
+    status_color: str | None = None
     scanned_at: datetime
     device_id: str
     operator_id: uuid.UUID | None = None
@@ -1015,6 +1021,9 @@ class AssetScanItem(BaseModel):
     scan_type: str
     scan_type_label: str
     scan_type_color: str
+    status: str | None = None
+    status_label: str | None = None
+    status_color: str | None = None
     scanned_at: datetime
     processed_at: datetime
     device_id: str

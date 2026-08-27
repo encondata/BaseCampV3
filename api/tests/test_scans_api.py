@@ -365,3 +365,38 @@ async def test_asset_scan_history_env_default(client, db, seeded_user, monkeypat
         Settings()
     monkeypatch.setenv("SS_SCANS_HISTORY_DEFAULT", "100")
     get_settings.cache_clear()
+
+
+async def test_scan_status_denormalized(client, db, seeded_user):
+    hdrs = await login(client)
+    asset = Asset(name="st-denorm")
+    db.add(asset)
+    await db.flush()
+    db.add(RawScan(scanned_value="ST-R", scan_type="rfid", scanned_at=T0,
+                   status="labeled"))
+    db.add(RawScan(scanned_value="ST-R2", scan_type="rfid",
+                   scanned_at=T0 + timedelta(minutes=1)))
+    p = ProcessedScan(scanned_value="ST-P", scan_type="rfid", scanned_at=T0,
+                      match_type="asset", asset_id=asset.id, processed_at=T0,
+                      status="labeled")
+    db.add(p)
+    await db.commit()
+
+    rows = (await client.get("/scans/raw", headers=hdrs)).json()
+    by_val = {r["scanned_value"]: r for r in rows}
+    assert by_val["ST-R"]["status"] == "labeled"
+    assert by_val["ST-R"]["status_label"] == "Labeled"
+    assert by_val["ST-R"]["status_color"]
+    assert by_val["ST-R2"]["status"] is None
+    assert by_val["ST-R2"]["status_label"] is None
+
+    row = (await client.get("/scans/processed", headers=hdrs)).json()[0]
+    assert row["status_label"] == "Labeled"
+
+    hist = (await client.get(f"/scans/asset/{asset.id}", headers=hdrs)).json()
+    assert hist[0]["status_label"] == "Labeled"
+
+    # raw status filter
+    resp = await client.get("/scans/raw", headers=hdrs,
+                            params={"status": "labeled"})
+    assert [r["scanned_value"] for r in resp.json()] == ["ST-R"]

@@ -28,14 +28,16 @@ def _err(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
-async def _vocab(db: DbSession) -> tuple[dict, dict]:
+async def _vocab(db: DbSession) -> tuple[dict, dict, dict]:
     rows = (await db.scalars(select(StatusValue).where(
-        StatusValue.record_type.in_(("scan", "processed_scan"))))).all()
+        StatusValue.record_type.in_(("scan", "processed_scan", "asset"))))).all()
     scan_types = {s.key: (s.label, s.color)
                   for s in rows if s.record_type == "scan"}
     match_types = {s.key: (s.label, s.color)
                    for s in rows if s.record_type == "processed_scan"}
-    return scan_types, match_types
+    asset_statuses = {s.key: (s.label, s.color)
+                      for s in rows if s.record_type == "asset"}
+    return scan_types, match_types, asset_statuses
 
 
 async def _people_names(db: DbSession, ids: set) -> dict:
@@ -56,13 +58,20 @@ async def _site_names(db: DbSession, ids: set) -> dict:
 
 
 def _raw_context(s: RawScan | ProcessedScan, scan_types: dict,
-                 people: dict, sites: dict) -> dict:
+                 asset_statuses: dict, people: dict, sites: dict) -> dict:
     st_label, st_color = scan_types.get(
         s.scan_type, (s.scan_type, FALLBACK_COLOR))
+    if s.status is not None:
+        a_label, a_color = asset_statuses.get(
+            s.status, (s.status, FALLBACK_COLOR))
+    else:
+        a_label = a_color = None
     return {
         "scanned_value": s.scanned_value,
         "scan_type": s.scan_type,
         "scan_type_label": st_label, "scan_type_color": st_color,
+        "status": s.status,
+        "status_label": a_label, "status_color": a_color,
         "scanned_at": s.scanned_at, "device_id": s.device_id,
         "operator_id": s.operator_id,
         "operator_name": people.get(s.operator_id),
@@ -79,6 +88,7 @@ async def list_raw_scans(
     operator_id: uuid.UUID | None = None,
     site_id: uuid.UUID | None = None,
     scan_type: str | None = None,
+    status: str | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
     value: str | None = None,
@@ -101,6 +111,8 @@ async def list_raw_scans(
         query = query.where(RawScan.site_id == site_id)
     if scan_type is not None:
         query = query.where(RawScan.scan_type == scan_type)
+    if status is not None:
+        query = query.where(RawScan.status == status)
     if since is not None:
         query = query.where(RawScan.scanned_at >= since)
     if until is not None:
@@ -110,11 +122,12 @@ async def list_raw_scans(
         query = query.where(RawScan.scanned_value.ilike(f"%{value}%"))
 
     scans = list(await db.scalars(query))
-    scan_types, _ = await _vocab(db)
+    scan_types, _, asset_statuses = await _vocab(db)
     people = await _people_names(db, {s.operator_id for s in scans})
     sites = await _site_names(db, {s.site_id for s in scans})
     return [RawScanItem(id=s.id, created_at=s.created_at,
-                        **_raw_context(s, scan_types, people, sites))
+                        **_raw_context(s, scan_types, asset_statuses,
+                                       people, sites))
             for s in scans]
 
 
@@ -126,7 +139,7 @@ async def list_processed_scans(
     scans = list(await db.scalars(
         select(ProcessedScan).order_by(ProcessedScan.scanned_at.desc(),
                                        ProcessedScan.id)))
-    scan_types, match_types = await _vocab(db)
+    scan_types, match_types, asset_statuses = await _vocab(db)
     people = await _people_names(
         db, {s.operator_id for s in scans} | {s.person_id for s in scans})
     sites = await _site_names(db, {s.site_id for s in scans})
@@ -160,7 +173,7 @@ async def list_processed_scans(
             person_id=s.person_id, matched_name=matched_name(s),
             processed_at=s.processed_at, archived_at=s.archived_at,
             created_at=s.created_at,
-            **_raw_context(s, scan_types, people, sites)))
+            **_raw_context(s, scan_types, asset_statuses, people, sites)))
     return out
 
 
@@ -182,16 +195,17 @@ async def list_asset_scans(
             ProcessedScan.archived_at.is_(None))
         .order_by(ProcessedScan.scanned_at.desc(), ProcessedScan.id)
         .limit(limit)))
-    scan_types, _ = await _vocab(db)
+    scan_types, _, asset_statuses = await _vocab(db)
     people = await _people_names(db, {s.operator_id for s in scans})
     sites = await _site_names(db, {s.site_id for s in scans})
     return [AssetScanItem(id=s.id, processed_at=s.processed_at,
-                          **_raw_context(s, scan_types, people, sites))
+                          **_raw_context(s, scan_types, asset_statuses,
+                                         people, sites))
             for s in scans]
 
 
 async def _processed_item(db: DbSession, s: ProcessedScan) -> ProcessedScanItem:
-    scan_types, match_types = await _vocab(db)
+    scan_types, match_types, asset_statuses = await _vocab(db)
     people = await _people_names(db, {s.operator_id, s.person_id})
     sites = await _site_names(db, {s.site_id})
     name = None
@@ -211,7 +225,7 @@ async def _processed_item(db: DbSession, s: ProcessedScan) -> ProcessedScanItem:
         person_id=s.person_id, matched_name=name,
         processed_at=s.processed_at, archived_at=s.archived_at,
         created_at=s.created_at,
-        **_raw_context(s, scan_types, people, sites))
+        **_raw_context(s, scan_types, asset_statuses, people, sites))
 
 
 @router.patch("/processed/{scan_id}", response_model=ProcessedScanItem)
