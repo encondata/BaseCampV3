@@ -3,7 +3,9 @@
  *  Read-only by design: rows arrive from kiosk/reader ingest and leave
  *  via the future matcher/pruner. */
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import {
+  useCallback, useEffect, useMemo, useRef, useState, type CSSProperties,
+} from 'react';
 
 import ComboBox from '../ComboBox';
 import {
@@ -67,6 +69,7 @@ export default function RawScansTab({ onCount }: {
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
   const [visibleCols, setVisibleCols] = useState<Set<string>>(
     new Set(COLUMNS.filter((c) => c.default).map((c) => c.key)));
+  const seq = useRef(0);
 
   const queryFrom = (f: Filters, offset: number) => ({
     device_id: f.device_id || undefined,
@@ -81,16 +84,19 @@ export default function RawScansTab({ onCount }: {
   });
 
   const load = useCallback(async (f: Filters, append: boolean, offset: number) => {
+    const mySeq = ++seq.current;
     setLoading(true);
     setError('');
     try {
       const page = await listRawScans(queryFrom(f, offset));
+      if (mySeq !== seq.current) return;
       setRows((prev) => (append ? [...prev, ...page] : page));
       setExhausted(page.length < PAGE);
     } catch {
+      if (mySeq !== seq.current) return;
       setError('Could not load raw scans.');
     } finally {
-      setLoading(false);
+      if (mySeq === seq.current) setLoading(false);
     }
   }, []);
 

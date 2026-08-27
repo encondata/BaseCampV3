@@ -22,8 +22,6 @@ router = APIRouter(prefix="/scans", tags=["scans"])
 
 FALLBACK_COLOR = "#51606f"
 
-PATCH_FIELDS = ["site_id", "location_detail", "operator_id"]
-
 
 def _err(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
