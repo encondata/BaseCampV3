@@ -92,3 +92,20 @@ async def test_scans_role_grants_seeded(db):
     assert grants["admin"] == {"view", "change", "delete"}
     assert grants["staff"] == {"view"}
     assert "worker" not in grants
+
+
+async def test_scans_registry_shape():
+    from serversherpa.access.defaults import DEFAULT_GRANTS
+    from serversherpa.access.resources import REGISTRY
+    from serversherpa.status.registry import STATUS_REGISTRY
+
+    assert REGISTRY["scans"].visible_to == frozenset({"global"})
+    assert "/admin/scans" in REGISTRY["scans"].routes
+    assert DEFAULT_GRANTS["admin"]["scans"] == ("view", "change", "delete")
+    assert DEFAULT_GRANTS["staff"]["scans"] == ("view",)
+    assert "scans" not in DEFAULT_GRANTS["worker"]
+    assert STATUS_REGISTRY["scan"].sources == (
+        ("raw_scans", "scan_type"), ("processed_scans", "scan_type"))
+    assert STATUS_REGISTRY["processed_scan"].sources == (
+        ("processed_scans", "match_type"),)
+    assert STATUS_REGISTRY["scan"].resource == "scans"

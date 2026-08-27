@@ -56,6 +56,13 @@ STATUS_RECORD_TYPES: list[StatusRecordType] = [
     StatusRecordType("partner_type", "Partner type",
                      sources=(("partners", "partner_types"),),
                      resource="partners", array=True),
+    StatusRecordType("scan", "Scan method",
+                     sources=(("raw_scans", "scan_type"),
+                              ("processed_scans", "scan_type")),
+                     resource="scans"),
+    StatusRecordType("processed_scan", "Scan match",
+                     sources=(("processed_scans", "match_type"),),
+                     resource="scans"),
 ]
 
 STATUS_REGISTRY: dict[str, StatusRecordType] = {
