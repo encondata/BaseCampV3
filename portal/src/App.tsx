@@ -20,6 +20,7 @@ import Partners from './pages/Partners';
 import Login from './pages/Login';
 import Profile from './pages/Profile';
 import ProcessLogs from './pages/ProcessLogs';
+import Scans from './pages/Scans';
 import Settings from './pages/Settings';
 import Sites from './pages/Sites';
 import SystemConfig from './pages/SystemConfig';
@@ -73,6 +74,7 @@ export default function App() {
               <ProtectedRoute resource="asset_models"><AssetModels /></ProtectedRoute>
             } />
             <Route path="/admin/audit" element={<ProtectedRoute resource="audit"><Audit /></ProtectedRoute>} />
+            <Route path="/admin/scans" element={<ProtectedRoute resource="scans"><Scans /></ProtectedRoute>} />
             <Route path="/dev" element={<ProtectedRoute resource="devtools"><Dev /></ProtectedRoute>} />
             <Route path="/dev/system-config" element={
               <ProtectedRoute resource="devtools"><SystemConfig /></ProtectedRoute>

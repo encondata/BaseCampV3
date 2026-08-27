@@ -82,6 +82,7 @@ export default function CommandPalette() {
       ...navGated('Clients', '/stakeholders/clients', 'clients'),
       ...navGated('Partners', '/stakeholders/partners', 'partners'),
       ...navGated('Makes / Models', '/admin/asset-models', 'asset_models'),
+      ...navGated('Scans', '/admin/scans', 'scans'),
       ...navGated('Access control', '/access', 'access'),
       ...navGated('Settings', '/settings', 'settings'),
       ...navGated('Developer tools', '/dev', 'devtools', true),
