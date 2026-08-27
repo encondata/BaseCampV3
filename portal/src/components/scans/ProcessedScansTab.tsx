@@ -40,9 +40,11 @@ import {
   exportCsv,
   moveKey,
   useReorderDrag,
+  useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef,
 } from '../../lib/listTools';
+import { VirtualRows } from '../../lib/virtualRows';
 
 const COLUMNS: ColumnDef[] = [
   { key: 'match', label: 'Match', width: '1fr', default: true },
@@ -159,6 +161,8 @@ export default function ProcessedScansTab({ onCount }: {
   const replaceRow = (u: ProcessedScanRow) =>
     setScans((xs) => xs?.map((x) => (x.id === u.id ? u : x)) ?? xs);
 
+  const haystack = useSearchHaystacks(scans, processedScanSearchText);
+
   const visible = useMemo(() => {
     if (!scans) return [];
     const q = query.trim().toLowerCase();
@@ -167,11 +171,11 @@ export default function ProcessedScansTab({ onCount }: {
       if (!showArchived && s.archived_at) return false;
       if (!passesColumnFilters(s, filters, processedScanCellText)) return false;
       if (!q) return true;
-      return processedScanSearchText(s).includes(q);
+      return haystack(s).includes(q);
     });
     return rows.sort((a, b) =>
       naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
-  }, [scans, filters, query, sortKey, sortDir]);
+  }, [scans, filters, query, sortKey, sortDir, haystack]);
 
   // Deep-link vs persisted-filter interplay — cloned from Containers.tsx.
   useEffect(() => {
@@ -321,43 +325,45 @@ export default function ProcessedScansTab({ onCount }: {
             </div>
           )}
 
-          {visible.map((s) => {
-            const open = openId === s.id;
-            return (
-              <div key={s.id} className={`dir-row ${open ? 'open' : ''} ${s.archived_at ? 'archived' : ''}`}>
-                <div className="row-main" style={grid}
-                     onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : s.id); }}>
-                  <div className="cell cell-primary">
-                    <div className="pn"><b className="mono">{s.scanned_value}</b>
-                      <span>{s.matched_name ?? s.match_type_label}</span></div>
+          <VirtualRows rows={visible}
+            renderRow={(s, vp) => {
+              const open = openId === s.id;
+              return (
+                <div key={s.id} className={`dir-row ${open ? 'open' : ''} ${s.archived_at ? 'archived' : ''}`}
+                     {...vp} style={vp?.style}>
+                  <div className="row-main" style={grid}
+                       onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : s.id); }}>
+                    <div className="cell cell-primary">
+                      <div className="pn"><b className="mono">{s.scanned_value}</b>
+                        <span>{s.matched_name ?? s.match_type_label}</span></div>
+                    </div>
+                    {shownCols.map((col) => (
+                      <div className="cell" key={col.key}>{cellFor(s, col.key)}</div>
+                    ))}
+                    <div className="cell chevron-cell">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                           strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+                    </div>
                   </div>
-                  {shownCols.map((col) => (
-                    <div className="cell" key={col.key}>{cellFor(s, col.key)}</div>
-                  ))}
-                  <div className="cell chevron-cell">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                         strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
-                  </div>
-                </div>
 
-                <div className="detail">
-                  <div className="detail-clip">
-                    <div className="detail-inner">
-                      {open && (
-                        <ProcessedScanRowDetail
-                          scan={s}
-                          godVisible={godMode}
-                          pending={pd.pendingIds.has(s.id)}
-                          onMark={() => pd.mark('processed_scan', s.id, s.scanned_value)}
-                          onUnmark={() => pd.unmark(s.id)}
-                        />
-                      )}
+                  <div className="detail">
+                    <div className="detail-clip">
+                      <div className="detail-inner">
+                        {open && (
+                          <ProcessedScanRowDetail
+                            scan={s}
+                            godVisible={godMode}
+                            pending={pd.pendingIds.has(s.id)}
+                            onMark={() => pd.mark('processed_scan', s.id, s.scanned_value)}
+                            onUnmark={() => pd.unmark(s.id)}
+                          />
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            }} />
         </div>
       )}
     </>
