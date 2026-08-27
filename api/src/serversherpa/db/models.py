@@ -542,6 +542,9 @@ class RawScan(Base):
     scan_type: Mapped[str]
     scan_type_record_type: Mapped[str] = mapped_column(
         server_default=text("'scan'"))  # GENERATED column; never written
+    status: Mapped[str | None]
+    status_record_type: Mapped[str] = mapped_column(
+        server_default=text("'asset'"))  # GENERATED column; never written
     scanned_at: Mapped[datetime]
     device_id: Mapped[str] = mapped_column(server_default="")
     operator_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -565,6 +568,9 @@ class ProcessedScan(Base):
     scan_type: Mapped[str]
     scan_type_record_type: Mapped[str] = mapped_column(
         server_default=text("'scan'"))  # GENERATED column; never written
+    status: Mapped[str | None]
+    status_record_type: Mapped[str] = mapped_column(
+        server_default=text("'asset'"))  # GENERATED column; never written
     scanned_at: Mapped[datetime]
     device_id: Mapped[str] = mapped_column(server_default="")
     operator_id: Mapped[uuid.UUID | None] = mapped_column(

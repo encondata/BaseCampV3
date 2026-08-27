@@ -94,6 +94,31 @@ async def test_scans_role_grants_seeded(db):
     assert "worker" not in grants
 
 
+async def test_scan_status_vocabulary_fk(db):
+    ok = RawScan(scanned_value="ST-1", scan_type="rfid", scanned_at=NOW,
+                 status="labeled")
+    db.add(ok)
+    await db.commit()
+    assert ok.status == "labeled"
+
+    db.add(RawScan(scanned_value="ST-2", scan_type="rfid", scanned_at=NOW,
+                   status="not_a_status"))
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()
+
+
+async def test_scan_status_nullable(db):
+    asset = Asset(name="st-null")
+    db.add(asset)
+    await db.flush()
+    p = ProcessedScan(scanned_value="ST-3", scan_type="rfid", scanned_at=NOW,
+                      match_type="asset", asset_id=asset.id, processed_at=NOW)
+    db.add(p)
+    await db.commit()
+    assert p.status is None
+
+
 async def test_scans_registry_shape():
     from serversherpa.access.defaults import DEFAULT_GRANTS
     from serversherpa.access.resources import REGISTRY

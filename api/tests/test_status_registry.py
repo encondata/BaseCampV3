@@ -51,5 +51,7 @@ def test_asset_type_counts_both_status_tables():
     must span assets.status AND initiative_assets.status."""
     asset = STATUS_REGISTRY["asset"]
     assert asset.sources == (("assets", "status"),
-                             ("initiative_assets", "status"))
+                             ("initiative_assets", "status"),
+                             ("raw_scans", "status"),
+                             ("processed_scans", "status"))
     assert asset.resource == "assets"
