@@ -16,6 +16,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import ComboBox, { type ComboOption } from '../components/ComboBox';
+import AssetScanHistory from '../components/initiatives/AssetScanHistory';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
 import RackViewModal from '../components/initiatives/RackViewModal';
 import NotesFilesPanel from '../components/NotesFilesPanel';
@@ -255,6 +256,8 @@ export default function InitiativeDetail() {
   const [moveStatuses, setMoveStatuses] = useState<StatusValue[]>([]);
   const [editingAsset, setEditingAsset] = useState<InitiativeAssetRow | null>(null);
   const [assetsBusy, setAssetsBusy] = useState(false);
+  const [openAssetId, setOpenAssetId] = useState<string | null>(null);
+  const canViewScans = can('scans', 'view');
   const [assetsActionError, setAssetsActionError] = useState('');
   // Inline edit-table mode for Assets — a separate toggle from the People
   // section's god.editing (Task 5b): gated on maxRank/canChange, not
@@ -528,7 +531,7 @@ export default function InitiativeDetail() {
   };
 
   const assetsGrid = { gridTemplateColumns:
-    `${assetsShownCols.map((c) => c.width).join(' ')}${canChange ? ' 132px' : ''}` };
+    `${assetsShownCols.map((c) => c.width).join(' ')}${canChange ? ' 132px' : ''}${canViewScans ? ' 30px' : ''}` };
 
   const assetsCaret = (key: string) =>
     assetsSortKey === key
@@ -760,6 +763,7 @@ export default function InitiativeDetail() {
                     </span>
                   ))}
                   {canChange && <span className="col-head" />}
+                  {canViewScans && <span className="col-head" />}
                 </div>
 
                 {visibleAssets.length === 0 && (
@@ -770,32 +774,53 @@ export default function InitiativeDetail() {
                 )}
 
                 <VirtualRows rows={visibleAssets}
-                  renderRow={(a, vp) => (
-                  <div key={a.id} className="dir-row" {...vp} style={vp?.style}>
-                    <div className="row-main" style={assetsGrid}>
-                      {assetsShownCols.map((c) => (
-                        <div className={`cell${ASSET_CENTERED_COLS.has(c.key)
-                          ? ' idet-col-center' : ''}`}
-                             key={c.key}>{assetCellFor(a, c.key)}</div>
-                      ))}
-                      {canChange && (
-                        <div className="cell idet-assets-actions">
-                          <button type="button" className="mini-btn sm"
-                                  disabled={assetsBusy}
-                                  onClick={() => setEditingAsset(a)}>
-                            Edit
-                          </button>
-                          <button type="button" className="mini-btn sm danger"
-                                  disabled={assetsBusy}
-                                  onClick={() => void runAssets(
-                                    () => removeInitiativeAsset(a.id))}>
-                            Remove
-                          </button>
+                  renderRow={(a, vp) => {
+                    const open = openAssetId === a.id;
+                    return (
+                      <div key={a.id} className={`dir-row ${open ? 'open' : ''}`} {...vp} style={vp?.style}>
+                        <div className="row-main" style={assetsGrid}
+                             onClick={canViewScans
+                               ? () => setOpenAssetId(open ? null : a.id)
+                               : undefined}>
+                          {assetsShownCols.map((c) => (
+                            <div className={`cell${ASSET_CENTERED_COLS.has(c.key)
+                              ? ' idet-col-center' : ''}`}
+                                 key={c.key}>{assetCellFor(a, c.key)}</div>
+                          ))}
+                          {canChange && (
+                            <div className="cell idet-assets-actions">
+                              <button type="button" className="mini-btn sm"
+                                      disabled={assetsBusy}
+                                      onClick={(e) => { e.stopPropagation(); setEditingAsset(a); }}>
+                                Edit
+                              </button>
+                              <button type="button" className="mini-btn sm danger"
+                                      disabled={assetsBusy}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        void runAssets(() => removeInitiativeAsset(a.id));
+                                      }}>
+                                Remove
+                              </button>
+                            </div>
+                          )}
+                          {canViewScans && (
+                            <div className="cell chevron-cell">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                                   strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  </div>
-                )} />
+                        <div className="detail">
+                          <div className="detail-clip">
+                            <div className="detail-inner">
+                              {open && <AssetScanHistory assetId={a.asset_id} />}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }} />
               </div>
               {assetsActionError && <span className="pf-error">{assetsActionError}</span>}
             </>

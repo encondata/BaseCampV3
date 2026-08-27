@@ -1448,6 +1448,24 @@ export async function updateProcessedScan(
   return resp.json();
 }
 
+export interface AssetScanRow {
+  id: string; scanned_value: string;
+  scan_type: string; scan_type_label: string; scan_type_color: string;
+  scanned_at: string; processed_at: string;
+  device_id: string;
+  operator_id: string | null; operator_name: string | null;
+  site_id: string | null; site_name: string | null;
+  location_detail: string; source: string;
+}
+
+export async function listAssetScans(
+  assetId: string, limit = 15,
+): Promise<AssetScanRow[]> {
+  const resp = await apiFetch(`/scans/asset/${assetId}?limit=${limit}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /* ── initiatives ──────────────────────────────────────────────────── */
 
 export interface InitiativeItem {
