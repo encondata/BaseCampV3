@@ -155,7 +155,7 @@ export default function TimeEntryEditModal({
         if (siteId !== (entry!.site_id ?? '')) {
           patch.site_id = siteId || null;
         }
-        if (notes !== (entry!.notes ?? '')) patch.notes = notes;
+        if (notes.trim() !== (entry!.notes ?? '')) patch.notes = notes.trim();
         if (timeChanged) patch.adjust_reason = reason.trim();
 
         if (Object.keys(patch).length === 0) {
@@ -321,7 +321,20 @@ export default function TimeEntryEditModal({
                   <div className="full">
                     <label htmlFor="te-reject-reason">Rejection reason *</label>
                     <input id="te-reject-reason" value={rejectReason} disabled={saving}
-                           onChange={(e) => setRejectReason(e.target.value)} />
+                           onChange={(e) => setRejectReason(e.target.value)}
+                           onKeyDown={(e) => {
+                             // This input sits inside the modal's single
+                             // <form> alongside the edit fields — a plain
+                             // Enter here would trigger the form's own
+                             // submit() instead, which no-ops on an empty
+                             // patch (nothing but the reason changed) and
+                             // silently discards whatever was typed. Route
+                             // Enter to the actual reject action instead.
+                             if (e.key === 'Enter') {
+                               e.preventDefault();
+                               void doReject();
+                             }
+                           }} />
                   </div>
                 </div>
               </>

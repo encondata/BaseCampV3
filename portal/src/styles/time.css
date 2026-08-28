@@ -195,6 +195,15 @@
   justify-content: flex-end;
 }
 
+/* A single row action's failure (approve races, etc.) — separate from the
+   list-load error state above, so it never blanks the loaded rows. */
+.time-action-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
 /* ── 5. TimeEntryEditModal's Reason field ───────────────────
    Highlighted once an in-progress edit would count as an
    adjustment (routes/time.py requires adjust_reason whenever the

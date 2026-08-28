@@ -31,6 +31,7 @@ vi.mock('../../lib/api', async (importActual) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   api.updateTimeEntry.mockResolvedValue({});
+  api.rejectTimeEntry.mockResolvedValue({});
 });
 
 afterEach(cleanup);
@@ -49,7 +50,10 @@ const ENTRY: TimeEntryItem = {
   created_at: '2026-08-27T22:00:00Z', updated_at: '2026-08-27T22:00:00Z',
 };
 
-function renderModal() {
+function renderModal(overrides: {
+  canApprove?: boolean;
+  initialMode?: 'edit' | 'reject';
+} = {}) {
   const onSaved = vi.fn().mockResolvedValue(undefined);
   const onClose = vi.fn();
   render(
@@ -58,7 +62,8 @@ function renderModal() {
       initiatives={[]}
       sites={[]}
       workers={[]}
-      canApprove={false}
+      canApprove={overrides.canApprove ?? false}
+      initialMode={overrides.initialMode}
       onClose={onClose}
       onSaved={onSaved}
     />,
@@ -126,5 +131,43 @@ describe('reason required only when the times actually change', () => {
     expect(patch.clock_out_at).toBe(new Date(changed).toISOString());
     expect(patch).not.toHaveProperty('clock_in_at');
     expect(patch).not.toHaveProperty('break_minutes');
+  });
+});
+
+/**
+ * The reject-reason field sits inside the modal's single <form> alongside
+ * the edit fields. Before the fix, pressing Enter there triggered the
+ * form's own submit() — which no-ops on an empty patch (nothing but the
+ * reason was ever touched) and silently threw away the typed reason
+ * without ever calling rejectTimeEntry. Enter must route to the actual
+ * reject action instead.
+ */
+describe('Enter in the rejection-reason field', () => {
+  it('rejects the entry instead of falling through to the form\'s submit', async () => {
+    const user = userEvent.setup();
+    const { onSaved, onClose } = renderModal({ canApprove: true, initialMode: 'reject' });
+
+    const reasonField = screen.getByLabelText('Rejection reason *');
+    await user.type(reasonField, 'Times look wrong');
+    fireEvent.keyDown(reasonField, { key: 'Enter' });
+
+    await waitFor(() => expect(api.rejectTimeEntry).toHaveBeenCalledTimes(1));
+    expect(api.rejectTimeEntry).toHaveBeenCalledWith('te-1', 'Times look wrong');
+
+    // the no-op submit path must never have fired
+    expect(api.updateTimeEntry).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reject on Enter while the reason is still empty', () => {
+    renderModal({ canApprove: true, initialMode: 'reject' });
+
+    const reasonField = screen.getByLabelText('Rejection reason *');
+    fireEvent.keyDown(reasonField, { key: 'Enter' });
+
+    expect(api.rejectTimeEntry).not.toHaveBeenCalled();
+    expect(api.updateTimeEntry).not.toHaveBeenCalled();
   });
 });

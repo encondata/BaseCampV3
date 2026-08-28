@@ -247,6 +247,11 @@ export default function TimeManagement() {
   const [statusPill, setStatusPill] = useState('all');
   const [modal, setModal] = useState<{ entry: TimeEntryItem | null; mode: 'edit' | 'reject' } | null>(null);
   const [rowBusyId, setRowBusyId] = useState<string | null>(null);
+  // A single row action failing (e.g. a 409 from someone else approving the
+  // same entry first) must never blank the whole loaded list — that's what
+  // `timesheetError` is for (the INITIAL load failing). This stays separate
+  // and renders as its own dismissible line above the list.
+  const [actionError, setActionError] = useState('');
 
   const {
     visibleCols, setVisibleCols,
@@ -299,11 +304,12 @@ export default function TimeManagement() {
 
   const doApproveRow = async (id: string) => {
     setRowBusyId(id);
+    setActionError('');
     try {
       await approveTimeEntry(id);
       await refreshAll();
     } catch (err) {
-      setTimesheetError(mapTimeError(err, 'Could not approve — try again.'));
+      setActionError(mapTimeError(err, 'Could not approve — try again.'));
     } finally {
       setRowBusyId(null);
     }
@@ -504,6 +510,15 @@ export default function TimeManagement() {
           {timesheetError && (
             <div className="dir-empty" style={{ marginBottom: 12 }}>
               <b>Cannot load timesheet</b>{timesheetError}
+            </div>
+          )}
+
+          {!timesheetError && actionError && (
+            <div className="time-action-error">
+              <span className="pf-error">{actionError}</span>
+              <button type="button" className="mini-btn sm" onClick={() => setActionError('')}>
+                Dismiss
+              </button>
             </div>
           )}
 
