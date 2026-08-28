@@ -174,6 +174,79 @@ async def test_manual_entry_validates_range_and_creates(client, db, seeded_user)
     assert body["person_name"] == "Man Ual"
 
 
+async def test_manual_entry_invalid_break(client, db, seeded_user):
+    await _bump_admin(db, seeded_user)
+    hdrs = await login(client)
+    worker = Person(first_name="Man", last_name="Ual")
+    db.add(worker)
+    await db.commit()
+
+    resp = await client.post("/time/entries", headers=hdrs, json={
+        "person_id": str(worker.id),
+        "clock_in_at": T0.isoformat(),
+        "clock_out_at": (T0 + timedelta(hours=8)).isoformat(),
+        "break_minutes": -10,
+    })
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_break"
+
+    resp = await client.post("/time/entries", headers=hdrs, json={
+        "person_id": str(worker.id),
+        "clock_in_at": T0.isoformat(),
+        "clock_out_at": (T0 + timedelta(hours=8)).isoformat(),
+        "break_minutes": 480,
+    })
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_break"
+
+
+async def test_patch_invalid_break(client, db, seeded_user):
+    await _bump_admin(db, seeded_user)
+    hdrs = await login(client)
+    entry = TimeEntry(person_id=seeded_user.id, clock_in_at=T0,
+                      clock_out_at=T0 + timedelta(hours=8), status="pending")
+    db.add(entry)
+    await db.commit()
+
+    resp = await client.patch(f"/time/entries/{entry.id}", headers=hdrs, json={
+        "break_minutes": 480, "adjust_reason": "bad break"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_break"
+
+    # a shortened clock_out can make the *existing* break invalid even
+    # though break_minutes itself isn't part of this patch.
+    entry2 = TimeEntry(person_id=seeded_user.id, clock_in_at=T0,
+                       clock_out_at=T0 + timedelta(hours=8),
+                       break_minutes=400, status="pending")
+    db.add(entry2)
+    await db.commit()
+
+    resp = await client.patch(f"/time/entries/{entry2.id}", headers=hdrs, json={
+        "clock_out_at": (T0 + timedelta(hours=1)).isoformat(),
+        "adjust_reason": "shortened shift"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_break"
+
+
+async def test_clock_in_race_loser_gets_409(client, db, seeded_user, monkeypatch):
+    """The loser of a concurrent clock-in misses the pre-check and hits
+    one_open_entry_per_person — that must surface as the same 409, not an
+    unhandled IntegrityError."""
+    from serversherpa.api.routes import time as time_routes
+
+    hdrs = await login(client)
+    db.add(TimeEntry(person_id=seeded_user.id, clock_in_at=T0))
+    await db.commit()
+
+    async def _races_past_check(db, person_id):
+        return None
+
+    monkeypatch.setattr(time_routes, "_open_entry_for", _races_past_check)
+    resp = await client.post("/time/clock-in", headers=hdrs, json={})
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "already_clocked_in"
+
+
 async def test_patch_requires_adjust_reason_for_time_fields(client, db, seeded_user):
     await _bump_admin(db, seeded_user)
     hdrs = await login(client)

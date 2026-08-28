@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
 from serversherpa.api.schemas import (
@@ -101,10 +102,14 @@ async def _items(db: DbSession, entries: list[TimeEntry]) -> list[TimeEntryItem]
     return [_item(e, vocab, people, sites, initiatives) for e in entries]
 
 
+async def _open_entry_for(db: DbSession, person_id: uuid.UUID) -> TimeEntry | None:
+    return await db.scalar(select(TimeEntry).where(
+        TimeEntry.person_id == person_id, TimeEntry.clock_out_at.is_(None)))
+
+
 @router.post("/clock-in", response_model=TimeEntryItem)
 async def clock_in(body: ClockInIn, db: DbSession, user: CurrentUser) -> TimeEntryItem:
-    existing = await db.scalar(select(TimeEntry).where(
-        TimeEntry.person_id == user.person.id, TimeEntry.clock_out_at.is_(None)))
+    existing = await _open_entry_for(db, user.person.id)
     if existing is not None:
         raise _err(409, "already_clocked_in")
     if body.initiative_id is not None and \
@@ -117,8 +122,17 @@ async def clock_in(body: ClockInIn, db: DbSession, user: CurrentUser) -> TimeEnt
         person_id=user.person.id, initiative_id=body.initiative_id,
         site_id=body.site_id, clock_in_at=datetime.now(UTC),
         notes=body.notes or "", created_by=user.person.id)
-    db.add(entry)
-    await db.flush()
+    # the pre-check above is only advisory — a concurrent clock-in for the
+    # same person can still race past it, so the actual guard is the
+    # partial unique index (one_open_entry_per_person, migration 0028).
+    # Flushing inside a savepoint catches that race here as a clean 409
+    # instead of surfacing an unhandled IntegrityError as a 500.
+    try:
+        async with db.begin_nested():
+            db.add(entry)
+            await db.flush()
+    except IntegrityError:
+        raise _err(409, "already_clocked_in") from None
     audit(db, actor_id=user.person.id, entity_type="time_entry",
           entity_id=str(entry.id), action="clock_in")
     await db.commit()
@@ -218,6 +232,11 @@ async def create_time_entry(
 ) -> TimeEntryItem:
     if body.clock_out_at <= body.clock_in_at:
         raise _err(422, "invalid_range")
+    if body.break_minutes is not None:
+        worked_span = int(
+            (body.clock_out_at - body.clock_in_at).total_seconds() // 60)
+        if body.break_minutes < 0 or body.break_minutes >= worked_span:
+            raise _err(422, "invalid_break")
     if await db.get(Person, body.person_id) is None:
         raise _err(404, "person_not_found")
     if body.initiative_id is not None and \
@@ -268,6 +287,12 @@ async def update_time_entry(
     if new_clock_out is not None and new_clock_in is not None \
             and new_clock_out <= new_clock_in:
         raise _err(422, "invalid_range")
+
+    new_break_minutes = data.get("break_minutes", entry.break_minutes)
+    if new_clock_out is not None and new_clock_in is not None:
+        worked_span = int((new_clock_out - new_clock_in).total_seconds() // 60)
+        if new_break_minutes < 0 or new_break_minutes >= worked_span:
+            raise _err(422, "invalid_break")
 
     fields = list(data.keys())
     if is_adjustment:
