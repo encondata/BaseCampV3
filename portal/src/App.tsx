@@ -21,6 +21,7 @@ import Initiatives from './pages/Initiatives';
 import InitiativeDetailPage from './pages/InitiativeDetail';
 import MoveAssetDetail from './pages/MoveAssetDetail';
 import Partners from './pages/Partners';
+import Placeholder from './pages/Placeholder';
 import Login from './pages/Login';
 import Profile from './pages/Profile';
 import ProcessLogs from './pages/ProcessLogs';
@@ -64,6 +65,18 @@ export default function App() {
               <ProtectedRoute resource="assets"><AssetDetail /></ProtectedRoute>
             } />
             <Route path="/logistics/containers" element={<ProtectedRoute resource="containers"><Containers /></ProtectedRoute>} />
+            <Route path="/logistics/trucks" element={
+              <ProtectedRoute resource="containers">
+                <Placeholder eyebrow="Logistics" title="Trucks / Shipments"
+                             hint="Outbound and inbound truckloads." />
+              </ProtectedRoute>
+            } />
+            <Route path="/logistics/warehouse" element={
+              <ProtectedRoute resource="containers">
+                <Placeholder eyebrow="Logistics" title="Warehouse"
+                             hint="Warehouse locations and stock." />
+              </ProtectedRoute>
+            } />
             <Route path="/sites" element={<ProtectedRoute resource="sites"><Sites /></ProtectedRoute>} />
             <Route path="/sites/:siteId" element={
               <ProtectedRoute resource="sites"><SiteDetail /></ProtectedRoute>

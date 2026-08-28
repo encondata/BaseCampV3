@@ -122,6 +122,34 @@ export const NAV_SECTIONS: NavSection[] = [
           </svg>
         ),
       },
+      {
+        to: '/logistics/trucks',
+        label: 'Trucks / Shipments',
+        resource: 'containers',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 17V7a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v10h2" />
+            <path d="M14 17H9" />
+            <path d="M14 9h3.5a1 1 0 0 1 .8.4l2.5 3.3a1 1 0 0 1 .2.6V17h-2" />
+            <circle cx="7" cy="17" r="2" />
+            <circle cx="17" cy="17" r="2" />
+          </svg>
+        ),
+      },
+      {
+        to: '/logistics/warehouse',
+        label: 'Warehouse',
+        resource: 'containers',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M22 20V8.4a1 1 0 0 0-.6-.9l-9-3.7a1 1 0 0 0-.8 0l-9 3.7a1 1 0 0 0-.6.9V20" />
+            <path d="M6 20v-8h12v8" />
+            <path d="M6 16h12" />
+          </svg>
+        ),
+      },
     ],
   },
   {
