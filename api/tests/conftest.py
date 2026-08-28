@@ -253,6 +253,18 @@ async def clean_db():
               ('processed_scan','container','Container','Matched to a container.','#0f7c86',2),
               ('processed_scan','person','Person','Matched to a person badge.','#6d4fc4',3)
         """))
+        # time entry vocabulary — restore canonical seeds (0028)
+        await session.execute(text(
+            "DELETE FROM status_values WHERE record_type = 'time_entry'"))
+        await session.execute(text("""
+            INSERT INTO status_values
+              (record_type, key, label, description, color, sort_order)
+            VALUES
+              ('time_entry','open','On the clock','','#258bcd',1),
+              ('time_entry','pending','Pending review','','#a36207',2),
+              ('time_entry','approved','Approved','','#178a4c',3),
+              ('time_entry','rejected','Rejected','','#c03540',4)
+        """))
         await session.execute(text("DELETE FROM asset_categories"))
         await session.execute(text("""
             INSERT INTO asset_categories (key, label, description, sort_order, color)

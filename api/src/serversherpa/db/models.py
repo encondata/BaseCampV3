@@ -754,6 +754,38 @@ class InitiativeAsset(Base):
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
+class TimeEntry(Base):
+    """One clock-in/clock-out span for the punch-clock + timesheet-approval
+    suite. status walks open -> pending -> approved/rejected. A partial
+    unique index (migration 0028) enforces at most one open entry per
+    person at a time."""
+
+    __tablename__ = "time_entries"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    person_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.id"))
+    initiative_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("initiatives.id"))
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
+    clock_in_at: Mapped[datetime]
+    clock_out_at: Mapped[datetime | None]
+    break_minutes: Mapped[int] = mapped_column(server_default="0")
+    status: Mapped[str] = mapped_column(server_default="open")
+    status_record_type: Mapped[str] = mapped_column(
+        server_default=text("'time_entry'"))  # GENERATED column; never written
+    source: Mapped[str] = mapped_column(server_default="punch")
+    notes: Mapped[str] = mapped_column(server_default="")
+    adjusted: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    adjust_reason: Mapped[str | None]
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    approved_at: Mapped[datetime | None]
+    reject_reason: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
 class ImportJob(Base):
     """Queued background import work. The API only creates rows and serves
     status; the separate import-worker process claims queued rows
