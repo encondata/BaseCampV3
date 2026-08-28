@@ -797,6 +797,10 @@ export default function InitiativeDetail() {
                                       disabled={assetsBusy}
                                       onClick={(e) => {
                                         e.stopPropagation();
+                                        const label = a.asset.name
+                                          ?? a.asset.serial_number ?? 'this asset';
+                                        if (!confirm(
+                                          `Remove "${label}" from this initiative?`)) return;
                                         void runAssets(() => removeInitiativeAsset(a.id));
                                       }}>
                                 Remove
@@ -966,8 +970,11 @@ export default function InitiativeDetail() {
                             </button>
                             <button type="button" className="mini-btn sm danger"
                                     disabled={peopleBusy}
-                                    onClick={() => void runPeople(
-                                      () => removeInitiativePerson(p.id))}>
+                                    onClick={() => {
+                                      if (!confirm(
+                                        `Remove "${p.person_name}" from this initiative?`)) return;
+                                      void runPeople(() => removeInitiativePerson(p.id));
+                                    }}>
                               Remove
                             </button>
                           </div>
