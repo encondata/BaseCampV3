@@ -34,6 +34,7 @@ import TimeManagement from './pages/TimeManagement';
 import Users from './pages/Users';
 import Variables from './pages/Variables';
 import Workers from './pages/Workers';
+import WorkerDetail from './pages/WorkerDetail';
 
 export default function App() {
   return (
@@ -101,6 +102,9 @@ export default function App() {
             } />
             <Route path="/people/users" element={<ProtectedRoute resource="users"><Users /></ProtectedRoute>} />
             <Route path="/people/workers" element={<ProtectedRoute resource="workers"><Workers /></ProtectedRoute>} />
+            <Route path="/people/workers/:personId" element={
+              <ProtectedRoute resource="workers"><WorkerDetail /></ProtectedRoute>
+            } />
             <Route path="/people/external" element={<ProtectedRoute resource="users"><External /></ProtectedRoute>} />
             <Route path="/people/time" element={<ProtectedRoute resource="dashboard"><TimeManagement /></ProtectedRoute>} />
             <Route path="/stakeholders/clients" element={<ProtectedRoute resource="clients"><Clients /></ProtectedRoute>} />

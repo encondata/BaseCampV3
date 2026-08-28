@@ -14,6 +14,7 @@
  */
 
 import type { Action, PermMap, ScopeInfo } from './access';
+import type { WorkerItem } from './workers';
 
 // Default: same host the portal was loaded from, port 8000 — so LAN devices
 // (phone/laptop hitting the dev box's IP) reach the API without extra config.
@@ -961,6 +962,31 @@ export interface StatusValue {
   is_active: boolean;
   usage_count: number | null;
   progress_weight: number | null;
+}
+
+/** GET /workers — the full worker-directory projection (same shape the
+ *  Workers page's row and this fetcher's `WorkerItem` describe). There is no
+ *  single-worker GET; a detail page loads this list and finds its row by
+ *  `person_id`, mirroring how MoveAssetDetail reads its row off the roster
+ *  list rather than a dedicated endpoint. */
+export async function listWorkers(): Promise<WorkerItem[]> {
+  const resp = await apiFetch('/workers');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export interface CertItem {
+  id: string;
+  name: string;
+  issuer: string | null;
+  issued_on: string | null;
+  expires_on: string | null;
+}
+
+export async function listWorkerCertifications(personId: string): Promise<CertItem[]> {
+  const resp = await apiFetch(`/workers/${personId}/certifications`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
 }
 
 /** The Workers page's status vocabulary — filter facet and edit select.

@@ -8,7 +8,7 @@
 import {
   useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent,
 } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
@@ -514,18 +514,19 @@ function WorkerDetail({
                   : <span className="chip c-green"><span className="dot" />portal access</span>)
                 : <span className="chip tag">no account</span>}</dd>
             </dl>
-            {(canManage || godVisible) && (
-              <div className="detail-actions">
-                {canManage && (
-                  <button className="mini-btn accent" onClick={() => setEditing(true)}>
-                    Edit profile
-                  </button>
-                )}
-                <GodDeleteButton visible={godVisible} entityType="person"
-                                 entityId={worker.person_id} label={worker.display_name}
-                                 pending={pending} onChange={pending ? onUnmark : onMark} />
-              </div>
-            )}
+            <div className="detail-actions">
+              <Link className="mini-btn" to={`/people/workers/${worker.person_id}`}>
+                Full Details ↗
+              </Link>
+              {canManage && (
+                <button className="mini-btn accent" onClick={() => setEditing(true)}>
+                  Edit profile
+                </button>
+              )}
+              <GodDeleteButton visible={godVisible} entityType="person"
+                               entityId={worker.person_id} label={worker.display_name}
+                               pending={pending} onChange={pending ? onUnmark : onMark} />
+            </div>
           </>
         )}
 
