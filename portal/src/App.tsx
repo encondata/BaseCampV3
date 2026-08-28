@@ -10,7 +10,6 @@ import AssetModels from './pages/AssetModels';
 import Audit from './pages/Audit';
 import Clients from './pages/Clients';
 import Containers from './pages/Containers';
-import DashboardPlaceholder from './pages/DashboardPlaceholder';
 import Dev from './pages/Dev';
 import MoveDashboard from './pages/MoveDashboard';
 import DevDatabase from './pages/DevDatabase';
@@ -55,10 +54,16 @@ export default function App() {
               <ProtectedRoute resource="dashboard"><MoveDashboard /></ProtectedRoute>
             } />
             <Route path="/dashboards/people" element={
-              <ProtectedRoute resource="dashboard"><DashboardPlaceholder title="People Dashboard" /></ProtectedRoute>
+              <ProtectedRoute resource="dashboard">
+                <Placeholder eyebrow="Dashboards" title="People Dashboard"
+                             hint="Nothing here yet — this dashboard is coming soon." />
+              </ProtectedRoute>
             } />
             <Route path="/dashboards/clients" element={
-              <ProtectedRoute resource="dashboard"><DashboardPlaceholder title="Client Dashboard" /></ProtectedRoute>
+              <ProtectedRoute resource="dashboard">
+                <Placeholder eyebrow="Dashboards" title="Client Dashboard"
+                             hint="Nothing here yet — this dashboard is coming soon." />
+              </ProtectedRoute>
             } />
             <Route path="/assets" element={<ProtectedRoute resource="assets"><Assets /></ProtectedRoute>} />
             <Route path="/assets/:assetId" element={
