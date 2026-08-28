@@ -178,8 +178,8 @@ describe('surveySaveOps', () => {
   });
 
   it('an explicitly-false bool that was false at baseline produces no ops', () => {
-    // Current surveyPayload semantics: false = unanswered. Not changed here —
-    // pinned as pre-existing behavior for a later task.
+    // Tri-state semantics: false is a real answer ("No") — unchanged means
+    // no ops, same as any other unchanged value.
     const ops = surveySaveOps(
       { dock_available: false }, { dock_available: false }, schema);
     expect(ops.put).toEqual([]);
@@ -192,9 +192,17 @@ describe('surveySaveOps', () => {
     expect(ops.clear).toEqual([]);
   });
 
-  it('a bool flipped from true to false produces one clear', () => {
+  it('a bool flipped from true to false puts the explicit false', () => {
+    // Tri-state: "No" persists as a real answer, distinct from unanswered.
     const ops = surveySaveOps(
       { dock_available: true }, { dock_available: false }, schema);
+    expect(ops.put).toEqual([['dock_available', false]]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it("a bool cleared to '' from true produces one clear", () => {
+    const ops = surveySaveOps(
+      { dock_available: true }, { dock_available: '' }, schema);
     expect(ops.put).toEqual([]);
     expect(ops.clear).toEqual(['dock_available']);
   });

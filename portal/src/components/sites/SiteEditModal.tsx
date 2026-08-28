@@ -349,8 +349,10 @@ export default function SiteEditModal({
             <div className="modal-section">Notes</div>
             <div className="pf-form">
               <div className="full">
-                <label>Notes</label>
+                {/* the section header IS the label — repeating it read as a
+                    stutter ("NOTES / NOTES") */}
                 <textarea value={form.notes} disabled={locked} rows={3}
+                          aria-label="Notes"
                           onChange={(e) => setField('notes', e.target.value)} />
               </div>
             </div>

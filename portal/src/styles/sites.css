@@ -42,17 +42,17 @@
   background: var(--surface, #fff);
 }
 
-.survey-bool-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  text-transform: none;
-  letter-spacing: normal;
+/* Survey sub-group headings: subordinate to .modal-section (which is
+   mono/uppercase) — display font, sentence case, hairline divider, so the
+   Survey section reads as one section with labeled clusters inside it. */
+.survey-group {
   font-family: var(--font-display);
-  font-size: 13.5px;
-  font-weight: 400;
+  font-size: 12.5px;
+  font-weight: 600;
   color: var(--text-dark);
-  margin: 0;
+  border-top: 1px solid var(--paper-line);
+  padding-top: 12px;
+  margin: 16px 0 10px;
 }
 
 /* ── map view ─────────────────────────────────────────────────── */

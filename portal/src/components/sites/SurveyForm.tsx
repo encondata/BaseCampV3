@@ -1,9 +1,12 @@
 /**
- * SurveyForm — renders the data-driven per-site survey schema: each group
- * as a `modal-section` + `pf-form` (matching the modal conventions used
- * elsewhere), each field rendered by `kind`. Values are kept loose
- * (Record<string, unknown>) since the schema is server-defined; the parent
- * normalizes them at save time via `surveyPayload`.
+ * SurveyForm — renders the data-driven per-site survey schema. Each group
+ * is a `survey-group` sub-heading (visually subordinate to the modal's
+ * `modal-section` headers) over the standard `pf-form` two-column grid.
+ * Every field — booleans included — renders as the same label-above-control
+ * block so the columns keep their rhythm; booleans are tri-state selects
+ * (— / Yes / No), so an explicit "No" is a real answer, distinct from
+ * unanswered. Values stay loose (Record<string, unknown>); the parent
+ * normalizes at save time via `surveyPayload`.
  */
 
 import type { SurveyFieldDef, SurveySchema } from '../../lib/api';
@@ -20,7 +23,7 @@ export default function SurveyForm({ schema, values, onChange, disabled = false 
     <>
       {schema.groups.map((group) => (
         <div key={group.key}>
-          <div className="modal-section">{group.label}</div>
+          <div className="survey-group">{group.label}</div>
           <div className="pf-form">
             {group.fields.map((field) => (
               <SurveyField
@@ -44,25 +47,23 @@ function SurveyField({ field, value, disabled, onChange }: {
   disabled: boolean;
   onChange: (value: unknown) => void;
 }) {
-  if (field.kind === 'bool') {
-    return (
-      <div>
-        <label className="survey-bool-label">
-          <input
-            type="checkbox"
-            checked={value === true}
-            disabled={disabled}
-            onChange={(e) => onChange(e.target.checked)}
-          />
-          {field.label}
-        </label>
-      </div>
-    );
-  }
-
   return (
     <div className={field.kind === 'textarea' ? 'full' : undefined}>
       <label>{field.label}</label>
+      {field.kind === 'bool' && (
+        <select
+          className="org-select"
+          value={value === true ? 'yes' : value === false ? 'no' : ''}
+          disabled={disabled}
+          onChange={(e) => onChange(
+            e.target.value === 'yes' ? true
+              : e.target.value === 'no' ? false : '')}
+        >
+          <option value="">—</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      )}
       {field.kind === 'textarea' && (
         <textarea
           value={typeof value === 'string' ? value : ''}

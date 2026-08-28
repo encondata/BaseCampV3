@@ -132,8 +132,9 @@ export function surveyPayload(
     const kind = kinds.get(key);
     if (!kind) continue;                       // unknown key — never send it
     if (kind === 'bool') {
-      if (raw === true) out[key] = true;
-      continue;                                // false/undefined = unanswered
+      // tri-state: explicit Yes/No both persist; ''/undefined = unanswered
+      if (raw === true || raw === false) out[key] = raw;
+      continue;
     }
     if (kind === 'int') {
       const n = Number(String(raw ?? '').trim());
