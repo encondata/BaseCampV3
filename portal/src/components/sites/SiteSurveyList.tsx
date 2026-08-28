@@ -50,9 +50,10 @@ const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c)
 
 /** GodField descriptor for one row, shaped from its registry `kind`.
  *  bool/select answer through a ComboBox (`kind: 'combo'`) so clearing is
- *  a click on the built-in clear button; text/textarea/int all edit as a
- *  plain text box (`kind: 'text'`) — int values are parsed to a real
- *  number in `toPatch` since the API 422s a stringified int. */
+ *  a click on the built-in clear button; text/int edit as a plain text
+ *  box (`kind: 'text'`) — int values are parsed to a real number in
+ *  `toPatch` since the API 422s a stringified int. `textarea` rows never
+ *  reach this function: `cellFor` renders them display-only (see there). */
 function godFieldForRow(row: SiteSurveyRow): GodField<SiteSurveyRow> {
   if (row.kind === 'bool') {
     return {
@@ -210,7 +211,13 @@ export default function SiteSurveyList({ siteId, onCount, onSaved, refreshKey }:
 
   const cellFor = (row: SiteSurveyRow, key: string) => {
     if (key === 'value') {
-      if (!canChange) return <span className="cell-top">{surveyValueText(row)}</span>;
+      // textarea fields never get the single-line GodCell editor: that
+      // input flattens newlines, silently corrupting multi-line answers
+      // (e.g. Security details). The Sites edit modal is the only
+      // multi-line-safe path for these, so this cell is display-only.
+      if (!canChange || row.kind === 'textarea') {
+        return <span className="cell-top">{surveyValueText(row)}</span>;
+      }
       return (
         <GodCell row={row} gf={godFieldForRow(row)} patch={patchValueFor(row)}
                  onRowSaved={replaceRow} errorMap={SITE_SURVEY_ERRORS}

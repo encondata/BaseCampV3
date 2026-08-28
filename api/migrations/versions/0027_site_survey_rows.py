@@ -22,6 +22,11 @@ to the blob. The blob column is then dropped; promotion of future raw
 rows (kiosk/import feeds) into curated answers is a deferred matcher-
 style step, like scans, and is NOT part of this migration.
 
+Downgrade warning: downgrade() re-folds only the curated answers in
+site_survey_data back into the blob — the raw submission trail in
+raw_survey_data (including any stray, non-registry keys) is dropped
+along with the table and is permanently lost.
+
 Revision ID: 0027
 Revises: 0026
 Create Date: 2026-08-27
