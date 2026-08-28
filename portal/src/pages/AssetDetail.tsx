@@ -132,7 +132,6 @@ export default function AssetDetail() {
       </div>
 
       <div className="init-panel">
-        <p className="eyebrow-sm">Notes & files</p>
         <NotesFilesPanel entityType="asset" entityId={asset.id} canWrite={canChange} />
       </div>
 

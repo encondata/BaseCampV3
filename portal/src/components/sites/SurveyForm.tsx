@@ -47,11 +47,13 @@ function SurveyField({ field, value, disabled, onChange }: {
   disabled: boolean;
   onChange: (value: unknown) => void;
 }) {
+  const inputId = `survey-${field.key}`;
   return (
     <div className={field.kind === 'textarea' ? 'full' : undefined}>
-      <label>{field.label}</label>
+      <label htmlFor={inputId}>{field.label}</label>
       {field.kind === 'bool' && (
         <select
+          id={inputId}
           className="org-select"
           value={value === true ? 'yes' : value === false ? 'no' : ''}
           disabled={disabled}
@@ -66,6 +68,7 @@ function SurveyField({ field, value, disabled, onChange }: {
       )}
       {field.kind === 'textarea' && (
         <textarea
+          id={inputId}
           value={typeof value === 'string' ? value : ''}
           disabled={disabled}
           rows={3}
@@ -74,6 +77,7 @@ function SurveyField({ field, value, disabled, onChange }: {
       )}
       {field.kind === 'int' && (
         <input
+          id={inputId}
           type="number"
           value={value === undefined || value === null ? '' : String(value)}
           disabled={disabled}
@@ -82,6 +86,7 @@ function SurveyField({ field, value, disabled, onChange }: {
       )}
       {field.kind === 'select' && (
         <select
+          id={inputId}
           className="org-select"
           value={typeof value === 'string' ? value : ''}
           disabled={disabled}
@@ -93,6 +98,7 @@ function SurveyField({ field, value, disabled, onChange }: {
       )}
       {field.kind === 'text' && (
         <input
+          id={inputId}
           value={typeof value === 'string' ? value : ''}
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}

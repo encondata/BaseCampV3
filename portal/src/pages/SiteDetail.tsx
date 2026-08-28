@@ -143,7 +143,6 @@ export default function SiteDetail() {
       </div>
 
       <div className="init-panel">
-        <p className="eyebrow-sm">Notes & files</p>
         <NotesFilesPanel entityType="site" entityId={site.id} canWrite={canChange} />
       </div>
 

@@ -15,7 +15,7 @@ const CRUMBS: Record<string, string[]> = {
   '/': ['Operations', 'Dashboard'],
   '/assets': ['Assets', 'Assets'],
   '/logistics/containers': ['Logistics', 'Containers'],
-  '/sites': ['Operations', 'Sites'],
+  '/sites': ['Sites', 'Sites'],
   '/people/users': ['People', 'Users'],
   '/people/workers': ['People', 'Workers'],
   '/stakeholders/clients': ['Stakeholders', 'Clients'],

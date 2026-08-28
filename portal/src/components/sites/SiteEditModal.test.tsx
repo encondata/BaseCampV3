@@ -67,6 +67,7 @@ const SITE: SiteItem = {
 
 const SURVEY_SCHEMA: SurveySchema = { groups: [{ key: 'dock', label: 'Dock', fields: [
   { key: 'dock_hours', label: 'Dock hours', kind: 'text', options: [] },
+  { key: 'dock_available', label: 'Dock available', kind: 'bool', options: [] },
 ] }] };
 
 function renderEditModal() {
@@ -184,6 +185,22 @@ describe('survey save loop', () => {
     await waitFor(() => expect(api.clearSiteSurveyValue).toHaveBeenCalledTimes(1));
     expect(api.clearSiteSurveyValue).toHaveBeenCalledWith('site-1', 'dock_hours');
     expect(api.putSiteSurveyValue).not.toHaveBeenCalled();
+  });
+
+  it("selecting No on a tri-state bool PUTs an explicit false", async () => {
+    const user = userEvent.setup();
+    renderEditModal();
+
+    await screen.findByDisplayValue('Dock A');   // survey loaded
+    const boolSelect = screen.getByLabelText('Dock available');
+    await user.selectOptions(boolSelect, 'no');
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(api.putSiteSurveyValue).toHaveBeenCalledTimes(1));
+    expect(api.putSiteSurveyValue).toHaveBeenCalledWith(
+      'site-1', 'dock_available', false);
+    expect(api.clearSiteSurveyValue).not.toHaveBeenCalled();
   });
 
   it('an untouched field makes no survey call', async () => {

@@ -24,7 +24,7 @@ export default function CollapsePanel({
       <button type="button" className="collapse-head"
               aria-expanded={open}
               onClick={() => { setOpen(!open); setEverOpened(true); }}>
-        <p className="eyebrow-sm">{title}</p>
+        <span className="eyebrow-sm">{title}</span>
         {badge}
         <svg className="collapse-chevron" viewBox="0 0 24 24" fill="none"
              stroke="currentColor" strokeWidth="2" strokeLinecap="round"
