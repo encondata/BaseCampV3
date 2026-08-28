@@ -1547,6 +1547,143 @@ export async function listAssetScans(
   return resp.json();
 }
 
+/* ── time ─────────────────────────────────────────────────────────── */
+
+export interface TimeEntryItem {
+  id: string; person_id: string; person_name: string;
+  initiative_id: string | null; initiative_name: string | null;
+  site_id: string | null; site_name: string | null;
+  clock_in_at: string; clock_out_at: string | null;
+  break_minutes: number; minutes: number;
+  status: string; status_label: string; status_color: string;
+  source: string; notes: string; adjusted: boolean; adjust_reason: string | null;
+  approved_by: string | null; approved_by_name: string | null;
+  approved_at: string | null; reject_reason: string | null;
+  created_at: string; updated_at: string;
+}
+
+export interface TimeSummaryPerson {
+  person_id: string; person_name: string;
+  approved_minutes: number; pending_minutes: number; entry_count: number;
+  last_entry_at: string | null;
+}
+
+export interface TimeSummaryOut {
+  approved_minutes: number; pending_minutes: number;
+  open_count: number; people: TimeSummaryPerson[];
+}
+
+export interface PunchOption { id: string; name: string }
+
+export async function clockIn(
+  body: { initiative_id?: string; site_id?: string; notes?: string },
+): Promise<TimeEntryItem> {
+  const resp = await apiFetch('/time/clock-in', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function clockOut(
+  body: { notes?: string; break_minutes?: number },
+): Promise<TimeEntryItem> {
+  const resp = await apiFetch('/time/clock-out', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getMyTime(
+  limit?: number,
+): Promise<{ open: TimeEntryItem | null; entries: TimeEntryItem[] }> {
+  const qs = limit !== undefined ? `?limit=${limit}` : '';
+  const resp = await apiFetch(`/time/me${qs}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getPunchOptions(): Promise<{
+  initiatives: PunchOption[]; sites: PunchOption[];
+}> {
+  const resp = await apiFetch('/time/punch-options');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listTimeEntries(q: {
+  person_id?: string; initiative_id?: string; status?: string;
+  since?: string; until?: string; limit?: number; offset?: number;
+}): Promise<TimeEntryItem[]> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(q)) {
+    if (value !== undefined && value !== '') params.set(key, String(value));
+  }
+  const resp = await apiFetch(`/time/entries?${params.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createTimeEntry(
+  body: Record<string, unknown>,
+): Promise<TimeEntryItem> {
+  const resp = await apiFetch('/time/entries', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateTimeEntry(
+  id: string, body: Record<string, unknown>,
+): Promise<TimeEntryItem> {
+  const resp = await apiFetch(`/time/entries/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function approveTimeEntry(id: string): Promise<TimeEntryItem> {
+  const resp = await apiFetch(`/time/entries/${id}/approve`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function rejectTimeEntry(
+  id: string, reason: string,
+): Promise<TimeEntryItem> {
+  const resp = await apiFetch(`/time/entries/${id}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listActiveTimeEntries(): Promise<TimeEntryItem[]> {
+  const resp = await apiFetch('/time/active');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getTimeSummary(initiativeId: string): Promise<TimeSummaryOut> {
+  const params = new URLSearchParams({ initiative_id: initiativeId });
+  const resp = await apiFetch(`/time/summary?${params.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /* ── initiatives ──────────────────────────────────────────────────── */
 
 export interface InitiativeItem {
