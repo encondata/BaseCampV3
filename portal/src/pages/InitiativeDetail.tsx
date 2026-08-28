@@ -72,6 +72,7 @@ import {
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
+import StatusHover from '../components/StatusHover';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
@@ -300,6 +301,12 @@ export default function InitiativeDetail() {
       return assetsHaystack(a).includes(q);
     });
     return filtered.sort((a, b) => {
+      // Timestamp columns sort by the real instant, not the locale date
+      // text (same rule as MoveDashboard's roster).
+      if (assetsSortKey === 'updated' || assetsSortKey === 'added') {
+        const field = assetsSortKey === 'updated' ? 'updated_at' : 'created_at';
+        return (Date.parse(a[field]) - Date.parse(b[field])) * assetsSortDir;
+      }
       const aText = moveAssetCellText(a, assetsSortKey);
       const bText = moveAssetCellText(b, assetsSortKey);
       // Wave column: blank ('—', unwaved) always sorts last regardless of
@@ -553,12 +560,20 @@ export default function InitiativeDetail() {
       }
     }
     if (key === 'status') {
-      return chip(a.status_label, a.status_color)
-        ?? <span className="cell-top">{a.status_label}</span>;
+      return (
+        <StatusHover entityType="initiative_asset" entityId={a.id} status={a.status}>
+          {chip(a.status_label, a.status_color)
+            ?? <span className="cell-top">{a.status_label}</span>}
+        </StatusHover>
+      );
     }
     if (key === 'asset_status') {
-      return chip(a.asset.status_label, a.asset.status_color)
-        ?? <span className="cell-top">{a.asset.status_label}</span>;
+      return (
+        <StatusHover entityType="asset" entityId={a.asset_id} status={a.asset.status}>
+          {chip(a.asset.status_label, a.asset.status_color)
+            ?? <span className="cell-top">{a.asset.status_label}</span>}
+        </StatusHover>
+      );
     }
     // Verified columns (Yes) get a small green check beside the text —
     // No/Unknown fall through to the plain moveAssetCellText rendering
@@ -608,7 +623,9 @@ export default function InitiativeDetail() {
             {chip(initiative.type_label, initiative.type_color)}
             {initiative.sub_type_label
               && chip(initiative.sub_type_label, initiative.sub_type_color)}
-            {chip(initiative.status_label, initiative.status_color)}
+            <StatusHover entityType="initiative" entityId={initiative.id} status={initiative.status}>
+              {chip(initiative.status_label, initiative.status_color)}
+            </StatusHover>
             {initiative.archived_at && <span className="chip tag">Archived</span>}
           </div>
           {initiative.description && (

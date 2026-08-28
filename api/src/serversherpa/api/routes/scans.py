@@ -4,14 +4,15 @@ read-only by design: rows arrive from future kiosk/reader ingest and
 leave via the future matcher/pruner — nothing here mutates them."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     AssetScanItem, ProcessedScanItem, ProcessedScanPatch, RawScanItem,
+    ScanDailyStat,
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
@@ -129,6 +130,33 @@ async def list_raw_scans(
                         **_raw_context(s, scan_types, asset_statuses,
                                        people, sites))
             for s in scans]
+
+
+@router.get("/stats/daily", response_model=list[ScanDailyStat])
+async def raw_scan_daily_stats(
+    db: DbSession,
+    actor: AuthContext = require_permission("scans", "view"),
+    days: int = Query(14, ge=1, le=90),
+) -> list[ScanDailyStat]:
+    """Raw-scan counts per UTC day, oldest first, today included.
+
+    GROUP BY server-side because raw_scans is the one table too big to
+    ship to the portal and count client-side. Zero-filled so charts get
+    a continuous axis without reconstructing missing days.
+    """
+    start_day = datetime.now(UTC).date() - timedelta(days=days - 1)
+    start = datetime.combine(start_day, time.min, tzinfo=UTC)
+    day_col = func.date_trunc("day", RawScan.scanned_at)
+    rows = (await db.execute(
+        select(day_col.label("day"), func.count())
+        .where(RawScan.scanned_at >= start)
+        .group_by(day_col).order_by(day_col))).all()
+    counts = {row[0].date(): row[1] for row in rows}
+    return [
+        ScanDailyStat(day=start_day + timedelta(days=i),
+                      count=counts.get(start_day + timedelta(days=i), 0))
+        for i in range(days)
+    ]
 
 
 @router.get("/processed", response_model=list[ProcessedScanItem])

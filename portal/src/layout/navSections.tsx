@@ -16,6 +16,62 @@ export interface NavSection { label: string; items: NavItem[] }
 
 export const NAV_SECTIONS: NavSection[] = [
   {
+    label: 'Dashboards',
+    items: [
+      {
+        to: '/',
+        label: 'Main Dashboard',
+        resource: 'dashboard',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="7" height="9" rx="1.5" />
+            <rect x="14" y="3" width="7" height="5" rx="1.5" />
+            <rect x="14" y="12" width="7" height="9" rx="1.5" />
+            <rect x="3" y="16" width="7" height="5" rx="1.5" />
+          </svg>
+        ),
+      },
+      {
+        to: '/dashboards/move',
+        label: 'Move Dashboard',
+        resource: 'dashboard',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M5 21V4" />
+            <path d="M5 4h13l-3 4 3 4H5" />
+          </svg>
+        ),
+      },
+      {
+        to: '/dashboards/people',
+        label: 'People Dashboard',
+        resource: 'dashboard',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+            <circle cx="9.5" cy="7" r="4" />
+            <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+          </svg>
+        ),
+      },
+      {
+        to: '/dashboards/clients',
+        label: 'Client Dashboard',
+        resource: 'dashboard',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="7" width="20" height="14" rx="2" />
+            <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
     label: 'Assets',
     items: [
       {
@@ -63,25 +119,6 @@ export const NAV_SECTIONS: NavSection[] = [
             <path d="M3 8h18v10H3z" />
             <path d="M3 8l2-4h14l2 4" />
             <path d="M8 12v3M12 12v3M16 12v3" />
-          </svg>
-        ),
-      },
-    ],
-  },
-  {
-    label: 'Operations',
-    items: [
-      {
-        to: '/',
-        label: 'Dashboard',
-        resource: 'dashboard',
-        icon: (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="3" width="7" height="9" rx="1.5" />
-            <rect x="14" y="3" width="7" height="5" rx="1.5" />
-            <rect x="14" y="12" width="7" height="9" rx="1.5" />
-            <rect x="3" y="16" width="7" height="5" rx="1.5" />
           </svg>
         ),
       },

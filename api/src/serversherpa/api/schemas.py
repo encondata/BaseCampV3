@@ -2,7 +2,7 @@
 
 import re
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -996,6 +996,28 @@ class RawScanItem(BaseModel):
     location_detail: str
     source: str
     created_at: datetime
+
+
+class StatusProvenanceOut(BaseModel):
+    """When (and via what) a row's status became its current value —
+    the payload behind every list's status-chip hover popup."""
+
+    status: str
+    changed_at: datetime | None = None
+    source: Literal["scan", "edit"] | None = None
+    scan_type: str | None = None
+    scan_type_label: str | None = None
+    scan_type_color: str | None = None
+    device_id: str | None = None
+    site_name: str | None = None
+    actor_name: str | None = None
+
+
+class ScanDailyStat(BaseModel):
+    """Raw-scan count for one UTC day — the dashboard's activity chart."""
+
+    day: date
+    count: int
 
 
 class ProcessedScanItem(BaseModel):

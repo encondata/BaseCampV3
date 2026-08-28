@@ -12,7 +12,10 @@ import { avatarGradient, initials } from '../lib/format';
 import { useTopbar } from '../lib/topbar';
 
 const CRUMBS: Record<string, string[]> = {
-  '/': ['Operations', 'Dashboard'],
+  '/': ['Dashboards', 'Main Dashboard'],
+  '/dashboards/move': ['Dashboards', 'Move Dashboard'],
+  '/dashboards/people': ['Dashboards', 'People Dashboard'],
+  '/dashboards/clients': ['Dashboards', 'Client Dashboard'],
   '/assets': ['Assets', 'Assets'],
   '/logistics/containers': ['Logistics', 'Containers'],
   '/sites': ['Sites', 'Sites'],
@@ -32,7 +35,10 @@ const G_CHORD: Record<string, string> = {
 };
 
 const PAGES = [
-  { label: 'Dashboard', to: '/' },
+  { label: 'Main Dashboard', to: '/' },
+  { label: 'Move Dashboard', to: '/dashboards/move' },
+  { label: 'People Dashboard', to: '/dashboards/people' },
+  { label: 'Client Dashboard', to: '/dashboards/clients' },
   { label: 'Assets', to: '/assets' },
   { label: 'Initiatives', to: '/initiatives' },
   { label: 'Containers', to: '/logistics/containers' },

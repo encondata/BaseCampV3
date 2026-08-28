@@ -18,6 +18,8 @@ import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/system.css';
 
+import StatusHover from '../components/StatusHover';
+
 const chip = (label: string | null, color: string | null) =>
   label && color ? (
     <span className="chip custom" style={{ '--chip': color } as CSSProperties}>
@@ -121,7 +123,11 @@ export default function AssetDetail() {
         <p className="eyebrow-sm">Location & status</p>
         <dl className="kv">
           <dt>Status</dt>
-          <dd>{chip(asset.status_label, asset.status_color) ?? asset.status_label}</dd>
+          <dd>
+            <StatusHover entityType="asset" entityId={asset.id} status={asset.status}>
+              {chip(asset.status_label, asset.status_color) ?? asset.status_label}
+            </StatusHover>
+          </dd>
           <dt>Client</dt><dd>{asset.client_name ?? 'House'}</dd>
           <dt>Site</dt><dd>{asset.site_name ?? '—'}</dd>
           <dt>Location</dt><dd>{asset.location_detail || '—'}</dd>

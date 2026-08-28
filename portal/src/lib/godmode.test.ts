@@ -55,10 +55,10 @@ describe('NAV_SECTIONS', () => {
     expect(isNavItemVisible(item!, canAll, true, 0)).toBe(true);
   });
 
-  it('registers Assets above Operations and Admin above System', () => {
+  it('registers Dashboards above Assets and Admin above System', () => {
     const labels = NAV_SECTIONS.map((s) => s.label);
-    expect(labels.indexOf('Assets')).toBeGreaterThanOrEqual(0);
-    expect(labels.indexOf('Assets')).toBeLessThan(labels.indexOf('Operations'));
+    expect(labels.indexOf('Dashboards')).toBe(0);
+    expect(labels.indexOf('Dashboards')).toBeLessThan(labels.indexOf('Assets'));
     expect(labels.indexOf('Admin')).toBeGreaterThan(labels.indexOf('Stakeholders'));
     expect(labels.indexOf('Admin')).toBeLessThan(labels.indexOf('System'));
 

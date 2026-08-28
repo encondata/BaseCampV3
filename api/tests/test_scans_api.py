@@ -148,9 +148,35 @@ async def test_scans_view_gate(client, db, seeded_user):
     db.add(PersonRole(person_id=w.id, role="worker"))
     await db.commit()
     hdrs = await make_login(db, client, w, "wk-noscan@test.example.com")
-    for path in ("/scans/raw", "/scans/processed"):
+    for path in ("/scans/raw", "/scans/processed", "/scans/stats/daily"):
         resp = await client.get(path, headers=hdrs)
         assert resp.status_code == 403, path
+
+
+async def test_raw_daily_stats_zero_filled(client, db, seeded_user):
+    hdrs = await login(client)
+    now = datetime.now(UTC)
+    db.add_all([
+        RawScan(scanned_value="ST-1", scan_type="rfid", scanned_at=now),
+        RawScan(scanned_value="ST-2", scan_type="rfid", scanned_at=now),
+        RawScan(scanned_value="ST-3", scan_type="barcode",
+                scanned_at=now - timedelta(days=2)),
+        # outside the 7-day window — must not be counted
+        RawScan(scanned_value="ST-OLD", scan_type="rfid",
+                scanned_at=now - timedelta(days=40)),
+    ])
+    await db.commit()
+
+    resp = await client.get("/scans/stats/daily?days=7", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    # continuous zero-filled axis: one row per day, oldest first
+    assert len(rows) == 7
+    assert [r["day"] for r in rows] == sorted(r["day"] for r in rows)
+    assert sum(r["count"] for r in rows) == 3
+    counts = {r["day"]: r["count"] for r in rows}
+    assert counts[now.date().isoformat()] == 2
+    assert counts[(now - timedelta(days=2)).date().isoformat()] == 1
 
 
 async def test_processed_patch_whitelist_and_audit(client, db, seeded_user):

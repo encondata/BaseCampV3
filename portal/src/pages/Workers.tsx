@@ -40,6 +40,7 @@ import {
   applyWorkerPatch, WORKER_ERRORS, WORKER_GOD_FIELDS, workerCellText, workerSearchText,
   type PartnerRef, type WorkerItem,
 } from '../lib/workers';
+import StatusHover from '../components/StatusHover';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
@@ -290,9 +291,11 @@ export default function Workers() {
       case 'status':
         return (
           <div className="chips">
-            <span className="chip custom" style={{ '--chip': w.status_color } as CSSProperties}>
-              <span className="dot" />{w.status_label}
-            </span>
+            <StatusHover entityType="worker" entityId={w.person_id} status={w.status}>
+              <span className="chip custom" style={{ '--chip': w.status_color } as CSSProperties}>
+                <span className="dot" />{w.status_label}
+              </span>
+            </StatusHover>
             {pd.pendingIds.has(w.person_id) && <span className="chip tag">Pending delete</span>}
           </div>
         );

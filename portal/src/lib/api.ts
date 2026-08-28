@@ -1475,6 +1475,40 @@ export async function listRawScans(query: RawScanQuery): Promise<RawScanRow[]> {
   return resp.json();
 }
 
+/** When (and via what) a row's status became its current value — the
+ *  payload behind status-chip hover popups (GET /status/provenance). */
+export interface StatusProvenance {
+  status: string;
+  changed_at: string | null;
+  source: 'scan' | 'edit' | null;
+  scan_type: string | null;
+  scan_type_label: string | null;
+  scan_type_color: string | null;
+  device_id: string | null;
+  site_name: string | null;
+  actor_name: string | null;
+}
+
+export async function getStatusProvenance(
+  entityType: string, entityId: string, status: string,
+): Promise<StatusProvenance> {
+  const params = new URLSearchParams({
+    entity_type: entityType, entity_id: entityId, status,
+  });
+  const resp = await apiFetch(`/status/provenance?${params.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** One UTC day's raw-scan count — zero-filled, oldest first. */
+export interface ScanDailyStat { day: string; count: number }
+
+export async function listScanDailyStats(days: number): Promise<ScanDailyStat[]> {
+  const resp = await apiFetch(`/scans/stats/daily?days=${days}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export async function listProcessedScans(): Promise<ProcessedScanRow[]> {
   const resp = await apiFetch('/scans/processed');
   if (!resp.ok) throw await errorFrom(resp);

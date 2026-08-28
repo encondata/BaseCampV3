@@ -52,6 +52,7 @@ import {
   type ColumnDef,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
+import StatusHover from '../components/StatusHover';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
@@ -282,9 +283,11 @@ export default function Sites() {
       case 'status':
         return (
           <div className="chips">
-            <span className="chip custom" style={{ '--chip': s.status_color } as CSSProperties}>
-              <span className="dot" />{s.status_label}
-            </span>
+            <StatusHover entityType="site" entityId={s.id} status={s.status}>
+              <span className="chip custom" style={{ '--chip': s.status_color } as CSSProperties}>
+                <span className="dot" />{s.status_label}
+              </span>
+            </StatusHover>
             {s.archived_at && <span className="chip tag">Archived</span>}
             {pd.pendingIds.has(s.id) && <span className="chip tag">Pending delete</span>}
           </div>
