@@ -9,7 +9,9 @@ import { Link, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import RawSurveyList from '../components/sites/RawSurveyList';
 import SiteEditModal from '../components/sites/SiteEditModal';
+import SiteSurveyList from '../components/sites/SiteSurveyList';
 import SitesMap from '../components/sites/SitesMap';
 import {
   getSite, listClients, listPartners, listSiteStatuses, listSiteTypes,
@@ -35,6 +37,7 @@ export default function SiteDetail() {
   const [site, setSite] = useState<SiteDetailOut | null>(null);
   const [missing, setMissing] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [surveyCount, setSurveyCount] = useState<{ filled: number; total: number } | null>(null);
 
   const [types, setTypes] = useState<SiteLookup[]>([]);
   const [statuses, setStatuses] = useState<SiteLookup[]>([]);
@@ -142,13 +145,16 @@ export default function SiteDetail() {
       </div>
 
       <div className="init-panel">
-        <p className="eyebrow-sm">Site Survey Data</p>
-        <p className="page-hint">Loading…</p>
+        <p className="eyebrow-sm">
+          Site Survey Data
+          {surveyCount ? ` — ${surveyCount.filled}/${surveyCount.total} filled` : ''}
+        </p>
+        <SiteSurveyList siteId={site.id} onCount={setSurveyCount} />
       </div>
 
       <div className="init-panel">
         <p className="eyebrow-sm">Raw Survey Data</p>
-        <p className="page-hint">Loading…</p>
+        <RawSurveyList siteId={site.id} />
       </div>
 
       {editing && (
