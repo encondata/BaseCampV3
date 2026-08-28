@@ -11,6 +11,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 import type { SiteItem } from '../../lib/api';
+import { MAP_TILE_URL } from '../../lib/mapTiles';
 
 function FitBounds({ points }: { points: [number, number][] }) {
   const map = useMap();
@@ -40,7 +41,7 @@ export default function DashSitesMap({ sites, onSelect }: {
   return (
     <MapContainer center={points[0]} zoom={2} className="dash-sites-map"
                   scrollWheelZoom={false} attributionControl={false}>
-      <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+      <TileLayer url={MAP_TILE_URL} />
       <FitBounds points={points} />
       {located.map((s) => (
         <CircleMarker key={s.id} radius={5} weight={1.5}

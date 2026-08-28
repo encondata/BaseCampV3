@@ -11,6 +11,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
 import type { InitiativeItem, SiteItem } from '../../lib/api';
+import { MAP_TILE_URL } from '../../lib/mapTiles';
 
 interface Route {
   id: string;
@@ -70,7 +71,7 @@ export default function TransitMap({ moves, sites }: {
       ) : (
         <MapContainer center={points[0]} zoom={4} className="dash-sites-map"
                       scrollWheelZoom={false} attributionControl={false}>
-          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <TileLayer url={MAP_TILE_URL} />
           <FitBounds points={points} />
           {routes.map((r) => (
             <Polyline key={`lane-${r.id}`} positions={[r.from, r.to]}

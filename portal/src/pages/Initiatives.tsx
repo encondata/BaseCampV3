@@ -348,7 +348,7 @@ export default function Initiatives() {
     <div className="portal-page">
       <div className="dir-head">
         <div>
-          <div className="eyebrow">Operations</div>
+          <div className="eyebrow">Initiatives</div>
           <h1 className="page-title">
             Initiatives
             <span className="badge-count">{initiatives?.length ?? '…'}</span>
