@@ -1439,3 +1439,106 @@ class LogEntryOut(BaseModel):
 class LogPageOut(BaseModel):
     entries: list[LogEntryOut]
     has_more: bool
+
+
+# ── time ──────────────────────────────────────────────────────────
+
+class TimeEntryItem(BaseModel):
+    """One clock-in/clock-out span — denormalized for the timesheet lists
+    and the punch-clock widget."""
+
+    id: uuid.UUID
+    person_id: uuid.UUID
+    person_name: str
+    initiative_id: uuid.UUID | None = None
+    initiative_name: str | None = None
+    site_id: uuid.UUID | None = None
+    site_name: str | None = None
+    clock_in_at: datetime
+    clock_out_at: datetime | None = None
+    break_minutes: int
+    minutes: int
+    status: str
+    status_label: str
+    status_color: str
+    source: str
+    notes: str
+    adjusted: bool
+    adjust_reason: str | None = None
+    approved_by: uuid.UUID | None = None
+    approved_by_name: str | None = None
+    approved_at: datetime | None = None
+    reject_reason: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TimeSummaryPerson(BaseModel):
+    person_id: uuid.UUID
+    person_name: str
+    approved_minutes: int
+    pending_minutes: int
+    entry_count: int
+    last_entry_at: datetime | None = None
+
+
+class TimeSummaryOut(BaseModel):
+    approved_minutes: int
+    pending_minutes: int
+    open_count: int
+    people: list[TimeSummaryPerson]
+
+
+class PunchOption(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
+class TimeMeOut(BaseModel):
+    open: TimeEntryItem | None = None
+    entries: list[TimeEntryItem]
+
+
+class TimePunchOptionsOut(BaseModel):
+    initiatives: list[PunchOption]
+    sites: list[PunchOption]
+
+
+class ClockInIn(BaseModel):
+    initiative_id: uuid.UUID | None = None
+    site_id: uuid.UUID | None = None
+    notes: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class ClockOutIn(BaseModel):
+    notes: str | None = None
+    break_minutes: int | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class TimeEntryCreateIn(BaseModel):
+    person_id: uuid.UUID
+    clock_in_at: datetime
+    clock_out_at: datetime
+    initiative_id: uuid.UUID | None = None
+    site_id: uuid.UUID | None = None
+    break_minutes: int | None = None
+    notes: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class TimeEntryPatchIn(BaseModel):
+    clock_in_at: datetime | None = None
+    clock_out_at: datetime | None = None
+    break_minutes: int | None = None
+    initiative_id: uuid.UUID | None = None
+    site_id: uuid.UUID | None = None
+    notes: str | None = None
+    adjust_reason: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class TimeEntryRejectIn(BaseModel):
+    reason: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")

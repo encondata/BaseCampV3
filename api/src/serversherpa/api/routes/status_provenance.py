@@ -38,6 +38,7 @@ ENTITY_RESOURCE: dict[str, str] = {
     "initiative": "initiatives",
     "client": "clients",
     "partner": "partners",
+    "time_entry": "time",
 }
 
 # How many recent audit rows to scan for a status transition before
