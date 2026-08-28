@@ -146,6 +146,39 @@ export function surveyPayload(
   return out;
 }
 
+/** Diffs the survey form's current values against the loaded baseline and
+ *  decides, per field, what to send — driving SiteEditModal's per-field
+ *  save loop. Comparison happens on CLEANED values (run through
+ *  `surveyPayload`, one key at a time) rather than raw form state: an edit
+ *  that round-trips to the same cleaned value (trailing whitespace on text,
+ *  a cosmetic int-string difference like "007" vs 7) must not produce a
+ *  PUT — it isn't a real change, and sending it grows the raw trail and
+ *  audit log with `{from: X, to: X}` noise. A field clears only when the
+ *  baseline had a cleaned (answered) value and the new cleaned value is
+ *  undefined; an untouched or still-unanswered field produces neither. */
+export function surveySaveOps(
+  baseline: Record<string, unknown>,
+  values: Record<string, unknown>,
+  schema: SurveySchema,
+): { put: [string, boolean | number | string][]; clear: string[] } {
+  const put: [string, boolean | number | string][] = [];
+  const clear: string[] = [];
+  for (const group of schema.groups) {
+    for (const field of group.fields) {
+      const key = field.key;
+      const cleanedNew = surveyPayload({ [key]: values[key] }, schema)[key];
+      const cleanedBase = surveyPayload({ [key]: baseline[key] }, schema)[key];
+      if (cleanedNew === cleanedBase) continue;
+      if (cleanedNew !== undefined) {
+        put.push([key, cleanedNew as boolean | number | string]);
+      } else if (cleanedBase !== undefined) {
+        clear.push(key);
+      }
+    }
+  }
+  return { put, clear };
+}
+
 /** Compare two client-id sets for equality regardless of order — lets the
  *  edit-mode Save skip the PUT to /sites/{id}/clients when nothing changed. */
 export function sameClientSet(a: string[], b: string[]): boolean {

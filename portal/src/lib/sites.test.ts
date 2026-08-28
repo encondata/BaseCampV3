@@ -3,7 +3,8 @@ import {
   afterSiteClientsFailure, formFromSite, formatCoords,
   naturalCompare, needsSiteCreate, sameClientSet, siteCellText,
   SITE_CREATED_UNLINKED_MESSAGE, SITE_ERRORS,
-  SITE_GOD_FIELDS, siteSearchText, sitePayload, surveyPayload, type SiteFormState,
+  SITE_GOD_FIELDS, siteSearchText, sitePayload, surveyPayload, surveySaveOps,
+  type SiteFormState,
 } from './sites';
 import type { SiteItem, SurveySchema } from './api';
 
@@ -131,6 +132,71 @@ describe('surveyPayload', () => {
   });
   it('drops unparseable ints', () => {
     expect(surveyPayload({ floor: 'abc' }, schema)).toEqual({});
+  });
+});
+
+describe('surveySaveOps', () => {
+  const schema: SurveySchema = { groups: [{ key: 'dock', label: 'Dock', fields: [
+    { key: 'dock_available', label: 'Dock available', kind: 'bool', options: [] },
+    { key: 'dock_hours', label: 'Dock hours', kind: 'text', options: [] },
+    { key: 'floor', label: 'Floor', kind: 'int', options: [] },
+  ] }] };
+
+  it('a changed field produces exactly one put with the cleaned key+value', () => {
+    const ops = surveySaveOps(
+      { dock_hours: '9-5' }, { dock_hours: '8-6' }, schema);
+    expect(ops.put).toEqual([['dock_hours', '8-6']]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it('a field cleared (baseline answered, now empty) produces exactly one clear', () => {
+    const ops = surveySaveOps(
+      { dock_hours: '9-5' }, { dock_hours: '' }, schema);
+    expect(ops.put).toEqual([]);
+    expect(ops.clear).toEqual(['dock_hours']);
+  });
+
+  it('an untouched field produces no ops', () => {
+    const ops = surveySaveOps(
+      { dock_hours: '9-5', floor: 3 }, { dock_hours: '9-5', floor: 3 }, schema);
+    expect(ops.put).toEqual([]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it('a no-op edit that differs only pre-cleaning (whitespace) produces no ops', () => {
+    const ops = surveySaveOps(
+      { dock_hours: 'Dock A' }, { dock_hours: 'Dock A  ' }, schema);
+    expect(ops.put).toEqual([]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it('a no-op edit that differs only pre-cleaning (cosmetic int formatting) produces no ops', () => {
+    const ops = surveySaveOps(
+      { floor: 7 }, { floor: '007' }, schema);
+    expect(ops.put).toEqual([]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it('an explicitly-false bool that was false at baseline produces no ops', () => {
+    // Current surveyPayload semantics: false = unanswered. Not changed here —
+    // pinned as pre-existing behavior for a later task.
+    const ops = surveySaveOps(
+      { dock_available: false }, { dock_available: false }, schema);
+    expect(ops.put).toEqual([]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it('a bool flipped from unanswered to true produces one put', () => {
+    const ops = surveySaveOps({}, { dock_available: true }, schema);
+    expect(ops.put).toEqual([['dock_available', true]]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it('a bool flipped from true to false produces one clear', () => {
+    const ops = surveySaveOps(
+      { dock_available: true }, { dock_available: false }, schema);
+    expect(ops.put).toEqual([]);
+    expect(ops.clear).toEqual(['dock_available']);
   });
 });
 

@@ -35,7 +35,7 @@ import {
   SITE_CREATED_UNLINKED_MESSAGE,
   SITE_ERRORS,
   sitePayload,
-  surveyPayload,
+  surveySaveOps,
   type SiteFormState,
 } from '../../lib/sites';
 import SiteBulkImport from './SiteBulkImport';
@@ -149,22 +149,15 @@ export default function SiteEditModal({
         }
 
         if (schema) {
-          // One PUT/DELETE per changed field, not a blob save — cleaned
-          // through surveyPayload (single-key) so each kind's emptiness
-          // rule (false/blank/whitespace = unanswered) matches SurveyForm.
-          for (const group of schema.groups) {
-            for (const field of group.fields) {
-              const key = field.key;
-              if (surveyValues[key] === surveyBaseline[key]) continue;
-              const cleanedNew = surveyPayload({ [key]: surveyValues[key] }, schema)[key];
-              const hadBaseline =
-                surveyPayload({ [key]: surveyBaseline[key] }, schema)[key] !== undefined;
-              if (cleanedNew !== undefined) {
-                await putSiteSurveyValue(id, key, cleanedNew as boolean | number | string);
-              } else if (hadBaseline) {
-                await clearSiteSurveyValue(id, key);
-              }
-            }
+          // One PUT/DELETE per changed field, not a blob save — diffed on
+          // CLEANED values (surveySaveOps) so a no-op edit that only differs
+          // pre-cleaning (whitespace, cosmetic int formatting) never fires.
+          const { put, clear } = surveySaveOps(surveyBaseline, surveyValues, schema);
+          for (const [key, value] of put) {
+            await putSiteSurveyValue(id, key, value);
+          }
+          for (const key of clear) {
+            await clearSiteSurveyValue(id, key);
           }
           setSurveyBaseline(surveyValues);
         }
