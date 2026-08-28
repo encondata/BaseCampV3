@@ -59,7 +59,7 @@ const CSV_COLUMNS: [string, (r: RawSurveyRow) => string][] = [
   ['Ingested', (r) => rawSurveyCellText(r, 'ingested')],
 ];
 
-export default function RawSurveyList({ siteId }: { siteId: string }) {
+export default function RawSurveyList({ siteId, refreshKey }: { siteId: string; refreshKey?: number }) {
   const [rows, setRows] = useState<RawSurveyRow[] | null>(null);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
@@ -88,7 +88,7 @@ export default function RawSurveyList({ siteId }: { siteId: string }) {
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [siteId]);
+  }, [siteId, refreshKey]);
 
   const haystack = useSearchHaystacks(rows, rawSurveySearchText);
 

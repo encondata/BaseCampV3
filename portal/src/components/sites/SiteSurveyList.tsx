@@ -106,9 +106,10 @@ const CSV_COLUMNS: [string, (r: SiteSurveyRow) => string][] = [
   ['Updated at', (r) => r.updated_at ?? ''],
 ];
 
-export default function SiteSurveyList({ siteId, onCount }: {
+export default function SiteSurveyList({ siteId, onCount, onSaved }: {
   siteId: string;
   onCount?: (info: { filled: number; total: number } | null) => void;
+  onSaved?: () => void;
 }) {
   const { can } = useAuth();
   const canChange = can('sites', 'change');
@@ -160,6 +161,7 @@ export default function SiteSurveyList({ siteId, onCount }: {
       if (next) onCount?.(filledCount(next));
       return next;
     });
+    onSaved?.();
   };
 
   const haystack = useSearchHaystacks(rows, surveySearchText);

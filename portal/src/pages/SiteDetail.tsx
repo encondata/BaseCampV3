@@ -38,6 +38,7 @@ export default function SiteDetail() {
   const [missing, setMissing] = useState(false);
   const [editing, setEditing] = useState(false);
   const [surveyCount, setSurveyCount] = useState<{ filled: number; total: number } | null>(null);
+  const [surveyVersion, setSurveyVersion] = useState(0);
 
   const [types, setTypes] = useState<SiteLookup[]>([]);
   const [statuses, setStatuses] = useState<SiteLookup[]>([]);
@@ -149,12 +150,13 @@ export default function SiteDetail() {
           Site Survey Data
           {surveyCount ? ` — ${surveyCount.filled}/${surveyCount.total} filled` : ''}
         </p>
-        <SiteSurveyList siteId={site.id} onCount={setSurveyCount} />
+        <SiteSurveyList siteId={site.id} onCount={setSurveyCount}
+                        onSaved={() => setSurveyVersion((v) => v + 1)} />
       </div>
 
       <div className="init-panel">
         <p className="eyebrow-sm">Raw Survey Data</p>
-        <RawSurveyList siteId={site.id} />
+        <RawSurveyList siteId={site.id} refreshKey={surveyVersion} />
       </div>
 
       {editing && (
