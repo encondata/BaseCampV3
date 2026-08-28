@@ -222,7 +222,7 @@ export default function StatusEditModal({ value, canChange, onClose, onSaved }: 
 
               {original && (
                 <div className="full">
-                  <label className="survey-bool-label">
+                  <label>
                     <input type="checkbox" checked={form.is_active} disabled={locked}
                            onChange={(e) =>
                              setForm((f) => ({ ...f, is_active: e.target.checked }))} />

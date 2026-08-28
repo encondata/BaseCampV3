@@ -13,7 +13,7 @@ from sqlalchemy import select
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
 from serversherpa.api.schemas import NoteCreateIn, NoteOut, NoteUpdateIn
-from serversherpa.db.models import Asset, Container, Initiative, Note, Person
+from serversherpa.db.models import Asset, Container, Initiative, Note, Person, Site
 from serversherpa.services.audit import audit
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -23,6 +23,7 @@ NOTE_HOSTS: dict[str, tuple[str, type]] = {
     "asset": ("assets", Asset),
     "container": ("containers", Container),
     "initiative": ("initiatives", Initiative),
+    "site": ("sites", Site),
 }
 
 

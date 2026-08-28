@@ -11,10 +11,38 @@ import {
   listNotes, updateNote, uploadAttachmentRequest,
   type AttachmentOut, type NoteOut,
 } from '../lib/api';
+import CollapsePanel from './CollapsePanel';
 
 type Entry =
   | { kind: 'note'; at: string; note: NoteOut }
   | { kind: 'file'; at: string; file: AttachmentOut };
+
+const isImage = (file: AttachmentOut) =>
+  !!file.content_type?.startsWith('image/') && !!file.url;
+
+/** Full-size overlay for one image attachment. Closes on scrim click or
+ *  Escape. Reuses the house modal-scrim so it sits above everything,
+ *  including the map's now-isolated stacking context. */
+function Lightbox({ file, onClose }: { file: AttachmentOut; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div className="modal-scrim nf-lightbox" onMouseDown={(e) => {
+      if (e.target === e.currentTarget) onClose();
+    }}>
+      <div className="nf-lightbox-frame">
+        <button type="button" className="mini-btn nf-lightbox-close" aria-label="Close"
+                onClick={onClose}>✕</button>
+        <img src={file.url ?? ''} alt={file.filename} className="nf-lightbox-img" />
+        <p className="nf-lightbox-caption">{file.filename}</p>
+      </div>
+    </div>
+  );
+}
 
 export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
   entityType: string; entityId: string; canWrite: boolean;
@@ -27,6 +55,7 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
   const [editBody, setEditBody] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [lightbox, setLightbox] = useState<AttachmentOut | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
@@ -60,9 +89,12 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityType, entityId]);
 
+  // image attachments move into the thumbnail grid; everything else
+  // (notes + non-image files) stays in the plain newest-first list.
+  const imageFiles = files.filter(isImage);
   const entries: Entry[] = [
     ...notes.map((n) => ({ kind: 'note' as const, at: n.created_at, note: n })),
-    ...files.map((f) => ({ kind: 'file' as const, at: f.created_at, file: f })),
+    ...files.filter((f) => !isImage(f)).map((f) => ({ kind: 'file' as const, at: f.created_at, file: f })),
   ].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
 
   const addNote = async () => {
@@ -145,15 +177,45 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
     }
   };
 
+  const badge = (
+    <span className="badge-count">
+      {status === 'loading' ? '…' : status === 'error' ? '—'
+        : `${notes.length} notes · ${files.length} files`}
+    </span>
+  );
+
   return (
     <div className="detail-block" style={{ gridColumn: '1 / -1' }}>
-      <p className="eyebrow-sm">Notes &amp; files</p>
-
+      <CollapsePanel title="Notes & files" badge={badge}>
       {status === 'loading' && <p className="page-hint">Loading…</p>}
       {status === 'error' && <p className="page-hint">Could not load notes and files.</p>}
 
       {status === 'loaded' && (
         <>
+          {imageFiles.length > 0 && (
+            <div className="nf-thumbs">
+              {imageFiles.map((file) => (
+                <div key={`t-${file.id}`} className="nf-thumb-wrap">
+                  <button type="button" className="nf-thumb"
+                          onClick={() => setLightbox(file)}
+                          aria-label={`Open ${file.filename}`}>
+                    <img src={file.url ?? ''} alt={file.filename} loading="lazy" />
+                  </button>
+                  <div className="nf-meta nf-thumb-cap">
+                    <span>{file.filename}</span>
+                    {canWrite && (
+                      <span className="nf-actions">
+                        <button className="mini-btn danger" disabled={busy} onClick={() => {
+                          void removeAttachment(file.id);
+                        }}>Delete</button>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {canWrite && (
             <div className="nf-composer">
               <textarea ref={composerRef} rows={2} placeholder="Add a note…"
@@ -175,7 +237,9 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
             </div>
           )}
 
-          {entries.length === 0 && <p className="page-hint">Nothing here yet.</p>}
+          {entries.length === 0 && imageFiles.length === 0 && (
+            <p className="page-hint">Nothing here yet.</p>
+          )}
 
           <ul className="nf-list">
             {entries.map((entry) => entry.kind === 'note' ? (
@@ -240,6 +304,8 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
           {error && <span className="pf-error">{error}</span>}
         </>
       )}
+      </CollapsePanel>
+      {lightbox && <Lightbox file={lightbox} onClose={() => setLightbox(null)} />}
     </div>
   );
 }

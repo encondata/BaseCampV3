@@ -598,7 +598,7 @@ class SiteItem(BaseModel):
 
 
 class SiteDetail(SiteItem):
-    survey_data: dict = {}
+    pass
 
 
 class StatusValueOut(BaseModel):
@@ -689,8 +689,37 @@ class SiteClientsIn(BaseModel):
     client_ids: list[uuid.UUID]
 
 
-class SiteSurveyIn(BaseModel):
-    survey_data: dict
+class SiteSurveyRowOut(BaseModel):
+    field_key: str
+    label: str
+    group: str
+    group_label: str
+    kind: str
+    options: list[str]
+    value: bool | int | str | None = None
+    raw_id: int | None = None
+    updated_by: uuid.UUID | None = None
+    updated_by_name: str | None = None
+    updated_at: datetime | None = None
+
+
+class RawSurveyRowOut(BaseModel):
+    id: int
+    field_key: str
+    registered: bool
+    value: bool | int | str | None = None
+    captured_at: datetime
+    submitted_by: uuid.UUID | None = None
+    submitted_by_name: str | None = None
+    device_id: str
+    source: str
+    created_at: datetime
+
+
+class SiteSurveyValueIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: bool | int | str | None = None
 
 
 class SiteCreateIn(BaseModel):
@@ -710,7 +739,7 @@ class SiteCreateIn(BaseModel):
     dc_provider: str | None = None
     partner_id: uuid.UUID | None = None
     notes: str | None = None
-    model_config = ConfigDict(extra="forbid")   # rejects survey_data
+    model_config = ConfigDict(extra="forbid")   # rejects unknown fields
 
 
 class SiteUpdateIn(BaseModel):
@@ -730,7 +759,7 @@ class SiteUpdateIn(BaseModel):
     dc_provider: str | None = None
     partner_id: uuid.UUID | None = None
     notes: str | None = None
-    model_config = ConfigDict(extra="forbid")   # rejects survey_data
+    model_config = ConfigDict(extra="forbid")   # rejects unknown fields
 
 
 # ── assets ─────────────────────────────────────────────────────────

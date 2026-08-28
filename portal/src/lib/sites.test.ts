@@ -3,7 +3,8 @@ import {
   afterSiteClientsFailure, formFromSite, formatCoords,
   naturalCompare, needsSiteCreate, sameClientSet, siteCellText,
   SITE_CREATED_UNLINKED_MESSAGE, SITE_ERRORS,
-  SITE_GOD_FIELDS, siteSearchText, sitePayload, surveyChanged, surveyPayload, type SiteFormState,
+  SITE_GOD_FIELDS, siteSearchText, sitePayload, surveyPayload, surveySaveOps,
+  type SiteFormState,
 } from './sites';
 import type { SiteItem, SurveySchema } from './api';
 
@@ -112,9 +113,6 @@ describe('sitePayload', () => {
     const out = sitePayload({ ...base, latitude: '', longitude: '-97.7431' });
     expect(out).toEqual({ country: 'US', latitude: null, longitude: -97.7431 });
   });
-  it('never includes survey_data', () => {
-    expect('survey_data' in sitePayload(base)).toBe(false);
-  });
 });
 
 describe('surveyPayload', () => {
@@ -137,6 +135,79 @@ describe('surveyPayload', () => {
   });
 });
 
+describe('surveySaveOps', () => {
+  const schema: SurveySchema = { groups: [{ key: 'dock', label: 'Dock', fields: [
+    { key: 'dock_available', label: 'Dock available', kind: 'bool', options: [] },
+    { key: 'dock_hours', label: 'Dock hours', kind: 'text', options: [] },
+    { key: 'floor', label: 'Floor', kind: 'int', options: [] },
+  ] }] };
+
+  it('a changed field produces exactly one put with the cleaned key+value', () => {
+    const ops = surveySaveOps(
+      { dock_hours: '9-5' }, { dock_hours: '8-6' }, schema);
+    expect(ops.put).toEqual([['dock_hours', '8-6']]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it('a field cleared (baseline answered, now empty) produces exactly one clear', () => {
+    const ops = surveySaveOps(
+      { dock_hours: '9-5' }, { dock_hours: '' }, schema);
+    expect(ops.put).toEqual([]);
+    expect(ops.clear).toEqual(['dock_hours']);
+  });
+
+  it('an untouched field produces no ops', () => {
+    const ops = surveySaveOps(
+      { dock_hours: '9-5', floor: 3 }, { dock_hours: '9-5', floor: 3 }, schema);
+    expect(ops.put).toEqual([]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it('a no-op edit that differs only pre-cleaning (whitespace) produces no ops', () => {
+    const ops = surveySaveOps(
+      { dock_hours: 'Dock A' }, { dock_hours: 'Dock A  ' }, schema);
+    expect(ops.put).toEqual([]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it('a no-op edit that differs only pre-cleaning (cosmetic int formatting) produces no ops', () => {
+    const ops = surveySaveOps(
+      { floor: 7 }, { floor: '007' }, schema);
+    expect(ops.put).toEqual([]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it('an explicitly-false bool that was false at baseline produces no ops', () => {
+    // Tri-state semantics: false is a real answer ("No") — unchanged means
+    // no ops, same as any other unchanged value.
+    const ops = surveySaveOps(
+      { dock_available: false }, { dock_available: false }, schema);
+    expect(ops.put).toEqual([]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it('a bool flipped from unanswered to true produces one put', () => {
+    const ops = surveySaveOps({}, { dock_available: true }, schema);
+    expect(ops.put).toEqual([['dock_available', true]]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it('a bool flipped from true to false puts the explicit false', () => {
+    // Tri-state: "No" persists as a real answer, distinct from unanswered.
+    const ops = surveySaveOps(
+      { dock_available: true }, { dock_available: false }, schema);
+    expect(ops.put).toEqual([['dock_available', false]]);
+    expect(ops.clear).toEqual([]);
+  });
+
+  it("a bool cleared to '' from true produces one clear", () => {
+    const ops = surveySaveOps(
+      { dock_available: true }, { dock_available: '' }, schema);
+    expect(ops.put).toEqual([]);
+    expect(ops.clear).toEqual(['dock_available']);
+  });
+});
+
 describe('sameClientSet', () => {
   it('true for identical sets regardless of order', () => {
     expect(sameClientSet(['a', 'b'], ['b', 'a'])).toBe(true);
@@ -145,29 +216,6 @@ describe('sameClientSet', () => {
   it('false when sizes or members differ', () => {
     expect(sameClientSet(['a'], ['a', 'b'])).toBe(false);
     expect(sameClientSet(['a', 'b'], ['a', 'c'])).toBe(false);
-  });
-});
-
-describe('surveyChanged', () => {
-  const schema: SurveySchema = { groups: [{ key: 'dock', label: 'Dock', fields: [
-    { key: 'dock_available', label: 'Dock available', kind: 'bool', options: [] },
-    { key: 'dock_hours', label: 'Dock hours', kind: 'text', options: [] },
-    { key: 'floor', label: 'Floor', kind: 'int', options: [] },
-  ] }] };
-  it('false when normalized answers are identical', () => {
-    expect(surveyChanged({ dock_hours: '9-5' }, { dock_hours: '9-5  ' }, schema)).toBe(false);
-  });
-  it('false when both are effectively unanswered', () => {
-    expect(surveyChanged({}, { dock_available: false, dock_hours: '' }, schema)).toBe(false);
-  });
-  it('true when a value actually changed', () => {
-    expect(surveyChanged({ dock_hours: '9-5' }, { dock_hours: '24/7' }, schema)).toBe(true);
-  });
-  it('true when a field is newly answered', () => {
-    expect(surveyChanged({}, { floor: '3' }, schema)).toBe(true);
-  });
-  it('ignores unknown keys on either side', () => {
-    expect(surveyChanged({ nope: 'x' }, { nope: 'y' }, schema)).toBe(false);
   });
 });
 

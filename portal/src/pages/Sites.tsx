@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Link } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import GodDeleteButton from '../components/GodDeleteButton';
@@ -15,18 +16,17 @@ import SiteEditModal from '../components/sites/SiteEditModal';
 import SitesMap, { SiteMapModal, SiteMiniMap } from '../components/sites/SitesMap';
 import {
   ApiError,
-  getSite,
-  getSurveySchema,
   listClients,
   listPartners,
   listSiteStatuses,
+  listSiteSurvey,
   listSiteTypes,
   listSites,
   updateSite,
   type OrgRef,
   type SiteItem,
   type SiteLookup,
-  type SurveySchema,
+  type SiteSurveyRow,
 } from '../lib/api';
 import { initialOpenId } from '../lib/auditFormat';
 import {
@@ -35,6 +35,7 @@ import {
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { usePendingDeletes } from '../lib/pendingDeletes';
+import { filledCount } from '../lib/siteSurvey';
 import {
   formatCoords, naturalCompare, siteCellText, siteSearchText, SITE_ERRORS, SITE_GOD_FIELDS,
 } from '../lib/sites';
@@ -130,16 +131,9 @@ const CSV_COLUMNS: [string, (s: SiteItem) => string][] = [
   ['Archived', (s) => String(Boolean(s.archived_at))],
 ];
 
-function surveySummary(
-  data: Record<string, unknown> | null, schema: SurveySchema | null,
-): string {
-  if (!data || !schema) return 'No survey data';
-  const keys = Object.keys(data);
-  if (keys.length === 0) return 'No survey data';
-  const answered = new Set(keys);
-  const groupsHit = schema.groups.filter((g) => g.fields.some((f) => answered.has(f.key)));
-  return `Survey: ${keys.length} field${keys.length === 1 ? '' : 's'} across `
-    + `${groupsHit.length} group${groupsHit.length === 1 ? '' : 's'}`;
+function surveySummary(rows: SiteSurveyRow[]): string {
+  const { filled, total } = filledCount(rows);
+  return `${filled}/${total} fields filled`;
 }
 
 export default function Sites() {
@@ -155,7 +149,6 @@ export default function Sites() {
   const [statuses, setStatuses] = useState<SiteLookup[]>([]);
   const [clients, setClients] = useState<OrgRef[]>([]);
   const [partners, setPartners] = useState<OrgRef[]>([]);
-  const [schema, setSchema] = useState<SurveySchema | null>(null);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [view, setView] = useState<'list' | 'map'>('list');
@@ -202,7 +195,6 @@ export default function Sites() {
     void listSiteStatuses().then(setStatuses).catch(() => {});
     void listClients().then(setClients).catch(() => {});
     void listPartners().then(setPartners).catch(() => {});
-    void getSurveySchema().then(setSchema).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -462,7 +454,6 @@ export default function Sites() {
                       {open && (
                         <SiteRowDetail
                           site={s}
-                          schema={schema}
                           canEdit={canChange}
                           onEdit={() => setEditingId(s.id)}
                           godVisible={godMode}
@@ -525,15 +516,14 @@ export default function Sites() {
 
 /* ── row detail: read-only display — the ONLY interactive element is the
  * Edit button. Address/coords/partner/clients/notes come straight off the
- * list row; the survey summary needs a per-row detail fetch (survey_data
- * isn't in the list projection), lazily loaded only while the row is open,
- * mirroring Workers.tsx's CertsPanel pattern. ───────────────────────── */
+ * list row; the survey summary needs a per-row detail fetch (the row
+ * endpoint isn't in the list projection), lazily loaded only while the
+ * row is open, mirroring Workers.tsx's CertsPanel pattern. ───────────── */
 
 function SiteRowDetail({
-  site, schema, canEdit, onEdit, godVisible, pending, onMark, onUnmark,
+  site, canEdit, onEdit, godVisible, pending, onMark, onUnmark,
 }: {
   site: SiteItem;
-  schema: SurveySchema | null;
   canEdit: boolean;
   onEdit: () => void;
   godVisible: boolean;
@@ -541,16 +531,16 @@ function SiteRowDetail({
   onMark: () => Promise<void>;
   onUnmark: () => Promise<void>;
 }) {
-  const [surveyData, setSurveyData] = useState<Record<string, unknown> | null>(null);
+  const [surveyRows, setSurveyRows] = useState<SiteSurveyRow[] | null>(null);
   const [surveyStatus, setSurveyStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
   const [mapOpen, setMapOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setSurveyStatus('loading');
-    void getSite(site.id).then((detail) => {
+    void listSiteSurvey(site.id).then((rows) => {
       if (cancelled) return;
-      setSurveyData(detail.survey_data);
+      setSurveyRows(rows);
       setSurveyStatus('loaded');
     }).catch(() => {
       if (!cancelled) setSurveyStatus('error');
@@ -603,8 +593,8 @@ function SiteRowDetail({
         {surveyStatus === 'error' && (
           <p className="set-note" style={{ padding: 0 }}>Could not load survey data.</p>
         )}
-        {surveyStatus === 'loaded' && (
-          <p className="survey-summary">{surveySummary(surveyData, schema)}</p>
+        {surveyStatus === 'loaded' && surveyRows && (
+          <p className="survey-summary">{surveySummary(surveyRows)}</p>
         )}
       </div>
 
@@ -621,16 +611,15 @@ function SiteRowDetail({
 
       {mapOpen && <SiteMapModal site={site} onClose={() => setMapOpen(false)} />}
 
-      {(canEdit || godVisible) && (
-        <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
-          {canEdit && (
-            <button className="btn-solid" onClick={onEdit}>Edit</button>
-          )}
-          <GodDeleteButton visible={godVisible} entityType="site" entityId={site.id}
-                           label={site.name} pending={pending}
-                           onChange={pending ? onUnmark : onMark} />
-        </div>
-      )}
+      <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
+        <Link className="mini-btn" to={`/sites/${site.id}`}>Full Details ↗</Link>
+        {canEdit && (
+          <button className="btn-solid" onClick={onEdit}>Edit</button>
+        )}
+        <GodDeleteButton visible={godVisible} entityType="site" entityId={site.id}
+                         label={site.name} pending={pending}
+                         onChange={pending ? onUnmark : onMark} />
+      </div>
     </div>
   );
 }

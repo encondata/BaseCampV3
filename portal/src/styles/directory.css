@@ -788,4 +788,13 @@ button.combo-caret:hover { color: var(--text-dark); }
   cursor: pointer;
   transition: background 0.15s;
 }
+
+/* ── collapsible panel sections ── */
+.collapse-head { display: flex; align-items: center; gap: 10px; width: 100%;
+  background: none; border: 0; padding: 0; cursor: pointer; text-align: left; }
+.collapse-head .eyebrow-sm { margin: 0; }
+.collapse-chevron { width: 16px; height: 16px; margin-left: auto;
+  color: var(--text-mute); transition: transform .15s ease; }
+.collapse-panel.open .collapse-chevron { transform: rotate(90deg); }
+.collapse-body { margin-top: 12px; }
 .supplied-modal-row:hover { background: var(--surface-2, #f5f7fa); }

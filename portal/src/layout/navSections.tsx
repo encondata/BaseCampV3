@@ -113,6 +113,11 @@ export const NAV_SECTIONS: NavSection[] = [
           </svg>
         ),
       },
+    ],
+  },
+  {
+    label: 'Sites',
+    items: [
       {
         to: '/sites',
         label: 'Sites',

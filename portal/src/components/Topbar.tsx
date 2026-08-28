@@ -15,7 +15,7 @@ const CRUMBS: Record<string, string[]> = {
   '/': ['Operations', 'Dashboard'],
   '/assets': ['Assets', 'Assets'],
   '/logistics/containers': ['Logistics', 'Containers'],
-  '/sites': ['Operations', 'Sites'],
+  '/sites': ['Sites', 'Sites'],
   '/people/users': ['People', 'Users'],
   '/people/workers': ['People', 'Workers'],
   '/stakeholders/clients': ['Stakeholders', 'Clients'],
@@ -121,13 +121,16 @@ export default function Topbar() {
     } else if (hit.kind === 'partner') {
       navigate('/stakeholders/partners', { state: { openRow: hit.id } });
     } else if (hit.kind === 'site') {
-      navigate('/sites', { state: { openRow: hit.id } });
+      // Sites have a full detail page — go straight there, not the list.
+      navigate(`/sites/${hit.id}`);
     } else if (hit.kind === 'asset') {
       navigate('/assets', { state: { openRow: hit.id } });
     } else if (hit.kind === 'container') {
       navigate('/logistics/containers', { state: { openRow: hit.id } });
     } else if (hit.kind === 'initiative') {
-      navigate('/initiatives', { state: { openRow: hit.id } });
+      // Initiatives have a full detail page — go straight there, not the
+      // list. Other kinds follow as their detail pages get built.
+      navigate(`/initiatives/${hit.id}`);
     } else if (hit.kind === 'asset_model') {
       navigate('/admin/asset-models', { state: { openRow: hit.id } });
     }

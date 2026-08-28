@@ -11,6 +11,7 @@ export const SITE_ERRORS: Record<string, string> = {
   unknown_status: 'That status no longer exists — pick another.',
   unknown_survey_field: 'A survey field is no longer valid — reload and retry.',
   invalid_survey_value: 'A survey answer has the wrong format.',
+  survey_value_not_found: 'That answer was already cleared — reload and retry.',
   client_not_found: 'One of the selected clients no longer exists.',
   site_not_found: 'This site no longer exists.',
   forbidden: 'You do not have permission to change sites.',
@@ -131,8 +132,9 @@ export function surveyPayload(
     const kind = kinds.get(key);
     if (!kind) continue;                       // unknown key — never send it
     if (kind === 'bool') {
-      if (raw === true) out[key] = true;
-      continue;                                // false/undefined = unanswered
+      // tri-state: explicit Yes/No both persist; ''/undefined = unanswered
+      if (raw === true || raw === false) out[key] = raw;
+      continue;
     }
     if (kind === 'int') {
       const n = Number(String(raw ?? '').trim());
@@ -145,25 +147,45 @@ export function surveyPayload(
   return out;
 }
 
+/** Diffs the survey form's current values against the loaded baseline and
+ *  decides, per field, what to send — driving SiteEditModal's per-field
+ *  save loop. Comparison happens on CLEANED values (run through
+ *  `surveyPayload`, one key at a time) rather than raw form state: an edit
+ *  that round-trips to the same cleaned value (trailing whitespace on text,
+ *  a cosmetic int-string difference like "007" vs 7) must not produce a
+ *  PUT — it isn't a real change, and sending it grows the raw trail and
+ *  audit log with `{from: X, to: X}` noise. A field clears only when the
+ *  baseline had a cleaned (answered) value and the new cleaned value is
+ *  undefined; an untouched or still-unanswered field produces neither. */
+export function surveySaveOps(
+  baseline: Record<string, unknown>,
+  values: Record<string, unknown>,
+  schema: SurveySchema,
+): { put: [string, boolean | number | string][]; clear: string[] } {
+  const put: [string, boolean | number | string][] = [];
+  const clear: string[] = [];
+  for (const group of schema.groups) {
+    for (const field of group.fields) {
+      const key = field.key;
+      const cleanedNew = surveyPayload({ [key]: values[key] }, schema)[key];
+      const cleanedBase = surveyPayload({ [key]: baseline[key] }, schema)[key];
+      if (cleanedNew === cleanedBase) continue;
+      if (cleanedNew !== undefined) {
+        put.push([key, cleanedNew as boolean | number | string]);
+      } else if (cleanedBase !== undefined) {
+        clear.push(key);
+      }
+    }
+  }
+  return { put, clear };
+}
+
 /** Compare two client-id sets for equality regardless of order — lets the
  *  edit-mode Save skip the PUT to /sites/{id}/clients when nothing changed. */
 export function sameClientSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   const sa = new Set(a);
   return b.every((id) => sa.has(id));
-}
-
-/** Deep-compare two survey answer sets after normalizing both through
- *  surveyPayload (drops unknown keys, coerces by kind) — so re-rendering
- *  the same answers back never triggers a needless PUT. */
-export function surveyChanged(
-  original: Record<string, unknown>, next: Record<string, unknown>, schema: SurveySchema,
-): boolean {
-  const a = surveyPayload(original, schema);
-  const b = surveyPayload(next, schema);
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-  for (const key of keys) if (a[key] !== b[key]) return true;
-  return false;
 }
 
 /* ── create-mode save trap ───────────────────────────────────────────

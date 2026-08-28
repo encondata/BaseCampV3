@@ -391,7 +391,6 @@ class Site(Base):
     timezone: Mapped[str | None]
     dc_provider: Mapped[str | None]
     partner_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("partners.id"))
-    survey_data: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     notes: Mapped[str | None]
     source: Mapped[str] = mapped_column(server_default="manual")
     source_ref: Mapped[str | None]
@@ -410,6 +409,43 @@ class SiteClient(Base):
         ForeignKey("clients.id"), primary_key=True)
     linked_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     linked_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class RawSurveyEntry(Base):
+    """Append-only submission trail — the scans-raw of surveys. ANY
+    field_key is accepted (strays allowed, V2 raw-editor parity); no FK
+    to the registry."""
+
+    __tablename__ = "raw_survey_data"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(),
+                                    primary_key=True)
+    site_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sites.id"))
+    field_key: Mapped[str]
+    value: Mapped[dict | list | str | int | bool | None] = mapped_column(JSONB)
+    captured_at: Mapped[datetime]
+    submitted_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    device_id: Mapped[str] = mapped_column(server_default="")
+    source: Mapped[str] = mapped_column(server_default="")
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class SiteSurveyEntry(Base):
+    """Current answer per (site, field); UNIQUE enforced; raw_id =
+    provenance (the raw_survey_data row this answer came from)."""
+
+    __tablename__ = "site_survey_data"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    site_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sites.id"))
+    field_key: Mapped[str]
+    value: Mapped[dict | list | str | int | bool] = mapped_column(JSONB)
+    raw_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("raw_survey_data.id"))
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
 class AssetCategory(Base):

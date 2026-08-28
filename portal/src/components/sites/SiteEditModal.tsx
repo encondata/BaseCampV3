@@ -16,10 +16,11 @@ import ComboBox from '../ComboBox';
 import {
   ApiError,
   archiveSite,
+  clearSiteSurveyValue,
   createSite,
-  getSite,
   getSurveySchema,
-  saveSiteSurvey,
+  listSiteSurvey,
+  putSiteSurveyValue,
   setSiteClients,
   updateSite,
   type SiteItem,
@@ -34,8 +35,7 @@ import {
   SITE_CREATED_UNLINKED_MESSAGE,
   SITE_ERRORS,
   sitePayload,
-  surveyChanged,
-  surveyPayload,
+  surveySaveOps,
   type SiteFormState,
 } from '../../lib/sites';
 import SiteBulkImport from './SiteBulkImport';
@@ -88,14 +88,18 @@ export default function SiteEditModal({
   }, []);
 
   // Load survey answers once a record exists to load them for (an existing
-  // site being edited, or a site just created in this session).
+  // site being edited, or a site just created in this session). One row per
+  // registry field, in registry order — only the answered ones become
+  // form values; SurveyForm treats a missing key as unanswered.
   useEffect(() => {
     if (!editingId) return;
     let cancelled = false;
-    void getSite(editingId).then((detail) => {
+    void listSiteSurvey(editingId).then((rows) => {
       if (cancelled) return;
-      setSurveyValues(detail.survey_data ?? {});
-      setSurveyBaseline(detail.survey_data ?? {});
+      const values = Object.fromEntries(
+        rows.filter((r) => r.value !== null).map((r) => [r.field_key, r.value]));
+      setSurveyValues(values);
+      setSurveyBaseline(values);
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [editingId]);
@@ -144,8 +148,17 @@ export default function SiteEditModal({
           setClientBaseline(clientIds);
         }
 
-        if (schema && surveyChanged(surveyBaseline, surveyValues, schema)) {
-          await saveSiteSurvey(id, surveyPayload(surveyValues, schema));
+        if (schema) {
+          // One PUT/DELETE per changed field, not a blob save — diffed on
+          // CLEANED values (surveySaveOps) so a no-op edit that only differs
+          // pre-cleaning (whitespace, cosmetic int formatting) never fires.
+          const { put, clear } = surveySaveOps(surveyBaseline, surveyValues, schema);
+          for (const [key, value] of put) {
+            await putSiteSurveyValue(id, key, value);
+          }
+          for (const key of clear) {
+            await clearSiteSurveyValue(id, key);
+          }
           setSurveyBaseline(surveyValues);
         }
       } catch (err) {
@@ -336,8 +349,10 @@ export default function SiteEditModal({
             <div className="modal-section">Notes</div>
             <div className="pf-form">
               <div className="full">
-                <label>Notes</label>
+                {/* the section header IS the label — repeating it read as a
+                    stutter ("NOTES / NOTES") */}
                 <textarea value={form.notes} disabled={locked} rows={3}
+                          aria-label="Notes"
                           onChange={(e) => setField('notes', e.target.value)} />
               </div>
             </div>

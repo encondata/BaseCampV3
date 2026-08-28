@@ -59,13 +59,15 @@ async def test_unknown_lookup_rejected(client, seeded_user):
     assert resp.json()["detail"]["code"] == "unknown_status"
 
 
-async def test_patch_rejects_survey_data(client, seeded_user):
-    """Survey has its own endpoint so registry validation can't be bypassed."""
+async def test_patch_rejects_unknown_field(client, seeded_user):
+    """extra=forbid rejects any field PATCH doesn't recognize — survey
+    answers have their own endpoints so registry validation can't be
+    bypassed via this one."""
     hdrs = await login(client)
     site_id = (await client.post("/sites", headers=hdrs,
                                  json={"name": "S"})).json()["id"]
     resp = await client.patch(f"/sites/{site_id}", headers=hdrs,
-                              json={"survey_data": {"contact_name": "X"}})
+                              json={"bogus_field": "X"})
     assert resp.status_code == 422
 
 

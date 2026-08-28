@@ -1,9 +1,10 @@
 """Workers: profiles, blacklist↔login coupling, certifications, levels."""
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.config import get_settings
-from serversherpa.db.models import Person, PersonRole, UserAccount
+from serversherpa.db.models import Person, PersonRole, UserAccount, WorkerProfile
 from serversherpa.security.passwords import hash_password
 
 PW = "CorrectHorse9!"
@@ -66,6 +67,51 @@ async def test_profile_upsert_with_level_and_partner(client, seeded_user, db):
     resp = await client.put(f"/workers/{worker.id}/profile", headers=headers,
                             json={"partner_id": str(worker.id)})
     assert resp.json()["detail"]["code"] == "partner_not_found"
+
+
+async def test_profile_upsert_conflict_recovers_via_savepoint(
+        client, seeded_user, db, monkeypatch):
+    """worker_profiles' PK is person_id. Simulate the real race: a profile
+    already exists (committed), but force the handler's own initial
+    `db.get(WorkerProfile, ...)` to miss it exactly once, so the request
+    takes the create path and collides for real on flush. The savepoint
+    must recover — expunge the failed insert, re-select the concurrent
+    winner, apply the PUT's field values to it, and audit an honest diff
+    off the pre-existing values (not blank defaults)."""
+    worker = await _mk_worker(db)
+    db.add(WorkerProfile(person_id=worker.id, trade="Old trade",
+                         status="active", created_by=seeded_user.id))
+    await db.commit()
+
+    orig_get = AsyncSession.get
+    state = {"tripped": False}
+
+    async def fake_get(self, entity, ident, *args, **kwargs):
+        if entity is WorkerProfile and not state["tripped"]:
+            state["tripped"] = True
+            return None
+        return await orig_get(self, entity, ident, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncSession, "get", fake_get)
+
+    headers = await _headers(client)
+    resp = await client.put(f"/workers/{worker.id}/profile", headers=headers, json={
+        "trade": "New trade", "status": "standby"})
+    assert resp.status_code == 204
+    assert state["tripped"]      # the seam actually fired
+
+    w = (await client.get("/workers", headers=headers)).json()[0]
+    assert w["trade"] == "New trade"
+    assert w["status"] == "standby"
+
+    db.add(PersonRole(person_id=seeded_user.id, role="admin"))
+    await db.commit()
+    audit_rows = [r for r in (await client.get(
+        f"/audit?entity_type=worker&entity_id={worker.id}",
+        headers=headers)).json() if r["action"] == "profile.update"]
+    assert len(audit_rows) == 1
+    assert audit_rows[0]["changes"]["trade"] == {"from": "Old trade", "to": "New trade"}
+    assert audit_rows[0]["changes"]["status"] == {"from": "active", "to": "standby"}
 
 
 async def test_blacklist_requires_note_and_kills_login(client, seeded_user, db):
