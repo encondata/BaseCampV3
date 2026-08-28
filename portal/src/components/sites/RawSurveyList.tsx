@@ -59,7 +59,11 @@ const CSV_COLUMNS: [string, (r: RawSurveyRow) => string][] = [
   ['Ingested', (r) => rawSurveyCellText(r, 'ingested')],
 ];
 
-export default function RawSurveyList({ siteId, refreshKey }: { siteId: string; refreshKey?: number }) {
+export default function RawSurveyList({ siteId, refreshKey, onCount }: {
+  siteId: string;
+  refreshKey?: number;
+  onCount?: (n: number | null) => void;
+}) {
   const [rows, setRows] = useState<RawSurveyRow[] | null>(null);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
@@ -78,10 +82,12 @@ export default function RawSurveyList({ siteId, refreshKey }: { siteId: string; 
       const data = await listSiteSurveyRaw(siteId);
       setRows(data);
       setError('');
+      onCount?.(data.length);
     } catch (err) {
       setError(err instanceof ApiError && err.status === 403
         ? 'You do not have permission to view this site.'
         : 'Failed to load survey submissions.');
+      onCount?.(null);
     }
   };
 

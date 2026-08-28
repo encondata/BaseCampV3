@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import CollapsePanel from '../components/CollapsePanel';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import RawSurveyList from '../components/sites/RawSurveyList';
 import SiteEditModal from '../components/sites/SiteEditModal';
@@ -38,6 +39,7 @@ export default function SiteDetail() {
   const [missing, setMissing] = useState(false);
   const [editing, setEditing] = useState(false);
   const [surveyCount, setSurveyCount] = useState<{ filled: number; total: number } | null>(null);
+  const [rawSurveyCount, setRawSurveyCount] = useState<number | null>(null);
   const [surveyVersion, setSurveyVersion] = useState(0);
 
   const [types, setTypes] = useState<SiteLookup[]>([]);
@@ -146,18 +148,25 @@ export default function SiteDetail() {
       </div>
 
       <div className="init-panel">
-        <p className="eyebrow-sm">
-          Site Survey Data
-          {surveyCount ? ` — ${surveyCount.filled}/${surveyCount.total} filled` : ''}
-        </p>
-        <SiteSurveyList siteId={site.id} onCount={setSurveyCount}
-                        onSaved={() => setSurveyVersion((v) => v + 1)}
-                        refreshKey={surveyVersion} />
+        <CollapsePanel title="Site Survey Data"
+                       badge={surveyCount && (
+                         <span className="badge-count">
+                           {surveyCount.filled}/{surveyCount.total} filled
+                         </span>
+                       )}>
+          <SiteSurveyList siteId={site.id} onCount={setSurveyCount}
+                          onSaved={() => setSurveyVersion((v) => v + 1)}
+                          refreshKey={surveyVersion} />
+        </CollapsePanel>
       </div>
 
       <div className="init-panel">
-        <p className="eyebrow-sm">Raw Survey Data</p>
-        <RawSurveyList siteId={site.id} refreshKey={surveyVersion} />
+        <CollapsePanel title="Raw Survey Data"
+                       badge={rawSurveyCount !== null && (
+                         <span className="badge-count">{rawSurveyCount} entries</span>
+                       )}>
+          <RawSurveyList siteId={site.id} refreshKey={surveyVersion} onCount={setRawSurveyCount} />
+        </CollapsePanel>
       </div>
 
       {editing && (

@@ -57,7 +57,12 @@
 
 /* ── map view ─────────────────────────────────────────────────── */
 
-.sites-map { height: 60vh; border-radius: 14px; overflow: hidden; }
+/* isolate Leaflet's internal pane/control z-indexes (up to ~1000) so they
+   can never escape the map and beat page overlays like the edit modal
+   (.modal-scrim is z-index: 80) — a new stacking context, not a z-index
+   arms race. */
+.sites-map { height: 60vh; border-radius: 14px; overflow: hidden;
+  position: relative; isolation: isolate; z-index: 0; }
 
 .sites-map-view { display: flex; flex-direction: column; gap: 12px; }
 
