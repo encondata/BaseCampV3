@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
@@ -577,6 +578,43 @@ async def _clear_curated_survey_field(
           changes={field_key: {"from": before, "to": None}})
 
 
+async def _upsert_survey_entry(
+    db: DbSession, site_id: uuid.UUID, field_key: str, cleaned, raw_id: int,
+    actor_id: uuid.UUID, now: datetime, existing: SiteSurveyEntry | None,
+) -> tuple[SiteSurveyEntry, object]:
+    """Insert the curated row, or update it if the caller already selected
+    `existing`. `site_survey_data` has UNIQUE(site_id, field_key) — under
+    concurrent PUTs of the same field, both requests can miss the caller's
+    select and both attempt the insert. Guard the insert in a savepoint:
+    on IntegrityError the pending row is expunged automatically, so
+    re-select the concurrent winner and fall through to the update path.
+    Returns (entry, before-value) for the audit diff."""
+    before = existing.value if existing is not None else None
+    if existing is None:
+        try:
+            async with db.begin_nested():
+                existing = SiteSurveyEntry(
+                    site_id=site_id, field_key=field_key, value=cleaned,
+                    raw_id=raw_id, updated_by=actor_id)
+                db.add(existing)
+                await db.flush()
+            return existing, before
+        except IntegrityError:
+            existing = await db.scalar(select(SiteSurveyEntry).where(
+                SiteSurveyEntry.site_id == site_id,
+                SiteSurveyEntry.field_key == field_key))
+            if existing is None:      # violation wasn't ours — re-raise
+                raise
+            before = existing.value
+
+    existing.value = cleaned
+    existing.raw_id = raw_id
+    existing.updated_by = actor_id
+    existing.updated_at = now
+    await db.flush()
+    return existing, before
+
+
 @router.put("/{site_id}/survey/{field_key}", response_model=SiteSurveyRowOut)
 async def put_site_survey_field(
     site_id: uuid.UUID,
@@ -599,6 +637,17 @@ async def put_site_survey_field(
         await db.commit()
         return _survey_row(field, None, {})
 
+    existing = await db.scalar(select(SiteSurveyEntry).where(
+        SiteSurveyEntry.site_id == site_id,
+        SiteSurveyEntry.field_key == field_key))
+    if existing is not None and existing.value == cleaned:
+        # idempotent PUT — value unchanged, so write nothing: no raw entry,
+        # no audit row, no updated_by/updated_at/raw_id touch. Names
+        # resolve against the existing row's updated_by, which may not be
+        # this actor.
+        people = await _people_names(db, {existing.updated_by})
+        return _survey_row(field, existing, people)
+
     now = datetime.now(UTC)
     raw = RawSurveyEntry(site_id=site_id, field_key=field_key, value=cleaned,
                          captured_at=now, submitted_by=actor.person.id,
@@ -606,21 +655,8 @@ async def put_site_survey_field(
     db.add(raw)
     await db.flush()
 
-    existing = await db.scalar(select(SiteSurveyEntry).where(
-        SiteSurveyEntry.site_id == site_id,
-        SiteSurveyEntry.field_key == field_key))
-    before = existing.value if existing is not None else None
-    if existing is None:
-        existing = SiteSurveyEntry(
-            site_id=site_id, field_key=field_key, value=cleaned,
-            raw_id=raw.id, updated_by=actor.person.id)
-        db.add(existing)
-    else:
-        existing.value = cleaned
-        existing.raw_id = raw.id
-        existing.updated_by = actor.person.id
-        existing.updated_at = now
-    await db.flush()
+    entry, before = await _upsert_survey_entry(
+        db, site_id, field_key, cleaned, raw.id, actor.person.id, now, existing)
 
     audit(db, actor_id=actor.person.id, entity_type="site",
           entity_id=str(site_id), action="survey.update",
@@ -628,7 +664,7 @@ async def put_site_survey_field(
     await db.commit()
 
     people = await _people_names(db, {actor.person.id})
-    return _survey_row(field, existing, people)
+    return _survey_row(field, entry, people)
 
 
 @router.delete("/{site_id}/survey/{field_key}", status_code=204)

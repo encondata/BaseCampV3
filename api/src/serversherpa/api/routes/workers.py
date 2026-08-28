@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.resolver import can_touch_rank
@@ -147,6 +148,34 @@ async def list_workers(
 NON_NULLABLE_PROFILE_FIELDS = ("status",)
 
 
+async def _get_or_create_profile(
+    db: DbSession, person_id: uuid.UUID, actor_id: uuid.UUID,
+) -> WorkerProfile:
+    """Get the existing profile, or create one and flush it immediately
+    inside a savepoint. worker_profiles' PK is person_id — under
+    concurrent PUTs for the same worker, both requests can miss the
+    initial get() and both insert. Flushing inside the guard (rather than
+    letting the insert ride along to the final commit) catches the
+    conflict here, before the mutate/audit/session-revocation flow below
+    ever runs against what would otherwise be a doomed pending row. On
+    IntegrityError the pending row is expunged automatically, so
+    re-select the concurrent winner and return that instead."""
+    profile = await db.get(WorkerProfile, person_id)
+    if profile is not None:
+        return profile
+    try:
+        async with db.begin_nested():
+            profile = WorkerProfile(person_id=person_id, created_by=actor_id)
+            db.add(profile)
+            await db.flush()
+        return profile
+    except IntegrityError:
+        profile = await db.get(WorkerProfile, person_id)
+        if profile is None:       # violation wasn't ours — re-raise
+            raise
+        return profile
+
+
 @router.put("/{person_id}/profile", status_code=204)
 async def upsert_profile(
     person_id: uuid.UUID,
@@ -168,10 +197,7 @@ async def upsert_profile(
         if field in data and data[field] is None:
             raise _err(422, f"{field}_required")
 
-    profile = await db.get(WorkerProfile, person_id)
-    if profile is None:
-        profile = WorkerProfile(person_id=person_id, created_by=actor.person.id)
-        db.add(profile)
+    profile = await _get_or_create_profile(db, person_id, actor.person.id)
 
     fields = ["partner_id", "trade", "level", "status", "status_note"]
     before = snapshot(profile, fields)
