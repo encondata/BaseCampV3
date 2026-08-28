@@ -106,10 +106,11 @@ const CSV_COLUMNS: [string, (r: SiteSurveyRow) => string][] = [
   ['Updated at', (r) => r.updated_at ?? ''],
 ];
 
-export default function SiteSurveyList({ siteId, onCount, onSaved }: {
+export default function SiteSurveyList({ siteId, onCount, onSaved, refreshKey }: {
   siteId: string;
   onCount?: (info: { filled: number; total: number } | null) => void;
   onSaved?: () => void;
+  refreshKey?: number;
 }) {
   const { can } = useAuth();
   const canChange = can('sites', 'change');
@@ -144,7 +145,7 @@ export default function SiteSurveyList({ siteId, onCount, onSaved }: {
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [siteId]);
+  }, [siteId, refreshKey]);
 
   // Registry position at load, keyed by field — the default sort's join
   // to questionnaire order. replaceRow (below) only ever swaps a row in

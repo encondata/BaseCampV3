@@ -151,7 +151,8 @@ export default function SiteDetail() {
           {surveyCount ? ` — ${surveyCount.filled}/${surveyCount.total} filled` : ''}
         </p>
         <SiteSurveyList siteId={site.id} onCount={setSurveyCount}
-                        onSaved={() => setSurveyVersion((v) => v + 1)} />
+                        onSaved={() => setSurveyVersion((v) => v + 1)}
+                        refreshKey={surveyVersion} />
       </div>
 
       <div className="init-panel">
@@ -168,7 +169,7 @@ export default function SiteDetail() {
           partners={partners}
           canChange={canChange}
           onClose={() => setEditing(false)}
-          onSaved={() => load()}
+          onSaved={() => { void load(); setSurveyVersion((v) => v + 1); }}
         />
       )}
     </div>
