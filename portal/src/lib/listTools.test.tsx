@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
 /**
  * lib/listTools.tsx: the column-order helpers (applyColumnOrder, moveKey),
- * the useReorderDrag drag-and-drop hook, and ColumnsButton's reorder mode.
+ * the useReorderDrag drag-and-drop hook, ColumnsButton's reorder mode, and
+ * csvCell (exportCsv's field encoder incl. the OWASP formula-injection guard).
  */
 
 import { cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  applyColumnOrder, ColumnsButton, moveKey, useReorderDrag, useSearchHaystacks, type ColumnDef,
+  applyColumnOrder, ColumnsButton, csvCell, moveKey, useReorderDrag, useSearchHaystacks,
+  type ColumnDef,
 } from './listTools';
 
 // The pinned jsdom here has no DragEvent constructor, so @testing-library/dom's
@@ -185,5 +187,53 @@ describe('ColumnsButton reorder', () => {
     expect(container.querySelector('.pop-grip')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'b' }));
     expect(onChange).toHaveBeenCalledWith(new Set(['a', 'b']));
+  });
+});
+
+describe('csvCell quoting (existing behavior)', () => {
+  it('passes plain values through untouched', () => {
+    expect(csvCell('hello')).toBe('hello');
+    expect(csvCell('')).toBe('');
+  });
+
+  it('quotes values containing commas', () => {
+    expect(csvCell('a,b')).toBe('"a,b"');
+  });
+
+  it('quotes and doubles embedded quotes', () => {
+    expect(csvCell('say "hi"')).toBe('"say ""hi"""');
+  });
+
+  it('quotes values containing newlines', () => {
+    expect(csvCell('line1\nline2')).toBe('"line1\nline2"');
+  });
+});
+
+describe('csvCell formula-injection guard', () => {
+  it('neutralizes = formulas', () => {
+    expect(csvCell('=HYPERLINK("http://evil")')).toBe(
+      '"\'=HYPERLINK(""http://evil"")"',
+    );
+    expect(csvCell('=1+1')).toBe("'=1+1");
+  });
+
+  it('neutralizes + prefixed values', () => {
+    expect(csvCell('+cmd|calc')).toBe("'+cmd|calc");
+  });
+
+  it('neutralizes - prefixed values', () => {
+    expect(csvCell('-cmd|calc')).toBe("'-cmd|calc");
+  });
+
+  it('neutralizes @ prefixed values', () => {
+    expect(csvCell('@SUM(1,2)')).toBe('"\'@SUM(1,2)"');
+  });
+
+  it('leaves purely numeric values alone (negative numbers are data)', () => {
+    // Decision: only escape when the value is NOT purely numeric —
+    // lists legitimately export negative/signed numbers like "-5".
+    expect(csvCell('-5')).toBe('-5');
+    expect(csvCell('-5.25')).toBe('-5.25');
+    expect(csvCell('+12')).toBe('+12');
   });
 });
