@@ -10,12 +10,14 @@ import pytest
 
 from serversherpa.db.models import DbBackup, Person, PersonRole
 from serversherpa.services.db_backup import (
-    PgDumpFailed, PgDumpUnavailable, decrypt_openssl, encrypt_openssl,
+    PgDumpFailed, PgDumpUnavailable, _dump_argv, decrypt_openssl,
+    encrypt_openssl,
 )
 from tests.test_assets_api import login, make_login
 
 FAKE_DUMP = b"-- fake dump\n"
 PASSWORD = "CorrectHorse9!"
+DB_PASSWORD = "s3cr3t-db-p$ss!"  # deliberately shell-hostile chars (no "@": that's the URL userinfo/host separator, not something this test is about)
 
 
 # ── crypto round-trip (pure, no app/db needed) ──────────────────────
@@ -63,6 +65,40 @@ def test_openssl_can_decrypt_our_envelope(tmp_path):
     )
     assert result.returncode == 0, result.stderr.decode()
     assert out_path.read_bytes() == FAKE_DUMP
+
+
+# ── pg_dump argv/env (the password must never reach argv) ──────────
+
+
+def test_dump_argv_keeps_password_out_of_argv_and_only_in_env(monkeypatch):
+    """Regression test for the real conninfo-building path: argv is visible
+    to every other process on the host via `ps`, so the DB password may
+    appear ONLY in the returned env's PGPASSWORD, never in any argv
+    element. (`url.set(password=None)` is a no-op in SQLAlchemy — None
+    there means "leave unchanged" — so a naive implementation leaves the
+    real password sitting in the conninfo string; this test would catch
+    that regression.)"""
+    monkeypatch.setattr(
+        "serversherpa.services.db_backup._resolve_pg_dump",
+        lambda: "/usr/bin/pg_dump")
+
+    database_url = (
+        f"postgresql+asyncpg://dbuser:{DB_PASSWORD}@dbhost:6543/serversherpa")
+    argv, env = _dump_argv(database_url)
+
+    assert argv[0] == "/usr/bin/pg_dump"
+    assert "--no-owner" in argv
+    assert "--no-privileges" in argv
+    for arg in argv:
+        assert DB_PASSWORD not in arg, f"password leaked into argv: {arg!r}"
+
+    assert env["PGPASSWORD"] == DB_PASSWORD
+    # the conninfo argument (right after "-d") still carries user/host/db
+    conninfo = argv[argv.index("-d") + 1]
+    assert "dbuser" in conninfo
+    assert "dbhost" in conninfo
+    assert "6543" in conninfo
+    assert "serversherpa" in conninfo
 
 
 # ── endpoint tests (storage + pg_dump mocked) ───────────────────────

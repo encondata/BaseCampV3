@@ -17,6 +17,7 @@ Key material is derived with PBKDF2-HMAC-SHA256 over (password, salt),
 import asyncio
 import os
 import shutil
+from urllib.parse import quote
 
 from cryptography.hazmat.primitives import hashes, padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -111,23 +112,50 @@ def _resolve_pg_dump() -> str:
     raise PgDumpUnavailable()
 
 
-async def run_pg_dump(database_url: str) -> bytes:
-    """Run `pg_dump --no-owner --no-privileges` (plain-format SQL) against
-    `database_url` and return the dump bytes. The password is passed via the
-    PGPASSWORD environment variable, never as an argv element (argv is
-    visible to every other process on the host via `ps`; the environment of
-    a subprocess we spawn ourselves is not)."""
-    binary = _resolve_pg_dump()
+def _conninfo_without_password(url) -> str:
+    """A libpq URI for `url` with the password component dropped entirely
+    — not masked, not blanked, just absent from the string.
 
+    NB: `url.set(password=None)` does NOT clear the password — SQLAlchemy
+    treats None on `.set()` as "leave this field unchanged" for every
+    field, so that call is a no-op and the real password stays in the
+    rendered string. Building the URI from the individual components here
+    sidesteps that trap without reaching for the underscore-prefixed
+    `_replace()` internals."""
+    userinfo = quote(url.username, safe="") if url.username else None
+    hostinfo = url.host or ""
+    if url.port:
+        hostinfo = f"{hostinfo}:{url.port}"
+    database = url.database or ""
+    netloc = f"{userinfo}@{hostinfo}" if userinfo else hostinfo
+    return f"postgresql://{netloc}/{database}"
+
+
+def _dump_argv(database_url: str) -> tuple[list[str], dict[str, str]]:
+    """Build the pg_dump argv and subprocess environment for `database_url`.
+
+    Split out from run_pg_dump so the security property that matters here —
+    the password lives ONLY in the returned env's PGPASSWORD, never in
+    argv (argv is visible to every other process on the host via `ps`; the
+    environment of a subprocess we spawn ourselves is not) — is directly
+    unit-testable without spawning a real pg_dump."""
+    binary = _resolve_pg_dump()
     # SQLAlchemy's asyncpg driver URL isn't a libpq URI; strip the driver
-    # suffix and pull the password out into PGPASSWORD instead.
+    # suffix before parsing.
     url = make_url(database_url.replace("+asyncpg", ""))
     env = {**os.environ, "PGPASSWORD": url.password or ""}
-    conninfo = url.set(password=None).render_as_string(hide_password=False)
+    conninfo = _conninfo_without_password(url)
+    argv = [binary, "--no-owner", "--no-privileges", "-d", conninfo]
+    return argv, env
+
+
+async def run_pg_dump(database_url: str) -> bytes:
+    """Run `pg_dump --no-owner --no-privileges` (plain-format SQL) against
+    `database_url` and return the dump bytes."""
+    argv, env = _dump_argv(database_url)
 
     proc = await asyncio.create_subprocess_exec(
-        binary, "--no-owner", "--no-privileges", "-d", conninfo,
-        env=env,
+        *argv, env=env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
