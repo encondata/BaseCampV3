@@ -36,7 +36,7 @@ async def test_create_group_defaults_echoed(client, db, seeded_user):
     assert body["description"] == ""
     assert set(body["channels"]) == {"email", "web"}
     assert body["quiet_start"] is None and body["quiet_end"] is None
-    assert body["timezone"] == "America/Chicago"
+    assert body["timezone"] == "America/New_York"
     assert set(body["active_days"]) == {"mon", "tue", "wed", "thu", "fri",
                                         "sat", "sun"}
     assert body["dnd_behavior"] == "defer"

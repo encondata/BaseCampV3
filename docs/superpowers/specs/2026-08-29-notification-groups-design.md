@@ -31,7 +31,7 @@ Schema of record is the migration; `db/models.py` mirrors it. Downgrade must be 
 | `channels` | text[] | not null, default `{email,web}`; CHECK subset of `{email,text,push,web}` |
 | `quiet_start` | time | nullable |
 | `quiet_end` | time | nullable; CHECK both-or-neither with `quiet_start` (NULL pair = no quiet hours) |
-| `timezone` | text | not null, default `America/Chicago`; IANA name validated in code via `zoneinfo` |
+| `timezone` | text | not null, default `America/New_York` (migration 0034; was America/Chicago); IANA name validated in code via `zoneinfo` |
 | `active_days` | text[] | not null, default `{mon,tue,wed,thu,fri,sat,sun}`; CHECK subset; code enforces non-empty |
 | `dnd_behavior` | text | not null, default `defer`; CHECK `defer\|skip` — what happens when quiet hours block a send |
 | `urgent_bypass` | boolean | not null, default true — urgent notifications ignore quiet hours |
@@ -134,7 +134,7 @@ Full detail page in the house-benchmark style:
   timezone, days, DND behavior, urgent bypass) with an Edit button opening a modal. The
   modal form is a 2-column label-above-control grid per the binding form rules: channel
   toggles rendered as an aligned labeled-switch group (never floating checkboxes), quiet
-  hours (start / end / timezone selects), active-days selector, DND behavior select
+  hours (start / end selects, timezone via type-to-filter ComboBox over the full IANA list), active-days selector, DND behavior select
   (Defer / Skip), urgent-bypass switch. Section headings visually distinct from field labels.
 - **Members panel**: real aligned table — Person (avatar, name, job title), Contact
   (email / phone, "—" when absent), Effective channels (chips + an override marker when

@@ -319,7 +319,7 @@ class NotificationGroup(Base):
         ARRAY(Text), server_default=text("'{email,web}'::text[]"))
     quiet_start: Mapped[time | None] = mapped_column(Time)
     quiet_end: Mapped[time | None] = mapped_column(Time)
-    timezone: Mapped[str] = mapped_column(server_default="America/Chicago")
+    timezone: Mapped[str] = mapped_column(server_default="America/New_York")
     active_days: Mapped[list[str]] = mapped_column(
         ARRAY(Text), server_default=text("'{mon,tue,wed,thu,fri,sat,sun}'::text[]"))
     dnd_behavior: Mapped[str] = mapped_column(server_default="defer")
