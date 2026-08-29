@@ -19,6 +19,7 @@ import ImportMoveAssets from './pages/ImportMoveAssets';
 import Initiatives from './pages/Initiatives';
 import InitiativeDetailPage from './pages/InitiativeDetail';
 import MoveAssetDetail from './pages/MoveAssetDetail';
+import Notifications from './pages/Notifications';
 import Partners from './pages/Partners';
 import Placeholder from './pages/Placeholder';
 import Login from './pages/Login';
@@ -118,10 +119,7 @@ export default function App() {
             } />
             <Route path="/settings" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
             <Route path="/system/notifications" element={
-              <ProtectedRoute resource="settings">
-                <Placeholder eyebrow="System" title="Notifications"
-                             hint="Notification rules and delivery settings." />
-              </ProtectedRoute>
+              <ProtectedRoute resource="notifications"><Notifications /></ProtectedRoute>
             } />
             <Route path="/system/processes" element={
               <ProtectedRoute minRank={80}><SystemProcesses /></ProtectedRoute>

@@ -2401,3 +2401,181 @@ export async function restartProcesses(): Promise<{ restarting: boolean }> {
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
+
+/* ── notification groups ─────────────────────────────────────────────
+ * Mirrors api/src/serversherpa/api/schemas.py's Notification*Out shapes.
+ * Times ("quiet_start"/"quiet_end") serialize as "HH:MM:SS" strings. */
+
+export interface NotificationGroup {
+  id: string;
+  name: string;
+  description: string;
+  channels: string[];
+  quiet_start: string | null;
+  quiet_end: string | null;
+  timezone: string;
+  active_days: string[];
+  dnd_behavior: string;
+  urgent_bypass: boolean;
+  enabled: boolean;
+  member_count: number;
+  created_at: string;
+}
+
+export interface NotificationMemberOverrides {
+  channels: string[] | null;
+  quiet_mode: string | null;
+  quiet_start: string | null;
+  quiet_end: string | null;
+  timezone: string | null;
+  active_days: string[] | null;
+  dnd_behavior: string | null;
+  urgent_bypass: boolean | null;
+}
+
+export interface NotificationEffectiveSettings {
+  channels: string[];
+  quiet_start: string | null;
+  quiet_end: string | null;
+  timezone: string;
+  active_days: string[];
+  dnd_behavior: string;
+  urgent_bypass: boolean;
+}
+
+export interface NotificationMember {
+  person_id: string;
+  display_name: string;
+  job_title: string | null;
+  avatar_url: string | null;
+  email: string | null;
+  phone: string | null;
+  has_account: boolean;
+  can_email: boolean;
+  can_text: boolean;
+  can_push: boolean;
+  can_web: boolean;
+  overrides: NotificationMemberOverrides;
+  effective: NotificationEffectiveSettings;
+  added_at: string;
+}
+
+export interface NotificationGroupDetail extends NotificationGroup {
+  members: NotificationMember[];
+}
+
+export interface NotificationRecipient {
+  person_id: string;
+  display_name: string;
+  job_title: string | null;
+  avatar_url: string | null;
+  email: string | null;
+  phone: string | null;
+  has_account: boolean;
+  can_email: boolean;
+  can_text: boolean;
+  can_push: boolean;
+  can_web: boolean;
+}
+
+/** Shared shape for group create/patch — all fields optional so callers can
+ *  send a partial patch. */
+export interface NotificationGroupSettingsIn {
+  channels?: string[];
+  quiet_start?: string | null;
+  quiet_end?: string | null;
+  timezone?: string;
+  active_days?: string[];
+  dnd_behavior?: string;
+  urgent_bypass?: boolean;
+}
+
+export interface NotificationGroupCreateIn extends NotificationGroupSettingsIn {
+  name: string;
+  description?: string;
+}
+
+export interface NotificationGroupPatchIn extends NotificationGroupSettingsIn {
+  name?: string;
+  description?: string;
+  enabled?: boolean;
+}
+
+export async function listNotificationGroups(): Promise<NotificationGroup[]> {
+  const resp = await apiFetch('/notifications/groups');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createNotificationGroup(
+  body: NotificationGroupCreateIn,
+): Promise<NotificationGroup> {
+  const resp = await apiFetch('/notifications/groups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getNotificationGroup(id: string): Promise<NotificationGroupDetail> {
+  const resp = await apiFetch(`/notifications/groups/${id}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateNotificationGroup(
+  id: string, body: NotificationGroupPatchIn,
+): Promise<NotificationGroup> {
+  const resp = await apiFetch(`/notifications/groups/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function deleteNotificationGroup(id: string): Promise<void> {
+  const resp = await apiFetch(`/notifications/groups/${id}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function addNotificationMember(
+  groupId: string, personId: string,
+): Promise<NotificationMember> {
+  const resp = await apiFetch(`/notifications/groups/${groupId}/members`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ person_id: personId }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateNotificationMember(
+  groupId: string, personId: string, overrides: Partial<NotificationMemberOverrides>,
+): Promise<NotificationMember> {
+  const resp = await apiFetch(`/notifications/groups/${groupId}/members/${personId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(overrides),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function removeNotificationMember(
+  groupId: string, personId: string,
+): Promise<void> {
+  const resp = await apiFetch(`/notifications/groups/${groupId}/members/${personId}`,
+    { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function listNotificationRecipients(): Promise<NotificationRecipient[]> {
+  const resp = await apiFetch('/notifications/recipients');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}

@@ -24,6 +24,7 @@ export const ROUTE_RESOURCE: Record<string, string> = {
   '/stakeholders/clients': 'clients',
   '/stakeholders/partners': 'partners',
   '/settings': 'settings',
+  '/system/notifications': 'notifications',
   '/access': 'access',
   '/admin/asset-models': 'asset_models',
   '/audit': 'audit',
