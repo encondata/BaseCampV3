@@ -18,9 +18,10 @@ import {
 } from '../../lib/api';
 import {
   CHANNELS, CHANNEL_LABELS, DAYS, canForChannel, formatDays, formatQuietHours,
-  type Channel, type Day,
+  timezoneOptions, type Channel, type Day,
 } from '../../lib/notifications';
 import { avatarGradient, initials } from '../../lib/format';
+import ComboBox from '../ComboBox';
 
 type Mode = 'default' | 'custom';
 type QuietMode = 'default' | 'none' | 'custom';
@@ -33,13 +34,6 @@ const DND_LABELS: Record<string, string> = {
   defer: 'Defer until window opens',
   skip: 'Skip entirely',
 };
-
-/** The 8 common IANA zones offered here — same curated list as
- *  EditSettingsModal's group-level timezone picker. */
-const TIMEZONES = [
-  'America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix',
-  'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu', 'UTC',
-];
 
 const ERRORS: Record<string, string> = {
   channel_unavailable: "That channel isn't available for this person.",
@@ -278,11 +272,10 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved }:
               </div>
               {timezoneMode === 'custom' && (
                 <div className="full">
-                  <label htmlFor="ov-tz-custom">Custom timezone</label>
-                  <select id="ov-tz-custom" value={timezoneCustom} disabled={saving}
-                          onChange={(e) => setTimezoneCustom(e.target.value)}>
-                    {TIMEZONES.map((tz) => <option key={tz} value={tz}>{tz}</option>)}
-                  </select>
+                  <label>Custom timezone</label>
+                  <ComboBox options={timezoneOptions()} value={timezoneCustom}
+                            onChange={setTimezoneCustom} disabled={saving}
+                            placeholder="Type to search timezones…" />
                 </div>
               )}
             </div>

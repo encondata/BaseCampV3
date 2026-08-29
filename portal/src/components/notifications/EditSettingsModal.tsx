@@ -14,18 +14,14 @@ import {
   ApiError, updateNotificationGroup,
   type NotificationGroupDetail, type NotificationGroupPatchIn,
 } from '../../lib/api';
-import { CHANNEL_LABELS, CHANNELS, DAYS, type Channel, type Day } from '../../lib/notifications';
+import ComboBox from '../ComboBox';
+import {
+  CHANNEL_LABELS, CHANNELS, DAYS, timezoneOptions, type Channel, type Day,
+} from '../../lib/notifications';
 
 const DAY_LABELS: Record<Day, string> = {
   mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun',
 };
-
-/** The 8 common IANA zones the settings modal offers — deliberately a
- *  short curated list rather than the full tz database. */
-const TIMEZONES = [
-  'America/New_York', 'America/Chicago', 'America/Denver', 'America/Phoenix',
-  'America/Los_Angeles', 'America/Anchorage', 'Pacific/Honolulu', 'UTC',
-];
 
 const ERRORS: Record<string, string> = {
   invalid_quiet_hours: "Quiet hours need both a start and an end (and they can't be equal).",
@@ -181,11 +177,10 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
                 </select>
               </div>
               <div>
-                <label htmlFor="ngd-timezone">Timezone</label>
-                <select id="ngd-timezone" value={timezone} disabled={saving}
-                        onChange={(e) => setTimezone(e.target.value)}>
-                  {TIMEZONES.map((tz) => <option key={tz} value={tz}>{tz}</option>)}
-                </select>
+                <label>Timezone</label>
+                <ComboBox options={timezoneOptions()} value={timezone}
+                          onChange={setTimezone} disabled={saving}
+                          placeholder="Type to search timezones…" />
               </div>
               {quietMode === 'custom' && (
                 <>

@@ -56,3 +56,37 @@ describe('canForChannel', () => {
     expect(canForChannel(caps, 'web')).toBe(false);
   });
 });
+
+describe('timezone helpers', () => {
+  it('allTimezones returns the full IANA list including worldwide zones', async () => {
+    const { allTimezones, DEFAULT_TIMEZONE } = await import('./notifications');
+    const zones = allTimezones();
+    expect(zones.length).toBeGreaterThan(100);
+    expect(zones).toContain(DEFAULT_TIMEZONE);
+    expect(zones).toContain('Pacific/Auckland');
+    expect(zones).toContain('Europe/London');
+    expect(zones).toContain('UTC');
+    expect([...zones].sort()).toEqual(zones); // alphabetical
+  });
+
+  it('DEFAULT_TIMEZONE is New York', async () => {
+    const { DEFAULT_TIMEZONE } = await import('./notifications');
+    expect(DEFAULT_TIMEZONE).toBe('America/New_York');
+  });
+
+  it('tzOffsetLabel formats a UTC offset and handles bad zones', async () => {
+    const { tzOffsetLabel } = await import('./notifications');
+    expect(tzOffsetLabel('UTC')).toBe('UTC+00:00');
+    expect(tzOffsetLabel('America/New_York')).toMatch(/^UTC-0[45]:00$/);
+    expect(tzOffsetLabel('Not/AZone')).toBe('');
+  });
+
+  it('timezoneOptions carries value/label/sub for the ComboBox', async () => {
+    const { timezoneOptions } = await import('./notifications');
+    const opts = timezoneOptions();
+    const ny = opts.find((o) => o.value === 'America/New_York');
+    expect(ny).toBeTruthy();
+    expect(ny!.label).toBe('America/New_York');
+    expect(ny!.sub).toMatch(/^UTC-0[45]:00$/);
+  });
+});
