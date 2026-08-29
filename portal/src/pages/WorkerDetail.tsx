@@ -56,7 +56,6 @@ export default function WorkerDetailPage() {
   const { personId } = useParams<{ personId: string }>();
   const { can } = useAuth();
   const canManage = can('workers', 'change');
-  const canEditPerson = can('users', 'change');
 
   const [worker, setWorker] = useState<WorkerDetailItem | null>(null);
   const [missing, setMissing] = useState(false);
@@ -107,12 +106,21 @@ export default function WorkerDetailPage() {
     }
     try {
       if (Object.keys(patch).length > 0) {
-        const resp = await apiFetch(`/users/${worker.person_id}/profile`, {
+        const resp = await apiFetch(`/workers/${worker.person_id}/person`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(patch),
         });
-        if (!resp.ok) throw new Error(String(resp.status));
+        if (!resp.ok) {
+          let code = 'unknown';
+          try { code = (await resp.json())?.detail?.code ?? code; } catch { /* noop */ }
+          setPersonError(code === 'rank_too_low'
+            ? "You can't edit this person's details — they outrank you."
+            : code === 'email_in_use'
+              ? 'That contact email is already in use by another person.'
+              : 'Could not save — check the fields and try again.');
+          return;
+        }
       }
       setEditingPerson(false);
       void load();
@@ -215,7 +223,7 @@ export default function WorkerDetailPage() {
           <div className="panel">
             <div className="panel-head">
               <h3>{editingPerson ? 'Edit person details' : 'Person details'}</h3>
-              {canEditPerson && !editingPerson && (
+              {canManage && !editingPerson && (
                 <button className="mini-btn" onClick={startPersonEdit}>Edit</button>
               )}
             </div>
@@ -341,7 +349,9 @@ export default function WorkerDetailPage() {
                           <td>{chip(i.work_type_label, i.work_type_color) ?? '—'}</td>
                           <td>{i.site_worked_name ?? '—'}</td>
                           <td>{i.rating != null ? `★ ${i.rating}` : '—'}</td>
-                          <td className="mono">{new Date(i.added_at).toLocaleDateString()}</td>
+                          <td className="mono" style={{ whiteSpace: 'nowrap' }}>
+                            {new Date(i.added_at).toLocaleDateString()}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
