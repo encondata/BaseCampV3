@@ -332,7 +332,8 @@ class OrgItem(BaseModel):
     code: str | None
     partner_types: list[str] = []   # partners only
     status: str
-    tier: str
+    tier: str | None = None            # clients only; None for partners
+    service_region: str | None = None  # partners only; None for clients
     phone: str | None
     website: str | None
     address_line1: str | None
@@ -357,7 +358,8 @@ class OrgCreateIn(BaseModel):
     partner_types: list[str] = []   # partners only; API-validated against
                                      # status_values record_type=partner_type
     status: Literal["prospect", "active", "dormant"] = "active"
-    tier: Literal["standard", "preferred", "strategic"] = "standard"
+    tier: Literal["standard", "preferred", "strategic"] = "standard"   # clients only
+    service_region: str | None = None   # partners only; freeform, '' -> NULL
     phone: str | None = None
     website: str | None = None
     address_line1: str | None = None
@@ -377,7 +379,8 @@ class OrgUpdateIn(BaseModel):
     code: str | None = None
     partner_types: list[str] | None = None   # partners only; API-validated
     status: Literal["prospect", "active", "dormant"] | None = None
-    tier: Literal["standard", "preferred", "strategic"] | None = None
+    tier: Literal["standard", "preferred", "strategic"] | None = None   # clients only
+    service_region: str | None = None   # partners only; freeform, '' -> NULL
     phone: str | None = None
     website: str | None = None
     address_line1: str | None = None

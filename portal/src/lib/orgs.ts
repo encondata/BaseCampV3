@@ -16,7 +16,8 @@ export interface OrgItem {
   code: string | null;
   partner_types: string[];
   status: string;
-  tier: string;
+  tier: string | null;             // clients only; null for partners
+  service_region: string | null;   // partners only; null for clients
   phone: string | null;
   website: string | null;
   address_line1: string | null;
@@ -83,12 +84,12 @@ export function partnerTypeColor(key: string, vocab: Map<string, StatusValue>): 
 /** Column-menu accessor (lib/columnMenu.tsx's `CellText<T>`) — one row's
  *  display text for a given column key. Mirrors exactly what the page's own
  *  cell renderer shows: 'status' reads effectiveStatus through STATUS_META
- *  (so 'Archived' is a selectable value, same as the pill), 'tier' shows
- *  the raw key (the cell renders it unlabeled), and 'type' joins the
- *  partner-types chip list, resolved through `typeVocab` (see
- *  `partnerTypeLabel`). 'primary' is the always-shown name+code/city cell —
- *  no archived pseudo-column is needed since archived already lives inside
- *  'status'.
+ *  (so 'Archived' is a selectable value, same as the pill), 'tier' (clients
+ *  only) shows the raw key unlabeled, 'service_region' (partners only) shows
+ *  the freeform text, and 'type' joins the partner-types chip list, resolved
+ *  through `typeVocab` (see `partnerTypeLabel`). 'primary' is the
+ *  always-shown name+code/city cell — no archived pseudo-column is needed
+ *  since archived already lives inside 'status'.
  *
  *  `typeVocab` defaults to an empty map so this still satisfies
  *  columnMenu's `CellText<OrgItem>` (a 2-arg callback) wherever the vocab
@@ -105,7 +106,8 @@ export function orgCellText(
     }
     case 'type': return o.partner_types.length
       ? o.partner_types.map((t) => partnerTypeLabel(t, typeVocab)).join(', ') : '—';
-    case 'tier': return o.tier;
+    case 'tier': return o.tier ?? '—';
+    case 'service_region': return o.service_region ?? '—';
     case 'status': return STATUS_META[effectiveStatus(o)]?.label ?? effectiveStatus(o);
     case 'manager': return o.account_manager?.display_name ?? '—';
     case 'contacts': return String(o.contact_count);
@@ -130,9 +132,11 @@ export function orgCellText(
  *  (api/src/serversherpa/api/deps.py:93-93). Verified against the
  *  handler: name_or_code_in_use (_commit_or_409's IntegrityError catch),
  *  manager_not_found (_apply, when account_manager_id doesn't resolve to
- *  a Person), org_not_found (_get_org), and {field}_required for
- *  name/status/tier/country — the four OrgUpdateIn fields the handler
- *  refuses to accept a null for once the key is present in the body. */
+ *  a Person), org_not_found (_get_org), {field}_required for
+ *  name/status/country (plus tier for clients only) — the OrgUpdateIn
+ *  fields the handler refuses to accept a null for once the key is
+ *  present in the body — and tier_not_allowed / service_region_not_allowed
+ *  when the wrong kind's org sends the other kind's field. */
 export const ORG_ERRORS: Record<string, string> = {
   name_or_code_in_use: 'That name or code is already in use.',
   manager_not_found: 'Pick a valid account manager.',
@@ -141,6 +145,8 @@ export const ORG_ERRORS: Record<string, string> = {
   status_required: 'Status is required.',
   tier_required: 'Tier is required.',
   country_required: 'Country is required.',
+  tier_not_allowed: 'Partners do not have a tier.',
+  service_region_not_allowed: 'Clients do not have a service region.',
   forbidden: 'You do not have permission to change this.',
 };
 
@@ -169,12 +175,14 @@ export function ORG_GOD_FIELDS(): GodField<OrgItem>[] {
     { column: 'primary2', field: 'code', kind: 'text',
       fromRow: (o) => o.code ?? '' },
     { column: 'tier', field: 'tier', kind: 'select',
-      fromRow: (o) => o.tier,
+      fromRow: (o) => o.tier ?? '',
       options: () => [
         { value: 'standard', label: 'Standard' },
         { value: 'preferred', label: 'Preferred' },
         { value: 'strategic', label: 'Strategic' },
       ] },
+    { column: 'service_region', field: 'service_region', kind: 'text',
+      fromRow: (o) => o.service_region ?? '' },
     { column: 'status', field: 'status', kind: 'select',
       fromRow: (o) => o.status,
       options: () => [

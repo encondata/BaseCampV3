@@ -900,3 +900,103 @@ async def test_partner_type_vocabulary(client, seeded_user, db):
     assert by_key["tech"]["usage_count"] == 1
     assert by_key["cable"]["usage_count"] == 0
     assert by_key["staffing"]["usage_count"] == 1
+
+
+async def test_partner_has_no_tier_but_records_service_region(client, seeded_user):
+    """Partners dropped tier in favor of a freeform service_region. Creating
+    one without tier succeeds (tier comes back None), sending tier is
+    rejected outright, and service_region round-trips through create and
+    patch — including '' normalizing to NULL."""
+    headers = await _headers(client)
+
+    resp = await client.post("/partners", headers=headers, json={"name": "Southline Corp"})
+    assert resp.status_code == 201, resp.text
+    org = resp.json()
+    assert org["tier"] is None
+    assert org["service_region"] is None
+    pid = org["id"]
+
+    # sending tier to a partner is rejected, not silently ignored
+    resp = await client.post("/partners", headers=headers,
+                             json={"name": "Bad Tier Co", "tier": "standard"})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "tier_not_allowed"
+
+    resp = await client.patch(f"/partners/{pid}", headers=headers, json={"tier": "preferred"})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "tier_not_allowed"
+
+    # service_region accepts any freeform string and round-trips
+    resp = await client.patch(f"/partners/{pid}", headers=headers,
+                              json={"service_region": "Southeast US"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["service_region"] == "Southeast US"
+
+    listed = (await client.get("/partners", headers=headers)).json()
+    row = next(r for r in listed if r["id"] == pid)
+    assert row["service_region"] == "Southeast US"
+    assert row["tier"] is None
+
+    # '' normalizes to NULL
+    resp = await client.patch(f"/partners/{pid}", headers=headers,
+                              json={"service_region": ""})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["service_region"] is None
+
+    # can be set directly on create too
+    resp = await client.post("/partners", headers=headers, json={
+        "name": "Northline Corp", "service_region": "Pacific Northwest"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["service_region"] == "Pacific Northwest"
+
+
+async def test_client_tier_unchanged_and_rejects_service_region(client, seeded_user):
+    """Clients keep tier exactly as before; sending service_region to a
+    client is rejected the same way tier is rejected for partners."""
+    headers = await _headers(client)
+
+    resp = await client.post("/clients", headers=headers, json={"name": "Acme West"})
+    assert resp.status_code == 201, resp.text
+    org = resp.json()
+    assert org["tier"] == "standard"     # unchanged default behavior
+    assert org["service_region"] is None
+    cid = org["id"]
+
+    resp = await client.patch(f"/clients/{cid}", headers=headers, json={"tier": "strategic"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["tier"] == "strategic"
+
+    # tier still required (cannot be nulled) for clients
+    resp = await client.patch(f"/clients/{cid}", headers=headers, json={"tier": None})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "tier_required"
+
+    # sending service_region to a client is rejected outright
+    resp = await client.post("/clients", headers=headers,
+                             json={"name": "Bad Region Co", "service_region": "Midwest"})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "service_region_not_allowed"
+
+    resp = await client.patch(f"/clients/{cid}", headers=headers,
+                              json={"service_region": "Midwest"})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "service_region_not_allowed"
+
+
+async def test_partner_service_region_change_is_audited(client, seeded_user, db):
+    from sqlalchemy import select
+
+    from serversherpa.db.models import AuditLog
+
+    headers = await _headers(client)
+    org = (await client.post("/partners", headers=headers,
+                             json={"name": "Auditable Partners"})).json()
+
+    resp = await client.patch(f"/partners/{org['id']}", headers=headers,
+                              json={"service_region": "New England"})
+    assert resp.status_code == 200, resp.text
+
+    row = (await db.scalars(select(AuditLog).where(
+        AuditLog.entity_type == "partner", AuditLog.entity_id == org["id"],
+        AuditLog.action == "update"))).one()
+    assert row.changes["service_region"] == {"from": None, "to": "New England"}

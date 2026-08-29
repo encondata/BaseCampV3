@@ -15,7 +15,7 @@ function statusValue(key: string, label: string, color: string): StatusValue {
 const org: OrgItem = {
   id: 'o1', name: 'Acme Co', code: 'ACME',
   partner_types: ['staffing'],
-  status: 'active', tier: 'preferred',
+  status: 'active', tier: 'preferred', service_region: null,
   phone: '555-0100', website: 'https://acme.example',
   address_line1: '1 Way', address_line2: null,
   city: 'Austin', region: 'TX', postal_code: '78701', country: 'US',
@@ -33,7 +33,7 @@ const org: OrgItem = {
  * against the schema; ORG_GOD_FIELDS must only ever name a field from
  * this writable set. */
 const ORG_WRITABLE_FIELDS = new Set([
-  'name', 'code', 'status', 'tier', 'phone', 'website',
+  'name', 'code', 'status', 'tier', 'service_region', 'phone', 'website',
   'address_line1', 'address_line2', 'city', 'region', 'postal_code',
   'country', 'notes',
 ]);
@@ -48,7 +48,8 @@ describe('ORG_GOD_FIELDS', () => {
 
   it('every fromRow round-trips a sample row', () => {
     const expected: Record<string, string> = {
-      primary: 'Acme Co', primary2: 'ACME', tier: 'preferred', status: 'active',
+      primary: 'Acme Co', primary2: 'ACME', tier: 'preferred',
+      service_region: '', status: 'active',
       phone: '555-0100', website: 'https://acme.example',
       city: 'Austin', region: 'TX', postal_code: '78701', country: 'US',
       address_line1: '1 Way', address_line2: '', notes: '',
@@ -62,9 +63,10 @@ describe('ORG_GOD_FIELDS', () => {
       ...org, code: null, phone: null, website: null,
       city: null, region: null, postal_code: null,
       address_line1: null, address_line2: null, notes: null,
+      service_region: null,
     };
     for (const col of ['primary2', 'phone', 'website', 'city', 'region',
-      'postal_code', 'address_line1', 'address_line2', 'notes']) {
+      'postal_code', 'address_line1', 'address_line2', 'notes', 'service_region']) {
       const f = fields.find((x) => x.column === col)!;
       expect(f.fromRow(bare)).toBe('');
     }
@@ -130,6 +132,16 @@ describe('orgCellText', () => {
     expect(orgCellText(org, 'tier')).toBe('preferred');
   });
 
+  it('tier dashes when unset (partner rows, which never populate it)', () => {
+    expect(orgCellText({ ...org, tier: null }, 'tier')).toBe('—');
+  });
+
+  it('service_region reads the raw freeform text, dashing when unset', () => {
+    expect(orgCellText({ ...org, service_region: 'Southeast US' }, 'service_region'))
+      .toBe('Southeast US');
+    expect(orgCellText(org, 'service_region')).toBe('—');
+  });
+
   it('status reads the STATUS_META label through effectiveStatus, so archived is selectable', () => {
     expect(orgCellText(org, 'status')).toBe('Active');
     expect(orgCellText({ ...org, archived_at: '2026-01-01T00:00:00Z' }, 'status')).toBe('Archived');
@@ -191,7 +203,8 @@ describe('ORG_ERRORS', () => {
   it('covers every code update_org can raise, plus the generic 403', () => {
     for (const code of [
       'name_or_code_in_use', 'manager_not_found', 'org_not_found',
-      'name_required', 'status_required', 'tier_required', 'country_required', 'forbidden',
+      'name_required', 'status_required', 'tier_required', 'country_required',
+      'tier_not_allowed', 'service_region_not_allowed', 'forbidden',
     ]) {
       expect(ORG_ERRORS[code]).toBeTruthy();
     }

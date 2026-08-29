@@ -512,7 +512,12 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
                 </span>
               </StatusHover>
               {org.archived_at && <span className="chip tag">Archived</span>}
-              <span className={`chip ${TIER_META[org.tier] ?? 'tag'}`}>{org.tier}</span>
+              {kind === 'client' && org.tier && (
+                <span className={`chip ${TIER_META[org.tier] ?? 'tag'}`}>{org.tier}</span>
+              )}
+              {kind === 'partner' && org.service_region && (
+                <span className="chip tag">{org.service_region}</span>
+              )}
               {kind === 'partner' && org.partner_types.map((t) => (
                 <span key={t} className="chip custom"
                       style={{ '--chip': partnerTypeColor(t, typeVocab) } as CSSProperties}>
@@ -550,7 +555,8 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
               ? <a href={org.website} target="_blank" rel="noreferrer">{org.website}</a>
               : '—'}</dd>
             <dt>Account manager</dt><dd>{org.account_manager?.display_name ?? '—'}</dd>
-            <dt>Tier</dt><dd>{org.tier}</dd>
+            <dt>{kind === 'client' ? 'Tier' : 'Region'}</dt>
+            <dd>{(kind === 'client' ? org.tier : org.service_region) ?? '—'}</dd>
             <dt>Created</dt><dd className="mono">{longDate(org.created_at)}</dd>
             {org.notes && <><dt>Directory notes</dt><dd>{org.notes}</dd></>}
           </dl>

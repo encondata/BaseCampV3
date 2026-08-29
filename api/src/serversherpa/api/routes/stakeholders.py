@@ -149,7 +149,8 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             code=org.code,
             partner_types=getattr(org, "partner_types", None) or [],
             status=org.status,
-            tier=org.tier,
+            tier=getattr(org, "tier", None),
+            service_region=getattr(org, "service_region", None),
             phone=org.phone,
             website=org.website,
             address_line1=org.address_line1,
@@ -199,6 +200,15 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
     async def _apply(db: AsyncSession, org, data: dict, actor: AuthContext):
         """Apply field updates only — the CALLER commits, so audit rows added
         after _apply always ride the same transaction as the mutation."""
+        # tier is client-only, service_region is partner-only — reject the
+        # wrong-kind field outright rather than silently dropping it (unlike
+        # partner_types, which clients may harmlessly submit and have ignored).
+        if is_partner and "tier" in data:
+            raise _err(422, "tier_not_allowed")
+        if not is_partner and "service_region" in data:
+            raise _err(422, "service_region_not_allowed")
+        if data.get("service_region") is not None:
+            data["service_region"] = data["service_region"].strip() or None
         if "account_manager_id" in data:
             manager_id = data.pop("account_manager_id")
             if manager_id is not None and await db.get(Person, manager_id) is None:
@@ -257,7 +267,8 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
     ) -> OrgItem:
         org = await _get_org(db, org_id, actor)
         data = body.model_dump(exclude_unset=True)
-        for required in ("name", "status", "tier", "country"):
+        required_fields = ("name", "status", "country") + (() if is_partner else ("tier",))
+        for required in required_fields:
             if required in data and data[required] is None:
                 raise _err(422, f"{required}_required")
         fields = []
@@ -265,6 +276,14 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             if key == "account_manager_id":
                 fields.append("account_manager")
             elif key == "partner_types" and not is_partner:
+                continue
+            # tier/service_region don't exist as attributes on the wrong
+            # kind's model at all — skip them here (rather than
+            # AttributeError-ing on snapshot()) and let _apply's explicit
+            # checks below raise the proper 422 for the wrong-kind field.
+            elif key == "tier" and is_partner:
+                continue
+            elif key == "service_region" and not is_partner:
                 continue
             else:
                 fields.append(key)

@@ -112,11 +112,13 @@ const PILLS = [
   { key: 'archived', label: 'Archived' },
 ];
 
-/* column registry (Name is fixed-first, chevron fixed-last). `type` is
-   partner-only and filtered out for clients at render time. */
-const ALL_COLUMNS: (ColumnDef & { partnerOnly?: boolean })[] = [
+/* column registry (Name is fixed-first, chevron fixed-last). `type` and
+   `service_region` are partner-only, `tier` is client-only — all three
+   are filtered out for the other kind at render time. */
+const ALL_COLUMNS: (ColumnDef & { partnerOnly?: boolean; clientOnly?: boolean })[] = [
   { key: 'type', label: 'Type', width: '1.1fr', default: true, partnerOnly: true },
-  { key: 'tier', label: 'Tier', width: '1fr', default: true },
+  { key: 'tier', label: 'Tier', width: '1fr', default: true, clientOnly: true },
+  { key: 'service_region', label: 'Region', width: '1fr', default: true, partnerOnly: true },
   { key: 'status', label: 'Status', width: '1fr', default: true },
   { key: 'manager', label: 'Account manager', width: '1.4fr', default: true },
   { key: 'contacts', label: 'Contacts', width: '0.8fr', default: true },
@@ -152,7 +154,8 @@ function sortValueFor(o: OrgItem, key: string): string | number {
   switch (key) {
     case 'primary': return o.name.toLowerCase();
     case 'type': return o.partner_types.join(',');
-    case 'tier': return o.tier;
+    case 'tier': return o.tier ?? '';
+    case 'service_region': return (o.service_region ?? '').toLowerCase();
     case 'status': return effectiveStatus(o);
     case 'manager': return o.account_manager?.display_name.toLowerCase() ?? '';
     case 'contacts': return o.contact_count;
@@ -178,8 +181,13 @@ function csvColumns(hasType: boolean): [string, (o: OrgItem) => string][] {
     ['Code', (o) => o.code ?? ''],
   ];
   if (hasType) cols.push(['Types', (o) => o.partner_types.join('; ')]);
+  // 'Region' is already used below for the address region (city/state) —
+  // partners' service region is a distinct freeform field, so it gets its
+  // own CSV header rather than colliding with that one.
   cols.push(
-    ['Tier', (o) => o.tier],
+    hasType
+      ? ['Service region', (o) => o.service_region ?? '']
+      : ['Tier', (o) => o.tier ?? ''],
     ['Status', (o) => effectiveStatus(o)],
     ['Account manager', (o) => o.account_manager?.display_name ?? ''],
     ['Contacts', (o) => String(o.contact_count)],
@@ -235,7 +243,8 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
   );
 
   const columns = useMemo(
-    () => ALL_COLUMNS.filter((c) => cfg.hasType || !c.partnerOnly),
+    () => ALL_COLUMNS.filter((c) => (cfg.hasType || !c.partnerOnly)
+      && (!cfg.hasType || !c.clientOnly)),
     [cfg.hasType]);
 
   const load = async () => {
@@ -398,7 +407,11 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
           </div>
         );
       case 'tier':
-        return <span className={`chip ${TIER_META[o.tier] ?? 'tag'}`}>{o.tier}</span>;
+        return o.tier
+          ? <span className={`chip ${TIER_META[o.tier] ?? 'tag'}`}>{o.tier}</span>
+          : <span className="chip tag">—</span>;
+      case 'service_region':
+        return <span className="cell-top">{o.service_region || '—'}</span>;
       case 'status': {
         const s = STATUS_META[effectiveStatus(o)];
         return (
@@ -1122,6 +1135,7 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
     code: org?.code ?? '',
     status: org?.status ?? 'active',
     tier: org?.tier ?? 'standard',
+    service_region: org?.service_region ?? '',
     phone: org?.phone ?? '',
     website: org?.website ?? '',
     city: org?.city ?? '',
@@ -1151,7 +1165,6 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
       name: form.name.trim(),
       code: form.code.trim() || null,
       status: form.status,
-      tier: form.tier,
       phone: form.phone.trim() || null,
       website: form.website.trim() || null,
       city: form.city.trim() || null,
@@ -1159,6 +1172,10 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
       notes: form.notes.trim() || null,
       account_manager_id: form.account_manager_id || null,
     };
+    // tier is client-only, service_region is partner-only — the API
+    // rejects (422) the other kind's field outright, so never send it.
+    if (cfg.kind === 'client') payload.tier = form.tier;
+    else payload.service_region = form.service_region.trim() || null;
     if (cfg.hasType) payload.partner_types = [...types];
     const resp = await apiFetch(org ? `${cfg.apiBase}/${org.id}` : cfg.apiBase, {
       method: org ? 'PATCH' : 'POST',
@@ -1211,12 +1228,18 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
                   <option value="active">Active</option>
                   <option value="dormant">Dormant</option>
                 </select></div>
-              <div><label>Tier</label>
-                <select className="org-select" value={form.tier} onChange={set('tier')}>
-                  <option value="standard">Standard</option>
-                  <option value="preferred">Preferred</option>
-                  <option value="strategic">Strategic</option>
-                </select></div>
+              {cfg.kind === 'client' ? (
+                <div><label>Tier</label>
+                  <select className="org-select" value={form.tier} onChange={set('tier')}>
+                    <option value="standard">Standard</option>
+                    <option value="preferred">Preferred</option>
+                    <option value="strategic">Strategic</option>
+                  </select></div>
+              ) : (
+                <div><label>Service region</label>
+                  <input value={form.service_region} onChange={set('service_region')}
+                         placeholder="e.g. Southeast US" /></div>
+              )}
               <div><label>Account manager</label>
                 <ComboBox
                   placeholder="Type to search people…"

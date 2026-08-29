@@ -98,7 +98,6 @@ class OrgColumns:
     postal_code: Mapped[str | None]
     country: Mapped[str] = mapped_column(server_default="US")
     status: Mapped[str] = mapped_column(server_default="active")
-    tier: Mapped[str] = mapped_column(server_default="standard")
     account_manager: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     logo_key: Mapped[str | None]
 
@@ -110,6 +109,7 @@ class Client(OrgColumns, Base):
         primary_key=True, server_default=text("gen_random_uuid()"))
     name: Mapped[str] = mapped_column(CITEXT)
     code: Mapped[str | None] = mapped_column(CITEXT)
+    tier: Mapped[str] = mapped_column(server_default="standard")
     notes: Mapped[str | None]
     source: Mapped[str] = mapped_column(server_default="manual")
     source_ref: Mapped[str | None]
@@ -130,6 +130,9 @@ class Partner(OrgColumns, Base):
     # (composite FK can't cover arrays) — see initiatives.shipping_types
     partner_types: Mapped[list[str]] = mapped_column(
         ARRAY(Text), server_default=text("'{}'::text[]"))
+    # freeform, unlike Client.tier — partners aren't tiered, they just
+    # record which regions they service; NULL = unrecorded
+    service_region: Mapped[str | None]
     notes: Mapped[str | None]
     source: Mapped[str] = mapped_column(server_default="manual")
     source_ref: Mapped[str | None]
