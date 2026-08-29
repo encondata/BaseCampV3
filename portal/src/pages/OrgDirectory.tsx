@@ -104,11 +104,13 @@ const TIER_META: Record<string, string> = {
   standard: 'tag', preferred: 'c-blue', strategic: 'c-amber',
 };
 
-const PILLS = [
+/* prospect is a client-lifecycle concept — partners are engaged or they
+   aren't, so their page hides the pill (and the modal's option below). */
+const PILLS: { key: string; label: string; clientOnly?: boolean }[] = [
   { key: 'all', label: 'All' },
   { key: 'active', label: 'Active' },
-  { key: 'prospect', label: 'Prospect' },
-  { key: 'dormant', label: 'Dormant' },
+  { key: 'prospect', label: 'Prospect', clientOnly: true },
+  { key: 'dormant', label: 'In-Active' },
   { key: 'archived', label: 'Archived' },
 ];
 
@@ -467,7 +469,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
 
       <div className="dir-toolbar">
         <div className="segmented" role="tablist">
-          {PILLS.map((p) => (
+          {PILLS.filter((p) => !p.clientOnly || cfg.kind === 'client').map((p) => (
             <button key={p.key} className={pill === p.key ? 'on' : ''}
                     onClick={() => setPill(p.key)}>
               {p.label} <span className="n">{counts[p.key] ?? 0}</span>
@@ -1224,9 +1226,9 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
               )}
               <div><label>Status</label>
                 <select className="org-select" value={form.status} onChange={set('status')}>
-                  <option value="prospect">Prospect</option>
+                  {cfg.kind === 'client' && <option value="prospect">Prospect</option>}
                   <option value="active">Active</option>
-                  <option value="dormant">Dormant</option>
+                  <option value="dormant">In-Active</option>
                 </select></div>
               {cfg.kind === 'client' ? (
                 <div><label>Tier</label>
