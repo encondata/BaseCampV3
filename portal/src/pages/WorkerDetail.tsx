@@ -22,6 +22,7 @@ import {
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
+import '../styles/settings.css';   // .set-note
 
 const PERSON_FIELDS = [
   { key: 'first_name', label: 'First name', full: false, required: true },
