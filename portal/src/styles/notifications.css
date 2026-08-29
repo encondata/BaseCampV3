@@ -17,6 +17,34 @@
   margin-bottom: 4px;
 }
 
+/* EditSettingsModal's section headings (Channels/Quiet hours/Active
+ * days/Behavior) in place of the shared .modal-section — that class
+ * renders at the same mono/9.5px/uppercase/text-mute look as .pf-form's
+ * own field labels just below it, so the two hierarchy levels were
+ * visually identical (house rule: section headings must be visually
+ * distinct from field labels — divider + spacing + weight). This adds
+ * a hairline top divider, generous surrounding space, a heavier weight
+ * and a touch more size/darker color than the field labels, all from
+ * existing house tokens. Scoped to this file/class rather than
+ * .modal-section itself, which ~15 other modals across the app share
+ * unchanged. */
+.ngd-section {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dark);
+  border-top: 1px solid var(--paper-line);
+  padding-top: 16px;
+  margin: 22px 0 12px;
+}
+.ngd-section:first-child {
+  border-top: 0;
+  padding-top: 0;
+  margin-top: 0;
+}
+
 /* Labeled switch row — label left, switch right, spanning the full
    width of the 2-col .pf-form grid (never a raw floating checkbox). */
 .ngd-switch-row {
@@ -163,13 +191,19 @@
   flex-wrap: wrap;
 }
 
-/* OverrideEditorModal dropped its per-section .modal-section headings
-   (they duplicated the field label right below them), but .modal-section
-   was also the only source of vertical rhythm between sections. Scoped to
-   .ov-body so no other modal's .modal-body/.pf-form pairing is affected;
-   the adjacent-sibling selector fires only between back-to-back .pf-form
-   blocks (Channels/Quiet hours/Timezone/Active days) and not before the
-   Behavior .pf-form, which still follows its own .modal-section heading. */
-.ov-body > .pf-form + .pf-form {
+/* OverrideEditorModal dropped all of its per-section .modal-section
+   headings (pass 2 removed the last one, Behavior — with the others
+   already gone it read as just another field label rather than a
+   section boundary; When blocked/Urgent bypass are self-explanatory
+   without it), but .modal-section was also the only source of vertical
+   rhythm between sections. Scoped to .ov-body so no other modal's
+   .modal-body/.pf-form pairing is affected. Two selectors cover the two
+   ways a section can precede the next .pf-form: back-to-back .pf-form
+   blocks (Channels/Quiet hours/Timezone/Active days/Behavior), and
+   Active days' .pf-form followed by the .day-pills block instead when
+   daysMode is 'custom' — Behavior's .pf-form still needs the same gap
+   whichever one came right before it. */
+.ov-body > .pf-form + .pf-form,
+.ov-body > .day-pills + .pf-form {
   margin-top: 18px;
 }

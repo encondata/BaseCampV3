@@ -159,7 +159,7 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
         </div>
         <form onSubmit={submit}>
           <div className="modal-body">
-            <div className="modal-section">Channels</div>
+            <div className="ngd-section">Channels</div>
             <div className="pf-form">
               {CHANNELS.map((c) => (
                 <div className="full ngd-switch-row" key={c}>
@@ -170,7 +170,7 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
               ))}
             </div>
 
-            <div className="modal-section">Quiet hours</div>
+            <div className="ngd-section">Quiet hours</div>
             <div className="pf-form">
               <div>
                 <label htmlFor="ngd-quiet-mode">Window</label>
@@ -203,7 +203,7 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
               )}
             </div>
 
-            <div className="modal-section">Active days</div>
+            <div className="ngd-section">Active days</div>
             <div className="day-pills">
               {DAYS.map((d) => (
                 <button type="button" key={d} disabled={saving}
@@ -214,7 +214,7 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
               ))}
             </div>
 
-            <div className="modal-section">Behavior</div>
+            <div className="ngd-section">Behavior</div>
             <div className="pf-form">
               <div>
                 <label htmlFor="ngd-dnd">When blocked</label>

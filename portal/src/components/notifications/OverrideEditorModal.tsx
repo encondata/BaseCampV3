@@ -309,7 +309,6 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved }:
               </div>
             )}
 
-            <div className="modal-section">Behavior</div>
             <div className="pf-form">
               <div className="full">
                 <label htmlFor="ov-dnd-mode">When blocked</label>

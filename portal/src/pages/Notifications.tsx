@@ -38,20 +38,26 @@ import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
 
-/* Each width is a minmax(<px>, <fr>) — the px floor keeps the header
+/* Most widths are minmax(<px>, <fr>) — the px floor keeps the header
  * label and the column's real content (chips, the nowrap quiet-hours
  * string, the status chip) from colliding with its neighbor at narrow
  * viewports (~1024px), the fr keeps the original relative growth once
- * there's slack; see notif-polish1-brief.md fix 6. */
+ * there's slack; see notif-polish1-brief.md fix 6. Members/Days/Status/
+ * Created carry short, low-variance content (a count, a day summary, a
+ * two-word chip, a locale date) that gains nothing from growing, so
+ * those four are plain fixed px instead — this is what keeps the 8
+ * floors + gaps fitting a ~1000px content area without a scrollbar
+ * (polish pass 2, fix 3); Description is clamped to 2 lines and shrinks
+ * furthest, Quiet hours stays a nowrap ellipsis at its ~150px floor. */
 const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: 'minmax(130px, 1.5fr)', default: true },
-  { key: 'description', label: 'Description', width: 'minmax(160px, 2fr)', default: true },
-  { key: 'members', label: 'Members', width: 'minmax(70px, 0.7fr)', default: true },
-  { key: 'channels', label: 'Channels', width: 'minmax(160px, 1.8fr)', default: true },
-  { key: 'quiet_hours', label: 'Quiet hours', width: 'minmax(170px, 1.8fr)', default: true },
-  { key: 'days', label: 'Days', width: 'minmax(90px, 1fr)', default: true },
-  { key: 'status', label: 'Status', width: 'minmax(100px, 0.8fr)', default: true },
-  { key: 'created', label: 'Created', width: 'minmax(100px, 1fr)', default: true },
+  { key: 'name', label: 'Name', width: 'minmax(110px, 1.3fr)', default: true },
+  { key: 'description', label: 'Description', width: 'minmax(100px, 2fr)', default: true },
+  { key: 'members', label: 'Members', width: '60px', default: true },
+  { key: 'channels', label: 'Channels', width: 'minmax(140px, 1.6fr)', default: true },
+  { key: 'quiet_hours', label: 'Quiet hours', width: 'minmax(150px, 1.2fr)', default: true },
+  { key: 'days', label: 'Days', width: '70px', default: true },
+  { key: 'status', label: 'Status', width: '90px', default: true },
+  { key: 'created', label: 'Created', width: '85px', default: true },
 ];
 
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
