@@ -35,6 +35,10 @@ GROUP_FIELDS = ["name", "description", "channels", "quiet_start", "quiet_end",
                 "timezone", "active_days", "dnd_behavior", "urgent_bypass",
                 "enabled"]
 
+# Every group column except quiet_start/quiet_end is NOT NULL — an explicit
+# null in a PATCH body must 422 here, not IntegrityError at commit.
+NON_NULLABLE_GROUP_FIELDS = frozenset(GROUP_FIELDS) - {"quiet_start", "quiet_end"}
+
 
 def _err(status: int, code: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code})
@@ -239,6 +243,9 @@ async def patch_group(
     _validate_quiet_hours(effective_start, effective_end)
 
     data = body.model_dump(exclude_unset=True)
+    if any(data[field] is None
+           for field in NON_NULLABLE_GROUP_FIELDS & data.keys()):
+        raise _err(422, "invalid")
 
     if "name" in data:
         exists = await db.scalar(select(NotificationGroup.id).where(

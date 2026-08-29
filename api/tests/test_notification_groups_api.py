@@ -195,6 +195,39 @@ async def test_patch_explicit_null_quiet_start_alone_rejected(
     assert resp.json()["detail"]["code"] == "invalid_quiet_hours"
 
 
+async def test_patch_explicit_null_non_nullable_field_rejected(
+        client, db, seeded_user):
+    """An explicit null for a NOT NULL column must 422 up front, not
+    reach the DB and 500 with an IntegrityError."""
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs,
+                             json={"name": "Null guard"})
+    gid = resp.json()["id"]
+    for field in ("name", "description", "channels", "timezone",
+                  "active_days", "dnd_behavior", "urgent_bypass", "enabled"):
+        resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
+                                  json={field: None})
+        assert resp.status_code == 422, f"{field}: {resp.text}"
+        assert resp.json()["detail"]["code"] == "invalid"
+
+
+async def test_patch_both_quiet_nulls_clears_quiet_hours(
+        client, db, seeded_user):
+    """quiet_start/quiet_end are the nullable exceptions — nulling both
+    together clears quiet hours."""
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs,
+                             json={"name": "Clear quiet",
+                                   "quiet_start": "22:00:00",
+                                   "quiet_end": "06:00:00"})
+    gid = resp.json()["id"]
+    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
+                              json={"quiet_start": None, "quiet_end": None})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["quiet_start"] is None and body["quiet_end"] is None
+
+
 async def test_delete_group(client, db, seeded_user):
     hdrs = await login_admin(client, db, seeded_user)
     resp = await client.post("/notifications/groups", headers=hdrs,
