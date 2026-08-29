@@ -1,0 +1,137 @@
+"""Encrypted database backups: an OpenSSL-compatible AES-256-CBC envelope
+around a pg_dump, keyed by the requesting user's own account password.
+
+The envelope format is intentionally byte-compatible with stock OpenSSL so
+an operator can decrypt a downloaded backup with nothing but the CLI:
+
+    openssl enc -d -aes-256-cbc -pbkdf2 -md sha256 -in <file> -out backup.sql
+
+That means matching OpenSSL's on-disk layout exactly: an 8-byte magic
+header (b"Salted__"), an 8-byte random salt, then the AES-CBC ciphertext.
+Key material is derived with PBKDF2-HMAC-SHA256 over (password, salt),
+10000 iterations (OpenSSL's own `-pbkdf2` default — matching it means no
+`-iter` flag is needed on the decrypt side), producing 48 bytes: the first
+32 are the AES-256 key, the last 16 are the CBC IV.
+"""
+
+import asyncio
+import os
+import shutil
+
+from cryptography.hazmat.primitives import hashes, padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from sqlalchemy.engine import make_url
+
+_MAGIC = b"Salted__"
+_SALT_LEN = 8
+_PBKDF2_ITERATIONS = 10000
+_KEY_LEN = 32
+_IV_LEN = 16
+
+# Resolution order for the pg_dump binary: PATH first, then the well-known
+# locations for hosts where PATH doesn't carry it (Homebrew's libpq is
+# keg-only and never symlinked onto PATH; the others cover common Linux
+# distro layouts).
+_FALLBACK_PG_DUMP_PATHS = [
+    "/opt/homebrew/opt/libpq/bin/pg_dump",
+    "/usr/local/bin/pg_dump",
+    "/usr/bin/pg_dump",
+]
+
+
+class PgDumpUnavailable(Exception):
+    """No pg_dump binary could be found on this host."""
+
+
+class PgDumpFailed(Exception):
+    """pg_dump ran but exited non-zero."""
+
+    def __init__(self, stderr: bytes):
+        self.stderr = stderr
+        super().__init__(stderr.decode("utf-8", errors="replace"))
+
+
+def _derive_key_iv(password: str, salt: bytes) -> tuple[bytes, bytes]:
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=_KEY_LEN + _IV_LEN,
+        salt=salt,
+        iterations=_PBKDF2_ITERATIONS,
+    )
+    material = kdf.derive(password.encode("utf-8"))
+    return material[:_KEY_LEN], material[_KEY_LEN:]
+
+
+def encrypt_openssl(data: bytes, password: str) -> bytes:
+    """Encrypt `data` into an OpenSSL `Salted__` envelope decryptable via
+    `openssl enc -d -aes-256-cbc -pbkdf2 -md sha256 -pass pass:<password>`."""
+    salt = os.urandom(_SALT_LEN)
+    key, iv = _derive_key_iv(password, salt)
+
+    padder = padding.PKCS7(algorithms.AES.block_size).padder()
+    padded = padder.update(data) + padder.finalize()
+
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+    ciphertext = encryptor.update(padded) + encryptor.finalize()
+
+    return _MAGIC + salt + ciphertext
+
+
+def decrypt_openssl(blob: bytes, password: str) -> bytes:
+    """Inverse of encrypt_openssl. Raises ValueError("bad_password_or_corrupt")
+    for a wrong password, a corrupt envelope, or anything else that keeps the
+    plaintext from coming back out cleanly (bad padding, misaligned
+    ciphertext, missing/short header) — deliberately one error for every
+    such case, since none of them are distinguishable from each other
+    without the correct password."""
+    if not blob.startswith(_MAGIC) or len(blob) < len(_MAGIC) + _SALT_LEN:
+        raise ValueError("bad_password_or_corrupt")
+
+    salt = blob[len(_MAGIC):len(_MAGIC) + _SALT_LEN]
+    ciphertext = blob[len(_MAGIC) + _SALT_LEN:]
+    key, iv = _derive_key_iv(password, salt)
+
+    try:
+        decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+        padded = decryptor.update(ciphertext) + decryptor.finalize()
+        unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+        return unpadder.update(padded) + unpadder.finalize()
+    except Exception as exc:  # noqa: BLE001 - collapse every failure mode
+        raise ValueError("bad_password_or_corrupt") from exc
+
+
+def _resolve_pg_dump() -> str:
+    found = shutil.which("pg_dump")
+    if found:
+        return found
+    for candidate in _FALLBACK_PG_DUMP_PATHS:
+        if os.path.exists(candidate):
+            return candidate
+    raise PgDumpUnavailable()
+
+
+async def run_pg_dump(database_url: str) -> bytes:
+    """Run `pg_dump --no-owner --no-privileges` (plain-format SQL) against
+    `database_url` and return the dump bytes. The password is passed via the
+    PGPASSWORD environment variable, never as an argv element (argv is
+    visible to every other process on the host via `ps`; the environment of
+    a subprocess we spawn ourselves is not)."""
+    binary = _resolve_pg_dump()
+
+    # SQLAlchemy's asyncpg driver URL isn't a libpq URI; strip the driver
+    # suffix and pull the password out into PGPASSWORD instead.
+    url = make_url(database_url.replace("+asyncpg", ""))
+    env = {**os.environ, "PGPASSWORD": url.password or ""}
+    conninfo = url.set(password=None).render_as_string(hide_password=False)
+
+    proc = await asyncio.create_subprocess_exec(
+        binary, "--no-owner", "--no-privileges", "-d", conninfo,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise PgDumpFailed(stderr)
+    return stdout

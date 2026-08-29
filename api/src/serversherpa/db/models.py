@@ -903,3 +903,21 @@ class PendingDelete(Base):
     entity_label: Mapped[str] = mapped_column(server_default="")
     marked_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     marked_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class DbBackup(Base):
+    """Metadata row for one encrypted full-database dump (Dev -> Database
+    -> Backups). The dump bytes live in Spaces at storage_key, encrypted
+    with the creator's own account password (services.db_backup) — never
+    stored here, never in this row, never in the audit log."""
+
+    __tablename__ = "db_backups"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    filename: Mapped[str]
+    storage_key: Mapped[str]
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

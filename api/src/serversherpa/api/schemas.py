@@ -1160,6 +1160,27 @@ class PendingDeleteReconcileOut(BaseModel):
     failed: list[PendingDeleteFailure] = []
 
 
+# ── db backups ───────────────────────────────────────────────────────
+
+
+class DbBackupItem(BaseModel):
+    id: uuid.UUID
+    filename: str
+    size_bytes: int
+    created_at: datetime
+    created_by: uuid.UUID | None = None
+    created_by_name: str | None = None
+    # only populated on create (a fresh presigned link); list rows leave
+    # this None — a caller wanting to download an older backup hits the
+    # dedicated download endpoint for a freshly-signed URL instead
+    download_url: str | None = None
+
+
+class DbBackupCreateIn(BaseModel):
+    password: str
+    model_config = ConfigDict(extra="forbid")
+
+
 # ── initiatives ────────────────────────────────────────────────────
 
 
