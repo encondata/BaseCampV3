@@ -44,9 +44,9 @@ async def test_client_crud_cycle(client, seeded_user):
     # update + manager assignment
     me = (await client.get("/auth/me/profile", headers=headers)).json()
     resp = await client.patch(f"/clients/{org_id}", headers=headers, json={
-        "status": "dormant", "account_manager_id": me["id"]})
+        "status": "inactive", "account_manager_id": me["id"]})
     assert resp.status_code == 200
-    assert resp.json()["status"] == "dormant"
+    assert resp.json()["status"] == "inactive"
     assert resp.json()["account_manager"]["display_name"] == "Alice Anderson"
 
     # archive / unarchive
@@ -319,7 +319,7 @@ async def test_patch_org_writes_audit_row(client, seeded_user, db):
                              json={"name": "Acme"})).json()
 
     resp = await client.patch(f"/clients/{org['id']}", headers=headers,
-                              json={"status": "dormant"})
+                              json={"status": "inactive"})
     assert resp.status_code == 200
 
     from sqlalchemy import select
@@ -329,7 +329,7 @@ async def test_patch_org_writes_audit_row(client, seeded_user, db):
         AuditLog.entity_id == org["id"],
         AuditLog.action == "update"))).one_or_none()
     assert row is not None                      # the audit row was committed
-    assert row.changes["status"] == {"from": "active", "to": "dormant"}
+    assert row.changes["status"] == {"from": "active", "to": "inactive"}
     assert row.actor_person_id == seeded_user.id
 
 

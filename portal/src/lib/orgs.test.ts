@@ -76,7 +76,7 @@ describe('ORG_GOD_FIELDS', () => {
     const tier = fields.find((f) => f.column === 'tier')!;
     const status = fields.find((f) => f.column === 'status')!;
     expect(tier.options?.().map((o) => o.value)).toEqual(['standard', 'preferred', 'strategic']);
-    expect(status.options?.().map((o) => o.value)).toEqual(['prospect', 'active', 'dormant']);
+    expect(status.options?.().map((o) => o.value)).toEqual(['prospect', 'active', 'inactive']);
   });
 
   it('deliberately has no descriptor for type, manager, or rollup columns', () => {

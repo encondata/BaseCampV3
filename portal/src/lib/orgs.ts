@@ -48,7 +48,7 @@ export function effectiveStatus(o: OrgItem): string {
 export const STATUS_META: Record<string, { label: string; cls: string }> = {
   prospect: { label: 'Prospect', cls: 'c-blue' },
   active: { label: 'Active', cls: 'c-green' },
-  dormant: { label: 'In-Active', cls: 'c-amber' },
+  inactive: { label: 'In-Active', cls: 'c-amber' },
   archived: { label: 'Archived', cls: 'c-red' },
 };
 
@@ -188,7 +188,7 @@ export function ORG_GOD_FIELDS(): GodField<OrgItem>[] {
       options: () => [
         { value: 'prospect', label: 'Prospect' },
         { value: 'active', label: 'Active' },
-        { value: 'dormant', label: 'In-Active' },
+        { value: 'inactive', label: 'In-Active' },
       ] },
     { column: 'phone', field: 'phone', kind: 'text',
       fromRow: (o) => o.phone ?? '' },

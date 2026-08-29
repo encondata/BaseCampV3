@@ -315,7 +315,7 @@ class UserCreateIn(BaseModel):
 
 # ── stakeholders (clients & partners) ──────────────────────────────
 
-ORG_STATUSES = {"prospect", "active", "dormant"}
+ORG_STATUSES = {"prospect", "active", "inactive"}
 ORG_TIERS = {"standard", "preferred", "strategic"}
 
 
@@ -357,7 +357,7 @@ class OrgCreateIn(BaseModel):
     code: str | None = None
     partner_types: list[str] = []   # partners only; API-validated against
                                      # status_values record_type=partner_type
-    status: Literal["prospect", "active", "dormant"] = "active"
+    status: Literal["prospect", "active", "inactive"] = "active"
     tier: Literal["standard", "preferred", "strategic"] = "standard"   # clients only
     service_region: str | None = None   # partners only; freeform, '' -> NULL
     phone: str | None = None
@@ -378,7 +378,7 @@ class OrgUpdateIn(BaseModel):
     name: str | None = Field(None, min_length=1)
     code: str | None = None
     partner_types: list[str] | None = None   # partners only; API-validated
-    status: Literal["prospect", "active", "dormant"] | None = None
+    status: Literal["prospect", "active", "inactive"] | None = None
     tier: Literal["standard", "preferred", "strategic"] | None = None   # clients only
     service_region: str | None = None   # partners only; freeform, '' -> NULL
     phone: str | None = None

@@ -110,7 +110,7 @@ const PILLS: { key: string; label: string; clientOnly?: boolean }[] = [
   { key: 'all', label: 'All' },
   { key: 'active', label: 'Active' },
   { key: 'prospect', label: 'Prospect', clientOnly: true },
-  { key: 'dormant', label: 'In-Active' },
+  { key: 'inactive', label: 'In-Active' },
   { key: 'archived', label: 'Archived' },
 ];
 
@@ -149,7 +149,7 @@ const DEFAULT_VISIBLE = new Set<string>(ALL_COLUMNS.filter((c) => c.default).map
 /** Sort value per column key — deliberately separate from `orgCellText`:
  *  that accessor's job is display/filter text (the STATUS_META label, the
  *  joined type-labels list), which would sort wrong (labels don't order
- *  prospect/active/dormant/archived the way the raw status key does).
+ *  prospect/active/inactive/archived the way the raw status key does).
  *  This stays raw/lowercase so naturalCompare orders rows the way a user
  *  expects. */
 function sortValueFor(o: OrgItem, key: string): string | number {
@@ -1228,7 +1228,7 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
                 <select className="org-select" value={form.status} onChange={set('status')}>
                   {cfg.kind === 'client' && <option value="prospect">Prospect</option>}
                   <option value="active">Active</option>
-                  <option value="dormant">In-Active</option>
+                  <option value="inactive">In-Active</option>
                 </select></div>
               {cfg.kind === 'client' ? (
                 <div><label>Tier</label>
