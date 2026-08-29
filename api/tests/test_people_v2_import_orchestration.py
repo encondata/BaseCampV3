@@ -4,7 +4,7 @@ its own tiny synthetic dump to tmp_path (sites importer test pattern)."""
 
 from sqlalchemy import select
 
-from serversherpa.db.models import Partner, Person, WorkerProfile
+from serversherpa.db.models import Partner, Person, PersonRole, WorkerProfile
 from serversherpa.people.v2_import import PEOPLE_COLS, import_workers
 
 
@@ -48,6 +48,10 @@ async def test_imports_worker_with_profile_and_source_ref(tmp_path, db):
     assert profile.status == "active"
     assert profile.trade == "Hardware"
     assert stats["id_map"] == {7: str(person.id)}
+    grant = await db.scalar(select(PersonRole).where(
+        PersonRole.person_id == person.id, PersonRole.role == "worker",
+        PersonRole.revoked_at.is_(None)))
+    assert grant is not None
 
 
 async def test_non_workers_are_skipped(tmp_path, db):

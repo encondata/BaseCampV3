@@ -1,5 +1,5 @@
-"""Import worker people (+ worker profiles, work history, avatars) from a
-legacy BaseCamp V2 pg_dump.
+"""Import worker people (+ worker profiles, worker role grants, work
+history, avatars) from a legacy BaseCamp V2 pg_dump.
 
 One-shot seeding helper behind `serversherpa import-v2-workers` — like
 `sites/v2_import.py`, NOT the designed bulk-import feature. The dump is
@@ -19,7 +19,8 @@ from typing import Callable, Iterator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import Attachment, Partner, Person, WorkerProfile
+from serversherpa.db.models import (
+    Attachment, Partner, Person, PersonRole, WorkerProfile)
 from serversherpa.services.storage import put_object
 from serversherpa.sites.v2_import import insert_rows
 
@@ -237,6 +238,7 @@ async def import_workers(db: AsyncSession, dump_path: str, limit: int) -> dict:
         db.add(WorkerProfile(
             person_id=person.id, partner_id=partner_id,
             trade=trade_of(row), status=status, status_note=status_note))
+        db.add(PersonRole(person_id=person.id, role="worker"))
         if email_cf:
             seen_this_run.add(email_cf)
         stats["id_map"][v2_id] = str(person.id)
