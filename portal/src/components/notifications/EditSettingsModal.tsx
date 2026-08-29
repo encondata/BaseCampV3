@@ -173,7 +173,7 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
             <div className="modal-section">Quiet hours</div>
             <div className="pf-form">
               <div>
-                <label htmlFor="ngd-quiet-mode">Quiet hours</label>
+                <label htmlFor="ngd-quiet-mode">Window</label>
                 <select id="ngd-quiet-mode" value={quietMode} disabled={saving}
                         onChange={(e) => setQuietMode(e.target.value as 'off' | 'custom')}>
                   <option value="off">Off</option>

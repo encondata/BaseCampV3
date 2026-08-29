@@ -38,15 +38,20 @@ import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
 
+/* Each width is a minmax(<px>, <fr>) — the px floor keeps the header
+ * label and the column's real content (chips, the nowrap quiet-hours
+ * string, the status chip) from colliding with its neighbor at narrow
+ * viewports (~1024px), the fr keeps the original relative growth once
+ * there's slack; see notif-polish1-brief.md fix 6. */
 const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: '1.5fr', default: true },
-  { key: 'description', label: 'Description', width: '2fr', default: true },
-  { key: 'members', label: 'Members', width: '0.7fr', default: true },
-  { key: 'channels', label: 'Channels', width: '1.8fr', default: true },
-  { key: 'quiet_hours', label: 'Quiet hours', width: '1.8fr', default: true },
-  { key: 'days', label: 'Days', width: '1fr', default: true },
-  { key: 'status', label: 'Status', width: '0.8fr', default: true },
-  { key: 'created', label: 'Created', width: '1fr', default: true },
+  { key: 'name', label: 'Name', width: 'minmax(130px, 1.5fr)', default: true },
+  { key: 'description', label: 'Description', width: 'minmax(160px, 2fr)', default: true },
+  { key: 'members', label: 'Members', width: 'minmax(70px, 0.7fr)', default: true },
+  { key: 'channels', label: 'Channels', width: 'minmax(160px, 1.8fr)', default: true },
+  { key: 'quiet_hours', label: 'Quiet hours', width: 'minmax(170px, 1.8fr)', default: true },
+  { key: 'days', label: 'Days', width: 'minmax(90px, 1fr)', default: true },
+  { key: 'status', label: 'Status', width: 'minmax(100px, 0.8fr)', default: true },
+  { key: 'created', label: 'Created', width: 'minmax(100px, 1fr)', default: true },
 ];
 
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
@@ -190,7 +195,7 @@ export default function Notifications() {
       case 'name':
         return <span className="cell-top"><b>{g.name}</b></span>;
       case 'description':
-        return <span className="cell-sub">{g.description || '—'}</span>;
+        return <span className="cell-sub cell-clamp2">{g.description || '—'}</span>;
       case 'members':
         return <span className="mono" style={{ display: 'block', textAlign: 'right' }}>{g.member_count}</span>;
       case 'channels':
@@ -202,7 +207,7 @@ export default function Notifications() {
           </div>
         );
       case 'quiet_hours':
-        return <span className="cell-top">{formatQuietHours(g.quiet_start, g.quiet_end, g.timezone)}</span>;
+        return <span className="cell-top cell-nowrap">{formatQuietHours(g.quiet_start, g.quiet_end, g.timezone)}</span>;
       case 'days':
         return <span className="cell-top">{formatDays(g.active_days)}</span>;
       case 'status':
@@ -258,7 +263,7 @@ export default function Notifications() {
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load notification groups</b>{error}</div>}
 
       {!error && (
-        <div className="dir-list">
+        <div className="dir-list ngd-notif-grid">
           <div className="list-head" style={grid}>
             {shownCols.map((c) => (
               <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}

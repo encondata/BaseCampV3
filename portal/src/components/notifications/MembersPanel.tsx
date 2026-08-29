@@ -67,7 +67,7 @@ export default function MembersPanel({ group, canChange, reload }: {
     if (loadStarted.current) return;
     loadStarted.current = true;
     void listNotificationRecipients()
-      .then(setRecipients)
+      .then((r) => { setRecipients(r); setRecipientsError(''); })
       .catch(() => {
         loadStarted.current = false;
         setRecipientsError('Could not load the recipient list.');
@@ -195,7 +195,7 @@ export default function MembersPanel({ group, canChange, reload }: {
                 </td>
                 <td>
                   <div className="ngd-cell-marker">
-                    <span>{formatDays(m.effective.active_days)}</span>
+                    <span className="ngd-nowrap">{formatDays(m.effective.active_days)}</span>
                     {m.overrides.active_days != null && <span className="chip c-amber">Override</span>}
                   </div>
                 </td>

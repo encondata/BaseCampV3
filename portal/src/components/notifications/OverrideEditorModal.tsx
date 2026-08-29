@@ -214,7 +214,6 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved }:
         </div>
         <form onSubmit={submit}>
           <div className="modal-body">
-            <div className="modal-section">Channels</div>
             <div className="pf-form">
               <div className="full">
                 <label htmlFor="ov-channels-mode">Channels</label>
@@ -242,7 +241,6 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved }:
               )}
             </div>
 
-            <div className="modal-section">Quiet hours</div>
             <div className="pf-form">
               <div className="full">
                 <label htmlFor="ov-quiet-mode">Quiet hours</label>
@@ -269,7 +267,6 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved }:
               )}
             </div>
 
-            <div className="modal-section">Timezone</div>
             <div className="pf-form">
               <div className="full">
                 <label htmlFor="ov-tz-mode">Timezone</label>
@@ -290,7 +287,6 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved }:
               )}
             </div>
 
-            <div className="modal-section">Active days</div>
             <div className="pf-form">
               <div className="full">
                 <label htmlFor="ov-days-mode">Active days</label>
