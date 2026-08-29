@@ -44,6 +44,17 @@ def _prepare_environment() -> None:
 
 _prepare_environment()
 
+# ── blast-radius guard ──────────────────────────────────────────────
+# The suite TRUNCATEs data tables before every test. On 2026-08-28 a run
+# escaped its sandbox and truncated the live dev database. These checks
+# make that structurally impossible: the target database NAME must say
+# it is a test database, both at configure time and again on the very
+# connection that is about to truncate.
+if not TEST_DB.startswith("serversherpa_test"):
+    raise RuntimeError(
+        f"refusing to run tests against database {TEST_DB!r} — "
+        "SS_TEST_DB must start with 'serversherpa_test'")
+
 
 @pytest.fixture(autouse=True)
 async def clean_db():
@@ -52,6 +63,11 @@ async def clean_db():
     from serversherpa.db.engine import dispose_engine, get_sessionmaker
 
     async with get_sessionmaker()() as session:
+        connected_db = await session.scalar(text("SELECT current_database()"))
+        if not str(connected_db).startswith("serversherpa_test"):
+            raise RuntimeError(
+                f"refusing to TRUNCATE: connected to {connected_db!r}, "
+                "not a serversherpa_test* database")
         await session.execute(text(
             "TRUNCATE auth_sessions, person_roles, user_accounts, clients, "
             "partners, people, access_groups, access_group_members, "
