@@ -13,7 +13,9 @@ from sqlalchemy import select
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
 from serversherpa.api.schemas import NoteCreateIn, NoteOut, NoteUpdateIn
-from serversherpa.db.models import Asset, Container, Initiative, Note, Person, Site
+from serversherpa.db.models import (
+    Asset, Container, Initiative, Note, Person, Site, WorkerProfile,
+)
 from serversherpa.services.audit import audit
 
 router = APIRouter(prefix="/notes", tags=["notes"])
@@ -25,6 +27,15 @@ NOTE_HOSTS: dict[str, tuple[str, type]] = {
     "initiative": ("initiatives", Initiative),
     "person": ("workers", Person),
     "site": ("sites", Site),
+}
+
+# person's "workers" scope columns live on WorkerProfile (keyed by
+# person_id), not Person — probing Person with them would cross-join and
+# match everyone. Mirror routes/workers.py::_check_worker_scope instead.
+SCOPE_PROBES = {
+    "person": lambda entity_id, cond: (
+        select(WorkerProfile.person_id)
+        .where(WorkerProfile.person_id == entity_id, cond)),
 }
 
 
@@ -52,8 +63,10 @@ async def _authorize_host(
         raise _err(404, "entity_not_found")
     cond = scope_conditions(resource, actor.access, actor.person.id)
     if cond is not None:
-        visible = await db.scalar(
-            select(model.id).where(model.id == entity_id, cond))
+        probe = SCOPE_PROBES.get(entity_type)
+        query = (probe(entity_id, cond) if probe
+                 else select(model.id).where(model.id == entity_id, cond))
+        visible = await db.scalar(query)
         if visible is None:
             raise _err(404, "entity_not_found")
 

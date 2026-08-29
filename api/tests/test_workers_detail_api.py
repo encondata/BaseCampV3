@@ -91,3 +91,37 @@ async def test_person_notes_host(client, seeded_user, db):
         f"/notes?entity_type=person&entity_id={worker.id}",
         headers=headers)).json()
     assert [n["body"] for n in listing] == ["met on site"]
+
+
+async def test_person_notes_scoped_worker_cannot_read_others(client, seeded_user, db):
+    worker_a = await _mk_worker(
+        db, first="Ann", last="WorkerA", email="worker-a@test.example.com")
+    worker_b = await _mk_worker(
+        db, first="Bob", last="WorkerB", email="worker-b@test.example.com")
+    db.add(WorkerProfile(person_id=worker_a.id, status="active"))
+    db.add(WorkerProfile(person_id=worker_b.id, status="active"))
+    await db.commit()
+
+    admin_headers = await _headers(client)
+    resp = await client.post("/notes", headers=admin_headers, json={
+        "entity_type": "person", "entity_id": str(worker_b.id),
+        "body": "note about worker B"})
+    assert resp.status_code == 201
+
+    worker_a_headers = await _headers(client, email="worker-a@test.example.com")
+
+    # worker A must NOT be able to read worker B's notes via the
+    # "workers" scope-probe (the bug: scope_conditions("workers", ...)
+    # returns WorkerProfile columns, but was being probed against Person,
+    # creating an unjoined cross product that matched every person id).
+    resp = await client.get(
+        f"/notes?entity_type=person&entity_id={worker_b.id}",
+        headers=worker_a_headers)
+    assert resp.status_code == 404
+
+    # worker A can read their own notes (empty list, but in scope -> 200).
+    resp = await client.get(
+        f"/notes?entity_type=person&entity_id={worker_a.id}",
+        headers=worker_a_headers)
+    assert resp.status_code == 200
+    assert resp.json() == []
