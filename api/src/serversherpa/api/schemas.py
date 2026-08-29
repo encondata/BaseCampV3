@@ -1183,6 +1183,11 @@ class PendingDeleteReference(BaseModel):
     # True for pure association tables (PURGE_ROW_TABLES): force mode
     # deletes these rows outright instead of nulling the column
     purgeable: bool = False
+    # True when a CHECK constraint on the referencing table mentions this
+    # column (e.g. processed_scans_match_target_chk): the column may be
+    # nullable, but force mode still can't null it without tripping the
+    # CHECK — the whole force delete rolls back
+    check_guarded: bool = False
     count: int
     labels: list[str] = []
 

@@ -11,8 +11,8 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { markerIdsByEntity, usePendingDeletes } from './pendingDeletes';
-import type { PendingDeleteItem } from './api';
+import { canForceDelete, markerIdsByEntity, usePendingDeletes } from './pendingDeletes';
+import type { PendingDeleteItem, PendingDeleteReference } from './api';
 
 const api = vi.hoisted(() => ({
   listPendingDeletes: vi.fn(),
@@ -51,6 +51,38 @@ describe('markerIdsByEntity', () => {
 
   it('returns an empty map for an empty list', () => {
     expect(markerIdsByEntity([]).size).toBe(0);
+  });
+});
+
+function ref(over: Partial<PendingDeleteReference> = {}): PendingDeleteReference {
+  return {
+    table: 'initiatives', column: 'site_id', nullable: true,
+    purgeable: false, check_guarded: false, count: 1, labels: [], ...over,
+  };
+}
+
+describe('canForceDelete', () => {
+  it('allows force when every reference is nullable or purgeable', () => {
+    expect(canForceDelete([
+      ref(),
+      ref({ table: 'site_clients', column: 'client_id', nullable: false, purgeable: true }),
+    ])).toBe(true);
+  });
+
+  it('refuses force on a non-nullable, non-purgeable reference', () => {
+    expect(canForceDelete([ref({ nullable: false })])).toBe(false);
+  });
+
+  it('refuses force on a check-guarded reference even though nullable', () => {
+    // processed_scans match FKs: nulling them trips the match_type CHECK,
+    // so offering the Force button would just fail and roll back
+    expect(canForceDelete([
+      ref({ table: 'processed_scans', column: 'asset_id', check_guarded: true }),
+    ])).toBe(false);
+  });
+
+  it('refuses force with no references (nothing to detach)', () => {
+    expect(canForceDelete([])).toBe(false);
   });
 });
 

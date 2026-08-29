@@ -6,7 +6,8 @@ from datetime import date, datetime, time
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, Date, ForeignKey, Identity, Integer, Numeric, SmallInteger, String, Text, Time, text,
+    BigInteger, Boolean, CheckConstraint, Date, ForeignKey, Identity, Integer, Numeric,
+    SmallInteger, String, Text, Time, text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, BYTEA, CITEXT, INET, JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -644,6 +645,16 @@ class ProcessedScan(Base):
     is who ran the scanner. CHECK enforces the match_type target FK."""
 
     __tablename__ = "processed_scans"
+    __table_args__ = (
+        # Mirrors migration 0025. Declared here so schema walkers (the
+        # devtools force-delete flow) can see that the match FKs, though
+        # nullable, cannot be nulled while match_type points at them.
+        CheckConstraint(
+            "(match_type = 'asset' AND asset_id IS NOT NULL) OR "
+            "(match_type = 'container' AND container_id IS NOT NULL) OR "
+            "(match_type = 'person' AND person_id IS NOT NULL)",
+            name="processed_scans_match_target_chk"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))

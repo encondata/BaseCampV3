@@ -10,13 +10,14 @@ The words live in SS_GOD_MODE_WORDS (server-side). A VITE_* equivalent
 would be inlined into the portal bundle and readable from devtools.
 """
 
+import re
 import secrets
 import uuid
 from datetime import UTC, datetime
 
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import String, cast, delete, func, select, update
+from sqlalchemy import CheckConstraint, String, cast, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.schema import Table
 
@@ -199,6 +200,18 @@ def _references_to(model: type):
                 yield table, fk.parent
 
 
+def _check_guarded(table: Table, col) -> bool:
+    """True when a CHECK constraint on `table` mentions `col` — the column
+    may be nullable, yet force-nulling it can trip the CHECK and roll the
+    whole force delete back (processed_scans_match_target_chk keeps the
+    match_type target FK non-null). Surfaced so a failure report doesn't
+    read as "nullable, so force should have cleared it"."""
+    return any(
+        isinstance(constraint, CheckConstraint)
+        and re.search(rf"\b{re.escape(col.name)}\b", str(constraint.sqltext))
+        for constraint in table.constraints)
+
+
 def _other_fk(table: Table, matching_col):
     """On an association row, the FK that ISN'T the one pointing at the
     delete target — the side whose label a human actually recognises
@@ -237,6 +250,7 @@ async def _find_references(
         refs.append(PendingDeleteReference(
             table=table.name, column=col.name, nullable=col.nullable,
             purgeable=table.name in PURGE_ROW_TABLES,
+            check_guarded=_check_guarded(table, col),
             count=count, labels=[str(v) for v in labels]))
     return refs
 

@@ -156,7 +156,8 @@ async def test_reconcile_reports_fk_violation_and_retains_marker(
     assert failure["reason"] == "fk_violation"
     assert failure["references"] == [{
         "table": "initiatives", "column": "site_id", "nullable": True,
-        "purgeable": False, "count": 1, "labels": ["Uses Site"],
+        "purgeable": False, "check_guarded": False, "count": 1,
+        "labels": ["Uses Site"],
     }]
 
     db.expire_all()
@@ -333,7 +334,8 @@ async def test_single_reconcile_failure_lists_referencing_records(
     assert failure["reason"] == "fk_violation"
     assert failure["references"] == [{
         "table": "initiatives", "column": "site_id", "nullable": True,
-        "purgeable": False, "count": 1, "labels": ["Vegas to Zurich migration"],
+        "purgeable": False, "check_guarded": False, "count": 1,
+        "labels": ["Vegas to Zurich migration"],
     }]
 
 
@@ -422,6 +424,98 @@ async def test_single_reconcile_force_still_fails_on_nonnullable_reference(
     db.expire_all()
     assert await db.get(Person, worker_id) is not None
     assert await db.get(PendingDelete, uuid.UUID(marker_id)) is not None
+
+
+async def test_single_reconcile_force_fails_on_check_guarded_match_column(
+        client, db, seeded_user):
+    """A processed scan's match FK (asset_id/container_id/person_id) is
+    nullable but guarded by processed_scans_match_target_chk — the column
+    matching match_type must stay non-null. Force mode nulls every nullable
+    reference, so nulling the match column trips the CHECK, the savepoint
+    rolls back, and the whole force delete fails with fk_violation. The
+    processed_scans reference must be flagged check_guarded so a developer
+    can see why force didn't clear a "nullable" column (workaround:
+    god-delete the matched processed scans first)."""
+    from datetime import UTC, datetime
+
+    from serversherpa.db.models import Asset, ProcessedScan
+
+    hdrs = await _developer(db, client, seeded_user)
+    asset = Asset(name="srv-1", serial_number="SN-1")
+    db.add(asset)
+    await db.flush()
+    now = datetime.now(UTC)
+    scan = ProcessedScan(
+        scanned_value="EPC-1", scan_type="rfid", scanned_at=now,
+        processed_at=now, match_type="asset", asset_id=asset.id)
+    db.add(scan)
+    await db.commit()
+    asset_id, scan_id = asset.id, scan.id
+
+    resp = await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "asset", "entity_id": str(asset_id),
+        "entity_label": "srv-1"})
+    marker_id = resp.json()["id"]
+
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/reconcile?force=true", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deleted"] == 0
+    failure = body["failed"][0]
+    assert failure["reason"] == "fk_violation"
+    refs = {(r["table"], r["column"]): r for r in failure["references"]}
+    scan_ref = refs[("processed_scans", "asset_id")]
+    assert scan_ref["nullable"] is True  # nullable, yet force can't null it
+    assert scan_ref["purgeable"] is False
+    assert scan_ref["check_guarded"] is True
+    assert scan_ref["count"] == 1
+
+    # savepoint rollback left everything intact: target, marker, and scan
+    db.expire_all()
+    assert await db.get(Asset, asset_id) is not None
+    assert await db.get(PendingDelete, uuid.UUID(marker_id)) is not None
+    refreshed = await db.get(ProcessedScan, scan_id)
+    assert refreshed.asset_id == asset_id
+
+
+async def test_check_guard_does_not_block_forcing_unguarded_columns(
+        client, db, seeded_user):
+    """operator_id on a processed scan is nullable and NOT part of the match
+    CHECK, so force-deleting a person who merely operated the scanner still
+    succeeds — the guard only bites on the matched target's column."""
+    from datetime import UTC, datetime
+
+    from serversherpa.db.models import Asset, ProcessedScan
+
+    hdrs = await _developer(db, client, seeded_user)
+    operator = Person(first_name="Olive", last_name="Operator")
+    asset = Asset(name="srv-2", serial_number="SN-2")
+    db.add_all([operator, asset])
+    await db.flush()
+    now = datetime.now(UTC)
+    scan = ProcessedScan(
+        scanned_value="EPC-2", scan_type="rfid", scanned_at=now,
+        processed_at=now, match_type="asset", asset_id=asset.id,
+        operator_id=operator.id)
+    db.add(scan)
+    await db.commit()
+    operator_id, scan_id = operator.id, scan.id
+
+    resp = await client.post("/devtools/pending-deletes", headers=hdrs, json={
+        "entity_type": "person", "entity_id": str(operator_id),
+        "entity_label": "Olive Operator"})
+    marker_id = resp.json()["id"]
+
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/reconcile?force=true", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"deleted": 1, "failed": []}
+
+    db.expire_all()
+    assert await db.get(Person, operator_id) is None
+    refreshed = await db.get(ProcessedScan, scan_id)
+    assert refreshed.operator_id is None
 
 
 async def test_force_purges_association_rows_and_labels_by_other_side(

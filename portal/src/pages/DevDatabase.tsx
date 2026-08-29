@@ -37,6 +37,7 @@ import {
   type PendingDeleteReconcileOut,
 } from '../lib/api';
 import { longDate, relativeTime } from '../lib/format';
+import { canForceDelete } from '../lib/pendingDeletes';
 import '../styles/directory.css';
 import '../styles/profile.css'; /* .btn-solid */
 import '../styles/initiatives.css'; /* .init-panel, .mini-btn.sm */
@@ -217,8 +218,8 @@ function ReconcileTab() {
           {result.failed.length > 0 && (
             <ul style={{ margin: '8px 0 0', paddingLeft: 18, textAlign: 'left' }}>
               {result.failed.map((f) => {
-                const canForce = f.references.length > 0
-                  && f.references.every((r) => r.nullable || r.purgeable);
+                const canForce = canForceDelete(f.references);
+                const checkGuarded = f.references.some((r) => r.check_guarded);
                 return (
                   <li key={`${f.entity_type}:${f.entity_id}`} style={{ marginBottom: 8 }}>
                     <b>{f.label}</b> — {humanizeReason(f.reason)}
@@ -232,6 +233,8 @@ function ReconcileTab() {
                           <li key={`${r.table}.${r.column}`}>
                             {r.table}.{r.column} — {r.count} row{r.count === 1 ? '' : 's'}
                             {r.labels.length > 0 && ` ("${r.labels.join('", "')}")`}
+                            {r.check_guarded
+                              && ' — kept non-null by a database rule; delete these rows first'}
                           </li>
                         ))}
                       </ul>
@@ -248,7 +251,9 @@ function ReconcileTab() {
                       </button>
                     ) : (
                       <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-mute)' }}>
-                        Cannot force — some references are required fields.
+                        {checkGuarded
+                          ? 'Cannot force — a database rule keeps some references non-null.'
+                          : 'Cannot force — some references are required fields.'}
                       </div>
                     ))}
                   </li>

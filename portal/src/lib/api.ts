@@ -2155,6 +2155,9 @@ export interface PendingDeleteReference {
   nullable: boolean;
   /** pure association table: force deletes these rows instead of nulling */
   purgeable: boolean;
+  /** a CHECK constraint keeps this column non-null even though it's
+   *  nullable — force can't clear it (processed_scans match FKs) */
+  check_guarded: boolean;
   count: number;
   labels: string[];
 }

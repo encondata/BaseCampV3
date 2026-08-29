@@ -14,8 +14,17 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   listPendingDeletes, markPendingDelete, unmarkPendingDelete,
-  type PendingDeleteItem,
+  type PendingDeleteItem, type PendingDeleteReference,
 } from './api';
+
+/** Whether force delete can actually detach every listed reference: it
+ *  purges association rows and nulls nullable columns, but a check-guarded
+ *  column (processed_scans match FKs) can't be nulled without tripping the
+ *  CHECK — offering Force there would just fail and roll back. */
+export function canForceDelete(references: PendingDeleteReference[]): boolean {
+  return references.length > 0
+    && references.every((r) => (r.nullable && !r.check_guarded) || r.purgeable);
+}
 
 /** entityId -> markerId, the lookup `unmark` needs. Split out from the
  *  hook body so it's testable without React or a mocked fetch. */
