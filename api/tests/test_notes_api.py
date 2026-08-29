@@ -3,8 +3,10 @@ host entity's resource. Clients read their own assets' notes; staff write."""
 
 from sqlalchemy import select
 
-from serversherpa.db.models import Asset, AuditLog, Initiative, Note
-from tests.test_assets_api import _client_contact, login
+from serversherpa.db.models import (
+    Asset, AuditLog, Client, Initiative, Note, Partner, Person, PersonRole,
+)
+from tests.test_assets_api import _client_contact, login, make_login
 
 
 async def _asset(db, **kw):
@@ -154,4 +156,135 @@ async def test_client_cannot_write_asset_attachments_but_can_view(client, db, se
         "entity_type": "asset", "entity_id": str(mine.id), "kind": "document"})
     assert resp.status_code == 403
     resp = await client.delete(f"/attachments/{att_id}", headers=hdrs)
+    assert resp.status_code == 403
+
+
+async def test_note_crud_on_client(client, db, seeded_user):
+    """'client' hosts notes exactly like asset/container/initiative — the
+    org itself is the anchor row."""
+    hdrs = await login(client)
+    org = Client(name="Host Org")
+    db.add(org)
+    await db.commit()
+
+    resp = await client.post("/notes", headers=hdrs, json={
+        "entity_type": "client", "entity_id": str(org.id),
+        "body": "Kickoff call scheduled."})
+    assert resp.status_code == 201, resp.text
+    note = resp.json()
+    assert note["entity_type"] == "client"
+
+    resp = await client.patch(f"/notes/{note['id']}", headers=hdrs,
+                               json={"body": "Kickoff call held."})
+    assert resp.status_code == 200
+    assert resp.json()["body"] == "Kickoff call held."
+
+    listing = (await client.get(
+        f"/notes?entity_type=client&entity_id={org.id}", headers=hdrs)).json()
+    assert len(listing) == 1
+    assert listing[0]["id"] == note["id"]
+
+    resp = await client.delete(f"/notes/{note['id']}", headers=hdrs)
+    assert resp.status_code == 204
+    listing = (await client.get(
+        f"/notes?entity_type=client&entity_id={org.id}", headers=hdrs)).json()
+    assert listing == []
+
+
+async def test_note_crud_on_partner(client, db, seeded_user):
+    """'partner' hosts notes the same way; the partner org is the anchor."""
+    hdrs = await login(client)
+    partner = Partner(name="Host Partner")
+    db.add(partner)
+    await db.commit()
+
+    resp = await client.post("/notes", headers=hdrs, json={
+        "entity_type": "partner", "entity_id": str(partner.id),
+        "body": "Insurance cert on file."})
+    assert resp.status_code == 201, resp.text
+    note = resp.json()
+    assert note["entity_type"] == "partner"
+
+    resp = await client.patch(f"/notes/{note['id']}", headers=hdrs,
+                               json={"body": "Insurance cert renewed."})
+    assert resp.status_code == 200
+    assert resp.json()["body"] == "Insurance cert renewed."
+
+    listing = (await client.get(
+        f"/notes?entity_type=partner&entity_id={partner.id}", headers=hdrs)).json()
+    assert len(listing) == 1
+    assert listing[0]["id"] == note["id"]
+
+    resp = await client.delete(f"/notes/{note['id']}", headers=hdrs)
+    assert resp.status_code == 204
+    listing = (await client.get(
+        f"/notes?entity_type=partner&entity_id={partner.id}", headers=hdrs)).json()
+    assert listing == []
+
+
+async def test_note_unknown_org_row_404(client, seeded_user):
+    """entity_type is registered but the org row doesn't exist -> 404,
+    not the unknown_entity_type 422 (that's for bogus entity_types)."""
+    hdrs = await login(client)
+    missing = "00000000-0000-0000-0000-000000000000"
+
+    resp = await client.post("/notes", headers=hdrs, json={
+        "entity_type": "client", "entity_id": missing, "body": "x"})
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "entity_not_found"
+
+    resp = await client.post("/notes", headers=hdrs, json={
+        "entity_type": "partner", "entity_id": missing, "body": "x"})
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "entity_not_found"
+
+
+async def test_role_with_no_clients_grant_gets_403(client, db, seeded_user):
+    org = Client(name="No Grant Org")
+    db.add(org)
+    await db.commit()
+    worker = Person(first_name="W", last_name="Orker")
+    db.add(worker)
+    await db.flush()
+    db.add(PersonRole(person_id=worker.id, role="worker"))
+    await db.commit()
+    hdrs = await make_login(db, client, worker, "worker-notes@test.example.com")
+
+    resp = await client.get(
+        f"/notes?entity_type=client&entity_id={org.id}", headers=hdrs)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "forbidden"
+
+
+async def test_client_owner_notes_scoped_to_own_org(client, db, seeded_user):
+    """client_owner anchored to org A: can view org A's notes, gets 404 on
+    org B (out-of-scope, matching the asset-scoping contract), and cannot
+    write anywhere (client tiers are read-only per _authorize_host)."""
+    staff_hdrs = await login(client)
+    org_a = Client(name="Org A")
+    org_b = Client(name="Org B")
+    db.add_all([org_a, org_b])
+    await db.commit()
+    owner = Person(first_name="O", last_name="Wner")
+    db.add(owner)
+    await db.flush()
+    db.add(PersonRole(person_id=owner.id, role="client_owner", client_id=org_a.id))
+    await db.commit()
+    owner_hdrs = await make_login(db, client, owner, "owner-notes@test.example.com")
+
+    for org in (org_a, org_b):
+        resp = await client.post("/notes", headers=staff_hdrs, json={
+            "entity_type": "client", "entity_id": str(org.id), "body": "note"})
+        assert resp.status_code == 201, resp.text
+
+    resp = await client.get(
+        f"/notes?entity_type=client&entity_id={org_a.id}", headers=owner_hdrs)
+    assert resp.status_code == 200 and len(resp.json()) == 1
+
+    resp = await client.get(
+        f"/notes?entity_type=client&entity_id={org_b.id}", headers=owner_hdrs)
+    assert resp.status_code == 404
+
+    resp = await client.post("/notes", headers=owner_hdrs, json={
+        "entity_type": "client", "entity_id": str(org_a.id), "body": "hi"})
     assert resp.status_code == 403
