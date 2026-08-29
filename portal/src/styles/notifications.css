@@ -1,0 +1,79 @@
+/* ============================================================
+   notifications.css — Notification group detail page. Reuses the
+   .idet-*/.init-panel/.kv/.pf-form/.modal-*/.switch/.mini-btn chrome
+   already defined by initiatives.css, directory.css, profile.css and
+   settings.css (all imported by the page) — this file only adds the
+   handful of rules those stylesheets don't already cover: the
+   Delivery-defaults panel's heading+button row, labeled switch rows
+   inside the settings modal's .pf-form grid, and the Active-days
+   toggle pills.
+   ============================================================ */
+
+.ngd-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+/* Labeled switch row — label left, switch right, spanning the full
+   width of the 2-col .pf-form grid (never a raw floating checkbox). */
+.ngd-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+}
+
+.day-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 4px;
+}
+.day-pills .mini-btn.active {
+  background: rgba(var(--accent-rgb), 0.14);
+  border-color: var(--amber);
+  color: var(--text-dark);
+  font-weight: 600;
+}
+
+.pf-form select {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+  background: var(--surface-2, #f5f7fa);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.pf-form select:focus {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
+  background: var(--surface, #fff);
+}
+.pf-form input[type='time'] {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+  background: var(--surface-2, #f5f7fa);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  padding: 9px 12px;
+  outline: none;
+}
+.pf-form input[type='time']:focus {
+  border-color: var(--amber);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16);
+  background: var(--surface, #fff);
+}
