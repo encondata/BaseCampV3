@@ -88,7 +88,7 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved }:
 
   const [channelsMode, setChannelsMode] = useState<Mode>(ov.channels === null ? 'default' : 'custom');
   const [channelsCustom, setChannelsCustom] = useState<Set<Channel>>(
-    () => new Set((ov.channels ?? []) as Channel[]));
+    () => new Set((ov.channels ?? []).filter((c) => canForChannel(member, c as Channel)) as Channel[]));
 
   const [quietMode, setQuietMode] = useState<QuietMode>(
     ov.quiet_mode === null ? 'default' : (ov.quiet_mode as QuietMode));

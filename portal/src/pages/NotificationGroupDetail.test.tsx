@@ -387,6 +387,62 @@ it('resetting a channel override to inherit sends an explicit null', async () =>
     .toHaveBeenCalledWith('g1', 'p2', { channels: null }));
 });
 
+it('retries the recipients fetch after a failed attempt on reopen', async () => {
+  const user = userEvent.setup();
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [] });
+  api.listNotificationRecipients
+    .mockRejectedValueOnce(new Error('network'))
+    .mockResolvedValueOnce(RECIPIENTS);
+  renderPage();
+  await screen.findByText('Ops Alerts');
+
+  const input = screen.getByPlaceholderText(/add a member/i);
+  await user.click(input);
+
+  expect(await screen.findByText('Could not load the recipient list.')).not.toBeNull();
+  expect(api.listNotificationRecipients).toHaveBeenCalledTimes(1);
+
+  // Close (outside click) then reopen/refocus — should retry the fetch
+  // rather than dead-ending on the first failure.
+  await user.click(document.body);
+  await user.click(input);
+
+  expect(await screen.findByText('Carol New')).not.toBeNull();
+  expect(api.listNotificationRecipients).toHaveBeenCalledTimes(2);
+});
+
+it('drops a stale unreachable channel from a custom override when saving', async () => {
+  const user = userEvent.setup();
+  const member: NotificationMember = {
+    ...MEMBER_1,
+    person_id: 'p4',
+    display_name: 'Dana Stale',
+    overrides: { ...MEMBER_1.overrides, channels: ['email', 'text'] },
+    effective: { ...MEMBER_1.effective, channels: ['email'] },
+  };
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [member] });
+  api.updateNotificationMember.mockResolvedValue(member);
+  renderPage();
+  await screen.findByText('Ops Alerts');
+
+  const row = screen.getByRole('row', { name: /dana stale/i });
+  await user.click(within(row).getByRole('button', { name: /^edit$/i }));
+
+  const heading = await screen.findByRole('heading', { name: /overrides — dana stale/i });
+  const dialog = heading.closest('.modal-card') as HTMLElement;
+
+  // Channels mode is already Custom (overrides.channels is non-null) —
+  // Alice/Dana has no phone on file, so Text must not offer a switch row
+  // even though the stored override still lists it.
+  expect(within(dialog).getByRole('checkbox', { name: /^email$/i })).not.toBeNull();
+  expect(within(dialog).queryByRole('checkbox', { name: /text/i })).toBeNull();
+
+  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
+
+  await waitFor(() => expect(api.updateNotificationMember)
+    .toHaveBeenCalledWith('g1', 'p4', { channels: ['email'] }));
+});
+
 it('removing a member requires a second click before calling the API', async () => {
   const user = userEvent.setup();
   api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });

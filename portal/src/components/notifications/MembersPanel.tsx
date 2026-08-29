@@ -68,7 +68,10 @@ export default function MembersPanel({ group, canChange, reload }: {
     loadStarted.current = true;
     void listNotificationRecipients()
       .then(setRecipients)
-      .catch(() => setRecipientsError('Could not load the recipient list.'));
+      .catch(() => {
+        loadStarted.current = false;
+        setRecipientsError('Could not load the recipient list.');
+      });
   };
 
   const memberIds = useMemo(
