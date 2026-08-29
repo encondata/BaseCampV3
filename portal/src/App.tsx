@@ -32,6 +32,7 @@ import SystemProcesses from './pages/SystemProcesses';
 import Users from './pages/Users';
 import Variables from './pages/Variables';
 import Workers from './pages/Workers';
+import WorkerDetailPage from './pages/WorkerDetail';
 
 export default function App() {
   return (
@@ -84,6 +85,9 @@ export default function App() {
             } />
             <Route path="/people/users" element={<ProtectedRoute resource="users"><Users /></ProtectedRoute>} />
             <Route path="/people/workers" element={<ProtectedRoute resource="workers"><Workers /></ProtectedRoute>} />
+            <Route path="/people/workers/:personId" element={
+              <ProtectedRoute resource="workers"><WorkerDetailPage /></ProtectedRoute>
+            } />
             <Route path="/people/external" element={<ProtectedRoute resource="users"><External /></ProtectedRoute>} />
             <Route path="/stakeholders/clients" element={<ProtectedRoute resource="clients"><Clients /></ProtectedRoute>} />
             <Route path="/stakeholders/partners" element={<ProtectedRoute resource="partners"><Partners /></ProtectedRoute>} />
