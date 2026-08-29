@@ -362,6 +362,7 @@ def _backup_out(backup: DbBackup, name: str | None,
                 download_url: str | None = None) -> DbBackupItem:
     return DbBackupItem(
         id=backup.id, filename=backup.filename, size_bytes=backup.size_bytes,
+        encrypted=backup.encrypted,
         created_at=backup.created_at, created_by=backup.created_by,
         created_by_name=name, download_url=download_url)
 
@@ -386,12 +387,16 @@ async def create_db_backup(
     actor: AuthContext = require_permission("devtools", "change"),
 ) -> DbBackupItem:
     settings = get_settings()
-    # The dump is encrypted with the CALLER's own account password, so we
-    # must be certain it's really theirs before we ever touch pg_dump —
-    # nothing downstream of this check may see or store body.password.
-    if not verify_password(actor.account.password_hash, body.password,
-                           pepper=settings.password_pepper.get_secret_value()):
-        raise _err(403, "invalid_password")
+    if body.encrypt:
+        # The dump is encrypted with the CALLER's own account password, so
+        # we must be certain it's really theirs before we ever touch
+        # pg_dump — nothing downstream of this check may see or store
+        # body.password.
+        if not body.password:
+            raise _err(422, "password_required")
+        if not verify_password(actor.account.password_hash, body.password,
+                               pepper=settings.password_pepper.get_secret_value()):
+            raise _err(403, "invalid_password")
 
     try:
         dump = await run_pg_dump(settings.database_url.get_secret_value())
@@ -400,22 +405,29 @@ async def create_db_backup(
     except PgDumpFailed:
         raise _err(500, "pg_dump_failed") from None
 
-    encrypted = encrypt_openssl(dump, body.password)
+    if body.encrypt:
+        blob = encrypt_openssl(dump, body.password or "")
+        suffix, content_type = ".sql.enc", "application/octet-stream"
+    else:
+        blob = dump
+        suffix, content_type = ".sql", "application/sql"
     now = datetime.now(UTC)
-    filename = f"serversherpa_backup_{now.strftime('%Y%m%d_%H%M%S')}.sql.enc"
-    key = f"backups/{uuid.uuid4()}.sql.enc"
-    await put_object(key, encrypted, "application/octet-stream")
+    filename = f"serversherpa_backup_{now.strftime('%Y%m%d_%H%M%S')}{suffix}"
+    key = f"backups/{uuid.uuid4()}{suffix}"
+    await put_object(key, blob, content_type)
 
     backup = DbBackup(filename=filename, storage_key=key,
-                      size_bytes=len(encrypted), created_by=actor.person.id)
+                      size_bytes=len(blob), encrypted=body.encrypt,
+                      created_by=actor.person.id)
     db.add(backup)
     await db.flush()
 
-    # changes carries only filename + size — never the password, and
-    # never anything that could reconstruct it
+    # changes carries only filename + size + mode — never the password,
+    # and never anything that could reconstruct it
     audit(db, actor_id=actor.person.id, entity_type="system",
           entity_id=str(backup.id), action="backup.create",
-          changes={"filename": filename, "size_bytes": len(encrypted)})
+          changes={"filename": filename, "size_bytes": len(blob),
+                   "encrypted": body.encrypt})
     await db.commit()
 
     return _backup_out(

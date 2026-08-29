@@ -1167,6 +1167,7 @@ class DbBackupItem(BaseModel):
     id: uuid.UUID
     filename: str
     size_bytes: int
+    encrypted: bool = True
     created_at: datetime
     created_by: uuid.UUID | None = None
     created_by_name: str | None = None
@@ -1177,7 +1178,12 @@ class DbBackupItem(BaseModel):
 
 
 class DbBackupCreateIn(BaseModel):
-    password: str
+    """encrypt=True (the default) seals the dump with the caller's own
+    account password, which must be supplied and is verified first.
+    encrypt=False produces a plain .sql dump — password stays unused."""
+
+    encrypt: bool = True
+    password: str | None = None
     model_config = ConfigDict(extra="forbid")
 
 

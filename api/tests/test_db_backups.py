@@ -273,3 +273,34 @@ async def test_devtools_gate_staff_and_worker_are_403(client, db, seeded_user,
         resp = await client.post("/devtools/backups", headers=hdrs,
                                  json={"password": PASSWORD})
         assert resp.status_code == 403
+
+
+async def test_create_plain_backup_needs_no_password(client, db, seeded_user,
+                                                     fake_storage, fake_pg_dump):
+    hdrs = await _developer(db, client, seeded_user)
+
+    resp = await client.post("/devtools/backups", headers=hdrs,
+                             json={"encrypt": False})
+    assert resp.status_code == 200, resp.text
+    created = resp.json()
+    assert created["encrypted"] is False
+    assert created["filename"].endswith(".sql")
+    assert not created["filename"].endswith(".sql.enc")
+
+    # stored blob IS the dump, byte for byte — no envelope
+    [(key, blob)] = fake_storage.objects.items()
+    assert key.endswith(".sql")
+    assert blob == FAKE_DUMP
+
+    # and the list reports the mode
+    rows = (await client.get("/devtools/backups", headers=hdrs)).json()
+    assert rows[0]["encrypted"] is False
+
+
+async def test_create_encrypted_without_password_is_422(client, db, seeded_user,
+                                                        fake_storage, fake_pg_dump):
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await client.post("/devtools/backups", headers=hdrs, json={})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "password_required"
+    assert fake_storage.objects == {}

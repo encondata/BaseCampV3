@@ -906,10 +906,11 @@ class PendingDelete(Base):
 
 
 class DbBackup(Base):
-    """Metadata row for one encrypted full-database dump (Dev -> Database
-    -> Backups). The dump bytes live in Spaces at storage_key, encrypted
-    with the creator's own account password (services.db_backup) — never
-    stored here, never in this row, never in the audit log."""
+    """Metadata row for one full-database dump (Dev -> Database ->
+    Backups). The dump bytes live in Spaces at storage_key — when
+    `encrypted`, sealed with the creator's own account password
+    (services.db_backup), which is never stored here, never in this
+    row, never in the audit log."""
 
     __tablename__ = "db_backups"
 
@@ -918,6 +919,7 @@ class DbBackup(Base):
     filename: Mapped[str]
     storage_key: Mapped[str]
     size_bytes: Mapped[int] = mapped_column(BigInteger)
+    encrypted: Mapped[bool] = mapped_column(server_default=text("true"))
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("people.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

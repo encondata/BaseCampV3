@@ -2159,6 +2159,7 @@ export interface DbBackupItem {
   id: string;
   filename: string;
   size_bytes: number;
+  encrypted: boolean;
   created_at: string;
   created_by: string | null;
   created_by_name: string | null;
@@ -2179,11 +2180,14 @@ export async function listDbBackups(): Promise<DbBackupItem[]> {
  *  call. Errors: 403 `invalid_password`, 500 `pg_dump_unavailable` (or
  *  `pg_dump_failed`) — see ApiError.code. The returned item's
  *  `download_url` is a freshly presigned, attachment-disposition link. */
-export async function createDbBackup(password: string): Promise<DbBackupItem> {
+/** password = null creates a plain (unencrypted) dump. */
+export async function createDbBackup(password: string | null): Promise<DbBackupItem> {
   const resp = await apiFetch('/devtools/backups', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password }),
+    body: JSON.stringify(password === null
+      ? { encrypt: false }
+      : { encrypt: true, password }),
   });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();

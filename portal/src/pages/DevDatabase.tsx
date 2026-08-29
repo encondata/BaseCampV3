@@ -361,6 +361,7 @@ function BackupsTab() {
   const [backups, setBackups] = useState<DbBackupItem[] | null>(null);
   const [listError, setListError] = useState('');
   const [password, setPassword] = useState('');
+  const [encrypt, setEncrypt] = useState(true);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -377,11 +378,11 @@ function BackupsTab() {
   useEffect(() => { void load(); }, []);
 
   const handleCreate = async () => {
-    if (!password) return;
+    if (encrypt && !password) return;
     setCreating(true);
     setCreateError('');
     try {
-      const created = await createDbBackup(password);
+      const created = await createDbBackup(encrypt ? password : null);
       setPassword('');
       await load();
       if (created.download_url) triggerDownload(created.download_url, created.filename);
@@ -425,41 +426,56 @@ function BackupsTab() {
       <div className="init-panel sysconf-card" style={{ marginBottom: 20 }}>
         <div className="eyebrow-sm">Create backup</div>
         <p className="page-hint" style={{ marginTop: 0 }}>
-          Creates a full SQL dump encrypted with your account password. Keep the
-          password — the file cannot be decrypted without it.
+          {encrypt
+            ? 'Creates a full SQL dump encrypted with your account password. Keep the password — the file cannot be decrypted without it.'
+            : 'Creates a plain, UNENCRYPTED SQL dump — anyone with the file can read the whole database.'}
         </p>
 
         {canChange ? (
           <>
-            <div className="sysconf-row">
-              <div className="sysconf-field">
-                <label className="sysconf-label" htmlFor="db-backup-password">
-                  Your account password
-                </label>
-                <input
-                  id="db-backup-password"
-                  type="password"
-                  autoComplete="current-password"
-                  value={password}
-                  disabled={creating}
-                  onChange={(e) => { setPassword(e.target.value); setCreateError(''); }}
-                />
+            <label className="init-check" style={{ marginBottom: 12 }}>
+              <input
+                type="checkbox"
+                checked={encrypt}
+                disabled={creating}
+                onChange={(e) => { setEncrypt(e.target.checked); setCreateError(''); }}
+              />
+              Encrypt with my account password
+            </label>
+            {encrypt && (
+              <div className="sysconf-row">
+                <div className="sysconf-field">
+                  <label className="sysconf-label" htmlFor="db-backup-password">
+                    Your account password
+                  </label>
+                  <input
+                    id="db-backup-password"
+                    type="password"
+                    autoComplete="current-password"
+                    value={password}
+                    disabled={creating}
+                    onChange={(e) => { setPassword(e.target.value); setCreateError(''); }}
+                  />
+                </div>
               </div>
-            </div>
+            )}
             <div>
               <button
                 type="button"
                 className="btn-solid"
-                disabled={creating || !password}
+                disabled={creating || (encrypt && !password)}
                 onClick={() => void handleCreate()}
               >
-                {creating ? 'Backing up…' : 'Create encrypted backup'}
+                {creating ? 'Backing up…'
+                  : encrypt ? 'Create encrypted backup' : 'Create plain backup'}
               </button>
             </div>
             {createError && <p className="pf-error">{createError}</p>}
-            <p className="page-hint" style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>
-              Decrypt with: {DECRYPT_HINT}
-            </p>
+            {encrypt && (
+              <p className="page-hint" style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>
+                Decrypt with: {DECRYPT_HINT}
+              </p>
+            )}
           </>
         ) : (
           <p className="page-hint" style={{ marginBottom: 0 }}>
@@ -484,7 +500,14 @@ function BackupsTab() {
         {(backups ?? []).map((b) => (
           <div key={b.id} className="dir-row">
             <div className="row-main" style={BACKUP_GRID}>
-              <div className="cell"><span className="cell-top">{b.filename}</span></div>
+              <div className="cell">
+                <span className="cell-top">
+                  {b.filename}
+                  {!b.encrypted && (
+                    <span className="chip tag" style={{ marginLeft: 8 }}>plain</span>
+                  )}
+                </span>
+              </div>
               <div className="cell">
                 <span className="cell-top" title={relativeTime(b.created_at)}>
                   {longDate(b.created_at)}
