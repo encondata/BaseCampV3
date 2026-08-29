@@ -10,8 +10,14 @@ dropped. Additive only: no updates or deletions of pre-existing rows.
 """
 
 import json
+from collections import defaultdict
+from datetime import UTC, datetime
 from typing import Iterator
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from serversherpa.db.models import Partner, Person, WorkerProfile
 from serversherpa.sites.v2_import import insert_rows
 
 # Identifies this dump for source_ref traceability; see Global Constraints.
@@ -129,3 +135,109 @@ def worker_notes(
             entry += f" (rating {a['rating']})"
         lines.append(entry)
     return "\n".join(lines) or None
+
+
+# dump table column lists the orchestrator needs (INSERT order)
+_PARTNER_COLS = ("id", "partner_name", "partner_services", "partner_region",
+                 "parent_partner")
+_WORK_ASSOC_COLS = ("id", "person_id", "entity_type", "entity_id",
+                    "work_type", "site_worked", "rating", "created_at",
+                    "updated_at", "metadata")
+
+
+def _table_rows(dump_path: str, table: str,
+                cols: tuple[str, ...]) -> Iterator[dict]:
+    for values in insert_rows(dump_path, table):
+        if len(values) != len(cols):
+            continue
+        yield dict(zip(cols, values))
+
+
+async def import_workers(db: AsyncSession, dump_path: str, limit: int) -> dict:
+    """Insert up to `limit` V2 worker people (+ profiles). Additive: rows
+    whose source_ref or email already exist in V3 are skipped; nothing
+    pre-existing is updated or deleted."""
+    stats = {"imported": 0, "skipped_existing": 0, "skipped_non_worker": 0,
+             "malformed": 0, "id_map": {}}
+
+    existing_refs = set(await db.scalars(
+        select(Person.source_ref).where(Person.source_ref.is_not(None))))
+    existing_emails = {e.casefold() for e in await db.scalars(
+        select(Person.email).where(Person.email.is_not(None)))}
+    partners_v3 = {p.name.casefold(): p for p in await db.scalars(select(Partner))}
+
+    v2_partner_names = {
+        r["id"]: r["partner_name"]
+        for r in _table_rows(dump_path, "partners", _PARTNER_COLS)
+        if r.get("id") is not None and r.get("partner_name")}
+    work_assocs: dict[object, list[dict]] = defaultdict(list)
+    for r in _table_rows(dump_path, "people_work_association",
+                         _WORK_ASSOC_COLS):
+        work_assocs[r.get("person_id")].append(r)
+
+    seen_this_run: set[str] = set()
+    raw_count = sum(1 for _ in insert_rows(dump_path, "people"))
+    parsed_count = 0
+
+    for row in people_rows(dump_path):
+        parsed_count += 1
+        if stats["imported"] >= limit:
+            break
+        if not is_worker(row):
+            stats["skipped_non_worker"] += 1
+            continue
+        v2_id = row["id"]
+        source_ref = f"{SOURCE_REF_PREFIX}:people/{v2_id}"
+        email = row.get("email_address") or None
+        email_cf = email.casefold() if email else None
+        if (source_ref in existing_refs
+                or (email_cf and email_cf in existing_emails)
+                or (email_cf and email_cf in seen_this_run)):
+            stats["skipped_existing"] += 1
+            continue
+
+        partner_note = None
+        partner_id = None
+        v2_partner = row.get("w_resource_partner")
+        if v2_partner is not None:
+            name = v2_partner_names.get(v2_partner)
+            if name is None:
+                partner_note = f"V2 partner #{v2_partner} not in dump"
+            else:
+                matched = partners_v3.get(name.casefold())
+                if matched is None:
+                    partner_note = f"V2 partner not in V3: {name}"
+                else:
+                    partner_id = matched.id
+
+        status, status_note, archived = worker_status(row)
+        first = (row.get("first_name") or "").strip()
+        last = (row.get("last_name") or "").strip()
+        display = (row.get("display_name") or "").strip()
+        if not first and not last:
+            first = display or f"V2 person {v2_id}"
+        person = Person(
+            first_name=first or display or "—",
+            last_name=last,
+            preferred_name=display if display and display != first else None,
+            email=email,
+            phone=row.get("phone_number") or None,
+            rfid_tag=row.get("rfid_tracker") or None,
+            notes=worker_notes(row, work_assocs.get(v2_id, []), partner_note),
+            source="import",
+            source_ref=source_ref,
+            archived_at=datetime.now(UTC) if archived else None,
+        )
+        db.add(person)
+        await db.flush()          # person.id for the profile row
+        db.add(WorkerProfile(
+            person_id=person.id, partner_id=partner_id,
+            trade=trade_of(row), status=status, status_note=status_note))
+        if email_cf:
+            seen_this_run.add(email_cf)
+        stats["id_map"][v2_id] = str(person.id)
+        stats["imported"] += 1
+
+    stats["malformed"] = raw_count - parsed_count if raw_count > parsed_count \
+        else 0
+    return stats
