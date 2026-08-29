@@ -591,29 +591,30 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                             <dt>Created</dt><dd className="mono">{longDate(o.created_at)}</dd>
                           </dl>
                         </div>
-                        {(canManage || godMode) && (
-                          <div className="detail-actions">
-                            {canManage && (<>
-                            <button className="mini-btn accent" onClick={() => setEditing(o)}>
-                              Edit {cfg.kind}
+                        <div className="detail-actions">
+                          <Link className="mini-btn" to={`/stakeholders/${cfg.kind}s/${o.id}`}>
+                            Full Details ↗
+                          </Link>
+                          {canManage && (<>
+                          <button className="mini-btn accent" onClick={() => setEditing(o)}>
+                            Edit {cfg.kind}
+                          </button>
+                          {o.archived_at ? (
+                            <button className="mini-btn" onClick={() => void setArchived(o, false)}>
+                              Unarchive
                             </button>
-                            {o.archived_at ? (
-                              <button className="mini-btn" onClick={() => void setArchived(o, false)}>
-                                Unarchive
-                              </button>
-                            ) : (
-                              <button className="mini-btn danger" onClick={() => void setArchived(o, true)}>
-                                Archive
-                              </button>
-                            )}
-                            </>)}
-                            <GodDeleteButton visible={godMode} entityType={cfg.kind} entityId={o.id}
-                                             label={o.name} pending={pd.pendingIds.has(o.id)}
-                                             onChange={pd.pendingIds.has(o.id)
-                                               ? () => pd.unmark(o.id)
-                                               : () => pd.mark(cfg.kind, o.id, o.name)} />
-                          </div>
-                        )}
+                          ) : (
+                            <button className="mini-btn danger" onClick={() => void setArchived(o, true)}>
+                              Archive
+                            </button>
+                          )}
+                          </>)}
+                          <GodDeleteButton visible={godMode} entityType={cfg.kind} entityId={o.id}
+                                           label={o.name} pending={pd.pendingIds.has(o.id)}
+                                           onChange={pd.pendingIds.has(o.id)
+                                             ? () => pd.unmark(o.id)
+                                             : () => pd.mark(cfg.kind, o.id, o.name)} />
+                        </div>
                       </div>
                       <div className="detail-block">
                         <div style={{
