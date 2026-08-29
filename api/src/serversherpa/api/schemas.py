@@ -1650,3 +1650,72 @@ class NotificationGroupOut(BaseModel):
     enabled: bool
     member_count: int
     created_at: datetime
+
+
+class NotificationMemberAddIn(BaseModel):
+    person_id: uuid.UUID
+    model_config = ConfigDict(extra="forbid")
+
+
+class NotificationMemberOverrides(BaseModel):
+    """Raw per-member override columns — nulls preserved (None means
+    'inherit the group value'). Used both as the PATCH body (all fields
+    optional, and `model_fields_set` distinguishes absent from explicit
+    null) and embedded read-only in NotificationMemberOut."""
+    channels: list[str] | None = None
+    quiet_mode: str | None = None
+    quiet_start: time | None = None
+    quiet_end: time | None = None
+    timezone: str | None = None
+    active_days: list[str] | None = None
+    dnd_behavior: str | None = None
+    urgent_bypass: bool | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class NotificationEffectiveSettings(BaseModel):
+    """Fully resolved settings (member override merged over group
+    default) — no Nones except the quiet hour times, which are legitimately
+    absent when there are no quiet hours in effect."""
+    channels: list[str]
+    quiet_start: time | None = None
+    quiet_end: time | None = None
+    timezone: str
+    active_days: list[str]
+    dnd_behavior: str
+    urgent_bypass: bool
+
+
+class NotificationMemberOut(BaseModel):
+    person_id: uuid.UUID
+    display_name: str
+    job_title: str | None
+    avatar_url: str | None
+    email: str | None
+    phone: str | None
+    has_account: bool
+    can_email: bool
+    can_text: bool
+    can_push: bool
+    can_web: bool
+    overrides: NotificationMemberOverrides
+    effective: NotificationEffectiveSettings
+    added_at: datetime
+
+
+class NotificationGroupDetailOut(NotificationGroupOut):
+    members: list[NotificationMemberOut]
+
+
+class NotificationRecipientOut(BaseModel):
+    person_id: uuid.UUID
+    display_name: str
+    job_title: str | None
+    avatar_url: str | None
+    email: str | None
+    phone: str | None
+    has_account: bool
+    can_email: bool
+    can_text: bool
+    can_push: bool
+    can_web: bool
