@@ -11,7 +11,9 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import { ApiError, type NotificationGroupDetail } from '../lib/api';
+import {
+  ApiError, type NotificationGroupDetail, type NotificationMember, type NotificationRecipient,
+} from '../lib/api';
 
 const state = vi.hoisted(() => ({ groupId: 'g1' }));
 const navigate = vi.hoisted(() => vi.fn());
@@ -35,6 +37,10 @@ const api = vi.hoisted(() => ({
   getNotificationGroup: vi.fn(),
   updateNotificationGroup: vi.fn(),
   deleteNotificationGroup: vi.fn(),
+  addNotificationMember: vi.fn(),
+  updateNotificationMember: vi.fn(),
+  removeNotificationMember: vi.fn(),
+  listNotificationRecipients: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -59,11 +65,78 @@ const BASE: NotificationGroupDetail = {
   members: [],
 };
 
+// Alice: no override (inherits the group's channels), but can't actually
+// receive Text (no phone on file) — exercises the unreachable-channel
+// warning chip.
+const MEMBER_1: NotificationMember = {
+  person_id: 'p1',
+  display_name: 'Alice Tech',
+  job_title: 'Technician',
+  avatar_url: null,
+  email: 'alice@example.com',
+  phone: null,
+  has_account: true,
+  can_email: true,
+  can_text: false,
+  can_push: true,
+  can_web: true,
+  overrides: {
+    channels: null, quiet_mode: null, quiet_start: null, quiet_end: null,
+    timezone: null, active_days: null, dnd_behavior: null, urgent_bypass: null,
+  },
+  effective: {
+    channels: ['email', 'text'],
+    quiet_start: '21:00:00', quiet_end: '07:00:00', timezone: 'America/Chicago',
+    active_days: ['mon', 'tue', 'wed', 'thu', 'fri'], dnd_behavior: 'defer', urgent_bypass: true,
+  },
+  added_at: '2026-01-02T00:00:00Z',
+};
+
+// Bob: fully reachable, but has a channel override restricting him to
+// email only — exercises the Override marker + reset-to-inherit.
+const MEMBER_2: NotificationMember = {
+  person_id: 'p2',
+  display_name: 'Bob Override',
+  job_title: null,
+  avatar_url: null,
+  email: 'bob@example.com',
+  phone: '555-1212',
+  has_account: true,
+  can_email: true,
+  can_text: true,
+  can_push: true,
+  can_web: true,
+  overrides: {
+    channels: ['email'], quiet_mode: null, quiet_start: null, quiet_end: null,
+    timezone: null, active_days: null, dnd_behavior: null, urgent_bypass: null,
+  },
+  effective: {
+    channels: ['email'],
+    quiet_start: '21:00:00', quiet_end: '07:00:00', timezone: 'America/Chicago',
+    active_days: ['mon', 'tue', 'wed', 'thu', 'fri'], dnd_behavior: 'defer', urgent_bypass: true,
+  },
+  added_at: '2026-01-03T00:00:00Z',
+};
+
+const RECIPIENTS: NotificationRecipient[] = [
+  {
+    person_id: 'p1', display_name: 'Alice Tech', job_title: 'Technician', avatar_url: null,
+    email: 'alice@example.com', phone: null, has_account: true,
+    can_email: true, can_text: false, can_push: true, can_web: true,
+  },
+  {
+    person_id: 'p3', display_name: 'Carol New', job_title: 'Coordinator', avatar_url: null,
+    email: 'carol@example.com', phone: '555-2222', has_account: true,
+    can_email: true, can_text: true, can_push: true, can_web: true,
+  },
+];
+
 beforeEach(() => {
   vi.clearAllMocks();
   auth.can = () => true;
   state.groupId = 'g1';
   api.getNotificationGroup.mockResolvedValue(BASE);
+  api.listNotificationRecipients.mockResolvedValue([]);
 });
 
 afterEach(cleanup);
@@ -239,4 +312,93 @@ it('closes the settings modal and reloads the group on a successful save', async
 
   await waitFor(() => expect(api.getNotificationGroup).toHaveBeenCalledTimes(2));
   expect(screen.queryByRole('button', { name: /^save$/i })).toBeNull();
+});
+
+// ── Members panel (Task 5) ──────────────────────────────────────────
+
+it('members table renders effective channel chips, a warning on an unreachable channel, and an Override marker', async () => {
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1, MEMBER_2] });
+  renderPage();
+  await screen.findByText('Ops Alerts');
+
+  await screen.findByText('Alice Tech');
+  const textChip = screen.getByText('Text (SMS)');
+  expect(textChip.title).toBe('No phone number');
+  expect(textChip.className).toContain('c-red');
+
+  // Alice has no override on channels; Bob's channel override should
+  // surface an "Override" marker.
+  expect(screen.getAllByText('Override').length).toBeGreaterThan(0);
+});
+
+it('excludes current members from the add-member recipients combo', async () => {
+  const user = userEvent.setup();
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
+  api.listNotificationRecipients.mockResolvedValue(RECIPIENTS);
+  renderPage();
+  await screen.findByText('Ops Alerts');
+
+  await user.click(screen.getByPlaceholderText(/add a member/i));
+
+  expect(await screen.findByText('Carol New')).not.toBeNull();
+  // Alice already appears once (in the members table) — the combo must
+  // not add a second occurrence for a person already in the group.
+  expect(screen.getAllByText('Alice Tech')).toHaveLength(1);
+});
+
+it('override modal shows switch rows only for channels the member can receive', async () => {
+  const user = userEvent.setup();
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
+  renderPage();
+  await screen.findByText('Ops Alerts');
+
+  const row = screen.getByRole('row', { name: /alice tech/i });
+  await user.click(within(row).getByRole('button', { name: /^edit$/i }));
+
+  const heading = await screen.findByRole('heading', { name: /overrides — alice tech/i });
+  const dialog = heading.closest('.modal-card') as HTMLElement;
+
+  await user.selectOptions(within(dialog).getByLabelText('Channels'), 'custom');
+
+  expect(within(dialog).getByRole('checkbox', { name: /^email$/i })).not.toBeNull();
+  expect(within(dialog).getByRole('checkbox', { name: /^push$/i })).not.toBeNull();
+  expect(within(dialog).getByRole('checkbox', { name: /^web$/i })).not.toBeNull();
+  // Alice has no phone on file — Text must not offer a switch row.
+  expect(within(dialog).queryByRole('checkbox', { name: /text/i })).toBeNull();
+});
+
+it('resetting a channel override to inherit sends an explicit null', async () => {
+  const user = userEvent.setup();
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_2] });
+  api.updateNotificationMember.mockResolvedValue(MEMBER_2);
+  renderPage();
+  await screen.findByText('Ops Alerts');
+
+  const row = screen.getByRole('row', { name: /bob override/i });
+  await user.click(within(row).getByRole('button', { name: /^edit$/i }));
+
+  const heading = await screen.findByRole('heading', { name: /overrides — bob override/i });
+  const dialog = heading.closest('.modal-card') as HTMLElement;
+
+  await user.selectOptions(within(dialog).getByLabelText('Channels'), 'default');
+  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
+
+  await waitFor(() => expect(api.updateNotificationMember)
+    .toHaveBeenCalledWith('g1', 'p2', { channels: null }));
+});
+
+it('removing a member requires a second click before calling the API', async () => {
+  const user = userEvent.setup();
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
+  api.removeNotificationMember.mockResolvedValue(undefined);
+  renderPage();
+  await screen.findByText('Ops Alerts');
+
+  const row = screen.getByRole('row', { name: /alice tech/i });
+  await user.click(within(row).getByRole('button', { name: /^remove$/i }));
+  expect(api.removeNotificationMember).not.toHaveBeenCalled();
+
+  await user.click(within(row).getByRole('button', { name: /really remove/i }));
+
+  await waitFor(() => expect(api.removeNotificationMember).toHaveBeenCalledWith('g1', 'p1'));
 });

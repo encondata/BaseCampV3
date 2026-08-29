@@ -5,9 +5,11 @@
  * actions); the Delivery defaults panel follows the same .init-panel +
  * dl.kv convention as InitiativeDetail's Overview panel. Editing is
  * delegated to components/notifications/{EditGroupModal,EditSettingsModal}
- * to keep this file under the house ~500-line split threshold. A Members
- * panel placeholder marks where Task 5 plugs in its full membership UI —
- * it reuses this page's `load()` as the `reload()` contract.
+ * to keep this file under the house ~500-line split threshold. The
+ * Members panel (add/remove, per-member override editor, capability
+ * warnings) is similarly delegated to components/notifications/
+ * MembersPanel.tsx, which reuses this page's `load()` as its `reload()`
+ * contract.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -16,6 +18,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import EditGroupModal from '../components/notifications/EditGroupModal';
 import EditSettingsModal from '../components/notifications/EditSettingsModal';
+import MembersPanel from '../components/notifications/MembersPanel';
 import {
   ApiError, deleteNotificationGroup, getNotificationGroup, updateNotificationGroup,
   type NotificationGroupDetail as NotificationGroupDetailOut,
@@ -222,12 +225,7 @@ export default function NotificationGroupDetailPage() {
         </dl>
       </div>
 
-      {/* Members panel — Task 5 replaces this placeholder with the full
-          membership UI, plugging into `load()` above as its reload(). */}
-      <div className="init-panel" style={{ marginTop: 18 }}>
-        <p className="eyebrow-sm">Members — {group.member_count}</p>
-        <p className="page-hint">Member management is coming soon.</p>
-      </div>
+      <MembersPanel group={group} canChange={canChange} reload={load} />
 
       {editingGroup && (
         <EditGroupModal
