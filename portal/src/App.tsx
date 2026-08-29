@@ -110,6 +110,12 @@ export default function App() {
             <Route path="/stakeholders/clients" element={<ProtectedRoute resource="clients"><Clients /></ProtectedRoute>} />
             <Route path="/stakeholders/partners" element={<ProtectedRoute resource="partners"><Partners /></ProtectedRoute>} />
             <Route path="/settings" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
+            <Route path="/system/notifications" element={
+              <ProtectedRoute resource="settings">
+                <Placeholder eyebrow="System" title="Notifications"
+                             hint="Notification rules and delivery settings." />
+              </ProtectedRoute>
+            } />
             <Route path="/system/processes" element={
               <ProtectedRoute minRank={80}><SystemProcesses /></ProtectedRoute>
             } />

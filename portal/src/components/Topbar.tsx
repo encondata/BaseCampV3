@@ -28,6 +28,7 @@ const CRUMBS: Record<string, string[]> = {
   '/stakeholders/partners': ['Stakeholders', 'Partners'],
   '/admin/asset-models': ['Admin', 'Makes / Models'],
   '/settings': ['System', 'Settings'],
+  '/system/notifications': ['System', 'Notifications'],
   '/me': ['Account', 'My profile'],
   '/dev': ['Portal', 'Developer tools'],
   '/dev/database/variables': ['Portal', 'Developer tools', 'Database', 'Variables'],
@@ -53,6 +54,7 @@ const PAGES = [
   { label: 'Partners', to: '/stakeholders/partners' },
   { label: 'Makes / Models', to: '/admin/asset-models' },
   { label: 'Settings', to: '/settings' },
+  { label: 'Notifications', to: '/system/notifications' },
   { label: 'My profile', to: '/me' },
 ];
 
