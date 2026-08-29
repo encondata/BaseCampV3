@@ -878,4 +878,64 @@
 .idet-expand-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .idet-expand-bar .sysconf-tabbar { margin: 0; }
 .idet-expand-links { margin-left: auto; display: flex; gap: 8px; }
+
+/* ── Time tracking panel (page bottom, every initiative type) ────────
+   Stat tiles restate access.css's .stat-tile visual language locally
+   (this page doesn't import access.css); per-person rows echo
+   time.css's .time-recent-row grid rhythm. ────────────────────────── */
+.idet-time-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.idet-time-stat {
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 14px;
+  padding: 14px 16px;
+}
+.idet-time-stat-label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.idet-time-stat-value {
+  display: block;
+  margin-top: 6px;
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-dark);
+  letter-spacing: -0.01em;
+}
+
+.idet-time-list { display: flex; flex-direction: column; }
+.idet-time-list-head,
+.idet-time-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.6fr) minmax(80px, 0.9fr) minmax(80px, 0.9fr)
+    minmax(60px, 0.7fr) minmax(90px, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 7px 0;
+}
+.idet-time-list-head {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  border-bottom: 1px solid var(--paper-line);
+  padding-bottom: 8px;
+}
+.idet-time-row {
+  font-size: 12.5px;
+  color: var(--text-dark);
+  border-bottom: 1px solid var(--paper-line);
+}
+.idet-time-row:last-child { border-bottom: none; }
+.idet-time-person { font-weight: 500; }
 .scan-history .scan-when { white-space: nowrap; }

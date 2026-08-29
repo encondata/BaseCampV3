@@ -26,6 +26,7 @@ import {
   addInitiativeLink,
   addInitiativePerson,
   getInitiative,
+  getTimeSummary,
   listAssetStatuses,
   listClients,
   listInitiativeAssets,
@@ -50,9 +51,11 @@ import {
   type OrgRef,
   type SiteItem,
   type StatusValue,
+  type TimeSummaryOut,
   type WorkerOption,
 } from '../lib/api';
 import { ADMIN_RANK } from '../lib/access';
+import { relativeTime } from '../lib/format';
 import {
   INITIATIVE_ERRORS, MOVE_ASSET_COLUMNS, MOVE_ASSET_EDIT_FIELDS, MOVE_ASSET_ERRORS,
   initiativeCellText, moveAssetCellText, moveAssetProgress, moveAssetStatusBreakdown,
@@ -72,6 +75,7 @@ import {
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
+import { formatMinutes } from '../lib/timeFormat';
 import StatusHover from '../components/StatusHover';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
@@ -343,6 +347,12 @@ export default function InitiativeDetail() {
   const [linksBusy, setLinksBusy] = useState(false);
   const [linksError, setLinksError] = useState('');
 
+  // Time tracking panel (page bottom) — /time/summary is initiatives:view,
+  // so it loads for every viewer of this page regardless of type; a failed
+  // fetch is swallowed and just renders as the empty state (Task brief).
+  const [timeSummary, setTimeSummary] = useState<TimeSummaryOut | null>(null);
+  const [timeLoaded, setTimeLoaded] = useState(false);
+
   const load = () => {
     if (!id) return;
     void getInitiative(id).then((data) => {
@@ -376,6 +386,16 @@ export default function InitiativeDetail() {
     if (!initiative || initiative.initiative_type !== 'move') return;
     void listAssetStatuses().then(setMoveStatuses).catch(() => {});
   }, [initiative?.id, initiative?.initiative_type]);
+
+  useEffect(() => {
+    if (!initiative) return;
+    setTimeLoaded(false);
+    setTimeSummary(null);
+    void getTimeSummary(initiative.id)
+      .then(setTimeSummary)
+      .catch(() => setTimeSummary(null))
+      .finally(() => setTimeLoaded(true));
+  }, [initiative?.id]);
 
   useEffect(() => {
     void listInitiativeStatuses().then(setStatuses).catch(() => {});
@@ -1040,6 +1060,68 @@ export default function InitiativeDetail() {
             </div>
           )}
           {peopleError && <span className="pf-error">{peopleError}</span>}
+        </div>
+
+        <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
+          <p className="eyebrow-sm">Time tracking</p>
+          {!timeLoaded ? (
+            <p className="page-hint">Loading…</p>
+          ) : (
+            <>
+              <div className="idet-time-stats">
+                <div className="idet-time-stat">
+                  <span className="idet-time-stat-label">Approved hours</span>
+                  <span className="idet-time-stat-value">
+                    {formatMinutes(timeSummary?.approved_minutes ?? 0)}
+                  </span>
+                </div>
+                <div className="idet-time-stat">
+                  <span className="idet-time-stat-label">Pending hours</span>
+                  <span className="idet-time-stat-value">
+                    {formatMinutes(timeSummary?.pending_minutes ?? 0)}
+                  </span>
+                </div>
+                <div className="idet-time-stat">
+                  <span className="idet-time-stat-label">People</span>
+                  <span className="idet-time-stat-value">
+                    {timeSummary?.people.length ?? 0}
+                  </span>
+                </div>
+                <div className="idet-time-stat">
+                  <span className="idet-time-stat-label">On the clock now</span>
+                  <span className="idet-time-stat-value">{timeSummary?.open_count ?? 0}</span>
+                </div>
+              </div>
+
+              {timeSummary && timeSummary.people.length > 0 ? (
+                <div className="idet-time-list">
+                  <div className="idet-time-list-head">
+                    <span>Person</span>
+                    <span>Approved</span>
+                    <span>Pending</span>
+                    <span>Entries</span>
+                    <span>Last activity</span>
+                  </div>
+                  {timeSummary.people.map((p) => (
+                    <div key={p.person_id} className="idet-time-row">
+                      <span className="idet-time-person">{p.person_name}</span>
+                      <span>{formatMinutes(p.approved_minutes)}</span>
+                      <span>{formatMinutes(p.pending_minutes)}</span>
+                      <span>{p.entry_count}</span>
+                      <span>{relativeTime(p.last_entry_at)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="page-hint">No time recorded against this initiative yet.</p>
+              )}
+            </>
+          )}
+          {can('time') && (
+            <div className="detail-actions">
+              <Link className="mini-btn" to="/people/time">Time Management →</Link>
+            </div>
+          )}
         </div>
       </div>
 
