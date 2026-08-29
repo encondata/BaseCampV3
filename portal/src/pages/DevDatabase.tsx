@@ -421,7 +421,8 @@ function BackupsTab() {
 
   return (
     <>
-      <div className="init-panel" style={{ marginBottom: 20 }}>
+      {/* sysconf-card scopes system.css's input styling to this form */}
+      <div className="init-panel sysconf-card" style={{ marginBottom: 20 }}>
         <div className="eyebrow-sm">Create backup</div>
         <p className="page-hint" style={{ marginTop: 0 }}>
           Creates a full SQL dump encrypted with your account password. Keep the
