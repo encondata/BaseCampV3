@@ -2153,6 +2153,53 @@ export async function reconcilePendingDelete(
   return resp.json();
 }
 
+/* ── db backups ───────────────────────────────────────────────────── */
+
+export interface DbBackupItem {
+  id: string;
+  filename: string;
+  size_bytes: number;
+  created_at: string;
+  created_by: string | null;
+  created_by_name: string | null;
+  // only populated by createDbBackup (a fresh presigned link) — list rows
+  // leave this undefined, so downloading an older backup goes through
+  // getDbBackupDownload for a freshly-signed URL instead.
+  download_url?: string;
+}
+
+export async function listDbBackups(): Promise<DbBackupItem[]> {
+  const resp = await apiFetch('/devtools/backups');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Runs pg_dump server-side and encrypts the dump with the caller's OWN
+ *  account password — the API never sees `password` again after this
+ *  call. Errors: 403 `invalid_password`, 500 `pg_dump_unavailable` (or
+ *  `pg_dump_failed`) — see ApiError.code. The returned item's
+ *  `download_url` is a freshly presigned, attachment-disposition link. */
+export async function createDbBackup(password: string): Promise<DbBackupItem> {
+  const resp = await apiFetch('/devtools/backups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getDbBackupDownload(backupId: string): Promise<{ url: string }> {
+  const resp = await apiFetch(`/devtools/backups/${backupId}/download`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function deleteDbBackup(backupId: string): Promise<void> {
+  const resp = await apiFetch(`/devtools/backups/${backupId}`, { method: 'DELETE' });
+  if (!resp.ok && resp.status !== 404) throw await errorFrom(resp);
+}
+
 // ── system: process registry + logs ─────────────────────────────────
 
 export interface SystemProcessOut {
