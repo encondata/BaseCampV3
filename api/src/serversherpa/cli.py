@@ -128,6 +128,47 @@ def import_v2_sites(
 
 
 @app.command()
+def import_v2_workers(
+    dump: str = typer.Option(..., help="Path to the V2 pg_dump .sql file"),
+    limit: int = typer.Option(200, help="Max workers to import this run"),
+    dry_run: bool = typer.Option(False, help="Parse and report; write nothing"),
+    photos: bool = typer.Option(True, help="Also fetch and attach avatars"),
+    photos_dir: list[str] = typer.Option(
+        [], help="Local dir(s) searched for photo files by filename"),
+    spaces_env: str = typer.Option(
+        "", help="V2 .env with DO_SPACES_* creds for S3-stored photos"),
+) -> None:
+    """Seed worker people (+ profiles, work-history notes, best-effort
+    avatars) from a legacy BaseCamp V2 dump. Additive: re-runs skip
+    already-imported source_refs and existing emails; never deletes."""
+
+    async def _run() -> None:
+        from serversherpa.people.v2_import import (
+            attach_photos, import_workers, spaces_getter_from_env)
+        from serversherpa.services.audit import audit
+
+        async with get_sessionmaker()() as db:
+            stats = await import_workers(db, dump, limit)
+            id_map = stats.pop("id_map")
+            if photos and not dry_run:
+                s3_get = spaces_getter_from_env(spaces_env) \
+                    if spaces_env else None
+                stats |= await attach_photos(
+                    db, dump, id_map, list(photos_dir), s3_get)
+            if dry_run:
+                await db.rollback()
+                typer.secho(f"[dry-run] would import: {stats}", fg="yellow")
+            else:
+                audit(db, actor_id=None, entity_type="person", entity_id=None,
+                      action="import", changes=stats)
+                await db.commit()
+                typer.secho(f"Imported: {stats}", fg="green")
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def set_password(
     email: str = typer.Option(..., help="Login email of the existing account"),
     password: str = typer.Option(
