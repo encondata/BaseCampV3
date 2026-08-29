@@ -21,6 +21,8 @@ from serversherpa.api.schemas import (
     CertCreateIn,
     CertItem,
     PartnerRef,
+    WorkerDetailOut,
+    WorkerInitiativeItem,
     WorkerItem,
     WorkerLevelCreateIn,
     WorkerLevelOut,
@@ -29,10 +31,13 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.db.models import (
     AuthSession,
+    Initiative,
+    InitiativePerson,
     Partner,
     Person,
     PersonRole,
     Role,
+    Site,
     StatusValue,
     UserAccount,
     WorkerCertification,
@@ -140,6 +145,101 @@ async def list_workers(
         )
         for person, profile, partner_id, partner_name, account_id in rows
     ]
+
+
+_VOCAB_FALLBACK = "#51606f"     # mirrors initiatives.py's unmapped-key color
+
+
+@router.get("/{person_id}", response_model=WorkerDetailOut)
+async def get_worker(
+    person_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("workers", "view"),
+) -> WorkerDetailOut:
+    person = await _require_worker(db, person_id)
+    await _check_worker_scope(db, actor, person_id)
+
+    profile = await db.get(WorkerProfile, person_id)
+    partner = (await db.get(Partner, profile.partner_id)
+               if profile and profile.partner_id else None)
+    account = await db.get(UserAccount, person_id)
+    labels = await status_labels(db, "worker")
+    lvl_colors = await level_colors(db)
+    level_row = (await db.get(WorkerLevel, profile.level)
+                 if profile and profile.level else None)
+
+    today = date.today()
+    cert_total, cert_expired = (await db.execute(
+        select(func.count(),
+               func.count().filter(WorkerCertification.expires_on < today))
+        .where(WorkerCertification.person_id == person_id))).one()
+
+    # one query per vocabulary, mirroring initiatives.py::_people_rows
+    vocab_rows = await db.scalars(select(StatusValue).where(
+        StatusValue.record_type.in_(
+            ["initiative", "initiative_type", "initiative_work_type"])))
+    vocabs: dict[str, dict[str, tuple[str, str]]] = {}
+    for s in vocab_rows:
+        vocabs.setdefault(s.record_type, {})[s.key] = (s.label, s.color)
+
+    memberships = (await db.execute(
+        select(InitiativePerson, Initiative, Site.name)
+        .join(Initiative, Initiative.id == InitiativePerson.initiative_id)
+        .outerjoin(Site, Site.id == InitiativePerson.site_worked_id)
+        .where(InitiativePerson.person_id == person_id)
+        .order_by(InitiativePerson.created_at.desc()))).all()
+    initiatives = []
+    for m, init, site_name in memberships:
+        wt = (vocabs.get("initiative_work_type", {}).get(
+                  m.work_type, (m.work_type, _VOCAB_FALLBACK))
+              if m.work_type is not None else (None, None))
+        t = vocabs.get("initiative_type", {}).get(
+            init.initiative_type, (init.initiative_type, _VOCAB_FALLBACK))
+        s = vocabs.get("initiative", {}).get(
+            init.status, (init.status, _VOCAB_FALLBACK))
+        initiatives.append(WorkerInitiativeItem(
+            initiative_id=init.id, initiative_name=init.name,
+            type_label=t[0], type_color=t[1],
+            status_label=s[0], status_color=s[1],
+            work_type_label=wt[0], work_type_color=wt[1],
+            site_worked_name=site_name, rating=m.rating,
+            added_at=m.created_at))
+
+    return WorkerDetailOut(
+        person_id=person.id,
+        display_name=person.display_name,
+        first_name=person.first_name,
+        last_name=person.last_name,
+        contact_email=person.email,
+        phone=person.phone,
+        avatar_url=presign_get(person.avatar_key),
+        has_account=account is not None,
+        trade=profile.trade if profile else None,
+        **level_fields(profile.level if profile else None, lvl_colors),
+        **status_fields(profile.status if profile else "active", labels),
+        status_note=profile.status_note if profile else None,
+        partner=(PartnerRef(id=partner.id, name=partner.name)
+                 if partner else None),
+        cert_count=cert_total or 0,
+        certs_expired=cert_expired or 0,
+        preferred_name=person.preferred_name,
+        job_title=person.job_title,
+        address_line1=person.address_line1,
+        address_line2=person.address_line2,
+        city=person.city,
+        region=person.region,
+        postal_code=person.postal_code,
+        country=person.country,
+        badge_uid=person.badge_uid,
+        rfid_tag=person.rfid_tag,
+        person_notes=person.notes,
+        source=person.source,
+        source_ref=person.source_ref,
+        created_at=person.created_at,
+        level_def=(WorkerLevelOut.model_validate(level_row)
+                   if level_row else None),
+        initiatives=initiatives,
+    )
 
 
 # worker_profiles.status is Mapped[str] (NOT NULL, server_default 'active').

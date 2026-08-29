@@ -23,6 +23,7 @@ NOTE_HOSTS: dict[str, tuple[str, type]] = {
     "asset": ("assets", Asset),
     "container": ("containers", Container),
     "initiative": ("initiatives", Initiative),
+    "person": ("workers", Person),
     "site": ("sites", Site),
 }
 

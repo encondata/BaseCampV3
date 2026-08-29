@@ -528,6 +528,43 @@ class WorkerItem(BaseModel):
     certs_expired: int
 
 
+class WorkerInitiativeItem(BaseModel):
+    initiative_id: uuid.UUID
+    initiative_name: str
+    type_label: str | None
+    type_color: str | None
+    status_label: str
+    status_color: str
+    work_type_label: str | None
+    work_type_color: str | None
+    site_worked_name: str | None
+    rating: int | None
+    added_at: datetime
+
+
+class WorkerDetailOut(WorkerItem):
+    """WorkerItem + the person-record extras and history the full-detail
+    page shows. person_notes is Person.notes (the imported V2 leftovers
+    live there) — distinct from the /notes entity rows."""
+
+    preferred_name: str | None
+    job_title: str | None
+    address_line1: str | None
+    address_line2: str | None
+    city: str | None
+    region: str | None
+    postal_code: str | None
+    country: str
+    badge_uid: uuid.UUID
+    rfid_tag: str | None
+    person_notes: str | None
+    source: str
+    source_ref: str | None
+    created_at: datetime
+    level_def: WorkerLevelOut | None
+    initiatives: list[WorkerInitiativeItem]
+
+
 class WorkerProfileIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
