@@ -213,7 +213,7 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved }:
           </button>
         </div>
         <form onSubmit={submit}>
-          <div className="modal-body">
+          <div className="modal-body ov-body">
             <div className="pf-form">
               <div className="full">
                 <label htmlFor="ov-channels-mode">Channels</label>

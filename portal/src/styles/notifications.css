@@ -162,3 +162,14 @@
   gap: 8px;
   flex-wrap: wrap;
 }
+
+/* OverrideEditorModal dropped its per-section .modal-section headings
+   (they duplicated the field label right below them), but .modal-section
+   was also the only source of vertical rhythm between sections. Scoped to
+   .ov-body so no other modal's .modal-body/.pf-form pairing is affected;
+   the adjacent-sibling selector fires only between back-to-back .pf-form
+   blocks (Channels/Quiet hours/Timezone/Active days) and not before the
+   Behavior .pf-form, which still follows its own .modal-section heading. */
+.ov-body > .pf-form + .pf-form {
+  margin-top: 18px;
+}
