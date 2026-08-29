@@ -107,10 +107,7 @@ def _out(group: NotificationGroup, member_count: int) -> NotificationGroupOut:
         member_count=member_count, created_at=group.created_at)
 
 
-# ── members, overrides, recipients (Task 2) ────────────────────────
-
-MEMBER_FIELDS = ["channels", "quiet_mode", "quiet_start", "quiet_end",
-                  "timezone", "active_days", "dnd_behavior", "urgent_bypass"]
+# ── members, overrides, recipients ─────────────────────────────────
 
 # channel name -> the capabilities() key that gates it
 CHANNEL_CAPABILITY = {"email": "can_email", "text": "can_text",

@@ -137,8 +137,8 @@ Full detail page in the house-benchmark style:
   hours (start / end / timezone selects), active-days selector, DND behavior select
   (Defer / Skip), urgent-bypass switch. Section headings visually distinct from field labels.
 - **Members panel**: real aligned table — Person (avatar, name, job title), Contact
-  (email / phone, with "unreachable" warning chips for channels the group uses but the
-  person lacks), Effective channels (chips + an override marker when personalized),
+  (email / phone, "—" when absent), Effective channels (chips + an override marker when
+  personalized; a chip the person cannot receive carries the warning style and title),
   Effective quiet hours / days, Actions (Edit overrides, Remove with two-click confirm).
   Add-member `ComboBox` fed by `GET /notifications/recipients`, each option showing the
   candidate's reachable channels.
