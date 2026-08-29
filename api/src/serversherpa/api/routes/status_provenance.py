@@ -24,6 +24,7 @@ from serversherpa.api.deps import CurrentUser, DbSession
 from serversherpa.api.schemas import StatusProvenanceOut
 from serversherpa.db.models import (
     AuditLog, InitiativeAsset, Person, ProcessedScan, Site, StatusValue,
+    TimeEntry,
 )
 
 router = APIRouter(prefix="/status", tags=["status"])
@@ -61,7 +62,18 @@ async def status_provenance(
     resource = ENTITY_RESOURCE.get(entity_type)
     if resource is None:
         raise _err(422, "unknown_entity_type")
-    if not user.access.can(resource, "view"):
+
+    # A worker hovering the status chip on their OWN time entry shouldn't
+    # need the `time` resource grant (workers don't hold time:view) — only
+    # looking up someone else's entry falls back to the normal gate.
+    own_time_entry = False
+    if entity_type == "time_entry":
+        time_entry = await db.get(TimeEntry, entity_id)
+        if time_entry is None:
+            raise _err(404, "not_found")
+        own_time_entry = time_entry.person_id == user.person.id
+
+    if not own_time_entry and not user.access.can(resource, "view"):
         raise HTTPException(status_code=403, detail={"code": "forbidden"})
 
     # initiative_asset rows resolve to their asset for the scan trail;

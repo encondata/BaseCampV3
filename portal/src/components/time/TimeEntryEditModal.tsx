@@ -100,11 +100,17 @@ export default function TimeEntryEditModal({
   const originalClockOut = isoToLocalInput(entry?.clock_out_at);
   const originalBreak = entry?.break_minutes ?? 0;
 
+  // Clearing Clock out in edit mode is treated as "leave it unchanged" —
+  // the API rejects an explicit clock_out_at: null (re-opening a closed
+  // entry isn't supported), so a blanked field must never reach the patch
+  // body. Only a *filled-in*, *different* value counts as a real change.
+  const clockOutChanged = !isCreateMode && clockOut !== '' && clockOut !== originalClockOut;
+
   // Only meaningful in edit mode — a brand-new entry has no "original" to
   // diverge from, and the create endpoint takes no adjust_reason at all.
   const timeChanged = !isCreateMode && (
     clockIn !== originalClockIn
-    || clockOut !== originalClockOut
+    || clockOutChanged
     || Number(breakMinutes || 0) !== originalBreak
   );
 
@@ -143,9 +149,7 @@ export default function TimeEntryEditModal({
       } else {
         const patch: Record<string, unknown> = {};
         if (clockIn !== originalClockIn) patch.clock_in_at = localInputToIso(clockIn);
-        if (clockOut !== originalClockOut) {
-          patch.clock_out_at = clockOut ? localInputToIso(clockOut) : null;
-        }
+        if (clockOutChanged) patch.clock_out_at = localInputToIso(clockOut);
         if (Number(breakMinutes || 0) !== originalBreak) {
           patch.break_minutes = Number(breakMinutes || 0);
         }

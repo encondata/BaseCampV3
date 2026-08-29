@@ -134,7 +134,8 @@ async def clock_in(body: ClockInIn, db: DbSession, user: CurrentUser) -> TimeEnt
     except IntegrityError:
         raise _err(409, "already_clocked_in") from None
     audit(db, actor_id=user.person.id, entity_type="time_entry",
-          entity_id=str(entry.id), action="clock_in")
+          entity_id=str(entry.id), action="clock_in",
+          changes={"status": {"from": None, "to": "open"}})
     await db.commit()
     return await _to_item(db, entry)
 
@@ -184,6 +185,12 @@ async def my_time(
 
 @router.get("/punch-options", response_model=TimePunchOptionsOut)
 async def punch_options(db: DbSession, user: CurrentUser) -> TimePunchOptionsOut:
+    # Sites and initiatives are internal-only resources (visible_to global,
+    # see access/resources.py) — a client/partner-scoped actor gets empty
+    # lists here rather than a leak of internal names. Punching still works;
+    # the entry is just unattributed to an initiative/site.
+    if not user.access.is_global:
+        return TimePunchOptionsOut(initiatives=[], sites=[])
     initiatives = list(await db.scalars(
         select(Initiative).where(
             Initiative.archived_at.is_(None),
@@ -255,7 +262,8 @@ async def create_time_entry(
     db.add(entry)
     await db.flush()
     audit(db, actor_id=actor.person.id, entity_type="time_entry",
-          entity_id=str(entry.id), action="create")
+          entity_id=str(entry.id), action="create",
+          changes={"status": {"from": None, "to": "pending"}})
     await db.commit()
     return await _to_item(db, entry)
 
@@ -270,6 +278,13 @@ async def update_time_entry(
         raise _err(404, "time_entry_not_found")
 
     data = body.model_dump(exclude_unset=True)
+    # Re-opening a closed entry isn't supported — a PATCH that explicitly
+    # carries clock_out_at: null must be rejected rather than silently
+    # nulling the column (which would collide with the one-open-entry-per-
+    # person unique index, or 500, on the next clock-in).
+    if "clock_out_at" in data and data["clock_out_at"] is None:
+        raise _err(422, "invalid_range")
+
     time_fields = {"clock_in_at", "clock_out_at", "break_minutes"}
     is_adjustment = bool(time_fields & data.keys())
     if is_adjustment and not data.get("adjust_reason"):
@@ -288,17 +303,28 @@ async def update_time_entry(
             and new_clock_out <= new_clock_in:
         raise _err(422, "invalid_range")
 
+    # Only re-validate the break/span relationship when the patch actually
+    # touches clock_in_at/clock_out_at/break_minutes — otherwise a notes-only
+    # PATCH on an entry whose existing (already-valid-at-save-time) span
+    # happens to be 0 minutes would spuriously 422.
     new_break_minutes = data.get("break_minutes", entry.break_minutes)
-    if new_clock_out is not None and new_clock_in is not None:
+    if is_adjustment and new_clock_out is not None and new_clock_in is not None:
         worked_span = int((new_clock_out - new_clock_in).total_seconds() // 60)
         if new_break_minutes < 0 or new_break_minutes >= worked_span:
             raise _err(422, "invalid_break")
+
+    # Closing a still-open entry (status "open" has no clock_out_at yet)
+    # via PATCH must graduate it into the pending queue — otherwise it's
+    # stuck "open" forever with no way to reach approval.
+    closes_open_entry = entry.status == "open" and data.get("clock_out_at") is not None
 
     fields = list(data.keys())
     if is_adjustment:
         fields.append("adjusted")
         if entry.status == "approved":
             fields += ["status", "approved_by", "approved_at"]
+        elif closes_open_entry:
+            fields.append("status")
     fields = list(dict.fromkeys(fields))
 
     before = snapshot(entry, fields)
@@ -310,6 +336,8 @@ async def update_time_entry(
             entry.status = "pending"
             entry.approved_by = None
             entry.approved_at = None
+        elif closes_open_entry:
+            entry.status = "pending"
     changes = diff(before, snapshot(entry, fields))
     if changes:
         entry.updated_at = datetime.now(UTC)

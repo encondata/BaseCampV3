@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from serversherpa.db.models import (
     Asset, AuditLog, Initiative, InitiativeAsset, Person, PersonRole,
-    ProcessedScan, Site,
+    ProcessedScan, Site, TimeEntry,
 )
 
 from .test_assets_api import login, make_login
@@ -134,3 +134,36 @@ async def test_gates_and_validation(client, db, seeded_user):
     resp = await _get(client, whdrs, entity_type="asset",
                       entity_id=aid, status="active")
     assert resp.status_code == 403
+
+
+async def test_time_entry_provenance_own_vs_others(client, db, seeded_user):
+    """A worker (no time:view grant) can still get provenance on their OWN
+    time entry; someone else's entry still requires the `time` gate."""
+    worker = Person(first_name="Wk", last_name="Prov")
+    other = Person(first_name="Other", last_name="Entry")
+    db.add_all([worker, other])
+    await db.flush()
+    db.add(PersonRole(person_id=worker.id, role="worker"))
+    own_entry = TimeEntry(person_id=worker.id, clock_in_at=T0,
+                          clock_out_at=T0 + timedelta(hours=8), status="pending")
+    other_entry = TimeEntry(person_id=other.id, clock_in_at=T0,
+                            clock_out_at=T0 + timedelta(hours=8), status="pending")
+    db.add_all([own_entry, other_entry])
+    await db.commit()
+    whdrs = await make_login(db, client, worker, "wk-prov@test.example.com")
+
+    resp = await _get(client, whdrs, entity_type="time_entry",
+                      entity_id=str(own_entry.id), status="pending")
+    assert resp.status_code == 200, resp.text
+
+    resp = await _get(client, whdrs, entity_type="time_entry",
+                      entity_id=str(other_entry.id), status="pending")
+    assert resp.status_code == 403
+
+
+async def test_time_entry_provenance_unknown_id_404s(client, db, seeded_user):
+    hdrs = await login(client)
+    resp = await _get(client, hdrs, entity_type="time_entry",
+                      entity_id="00000000-0000-0000-0000-000000000000",
+                      status="pending")
+    assert resp.status_code == 404

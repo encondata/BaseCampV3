@@ -131,6 +131,9 @@ export default function TimeManagement() {
   const [activeEntries, setActiveEntries] = useState<TimeEntryItem[] | null>(null);
   const [timesheet, setTimesheet] = useState<TimeEntryItem[] | null>(null);
   const [timesheetError, setTimesheetError] = useState('');
+  // Declared here (rather than down with the rest of the timesheet-list
+  // state) because the load effects below need it to refetch on pill change.
+  const [statusPill, setStatusPill] = useState('all');
 
   // ── live elapsed ticking (block 1's open span, block 3's since-times) ──
   const [, setTick] = useState(0);
@@ -153,9 +156,13 @@ export default function TimeManagement() {
       setActiveEntries([]);
     }
   };
-  const loadTimesheet = async () => {
+  // A specific status pill filters server-side (refetch on pill change) so
+  // the 500-row cap applies per-status instead of truncating the whole
+  // timesheet before the pill even gets a look; 'All' fetches unfiltered
+  // and relies on the client-side pill/column/search filtering below.
+  const loadTimesheet = async (status: string) => {
     try {
-      setTimesheet(await listTimeEntries({}));
+      setTimesheet(await listTimeEntries(status === 'all' ? {} : { status }));
       setTimesheetError('');
     } catch (err) {
       setTimesheet([]);
@@ -173,9 +180,14 @@ export default function TimeManagement() {
   useEffect(() => {
     if (!canView) return;
     void loadActive();
-    void loadTimesheet();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canView]);
+
+  useEffect(() => {
+    if (!canView) return;
+    void loadTimesheet(statusPill);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canView, statusPill]);
 
   useEffect(() => {
     if (!canAdd) return;
@@ -186,7 +198,7 @@ export default function TimeManagement() {
     await loadMyTime();
     if (canView) {
       await loadActive();
-      await loadTimesheet();
+      await loadTimesheet(statusPill);
     }
   };
 
@@ -244,7 +256,6 @@ export default function TimeManagement() {
   /* ── block 4: timesheet list machinery ───────────────────── */
 
   const [query, setQuery] = useState('');
-  const [statusPill, setStatusPill] = useState('all');
   const [modal, setModal] = useState<{ entry: TimeEntryItem | null; mode: 'edit' | 'reject' } | null>(null);
   const [rowBusyId, setRowBusyId] = useState<string | null>(null);
   // A single row action failing (e.g. a 409 from someone else approving the
@@ -520,6 +531,12 @@ export default function TimeManagement() {
                 Dismiss
               </button>
             </div>
+          )}
+
+          {!timesheetError && timesheet !== null && timesheet.length === 500 && (
+            <p className="page-hint">
+              Showing the newest 500 entries — use filters to narrow.
+            </p>
           )}
 
           {!timesheetError && (

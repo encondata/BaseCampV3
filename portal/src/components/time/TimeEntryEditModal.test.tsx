@@ -132,6 +132,22 @@ describe('reason required only when the times actually change', () => {
     expect(patch).not.toHaveProperty('clock_in_at');
     expect(patch).not.toHaveProperty('break_minutes');
   });
+
+  it('clearing Clock out is treated as unchanged — never sends clock_out_at: null', async () => {
+    const user = userEvent.setup();
+    renderModal();
+
+    const input = screen.getByLabelText('Clock out') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: '' } });
+
+    // no adjustment pending — clearing the field is a no-op, not a change
+    expect(screen.getByLabelText('Reason for change')).toBeDefined();
+
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+
+    // nothing changed, so no patch is sent at all (and definitely no null)
+    await waitFor(() => expect(api.updateTimeEntry).not.toHaveBeenCalled());
+  });
 });
 
 /**

@@ -3,9 +3,13 @@ and the access gates around them."""
 
 from datetime import UTC, datetime, timedelta
 
-from serversherpa.db.models import Initiative, Person, PersonRole, Site, TimeEntry
+from sqlalchemy import select
 
-from .test_assets_api import login, make_login
+from serversherpa.db.models import (
+    AuditLog, Initiative, Person, PersonRole, Site, TimeEntry,
+)
+
+from .test_assets_api import _client_contact, login, make_login
 
 T0 = datetime(2026, 8, 27, 9, 0, tzinfo=UTC)
 ZERO_UUID = "00000000-0000-0000-0000-000000000000"
@@ -145,6 +149,31 @@ async def test_punch_options_filters(client, db, seeded_user):
     assert "Init Arch" not in init_names
 
 
+async def test_punch_options_scoped_actor_gets_empty_lists(client, db, seeded_user):
+    """Sites and initiatives are internal-only (visible_to global) — a
+    client-scoped actor must not see them via punch-options, even though
+    punching itself carries no resource gate."""
+    db.add_all([Site(name="Internal Site"),
+               Initiative(name="Internal Init", initiative_type="project",
+                          status="in_progress")])
+    await db.commit()
+
+    _org, chdrs = await _client_contact(db, client, "PunchCo", "punch-client@test.example.com")
+    resp = await client.get("/time/punch-options", headers=chdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["initiatives"] == []
+    assert body["sites"] == []
+
+    # a global-anchored (staff) actor still sees the populated lists
+    hdrs = await login(client)
+    resp = await client.get("/time/punch-options", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert any(i["name"] == "Internal Init" for i in body["initiatives"])
+    assert any(s["name"] == "Internal Site" for s in body["sites"])
+
+
 async def test_manual_entry_validates_range_and_creates(client, db, seeded_user):
     await _bump_admin(db, seeded_user)
     hdrs = await login(client)
@@ -226,6 +255,102 @@ async def test_patch_invalid_break(client, db, seeded_user):
         "adjust_reason": "shortened shift"})
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "invalid_break"
+
+
+async def test_clock_in_and_manual_create_audit_initial_status(client, db, seeded_user):
+    """Clock-in and manual-create must leave a provenance trail for the
+    entry's INITIAL status, not just later transitions."""
+    await _bump_admin(db, seeded_user)
+    hdrs = await login(client)
+
+    resp = await client.post("/time/clock-in", headers=hdrs, json={})
+    assert resp.status_code == 200, resp.text
+    entry_id = resp.json()["id"]
+    row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "time_entry", AuditLog.entity_id == entry_id,
+        AuditLog.action == "clock_in"))
+    assert row.changes == {"status": {"from": None, "to": "open"}}
+
+    worker = Person(first_name="Man", last_name="Ual")
+    db.add(worker)
+    await db.commit()
+    resp = await client.post("/time/entries", headers=hdrs, json={
+        "person_id": str(worker.id),
+        "clock_in_at": T0.isoformat(),
+        "clock_out_at": (T0 + timedelta(hours=8)).isoformat(),
+    })
+    assert resp.status_code == 201, resp.text
+    created_id = resp.json()["id"]
+    row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "time_entry", AuditLog.entity_id == created_id,
+        AuditLog.action == "create"))
+    assert row.changes == {"status": {"from": None, "to": "pending"}}
+
+
+async def test_patch_rejects_explicit_null_clock_out(client, db, seeded_user):
+    """Re-opening a closed entry via PATCH is unsupported — an explicit
+    clock_out_at: null must 422, not silently null the column (which would
+    collide with the one-open-entry-per-person unique index)."""
+    await _bump_admin(db, seeded_user)
+    hdrs = await login(client)
+    entry = TimeEntry(person_id=seeded_user.id, clock_in_at=T0,
+                      clock_out_at=T0 + timedelta(hours=8), status="pending")
+    db.add(entry)
+    await db.commit()
+
+    resp = await client.patch(f"/time/entries/{entry.id}", headers=hdrs, json={
+        "clock_out_at": None, "adjust_reason": "trying to reopen"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_range"
+
+
+async def test_patch_closes_open_entry_to_pending(client, db, seeded_user):
+    """PATCHing a clock_out onto a still-open entry must graduate it to
+    pending (with minutes computed) so it can be approved — otherwise it's
+    stuck open forever."""
+    await _bump_admin(db, seeded_user)
+    hdrs = await login(client)
+    entry = TimeEntry(person_id=seeded_user.id, clock_in_at=T0, status="open")
+    db.add(entry)
+    await db.commit()
+
+    resp = await client.patch(f"/time/entries/{entry.id}", headers=hdrs, json={
+        "clock_out_at": (T0 + timedelta(hours=8)).isoformat(),
+        "adjust_reason": "manager closed out shift"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "pending"
+    assert body["minutes"] == 480
+
+    row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "time_entry", AuditLog.entity_id == str(entry.id),
+        AuditLog.action == "update"))
+    assert row.changes["status"] == {"from": "open", "to": "pending"}
+
+    resp = await client.post(f"/time/entries/{entry.id}/approve", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "approved"
+
+
+async def test_patch_notes_only_skips_break_revalidation(client, db, seeded_user):
+    """A notes-only PATCH on an entry whose existing (already-valid) span
+    happens to be 0 minutes must not spuriously 422 — the invalid_break
+    check only applies when the patch actually touches
+    clock_in_at/clock_out_at/break_minutes."""
+    await _bump_admin(db, seeded_user)
+    hdrs = await login(client)
+    # clock_out is 30s after clock_in — a valid span at creation time
+    # (clock_out > clock_in) that floors to 0 *minutes*.
+    entry = TimeEntry(person_id=seeded_user.id, clock_in_at=T0,
+                      clock_out_at=T0 + timedelta(seconds=30), break_minutes=0,
+                      status="pending")
+    db.add(entry)
+    await db.commit()
+
+    resp = await client.patch(f"/time/entries/{entry.id}", headers=hdrs,
+                              json={"notes": "no time fields touched"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["notes"] == "no time fields touched"
 
 
 async def test_clock_in_race_loser_gets_409(client, db, seeded_user, monkeypatch):
