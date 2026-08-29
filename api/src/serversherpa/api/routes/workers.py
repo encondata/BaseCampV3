@@ -21,6 +21,7 @@ from serversherpa.api.schemas import (
     CertCreateIn,
     CertItem,
     PartnerRef,
+    ProfileUpdateIn,
     WorkerDetailOut,
     WorkerInitiativeItem,
     WorkerItem,
@@ -240,6 +241,56 @@ async def get_worker(
                    if level_row else None),
         initiatives=initiatives,
     )
+
+
+@router.patch("/{person_id}/person", status_code=204)
+async def update_worker_person(
+    person_id: uuid.UUID,
+    body: ProfileUpdateIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("workers", "change"),
+) -> None:
+    """Person contact/identity fields for a worker. Unlike
+    `PATCH /users/{person_id}/profile` (users.py::admin_update_profile),
+    this does NOT require the target to hold a UserAccount and does NOT
+    forbid self-targeting — both of which make that endpoint unusable for
+    imported, account-less workers and confusing for self-edits."""
+    person = await _require_worker(db, person_id)
+    await _check_worker_scope(db, actor, person_id)
+
+    # rank guard only applies to targets who can actually log in and hold
+    # elevated roles; account-less workers and self-edits skip it entirely
+    # (mirrors upsert_profile's blacklist rank check, minus the self-target
+    # exclusion — self-edits are allowed here).
+    account = await db.get(UserAccount, person_id)
+    if account is not None and person_id != actor.person.id:
+        target_rank = (await db.scalar(
+            select(func.max(Role.rank))
+            .join(PersonRole, PersonRole.role == Role.name)
+            .where(PersonRole.person_id == person_id,
+                   PersonRole.revoked_at.is_(None)))) or 0
+        if not can_touch_rank(actor.access.max_rank, target_rank):
+            raise _err(403, "rank_too_low")
+
+    data = body.model_dump(exclude_unset=True)
+    for required in ("first_name", "last_name", "country"):
+        if required in data and data[required] is None:
+            raise _err(422, f"{required}_required")
+    fields = list(data.keys())
+    before = snapshot(person, fields)
+    for field, value in data.items():
+        setattr(person, field, value)
+    person.updated_at = datetime.now(UTC)
+    changes = diff(before, snapshot(person, fields))
+    if changes:
+        audit(db, actor_id=actor.person.id, entity_type="person",
+              entity_id=str(person_id), action="update",
+              changes=changes)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise _err(409, "email_in_use") from None
 
 
 # worker_profiles.status is Mapped[str] (NOT NULL, server_default 'active').

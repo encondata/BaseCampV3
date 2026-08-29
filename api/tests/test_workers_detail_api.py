@@ -3,7 +3,7 @@
 import uuid
 
 from serversherpa.db.models import (
-    Initiative, InitiativePerson, Person, WorkerProfile,
+    Initiative, InitiativePerson, Person, PersonRole, WorkerProfile,
 )
 from tests.test_workers import _headers, _mk_worker  # shared harness
 
@@ -91,6 +91,53 @@ async def test_person_notes_host(client, seeded_user, db):
         f"/notes?entity_type=person&entity_id={worker.id}",
         headers=headers)).json()
     assert [n["body"] for n in listing] == ["met on site"]
+
+
+async def test_patch_worker_person_updates_accountless_worker(client, seeded_user, db):
+    """The account-less-worker regression: 112 imported workers have no
+    UserAccount row, so the old `/users/{id}/profile` PATCH (which requires
+    one) 404s on them. The new `/workers/{id}/person` endpoint must work
+    without an account."""
+    worker = await _mk_worker(db, account=False, email="noacct@test.example.com")
+    headers = await _headers(client)
+
+    resp = await client.patch(f"/workers/{worker.id}/person", headers=headers, json={
+        "job_title": "Field Tech", "city": "Reno"})
+    assert resp.status_code == 204
+
+    body = (await client.get(f"/workers/{worker.id}", headers=headers)).json()
+    assert body["job_title"] == "Field Tech"
+    assert body["city"] == "Reno"
+
+
+async def test_patch_worker_person_rank_guard(client, seeded_user, db):
+    """A worker who ALSO holds an account and an elevated role (rank higher
+    than the actor's) must not be editable via this endpoint — mirrors the
+    blacklist rank guard in upsert_profile. seeded_user is "staff" (rank 40);
+    admin is rank 60, so it genuinely outranks staff."""
+    worker = await _mk_worker(db, first="Ed", last="Elevated",
+                              email="ed@test.example.com")
+    db.add(PersonRole(person_id=worker.id, role="admin"))
+    await db.commit()
+
+    headers = await _headers(client)
+    resp = await client.patch(f"/workers/{worker.id}/person", headers=headers, json={
+        "job_title": "Ops Lead"})
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "rank_too_low"
+
+
+async def test_patch_worker_person_email_conflict(client, seeded_user, db):
+    worker_a = await _mk_worker(
+        db, first="Ann", last="WorkerA", email="worker-a@test.example.com")
+    worker_b = await _mk_worker(
+        db, first="Bob", last="WorkerB", email="worker-b@test.example.com")
+    headers = await _headers(client)
+
+    resp = await client.patch(f"/workers/{worker_a.id}/person", headers=headers, json={
+        "email": "worker-b@test.example.com"})
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "email_in_use"
 
 
 async def test_person_notes_scoped_worker_cannot_read_others(client, seeded_user, db):
