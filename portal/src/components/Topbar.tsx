@@ -12,16 +12,23 @@ import { avatarGradient, initials } from '../lib/format';
 import { useTopbar } from '../lib/topbar';
 
 const CRUMBS: Record<string, string[]> = {
-  '/': ['Operations', 'Dashboard'],
+  '/': ['Dashboards', 'Main Dashboard'],
+  '/dashboards/move': ['Dashboards', 'Move Dashboard'],
+  '/dashboards/people': ['Dashboards', 'People Dashboard'],
+  '/dashboards/clients': ['Dashboards', 'Client Dashboard'],
   '/assets': ['Assets', 'Assets'],
   '/logistics/containers': ['Logistics', 'Containers'],
+  '/logistics/trucks': ['Logistics', 'Trucks / Shipments'],
+  '/logistics/warehouse': ['Logistics', 'Warehouse'],
   '/sites': ['Sites', 'Sites'],
   '/people/users': ['People', 'Users'],
   '/people/workers': ['People', 'Workers'],
+  '/people/time': ['People', 'Time Management'],
   '/stakeholders/clients': ['Stakeholders', 'Clients'],
   '/stakeholders/partners': ['Stakeholders', 'Partners'],
   '/admin/asset-models': ['Admin', 'Makes / Models'],
   '/settings': ['System', 'Settings'],
+  '/system/notifications': ['System', 'Notifications'],
   '/me': ['Account', 'My profile'],
   '/dev': ['Portal', 'Developer tools'],
   '/dev/database/variables': ['Portal', 'Developer tools', 'Database', 'Variables'],
@@ -32,17 +39,22 @@ const G_CHORD: Record<string, string> = {
 };
 
 const PAGES = [
-  { label: 'Dashboard', to: '/' },
+  { label: 'Main Dashboard', to: '/' },
+  { label: 'Move Dashboard', to: '/dashboards/move' },
+  { label: 'People Dashboard', to: '/dashboards/people' },
+  { label: 'Client Dashboard', to: '/dashboards/clients' },
   { label: 'Assets', to: '/assets' },
   { label: 'Initiatives', to: '/initiatives' },
   { label: 'Containers', to: '/logistics/containers' },
   { label: 'Sites', to: '/sites' },
   { label: 'Users', to: '/people/users' },
   { label: 'Workers', to: '/people/workers' },
+  { label: 'Time Management', to: '/people/time' },
   { label: 'Clients', to: '/stakeholders/clients' },
   { label: 'Partners', to: '/stakeholders/partners' },
   { label: 'Makes / Models', to: '/admin/asset-models' },
   { label: 'Settings', to: '/settings' },
+  { label: 'Notifications', to: '/system/notifications' },
   { label: 'My profile', to: '/me' },
 ];
 

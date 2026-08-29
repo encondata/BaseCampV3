@@ -163,3 +163,33 @@
 .site-map-modal-card { width: min(920px, 94vw); }
 .site-map-modal-body { padding: 0; }
 .site-map-modal-map { height: min(64vh, 620px); }
+
+/* ── status-colored map pins (SitesMap full map) ─────────────── */
+.site-status-pin {
+  background: none;
+  border: none;
+  filter: drop-shadow(0 2px 3px rgba(12, 17, 23, 0.35));
+  cursor: pointer;
+}
+
+/* ── pin-click detail card under the map — same read-only body the
+   list rows expand to (SiteRowDetail) ───────────────────────── */
+.site-map-detail {
+  margin-top: 14px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 16px;
+  padding: 16px 20px 20px;
+}
+.site-map-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 14px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--paper-line);
+}
+.site-map-detail-head .pn b { font-size: 15px; }
+.site-map-detail-close { margin-left: auto; }
+

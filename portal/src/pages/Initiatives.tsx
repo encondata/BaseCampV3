@@ -59,6 +59,7 @@ import {
   type ColumnDef,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
+import StatusHover from '../components/StatusHover';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
@@ -315,7 +316,9 @@ export default function Initiatives() {
       case 'status':
         return (
           <div className="chips">
-            {chip(i.status_label, i.status_color)}
+            <StatusHover entityType="initiative" entityId={i.id} status={i.status}>
+              {chip(i.status_label, i.status_color)}
+            </StatusHover>
             {i.archived_at && <span className="chip tag">Archived</span>}
             {pd.pendingIds.has(i.id) && <span className="chip tag">Pending delete</span>}
           </div>
@@ -345,7 +348,7 @@ export default function Initiatives() {
     <div className="portal-page">
       <div className="dir-head">
         <div>
-          <div className="eyebrow">Operations</div>
+          <div className="eyebrow">Initiatives</div>
           <h1 className="page-title">
             Initiatives
             <span className="badge-count">{initiatives?.length ?? '…'}</span>

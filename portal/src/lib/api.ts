@@ -14,6 +14,7 @@
  */
 
 import type { Action, PermMap, ScopeInfo } from './access';
+import type { WorkerItem } from './workers';
 
 // Default: same host the portal was loaded from, port 8000 — so LAN devices
 // (phone/laptop hitting the dev box's IP) reach the API without extra config.
@@ -963,6 +964,31 @@ export interface StatusValue {
   progress_weight: number | null;
 }
 
+/** GET /workers — the full worker-directory projection (same shape the
+ *  Workers page's row and this fetcher's `WorkerItem` describe). There is no
+ *  single-worker GET; a detail page loads this list and finds its row by
+ *  `person_id`, mirroring how MoveAssetDetail reads its row off the roster
+ *  list rather than a dedicated endpoint. */
+export async function listWorkers(): Promise<WorkerItem[]> {
+  const resp = await apiFetch('/workers');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export interface CertItem {
+  id: string;
+  name: string;
+  issuer: string | null;
+  issued_on: string | null;
+  expires_on: string | null;
+}
+
+export async function listWorkerCertifications(personId: string): Promise<CertItem[]> {
+  const resp = await apiFetch(`/workers/${personId}/certifications`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /** The Workers page's status vocabulary — filter facet and edit select.
  *  Chips do NOT come from here: /workers denormalises status_label/status_color
  *  onto every row, as /sites does. Server filters to is_active, so a worker on a
@@ -1475,6 +1501,40 @@ export async function listRawScans(query: RawScanQuery): Promise<RawScanRow[]> {
   return resp.json();
 }
 
+/** When (and via what) a row's status became its current value — the
+ *  payload behind status-chip hover popups (GET /status/provenance). */
+export interface StatusProvenance {
+  status: string;
+  changed_at: string | null;
+  source: 'scan' | 'edit' | null;
+  scan_type: string | null;
+  scan_type_label: string | null;
+  scan_type_color: string | null;
+  device_id: string | null;
+  site_name: string | null;
+  actor_name: string | null;
+}
+
+export async function getStatusProvenance(
+  entityType: string, entityId: string, status: string,
+): Promise<StatusProvenance> {
+  const params = new URLSearchParams({
+    entity_type: entityType, entity_id: entityId, status,
+  });
+  const resp = await apiFetch(`/status/provenance?${params.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** One UTC day's raw-scan count — zero-filled, oldest first. */
+export interface ScanDailyStat { day: string; count: number }
+
+export async function listScanDailyStats(days: number): Promise<ScanDailyStat[]> {
+  const resp = await apiFetch(`/scans/stats/daily?days=${days}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export async function listProcessedScans(): Promise<ProcessedScanRow[]> {
   const resp = await apiFetch('/scans/processed');
   if (!resp.ok) throw await errorFrom(resp);
@@ -1509,6 +1569,143 @@ export async function listAssetScans(
 ): Promise<AssetScanRow[]> {
   const qs = limit !== undefined ? `?limit=${limit}` : '';
   const resp = await apiFetch(`/scans/asset/${assetId}${qs}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/* ── time ─────────────────────────────────────────────────────────── */
+
+export interface TimeEntryItem {
+  id: string; person_id: string; person_name: string;
+  initiative_id: string | null; initiative_name: string | null;
+  site_id: string | null; site_name: string | null;
+  clock_in_at: string; clock_out_at: string | null;
+  break_minutes: number; minutes: number;
+  status: string; status_label: string; status_color: string;
+  source: string; notes: string; adjusted: boolean; adjust_reason: string | null;
+  approved_by: string | null; approved_by_name: string | null;
+  approved_at: string | null; reject_reason: string | null;
+  created_at: string; updated_at: string;
+}
+
+export interface TimeSummaryPerson {
+  person_id: string; person_name: string;
+  approved_minutes: number; pending_minutes: number; entry_count: number;
+  last_entry_at: string | null;
+}
+
+export interface TimeSummaryOut {
+  approved_minutes: number; pending_minutes: number;
+  open_count: number; people: TimeSummaryPerson[];
+}
+
+export interface PunchOption { id: string; name: string }
+
+export async function clockIn(
+  body: { initiative_id?: string; site_id?: string; notes?: string },
+): Promise<TimeEntryItem> {
+  const resp = await apiFetch('/time/clock-in', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function clockOut(
+  body: { notes?: string; break_minutes?: number },
+): Promise<TimeEntryItem> {
+  const resp = await apiFetch('/time/clock-out', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getMyTime(
+  limit?: number,
+): Promise<{ open: TimeEntryItem | null; entries: TimeEntryItem[] }> {
+  const qs = limit !== undefined ? `?limit=${limit}` : '';
+  const resp = await apiFetch(`/time/me${qs}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getPunchOptions(): Promise<{
+  initiatives: PunchOption[]; sites: PunchOption[];
+}> {
+  const resp = await apiFetch('/time/punch-options');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listTimeEntries(q: {
+  person_id?: string; initiative_id?: string; status?: string;
+  since?: string; until?: string; limit?: number; offset?: number;
+}): Promise<TimeEntryItem[]> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(q)) {
+    if (value !== undefined && value !== '') params.set(key, String(value));
+  }
+  const resp = await apiFetch(`/time/entries?${params.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createTimeEntry(
+  body: Record<string, unknown>,
+): Promise<TimeEntryItem> {
+  const resp = await apiFetch('/time/entries', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateTimeEntry(
+  id: string, body: Record<string, unknown>,
+): Promise<TimeEntryItem> {
+  const resp = await apiFetch(`/time/entries/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function approveTimeEntry(id: string): Promise<TimeEntryItem> {
+  const resp = await apiFetch(`/time/entries/${id}/approve`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function rejectTimeEntry(
+  id: string, reason: string,
+): Promise<TimeEntryItem> {
+  const resp = await apiFetch(`/time/entries/${id}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listActiveTimeEntries(): Promise<TimeEntryItem[]> {
+  const resp = await apiFetch('/time/active');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getTimeSummary(initiativeId: string): Promise<TimeSummaryOut> {
+  const params = new URLSearchParams({ initiative_id: initiativeId });
+  const resp = await apiFetch(`/time/summary?${params.toString()}`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
@@ -1954,6 +2151,57 @@ export async function reconcilePendingDelete(
     { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
+}
+
+/* ── db backups ───────────────────────────────────────────────────── */
+
+export interface DbBackupItem {
+  id: string;
+  filename: string;
+  size_bytes: number;
+  encrypted: boolean;
+  created_at: string;
+  created_by: string | null;
+  created_by_name: string | null;
+  // only populated by createDbBackup (a fresh presigned link) — list rows
+  // leave this undefined, so downloading an older backup goes through
+  // getDbBackupDownload for a freshly-signed URL instead.
+  download_url?: string;
+}
+
+export async function listDbBackups(): Promise<DbBackupItem[]> {
+  const resp = await apiFetch('/devtools/backups');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Runs pg_dump server-side and encrypts the dump with the caller's OWN
+ *  account password — the API never sees `password` again after this
+ *  call. Errors: 403 `invalid_password`, 500 `pg_dump_unavailable` (or
+ *  `pg_dump_failed`) — see ApiError.code. The returned item's
+ *  `download_url` is a freshly presigned, attachment-disposition link. */
+/** password = null creates a plain (unencrypted) dump. */
+export async function createDbBackup(password: string | null): Promise<DbBackupItem> {
+  const resp = await apiFetch('/devtools/backups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(password === null
+      ? { encrypt: false }
+      : { encrypt: true, password }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getDbBackupDownload(backupId: string): Promise<{ url: string }> {
+  const resp = await apiFetch(`/devtools/backups/${backupId}/download`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function deleteDbBackup(backupId: string): Promise<void> {
+  const resp = await apiFetch(`/devtools/backups/${backupId}`, { method: 'DELETE' });
+  if (!resp.ok && resp.status !== 404) throw await errorFrom(resp);
 }
 
 // ── system: process registry + logs ─────────────────────────────────

@@ -14,7 +14,8 @@ from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
 from serversherpa.api.schemas import NoteCreateIn, NoteOut, NoteUpdateIn
 from serversherpa.db.models import (
-    Asset, Container, Initiative, Note, Person, Site, WorkerProfile,
+    Asset, Client, Container, Initiative, Note, Partner, Person, Site,
+    WorkerProfile,
 )
 from serversherpa.services.audit import audit
 
@@ -27,6 +28,8 @@ NOTE_HOSTS: dict[str, tuple[str, type]] = {
     "initiative": ("initiatives", Initiative),
     "person": ("workers", Person),
     "site": ("sites", Site),
+    "client": ("clients", Client),
+    "partner": ("partners", Partner),
 }
 
 # person's "workers" scope columns live on WorkerProfile (keyed by

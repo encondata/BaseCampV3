@@ -1,0 +1,671 @@
+/* ============================================================
+   dashboard.css — Main Dashboard (/)
+   Mission-control layout on the portal paper theme: KPI band,
+   initiative "flight board" (the signature element), scan
+   activity chart, status distributions, activity feed.
+   Charts are pure SVG (no libraries) — see components/dashboard.
+   Color rules (validated with the dataviz palette checker):
+   single-series marks use var(--accent); multi-color segments
+   ALWAYS carry a direct label + count (hue is never the only
+   encoding) and sit on 2px surface gaps.
+   ============================================================ */
+
+/* ── page grid ────────────────────────────────────────────── */
+
+.dash-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.dash-asof {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  letter-spacing: 0.06em;
+  padding-bottom: 6px;
+  white-space: nowrap;
+}
+.dash-asof .dash-asof-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--c-green, #178a4c);
+  margin-right: 7px;
+  animation: sys-pulse 2s infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dash-asof .dash-asof-dot { animation: none; }
+}
+
+.dash-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 22px;
+}
+
+/* panel spans (12-col grid) */
+.dash-span-12 { grid-column: span 12; }
+.dash-span-8 { grid-column: span 8; }
+.dash-span-7 { grid-column: span 7; }
+.dash-span-6 { grid-column: span 6; }
+.dash-span-5 { grid-column: span 5; }
+.dash-span-4 { grid-column: span 4; }
+@media (max-width: 1160px) {
+  .dash-span-8, .dash-span-7, .dash-span-6, .dash-span-5, .dash-span-4 { grid-column: span 12; }
+}
+
+/* ── KPI band ─────────────────────────────────────────────── */
+
+.dash-kpis {
+  grid-column: span 12;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+}
+.dash-kpi {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 18px 14px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 14px;
+  color: inherit;
+  text-decoration: none;
+  overflow: hidden;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+a.dash-kpi:hover {
+  border-color: rgba(var(--accent-rgb), 0.55);
+  box-shadow: 0 2px 10px rgba(27, 33, 41, 0.06);
+}
+.dash-kpi-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.dash-kpi-value {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  color: var(--text-dark);
+  font-variant-numeric: tabular-nums;
+}
+.dash-kpi-sub {
+  font-size: 11.5px;
+  font-weight: 300;
+  color: var(--text-mute);
+  min-height: 15px;
+}
+.dash-kpi-sub strong { font-weight: 500; color: var(--text-dark); }
+.dash-kpi-spark {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 76px;
+  height: 30px;
+  opacity: 0.9;
+}
+
+/* ── shared panel chrome ──────────────────────────────────── */
+
+.dash-panel {
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 16px;
+  padding: 18px 20px 20px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dash-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.dash-panel-title {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.dash-panel-link {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--amber);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.dash-panel-link:hover { text-decoration: underline; }
+.dash-panel-empty {
+  font-size: 13px;
+  font-weight: 300;
+  color: var(--text-mute);
+  padding: 18px 0;
+}
+
+/* ── flight board ─────────────────────────────────────────── */
+/* Active initiatives as a departure board: mono site codes,
+   ORIGIN → DEST, window dates, labeled progress. Sits on the same
+   light panel surface as everything else — the departure-board
+   typography carries the identity, not a different background. */
+
+.dash-board.dash-panel {
+  padding: 0;
+  overflow: hidden;
+}
+.dash-board .dash-panel-head {
+  padding: 16px 20px 12px;
+  margin: 0;
+  border-bottom: 1px solid var(--paper-line);
+}
+.dash-board-rows { display: flex; flex-direction: column; }
+.dash-board-row {
+  display: grid;
+  /* full-width band: name and route split the room, window and progress
+     stay compact on the right like a real departures board */
+  grid-template-columns: minmax(140px, 1.2fr) minmax(130px, 1fr) minmax(110px, 0.5fr) 120px;
+  gap: 14px;
+  align-items: center;
+  padding: 13px 20px;
+  border-bottom: 1px solid var(--paper-line);
+  color: var(--text-dark);
+  text-decoration: none;
+  transition: background 0.15s;
+}
+.dash-board-row:last-child { border-bottom: none; }
+.dash-board-row:hover { background: var(--surface-2, #f5f7fa); }
+.dash-board-row:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
+
+.dash-board-name {
+  font-size: 13.5px;
+  font-weight: 500;
+  min-width: 0;
+}
+.dash-board-name .dash-board-name-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.dash-board-name .dash-board-type {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  margin-top: 2px;
+}
+.dash-board-route {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  letter-spacing: 0.04em;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.dash-board-route .code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-board-route .arrow { color: var(--amber); }
+.dash-board-route .tbd { color: var(--text-mute); }
+.dash-board-window {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.dash-board-progress { display: flex; flex-direction: column; gap: 5px; }
+.dash-board-progress .pct {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--c-amber, #a36207);
+}
+.dash-board-progress .track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--paper-line);
+  overflow: hidden;
+}
+.dash-board-progress .fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--amber);
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* planned (no roster yet): quiet slate chip instead of a bar */
+.dash-board-chip {
+  justify-self: start;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--paper-line);
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .dash-board-row { grid-template-columns: 1fr 96px; }
+  .dash-board-route, .dash-board-window { display: none; }
+}
+
+/* ── scan activity chart ──────────────────────────────────── */
+
+.dash-chart-wrap { position: relative; flex: 1; min-height: 150px; }
+.dash-chart-svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.dash-bar {
+  fill: var(--accent);
+  opacity: 0.85;
+  transition: opacity 0.15s;
+}
+.dash-bar.dim { opacity: 0.3; }
+.dash-bar-hit { fill: transparent; cursor: default; }
+.dash-axis-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  fill: var(--text-mute);
+}
+.dash-grid-line { stroke: var(--paper-line); stroke-width: 1; }
+.dash-chart-tooltip {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 8px));
+  background: var(--ink);
+  color: var(--snow);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  box-shadow: 0 4px 14px rgba(12, 17, 23, 0.35);
+}
+.dash-chart-note {
+  margin-top: 10px;
+  font-size: 11.5px;
+  font-weight: 300;
+  color: var(--text-mute);
+}
+.dash-chart-note strong { font-weight: 500; color: var(--text-dark); }
+
+/* ── labeled distribution (status strip + rows) ───────────── */
+
+.dash-strip {
+  display: flex;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  gap: 2px; /* the 2px surface gap between segments */
+  margin: 4px 0 14px;
+}
+.dash-strip .seg { min-width: 4px; }
+.dash-dist-rows { display: flex; flex-direction: column; }
+.dash-dist-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--paper-line);
+  font-size: 13px;
+}
+.dash-dist-row:last-child { border-bottom: none; }
+.dash-dist-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  flex: none;
+}
+.dash-dist-label {
+  color: var(--text-dark);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-dist-count {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dark);
+}
+.dash-dist-pct {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  width: 4ch;
+  text-align: right;
+}
+
+/* ── in transit (truck tracking placeholder) ──────────────── */
+
+.dash-transit {
+  position: relative;
+  height: 280px; /* matches .dash-map — the maps are a matched pair */
+}
+.dash-transit-empty {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 32px;
+  font-size: 13px;
+  font-weight: 300;
+  color: var(--text-mute);
+  border: 1px dashed var(--paper-line);
+  border-radius: 12px;
+}
+.dash-transit-badge {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 500; /* above leaflet tiles/overlays */
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--amber-soft);
+  border: 1px solid var(--ink-line);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ── latest scans list ────────────────────────────────────── */
+
+.dash-scan-list { display: flex; flex-direction: column; }
+.dash-scan-row {
+  display: grid;
+  grid-template-columns: 9px minmax(90px, 1.3fr) minmax(52px, auto) minmax(70px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--paper-line);
+  font-size: 12.5px;
+}
+.dash-scan-row:last-child { border-bottom: none; }
+.dash-scan-dot { width: 9px; height: 9px; border-radius: 3px; }
+.dash-scan-name {
+  font-weight: 500;
+  color: var(--text-dark);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-scan-kind {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.dash-scan-site {
+  color: var(--text-mute);
+  font-weight: 300;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-scan-time {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-mute);
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* ── activity feed ────────────────────────────────────────── */
+
+.dash-feed { display: flex; flex-direction: column; }
+.dash-feed-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--paper-line);
+  font-size: 12.5px;
+}
+.dash-feed-row:last-child { border-bottom: none; }
+.dash-feed-time {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-mute);
+  flex: none;
+  min-width: 7ch;
+}
+
+/* map panels: one shared height so the two maps sit as an equal pair */
+.dash-map { height: 280px; }
+.dash-sites-map {
+  height: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--paper-line);
+}
+.dash-sites-map .leaflet-popup-content b { display: block; margin-bottom: 2px; }
+.dash-sites-map .leaflet-popup-content div { font-size: 12.5px; color: #444; }
+/* dark theme: darken the (always-light) OSM tiles so the map sits into
+   the page; the SVG marker overlay is untouched, so the amber dots keep
+   their color */
+.portal-shell[data-theme='dark'] .dash-sites-map { background: #0b0f17; }
+.portal-shell[data-theme='dark'] .dash-sites-map .leaflet-tile {
+  filter: invert(1) hue-rotate(180deg) brightness(0.85) saturate(0.35);
+}
+.dash-feed-text {
+  color: var(--text-dark);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-feed-text .who { font-weight: 500; }
+.dash-feed-text .what { color: var(--text-mute); font-weight: 300; }
+
+/* ── Move Dashboard (/dashboards/move) ────────────────────── */
+
+.dash-ctrls {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.dash-ctrl {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dash-ctrl > span {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.dash-ctrl select {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid var(--paper-line);
+  background: var(--surface, #fff);
+  color: var(--text-dark);
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  max-width: 320px;
+}
+.dash-ctrl select:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+.dash-ctrls .dash-asof { padding-bottom: 8px; }
+
+/* summary strip: name + status | route | window | link */
+.mdash-summary {
+  flex-direction: row;
+  align-items: center;
+  gap: 22px;
+  flex-wrap: wrap;
+  padding: 14px 20px;
+}
+.mdash-summary-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.mdash-summary-name {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mdash-summary-route {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.mdash-summary-route .code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mdash-summary-route .arrow { color: var(--amber); flex: none; }
+.mdash-summary-window {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.mdash-summary .dash-panel-link { margin-left: auto; }
+
+.mdash-kpi-soon { opacity: 0.65; }
+
+/* priority wave bars — single-hue magnitude, labels carry identity */
+.mdash-waves { display: flex; flex-direction: column; gap: 10px; }
+.mdash-wave-row { display: flex; align-items: center; gap: 12px; }
+.mdash-wave-label {
+  flex: 0 0 92px;
+  font-size: 12.5px;
+  color: var(--text-dark);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mdash-wave-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--paper-line);
+  overflow: hidden;
+}
+.mdash-wave-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mdash-wave-count {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dark);
+  min-width: 3ch;
+  text-align: right;
+}
+
+/* verification progress pair */
+.mdash-verify { display: flex; flex-direction: column; gap: 18px; }
+.mdash-verify-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12.5px;
+  color: var(--text-dark);
+  margin-bottom: 6px;
+}
+.mdash-verify-n { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-mute); }
+.mdash-verify-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--paper-line);
+  overflow: hidden;
+}
+.mdash-verify-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--c-green, #178a4c);
+  transition: width 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* roster: the shared dir-list pattern does the styling; rows here are
+   read-only (no expansion), so suppress the row-click affordance */
+.mdash-roster .mdash-row-static { cursor: default; }
+.mdash-roster .mdash-row-static:hover { background: none; }
+/* "Newest updates" sort toggle — lit while the persisted sort is
+   updated-desc */
+.mdash-roster .mini-btn.mdash-sort-on {
+  border-color: var(--amber);
+  color: var(--c-amber, #a36207);
+  background: var(--surface-2, #f5f7fa);
+}
+
+/* ── load-in motion: one orchestrated stagger ─────────────── */
+
+@media (prefers-reduced-motion: no-preference) {
+  .dash-rise {
+    opacity: 0;
+    transform: translateY(8px);
+    animation: dash-rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+  .dash-rise:nth-child(1) { animation-delay: 0ms; }
+  .dash-rise:nth-child(2) { animation-delay: 40ms; }
+  .dash-rise:nth-child(3) { animation-delay: 80ms; }
+  .dash-rise:nth-child(4) { animation-delay: 120ms; }
+  .dash-rise:nth-child(5) { animation-delay: 160ms; }
+  .dash-rise:nth-child(6) { animation-delay: 200ms; }
+  .dash-rise:nth-child(7) { animation-delay: 240ms; }
+  .dash-rise:nth-child(8) { animation-delay: 280ms; }
+  @keyframes dash-rise {
+    to { opacity: 1; transform: translateY(0); }
+  }
+}
+
+/* skeleton shimmer while numbers load */
+.dash-skel {
+  display: inline-block;
+  width: 3ch;
+  height: 1em;
+  border-radius: 6px;
+  background: var(--paper-line);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .dash-skel {
+    background: linear-gradient(90deg, var(--paper-line) 25%, var(--surface-2, #f5f7fa) 50%, var(--paper-line) 75%);
+    background-size: 200% 100%;
+    animation: dash-shimmer 1.4s ease infinite;
+  }
+  @keyframes dash-shimmer {
+    to { background-position: -200% 0; }
+  }
+}

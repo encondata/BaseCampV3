@@ -1,0 +1,218 @@
+/* ============================================================
+   time.css — Time Management (/people/time)
+   Punch clock, recent-entries strip, on-the-clock roster, and
+   the Timesheet directory-list. The clock card and the two
+   compact lists borrow the Main Dashboard's visual language
+   (dash-kpi's surface treatment, dash-scan-row's grid rhythm)
+   without importing dashboard.css — this page isn't part of the
+   dashboard family, so the tokens are restated locally here.
+   ============================================================ */
+
+/* ── 1. Timeclock card ───────────────────────────────────────
+   Same surface treatment as .dash-kpi: card on the paper theme,
+   1px hairline border, generous radius. */
+
+.time-clock-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 22px;
+  margin-top: 18px;
+  padding: 18px 20px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 14px;
+}
+
+.time-clock-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 160px;
+}
+.time-clock-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.time-clock-elapsed {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  color: var(--text-dark);
+  font-variant-numeric: tabular-nums;
+}
+.time-clock-meta {
+  font-size: 12px;
+  font-weight: 300;
+  color: var(--text-mute);
+}
+
+.time-clock-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+  flex: 1;
+}
+.time-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 180px;
+}
+.time-field label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.time-field input {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid var(--paper-line);
+  background: var(--surface, #fff);
+  color: var(--text-dark);
+  font-family: var(--font-display);
+  font-size: 13px;
+}
+.time-field input:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+.time-clock-form .btn-solid { height: 34px; }
+.time-clock-card > .pf-error { flex-basis: 100%; }
+
+/* ── shared compact-panel chrome (blocks 2 & 3) ──────────────
+   Mirrors dash-panel's card/head/empty-state trio, restated so
+   this page doesn't need to import dashboard.css. */
+
+.time-panel {
+  margin-top: 18px;
+  padding: 16px 18px 18px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 14px;
+}
+.time-panel-head { margin-bottom: 10px; }
+.time-panel-title {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.time-panel-empty {
+  font-size: 13px;
+  font-weight: 300;
+  color: var(--text-mute);
+  padding: 10px 0;
+}
+
+/* ── 2. My recent entries — grid rows echo .dash-scan-row ─── */
+
+.time-recent-list { display: flex; flex-direction: column; }
+.time-recent-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.9fr) minmax(120px, 1.3fr) minmax(56px, 0.6fr) minmax(90px, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--paper-line);
+  font-size: 12.5px;
+}
+.time-recent-row:last-child { border-bottom: none; }
+.time-recent-date { color: var(--text-dark); font-weight: 500; }
+.time-recent-span {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+.time-recent-duration {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-dark);
+}
+.time-recent-initiative {
+  color: var(--text-mute);
+  font-weight: 300;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 3. On the clock now ─────────────────────────────────── */
+
+.time-active-list { display: flex; flex-direction: column; }
+.time-active-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.3fr) minmax(70px, 0.8fr) minmax(70px, 0.8fr) minmax(100px, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--paper-line);
+  font-size: 12.5px;
+}
+.time-active-row:last-child { border-bottom: none; }
+.time-active-person { font-weight: 500; color: var(--text-dark); }
+.time-active-since,
+.time-active-elapsed {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-mute);
+}
+.time-active-elapsed { color: var(--text-dark); }
+.time-active-initiative {
+  color: var(--text-mute);
+  font-weight: 300;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip.tag.time-flag {
+  color: var(--c-amber, #a36207);
+  background: var(--c-amber-bg, transparent);
+  border-color: var(--c-amber-bd, currentColor);
+}
+
+/* ── 4. Timesheet ────────────────────────────────────────── */
+
+.time-timesheet { margin-top: 26px; }
+.time-section-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 4px;
+}
+.time-row-static { cursor: default; }
+.time-row-static:hover { background: none; }
+.time-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* A single row action's failure (approve races, etc.) — separate from the
+   list-load error state above, so it never blanks the loaded rows. */
+.time-action-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+/* ── 5. TimeEntryEditModal's Reason field ───────────────────
+   Highlighted once an in-progress edit would count as an
+   adjustment (routes/time.py requires adjust_reason whenever the
+   PATCH body carries a changed clock_in_at/clock_out_at/
+   break_minutes key). */
+
+.te-reason-highlight label {
+  color: var(--c-amber, #a36207);
+}
+.te-reason-highlight input {
+  border-color: var(--c-amber-bd, var(--c-amber, #a36207));
+}

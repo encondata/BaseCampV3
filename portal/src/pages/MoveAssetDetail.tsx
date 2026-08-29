@@ -17,6 +17,8 @@ import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/system.css';
 
+import StatusHover from '../components/StatusHover';
+
 const chip = (label: string | null, color: string | null) =>
   label && color ? (
     <span className="chip custom" style={{ '--chip': color } as CSSProperties}>
@@ -171,10 +173,18 @@ export default function MoveAssetDetail() {
             <p className="eyebrow-sm">Status</p>
             <dl className="kv">
               <dt>Move status</dt>
-              <dd>{chip(row.status_label, row.status_color) ?? row.status_label}</dd>
+              <dd>
+                <StatusHover entityType="initiative_asset" entityId={row.id} status={row.status}>
+                  {chip(row.status_label, row.status_color) ?? row.status_label}
+                </StatusHover>
+              </dd>
               <dt>Asset status</dt>
-              <dd>{chip(row.asset.status_label, row.asset.status_color)
-                ?? row.asset.status_label}</dd>
+              <dd>
+                <StatusHover entityType="asset" entityId={row.asset_id} status={row.asset.status}>
+                  {chip(row.asset.status_label, row.asset.status_color)
+                    ?? row.asset.status_label}
+                </StatusHover>
+              </dd>
               <dt>Added</dt><dd>{new Date(row.created_at).toLocaleDateString()}</dd>
               <dt>Updated</dt><dd>{new Date(row.updated_at).toLocaleDateString()}</dd>
             </dl>

@@ -10,7 +10,8 @@ from fastapi.middleware.gzip import GZipMiddleware
 from serversherpa.api.routes import (
     access, asset_models, assets, attachments, audit, auth, containers,
     devtools, initiatives, me, notes, scans, search, sites, stakeholders,
-    status_values, system, users, workers,
+    status_provenance, status_values, system, time as time_routes, users,
+    workers,
 )
 from serversherpa.config import get_settings
 from serversherpa.db.engine import dispose_engine
@@ -108,8 +109,10 @@ def create_app() -> FastAPI:
     app.include_router(containers.router)
     app.include_router(scans.router)
     app.include_router(initiatives.router)
+    app.include_router(time_routes.router)
     app.include_router(notes.router)
     app.include_router(status_values.router)
+    app.include_router(status_provenance.router)
     app.include_router(devtools.router)
     app.include_router(audit.router)
     app.include_router(system.router)

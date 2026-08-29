@@ -23,6 +23,8 @@ import '../styles/initiatives.css';
 import '../styles/sites.css';
 import '../styles/system.css';
 
+import StatusHover from '../components/StatusHover';
+
 const chip = (label: string | null, color: string | null) =>
   label && color ? (
     <span className="chip custom" style={{ '--chip': color } as CSSProperties}>
@@ -92,9 +94,11 @@ export default function SiteDetail() {
           <div className="idet-title-row">
             <h1 className="page-title">{site.name}</h1>
             {chip(site.type_label, site.type_color)}
-            <span className="chip custom" style={{ '--chip': site.status_color } as CSSProperties}>
-              <span className="dot" />{site.status_label}
-            </span>
+            <StatusHover entityType="site" entityId={site.id} status={site.status}>
+              <span className="chip custom" style={{ '--chip': site.status_color } as CSSProperties}>
+                <span className="dot" />{site.status_label}
+              </span>
+            </StatusHover>
             {site.archived_at && <span className="chip tag">Archived</span>}
           </div>
           <p className="page-hint">

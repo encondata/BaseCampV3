@@ -12,7 +12,9 @@ would be inlined into the portal bundle and readable from devtools.
 
 import secrets
 import uuid
+from datetime import UTC, datetime
 
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import String, cast, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -20,15 +22,21 @@ from sqlalchemy.sql.schema import Table
 
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
 from serversherpa.api.schemas import (
-    GodModeIn, PendingDeleteCreateIn, PendingDeleteFailure, PendingDeleteOut,
-    PendingDeleteReconcileOut, PendingDeleteReference,
+    DbBackupCreateIn, DbBackupItem, GodModeIn, PendingDeleteCreateIn,
+    PendingDeleteFailure, PendingDeleteOut, PendingDeleteReconcileOut,
+    PendingDeleteReference,
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    Asset, AssetModel, Base, Client, Container, Initiative, Partner,
+    Asset, AssetModel, Base, Client, Container, DbBackup, Initiative, Partner,
     PendingDelete, Person, ProcessedScan, Site,
 )
+from serversherpa.security.passwords import verify_password
 from serversherpa.services.audit import audit
+from serversherpa.services.db_backup import (
+    PgDumpFailed, PgDumpUnavailable, encrypt_openssl, run_pg_dump,
+)
+from serversherpa.services.storage import delete_object, presign_get, put_object
 
 router = APIRouter(prefix="/devtools", tags=["devtools"])
 
@@ -345,3 +353,119 @@ async def reconcile_pending_delete(
     if marker is None:
         raise _err(404, "marker_not_found")
     return await _reconcile_markers(db, actor, [marker], force=force)
+
+
+# ── db backups ───────────────────────────────────────────────────────
+
+
+def _backup_out(backup: DbBackup, name: str | None,
+                download_url: str | None = None) -> DbBackupItem:
+    return DbBackupItem(
+        id=backup.id, filename=backup.filename, size_bytes=backup.size_bytes,
+        encrypted=backup.encrypted,
+        created_at=backup.created_at, created_by=backup.created_by,
+        created_by_name=name, download_url=download_url)
+
+
+@router.get("/backups", response_model=list[DbBackupItem])
+async def list_db_backups(
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "view"),
+) -> list[DbBackupItem]:
+    rows = (await db.execute(
+        select(DbBackup, Person)
+        .outerjoin(Person, Person.id == DbBackup.created_by)
+        .order_by(DbBackup.created_at.desc()))).all()
+    return [_backup_out(backup, f"{p.first_name} {p.last_name}" if p else None)
+            for backup, p in rows]
+
+
+@router.post("/backups", response_model=DbBackupItem)
+async def create_db_backup(
+    body: DbBackupCreateIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> DbBackupItem:
+    settings = get_settings()
+    if body.encrypt:
+        # The dump is encrypted with the CALLER's own account password, so
+        # we must be certain it's really theirs before we ever touch
+        # pg_dump — nothing downstream of this check may see or store
+        # body.password.
+        if not body.password:
+            raise _err(422, "password_required")
+        if not verify_password(actor.account.password_hash, body.password,
+                               pepper=settings.password_pepper.get_secret_value()):
+            raise _err(403, "invalid_password")
+
+    try:
+        dump = await run_pg_dump(settings.database_url.get_secret_value())
+    except PgDumpUnavailable:
+        raise _err(500, "pg_dump_unavailable") from None
+    except PgDumpFailed:
+        raise _err(500, "pg_dump_failed") from None
+
+    if body.encrypt:
+        blob = encrypt_openssl(dump, body.password or "")
+        suffix, content_type = ".sql.enc", "application/octet-stream"
+    else:
+        blob = dump
+        suffix, content_type = ".sql", "application/sql"
+    now = datetime.now(UTC)
+    filename = f"serversherpa_backup_{now.strftime('%Y%m%d_%H%M%S')}{suffix}"
+    key = f"backups/{uuid.uuid4()}{suffix}"
+    await put_object(key, blob, content_type)
+
+    backup = DbBackup(filename=filename, storage_key=key,
+                      size_bytes=len(blob), encrypted=body.encrypt,
+                      created_by=actor.person.id)
+    db.add(backup)
+    await db.flush()
+
+    # changes carries only filename + size + mode — never the password,
+    # and never anything that could reconstruct it
+    audit(db, actor_id=actor.person.id, entity_type="system",
+          entity_id=str(backup.id), action="backup.create",
+          changes={"filename": filename, "size_bytes": len(blob),
+                   "encrypted": body.encrypt})
+    await db.commit()
+
+    return _backup_out(
+        backup, f"{actor.person.first_name} {actor.person.last_name}",
+        download_url=presign_get(key, download_filename=filename))
+
+
+@router.get("/backups/{backup_id}/download")
+async def download_db_backup(
+    backup_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "view"),
+) -> dict:
+    backup = await db.get(DbBackup, backup_id)
+    if backup is None:
+        raise _err(404, "not_found")
+    return {"url": presign_get(backup.storage_key,
+                               download_filename=backup.filename)}
+
+
+@router.delete("/backups/{backup_id}", status_code=204)
+async def delete_db_backup(
+    backup_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> None:
+    backup = await db.get(DbBackup, backup_id)
+    if backup is None:
+        raise _err(404, "not_found")
+    try:
+        await delete_object(backup.storage_key)
+    except ClientError as exc:
+        # the row is the source of truth here — an object already gone
+        # (or never written) is not a failure worth reporting
+        if exc.response.get("Error", {}).get("Code") not in ("NoSuchKey", "404"):
+            raise
+    await db.delete(backup)
+    audit(db, actor_id=actor.person.id, entity_type="system",
+          entity_id=str(backup_id), action="backup.delete",
+          changes={"filename": backup.filename, "size_bytes": backup.size_bytes})
+    await db.commit()

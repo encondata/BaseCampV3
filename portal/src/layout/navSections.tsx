@@ -16,6 +16,62 @@ export interface NavSection { label: string; items: NavItem[] }
 
 export const NAV_SECTIONS: NavSection[] = [
   {
+    label: 'Dashboards',
+    items: [
+      {
+        to: '/',
+        label: 'Main Dashboard',
+        resource: 'dashboard',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="7" height="9" rx="1.5" />
+            <rect x="14" y="3" width="7" height="5" rx="1.5" />
+            <rect x="14" y="12" width="7" height="9" rx="1.5" />
+            <rect x="3" y="16" width="7" height="5" rx="1.5" />
+          </svg>
+        ),
+      },
+      {
+        to: '/dashboards/move',
+        label: 'Move Dashboard',
+        resource: 'dashboard',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M5 21V4" />
+            <path d="M5 4h13l-3 4 3 4H5" />
+          </svg>
+        ),
+      },
+      {
+        to: '/dashboards/people',
+        label: 'People Dashboard',
+        resource: 'dashboard',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+            <circle cx="9.5" cy="7" r="4" />
+            <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+          </svg>
+        ),
+      },
+      {
+        to: '/dashboards/clients',
+        label: 'Client Dashboard',
+        resource: 'dashboard',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="2" y="7" width="20" height="14" rx="2" />
+            <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
     label: 'Assets',
     items: [
       {
@@ -97,25 +153,6 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    label: 'Operations',
-    items: [
-      {
-        to: '/',
-        label: 'Dashboard',
-        resource: 'dashboard',
-        icon: (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="3" width="7" height="9" rx="1.5" />
-            <rect x="14" y="3" width="7" height="5" rx="1.5" />
-            <rect x="14" y="12" width="7" height="9" rx="1.5" />
-            <rect x="3" y="16" width="7" height="5" rx="1.5" />
-          </svg>
-        ),
-      },
-    ],
-  },
-  {
     label: 'Sites',
     items: [
       {
@@ -170,6 +207,18 @@ export const NAV_SECTIONS: NavSection[] = [
                strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="9" />
             <path d="M3 12h18M12 3c2.5 2.6 3.8 5.7 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.7-3.8-9s1.3-6.4 3.8-9Z" />
+          </svg>
+        ),
+      },
+      {
+        to: '/people/time',
+        label: 'Time Management',
+        resource: 'dashboard',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3.5 2" />
           </svg>
         ),
       },
@@ -270,6 +319,18 @@ export const NAV_SECTIONS: NavSection[] = [
             <rect x="4" y="4" width="16" height="16" rx="2" />
             <path d="M9 9h6v6H9z" />
             <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3" />
+          </svg>
+        ),
+      },
+      {
+        to: '/system/notifications',
+        label: 'Notifications',
+        resource: 'settings',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+            <path d="M13.7 21a2 2 0 0 1-3.4 0" />
           </svg>
         ),
       },

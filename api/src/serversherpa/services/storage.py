@@ -31,16 +31,22 @@ def _client():
     )
 
 
-def presign_get(key: str | None) -> str | None:
+def presign_get(key: str | None, *, download_filename: str | None = None) -> str | None:
     """Short-lived read URL for a private object (None passes through so
-    callers can presign optional keys like avatar_key directly)."""
+    callers can presign optional keys like avatar_key directly).
+
+    `download_filename`, when given, sets Content-Disposition on the
+    response so a browser saves the file under that name instead of the
+    (often opaque, uuid-bearing) storage key."""
     if not key:
         return None
     s = get_settings()
+    params: dict = {"Bucket": s.spaces_bucket, "Key": key}
+    if download_filename:
+        params["ResponseContentDisposition"] = (
+            f'attachment; filename="{download_filename}"')
     return _client().generate_presigned_url(
-        "get_object",
-        Params={"Bucket": s.spaces_bucket, "Key": key},
-        ExpiresIn=s.spaces_presign_ttl_seconds,
+        "get_object", Params=params, ExpiresIn=s.spaces_presign_ttl_seconds,
     )
 
 
@@ -66,3 +72,16 @@ async def get_object(key: str) -> bytes:
         Key=key,
     ))
     return await asyncio.to_thread(resp["Body"].read)
+
+
+async def delete_object(key: str) -> None:
+    """Delete a private object. S3-compatible DELETE is idempotent (no error
+    for a key that's already gone), so callers never need to check
+    existence first — a delete of a key that was never written, or was
+    already removed, succeeds exactly like one that removes something."""
+    s = get_settings()
+    await asyncio.to_thread(partial(
+        _client().delete_object,
+        Bucket=s.spaces_bucket,
+        Key=key,
+    ))

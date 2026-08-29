@@ -8,7 +8,7 @@
 import {
   useCallback, useEffect, useMemo, useRef, useState, type CSSProperties,
 } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
@@ -39,14 +39,31 @@ import {
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import {
-  applyWorkerPatch, WORKER_BLACKLIST, WORKER_ERRORS, WORKER_GOD_FIELDS, workerCellText,
-  workerSearchText, type WorkerItem, type WorkerLevelDef,
+  applyWorkerPatch, WORKER_BLACKLIST, WORKER_ERRORS, WORKER_GOD_FIELDS,
+  workerCellText, workerSearchText, type WorkerItem, type WorkerLevelDef,
 } from '../lib/workers';
+import StatusHover from '../components/StatusHover';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
 
 type LevelDef = WorkerLevelDef;
+
+
+// Worker statuses are editable data (status_values, record_type='worker'), so
+// this page must not hold a copy of the vocabulary. Chips read the label/colour
+// the server denormalises onto each row; the facet and the edit select read
+// listWorkerStatuses().
+//
+// `blacklist` is the one key that is NOT just-another-status, and cannot become
+// one by making the vocabulary dynamic:
+//   - worker_profiles has a CHECK hardcoding the literal (status != 'blacklist'
+//     OR status_note IS NOT NULL), so the reason field is a DB requirement
+//   - workers.py enforces a rank rule and a not-yourself rule on it
+//   - it disables the login account, which no other status does
+// Data-driving this (a requires_note column) is YAGNI until a second status
+// needs it — and the CHECK would still name this literal.
+const BLACKLIST = WORKER_BLACKLIST;
 
 const COLUMNS: ColumnDef[] = [
   { key: 'trade', label: 'Trade', width: '1.3fr', default: true },
@@ -251,9 +268,11 @@ export default function Workers() {
       case 'status':
         return (
           <div className="chips">
-            <span className="chip custom" style={{ '--chip': w.status_color } as CSSProperties}>
-              <span className="dot" />{w.status_label}
-            </span>
+            <StatusHover entityType="worker" entityId={w.person_id} status={w.status}>
+              <span className="chip custom" style={{ '--chip': w.status_color } as CSSProperties}>
+                <span className="dot" />{w.status_label}
+              </span>
+            </StatusHover>
             {pd.pendingIds.has(w.person_id) && <span className="chip tag">Pending delete</span>}
           </div>
         );
@@ -416,7 +435,6 @@ function WorkerDetail({
   onMark: () => Promise<void>;
   onUnmark: () => Promise<void>;
 }) {
-  const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
   const levelDef = levels.find((l) => l.level === worker.level);
 
@@ -468,16 +486,15 @@ function WorkerDetail({
                 .filter(Boolean).join(' · ') || '—'}</dd>
               <dt>Login</dt>
               <dd>{worker.has_account
-                ? (worker.status === WORKER_BLACKLIST
+                ? (worker.status === BLACKLIST
                   ? <span className="chip c-red"><span className="dot" />disabled (blacklist)</span>
                   : <span className="chip c-green"><span className="dot" />portal access</span>)
                 : <span className="chip tag">no account</span>}</dd>
             </dl>
             <div className="detail-actions">
-              <button className="btn-ghost"
-                      onClick={() => navigate(`/people/workers/${worker.person_id}`)}>
-                Full details
-              </button>
+              <Link className="mini-btn" to={`/people/workers/${worker.person_id}`}>
+                Full Details ↗
+              </Link>
               {canManage && (
                 <button className="mini-btn accent" onClick={() => setEditing(true)}>
                   Edit profile

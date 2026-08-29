@@ -11,6 +11,7 @@ import Audit from './pages/Audit';
 import Clients from './pages/Clients';
 import Containers from './pages/Containers';
 import Dev from './pages/Dev';
+import MoveDashboard from './pages/MoveDashboard';
 import DevDatabase from './pages/DevDatabase';
 import External from './pages/External';
 import Home from './pages/Home';
@@ -29,6 +30,7 @@ import Sites from './pages/Sites';
 import SiteDetail from './pages/SiteDetail';
 import SystemConfig from './pages/SystemConfig';
 import SystemProcesses from './pages/SystemProcesses';
+import TimeManagement from './pages/TimeManagement';
 import Users from './pages/Users';
 import Variables from './pages/Variables';
 import Workers from './pages/Workers';
@@ -50,6 +52,21 @@ export default function App() {
             }
           >
             <Route path="/" element={<ProtectedRoute resource="dashboard"><Home /></ProtectedRoute>} />
+            <Route path="/dashboards/move" element={
+              <ProtectedRoute resource="dashboard"><MoveDashboard /></ProtectedRoute>
+            } />
+            <Route path="/dashboards/people" element={
+              <ProtectedRoute resource="dashboard">
+                <Placeholder eyebrow="Dashboards" title="People Dashboard"
+                             hint="Nothing here yet — this dashboard is coming soon." />
+              </ProtectedRoute>
+            } />
+            <Route path="/dashboards/clients" element={
+              <ProtectedRoute resource="dashboard">
+                <Placeholder eyebrow="Dashboards" title="Client Dashboard"
+                             hint="Nothing here yet — this dashboard is coming soon." />
+              </ProtectedRoute>
+            } />
             <Route path="/assets" element={<ProtectedRoute resource="assets"><Assets /></ProtectedRoute>} />
             <Route path="/assets/:assetId" element={
               <ProtectedRoute resource="assets"><AssetDetail /></ProtectedRoute>
@@ -89,9 +106,16 @@ export default function App() {
               <ProtectedRoute resource="workers"><WorkerDetailPage /></ProtectedRoute>
             } />
             <Route path="/people/external" element={<ProtectedRoute resource="users"><External /></ProtectedRoute>} />
+            <Route path="/people/time" element={<ProtectedRoute resource="dashboard"><TimeManagement /></ProtectedRoute>} />
             <Route path="/stakeholders/clients" element={<ProtectedRoute resource="clients"><Clients /></ProtectedRoute>} />
             <Route path="/stakeholders/partners" element={<ProtectedRoute resource="partners"><Partners /></ProtectedRoute>} />
             <Route path="/settings" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
+            <Route path="/system/notifications" element={
+              <ProtectedRoute resource="settings">
+                <Placeholder eyebrow="System" title="Notifications"
+                             hint="Notification rules and delivery settings." />
+              </ProtectedRoute>
+            } />
             <Route path="/system/processes" element={
               <ProtectedRoute minRank={80}><SystemProcesses /></ProtectedRoute>
             } />

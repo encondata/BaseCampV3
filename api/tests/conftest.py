@@ -44,6 +44,17 @@ def _prepare_environment() -> None:
 
 _prepare_environment()
 
+# ── blast-radius guard ──────────────────────────────────────────────
+# The suite TRUNCATEs data tables before every test. On 2026-08-28 a run
+# escaped its sandbox and truncated the live dev database. These checks
+# make that structurally impossible: the target database NAME must say
+# it is a test database, both at configure time and again on the very
+# connection that is about to truncate.
+if not TEST_DB.startswith("serversherpa_test"):
+    raise RuntimeError(
+        f"refusing to run tests against database {TEST_DB!r} — "
+        "SS_TEST_DB must start with 'serversherpa_test'")
+
 
 @pytest.fixture(autouse=True)
 async def clean_db():
@@ -52,6 +63,11 @@ async def clean_db():
     from serversherpa.db.engine import dispose_engine, get_sessionmaker
 
     async with get_sessionmaker()() as session:
+        connected_db = await session.scalar(text("SELECT current_database()"))
+        if not str(connected_db).startswith("serversherpa_test"):
+            raise RuntimeError(
+                f"refusing to TRUNCATE: connected to {connected_db!r}, "
+                "not a serversherpa_test* database")
         await session.execute(text(
             "TRUNCATE auth_sessions, person_roles, user_accounts, clients, "
             "partners, people, access_groups, access_group_members, "
@@ -252,6 +268,18 @@ async def clean_db():
               ('processed_scan','asset','Asset','Matched to an asset.','#178a4c',1),
               ('processed_scan','container','Container','Matched to a container.','#0f7c86',2),
               ('processed_scan','person','Person','Matched to a person badge.','#6d4fc4',3)
+        """))
+        # time entry vocabulary — restore canonical seeds (0028)
+        await session.execute(text(
+            "DELETE FROM status_values WHERE record_type = 'time_entry'"))
+        await session.execute(text("""
+            INSERT INTO status_values
+              (record_type, key, label, description, color, sort_order)
+            VALUES
+              ('time_entry','open','On the clock','','#258bcd',1),
+              ('time_entry','pending','Pending review','','#a36207',2),
+              ('time_entry','approved','Approved','','#178a4c',3),
+              ('time_entry','rejected','Rejected','','#c03540',4)
         """))
         await session.execute(text("DELETE FROM asset_categories"))
         await session.execute(text("""

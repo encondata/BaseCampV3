@@ -52,6 +52,7 @@ import {
   type ColumnDef,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
+import StatusHover from '../components/StatusHover';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
@@ -153,6 +154,10 @@ export default function Sites() {
   const [query, setQuery] = useState('');
   const [view, setView] = useState<'list' | 'map'>('list');
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
+  // Map-only display filters: which site types show as pins (null = all),
+  // and whether decommissioned/archived sites appear (hidden by default).
+  const [mapTypes, setMapTypes] = useState<Set<string> | null>(null);
+  const [mapShowRetired, setMapShowRetired] = useState(false);
   // See Assets.tsx for the full rationale — the id of the most recent
   // deep-link arrival, as opposed to a plain row click (which never touches
   // this ref), so an unrelated later filter edit can't be mistaken for a
@@ -244,10 +249,39 @@ export default function Sites() {
     }
   }, [visible]);
 
-  const noCoords = useMemo(
-    () => visible.filter((s) => s.latitude === null || s.longitude === null),
-    [visible],
+  // Type options for the map dropdown, from the data itself (label per
+  // site_type key; null types bucket under ''). Sorted by label.
+  const mapTypeOptions = useMemo(() => {
+    const byKey = new Map<string, string>();
+    for (const s of sites ?? []) {
+      byKey.set(s.site_type ?? '', s.type_label ?? 'No type');
+    }
+    return [...byKey.entries()]
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [sites]);
+
+  const isRetired = (s: SiteItem) =>
+    s.archived_at !== null || s.status === 'decommissioned';
+
+  const mapSites = useMemo(
+    () => visible.filter((s) => {
+      if (!mapShowRetired && isRetired(s)) return false;
+      if (mapTypes && !mapTypes.has(s.site_type ?? '')) return false;
+      return true;
+    }),
+    [visible, mapTypes, mapShowRetired],
   );
+
+  const toggleMapType = (value: string) => {
+    setMapTypes((cur) => {
+      const next = new Set(cur ?? mapTypeOptions.map((o) => o.value));
+      if (next.has(value)) next.delete(value); else next.add(value);
+      // back to "all" once everything is re-checked, so new types
+      // arriving later aren't accidentally filtered out
+      return next.size === mapTypeOptions.length ? null : next;
+    });
+  };
 
   const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
@@ -282,9 +316,11 @@ export default function Sites() {
       case 'status':
         return (
           <div className="chips">
-            <span className="chip custom" style={{ '--chip': s.status_color } as CSSProperties}>
-              <span className="dot" />{s.status_label}
-            </span>
+            <StatusHover entityType="site" entityId={s.id} status={s.status}>
+              <span className="chip custom" style={{ '--chip': s.status_color } as CSSProperties}>
+                <span className="dot" />{s.status_label}
+              </span>
+            </StatusHover>
             {s.archived_at && <span className="chip tag">Archived</span>}
             {pd.pendingIds.has(s.id) && <span className="chip tag">Pending delete</span>}
           </div>
@@ -333,7 +369,7 @@ export default function Sites() {
     <div className="portal-page">
       <div className="dir-head">
         <div>
-          <div className="eyebrow">Operations</div>
+          <div className="eyebrow">Sites</div>
           <h1 className="page-title">
             Sites
             <span className="badge-count">{sites?.length ?? '…'}</span>
@@ -356,6 +392,20 @@ export default function Sites() {
           </button>
         </div>
         <div className="toolbar-right">
+          {view === 'map' && (
+            <>
+              <MapTypeFilter
+                options={mapTypeOptions}
+                selected={mapTypes}
+                onToggle={toggleMapType}
+                showRetired={mapShowRetired}
+                onToggleRetired={() => setMapShowRetired((v) => !v)}
+              />
+              <span className="result-count">
+                {mapSites.length} of {visible.length} on map
+              </span>
+            </>
+          )}
           <div className="dir-search" style={{ marginLeft: 0 }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                  strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
@@ -473,15 +523,50 @@ export default function Sites() {
 
       {!error && view === 'map' && (
         <div className="sites-map-view">
-          <SitesMap sites={visible} onSelect={(id) => {
-            deepLinkTarget.current = null; setView('list'); setOpenId(id);
+          <SitesMap sites={mapSites} onSelect={(id) => {
+            deepLinkTarget.current = null;
+            setOpenId((cur) => (cur === id ? null : id));
           }} />
-          {noCoords.length > 0 && (
-            <p className="set-note">
-              {noCoords.length} site{noCoords.length === 1 ? '' : 's'} without coordinates —{' '}
-              {noCoords.map((s) => s.name).join(', ')}
-            </p>
-          )}
+          {(() => {
+            // pin click → the same read-only detail the list rows expand to,
+            // shown as a card under the map (shares openId with the list, so
+            // switching views keeps the same site selected)
+            const sel = mapSites.find((s) => s.id === openId);
+            if (!sel) return null;
+            return (
+              <div className="site-map-detail">
+                <div className="site-map-detail-head">
+                  <div className="pn">
+                    <b>{sel.name}</b>
+                    {sel.code && <span>{sel.code}</span>}
+                  </div>
+                  {sel.type_color && (
+                    <span className="chip custom" style={{ '--chip': sel.type_color } as CSSProperties}>
+                      <span className="dot" />{sel.type_label}
+                    </span>
+                  )}
+                  <StatusHover entityType="site" entityId={sel.id} status={sel.status}>
+                    <span className="chip custom" style={{ '--chip': sel.status_color } as CSSProperties}>
+                      <span className="dot" />{sel.status_label}
+                    </span>
+                  </StatusHover>
+                  <button type="button" className="mini-btn sm site-map-detail-close"
+                          onClick={() => setOpenId(null)}>
+                    Close
+                  </button>
+                </div>
+                <SiteRowDetail
+                  site={sel}
+                  canEdit={canChange}
+                  onEdit={() => setEditingId(sel.id)}
+                  godVisible={godMode}
+                  pending={pd.pendingIds.has(sel.id)}
+                  onMark={() => pd.mark('site', sel.id, sel.name)}
+                  onUnmark={() => pd.unmark(sel.id)}
+                />
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -509,6 +594,73 @@ export default function Sites() {
           onClose={() => setCreating(false)}
           onSaved={() => load()}
         />
+      )}
+    </div>
+  );
+}
+
+/* ── map display filter: which site types render as pins, plus the
+ * decommissioned/archived toggle (off by default). Same pop-menu chrome
+ * as the list toolbar's Filters/Columns buttons (directory.css). ────── */
+function MapTypeFilter({ options, selected, onToggle, showRetired, onToggleRetired }: {
+  options: { value: string; label: string }[];
+  selected: Set<string> | null; // null = all types shown
+  onToggle: (value: string) => void;
+  showRetired: boolean;
+  onToggleRetired: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown, true);
+    return () => document.removeEventListener('mousedown', onDown, true);
+  }, [open]);
+
+  const hiddenTypes = selected === null ? 0 : options.length - selected.size;
+  const active = hiddenTypes + (showRetired ? 1 : 0);
+  const check = (
+    <span className="pop-check">
+      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2.2"
+           strokeLinecap="round" strokeLinejoin="round"><path d="M2 6.5 4.8 9.5 10 2.8" /></svg>
+    </span>
+  );
+
+  return (
+    <div className="pop-wrap" ref={ref}>
+      <button className="btn-ghost" onClick={() => setOpen((v) => !v)}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+             strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 21s-7-5.5-7-11a7 7 0 1 1 14 0c0 5.5-7 11-7 11z" />
+          <circle cx="12" cy="10" r="2.6" />
+        </svg>
+        Site types
+        {active > 0 && <span className="fbadge">{active}</span>}
+      </button>
+      {open && (
+        <div className="pop-menu">
+          <div className="pop-title">Site types shown</div>
+          {options.map((o) => {
+            const on = selected === null || selected.has(o.value);
+            return (
+              <button key={o.value} className={`pop-item ${on ? 'on' : ''}`}
+                      onClick={() => onToggle(o.value)}>
+                {check}
+                {o.label}
+              </button>
+            );
+          })}
+          <div className="pop-sep" />
+          <div className="pop-title">Status</div>
+          <button className={`pop-item ${showRetired ? 'on' : ''}`}
+                  onClick={onToggleRetired}>
+            {check}
+            Show decommissioned &amp; archived
+          </button>
+        </div>
       )}
     </div>
   );

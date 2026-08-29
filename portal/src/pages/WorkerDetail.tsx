@@ -10,11 +10,16 @@ import { Link, useParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import StatusHover from '../components/StatusHover';
 import CertsPanel from '../components/workers/CertsPanel';
 import LevelBadge from '../components/workers/LevelBadge';
 import ProfileForm from '../components/workers/ProfileForm';
-import { apiFetch, listWorkerStatuses, type StatusValue } from '../lib/api';
+import {
+  apiFetch, listTimeEntries, listWorkerStatuses,
+  type StatusValue, type TimeEntryItem,
+} from '../lib/api';
 import { longDate } from '../lib/format';
+import { formatMinutes } from '../lib/timeFormat';
 import {
   getWorker, WORKER_BLACKLIST,
   type WorkerDetailItem, type WorkerLevelDef,
@@ -23,6 +28,7 @@ import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
 import '../styles/settings.css';   // .set-note
+import '../styles/time.css';       // .time-recent-* rows
 
 const PERSON_FIELDS = [
   { key: 'first_name', label: 'First name', full: false, required: true },
@@ -45,6 +51,12 @@ type PersonKey = (typeof PERSON_FIELDS)[number]['key'];
 const valueFor = (w: WorkerDetailItem, key: PersonKey): string =>
   (key === 'email' ? w.contact_email : (w as unknown as Record<string, string | null>)[key]) ?? '';
 
+const fmtClock = (iso: string | null): string =>
+  iso ? new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '—';
+
+const fmtDay = (iso: string): string =>
+  new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+
 const chip = (label: string | null, color: string | null) =>
   label ? (
     <span className="chip custom" style={{ '--chip': color ?? '#51606f' } as CSSProperties}>
@@ -56,8 +68,10 @@ export default function WorkerDetailPage() {
   const { personId } = useParams<{ personId: string }>();
   const { can } = useAuth();
   const canManage = can('workers', 'change');
+  const canViewTime = can('time');
 
   const [worker, setWorker] = useState<WorkerDetailItem | null>(null);
+  const [entries, setEntries] = useState<TimeEntryItem[] | null>(null);
   const [missing, setMissing] = useState(false);
   const [levels, setLevels] = useState<WorkerLevelDef[]>([]);
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
@@ -84,6 +98,12 @@ export default function WorkerDetailPage() {
     }).catch(() => {});
     void listWorkerStatuses().then(setStatuses).catch(() => {});
   }, [load]);
+
+  useEffect(() => {
+    if (!personId || !canViewTime) return;
+    void listTimeEntries({ person_id: personId, limit: 15 })
+      .then(setEntries).catch(() => setEntries([]));
+  }, [personId, canViewTime]);
 
   const startPersonEdit = () => {
     if (!worker) return;
@@ -360,6 +380,38 @@ export default function WorkerDetailPage() {
               )}
             </div>
           </div>
+
+          {canViewTime && (
+            <div className="panel">
+              <div className="panel-head">
+                <h3>Recent time entries</h3>
+                <Link className="mini-btn" to="/people/time">Time Management →</Link>
+              </div>
+              <div className="panel-body">
+                {entries === null && <p className="set-note" style={{ padding: 0 }}>Loading…</p>}
+                {entries?.length === 0 && (
+                  <p className="set-note" style={{ padding: 0 }}>No time entries recorded.</p>
+                )}
+                {entries !== null && entries.length > 0 && (
+                  <div className="time-recent-list">
+                    {entries.map((e) => (
+                      <div key={e.id} className="time-recent-row">
+                        <span className="time-recent-date">{fmtDay(e.clock_in_at)}</span>
+                        <span className="time-recent-span">
+                          {fmtClock(e.clock_in_at)} → {fmtClock(e.clock_out_at)}
+                        </span>
+                        <span className="time-recent-duration">{formatMinutes(e.minutes)}</span>
+                        <span className="time-recent-initiative">{e.initiative_name ?? '—'}</span>
+                        <StatusHover entityType="time_entry" entityId={e.id} status={e.status}>
+                          {chip(e.status_label, e.status_color)}
+                        </StatusHover>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="panel">
             <div className="panel-body">
