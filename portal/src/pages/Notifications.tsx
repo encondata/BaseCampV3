@@ -51,10 +51,10 @@ import '../styles/settings.css';
  * furthest, Quiet hours stays a nowrap ellipsis at its ~150px floor. */
 const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: 'minmax(110px, 1.3fr)', default: true },
-  { key: 'description', label: 'Description', width: 'minmax(100px, 2fr)', default: true },
+  { key: 'description', label: 'Description', width: 'minmax(75px, 2fr)', default: true },
   { key: 'members', label: 'Members', width: '60px', default: true },
-  { key: 'channels', label: 'Channels', width: 'minmax(140px, 1.6fr)', default: true },
-  { key: 'quiet_hours', label: 'Quiet hours', width: 'minmax(150px, 1.2fr)', default: true },
+  { key: 'channels', label: 'Channels', width: 'minmax(128px, 1.6fr)', default: true },
+  { key: 'quiet_hours', label: 'Quiet hours', width: 'minmax(144px, 1.2fr)', default: true },
   { key: 'days', label: 'Days', width: '70px', default: true },
   { key: 'status', label: 'Status', width: '90px', default: true },
   { key: 'created', label: 'Created', width: '85px', default: true },
