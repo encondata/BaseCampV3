@@ -129,6 +129,59 @@ async def test_patch_equal_quiet_times_rejected(client, db, seeded_user):
     assert resp.json()["detail"]["code"] == "invalid_quiet_hours"
 
 
+async def test_patch_partial_quiet_start_against_existing_end_allowed(
+        client, db, seeded_user):
+    """A PATCH that supplies only quiet_start must be validated against the
+    MERGED state (existing quiet_end), not treated as if quiet_end were
+    being cleared."""
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs,
+                             json={"name": "Merged quiet",
+                                   "quiet_start": "22:00:00",
+                                   "quiet_end": "06:00:00"})
+    gid = resp.json()["id"]
+
+    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
+                              json={"quiet_start": "23:00:00"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["quiet_start"] == "23:00:00"
+    assert body["quiet_end"] == "06:00:00"
+
+
+async def test_patch_quiet_start_against_no_existing_quiet_hours_rejected(
+        client, db, seeded_user):
+    """Same partial-field PATCH, but the group has no quiet hours set at
+    all — merged state is start-only, still invalid."""
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs,
+                             json={"name": "No quiet yet"})
+    gid = resp.json()["id"]
+
+    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
+                              json={"quiet_start": "10:00:00"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_quiet_hours"
+
+
+async def test_patch_explicit_null_quiet_start_alone_rejected(
+        client, db, seeded_user):
+    """Explicitly nulling only quiet_start (leaving quiet_end untouched)
+    on a group with both set must still 422 — clearing requires nulling
+    both fields together."""
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs,
+                             json={"name": "Explicit null quiet",
+                                   "quiet_start": "22:00:00",
+                                   "quiet_end": "06:00:00"})
+    gid = resp.json()["id"]
+
+    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
+                              json={"quiet_start": None})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_quiet_hours"
+
+
 async def test_delete_group(client, db, seeded_user):
     hdrs = await login_admin(client, db, seeded_user)
     resp = await client.post("/notifications/groups", headers=hdrs,

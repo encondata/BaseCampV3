@@ -34,11 +34,25 @@ def _err(status: int, code: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code})
 
 
-def validate_settings(body) -> None:
+def _validate_quiet_hours(quiet_start, quiet_end) -> None:
+    """Both-or-neither, and (if both) not-equal. Callers pass whichever
+    pair of values is authoritative for their case — the raw body for a
+    create, or the merged (incoming-over-existing) state for a patch."""
+    if (quiet_start is None) != (quiet_end is None):
+        raise _err(422, "invalid_quiet_hours")
+    if quiet_start is not None and quiet_start == quiet_end:
+        raise _err(422, "invalid_quiet_hours")
+
+
+def validate_settings(body, *, check_quiet_hours: bool = True) -> None:
     """Shared settings validation for group create/patch (and Task 2's
     member override patch) — duck-typed on whichever of these attributes
     the given body carries, so callers can pass any object that has some
-    subset of them."""
+    subset of them.
+
+    check_quiet_hours is disabled by patch_group, which validates quiet
+    hours itself against the merged (incoming + existing) state instead
+    of the raw, possibly-partial patch body."""
     channels = getattr(body, "channels", None)
     if channels is not None and not set(channels) <= set(CHANNELS):
         raise _err(422, "invalid")
@@ -59,12 +73,9 @@ def validate_settings(body) -> None:
         except (ZoneInfoNotFoundError, ValueError):
             raise _err(422, "invalid_timezone")
 
-    quiet_start = getattr(body, "quiet_start", None)
-    quiet_end = getattr(body, "quiet_end", None)
-    if (quiet_start is None) != (quiet_end is None):
-        raise _err(422, "invalid_quiet_hours")
-    if quiet_start is not None and quiet_start == quiet_end:
-        raise _err(422, "invalid_quiet_hours")
+    if check_quiet_hours:
+        _validate_quiet_hours(getattr(body, "quiet_start", None),
+                               getattr(body, "quiet_end", None))
 
 
 async def _get_group(db: DbSession, group_id: uuid.UUID) -> NotificationGroup:
@@ -138,7 +149,15 @@ async def patch_group(
     actor: AuthContext = require_permission("notifications", "change"),
 ) -> NotificationGroupOut:
     group = await _get_group(db, group_id)
-    validate_settings(body)
+    validate_settings(body, check_quiet_hours=False)
+
+    fields_set = body.model_fields_set
+    effective_start = (body.quiet_start if "quiet_start" in fields_set
+                        else group.quiet_start)
+    effective_end = (body.quiet_end if "quiet_end" in fields_set
+                      else group.quiet_end)
+    _validate_quiet_hours(effective_start, effective_end)
+
     data = body.model_dump(exclude_unset=True)
 
     if "name" in data:
