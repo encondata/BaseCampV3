@@ -14,6 +14,7 @@
  */
 
 import type { Action, PermMap, ScopeInfo } from './access';
+import type { OrgItem } from './orgs';
 import type { WorkerItem } from './workers';
 
 // Default: same host the portal was loaded from, port 8000 — so LAN devices
@@ -693,6 +694,47 @@ export async function getExternal(): Promise<ExternalDirectoryOut> {
 
 function orgContactsBase(kind: OrgKind): string {
   return kind === 'client' ? '/clients' : '/partners';
+}
+
+/** GET /clients|partners/{id} — one org row, same OrgItem shape the
+ *  directory list (lib/orgs.ts) already renders. Used by StakeholderDetail
+ *  to load the org this page is about, distinctly from the list fetch. */
+export async function getOrg(kind: OrgKind, id: string): Promise<OrgItem> {
+  const resp = await apiFetch(`${orgContactsBase(kind)}/${id}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** A person linked to an organization via a scoped role grant — mirrors
+ *  OrgDirectory.tsx's page-local ContactItem field-for-field (kept as a
+ *  separate declaration there since that page doesn't import this one). */
+export interface ContactItem {
+  person_id: string;
+  display_name: string;
+  email: string | null;
+  phone: string | null;
+  job_title: string | null;
+  avatar_url: string | null;
+  has_account: boolean;
+  granted_at: string;
+  tier: ContactTier;
+  org_title: string | null;
+  functions: string[];
+}
+
+export async function listOrgContacts(kind: OrgKind, id: string): Promise<ContactItem[]> {
+  const resp = await apiFetch(`${orgContactsBase(kind)}/${id}/contacts`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** GET /partners/{id}/workers — crews supplied by this partner (same
+ *  WorkerItem shape /workers returns; see OrgDirectory.tsx's SuppliedWorker,
+ *  a slimmer page-local read of the same endpoint). */
+export async function listPartnerWorkers(id: string): Promise<WorkerItem[]> {
+  const resp = await apiFetch(`/partners/${id}/workers`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
 }
 
 export async function addContactLink(

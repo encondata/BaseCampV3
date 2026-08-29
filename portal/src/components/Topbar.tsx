@@ -129,9 +129,11 @@ export default function Topbar() {
     } else if (hit.kind === 'user') {
       navigate('/people/users', { state: { openRow: hit.id } });
     } else if (hit.kind === 'client') {
-      navigate('/stakeholders/clients', { state: { openRow: hit.id } });
+      // Clients have a full detail page — go straight there, not the list.
+      navigate(`/stakeholders/clients/${hit.id}`);
     } else if (hit.kind === 'partner') {
-      navigate('/stakeholders/partners', { state: { openRow: hit.id } });
+      // Partners have a full detail page — go straight there, not the list.
+      navigate(`/stakeholders/partners/${hit.id}`);
     } else if (hit.kind === 'site') {
       // Sites have a full detail page — go straight there, not the list.
       navigate(`/sites/${hit.id}`);

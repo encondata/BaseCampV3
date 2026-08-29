@@ -28,6 +28,7 @@ import Scans from './pages/Scans';
 import Settings from './pages/Settings';
 import Sites from './pages/Sites';
 import SiteDetail from './pages/SiteDetail';
+import StakeholderDetail from './pages/StakeholderDetail';
 import SystemConfig from './pages/SystemConfig';
 import SystemProcesses from './pages/SystemProcesses';
 import TimeManagement from './pages/TimeManagement';
@@ -108,7 +109,13 @@ export default function App() {
             <Route path="/people/external" element={<ProtectedRoute resource="users"><External /></ProtectedRoute>} />
             <Route path="/people/time" element={<ProtectedRoute resource="dashboard"><TimeManagement /></ProtectedRoute>} />
             <Route path="/stakeholders/clients" element={<ProtectedRoute resource="clients"><Clients /></ProtectedRoute>} />
+            <Route path="/stakeholders/clients/:id" element={
+              <ProtectedRoute resource="clients"><StakeholderDetail kind="client" /></ProtectedRoute>
+            } />
             <Route path="/stakeholders/partners" element={<ProtectedRoute resource="partners"><Partners /></ProtectedRoute>} />
+            <Route path="/stakeholders/partners/:id" element={
+              <ProtectedRoute resource="partners"><StakeholderDetail kind="partner" /></ProtectedRoute>
+            } />
             <Route path="/settings" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
             <Route path="/system/notifications" element={
               <ProtectedRoute resource="settings">
