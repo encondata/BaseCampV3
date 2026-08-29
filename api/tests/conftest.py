@@ -72,6 +72,7 @@ async def clean_db():
             "TRUNCATE auth_sessions, person_roles, user_accounts, clients, "
             "partners, people, access_groups, access_group_members, "
             "resource_group_gates, permission_overrides, audit_log, "
+            "notification_groups, notification_group_members, "
             "contact_profiles, sites, site_clients, notes, assets, "
             "asset_model_aliases, asset_models, container_assets, "
             "log_entries, processes, "

@@ -3,7 +3,7 @@ audit() adds a row to the CALLER's transaction — never commits itself, so
 an audit row can never outlive a rolled-back mutation (or vice versa)."""
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
 
@@ -17,7 +17,7 @@ _REDACTED = "[redacted]"
 
 
 def _jsonable(value: Any) -> Any:
-    if isinstance(value, (datetime, date)):
+    if isinstance(value, (datetime, date, time)):
         return value.isoformat()
     if isinstance(value, uuid.UUID):
         return str(value)

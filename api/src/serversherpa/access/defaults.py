@@ -11,7 +11,7 @@ FULL = ("view", "add", "change", "delete")
 _ALL = ["dashboard", "users", "workers", "clients", "partners",
         "attachments", "settings", "access", "audit", "devtools", "sites",
         "assets", "asset_models", "containers", "initiatives", "scans",
-        "time"]
+        "time", "notifications"]
 
 DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
     "developer":   {r: FULL for r in _ALL},
@@ -22,7 +22,8 @@ DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
               "settings": ("view", "change"), "access": ("view", "change"),
               "audit": ("view",), "sites": FULL, "assets": FULL,
               "asset_models": FULL, "containers": FULL, "initiatives": FULL,
-              "scans": ("view", "change", "delete"), "time": FULL},
+              "scans": ("view", "change", "delete"), "time": FULL,
+              "notifications": FULL},
     "staff": {"dashboard": ("view",), "users": ("view", "add", "change"),
               "workers": FULL, "clients": FULL, "partners": FULL,
               "attachments": FULL, "settings": ("view",), "access": ("view",),

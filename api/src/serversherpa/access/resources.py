@@ -75,6 +75,7 @@ _RESOURCES = [
              always_viewable=True),
     Resource("audit", "Audit log", routes=("/audit",)),
     Resource("devtools", "Developer tools", developer_only=True),
+    Resource("notifications", "Notifications", routes=("/system/notifications",)),
 ]
 
 REGISTRY: dict[str, Resource] = {r.id: r for r in _RESOURCES}

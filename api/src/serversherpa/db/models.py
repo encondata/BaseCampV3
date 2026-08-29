@@ -2,11 +2,11 @@
 these models mirror them for application queries."""
 
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, Date, ForeignKey, Identity, Integer, Numeric, SmallInteger, String, Text, text,
+    BigInteger, Boolean, Date, ForeignKey, Identity, Integer, Numeric, SmallInteger, String, Text, Time, text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, BYTEA, CITEXT, INET, JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -306,6 +306,50 @@ class AccessGroupMember(Base):
         ForeignKey("people.id"), primary_key=True)
     added_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     added_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class NotificationGroup(Base):
+    __tablename__ = "notification_groups"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    name: Mapped[str] = mapped_column(CITEXT)
+    description: Mapped[str] = mapped_column(server_default="")
+    channels: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("'{email,web}'::text[]"))
+    quiet_start: Mapped[time | None] = mapped_column(Time)
+    quiet_end: Mapped[time | None] = mapped_column(Time)
+    timezone: Mapped[str] = mapped_column(server_default="America/Chicago")
+    active_days: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("'{mon,tue,wed,thu,fri,sat,sun}'::text[]"))
+    dnd_behavior: Mapped[str] = mapped_column(server_default="defer")
+    urgent_bypass: Mapped[bool] = mapped_column(server_default=text("true"))
+    enabled: Mapped[bool] = mapped_column(server_default=text("true"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class NotificationGroupMember(Base):
+    __tablename__ = "notification_group_members"
+
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("notification_groups.id", ondelete="CASCADE"), primary_key=True)
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("people.id", ondelete="CASCADE"), primary_key=True)
+    added_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    added_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    # nullable per-member overrides — NULL means "inherit the group value"
+    channels: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    quiet_mode: Mapped[str | None]
+    quiet_start: Mapped[time | None] = mapped_column(Time)
+    quiet_end: Mapped[time | None] = mapped_column(Time)
+    timezone: Mapped[str | None]
+    active_days: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    dnd_behavior: Mapped[str | None]
+    urgent_bypass: Mapped[bool | None]
 
 
 class ResourceGroupGate(Base):

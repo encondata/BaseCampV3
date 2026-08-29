@@ -2,7 +2,7 @@
 
 import re
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -1609,3 +1609,44 @@ class TimeEntryPatchIn(BaseModel):
 class TimeEntryRejectIn(BaseModel):
     reason: str = Field(min_length=1)
     model_config = ConfigDict(extra="forbid")
+
+
+class NotificationGroupSettings(BaseModel):
+    """Shared shape for the group-level notification settings. All fields
+    optional so it can be reused for PATCH (partial update)."""
+    channels: list[str] | None = None
+    quiet_start: time | None = None
+    quiet_end: time | None = None
+    timezone: str | None = None
+    active_days: list[str] | None = None
+    dnd_behavior: str | None = None
+    urgent_bypass: bool | None = None
+
+
+class NotificationGroupCreateIn(NotificationGroupSettings):
+    name: str
+    description: str = ""
+    model_config = ConfigDict(extra="forbid")
+
+
+class NotificationGroupPatchIn(NotificationGroupSettings):
+    name: str | None = None
+    description: str | None = None
+    enabled: bool | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class NotificationGroupOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str
+    channels: list[str]
+    quiet_start: time | None = None
+    quiet_end: time | None = None
+    timezone: str
+    active_days: list[str]
+    dnd_behavior: str
+    urgent_bypass: bool
+    enabled: bool
+    member_count: int
+    created_at: datetime
