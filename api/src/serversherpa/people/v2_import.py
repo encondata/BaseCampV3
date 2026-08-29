@@ -176,13 +176,14 @@ async def import_workers(db: AsyncSession, dump_path: str, limit: int) -> dict:
         work_assocs[r.get("person_id")].append(r)
 
     seen_this_run: set[str] = set()
-    raw_count = sum(1 for _ in insert_rows(dump_path, "people"))
-    parsed_count = 0
 
-    for row in people_rows(dump_path):
-        parsed_count += 1
+    for values in insert_rows(dump_path, "people"):
         if stats["imported"] >= limit:
             break
+        if len(values) != len(PEOPLE_COLS):
+            stats["malformed"] += 1
+            continue
+        row = dict(zip(PEOPLE_COLS, values))
         if not is_worker(row):
             stats["skipped_non_worker"] += 1
             continue
@@ -238,6 +239,4 @@ async def import_workers(db: AsyncSession, dump_path: str, limit: int) -> dict:
         stats["id_map"][v2_id] = str(person.id)
         stats["imported"] += 1
 
-    stats["malformed"] = raw_count - parsed_count if raw_count > parsed_count \
-        else 0
     return stats

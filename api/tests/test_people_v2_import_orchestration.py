@@ -139,3 +139,48 @@ async def test_limit_caps_inserts(tmp_path, db):
     ))
     stats = await import_workers(db, str(dump), limit=1)
     assert stats["imported"] == 1
+
+
+async def test_limit_truncated_run_reports_no_malformed(tmp_path, db):
+    # Regression: malformed used to be computed as (raw_count - parsed_count),
+    # which counted rows never scanned past `limit` as malformed. All three
+    # rows here are well-formed; only one is ever scanned.
+    dump = tmp_path / "d.sql"
+    dump.write_text(_dump_text(
+        _person_values(1, "A", "A", "a@example.com"),
+        _person_values(2, "B", "B", "b@example.com"),
+        _person_values(3, "C", "C", "c@example.com"),
+    ))
+    stats = await import_workers(db, str(dump), limit=1)
+    assert stats["imported"] == 1
+    assert stats["malformed"] == 0
+
+
+async def test_malformed_people_row_is_counted(tmp_path, db):
+    extra = "INSERT INTO people (id) VALUES (99);\n"
+    dump = tmp_path / "d.sql"
+    dump.write_text(_dump_text(
+        _person_values(1, "A", "A", "a@example.com"), extra=extra))
+    stats = await import_workers(db, str(dump), limit=10)
+    assert stats["malformed"] == 1
+    assert stats["imported"] == 1
+
+
+async def test_partner_in_dump_but_not_in_v3_notes_and_no_partner_id(
+        tmp_path, db):
+    extra = (
+        "INSERT INTO partners (id, partner_name, partner_services, "
+        "partner_region, parent_partner) VALUES "
+        "(5, 'Nowhere Partners', NULL, NULL, NULL);\n")
+    dump = tmp_path / "d.sql"
+    dump.write_text(_dump_text(
+        _person_values(1, "Orphan", "Ed", "orphan@example.com", partner="5"),
+        extra=extra,
+    ))
+    stats = await import_workers(db, str(dump), limit=10)
+    assert stats["imported"] == 1
+    person = await db.scalar(
+        select(Person).where(Person.email == "orphan@example.com"))
+    assert "V2 partner not in V3: Nowhere Partners" in (person.notes or "")
+    profile = await db.get(WorkerProfile, person.id)
+    assert profile.partner_id is None
