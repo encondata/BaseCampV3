@@ -3,7 +3,7 @@
  *  profile-PATCH error map, and the god-edit descriptor table. */
 
 import type { ComboOption } from '../components/ComboBox';
-import type { StatusValue } from './api';
+import { apiFetch, type StatusValue } from './api';
 import type { GodField } from './godEdit';
 
 export interface PartnerRef { id: string; name: string }
@@ -12,6 +12,28 @@ export interface PartnerRef { id: string; name: string }
  *  to render the same "L2 · Journeyman" text the LevelBadge cell shows —
  *  kept minimal so this module doesn't have to import the page's type. */
 export interface WorkerLevelLookup { level: string; title: string }
+
+/** Worker level definition (worker_levels), moved out of Workers.tsx so the
+ *  extracted worker components (LevelBadge, ProfileForm) and the full-detail
+ *  page can share one shape instead of each declaring their own LevelDef. */
+export interface WorkerLevelDef {
+  level: string;
+  rank: number;
+  title: string;
+  description: string;
+  expected_skills: string[];
+  color: string | null;
+}
+
+// `blacklist` is the one worker status key that is NOT just-another-status,
+// and cannot become one by making the vocabulary dynamic:
+//   - worker_profiles has a CHECK hardcoding the literal (status != 'blacklist'
+//     OR status_note IS NOT NULL), so the reason field is a DB requirement
+//   - workers.py enforces a rank rule and a not-yourself rule on it
+//   - it disables the login account, which no other status does
+// Data-driving this (a requires_note column) is YAGNI until a second status
+// needs it — and the CHECK would still name this literal.
+export const WORKER_BLACKLIST = 'blacklist';
 
 export interface WorkerItem {
   person_id: string;
@@ -142,4 +164,45 @@ export function applyWorkerPatch(
     }
   }
   return next;
+}
+
+/* ── worker full-detail page ─────────────────────────────────────── */
+
+export interface WorkerInitiativeItem {
+  initiative_id: string;
+  initiative_name: string;
+  type_label: string | null;
+  type_color: string | null;
+  status_label: string;
+  status_color: string;
+  work_type_label: string | null;
+  work_type_color: string | null;
+  site_worked_name: string | null;
+  rating: number | null;
+  added_at: string;
+}
+
+export interface WorkerDetailItem extends WorkerItem {
+  preferred_name: string | null;
+  job_title: string | null;
+  address_line1: string | null;
+  address_line2: string | null;
+  city: string | null;
+  region: string | null;
+  postal_code: string | null;
+  country: string;
+  badge_uid: string;
+  rfid_tag: string | null;
+  person_notes: string | null;
+  source: string;
+  source_ref: string | null;
+  created_at: string;
+  level_def: WorkerLevelDef | null;
+  initiatives: WorkerInitiativeItem[];
+}
+
+export async function getWorker(personId: string): Promise<WorkerDetailItem> {
+  const resp = await apiFetch(`/workers/${personId}`);
+  if (!resp.ok) throw new Error(`worker_${resp.status}`);
+  return await resp.json() as WorkerDetailItem;
 }

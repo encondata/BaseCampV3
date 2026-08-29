@@ -6,14 +6,16 @@
  */
 
 import {
-  useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent,
+  useCallback, useEffect, useMemo, useRef, useState, type CSSProperties,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
-import ComboBox from '../components/ComboBox';
 import GodDeleteButton from '../components/GodDeleteButton';
+import CertsPanel from '../components/workers/CertsPanel';
+import LevelBadge from '../components/workers/LevelBadge';
+import ProfileForm from '../components/workers/ProfileForm';
 import { apiFetch, listWorkerStatuses, updateWorkerProfile, type StatusValue } from '../lib/api';
 import { initialOpenId } from '../lib/auditFormat';
 import {
@@ -23,7 +25,7 @@ import {
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
-import { avatarGradient, initials, longDate } from '../lib/format';
+import { avatarGradient, initials } from '../lib/format';
 import {
   applyColumnOrder,
   ColumnsButton,
@@ -37,44 +39,14 @@ import {
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import {
-  applyWorkerPatch, WORKER_ERRORS, WORKER_GOD_FIELDS, workerCellText, workerSearchText,
-  type PartnerRef, type WorkerItem,
+  applyWorkerPatch, WORKER_BLACKLIST, WORKER_ERRORS, WORKER_GOD_FIELDS, workerCellText,
+  workerSearchText, type WorkerItem, type WorkerLevelDef,
 } from '../lib/workers';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
 
-interface LevelDef {
-  level: string;
-  rank: number;
-  title: string;
-  description: string;
-  expected_skills: string[];
-  color: string;
-}
-
-interface Cert {
-  id: string;
-  name: string;
-  issuer: string | null;
-  issued_on: string | null;
-  expires_on: string | null;
-}
-
-// Worker statuses are editable data (status_values, record_type='worker'), so
-// this page must not hold a copy of the vocabulary. Chips read the label/colour
-// the server denormalises onto each row; the facet and the edit select read
-// listWorkerStatuses().
-//
-// `blacklist` is the one key that is NOT just-another-status, and cannot become
-// one by making the vocabulary dynamic:
-//   - worker_profiles has a CHECK hardcoding the literal (status != 'blacklist'
-//     OR status_note IS NOT NULL), so the reason field is a DB requirement
-//   - workers.py enforces a rank rule and a not-yourself rule on it
-//   - it disables the login account, which no other status does
-// Data-driving this (a requires_note column) is YAGNI until a second status
-// needs it — and the CHECK would still name this literal.
-const BLACKLIST = 'blacklist';
+type LevelDef = WorkerLevelDef;
 
 const COLUMNS: ColumnDef[] = [
   { key: 'trade', label: 'Trade', width: '1.3fr', default: true },
@@ -125,17 +97,6 @@ const CSV_COLUMNS: [string, (w: WorkerItem) => string][] = [
   ['Phone', (w) => w.phone ?? ''],
   ['Has login', (w) => String(w.has_account)],
 ];
-
-function LevelBadge({ level, levels }: { level: string | null; levels: LevelDef[] }) {
-  if (!level) return <span className="chip tag">unleveled</span>;
-  const def = levels.find((l) => l.level === level);
-  return (
-    <span className="lvl-badge" title={def ? `${def.title} — ${def.description}` : level}>
-      <b style={{ '--lvl': def?.color ?? '#8a93a6' } as CSSProperties}>{level}</b>
-      <span>{def?.title ?? ''}</span>
-    </span>
-  );
-}
 
 export default function Workers() {
   const { can, godMode } = useAuth();
@@ -455,6 +416,7 @@ function WorkerDetail({
   onMark: () => Promise<void>;
   onUnmark: () => Promise<void>;
 }) {
+  const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
   const levelDef = levels.find((l) => l.level === worker.level);
 
@@ -506,23 +468,25 @@ function WorkerDetail({
                 .filter(Boolean).join(' · ') || '—'}</dd>
               <dt>Login</dt>
               <dd>{worker.has_account
-                ? (worker.status === BLACKLIST
+                ? (worker.status === WORKER_BLACKLIST
                   ? <span className="chip c-red"><span className="dot" />disabled (blacklist)</span>
                   : <span className="chip c-green"><span className="dot" />portal access</span>)
                 : <span className="chip tag">no account</span>}</dd>
             </dl>
-            {(canManage || godVisible) && (
-              <div className="detail-actions">
-                {canManage && (
-                  <button className="mini-btn accent" onClick={() => setEditing(true)}>
-                    Edit profile
-                  </button>
-                )}
-                <GodDeleteButton visible={godVisible} entityType="person"
-                                 entityId={worker.person_id} label={worker.display_name}
-                                 pending={pending} onChange={pending ? onUnmark : onMark} />
-              </div>
-            )}
+            <div className="detail-actions">
+              <button className="btn-ghost"
+                      onClick={() => navigate(`/people/workers/${worker.person_id}`)}>
+                Full details
+              </button>
+              {canManage && (
+                <button className="mini-btn accent" onClick={() => setEditing(true)}>
+                  Edit profile
+                </button>
+              )}
+              <GodDeleteButton visible={godVisible} entityType="person"
+                               entityId={worker.person_id} label={worker.display_name}
+                               pending={pending} onChange={pending ? onUnmark : onMark} />
+            </div>
           </>
         )}
 
@@ -544,257 +508,5 @@ function WorkerDetail({
         <CertsPanel personId={worker.person_id} onChanged={onChanged} />
       </div>
     </div>
-  );
-}
-
-function ProfileForm({ worker, levels, statuses, onDone, onCancel }: {
-  worker: WorkerItem;
-  levels: LevelDef[];
-  statuses: StatusValue[];
-  onDone: () => void;
-  onCancel: () => void;
-}) {
-  const [trade, setTrade] = useState(worker.trade ?? '');
-  const [level, setLevel] = useState(worker.level ?? '');
-  const [partnerId, setPartnerId] = useState(worker.partner?.id ?? '');
-  const [partners, setPartners] = useState<PartnerRef[] | null>(null);
-  const [status, setStatus] = useState(worker.status);
-  const [note, setNote] = useState(worker.status_note ?? '');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-
-  // listWorkerStatuses() filters to is_active, so a worker sitting on a retired
-  // status isn't in it — the select would render blank and read as "no status
-  // set". The row already carries its label, so seed the option back from there.
-  // Appended last: the server sorts by sort_order, and this is the exception.
-  const options = useMemo<{ key: string; label: string }[]>(() => (
-    statuses.some((s) => s.key === worker.status)
-      ? statuses
-      : [...statuses, { key: worker.status, label: worker.status_label }]
-  ), [statuses, worker.status, worker.status_label]);
-
-  const loadPartners = async () => {
-    if (partners) return;
-    const resp = await apiFetch('/partners');
-    if (resp.ok) {
-      const body = await resp.json() as { id: string; name: string; archived_at: string | null }[];
-      setPartners(body.filter((p) => !p.archived_at));
-    }
-  };
-
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (status === BLACKLIST && !note.trim()) {
-      setError('Blacklisting requires a reason.');
-      return;
-    }
-    setSaving(true);
-    setError('');
-    const resp = await apiFetch(`/workers/${worker.person_id}/profile`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        trade: trade.trim() || null,
-        level: level || null,
-        partner_id: partnerId || null,
-        status,
-        status_note: note.trim() || null,
-      }),
-    });
-    if (!resp.ok) {
-      let code = 'unknown';
-      try { code = (await resp.json())?.detail?.code ?? code; } catch { /* noop */ }
-      setError(code === 'blacklist_requires_note'
-        ? 'Blacklisting requires a reason.'
-        : code === 'cannot_target_self'
-          ? 'You cannot blacklist yourself.'
-          : code === 'rank_too_low'
-            ? 'Their rank is at or above yours.'
-            : 'Could not save — try again.');
-      setSaving(false);
-      return;
-    }
-    onDone();
-  };
-
-  return (
-    <form className="pf-form" onSubmit={submit}>
-      <div><label>Trade / specialty</label>
-        <input value={trade} onChange={(e) => setTrade(e.target.value)}
-               placeholder="Server tech, packer, driver…" /></div>
-      <div><label>Level</label>
-        <ComboBox
-          placeholder="Type to pick a level…"
-          value={level}
-          clearable
-          onChange={setLevel}
-          options={levels.map((l) => ({
-            value: l.level, label: `${l.level} · ${l.title}`, sub: l.description,
-          }))}
-        /></div>
-      <div><label>Supplying partner (blank = direct hire)</label>
-        <ComboBox
-          placeholder="Type to search partners…"
-          value={partnerId}
-          clearable
-          onChange={setPartnerId}
-          onOpen={() => void loadPartners()}
-          options={(partners ?? (worker.partner ? [worker.partner] : []))
-            .map((p) => ({ value: p.id, label: p.name }))}
-        /></div>
-      <div><label>Status</label>
-        <select className="org-select" value={status}
-                onChange={(e) => setStatus(e.target.value)}>
-          {options.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-        </select></div>
-      {status === BLACKLIST && (
-        <div className="full">
-          <label>Blacklist reason *</label>
-          <input value={note} onChange={(e) => setNote(e.target.value)}
-                 placeholder="Why is this worker blocked?" required />
-          <p className="pf-error" style={{ marginTop: 6 }}>
-            Saving disables their login and signs them out everywhere.
-          </p>
-        </div>
-      )}
-      {status !== BLACKLIST && worker.status === BLACKLIST && (
-        <p className="set-note full" style={{ padding: 0, margin: 0 }}>
-          Leaving blacklist re-enables their login account.
-        </p>
-      )}
-      <div className="pf-form-actions">
-        <button className="btn-solid" type="submit" disabled={saving}>
-          {saving ? 'Saving…' : 'Save profile'}
-        </button>
-        <button className="mini-btn" type="button" onClick={onCancel} disabled={saving}>
-          Cancel
-        </button>
-        {error && <span className="pf-error">{error}</span>}
-      </div>
-    </form>
-  );
-}
-
-/* ── certifications panel ───────────────────────────────────────── */
-
-function certState(c: Cert): { label: string; cls: string } | null {
-  if (!c.expires_on) return null;
-  const days = (new Date(c.expires_on).getTime() - Date.now()) / 86_400_000;
-  if (days < 0) return { label: 'expired', cls: 'c-red' };
-  if (days < 30) return { label: 'expiring', cls: 'c-amber' };
-  return null;
-}
-
-function CertsPanel({ personId, onChanged }: {
-  personId: string;
-  onChanged: () => void;
-}) {
-  const { can } = useAuth();
-  const canAdd = can('workers', 'add');
-  const canDelete = can('workers', 'delete');
-  const [certs, setCerts] = useState<Cert[] | null>(null);
-  const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ name: '', issuer: '', issued_on: '', expires_on: '' });
-  const [busy, setBusy] = useState(false);
-
-  const refresh = async () => {
-    const resp = await apiFetch(`/workers/${personId}/certifications`);
-    if (resp.ok) setCerts(await resp.json());
-  };
-
-  useEffect(() => { void refresh(); /* eslint-disable-next-line */ }, [personId]);
-
-  const add = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    await apiFetch(`/workers/${personId}/certifications`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: form.name.trim(),
-        issuer: form.issuer.trim() || null,
-        issued_on: form.issued_on || null,
-        expires_on: form.expires_on || null,
-      }),
-    });
-    setForm({ name: '', issuer: '', issued_on: '', expires_on: '' });
-    setAdding(false);
-    await refresh();
-    onChanged();
-    setBusy(false);
-  };
-
-  const remove = async (certId: string) => {
-    setBusy(true);
-    await apiFetch(`/workers/${personId}/certifications/${certId}`, { method: 'DELETE' });
-    await refresh();
-    onChanged();
-    setBusy(false);
-  };
-
-  return (
-    <>
-      {certs === null && <p className="set-note" style={{ padding: 0 }}>Loading…</p>}
-      {certs?.length === 0 && !adding && (
-        <p className="set-note" style={{ padding: 0 }}>No certifications on file.</p>
-      )}
-      {certs?.map((c) => {
-        const state = certState(c);
-        return (
-          <div className="session-item" key={c.id}>
-            <div className="session-main">
-              <b>{c.name}</b>
-              <p>
-                {[c.issuer,
-                  c.issued_on ? `issued ${longDate(c.issued_on)}` : null,
-                  c.expires_on ? `expires ${longDate(c.expires_on)}` : 'no expiry',
-                ].filter(Boolean).join(' · ')}
-              </p>
-            </div>
-            {state && (
-              <span className={`chip ${state.cls}`}><span className="dot" />{state.label}</span>
-            )}
-            {canDelete && (
-              <button className="mini-btn" disabled={busy} title="Remove"
-                      onClick={() => void remove(c.id)}>✕</button>
-            )}
-          </div>
-        );
-      })}
-
-      {canAdd && !adding && (
-        <div className="detail-actions">
-          <button className="mini-btn accent" onClick={() => setAdding(true)}>
-            + Add certification
-          </button>
-        </div>
-      )}
-      {adding && (
-        <form className="pf-form" onSubmit={add} style={{ marginTop: 14 }}>
-          <div><label>Name *</label>
-            <input value={form.name} required autoFocus
-                   placeholder="OSHA 30, background check…"
-                   onChange={(e) => setForm({ ...form, name: e.target.value })} /></div>
-          <div><label>Issuer</label>
-            <input value={form.issuer}
-                   onChange={(e) => setForm({ ...form, issuer: e.target.value })} /></div>
-          <div><label>Issued</label>
-            <input type="date" value={form.issued_on}
-                   onChange={(e) => setForm({ ...form, issued_on: e.target.value })} /></div>
-          <div><label>Expires</label>
-            <input type="date" value={form.expires_on}
-                   onChange={(e) => setForm({ ...form, expires_on: e.target.value })} /></div>
-          <div className="pf-form-actions">
-            <button className="btn-solid" type="submit" disabled={busy || !form.name.trim()}>
-              Add
-            </button>
-            <button className="mini-btn" type="button" disabled={busy}
-                    onClick={() => setAdding(false)}>
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
-    </>
   );
 }
