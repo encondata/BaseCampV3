@@ -32,7 +32,7 @@ _STATUS_MAP = {40: "active", 41: "decommissioned"}
 _SOURCE = "backup_20260825_193157"
 
 
-def parse_values_tuple(raw: str) -> list[str | int | float | None]:
+def parse_values_tuple(raw: str) -> list[str | int | float | bool | None]:
     """Parse the comma-separated content between the outer `VALUES ( ... )`
     parens of one INSERT statement into typed Python values.
 
@@ -80,12 +80,14 @@ def parse_values_tuple(raw: str) -> list[str | int | float | None]:
     return fields
 
 
-def _typed_field(text: str, quoted: bool) -> str | int | float | None:
+def _typed_field(text: str, quoted: bool) -> str | int | float | bool | None:
     if quoted:
         return text                 # quotes already stripped, escapes resolved
     text = text.strip()
     if text == "NULL":
         return None
+    if text.upper() in ("TRUE", "FALSE"):
+        return text.upper() == "TRUE"
     if "." in text:
         return float(text)
     return int(text)

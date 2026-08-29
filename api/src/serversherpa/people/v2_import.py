@@ -10,14 +10,17 @@ dropped. Additive only: no updates or deletions of pre-existing rows.
 """
 
 import json
+import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
-from typing import Iterator
+from pathlib import Path
+from typing import Callable, Iterator
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import Partner, Person, WorkerProfile
+from serversherpa.db.models import Attachment, Partner, Person, WorkerProfile
+from serversherpa.services.storage import put_object
 from serversherpa.sites.v2_import import insert_rows
 
 # Identifies this dump for source_ref traceability; see Global Constraints.
@@ -240,3 +243,139 @@ async def import_workers(db: AsyncSession, dump_path: str, limit: int) -> dict:
         stats["imported"] += 1
 
     return stats
+
+
+_IMAGE_COLS = ("id", "s3_bucket", "s3_key", "original_filename", "file_size",
+               "mime_type", "width", "height", "alt_text", "created_at",
+               "uploaded_by", "storage_type", "local_path", "filename",
+               "storage_url", "description", "updated_at")
+_IMG_ASSOC_COLS = ("id", "image_id", "entity_type", "entity_id",
+                   "association_type", "display_order", "created_at",
+                   "is_primary", "metadata", "updated_at")
+_EXT = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+        "image/gif": ".gif"}
+
+
+def choose_avatars(dump_path: str) -> dict[int, dict]:
+    """One chosen `images` row per V2 person id: is_primary first, then
+    lowest display_order, then highest image id (newest upload)."""
+    images = {r["id"]: r
+              for r in _table_rows(dump_path, "images", _IMAGE_COLS)
+              if r.get("id") is not None}
+    best: dict[int, tuple] = {}
+    chosen: dict[int, dict] = {}
+    for a in _table_rows(dump_path, "image_associations", _IMG_ASSOC_COLS):
+        if a.get("entity_type") != "people":
+            continue
+        img = images.get(a.get("image_id"))
+        person = a.get("entity_id")
+        if img is None or person is None:
+            continue
+        primary = str(a.get("is_primary")).upper() == "TRUE" \
+            or a.get("is_primary") is True
+        order = a.get("display_order")
+        rank = (0 if primary else 1,
+                order if isinstance(order, (int, float)) else 999,
+                -img["id"])
+        if person not in best or rank < best[person]:
+            best[person] = rank
+            chosen[person] = img
+    return chosen
+
+
+def _resolve_bytes(img: dict, local_dirs: list[str],
+                   s3_get: Callable[[str], bytes | None] | None,
+                   ) -> bytes | None:
+    """Best-effort photo bytes: any local dir by filename first, then the
+    V2 object store by s3_key. None = unresolved (caller counts it)."""
+    for name in (img.get("filename"), img.get("local_path")):
+        if not name:
+            continue
+        base = Path(str(name)).name
+        for d in local_dirs:
+            candidate = Path(d) / base
+            try:
+                if candidate.is_file():
+                    return candidate.read_bytes()
+            except OSError:
+                continue
+    if s3_get is not None and img.get("s3_key"):
+        try:
+            return s3_get(str(img["s3_key"]))
+        except Exception:       # noqa: BLE001 — best-effort by contract
+            return None
+    return None
+
+
+async def attach_photos(
+    db: AsyncSession, dump_path: str, id_map: dict[int, str],
+    local_dirs: list[str],
+    s3_get: Callable[[str], bytes | None] | None,
+) -> dict:
+    """Store one avatar per just-imported person (id_map keys). Only
+    touches people created this run — never replaces an existing avatar."""
+    stats = {"photos_attached": 0, "photos_unresolved": 0}
+    chosen = choose_avatars(dump_path)
+    for v2_id, img in chosen.items():
+        person_uuid = id_map.get(v2_id)
+        if person_uuid is None:
+            continue
+        data = _resolve_bytes(img, local_dirs, s3_get)
+        if not data:
+            stats["photos_unresolved"] += 1
+            continue
+        content_type = img.get("mime_type") or "image/jpeg"
+        ext = _EXT.get(content_type, ".jpg")
+        key = f"attachments/person/{person_uuid}/avatar/{uuid.uuid4()}{ext}"
+        try:
+            await put_object(key, data, content_type)
+        except Exception:       # noqa: BLE001 — best-effort by contract
+            stats["photos_unresolved"] += 1
+            continue
+        person = await db.get(Person, uuid.UUID(person_uuid))
+        person.avatar_key = key
+        db.add(Attachment(
+            entity_type="person", entity_id=person.id, kind="avatar",
+            storage_key=key,
+            filename=str(img.get("original_filename")
+                         or img.get("filename") or f"avatar{ext}"),
+            content_type=content_type, size_bytes=len(data)))
+        stats["photos_attached"] += 1
+    return stats
+
+
+def spaces_getter_from_env(env_path: str,
+                           ) -> Callable[[str], bytes | None] | None:
+    """Build a download callable for the V2 DigitalOcean Space from a V2
+    `.env` file (DO_SPACES_ENDPOINT/REGION/KEY/SECRET/BUCKET). Returns
+    None when the file or any key is missing — photos then fall back to
+    local dirs only."""
+    try:
+        text = Path(env_path).read_text()
+    except OSError:
+        return None
+    vals = {}
+    for line in text.splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, _, v = line.partition("=")
+            vals[k.strip()] = v.strip()
+    needed = ("DO_SPACES_ENDPOINT", "DO_SPACES_REGION", "DO_SPACES_KEY",
+              "DO_SPACES_SECRET", "DO_SPACES_BUCKET")
+    if any(not vals.get(k) for k in needed):
+        return None
+    import boto3
+
+    client = boto3.client(
+        "s3", endpoint_url=vals["DO_SPACES_ENDPOINT"],
+        region_name=vals["DO_SPACES_REGION"],
+        aws_access_key_id=vals["DO_SPACES_KEY"],
+        aws_secret_access_key=vals["DO_SPACES_SECRET"])
+    bucket = vals["DO_SPACES_BUCKET"]
+
+    def _get(key: str) -> bytes | None:
+        try:
+            return client.get_object(Bucket=bucket, Key=key)["Body"].read()
+        except Exception:       # noqa: BLE001 — best-effort by contract
+            return None
+
+    return _get
