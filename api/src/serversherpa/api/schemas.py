@@ -1724,3 +1724,45 @@ class NotificationRecipientOut(BaseModel):
     can_text: bool
     can_push: bool
     can_web: bool
+
+
+# ── status rules ─────────────────────────────────────────────────────
+
+class StatusRuleConditionIn(BaseModel):
+    field: str
+    operator: str
+    value: str | None = None
+
+
+class StatusRuleActionIn(BaseModel):
+    action_type: str
+    params: dict = {}
+
+
+class StatusRuleIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = ""
+    trigger_status: str
+    trigger_match_type: str
+    priority: int = 10
+    enabled: bool = True
+    conditions: list[StatusRuleConditionIn] = []
+    actions: list[StatusRuleActionIn] = Field(min_length=1)
+
+
+class StatusRulePatch(BaseModel):
+    enabled: bool
+
+
+class StatusRuleOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str
+    trigger_status: str
+    trigger_match_type: str
+    priority: int
+    enabled: bool
+    conditions: list[StatusRuleConditionIn]
+    actions: list[StatusRuleActionIn]
+    created_at: datetime
+    updated_at: datetime
