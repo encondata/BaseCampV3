@@ -36,6 +36,9 @@ function ruleSearchText(r: StatusRule, schema: StatusRuleSchema): string {
   ].join(' ').toLowerCase();
 }
 
+const msgFor = (err: unknown): string =>
+  err instanceof ApiError ? `Request failed (${err.code}).` : "Couldn't update the rule.";
+
 export default function RulesTab({ onCount }: {
   onCount: (n: number | null) => void;
 }) {
@@ -80,14 +83,17 @@ export default function RulesTab({ onCount }: {
   }, [rules, schema, query]);
 
   const toggle = async (rule: StatusRule) => {
+    setError('');
     try {
       await toggleStatusRule(rule.id, !rule.enabled);
-    } finally {
       await load();
+    } catch (err) {
+      setError(msgFor(err));
     }
   };
 
   const duplicate = async (rule: StatusRule) => {
+    setError('');
     try {
       await createStatusRule({
         name: `${rule.name} (Copy)`, description: rule.description,
@@ -95,17 +101,20 @@ export default function RulesTab({ onCount }: {
         priority: rule.priority, enabled: false,
         conditions: rule.conditions, actions: rule.actions,
       });
-    } finally {
       await load();
+    } catch (err) {
+      setError(msgFor(err));
     }
   };
 
   const remove = async (rule: StatusRule) => {
     if (!window.confirm(`Delete "${rule.name}"? This cannot be undone.`)) return;
+    setError('');
     try {
       await deleteStatusRule(rule.id);
-    } finally {
       await load();
+    } catch (err) {
+      setError(msgFor(err));
     }
   };
 
@@ -130,11 +139,11 @@ export default function RulesTab({ onCount }: {
 
       {error && (
         <div className="dir-empty" style={{ marginBottom: 12 }}>
-          <b>Cannot load status rules</b>{error}
+          <b>{rules ? "Couldn't complete that action" : 'Cannot load status rules'}</b>{error}
         </div>
       )}
 
-      {!error && schema && (
+      {schema && rules && (
         <div className="dir-list">
           <div className="list-head" style={{ gridTemplateColumns: GRID }}>
             <span className="col-head">Name</span>

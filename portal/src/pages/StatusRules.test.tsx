@@ -137,3 +137,22 @@ it('shows the load-error banner when listStatusRules rejects', async () => {
 
   expect(await screen.findByText(/Couldn.t load status rules/i)).not.toBeNull();
 });
+
+it('surfaces a mutation failure instead of leaving it unhandled', async () => {
+  const user = userEvent.setup();
+  api.toggleStatusRule.mockRejectedValue(new Error('network down'));
+  render(<StatusRules />);
+  await screen.findByText('High priority');
+
+  const row = screen.getByText('High priority').closest('.dir-row') as HTMLElement;
+  const toggle = within(row).getByRole('checkbox');
+  await user.click(toggle);
+
+  expect(await screen.findByText(/Couldn.t update the rule/i)).not.toBeNull();
+  // The list should not be re-fetched off a failed mutation — only the
+  // initial load call should have happened.
+  expect(api.listStatusRules).toHaveBeenCalledTimes(1);
+  // The rule list itself should still be visible — a mutation failure
+  // must not blank out the already-loaded table.
+  expect(screen.getByText('Low priority')).not.toBeNull();
+});
