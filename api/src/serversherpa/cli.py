@@ -309,5 +309,60 @@ def log_service(
     asyncio.run(_run())
 
 
+def _run_notification_worker_process(poll_seconds: float) -> None:
+    """Reload-mode child entry point (picklable, like the import
+    worker's)."""
+
+    async def _run() -> None:
+        from serversherpa.notifications import worker
+
+        await worker.run_forever(poll_seconds)
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass    # watchfiles stops the old process with SIGINT on reload
+
+
+@app.command()
+def notification_worker(
+    poll_seconds: float = typer.Option(
+        5.0, help="Seconds between status-log checks"),
+    once: bool = typer.Option(
+        False, help="One status pass, then exit"),
+    reload: bool = typer.Option(
+        False, help="Dev mode: restart when api/src changes "
+                    "(uvicorn-style)"),
+) -> None:
+    """Run the notification-worker placeholder — heartbeat + periodic
+    status logs only. No delivery pipeline yet."""
+
+    if reload and once:
+        typer.secho("--once cannot be combined with --reload", fg="red")
+        raise typer.Exit(code=1)
+    if reload:
+        import watchfiles
+
+        src_dir = Path(__file__).resolve().parents[1]
+        typer.secho(f"[notification-worker] dev reload — watching {src_dir}",
+                    fg="cyan")
+        watchfiles.run_process(src_dir, target=_run_notification_worker_process,
+                               args=(poll_seconds,))
+        return
+
+    async def _run() -> None:
+        from serversherpa.db.engine import get_sessionmaker
+        from serversherpa.notifications import worker
+
+        if once:
+            await worker.run_once(get_sessionmaker())
+            typer.secho("status pass complete", fg="green")
+        else:
+            await worker.run_forever(poll_seconds)
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     app()
