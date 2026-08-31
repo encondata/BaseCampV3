@@ -3,8 +3,9 @@
  * /admin/status-rules — page shell + Rules tab. Covers what a unit test
  * can see: schema-resolved trigger chip labels, priority sort, the add
  * button's permission gate, the enabled switch's toggle+reload round
- * trip, and the load-error banner. Editor wiring lands in Task 11 — Edit
- * and "+ New rule" are no-ops here.
+ * trip, and the load-error banner. The editor modal itself (create/edit,
+ * schema-driven condition/action builder) is covered in
+ * components/statusRules/RuleEditorModal.test.tsx.
  */
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';

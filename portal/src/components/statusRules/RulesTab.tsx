@@ -2,9 +2,9 @@
  *  Notifications: rules run in the dozens, so this is search + rows
  *  sorted by priority, no column menus, virtualization, or CSV. Trigger
  *  and action labels are resolved from the /status-rules schema so the
- *  list can never drift from the engine's vocabulary. The editor modal
- *  (create/edit) lands in Task 11 — "+ New rule" and row Edit are
- *  no-ops here. */
+ *  list can never drift from the engine's vocabulary. "+ New rule" and
+ *  row Edit open RuleEditorModal (Task 11), schema-driven off the same
+ *  /status-rules/schema payload this tab already loads. */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
@@ -16,6 +16,7 @@ import {
 } from '../../lib/api';
 import { relativeTime } from '../../lib/format';
 import { summarizeAction } from '../../lib/statusRules';
+import RuleEditorModal from './RuleEditorModal';
 
 // Name | Trigger | Priority | Conditions | Actions | Runs | Enabled | row actions
 const GRID = '1.6fr 1.3fr 80px 100px 90px 150px 80px 200px';
@@ -52,6 +53,7 @@ export default function RulesTab({ onCount }: {
   const [stats, setStats] = useState<StatusRuleExecStat[]>([]);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
+  const [editing, setEditing] = useState<StatusRule | 'new' | null>(null);
 
   const load = async () => {
     try {
@@ -130,7 +132,7 @@ export default function RulesTab({ onCount }: {
           </div>
           <span className="result-count">{visible.length} of {rules?.length ?? 0} shown</span>
           {canAdd && (
-            <button className="btn-solid" onClick={() => { /* Task 11: open the create modal */ }}>
+            <button className="btn-solid" onClick={() => setEditing('new')}>
               + New rule
             </button>
           )}
@@ -204,7 +206,7 @@ export default function RulesTab({ onCount }: {
                   </div>
                   <div className="cell" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                     {canChange && (
-                      <button className="mini-btn" onClick={() => { /* Task 11: open the edit modal */ }}>
+                      <button className="mini-btn" onClick={() => setEditing(rule)}>
                         Edit
                       </button>
                     )}
@@ -224,6 +226,15 @@ export default function RulesTab({ onCount }: {
             );
           })}
         </div>
+      )}
+
+      {editing && schema && (
+        <RuleEditorModal
+          schema={schema}
+          rule={editing === 'new' ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); void load(); }}
+        />
       )}
     </>
   );
