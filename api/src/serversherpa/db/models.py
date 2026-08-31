@@ -636,6 +636,8 @@ class RawScan(Base):
     site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
     location_detail: Mapped[str] = mapped_column(server_default="")
     source: Mapped[str] = mapped_column(server_default="")
+    match_attempted_at: Mapped[datetime | None] = mapped_column(
+        comment="last matcher attempt; NULL = never tried")
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
@@ -685,6 +687,82 @@ class ProcessedScan(Base):
     archived_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class StatusRule(Base):
+    """Admin-authored scan automation: when a scan with trigger_status
+    matches a trigger_match_type entity, conditions (AND-only) gate the
+    typed actions. Evaluated by the scan-matching worker."""
+
+    __tablename__ = "status_rules"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    name: Mapped[str]
+    description: Mapped[str] = mapped_column(server_default="")
+    trigger_status: Mapped[str]
+    trigger_status_record_type: Mapped[str] = mapped_column(
+        server_default=text("'asset'"))  # GENERATED column; never written
+    trigger_match_type: Mapped[str]
+    trigger_match_record_type: Mapped[str] = mapped_column(
+        server_default=text("'processed_scan'"))  # GENERATED; never written
+    priority: Mapped[int] = mapped_column(server_default="10")
+    enabled: Mapped[bool] = mapped_column(server_default=text("true"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    conditions: Mapped[list["StatusRuleCondition"]] = relationship(
+        cascade="all, delete-orphan",
+        order_by="StatusRuleCondition.position")
+    actions: Mapped[list["StatusRuleAction"]] = relationship(
+        cascade="all, delete-orphan", order_by="StatusRuleAction.position")
+
+
+class StatusRuleCondition(Base):
+    __tablename__ = "status_rule_conditions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("status_rules.id", ondelete="CASCADE"))
+    position: Mapped[int]
+    field: Mapped[str]
+    operator: Mapped[str]
+    value: Mapped[str | None]
+
+
+class StatusRuleAction(Base):
+    __tablename__ = "status_rule_actions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    rule_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("status_rules.id", ondelete="CASCADE"))
+    position: Mapped[int]
+    action_type: Mapped[str]
+    params: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+
+
+class StatusRuleExecution(Base):
+    """One row per rule fire (or per failed scan — then processed_scan_id
+    is NULL and error is set; the scan txn rolled back)."""
+
+    __tablename__ = "status_rule_executions"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    rule_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("status_rules.id", ondelete="SET NULL"))
+    rule_name: Mapped[str]
+    processed_scan_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("processed_scans.id"))
+    conditions_met: Mapped[bool]
+    actions_applied: Mapped[list] = mapped_column(
+        JSONB, server_default=text("'[]'::jsonb"))
+    error: Mapped[str | None]
+    executed_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    duration_ms: Mapped[int] = mapped_column(server_default="0")
 
 
 class Initiative(Base):

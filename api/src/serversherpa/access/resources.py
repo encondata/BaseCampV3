@@ -66,6 +66,9 @@ _RESOURCES = [
     Resource("scans", "Scans", routes=("/admin/scans",),
              # internal-only Admin forensic surface, same posture as audit.
              visible_to=frozenset({"global"})),
+    Resource("status_rules", "Status rules", routes=("/admin/status-rules",),
+             # internal-only Admin automation surface, same posture as scans.
+             visible_to=frozenset({"global"})),
     Resource("time", "Time", routes=("/people/time",),
              visible_to=frozenset({"global"})),
     Resource("attachments", "Files & attachments",
