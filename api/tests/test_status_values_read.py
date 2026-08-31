@@ -88,7 +88,7 @@ async def test_developer_reads_everything_with_counts(client, db, seeded_user):
         "site", "worker", "asset", "container", "container_type",
         "initiative", "initiative_type", "initiative_sub_type",
         "initiative_work_type", "shipping_type", "partner_type",
-        "scan", "processed_scan", "time_entry"}
+        "scan", "processed_scan", "time_entry", "device_type"}
     active_site = next(
         r for r in rows if r["record_type"] == "site" and r["key"] == "active")
     assert active_site["usage_count"] == 0
