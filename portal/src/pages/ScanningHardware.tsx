@@ -1,6 +1,7 @@
-/** Scanning Hardware placeholders — one shell, four pages. Each device
- *  family (handhelds, fixed readers, kiosks, routers) gets its own
- *  real spec/build later; these just claim the routes and copy. */
+/** Scanning Hardware placeholders — one shell, three pages. Each device
+ *  family (handhelds, fixed readers, kiosks) gets its own real spec/
+ *  build later; these just claim the routes and copy. Routers has its
+ *  own real page now — see pages/Routers.tsx. */
 
 import '../styles/directory.css';
 
@@ -34,9 +35,4 @@ export function FixedReaders() {
 export function KioskDevices() {
   return <Placeholder title="Kiosk Devices"
                       hint="Web and iOS (iPad) kiosk stations." />;
-}
-
-export function HardwareRouters() {
-  return <Placeholder title="Routers"
-                      hint="GL.iNet site routers." />;
 }

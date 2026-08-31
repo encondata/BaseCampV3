@@ -27,8 +27,9 @@ import Login from './pages/Login';
 import Profile from './pages/Profile';
 import ProcessLogs from './pages/ProcessLogs';
 import {
-  FixedReaders, HandheldReaders, HardwareRouters, KioskDevices,
+  FixedReaders, HandheldReaders, KioskDevices,
 } from './pages/ScanningHardware';
+import Routers from './pages/Routers';
 import Scans from './pages/Scans';
 import Settings from './pages/Settings';
 import Sites from './pages/Sites';
@@ -129,7 +130,7 @@ export default function App() {
             <Route path="/hardware/kiosks" element={
               <ProtectedRoute resource="scanning_hardware"><KioskDevices /></ProtectedRoute>} />
             <Route path="/hardware/routers" element={
-              <ProtectedRoute resource="scanning_hardware"><HardwareRouters /></ProtectedRoute>} />
+              <ProtectedRoute resource="scanning_hardware"><Routers /></ProtectedRoute>} />
             <Route path="/settings" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
             <Route path="/system/notifications" element={
               <ProtectedRoute resource="notifications"><Notifications /></ProtectedRoute>

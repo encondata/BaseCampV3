@@ -2686,3 +2686,28 @@ export async function getStatusRuleExecStats(): Promise<StatusRuleExecStat[]> {
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
+
+/* ── devices ───────────────────────────────────────────────────────── */
+
+export interface DeviceItem {
+  id: string; device_type: string; name: string;
+  serial: string | null; mac: string | null;
+  site_id: string | null; site_name: string | null;
+  wan_ip: string | null; lan_ip: string | null;
+  uptime_seconds: number | null; last_seen_at: string | null;
+  raw_info: Record<string, unknown>; registered_at: string;
+}
+
+export async function listDevices(deviceType?: string): Promise<DeviceItem[]> {
+  const qs = new URLSearchParams();
+  if (deviceType) qs.set('device_type', deviceType);
+  const query = qs.toString();
+  const resp = await apiFetch(`/devices${query ? `?${query}` : ''}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function deleteDevice(id: string): Promise<void> {
+  const resp = await apiFetch(`/devices/${id}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
