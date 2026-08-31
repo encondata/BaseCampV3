@@ -169,6 +169,40 @@ def import_v2_workers(
 
 
 @app.command()
+def import_v2_status_rules(
+    dump: str = typer.Option(..., help="Path to the V2 pg_dump .sql file"),
+    dry_run: bool = typer.Option(False, help="Parse and report; write nothing"),
+) -> None:
+    """Import V2 process-engine rules as V3 status rules. Upserts by
+    rule name; first imports land DISABLED for review in
+    /admin/status-rules. Truck-dependent rules are skipped (no trucks
+    in V3)."""
+
+    async def _run() -> None:
+        from serversherpa.status_rules.v2_import import import_rules
+
+        async with get_sessionmaker()() as db:
+            stats = await import_rules(db, dump)
+            for name, reason in stats["skipped"]:
+                typer.secho(f"skipped: {name} — {reason}", fg="yellow")
+            for name, what, _ in stats["partial"]:
+                typer.secho(f"partial: {name} — {what}", fg="yellow")
+            summary = (f"{stats['imported']} imported (disabled), "
+                       f"{stats['updated']} updated, "
+                       f"{len(stats['partial'])} partial, "
+                       f"{len(stats['skipped'])} skipped")
+            if dry_run:
+                await db.rollback()
+                typer.secho(f"[dry-run] {summary}", fg="yellow")
+            else:
+                await db.commit()
+                typer.secho(summary, fg="green")
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def set_password(
     email: str = typer.Option(..., help="Login email of the existing account"),
     password: str = typer.Option(
