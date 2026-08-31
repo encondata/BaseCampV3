@@ -10,8 +10,9 @@ import pytest
 from sqlalchemy import select
 
 from serversherpa.db.models import (
-    Asset, Initiative, InitiativeAsset, ProcessedScan, StatusRule,
-    StatusRuleAction, StatusRuleCondition, StatusRuleExecution,
+    Asset, Container, ContainerAsset, Initiative, InitiativeAsset,
+    ProcessedScan, StatusRule, StatusRuleAction, StatusRuleCondition,
+    StatusRuleExecution,
 )
 from serversherpa.status_rules import engine
 from serversherpa.status_rules.engine import (
@@ -201,3 +202,31 @@ async def test_cache_serves_stale_until_ttl(db, monkeypatch):
 
     monkeypatch.setattr(engine, "RULE_CACHE_SECONDS", 0)
     assert await apply_rules(db, scan) == 1
+
+
+async def test_asset_context_resolves_containing_container(db):
+    a = Asset()
+    c = Container(name="crate-7")
+    db.add_all([a, c])
+    await db.flush()
+    db.add(ContainerAsset(container_id=c.id, asset_id=a.id))
+    db.add(_rule("Pack location", status="rfid_4_into_cage", actions=(
+        ("set_asset_location_from_container", {}),)))
+    await db.flush()
+    scan = await _asset_scan(db, a)
+    assert await apply_rules(db, scan) == 1
+    assert a.location_detail == "crate-7"
+
+
+async def test_asset_context_without_container_skips(db):
+    a = Asset()
+    db.add(a)
+    db.add(_rule("Pack location", status="rfid_4_into_cage", actions=(
+        ("set_asset_location_from_container", {}),)))
+    await db.flush()
+    scan = await _asset_scan(db, a)
+    assert await apply_rules(db, scan) == 1
+    ex = (await db.scalars(select(StatusRuleExecution))).one()
+    assert ex.actions_applied == [
+        {"action_type": "set_asset_location_from_container",
+         "applied": False, "reason": "not_in_container"}]

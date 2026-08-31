@@ -16,8 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from serversherpa.db.models import (
-    Asset, Container, Initiative, InitiativeAsset, Person, ProcessedScan,
-    StatusRule, StatusRuleExecution,
+    Asset, Container, ContainerAsset, Initiative, InitiativeAsset, Person,
+    ProcessedScan, StatusRule, StatusRuleExecution,
 )
 from serversherpa.status_rules.catalog import ACTIONS, evaluate_condition
 from serversherpa.status_rules.context import Context
@@ -68,6 +68,14 @@ async def _build_context(db: AsyncSession, scan: ProcessedScan) -> Context:
     ctx = Context(scan=scan)
     if scan.match_type == "asset":
         ctx.asset = await db.get(Asset, scan.asset_id)
+        # For asset matches ctx.container is the CONTAINING container
+        # (container_assets.asset_id is unique); for container matches
+        # it stays the matched container.
+        ctx.container = await db.scalar(
+            select(Container)
+            .join(ContainerAsset,
+                  ContainerAsset.container_id == Container.id)
+            .where(ContainerAsset.asset_id == scan.asset_id))
         pair = (await db.execute(
             select(InitiativeAsset, Initiative)
             .join(Initiative,

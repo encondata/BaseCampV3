@@ -1,5 +1,7 @@
 """Evaluation context for one processed scan: the scan row plus the
 matched entity and (asset matches only) the active-initiative pair.
+For asset matches, container is the asset's containing container; for
+container matches, it is the matched container.
 Dotted keys resolve leniently — a missing entity yields None so
 conditions on absent context evaluate per-operator instead of raising."""
 
