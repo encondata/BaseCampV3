@@ -24,6 +24,7 @@ import {
   type StatusRule, type StatusRuleAction, type StatusRuleCondition,
   type StatusRuleIn, type StatusRuleSchema,
 } from '../../lib/api';
+import '../../styles/status-rules.css';
 
 interface Props {
   schema: StatusRuleSchema;
@@ -226,7 +227,7 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
     <div className="modal-scrim" onMouseDown={(e) => {
       if (e.target === e.currentTarget && !saving) onClose();
     }}>
-      <div className="modal-card">
+      <div className="modal-card rule-editor-card">
         <div className="modal-head">
           <h3>{isCreate ? 'New rule' : `Edit — ${rule.name}`}</h3>
           <button className="modal-close" aria-label="Close" onClick={onClose} disabled={saving}>
@@ -335,7 +336,11 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
               const def = actionDefFor(a.action_type);
               return (
                 <div key={i} className="pf-form" style={{
-                  gridTemplateColumns: '1fr 1fr auto auto auto', alignItems: 'end', marginBottom: 10,
+                  // One column per rendered cell: type select, each param,
+                  // then the three buttons — so no cell ever wraps.
+                  gridTemplateColumns:
+                    `minmax(240px, 2fr)${' minmax(150px, 1fr)'.repeat(def?.params.length ?? 0)} auto auto auto`,
+                  alignItems: 'end', marginBottom: 10,
                 }}>
                   <div><label>Action</label>
                     <select aria-label={`Action ${i + 1} type`} value={a.action_type} disabled={saving}

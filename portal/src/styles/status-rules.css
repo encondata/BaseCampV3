@@ -1,0 +1,9 @@
+/* Status-rules editor modal only. Does NOT duplicate chrome.css's
+ * .modal-* skeleton or profile.css's .pf-form grid — it widens this one
+ * modal beyond the 620px house default so an action row (type select +
+ * up to two param controls + move/remove buttons) always fits on a
+ * single line. */
+
+.rule-editor-card {
+  width: min(880px, 96vw);
+}

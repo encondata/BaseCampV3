@@ -91,9 +91,9 @@ _FIELDS = [
                    "status:initiative_sub_type"),
     ConditionField("initiative.status", "Initiative status", "status",
                    "status:initiative"),
-    ConditionField("initiative_asset.status", "Roster asset status", "status",
+    ConditionField("initiative_asset.status", "Move asset status", "status",
                    "status:asset"),
-    ConditionField("initiative_asset.disposition", "Roster disposition",
+    ConditionField("initiative_asset.disposition", "Move asset disposition",
                    "text"),
     ConditionField("initiative_asset.priority_wave", "Priority wave", "text"),
 ]
@@ -200,7 +200,7 @@ async def _set_asset_location_from_initiative(db, ctx, params) -> ActionOutcome:
     ru = _ru_str(getattr(ctx.initiative_asset, f"{side}_ru"))
     parts = [p for p in (rack, ru) if p]
     if not parts:
-        return ActionOutcome(False, "no_location_on_roster")
+        return ActionOutcome(False, "no_location_on_move_asset")
     ctx.asset.location_detail = " ".join(parts)
     site_attr = ("origin_site_id" if side == "source"
                  else "destination_site_id")
@@ -262,7 +262,7 @@ _ACTION_LIST = [
     ActionDef("set_asset_status", "Set asset status",
               (ParamField("status", "status", options_source="status:asset"),),
               _set_asset_status),
-    ActionDef("set_initiative_asset_status", "Set roster asset status",
+    ActionDef("set_initiative_asset_status", "Set move asset status",
               (ParamField("status", "status", options_source="status:asset"),),
               _set_initiative_asset_status),
     ActionDef("set_container_status", "Set container status",
@@ -274,9 +274,9 @@ _ACTION_LIST = [
               (ParamField("fields", "choice", options=("site", "location", "both")),),
               _set_asset_location_from_scan),
     ActionDef("set_asset_location_from_initiative",
-              "Set asset location from the initiative roster", (_SIDE,),
+              "Set asset location from move asset rack/RU", (_SIDE,),
               _set_asset_location_from_initiative),
-    ActionDef("set_initiative_asset_verified", "Mark roster side verified",
+    ActionDef("set_initiative_asset_verified", "Mark move asset side verified",
               (_SIDE, ParamField("value", "bool")),
               _set_initiative_asset_verified),
     ActionDef("touch_container_audit", "Record container audit touch", (),
