@@ -69,6 +69,11 @@ _RESOURCES = [
     Resource("status_rules", "Status rules", routes=("/admin/status-rules",),
              # internal-only Admin automation surface, same posture as scans.
              visible_to=frozenset({"global"})),
+    Resource("scanning_hardware", "Scanning hardware",
+             routes=("/hardware/handheld-readers", "/hardware/fixed-readers",
+                     "/hardware/kiosks", "/hardware/routers"),
+             # internal-only: device fleet records are house operations data.
+             visible_to=frozenset({"global"})),
     Resource("time", "Time", routes=("/people/time",),
              visible_to=frozenset({"global"})),
     Resource("attachments", "Files & attachments",
