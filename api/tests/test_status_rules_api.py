@@ -1,6 +1,6 @@
 """API tests for /status-rules — CRUD + toggle, catalog validation, audit."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, text
 
@@ -210,15 +210,16 @@ async def test_executions_list_and_filter(client, db, seeded_user):
     db.add(scan)
     await db.flush()
 
+    now = datetime.now(UTC)
     matched = StatusRuleExecution(
         rule_id=rule_id, rule_name="Into cage",
         processed_scan_id=scan.id, conditions_met=True,
         actions_applied=[{"action_type": "set_asset_status"}],
-        error=None, duration_ms=12)
+        error=None, duration_ms=12, executed_at=now - timedelta(seconds=60))
     errored = StatusRuleExecution(
         rule_id=None, rule_name="Broken rule",
         processed_scan_id=None, conditions_met=False,
-        actions_applied=[], error="boom", duration_ms=3)
+        actions_applied=[], error="boom", duration_ms=3, executed_at=now)
     db.add_all([matched, errored])
     await db.commit()
 
@@ -226,8 +227,9 @@ async def test_executions_list_and_filter(client, db, seeded_user):
     assert resp.status_code == 200, resp.text
     items = resp.json()
     assert len(items) == 2
-    # newest first
-    assert items[0]["executed_at"] >= items[1]["executed_at"]
+    # newest first — errored is newer (executed_at=now), matched is older (executed_at=now-60s)
+    assert items[0]["id"] == errored.id
+    assert items[1]["id"] == matched.id
 
     by_id = {item["id"]: item for item in items}
     matched_item = by_id[matched.id]
