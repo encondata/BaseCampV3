@@ -1802,7 +1802,20 @@ class DeviceItem(BaseModel):
     site_name: str | None
     wan_ip: str | None
     lan_ip: str | None
+    vpn_status: str | None
+    token_expires_at: datetime | None
+    connected_count: int
     uptime_seconds: int | None
     last_seen_at: datetime | None
     raw_info: dict
     registered_at: datetime
+
+
+class DeviceLeaseItem(BaseModel):
+    id: uuid.UUID
+    mac: str
+    ip: str | None
+    hostname: str | None
+    reserved: bool
+    up: bool
+    last_seen_at: datetime | None

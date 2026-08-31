@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
-from serversherpa.db.models import AuditLog, Device, Site
+from serversherpa.db.models import AuditLog, Device, DeviceDhcpLease, Site
 from tests.test_access_roles_api import login_admin
 from tests.test_notification_groups_api import login_staff
 
@@ -135,4 +135,90 @@ async def test_devices_permissions(client, db, seeded_user):
     await db.commit()
 
     resp = await client.delete(f"/devices/{device.id}", headers=hdrs)
+    assert resp.status_code == 403
+
+
+async def test_lease_round_trip_unique_and_cascade(db):
+    d = Device(device_type="router", name="r1")
+    db.add(d)
+    await db.flush()
+    device_id = d.id  # captured before rollback expires d's attributes
+    db.add(DeviceDhcpLease(device_id=device_id, mac="AA:BB:CC:00:00:01",
+                           ip="192.168.8.100", hostname="handheld-01",
+                           reserved=False, up=True))
+    await db.commit()
+    db.add(DeviceDhcpLease(device_id=device_id, mac="aa:bb:cc:00:00:01"))
+    with pytest.raises(IntegrityError):          # CITEXT: case-insensitive dupe
+        await db.commit()
+    await db.rollback()
+    # select() against the captured id, not db.get()/d.id — Session.rollback()
+    # expires every object in the session, and refreshing an expired
+    # instance right after a failed commit triggers a pool_pre_ping
+    # checkout outside the async greenlet context (asyncpg/SQLAlchemy
+    # interaction quirk, unrelated to the feature under test).
+    row = await db.scalar(select(Device).where(Device.id == device_id))
+    await db.delete(row)
+    await db.commit()
+    assert (await db.scalars(select(DeviceDhcpLease))).all() == []
+
+
+async def test_list_derives_connected_count(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+
+    d = Device(device_type="router", name="counted",
+               vpn_status="connected")
+    empty = Device(device_type="router", name="empty")
+    db.add_all([d, empty])
+    await db.flush()
+    db.add_all([
+        DeviceDhcpLease(device_id=d.id, mac="AA:00:00:00:00:01", up=True),
+        DeviceDhcpLease(device_id=d.id, mac="AA:00:00:00:00:02", up=True,
+                        reserved=True),
+        DeviceDhcpLease(device_id=d.id, mac="AA:00:00:00:00:03", up=False),
+    ])
+    await db.commit()
+    resp = await client.get("/devices", headers=hdrs,
+                            params={"device_type": "router"})
+    assert resp.status_code == 200
+    by_name = {i["name"]: i for i in resp.json()}
+    assert by_name["counted"]["connected_count"] == 2   # up only, reserved counts
+    assert by_name["counted"]["vpn_status"] == "connected"
+    assert by_name["empty"]["connected_count"] == 0
+    assert by_name["empty"]["token_expires_at"] is None
+
+
+async def test_leases_endpoint_ordering_404_403(client, db, seeded_user):
+    hdrs_admin = await login_admin(client, db, seeded_user)
+
+    d = Device(device_type="router", name="r2")
+    db.add(d)
+    await db.flush()
+    db.add_all([
+        DeviceDhcpLease(device_id=d.id, mac="AA:00:00:00:00:10",
+                        hostname="zeta", up=False),
+        DeviceDhcpLease(device_id=d.id, mac="AA:00:00:00:00:11",
+                        hostname=None, up=True),
+        DeviceDhcpLease(device_id=d.id, mac="AA:00:00:00:00:12",
+                        hostname="alpha", up=True),
+    ])
+    await db.commit()
+    resp = await client.get(f"/devices/{d.id}/leases", headers=hdrs_admin)
+    assert resp.status_code == 200
+    rows = resp.json()
+    # up DESC, hostname NULLS LAST, mac
+    assert [(r["up"], r["hostname"]) for r in rows] == [
+        (True, "alpha"), (True, None), (False, "zeta")]
+    missing = await client.get(
+        "/devices/00000000-0000-0000-0000-000000000000/leases",
+        headers=hdrs_admin)
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["code"] == "device_not_found"
+
+    # "external" carries no grants at all — prove the endpoint is gated
+    await db.execute(text(
+        "UPDATE person_roles SET role='external' WHERE person_id=:p"),
+        {"p": seeded_user.id})
+    await db.commit()
+    hdrs_external = await login_staff(client, seeded_user)
+    resp = await client.get(f"/devices/{d.id}/leases", headers=hdrs_external)
     assert resp.status_code == 403

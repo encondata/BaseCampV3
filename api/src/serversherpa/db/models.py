@@ -785,12 +785,35 @@ class Device(Base):
     site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
     wan_ip: Mapped[str | None]
     lan_ip: Mapped[str | None]
+    vpn_status: Mapped[str | None]
     uptime_seconds: Mapped[int | None] = mapped_column(BigInteger)
     last_seen_at: Mapped[datetime | None]
+    token_expires_at: Mapped[datetime | None]
     raw_info: Mapped[dict] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb"))
     registered_at: Mapped[datetime] = mapped_column(
         server_default=text("now()"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class DeviceDhcpLease(Base):
+    """One DHCP lease/reservation on a device, synced by the (future)
+    heartbeat via UNIQUE (device_id, mac). reserved and up are
+    orthogonal — a static reservation can be online."""
+
+    __tablename__ = "device_dhcp_leases"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    device_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"))
+    mac: Mapped[str] = mapped_column(CITEXT)
+    ip: Mapped[str | None]
+    hostname: Mapped[str | None]
+    reserved: Mapped[bool] = mapped_column(server_default=text("false"))
+    up: Mapped[bool] = mapped_column(server_default=text("false"))
+    last_seen_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
