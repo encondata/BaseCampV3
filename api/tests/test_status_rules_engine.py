@@ -135,11 +135,17 @@ async def test_active_initiative_resolved_for_asset_match(db):
                       scheduled_start=datetime.now(UTC))
     stale = Initiative(name="Planned", initiative_type="move",
                        status="planned")
-    db.add_all([live, stale])
+    archived = Initiative(name="Archived", initiative_type="move",
+                          status="in_progress",
+                          archived_at=datetime.now(UTC),
+                          scheduled_start=datetime.now(UTC))
+    db.add_all([live, stale, archived])
     await db.flush()
     db.add(InitiativeAsset(initiative_id=live.id, asset_id=a.id,
                            status="loaded_in_system"))
     db.add(InitiativeAsset(initiative_id=stale.id, asset_id=a.id,
+                           status="loaded_in_system"))
+    db.add(InitiativeAsset(initiative_id=archived.id, asset_id=a.id,
                            status="loaded_in_system"))
     db.add(_rule("Roster", actions=(
         ("set_initiative_asset_status", {"status": "rfid_4_into_cage"}),)))
@@ -149,6 +155,9 @@ async def test_active_initiative_resolved_for_asset_match(db):
     rows = (await db.scalars(select(InitiativeAsset).where(
         InitiativeAsset.initiative_id == live.id))).one()
     assert rows.status == "rfid_4_into_cage"
+    archived_rows = (await db.scalars(select(InitiativeAsset).where(
+        InitiativeAsset.initiative_id == archived.id))).one()
+    assert archived_rows.status == "loaded_in_system"
 
 
 async def test_missing_context_action_is_recorded_skip(db):
