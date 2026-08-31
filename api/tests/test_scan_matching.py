@@ -4,7 +4,7 @@ Archived entities never match."""
 
 from datetime import UTC, datetime
 
-from serversherpa.db.models import Asset, AssetModel, Container, Person
+from serversherpa.db.models import Asset, Container, Person
 from serversherpa.scans.matching import Match, match_scan
 
 
@@ -67,3 +67,22 @@ async def test_archived_entities_never_match(db):
 
 async def test_no_match_returns_none(db):
     assert await match_scan(db, "definitely-not-here") is None
+
+
+async def test_person_rfid_matches_case_insensitively(db):
+    p = Person(first_name="Badge", last_name="Holder", rfid_tag="E280CCC")
+    db.add(p)
+    await db.flush()
+    assert await match_scan(db, "e280ccc") == Match("person", p.id)
+
+
+async def test_duplicate_name_is_ambiguous(db):
+    await _asset(db, name="Widget")
+    await _asset(db, name="Widget")
+    assert await match_scan(db, "Widget") is None
+
+
+async def test_duplicate_legacy_id_is_ambiguous(db):
+    await _asset(db, legacy_id=4471)
+    await _asset(db, legacy_id=4471)
+    assert await match_scan(db, "4471") is None
