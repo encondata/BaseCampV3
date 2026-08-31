@@ -2582,3 +2582,107 @@ export async function listNotificationRecipients(): Promise<NotificationRecipien
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
+
+/* ── status rules ─────────────────────────────────────────────────── */
+
+export interface StatusRuleCondition { field: string; operator: string; value: string | null }
+export interface StatusRuleAction { action_type: string; params: Record<string, unknown> }
+export interface StatusRule {
+  id: string; name: string; description: string;
+  trigger_status: string; trigger_match_type: string;
+  priority: number; enabled: boolean;
+  conditions: StatusRuleCondition[]; actions: StatusRuleAction[];
+  created_at: string; updated_at: string;
+}
+export interface StatusRuleIn {
+  name: string; description: string; trigger_status: string;
+  trigger_match_type: string; priority: number; enabled: boolean;
+  conditions: StatusRuleCondition[]; actions: StatusRuleAction[];
+}
+export interface SchemaOption { value: string; label: string; color?: string }
+export interface RuleSchemaOperator { key: string; label: string; needs_value: boolean }
+export interface RuleSchemaField { key: string; label: string; type: string; options?: SchemaOption[] }
+export interface RuleSchemaParam { name: string; type: string; options?: (string | SchemaOption)[] }
+export interface RuleSchemaAction { key: string; label: string; params: RuleSchemaParam[] }
+export interface StatusRuleSchema {
+  trigger_statuses: SchemaOption[]; match_types: SchemaOption[];
+  operators: RuleSchemaOperator[]; condition_fields: RuleSchemaField[];
+  actions: RuleSchemaAction[]; sites: SchemaOption[];
+}
+export interface StatusRuleExecution {
+  id: number; rule_id: string | null; rule_name: string;
+  processed_scan_id: string | null; conditions_met: boolean;
+  actions_applied: { action_type: string; applied: boolean; reason?: string }[];
+  error: string | null; executed_at: string; duration_ms: number;
+  scanned_value: string | null; scan_status: string | null;
+}
+export interface StatusRuleExecStat {
+  rule_id: string; run_count: number; met_count: number;
+  last_run_at: string | null; avg_duration_ms: number | null;
+}
+
+export async function listStatusRules(): Promise<StatusRule[]> {
+  const resp = await apiFetch('/status-rules');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createStatusRule(body: StatusRuleIn): Promise<StatusRule> {
+  const resp = await apiFetch('/status-rules', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateStatusRule(id: string, body: StatusRuleIn): Promise<StatusRule> {
+  const resp = await apiFetch(`/status-rules/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function toggleStatusRule(id: string, enabled: boolean): Promise<StatusRule> {
+  const resp = await apiFetch(`/status-rules/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function deleteStatusRule(id: string): Promise<void> {
+  const resp = await apiFetch(`/status-rules/${id}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function getStatusRuleSchema(): Promise<StatusRuleSchema> {
+  const resp = await apiFetch('/status-rules/schema');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listStatusRuleExecutions(
+  params: { ruleId?: string; limit?: number; offset?: number },
+): Promise<StatusRuleExecution[]> {
+  const qs = new URLSearchParams();
+  if (params.ruleId != null) qs.set('rule_id', params.ruleId);
+  if (params.limit != null) qs.set('limit', String(params.limit));
+  if (params.offset != null) qs.set('offset', String(params.offset));
+  const query = qs.toString();
+  const resp = await apiFetch(`/status-rules/executions${query ? `?${query}` : ''}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getStatusRuleExecStats(): Promise<StatusRuleExecStat[]> {
+  const resp = await apiFetch('/status-rules/executions/stats');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
