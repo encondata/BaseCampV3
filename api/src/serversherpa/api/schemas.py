@@ -1788,3 +1788,21 @@ class StatusRuleExecStat(BaseModel):
     met_count: int
     last_run_at: datetime | None
     avg_duration_ms: float | None
+
+
+# ── devices ──────────────────────────────────────────────────────────
+
+class DeviceItem(BaseModel):
+    id: uuid.UUID
+    device_type: str
+    name: str
+    serial: str | None
+    mac: str | None
+    site_id: uuid.UUID | None
+    site_name: str | None
+    wan_ip: str | None
+    lan_ip: str | None
+    uptime_seconds: int | None
+    last_seen_at: datetime | None
+    raw_info: dict
+    registered_at: datetime
