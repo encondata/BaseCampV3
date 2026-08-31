@@ -254,6 +254,55 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    label: 'Scanning Hardware',
+    items: [
+      {
+        to: '/hardware/handheld-readers',
+        label: 'Handheld Readers',
+        resource: 'scanning_hardware',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+            <rect x="8" y="3" width="8" height="18" rx="2" />
+            <path d="M11 18h2" />
+          </svg>
+        ),
+      },
+      {
+        to: '/hardware/fixed-readers',
+        label: 'Fixed Readers',
+        resource: 'scanning_hardware',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+            <rect x="4" y="12" width="16" height="7" rx="2" />
+            <path d="M8 12V8m8 4V8M6 5c3.5-2.5 8.5-2.5 12 0" strokeLinecap="round" />
+          </svg>
+        ),
+      },
+      {
+        to: '/hardware/kiosks',
+        label: 'Kiosk Devices',
+        resource: 'scanning_hardware',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+            <rect x="4" y="4" width="16" height="12" rx="2" />
+            <path d="M12 16v4m-4 0h8" strokeLinecap="round" />
+          </svg>
+        ),
+      },
+      {
+        to: '/hardware/routers',
+        label: 'Routers',
+        resource: 'scanning_hardware',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+            <rect x="3" y="13" width="18" height="6" rx="2" />
+            <path d="M7 13V9m0 0c2.8-2 7.2-2 10 0M17 16h.01M14 16h.01" strokeLinecap="round" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
     label: 'Admin',
     items: [
       {
