@@ -11,7 +11,6 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import (
     Asset, ProcessedScan, RawScan, StatusRuleExecution,
