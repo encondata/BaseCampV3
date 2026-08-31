@@ -166,7 +166,11 @@ export default function RuleEditorModal({ schema, rule, onClose, onSaved }: Prop
   const addCondition = () => setConditions((cs) => [...cs, defaultCondition(schema)]);
   const removeCondition = (i: number) => setConditions((cs) => cs.filter((_, idx) => idx !== i));
 
-  const onFieldChange = (i: number, fieldKey: string) => updateCondition(i, { field: fieldKey, value: '' });
+  const onFieldChange = (i: number, fieldKey: string) => {
+    const condition = conditions[i];
+    const op = schema.operators.find((o) => o.key === condition?.operator);
+    updateCondition(i, { field: fieldKey, value: op?.needs_value === false ? null : '' });
+  };
 
   const onOperatorChange = (i: number, opKey: string) => {
     const op = schema.operators.find((o) => o.key === opKey);

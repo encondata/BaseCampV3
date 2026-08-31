@@ -142,6 +142,35 @@ it('condition row: selecting operator "is_null" hides the value control', async 
   expect(screen.queryByLabelText('Condition 1 value')).toBeNull();
 });
 
+it('condition row: field change preserves null value when operator needs_value is false', async () => {
+  const user = userEvent.setup();
+  api.createStatusRule.mockResolvedValue({ ...RULE, id: 'new-1' });
+  const { onSaved } = renderCreate();
+
+  await user.type(screen.getByLabelText('Name'), 'Test rule');
+  await user.selectOptions(screen.getByLabelText('When a scan with status'), 'in_transit');
+  await user.selectOptions(screen.getByLabelText('matches a'), 'fuzzy');
+
+  await user.click(screen.getByRole('button', { name: 'Add condition' }));
+  await user.selectOptions(screen.getByLabelText('Condition 1 operator'), 'is_null');
+  await user.selectOptions(screen.getByLabelText('Condition 1 field'), 'scan.device_id');
+
+  await user.click(screen.getByRole('button', { name: 'Add action' }));
+  await user.selectOptions(screen.getByLabelText('Action 1 status'), 'bad');
+
+  await user.click(screen.getByRole('button', { name: /Create rule/i }));
+
+  await waitFor(() => expect(api.createStatusRule).toHaveBeenCalledTimes(1));
+  expect(api.createStatusRule).toHaveBeenCalledWith({
+    name: 'Test rule', description: '',
+    trigger_status: 'in_transit', trigger_match_type: 'fuzzy',
+    priority: 10, enabled: true,
+    conditions: [{ field: 'scan.device_id', operator: 'is_null', value: null }],
+    actions: [{ action_type: 'set_asset_status', params: { status: 'bad' } }],
+  });
+  await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+});
+
 it('edit mode: prefills fields from the rule prop and submits updateStatusRule(rule.id, …)', async () => {
   const user = userEvent.setup();
   api.updateStatusRule.mockResolvedValue(RULE);
