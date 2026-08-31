@@ -3,8 +3,9 @@
  * ExecutionsTab — per-fire status-rule execution log. Covers: newest-first
  * row rendering (time/rule/scan/result chip), error-row rendering (error
  * text + red chip, scan cell collapsed to '—'), the rule filter select
- * re-fetching from offset 0, and "Load more" pagination (append + hide on
- * a short page).
+ * re-fetching from offset 0, "Load more" pagination (append + hide on a
+ * short page), the in-flight guard against a double-click on "Load more",
+ * and ignoring a stale (superseded) filter response.
  */
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -39,6 +40,12 @@ const RULES: StatusRule[] = [
     created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
   },
 ];
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+}
 
 function mkExec(overrides: Partial<StatusRuleExecution> = {}): StatusRuleExecution {
   return {
@@ -167,4 +174,65 @@ it('"Load more" appends the next offset page and disappears when a short page re
 
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull());
   await waitFor(() => expect(onCount).toHaveBeenLastCalledWith(PAGE + 30));
+});
+
+it('double-clicking "Load more" only appends one page (in-flight guard)', async () => {
+  const firstPage = Array.from({ length: PAGE }, (_, i) => mkExec({ id: i + 1, scanned_value: `V${i}` }));
+  const secondPage = Array.from({ length: 30 }, (_, i) => mkExec({ id: PAGE + i + 1, scanned_value: `W${i}` }));
+  api.listStatusRules.mockResolvedValue(RULES);
+  const more = deferred<StatusRuleExecution[]>();
+  api.listStatusRuleExecutions
+    .mockResolvedValueOnce(firstPage)
+    .mockReturnValueOnce(more.promise);
+  const user = userEvent.setup();
+
+  render(<ExecutionsTab onCount={vi.fn()} />);
+
+  const loadMore = await screen.findByRole('button', { name: 'Load more' });
+  await user.click(loadMore);
+
+  // button is disabled while the request is in flight — a second click is a no-op
+  const loadingBtn = await screen.findByRole('button', { name: /loading/i });
+  await waitFor(() => expect((loadingBtn as HTMLButtonElement).disabled).toBe(true));
+  await user.click(loadingBtn);
+
+  more.resolve(secondPage);
+  await screen.findByText('W0');
+
+  // only the initial load + a single "load more" call, never two
+  expect(api.listStatusRuleExecutions).toHaveBeenCalledTimes(2);
+  expect(screen.getAllByText('V0')).toHaveLength(1);
+  expect(screen.getAllByText('W0')).toHaveLength(1);
+});
+
+it('ignores a stale filter response that resolves after a newer one', async () => {
+  api.listStatusRules.mockResolvedValue(RULES);
+  api.listStatusRuleExecutions.mockResolvedValue([mkExec()]);
+  const user = userEvent.setup();
+
+  render(<ExecutionsTab onCount={vi.fn()} />);
+  await screen.findAllByText('Rule One');
+
+  const older = deferred<StatusRuleExecution[]>();
+  const newer = deferred<StatusRuleExecution[]>();
+  api.listStatusRuleExecutions.mockClear();
+  api.listStatusRuleExecutions
+    .mockReturnValueOnce(older.promise)
+    .mockReturnValueOnce(newer.promise);
+
+  const select = screen.getByLabelText(/rule/i);
+  await user.selectOptions(select, 'rule-2'); // fires the "older" request
+  await user.selectOptions(select, 'rule-1'); // fires the "newer" request
+
+  // resolve out of order: newer request settles first, older settles after
+  newer.resolve([mkExec({ id: 9, rule_id: 'rule-1', rule_name: 'Rule One', scanned_value: 'NEWER' })]);
+  await screen.findByText('NEWER');
+
+  older.resolve([mkExec({ id: 8, rule_id: 'rule-2', rule_name: 'Rule Two', scanned_value: 'STALE' })]);
+
+  // give the stale promise's .then a turn, then assert it never overwrote state
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(screen.queryByText('STALE')).toBeNull();
+  expect(screen.getByText('NEWER')).not.toBeNull();
 });

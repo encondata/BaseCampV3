@@ -4,7 +4,7 @@
  *  skipped), and any error. Ordering and paging are server-driven — this
  *  tab renders whatever page `listStatusRuleExecutions` returns. */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
   ApiError, listStatusRuleExecutions, listStatusRules,
@@ -39,19 +39,27 @@ export default function ExecutionsTab({ onCount }: {
   const [filter, setFilter] = useState('');
   const [done, setDone] = useState(true);
   const [error, setError] = useState('');
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Bumped on every initial load / filter change / load-more so a slow,
+  // superseded response can be detected and ignored (see ProcessLogs'
+  // `alive` flag for the effect-cleanup equivalent of this guard).
+  const seq = useRef(0);
 
   useEffect(() => {
+    const mySeq = ++seq.current;
     (async () => {
       try {
         const [r, execs] = await Promise.all([
           listStatusRules(), listStatusRuleExecutions({ limit: PAGE }),
         ]);
+        if (mySeq !== seq.current) return;
         setRules(r);
         setRows(execs);
         setDone(execs.length < PAGE);
         setError('');
         onCount(execs.length);
       } catch (err) {
+        if (mySeq !== seq.current) return;
         setError(msgFor(err));
         onCount(null);
       }
@@ -61,29 +69,39 @@ export default function ExecutionsTab({ onCount }: {
 
   const applyFilter = async (value: string) => {
     setFilter(value);
+    const mySeq = ++seq.current;
     try {
       const execs = await listStatusRuleExecutions({ ruleId: value || undefined, limit: PAGE });
+      if (mySeq !== seq.current) return;
       setRows(execs);
       setDone(execs.length < PAGE);
       setError('');
       onCount(execs.length);
     } catch (err) {
+      if (mySeq !== seq.current) return;
       setError(msgFor(err));
       onCount(null);
     }
   };
 
   const loadMore = async () => {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    const mySeq = ++seq.current;
     try {
       const execs = await listStatusRuleExecutions({
         ruleId: filter || undefined, limit: PAGE, offset: rows.length,
       });
+      if (mySeq !== seq.current) return;
       setRows((prev) => [...prev, ...execs]);
       setDone(execs.length < PAGE);
       setError('');
       onCount(rows.length + execs.length);
     } catch (err) {
+      if (mySeq !== seq.current) return;
       setError(msgFor(err));
+    } finally {
+      setLoadingMore(false);
     }
   };
 
@@ -160,8 +178,9 @@ export default function ExecutionsTab({ onCount }: {
 
       {rules && !done && (
         <div style={{ marginTop: 12 }}>
-          <button type="button" className="mini-btn" onClick={() => void loadMore()}>
-            Load more
+          <button type="button" className="mini-btn" disabled={loadingMore}
+                  onClick={() => void loadMore()}>
+            {loadingMore ? 'Loading…' : 'Load more'}
           </button>
         </div>
       )}
