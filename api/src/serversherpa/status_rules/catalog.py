@@ -38,9 +38,8 @@ def _cmp(op: Callable[[float, float], bool]):
 OPERATORS: dict[str, Callable[[Any, str | None], bool]] = {
     "equals": lambda f, v: (f is not None and v is not None
                             and str(f).lower() == str(v).lower()),
-    "not_equals": lambda f, v: (v is not None
-                                and (f is None
-                                     or str(f).lower() != str(v).lower())),
+    "not_equals": lambda f, v: (f is not None and v is not None
+                                and str(f).lower() != str(v).lower()),
     "contains": lambda f, v: (f is not None and v is not None
                               and str(v).lower() in str(f).lower()),
     "is_null": lambda f, v: f is None or f == "",

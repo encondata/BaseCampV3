@@ -116,7 +116,7 @@ async def run_once(maker) -> bool:
             ids += (await db.scalars(
                 select(RawScan.id)
                 .where(RawScan.match_attempted_at < cutoff)
-                .order_by(RawScan.id).limit(BATCH_LIMIT))).all()
+                .order_by(RawScan.match_attempted_at).limit(BATCH_LIMIT))).all()
             _last_sweep = wall_now
     for raw_id in ids:
         await process_raw_scan(maker, raw_id)

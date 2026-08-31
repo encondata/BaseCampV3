@@ -23,6 +23,7 @@ def test_operator_truth_table():
     assert evaluate_condition("Dock-1", "equals", "dock-1") is True
     assert evaluate_condition(None, "equals", "x") is False
     assert evaluate_condition("a", "not_equals", "b") is True
+    assert evaluate_condition(None, "not_equals", "x") is False
     assert evaluate_condition("warehouse-7", "contains", "HOUSE") is True
     assert evaluate_condition(None, "is_null", None) is True
     assert evaluate_condition("", "is_null", None) is True

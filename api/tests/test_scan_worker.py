@@ -109,6 +109,29 @@ async def test_run_once_picks_fresh_rows_and_sweeps_stale(db, monkeypatch):
     assert await worker.run_once(get_sessionmaker()) is False   # all stamped
 
 
+async def test_sweep_retries_oldest_attempted_first(db, monkeypatch):
+    monkeypatch.setattr(worker, "RETRY_SWEEP_SECONDS", 0)
+    monkeypatch.setattr(worker, "BATCH_LIMIT", 1)
+    now = datetime.now(UTC)
+    a = _raw("SWEEP-A", attempted=now - timedelta(hours=1))
+    b = _raw("SWEEP-B", attempted=now - timedelta(hours=2))
+    db.add_all([a, b])
+    await db.commit()
+    a_id, b_id, a_stamp = a.id, b.id, a.match_attempted_at
+
+    await worker.run_once(get_sessionmaker())
+
+    async with get_sessionmaker()() as check:
+        a_after = await check.get(RawScan, a_id)
+        b_after = await check.get(RawScan, b_id)
+        # b has the older (more stale) match_attempted_at, so it must be
+        # the row re-attempted this pass — its stamp is now newer than
+        # a's original stamp. Under order_by(RawScan.id) this fails
+        # because the lower-id row (a) is swept instead.
+        assert b_after.match_attempted_at > a_stamp
+        assert a_after.match_attempted_at == a_stamp
+
+
 async def test_run_forever_heartbeats_and_stops(db):
     task = asyncio.create_task(worker.run_forever(poll_seconds=0.05))
     try:
