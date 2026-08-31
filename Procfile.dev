@@ -11,4 +11,5 @@ api:    api/.venv/bin/python -m uvicorn --factory serversherpa.api.app:create_ap
 worker: api/.venv/bin/serversherpa import-worker --reload
 logsvc: api/.venv/bin/serversherpa log-service --reload
 notifsvc: api/.venv/bin/serversherpa notification-worker --reload
+scanmatch: api/.venv/bin/serversherpa scan-matching-worker --reload
 portal: npm --prefix portal run dev
