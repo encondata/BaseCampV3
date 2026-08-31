@@ -292,6 +292,16 @@ export const NAV_SECTIONS: NavSection[] = [
           </svg>
         ),
       },
+      {
+        to: '/admin/status-rules',
+        label: 'Status rules',
+        resource: 'status_rules',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
+            <path d="M13 2 4.5 13.5H11L9.5 22 19 10h-6.5L13 2Z" strokeLinejoin="round" />
+          </svg>
+        ),
+      },
     ],
   },
   {

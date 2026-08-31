@@ -31,6 +31,7 @@ import Settings from './pages/Settings';
 import Sites from './pages/Sites';
 import SiteDetail from './pages/SiteDetail';
 import StakeholderDetail from './pages/StakeholderDetail';
+import StatusRules from './pages/StatusRules';
 import SystemConfig from './pages/SystemConfig';
 import SystemProcesses from './pages/SystemProcesses';
 import TimeManagement from './pages/TimeManagement';
@@ -137,6 +138,9 @@ export default function App() {
             } />
             <Route path="/admin/audit" element={<ProtectedRoute resource="audit"><Audit /></ProtectedRoute>} />
             <Route path="/admin/scans" element={<ProtectedRoute resource="scans"><Scans /></ProtectedRoute>} />
+            <Route path="/admin/status-rules" element={
+              <ProtectedRoute resource="status_rules"><StatusRules /></ProtectedRoute>
+            } />
             <Route path="/dev" element={<ProtectedRoute resource="devtools"><Dev /></ProtectedRoute>} />
             <Route path="/dev/system-config" element={
               <ProtectedRoute resource="devtools"><SystemConfig /></ProtectedRoute>
