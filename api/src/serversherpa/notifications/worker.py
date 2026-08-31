@@ -2,7 +2,7 @@
 (`serversherpa notification-worker`). PLACEHOLDER ONLY: heartbeat +
 periodic status logs. It does not read or mutate any notification
 delivery state; the only DB touches are the heartbeat upsert, log
-writes, and a single read-only count query for the status line. The
+writes, and read-only count queries for the status line. The
 actual delivery pipeline (channel dispatch, quiet hours, DND) is a
 later task."""
 
@@ -55,7 +55,9 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
 
     maker = get_sessionmaker()
     try:
-        last_log = 0.0
+        # monotonic()'s reference point is undefined — seed one full
+        # interval in the past so the first loop iteration always logs.
+        last_log = time.monotonic() - IDLE_LOG_SECONDS
         while True:
             now = time.monotonic()
             if now - last_log >= IDLE_LOG_SECONDS:

@@ -70,7 +70,8 @@ async def test_run_once_logs_idle_status_line(db, caplog):
     assert "2 member(s)" in caplog.text
 
 
-async def test_run_forever_heartbeats_and_marks_stop(db):
+async def test_run_forever_heartbeats_and_marks_stop(db, caplog):
+    caplog.set_level(logging.INFO, logger="serversherpa.notifications.worker")
     task = asyncio.create_task(run_forever(poll_seconds=0.05))
     try:
         await asyncio.sleep(0.3)
@@ -81,6 +82,9 @@ async def test_run_forever_heartbeats_and_marks_stop(db):
         age = (datetime.now(UTC) - row.heartbeat_at).total_seconds()
         assert age < 5
         assert row.stopped_at is None
+        # The first loop iteration must emit the idle status line
+        # immediately — the cadence seed cannot defer it 15 minutes.
+        assert "delivery pipeline not implemented" in caplog.text
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
