@@ -180,8 +180,12 @@ async def _set_container_status(db, ctx, params) -> ActionOutcome:
 async def _set_asset_location_from_scan(db, ctx, params) -> ActionOutcome:
     if ctx.asset is None:
         return ActionOutcome(False, "no_asset")
-    ctx.asset.site_id = ctx.scan.site_id
-    ctx.asset.location_detail = ctx.scan.location_detail
+    # Older rows may predate the fields param — absent means both.
+    fields = params.get("fields", "both")
+    if fields in ("site", "both"):
+        ctx.asset.site_id = ctx.scan.site_id
+    if fields in ("location", "both"):
+        ctx.asset.location_detail = ctx.scan.location_detail
     _touch(ctx.asset)
     return ActionOutcome(True)
 
@@ -225,6 +229,34 @@ async def _touch_container_audit(db, ctx, params) -> ActionOutcome:
     return ActionOutcome(True)
 
 
+async def _clear_asset_location(db, ctx, params) -> ActionOutcome:
+    if ctx.asset is None:
+        return ActionOutcome(False, "no_asset")
+    ctx.asset.location_detail = ""
+    _touch(ctx.asset)
+    return ActionOutcome(True)
+
+
+async def _clear_asset_site(db, ctx, params) -> ActionOutcome:
+    if ctx.asset is None:
+        return ActionOutcome(False, "no_asset")
+    ctx.asset.site_id = None
+    _touch(ctx.asset)
+    return ActionOutcome(True)
+
+
+async def _set_asset_location_from_container(db, ctx, params) -> ActionOutcome:
+    """ctx.container is the asset's CONTAINING container for asset
+    matches (resolved by the engine); required here."""
+    if ctx.asset is None:
+        return ActionOutcome(False, "no_asset")
+    if ctx.container is None:
+        return ActionOutcome(False, "not_in_container")
+    ctx.asset.location_detail = ctx.container.name
+    _touch(ctx.asset)
+    return ActionOutcome(True)
+
+
 _SIDE = ParamField("side", "choice", options=("source", "destination"))
 _ACTION_LIST = [
     ActionDef("set_asset_status", "Set asset status",
@@ -238,7 +270,8 @@ _ACTION_LIST = [
                           options_source="status:container"),),
               _set_container_status),
     ActionDef("set_asset_location_from_scan",
-              "Set asset location from the scan", (),
+              "Set asset location from the scan",
+              (ParamField("fields", "choice", options=("site", "location", "both")),),
               _set_asset_location_from_scan),
     ActionDef("set_asset_location_from_initiative",
               "Set asset location from the initiative roster", (_SIDE,),
@@ -248,6 +281,13 @@ _ACTION_LIST = [
               _set_initiative_asset_verified),
     ActionDef("touch_container_audit", "Record container audit touch", (),
               _touch_container_audit),
+    ActionDef("clear_asset_location", "Clear asset location", (),
+              _clear_asset_location),
+    ActionDef("clear_asset_site", "Clear asset site", (),
+              _clear_asset_site),
+    ActionDef("set_asset_location_from_container",
+              "Set asset location from its container", (),
+              _set_asset_location_from_container),
 ]
 ACTIONS: dict[str, ActionDef] = {a.key: a for a in _ACTION_LIST}
 

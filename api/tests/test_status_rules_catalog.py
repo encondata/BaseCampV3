@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from serversherpa.db.models import (
-    Asset, Container, Initiative, InitiativeAsset, Person, ProcessedScan,
+    Asset, Container, Initiative, InitiativeAsset, Person, ProcessedScan, Site,
 )
 from serversherpa.status_rules.catalog import (
     ACTIONS, CONDITION_FIELDS, OPERATORS, evaluate_condition,
@@ -126,3 +126,73 @@ async def test_touch_container_audit(db):
     assert out.applied is True
     assert c.last_audit_at == scan.scanned_at
     assert c.audit_by == p.id
+
+
+async def test_clear_actions(db):
+    site = Site(name="NAP 11")
+    db.add(site)
+    await db.flush()
+    a = Asset(location_detail="R4 RU10", site_id=site.id)
+    db.add(a)
+    await db.flush()
+    scan = await _scan(db, asset=a)
+    ctx = Context(scan=scan, asset=a)
+    out = await ACTIONS["clear_asset_location"].apply(db, ctx, {})
+    assert out.applied is True
+    assert a.location_detail == ""
+    out = await ACTIONS["clear_asset_site"].apply(db, ctx, {})
+    assert out.applied is True
+    assert a.site_id is None
+
+
+async def test_set_asset_location_from_container(db):
+    a = Asset()
+    c = Container(name="scan-verify-crate")
+    db.add_all([a, c])
+    await db.flush()
+    scan = await _scan(db, asset=a)
+    ctx = Context(scan=scan, asset=a, container=c)
+    out = await ACTIONS["set_asset_location_from_container"].apply(db, ctx, {})
+    assert out.applied is True
+    assert a.location_detail == "scan-verify-crate"
+
+    bare = Context(scan=scan, asset=a)          # not in any container
+    out = await ACTIONS["set_asset_location_from_container"].apply(db, bare, {})
+    assert out.applied is False
+    assert out.reason == "not_in_container"
+
+
+async def test_location_from_scan_fields_param(db):
+    site = Site(name="NAP 11")
+    db.add(site)
+    await db.flush()
+    a = Asset(location_detail="R4 RU10", site_id=None)
+    db.add(a)
+    await db.flush()
+    scan = await _scan(db, asset=a, site_id=site.id, location_detail="")
+    ctx = Context(scan=scan, asset=a)
+
+    out = await ACTIONS["set_asset_location_from_scan"].apply(
+        db, ctx, {"fields": "site"})
+    assert out.applied is True
+    assert a.site_id == site.id
+    assert a.location_detail == "R4 RU10"       # untouched — the V2 fidelity point
+
+    out = await ACTIONS["set_asset_location_from_scan"].apply(
+        db, ctx, {"fields": "location"})
+    assert a.location_detail == ""
+
+    a.location_detail = "R4 RU10"
+    out = await ACTIONS["set_asset_location_from_scan"].apply(db, ctx, {})
+    assert a.location_detail == ""              # empty params default to both
+
+
+def test_validate_new_actions():
+    assert validate_action("clear_asset_location", {}) is None
+    assert validate_action("clear_asset_site", {}) is None
+    assert validate_action("set_asset_location_from_container", {}) is None
+    assert validate_action("set_asset_location_from_scan",
+                           {"fields": "site"}) is None
+    assert validate_action("set_asset_location_from_scan",
+                           {"fields": "sideways"}) == "bad_param"
+    assert validate_action("set_asset_location_from_scan", {}) == "missing_param"
