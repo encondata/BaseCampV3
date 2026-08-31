@@ -1766,3 +1766,25 @@ class StatusRuleOut(BaseModel):
     actions: list[StatusRuleActionIn]
     created_at: datetime
     updated_at: datetime
+
+
+class StatusRuleExecutionItem(BaseModel):
+    id: int
+    rule_id: uuid.UUID | None
+    rule_name: str
+    processed_scan_id: uuid.UUID | None
+    conditions_met: bool
+    actions_applied: list
+    error: str | None
+    executed_at: datetime
+    duration_ms: int
+    scanned_value: str | None
+    scan_status: str | None
+
+
+class StatusRuleExecStat(BaseModel):
+    rule_id: uuid.UUID
+    run_count: int
+    met_count: int
+    last_run_at: datetime | None
+    avg_duration_ms: float | None

@@ -8,20 +8,22 @@ nothing may reference them. All writes audit through services.audit."""
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    StatusRuleIn, StatusRuleOut, StatusRulePatch,
+    StatusRuleExecStat, StatusRuleExecutionItem, StatusRuleIn, StatusRuleOut,
+    StatusRulePatch,
 )
 from serversherpa.db.models import (
-    StatusRule, StatusRuleAction, StatusRuleCondition, StatusValue,
+    ProcessedScan, Site, StatusRule, StatusRuleAction, StatusRuleCondition,
+    StatusRuleExecution, StatusValue,
 )
 from serversherpa.services.audit import audit
 from serversherpa.status_rules.catalog import (
-    ACTIONS, validate_action, validate_condition,
+    ACTIONS, CONDITION_FIELDS, OPERATORS, validate_action, validate_condition,
 )
 
 router = APIRouter(prefix="/status-rules", tags=["status-rules"])
@@ -129,10 +131,100 @@ async def create_rule(
     return _out(await _get(db, rule.id))
 
 
-# NOTE(task 8): schema/executions endpoints (GET /status-rules/schema,
-# GET /status-rules/executions) must be added ABOVE the /{rule_id}
-# routes below — otherwise "schema"/"executions" would be swallowed by
-# the {rule_id} path param.
+@router.get("/schema")
+async def rule_schema(
+    db: DbSession,
+    actor: AuthContext = require_permission("status_rules", "view"),
+) -> dict:
+    vocab = (await db.scalars(select(StatusValue).where(
+        StatusValue.is_active.is_(True)).order_by(
+        StatusValue.record_type, StatusValue.sort_order))).all()
+    by_type: dict[str, list[dict]] = {}
+    for v in vocab:
+        by_type.setdefault(v.record_type, []).append(
+            {"value": v.key, "label": v.label, "color": v.color})
+    sites = [{"value": str(sid), "label": name}
+             for sid, name in (await db.execute(
+                 select(Site.id, Site.name).order_by(Site.name))).all()]
+
+    def options_for(source: str | None):
+        if source is None:
+            return None
+        if source == "sites":
+            return sites
+        return by_type.get(source.removeprefix("status:"), [])
+
+    return {
+        "trigger_statuses": by_type.get("asset", []),
+        "match_types": by_type.get("processed_scan", []),
+        "operators": [{"key": k, "label": k.replace("_", " "),
+                       "needs_value": k not in ("is_null", "is_not_null")}
+                      for k in OPERATORS],
+        "condition_fields": [
+            {"key": f.key, "label": f.label, "type": f.type,
+             **({"options": options_for(f.options_source)}
+                if f.options_source else {})}
+            for f in CONDITION_FIELDS.values()],
+        "actions": [
+            {"key": a.key, "label": a.label,
+             "params": [
+                 {"name": p.name, "type": p.type,
+                  **({"options": list(p.options)} if p.options else {}),
+                  **({"options": options_for(p.options_source)}
+                     if p.options_source else {})}
+                 for p in a.params]}
+            for a in ACTIONS.values()],
+        "sites": sites,
+    }
+
+
+@router.get("/executions", response_model=list[StatusRuleExecutionItem])
+async def list_executions(
+    db: DbSession,
+    actor: AuthContext = require_permission("status_rules", "view"),
+    rule_id: uuid.UUID | None = None,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> list[dict]:
+    query = (select(StatusRuleExecution, ProcessedScan.scanned_value,
+                    ProcessedScan.status)
+             .outerjoin(ProcessedScan,
+                        StatusRuleExecution.processed_scan_id
+                        == ProcessedScan.id)
+             .order_by(StatusRuleExecution.executed_at.desc(),
+                       StatusRuleExecution.id.desc())
+             .limit(limit).offset(offset))
+    if rule_id is not None:
+        query = query.where(StatusRuleExecution.rule_id == rule_id)
+    rows = (await db.execute(query)).all()
+    return [{
+        "id": ex.id, "rule_id": ex.rule_id, "rule_name": ex.rule_name,
+        "processed_scan_id": ex.processed_scan_id,
+        "conditions_met": ex.conditions_met,
+        "actions_applied": ex.actions_applied, "error": ex.error,
+        "executed_at": ex.executed_at, "duration_ms": ex.duration_ms,
+        "scanned_value": value, "scan_status": status,
+    } for ex, value, status in rows]
+
+
+@router.get("/executions/stats", response_model=list[StatusRuleExecStat])
+async def execution_stats(
+    db: DbSession,
+    actor: AuthContext = require_permission("status_rules", "view"),
+) -> list[dict]:
+    rows = (await db.execute(
+        select(StatusRuleExecution.rule_id,
+               func.count().label("run_count"),
+               func.count().filter(
+                   StatusRuleExecution.conditions_met).label("met_count"),
+               func.max(StatusRuleExecution.executed_at),
+               func.avg(StatusRuleExecution.duration_ms))
+        .where(StatusRuleExecution.rule_id.is_not(None))
+        .group_by(StatusRuleExecution.rule_id))).all()
+    return [{"rule_id": r[0], "run_count": r[1], "met_count": r[2],
+             "last_run_at": r[3],
+             "avg_duration_ms": float(r[4]) if r[4] is not None else None}
+            for r in rows]
 
 
 @router.get("/{rule_id}", response_model=StatusRuleOut)

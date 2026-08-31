@@ -1,8 +1,13 @@
 """API tests for /status-rules — CRUD + toggle, catalog validation, audit."""
 
-from sqlalchemy import select
+from datetime import UTC, datetime
 
-from serversherpa.db.models import AuditLog, StatusRule
+from sqlalchemy import select, text
+
+from serversherpa.db.models import (
+    AuditLog, Asset, ProcessedScan, StatusRule, StatusRuleExecution,
+)
+from serversherpa.status_rules.catalog import ACTIONS, OPERATORS
 from tests.test_access_roles_api import login_admin
 from tests.test_notification_groups_api import login_staff
 
@@ -163,4 +168,135 @@ async def test_delete_removes_rule(client, db, seeded_user):
 async def test_permission_denied_without_grant(client, db, seeded_user):
     hdrs = await login_staff(client, seeded_user)
     resp = await client.post("/status-rules", headers=hdrs, json=_body())
+    assert resp.status_code == 403
+
+
+async def test_schema_endpoint_shape(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.get("/status-rules/schema", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    assert len(data["trigger_statuses"]) > 0
+    assert any(s["value"].startswith("rfid") for s in data["trigger_statuses"])
+
+    assert {o["key"] for o in data["operators"]} == set(OPERATORS)
+    assert len(data["operators"]) == 9
+
+    for action in data["actions"]:
+        catalog_action = ACTIONS[action["key"]]
+        status_param_names = {p.name for p in catalog_action.params
+                              if p.type == "status"}
+        for param in action["params"]:
+            if param["name"] in status_param_names:
+                assert len(param.get("options") or []) > 0
+
+    assert "sites" in data
+    assert isinstance(data["sites"], list)
+
+
+async def test_executions_list_and_filter(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/status-rules", headers=hdrs, json=_body())
+    rule_id = resp.json()["id"]
+
+    asset = Asset(status="unknown")
+    db.add(asset)
+    await db.flush()
+    scan = ProcessedScan(
+        scanned_value="TAG-1", scan_type="rfid", status="rfid_4_into_cage",
+        scanned_at=datetime.now(UTC), processed_at=datetime.now(UTC),
+        match_type="asset", asset_id=asset.id)
+    db.add(scan)
+    await db.flush()
+
+    matched = StatusRuleExecution(
+        rule_id=rule_id, rule_name="Into cage",
+        processed_scan_id=scan.id, conditions_met=True,
+        actions_applied=[{"action_type": "set_asset_status"}],
+        error=None, duration_ms=12)
+    errored = StatusRuleExecution(
+        rule_id=None, rule_name="Broken rule",
+        processed_scan_id=None, conditions_met=False,
+        actions_applied=[], error="boom", duration_ms=3)
+    db.add_all([matched, errored])
+    await db.commit()
+
+    resp = await client.get("/status-rules/executions", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    items = resp.json()
+    assert len(items) == 2
+    # newest first
+    assert items[0]["executed_at"] >= items[1]["executed_at"]
+
+    by_id = {item["id"]: item for item in items}
+    matched_item = by_id[matched.id]
+    assert matched_item["scanned_value"] == "TAG-1"
+    assert matched_item["scan_status"] == "rfid_4_into_cage"
+    assert matched_item["rule_id"] == rule_id
+    assert matched_item["conditions_met"] is True
+
+    error_item = by_id[errored.id]
+    assert error_item["scanned_value"] is None
+    assert error_item["scan_status"] is None
+    assert error_item["rule_id"] is None
+    assert error_item["error"] == "boom"
+
+    resp = await client.get(
+        "/status-rules/executions", headers=hdrs,
+        params={"rule_id": rule_id})
+    assert resp.status_code == 200, resp.text
+    filtered = resp.json()
+    assert len(filtered) == 1
+    assert filtered[0]["id"] == matched.id
+
+
+async def test_executions_stats(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/status-rules", headers=hdrs, json=_body())
+    rule_a = resp.json()["id"]
+    resp = await client.post("/status-rules", headers=hdrs,
+                             json=_body(name="Second rule"))
+    rule_b = resp.json()["id"]
+
+    db.add_all([
+        StatusRuleExecution(
+            rule_id=rule_a, rule_name="Into cage", processed_scan_id=None,
+            conditions_met=True, actions_applied=[], error=None,
+            duration_ms=10),
+        StatusRuleExecution(
+            rule_id=rule_a, rule_name="Into cage", processed_scan_id=None,
+            conditions_met=False, actions_applied=[], error=None,
+            duration_ms=20),
+        StatusRuleExecution(
+            rule_id=rule_b, rule_name="Second rule", processed_scan_id=None,
+            conditions_met=True, actions_applied=[], error=None,
+            duration_ms=30),
+    ])
+    await db.commit()
+
+    resp = await client.get("/status-rules/executions/stats", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    stats = {row["rule_id"]: row for row in resp.json()}
+
+    assert stats[rule_a]["run_count"] == 2
+    assert stats[rule_a]["met_count"] == 1
+    assert stats[rule_a]["avg_duration_ms"] == 15.0
+    assert stats[rule_a]["last_run_at"] is not None
+
+    assert stats[rule_b]["run_count"] == 1
+    assert stats[rule_b]["met_count"] == 1
+    assert stats[rule_b]["avg_duration_ms"] == 30.0
+
+
+async def test_executions_require_view(client, db, seeded_user):
+    # "staff" carries status_rules:view by default (RULE_GRANTS in
+    # migration 0035); "external" has no grants at all, so it's the role
+    # to prove the endpoint is actually permission-gated.
+    await db.execute(text(
+        "UPDATE person_roles SET role='external' WHERE person_id=:p"),
+        {"p": seeded_user.id})
+    await db.commit()
+    hdrs = await login_staff(client, seeded_user)
+    resp = await client.get("/status-rules/executions", headers=hdrs)
     assert resp.status_code == 403
