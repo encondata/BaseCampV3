@@ -6,6 +6,7 @@ the worker. Fixture rows are verbatim from backup_20260825_193157.sql
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
@@ -13,17 +14,20 @@ from serversherpa.db.models import (
 )
 from serversherpa.scans import worker
 from serversherpa.status_rules.engine import invalidate_cache
-from serversherpa.status_rules.v2_import import import_rules
+from serversherpa.status_rules.v2_import import import_rules, translate_action
 
 FIXTURE = """
 INSERT INTO status_options (id, status_name, association_type, sort_order, process_order, color, metadata, created_at, updated_at, list_in_dropdown, process_type, description) VALUES (9, 'RFID 1 - Cage Exit', 'Assets', 9, 9, '#31F527', NULL, '2025-10-13T00:00:00+00:00', '2025-10-13T00:00:00+00:00', NULL, NULL, NULL);
 INSERT INTO status_options (id, status_name, association_type, sort_order, process_order, color, metadata, created_at, updated_at, list_in_dropdown, process_type, description) VALUES (19, 'RFID 4 - Into Cage', 'Assets', 19, 19, '#f5297a', NULL, '2025-10-13T00:00:00+00:00', '2025-10-13T00:00:00+00:00', NULL, NULL, NULL);
 INSERT INTO status_options (id, status_name, association_type, sort_order, process_order, color, metadata, created_at, updated_at, list_in_dropdown, process_type, description) VALUES (13, 'In Container', 'Assets', 13, 13, '#888888', NULL, '2025-10-13T00:00:00+00:00', '2025-10-13T00:00:00+00:00', NULL, NULL, NULL);
 INSERT INTO status_options (id, status_name, association_type, sort_order, process_order, color, metadata, created_at, updated_at, list_in_dropdown, process_type, description) VALUES (45, 'In-Transit', 'Trucks', 45, 45, '#111111', NULL, '2025-10-13T00:00:00+00:00', '2025-10-13T00:00:00+00:00', NULL, NULL, NULL);
+INSERT INTO status_options (id, status_name, association_type, sort_order, process_order, color, metadata, created_at, updated_at, list_in_dropdown, process_type, description) VALUES (20, 'Re-Racked', 'Assets', 20, 20, '#31F527', NULL, '2025-10-13T00:00:00+00:00', '2025-10-13T00:00:00+00:00', NULL, NULL, NULL);
+INSERT INTO status_options (id, status_name, association_type, sort_order, process_order, color, metadata, created_at, updated_at, list_in_dropdown, process_type, description) VALUES (8, 'Racked', 'Assets', 8, 8, '#273FF5', NULL, '2025-10-13T00:00:00+00:00', '2025-10-13T00:00:00+00:00', NULL, NULL, NULL);
 INSERT INTO process_engine_rules (id, name, description, trigger_table, trigger_status_id, priority, enabled, created_at, updated_at, created_by) VALUES (16, 'RFID 1 - Exiting Cage', 'Asset detected leaving the cage via RFID reader.', 'moves_assets_list', 9, 9, TRUE, '2026-01-03T06:36:04+00:00', '2026-01-14T20:23:29+00:00', NULL);
 INSERT INTO process_engine_rules (id, name, description, trigger_table, trigger_status_id, priority, enabled, created_at, updated_at, created_by) VALUES (23, 'Scan Type 19: RFID 4 - In Cage', 'Asset detected entering destination cage via RFID.', 'moves_assets_list', 19, 19, TRUE, '2026-01-03T06:36:05+00:00', '2026-01-14T21:00:50+00:00', NULL);
 INSERT INTO process_engine_rules (id, name, description, trigger_table, trigger_status_id, priority, enabled, created_at, updated_at, created_by) VALUES (29, 'Asset Packed In Container', '', 'moves_assets_list', 13, 10, TRUE, '2026-01-21T04:18:22+00:00', '2026-01-29T21:24:34+00:00', NULL);
 INSERT INTO process_engine_rules (id, name, description, trigger_table, trigger_status_id, priority, enabled, created_at, updated_at, created_by) VALUES (27, 'Truck Left Source - In Transit', 'GPS.', 'trucks', 45, 100, TRUE, '2026-01-03T06:36:05+00:00', '2026-01-03T06:36:05+00:00', NULL);
+INSERT INTO process_engine_rules (id, name, description, trigger_table, trigger_status_id, priority, enabled, created_at, updated_at, created_by) VALUES (24, 'Scan Type 20: Racked at Destination', 'Asset racked at final destination location.', 'moves_assets_list', 20, 20, TRUE, '2026-01-03T06:36:05+00:00', '2026-01-03T06:36:05+00:00', NULL);
 INSERT INTO process_engine_conditions (id, rule_id, condition_table, field_name, operator, value, logic, value_min, value_max) VALUES (4, 27, 'trucks', 'start_site', 'is_not_null', '', 'AND', NULL, NULL);
 INSERT INTO process_engine_actions (id, rule_id, action_order, action_type, target_table, target_field, value_source, value, expression_type, expression_inputs) VALUES (135, 16, 1, 'set_status', 'moves_assets_list', 'asset_status', NULL, '9', NULL, NULL);
 INSERT INTO process_engine_actions (id, rule_id, action_order, action_type, target_table, target_field, value_source, value, expression_type, expression_inputs) VALUES (136, 16, 2, 'set_status', 'assets', 'status', NULL, '9', NULL, NULL);
@@ -36,6 +40,9 @@ INSERT INTO process_engine_actions (id, rule_id, action_order, action_type, targ
 INSERT INTO process_engine_actions (id, rule_id, action_order, action_type, target_table, target_field, value_source, value, expression_type, expression_inputs) VALUES (152, 29, 3, 'set_status', 'assets', 'status', 'static', '13', NULL, NULL);
 INSERT INTO process_engine_actions (id, rule_id, action_order, action_type, target_table, target_field, value_source, value, expression_type, expression_inputs) VALUES (160, 29, 4, 'set_field', 'assets', 'weird_field', 'static', 'x', NULL, NULL);
 INSERT INTO process_engine_actions (id, rule_id, action_order, action_type, target_table, target_field, value_source, value, expression_type, expression_inputs) VALUES (87, 27, 1, 'set_status', 'trucks', 'truck_status', NULL, '45', NULL, NULL);
+INSERT INTO process_engine_actions (id, rule_id, action_order, action_type, target_table, target_field, value_source, value, expression_type, expression_inputs) VALUES (80, 24, 1, 'set_status', 'moves_assets_list', 'asset_status', NULL, '20', NULL, NULL);
+INSERT INTO process_engine_actions (id, rule_id, action_order, action_type, target_table, target_field, value_source, value, expression_type, expression_inputs) VALUES (82, 24, 3, 'expression', 'assets', 'location', NULL, NULL, 'concat_if_exists', '{"field1": "move_asset.destination_raw", "field2": "move_asset.destination_ru", "prefix2": "RU", "separator": " "}');
+INSERT INTO process_engine_actions (id, rule_id, action_order, action_type, target_table, target_field, value_source, value, expression_type, expression_inputs) VALUES (110, 24, 4, 'set_field', 'assets', 'location', 'template', 'move_asset.destination_raw', NULL, '{"template": "{move_asset.destination_raw} RU:{move_asset.destination_ru}"}');
 """
 
 
@@ -45,11 +52,32 @@ def _dump(tmp_path):
     return str(p)
 
 
+# A scan_match_category condition with operator 'equals' is absorbed by
+# V3's trigger match type; the same field with any other operator is not
+# — it gates behavior V3 has no way to express, so the rule must be
+# skipped rather than silently imported without its guard.
+CONDITION_FIXTURE = """
+INSERT INTO status_options (id, status_name, association_type, sort_order, process_order, color, metadata, created_at, updated_at, list_in_dropdown, process_type, description) VALUES (9, 'RFID 1 - Cage Exit', 'Assets', 9, 9, '#31F527', NULL, '2025-10-13T00:00:00+00:00', '2025-10-13T00:00:00+00:00', NULL, NULL, NULL);
+INSERT INTO process_engine_rules (id, name, description, trigger_table, trigger_status_id, priority, enabled, created_at, updated_at, created_by) VALUES (200, 'Equals Absorbed', '', 'moves_assets_list', 9, 1, TRUE, '2026-01-03T06:36:04+00:00', '2026-01-03T06:36:04+00:00', NULL);
+INSERT INTO process_engine_rules (id, name, description, trigger_table, trigger_status_id, priority, enabled, created_at, updated_at, created_by) VALUES (201, 'Non Equals Blocked', '', 'moves_assets_list', 9, 2, TRUE, '2026-01-03T06:36:04+00:00', '2026-01-03T06:36:04+00:00', NULL);
+INSERT INTO process_engine_conditions (id, rule_id, condition_table, field_name, operator, value, logic, value_min, value_max) VALUES (300, 200, 'scans_processed', 'scan_match_category', 'equals', 'exact', 'AND', NULL, NULL);
+INSERT INTO process_engine_conditions (id, rule_id, condition_table, field_name, operator, value, logic, value_min, value_max) VALUES (301, 201, 'scans_processed', 'scan_match_category', 'not_equals', 'exact', 'AND', NULL, NULL);
+INSERT INTO process_engine_actions (id, rule_id, action_order, action_type, target_table, target_field, value_source, value, expression_type, expression_inputs) VALUES (400, 200, 1, 'set_status', 'moves_assets_list', 'asset_status', NULL, '9', NULL, NULL);
+INSERT INTO process_engine_actions (id, rule_id, action_order, action_type, target_table, target_field, value_source, value, expression_type, expression_inputs) VALUES (401, 201, 1, 'set_status', 'moves_assets_list', 'asset_status', NULL, '9', NULL, NULL);
+"""
+
+
+def _cond_dump(tmp_path):
+    p = tmp_path / "cond.sql"
+    p.write_text(CONDITION_FIXTURE)
+    return str(p)
+
+
 async def test_import_translates_and_reports(db, tmp_path):
     stats = await import_rules(db, _dump(tmp_path))
     await db.commit()
 
-    assert stats["imported"] == 3
+    assert stats["imported"] == 4
     assert stats["updated"] == 0
     assert [name for name, _ in stats["skipped"]] == [
         "Truck Left Source - In Transit"]
@@ -57,7 +85,7 @@ async def test_import_translates_and_reports(db, tmp_path):
     assert stats["partial"][0][0] == "Asset Packed In Container"
 
     rules = {r.name: r for r in (await db.scalars(
-        select(StatusRule))).all()}
+        select(StatusRule).options(selectinload(StatusRule.actions)))).all()}
     cage = rules["RFID 1 - Exiting Cage"]
     assert cage.trigger_status == "rfid_1_cage_exit"
     assert cage.trigger_match_type == "asset"
@@ -80,6 +108,12 @@ async def test_import_translates_and_reports(db, tmp_path):
         ("clear_asset_site", {}),
         ("set_asset_status", {"status": "in_container"}),
     ]
+    racked = rules["Scan Type 20: Racked at Destination"]
+    assert [(a.action_type, a.params) for a in racked.actions] == [
+        ("set_initiative_asset_status", {"status": "re_racked"}),
+        ("set_asset_location_from_initiative", {"side": "destination"}),
+        ("set_asset_location_from_initiative", {"side": "destination"}),
+    ]
 
 
 async def test_reimport_is_idempotent_and_preserves_enabled(db, tmp_path):
@@ -95,10 +129,11 @@ async def test_reimport_is_idempotent_and_preserves_enabled(db, tmp_path):
     stats = await import_rules(db, path)
     await db.commit()
     assert stats["imported"] == 0
-    assert stats["updated"] == 3
+    assert stats["updated"] == 4
 
-    again = (await db.scalars(select(StatusRule).where(
-        StatusRule.name == "RFID 1 - Exiting Cage"))).one()
+    again = (await db.scalars(select(StatusRule)
+        .options(selectinload(StatusRule.actions))
+        .where(StatusRule.name == "RFID 1 - Exiting Cage"))).one()
     assert again.enabled is True                # preserved
     assert again.priority == 9                  # V2 value restored
     assert len(again.actions) == 3              # children replaced, not doubled
@@ -123,3 +158,29 @@ async def test_end_to_end_imported_rule_fires(db, tmp_path):
         assert seen.status == "rfid_1_cage_exit"
         assert seen.location_detail == ""       # clear_asset_location fired
     invalidate_cache()
+
+
+async def test_condition_absorption_requires_equals_operator(db, tmp_path):
+    stats = await import_rules(db, _cond_dump(tmp_path))
+    assert stats["imported"] == 1
+    assert [name for name, _ in stats["skipped"]] == ["Non Equals Blocked"]
+    assert stats["skipped"][0][1] == "unmapped condition on scans_processed.scan_match_category"
+
+
+def test_translate_action_drops_status_key_not_in_vocab():
+    id_to_name = {9: "RFID 1 - Cage Exit"}
+    row = {"action_type": "set_status", "target_table": "moves_assets_list",
+           "target_field": "asset_status", "value": "9",
+           "value_source": None, "expression_type": None,
+           "expression_inputs": None}
+
+    payload, reason = translate_action(row, id_to_name, vocab=set())
+    assert payload is None
+    assert reason == ("set_status moves_assets_list.asset_status: "
+                       "status 'rfid_1_cage_exit' not in the V3 asset vocabulary")
+
+    payload, reason = translate_action(
+        row, id_to_name, vocab={"rfid_1_cage_exit"})
+    assert reason is None
+    assert payload == {"action_type": "set_initiative_asset_status",
+                        "params": {"status": "rfid_1_cage_exit"}}

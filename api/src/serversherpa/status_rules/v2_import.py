@@ -69,7 +69,7 @@ def _status_key(v2_id, id_to_name: dict) -> str | None:
     return V2_NAME_TO_V3_KEY.get(name) if name else None
 
 
-def translate_action(row: dict, id_to_name: dict):
+def translate_action(row: dict, id_to_name: dict, vocab: set):
     """(v3 {action_type, params}, None) on success, (None, reason) on drop."""
     atype = row["action_type"]
     table, field = row["target_table"], row["target_field"]
@@ -81,12 +81,16 @@ def translate_action(row: dict, id_to_name: dict):
         key = _status_key(value, id_to_name)
         if key is None:
             return None, f"{where}: unknown status id {value}"
+        if key not in vocab:
+            return None, f"{where}: status '{key}' not in the V3 asset vocabulary"
         return {"action_type": "set_initiative_asset_status",
                 "params": {"status": key}}, None
     if atype == "set_status" and table == "assets" and field == "status":
         key = _status_key(value, id_to_name)
         if key is None:
             return None, f"{where}: unknown status id {value}"
+        if key not in vocab:
+            return None, f"{where}: status '{key}' not in the V3 asset vocabulary"
         return {"action_type": "set_asset_status",
                 "params": {"status": key}}, None
     if atype == "set_field" and table == "moves_assets_list" \
@@ -146,7 +150,6 @@ async def import_rules(db: AsyncSession, dump_path: str) -> dict:
         actions.setdefault(int(a["rule_id"]), []).append(a)
 
     stats = {"imported": 0, "updated": 0, "partial": [], "skipped": []}
-    touched: list[StatusRule] = []
     rules = sorted(_rows(dump_path, "process_engine_rules", RULE_COLS),
                    key=lambda r: (int(r["priority"]), int(r["id"])))
     for rule in rules:
@@ -162,12 +165,14 @@ async def import_rules(db: AsyncSession, dump_path: str) -> dict:
                 (name, f"trigger status id {rule['trigger_status_id']} "
                        "not in the V3 asset vocabulary"))
             continue
-        # scan_match_category conditions are absorbed by V3's trigger
-        # match type; any other condition means the rule would over-fire
-        # without its gate — skip it.
+        # An equals check on scan_match_category is absorbed by V3's
+        # trigger match type; any other condition — including a
+        # non-equals operator on that same field — means the rule would
+        # over-fire without its gate, so skip it.
         blocked = [c for c in conditions.get(int(rule["id"]), [])
                    if not (c["condition_table"] == "scans_processed"
-                           and c["field_name"] == "scan_match_category")]
+                           and c["field_name"] == "scan_match_category"
+                           and c["operator"] == "equals")]
         if blocked:
             stats["skipped"].append(
                 (name, f"unmapped condition on "
@@ -178,7 +183,7 @@ async def import_rules(db: AsyncSession, dump_path: str) -> dict:
         translated, dropped = [], []
         for a in sorted(actions.get(int(rule["id"]), []),
                         key=lambda a: int(a["action_order"])):
-            payload, reason = translate_action(a, id_to_name)
+            payload, reason = translate_action(a, id_to_name, vocab)
             if payload is None:
                 dropped.append(reason)
             else:
@@ -204,7 +209,6 @@ async def import_rules(db: AsyncSession, dump_path: str) -> dict:
                 priority=int(rule["priority"]), enabled=False,
                 conditions=[], actions=children)
             db.add(new_rule)
-            touched.append(new_rule)
             stats["imported"] += 1
         else:
             existing.description = rule["description"] or ""
@@ -213,15 +217,6 @@ async def import_rules(db: AsyncSession, dump_path: str) -> dict:
             existing.priority = int(rule["priority"])
             existing.conditions[:] = []
             existing.actions[:] = children          # enabled untouched
-            touched.append(existing)
             stats["updated"] += 1
     await db.flush()
-    # Session identity map is weak — once this function returns, nothing
-    # else references the ORM objects it just touched, so they'd be
-    # garbage-collected and a later `select(StatusRule)` in the caller
-    # would build fresh, non-eager-loaded instances (lazy `.actions`
-    # access on those raises outside a greenlet context). Keeping them
-    # referenced from the returned dict keeps the caller's identity-map
-    # entries alive for as long as the caller holds the stats.
-    stats["_rules"] = touched
     return stats
