@@ -14,7 +14,7 @@ def test_launch_types_are_site_worker_asset_and_container():
         "site", "worker", "asset", "container", "container_type",
         "initiative", "initiative_type", "initiative_sub_type",
         "initiative_work_type", "shipping_type", "partner_type",
-        "scan", "processed_scan", "time_entry"}
+        "scan", "processed_scan", "time_entry", "device_type"}
 
 
 def test_every_record_type_points_at_a_real_resource():

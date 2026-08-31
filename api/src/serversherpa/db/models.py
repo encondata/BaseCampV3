@@ -765,6 +765,36 @@ class StatusRuleExecution(Base):
     duration_ms: Mapped[int] = mapped_column(server_default="0")
 
 
+class Device(Base):
+    """One row per piece of scanning hardware; device_type discriminates
+    (initiatives-style unification). wan_ip/lan_ip/uptime_seconds are
+    the router block — NULL for other families. serial is the future
+    registration endpoint's upsert key. Hard-delete only; deletes are
+    audited."""
+
+    __tablename__ = "devices"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    device_type: Mapped[str]
+    type_record_type: Mapped[str] = mapped_column(
+        server_default=text("'device_type'"))  # GENERATED; never written
+    name: Mapped[str] = mapped_column(CITEXT)
+    serial: Mapped[str | None] = mapped_column(CITEXT)
+    mac: Mapped[str | None] = mapped_column(CITEXT)
+    site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
+    wan_ip: Mapped[str | None]
+    lan_ip: Mapped[str | None]
+    uptime_seconds: Mapped[int | None] = mapped_column(BigInteger)
+    last_seen_at: Mapped[datetime | None]
+    raw_info: Mapped[dict] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"))
+    registered_at: Mapped[datetime] = mapped_column(
+        server_default=text("now()"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
 class Initiative(Base):
     """Unified V2 projects/events/moves. initiative_type discriminates;
     the move-only block stays NULL for the other types and is retained
