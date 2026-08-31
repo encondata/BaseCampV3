@@ -28,6 +28,7 @@ import {
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import '../styles/directory.css';
+import '../styles/profile.css';
 
 const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: 'minmax(180px, 1.4fr)', default: true },
