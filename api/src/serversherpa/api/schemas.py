@@ -1803,6 +1803,10 @@ class DeviceItem(BaseModel):
     wan_ip: str | None
     lan_ip: str | None
     model: str | None
+    version: str | None
+    kiosk_type: str | None
+    current_initiative_id: uuid.UUID | None
+    current_initiative_name: str | None
     antennas_connected: int | None
     connection_type: str | None
     scan_status: str | None
@@ -1816,6 +1820,28 @@ class DeviceItem(BaseModel):
     last_seen_at: datetime | None
     raw_info: dict
     registered_at: datetime
+
+
+class DevicePatch(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    name: str | None = None
+    kiosk_type: str | None = None
+    mac: str | None = None
+    lan_ip: str | None = None
+    version: str | None = None
+    site_id: uuid.UUID | None = None
+    current_initiative_id: uuid.UUID | None = None
+    scan_status: str | None = None
+
+
+class DeviceCreate(DevicePatch):
+    device_type: str
+    name: str = Field(min_length=1)
+
+
+class DeviceRegisterIn(BaseModel):
+    days: int = 30
 
 
 class DeviceLeaseItem(BaseModel):

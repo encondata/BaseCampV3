@@ -1,6 +1,7 @@
 """Devices — model round-trip, vocab FK enforcement (Task 1); list +
 delete routes (Task 2 appends)."""
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -8,7 +9,8 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.db.models import (
-    Asset, AuditLog, Device, DeviceDhcpLease, ProcessedScan, RawScan, Site,
+    Asset, AuditLog, Device, DeviceDhcpLease, Initiative, ProcessedScan,
+    RawScan, Site,
 )
 from tests.test_access_roles_api import login_admin
 from tests.test_notification_groups_api import login_staff
@@ -284,3 +286,180 @@ async def test_list_derives_tags_read_24h(client, db, seeded_user):
     assert by_name["dock-reader-9"]["scan_status_label"] is not None
     assert by_name["dock-reader-9"]["scan_status_color"] is not None
     assert by_name["idle-reader"]["scan_status_label"] is None
+
+
+async def test_create_kiosk_and_initiative_join(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+
+    move = Initiative(name="Rack Move 12", initiative_type="move",
+                      status="planned")
+    db.add(move)
+    await db.commit()
+
+    resp = await client.post("/devices", headers=hdrs, json={
+        "device_type": "kiosk", "name": "lobby-kiosk-2",
+        "kiosk_type": "laptop", "mac": "AA:BB:CC:00:00:99",
+        "lan_ip": "192.168.9.50", "version": "1.2.3",
+        "scan_status": "rfid_1_cage_exit",
+        "current_initiative_id": str(move.id),
+    })
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["device_type"] == "kiosk"
+    assert body["kiosk_type"] == "laptop"
+    assert body["version"] == "1.2.3"
+    assert body["current_initiative_id"] == str(move.id)
+    device_id = body["id"]
+
+    resp = await client.get("/devices", headers=hdrs,
+                            params={"device_type": "kiosk"})
+    assert resp.status_code == 200, resp.text
+    by_id = {i["id"]: i for i in resp.json()}
+    assert by_id[device_id]["current_initiative_name"] == "Rack Move 12"
+
+    resp = await client.post("/devices", headers=hdrs, json={
+        "device_type": "toaster", "name": "not-a-device"})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "bad_device_type"
+
+    resp = await client.post("/devices", headers=hdrs, json={
+        "device_type": "kiosk", "name": "bad-status-kiosk",
+        "scan_status": "nope"})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "bad_scan_status"
+
+    resp = await client.post("/devices", headers=hdrs, json={
+        "device_type": "kiosk", "name": "bad-initiative-kiosk",
+        "current_initiative_id": str(uuid.uuid4())})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "bad_initiative"
+
+
+async def test_patch_allowed_fields_and_guards(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+
+    move = Initiative(name="Rack Move 13", initiative_type="move",
+                      status="planned")
+    db.add(move)
+    await db.flush()
+    device = Device(device_type="kiosk", name="kiosk-a",
+                    current_initiative_id=move.id)
+    db.add(device)
+    await db.commit()
+    device_id = device.id
+
+    resp = await client.patch(f"/devices/{device_id}", headers=hdrs, json={
+        "name": "kiosk-a-renamed", "version": "2.0.0",
+        "current_initiative_id": None,
+    })
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["name"] == "kiosk-a-renamed"
+    assert body["version"] == "2.0.0"
+    assert body["current_initiative_id"] is None
+    assert body["current_initiative_name"] is None
+
+    row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "device", AuditLog.action == "update",
+        AuditLog.entity_id == str(device_id)))
+    assert row is not None
+    assert row.changes["name"] == {"from": "kiosk-a", "to": "kiosk-a-renamed"}
+    assert row.changes["version"] == {"from": None, "to": "2.0.0"}
+    assert row.changes["current_initiative_id"] == {
+        "from": str(move.id), "to": None}
+
+    resp = await client.patch(f"/devices/{device_id}", headers=hdrs,
+                              json={"serial": "x"})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "bad_field"
+
+    resp = await client.patch(f"/devices/{device_id}", headers=hdrs,
+                              json={"name": ""})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "bad_name"
+
+    resp = await client.patch(f"/devices/{device_id}", headers=hdrs,
+                              json={"name": None})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "bad_name"
+
+
+async def test_register_deregister_lifecycle(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+
+    device = Device(device_type="kiosk", name="kiosk-b")
+    db.add(device)
+    await db.commit()
+    device_id = device.id
+
+    before = datetime.now(UTC)
+    resp = await client.post(f"/devices/{device_id}/register", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    registered_at = datetime.fromisoformat(body["registered_at"])
+    expires_at = datetime.fromisoformat(body["token_expires_at"])
+    assert abs((registered_at - before).total_seconds()) < 10
+    assert abs((expires_at - (before + timedelta(days=30)))
+              .total_seconds()) < 10
+
+    resp = await client.post(f"/devices/{device_id}/register", headers=hdrs,
+                             json={"days": 7})
+    assert resp.status_code == 200, resp.text
+    expires_at = datetime.fromisoformat(resp.json()["token_expires_at"])
+    assert abs((expires_at - (before + timedelta(days=7)))
+              .total_seconds()) < 10
+
+    resp = await client.post(f"/devices/{device_id}/register", headers=hdrs,
+                             json={"days": 0})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "bad_days"
+
+    resp = await client.post(f"/devices/{device_id}/register", headers=hdrs,
+                             json={"days": 400})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "bad_days"
+
+    resp = await client.post(f"/devices/{device_id}/deregister",
+                             headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["token_expires_at"] is None
+    assert body["registered_at"] is not None
+
+    register_row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "device", AuditLog.action == "register",
+        AuditLog.entity_id == str(device_id)))
+    assert register_row is not None
+    deregister_row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "device", AuditLog.action == "deregister",
+        AuditLog.entity_id == str(device_id)))
+    assert deregister_row is not None
+
+
+async def test_mutations_permission_denied(client, db, seeded_user):
+    # "external" carries no grants at all — prove the mutation endpoints
+    # are permission-gated same as list/leases/delete.
+    await db.execute(text(
+        "UPDATE person_roles SET role='external' WHERE person_id=:p"),
+        {"p": seeded_user.id})
+    await db.commit()
+    hdrs = await login_staff(client, seeded_user)
+
+    resp = await client.post("/devices", headers=hdrs, json={
+        "device_type": "kiosk", "name": "denied-kiosk"})
+    assert resp.status_code == 403
+
+    device = Device(device_type="kiosk", name="kiosk-c")
+    db.add(device)
+    await db.commit()
+
+    resp = await client.patch(f"/devices/{device.id}", headers=hdrs,
+                              json={"name": "renamed"})
+    assert resp.status_code == 403
+
+    resp = await client.post(f"/devices/{device.id}/register", headers=hdrs)
+    assert resp.status_code == 403
+
+    resp = await client.post(f"/devices/{device.id}/deregister",
+                             headers=hdrs)
+    assert resp.status_code == 403
