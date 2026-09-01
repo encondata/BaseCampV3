@@ -1890,3 +1890,38 @@ class LabelVocabUpdateIn(BaseModel):
     meta: dict | None = None
     sort_order: int | None = None
     is_active: bool | None = None
+
+
+class LabelPlaceholderOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    key: str
+    label: str
+    description: str
+    sample_value: str
+    applies_to: list[str]
+    sort_order: int
+    is_active: bool
+    usage_count: int | None = None
+
+
+class LabelPlaceholderCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9_]+$")
+    label: str = Field(min_length=1, max_length=80)
+    description: str = ""
+    sample_value: str = ""
+    applies_to: list[str] = Field(default_factory=list)
+    sort_order: int = 0
+
+
+class LabelPlaceholderUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str | None = Field(None, min_length=1, max_length=80)
+    description: str | None = None
+    sample_value: str | None = None
+    applies_to: list[str] | None = None
+    sort_order: int | None = None
+    is_active: bool | None = None

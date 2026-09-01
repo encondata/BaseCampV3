@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
+    LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
     LabelVocabCreateIn, LabelVocabOut, LabelVocabUpdateIn,
 )
 from serversherpa.db.models import LabelPlaceholder, LabelTemplate, LabelVocab
@@ -126,3 +127,91 @@ async def update_vocab(
               entity_id=f"{kind}:{key}", action="update", changes=changes)
     await db.commit()
     return LabelVocabOut.model_validate(row)
+
+
+PLACEHOLDER_FIELDS = ["label", "description", "sample_value", "applies_to",
+                      "sort_order", "is_active"]
+
+
+async def _placeholder_usage(db: DbSession) -> dict[str, int]:
+    """key -> count of templates whose design JSON or code holds {key}.
+    One fetch, counted in Python — the catalog is tiny and this listing
+    is a dev-screen surface."""
+    import json as _json
+
+    bodies = []
+    for design, code in (await db.execute(
+            select(LabelTemplate.design, LabelTemplate.code))).all():
+        bodies.append(code if code is not None else _json.dumps(design))
+    keys = (await db.execute(select(LabelPlaceholder.key))).scalars().all()
+    return {k: sum(1 for b in bodies if ("{" + k + "}") in b) for k in keys}
+
+
+async def _valid_type_keys(db: DbSession) -> set[str]:
+    rows = (await db.execute(
+        select(LabelVocab.key).where(LabelVocab.kind == "type"))).scalars()
+    return set(rows)
+
+
+@router.get("/placeholders", response_model=list[LabelPlaceholderOut])
+async def list_placeholders(
+    db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+) -> list[LabelPlaceholderOut]:
+    rows = (await db.execute(select(LabelPlaceholder).order_by(
+        LabelPlaceholder.sort_order, LabelPlaceholder.key))).scalars().all()
+    usage = await _placeholder_usage(db)
+    out = []
+    for r in rows:
+        item = LabelPlaceholderOut.model_validate(r)
+        item.usage_count = usage.get(r.key, 0)
+        out.append(item)
+    return out
+
+
+@router.post("/placeholders", response_model=LabelPlaceholderOut,
+             status_code=201)
+async def create_placeholder(
+    body: LabelPlaceholderCreateIn, db: DbSession,
+    actor: AuthContext = require_permission("devtools", "add"),
+) -> LabelPlaceholderOut:
+    bad = set(body.applies_to) - await _valid_type_keys(db)
+    if bad:
+        raise _err(422, "bad_applies_to", unknown=sorted(bad))
+    if await db.get(LabelPlaceholder, body.key):
+        raise _err(409, "label_placeholder_exists")
+    row = LabelPlaceholder(**body.model_dump())
+    db.add(row)
+    audit(db, actor_id=actor.person.id, entity_type="label_placeholder",
+          entity_id=body.key, action="create",
+          changes=diff({}, snapshot(row, PLACEHOLDER_FIELDS)))
+    await db.commit()
+    return LabelPlaceholderOut.model_validate(row)
+
+
+@router.patch("/placeholders/{key}", response_model=LabelPlaceholderOut)
+async def update_placeholder(
+    key: str, body: LabelPlaceholderUpdateIn, db: DbSession,
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> LabelPlaceholderOut:
+    row = await db.get(LabelPlaceholder, key)
+    if row is None:
+        raise _err(404, "unknown_placeholder")
+    data = body.model_dump(exclude_unset=True)
+    for f, v in data.items():
+        if v is None:
+            raise _err(422, "bad_field", field=f)
+    if "applies_to" in data:
+        bad = set(data["applies_to"]) - await _valid_type_keys(db)
+        if bad:
+            raise _err(422, "bad_applies_to", unknown=sorted(bad))
+    before = snapshot(row, PLACEHOLDER_FIELDS)
+    for field, value in data.items():
+        setattr(row, field, value)
+    changes = diff(before, snapshot(row, PLACEHOLDER_FIELDS))
+    if changes:
+        row.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor.person.id, entity_type="label_placeholder",
+              entity_id=key, action="update", changes=changes)
+    await db.commit()
+    return LabelPlaceholderOut.model_validate(row)
