@@ -11,15 +11,19 @@ import { useEffect, useReducer, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import EditorCanvas from '../components/labels/EditorCanvas';
+import ElementPalette from '../components/labels/ElementPalette';
 import {
   ApiError, createLabelTemplate, getLabelTemplate, listLabelPlaceholders, listLabelVocab,
   updateLabelTemplate, type LabelPlaceholder, type LabelVocab,
 } from '../lib/api';
 import { sizeMeta, vocabOfKind } from '../lib/labels';
 import {
-  editorReducer, emptyDesign, initialEditorState, type LabelDesign,
+  editorReducer, emptyDesign, initialEditorState, newElement, type LabelDesign,
 } from '../lib/labelModel';
 import '../styles/labels.css';
+
+const ZOOM_OPTIONS = [1, 1.5, 2];
 
 const SAVE_ERROR_MAP: Record<string, string> = {
   label_template_exists: 'A template with this name already exists.',
@@ -50,6 +54,7 @@ export default function LabelTemplateEditor() {
     name: '', description: '', label_type: '', size_key: '', dpi_key: '', language_key: '',
   });
   const [state, dispatch] = useReducer(editorReducer, emptyDesign(4, 2), initialEditorState);
+  const [zoom, setZoom] = useState(1);
   const [codeText, setCodeText] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -145,6 +150,8 @@ export default function LabelTemplateEditor() {
   const sizeOptions = vocabOfKind(vocab, 'size');
   const dpiOptions = vocabOfKind(vocab, 'dpi');
   const languageOptions = vocabOfKind(vocab, 'language');
+  const sizeRow = vocab.find((v) => v.kind === 'size' && v.key === meta.size_key);
+  const hasTab = sizeRow ? sizeMeta(sizeRow).has_tab : false;
 
   return (
     <div className="portal-page">
@@ -176,6 +183,23 @@ export default function LabelTemplateEditor() {
                 onChange={(e) => setMeta((m) => ({ ...m, language_key: e.target.value }))}>
           {languageOptions.map((v) => <option key={v.key} value={v.key}>{v.label}</option>)}
         </select>
+        {kind === 'design' && (
+          <>
+            <label htmlFor="tpl-zoom">Zoom</label>
+            <select id="tpl-zoom" value={zoom}
+                    onChange={(e) => setZoom(Number(e.target.value))}>
+              {ZOOM_OPTIONS.map((z) => <option key={z} value={z}>{z}x</option>)}
+            </select>
+            <button type="button" className="mini-btn" disabled={state.past.length === 0}
+                    onClick={() => dispatch({ type: 'undo' })}>
+              Undo
+            </button>
+            <button type="button" className="mini-btn" disabled={state.future.length === 0}
+                    onClick={() => dispatch({ type: 'redo' })}>
+              Redo
+            </button>
+          </>
+        )}
         <button type="button" className="btn-solid"
                 disabled={saving || !can('labels', isCreate ? 'add' : 'change')}
                 onClick={() => void save()}>
@@ -196,8 +220,22 @@ export default function LabelTemplateEditor() {
       ) : (
         <>
           <div className="label-editor-body">
-            <div data-slot="palette" data-placeholder-count={placeholders.length} />
-            <div data-slot="canvas" />
+            <ElementPalette
+              onAdd={(t) => dispatch({ type: 'add', element: newElement(t, state.design) })}
+              layers={state.design.elements}
+              selectedId={state.selectedId}
+              onSelect={(elId) => dispatch({ type: 'select', id: elId })}
+              onReorder={(elId, dir) => dispatch({ type: 'reorder', id: elId, dir })}
+              onRemove={(elId) => dispatch({ type: 'remove', id: elId })}
+            />
+            <EditorCanvas
+              design={state.design}
+              selectedId={state.selectedId}
+              hasTab={hasTab}
+              zoom={zoom}
+              onSelect={(elId) => dispatch({ type: 'select', id: elId })}
+              onPatch={(elId, patch) => dispatch({ type: 'patch', id: elId, patch })}
+            />
             <div data-slot="props" />
           </div>
           <div data-slot="code-panel" />

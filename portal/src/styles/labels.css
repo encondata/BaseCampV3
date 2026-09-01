@@ -10,3 +10,34 @@
 .label-editor-top input, .label-editor-top select { min-width: 0; }
 .label-editor-body { display: grid; grid-template-columns: 180px 1fr 260px; gap: 14px; align-items: start; }
 .label-editor-code textarea { width: 100%; font-family: var(--mono, monospace); }
+
+/* EditorCanvas — Task 16 */
+.lbl-canvas { display: block; max-width: 100%; }
+.lbl-bg { fill: #fff; stroke: var(--line, #ccc); stroke-width: 0.01; }
+.lbl-grid { stroke: #eef1f4; stroke-width: 0.005; }
+.lbl-tab { fill: none; stroke: #c9d2da; stroke-dasharray: 0.05 0.05; stroke-width: 0.01; }
+.lbl-barcode { fill: #f4f6f8; stroke: #97a3ad; stroke-width: 0.008; }
+.lbl-qr { fill: #f4f6f8; stroke: #97a3ad; stroke-width: 0.008; }
+.lbl-selected { fill: none; stroke: var(--accent, #2563eb); stroke-dasharray: 0.06 0.04; stroke-width: 0.015; }
+
+/* ElementPalette — Task 16 */
+.lbl-palette { display: flex; flex-direction: column; gap: 6px; }
+/* directory.css/initiatives.css scope .eyebrow-sm to their own container — mirror it here */
+.lbl-palette .eyebrow-sm {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  margin: 10px 0 6px;
+}
+.lbl-layers { display: flex; flex-direction: column; gap: 2px; }
+.lbl-layer {
+  display: flex; align-items: center; gap: 4px;
+  padding: 4px 6px; border-radius: 6px; cursor: pointer;
+  font-size: 12px;
+}
+.lbl-layer:hover { background: var(--surface-2, #f4f6f8); }
+.lbl-layer.on { background: var(--accent-soft, #e8f0fe); }
+.lbl-layer-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lbl-layer .mini-btn { padding: 0 6px; height: 22px; font-size: 11px; }
