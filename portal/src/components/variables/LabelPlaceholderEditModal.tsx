@@ -19,6 +19,7 @@ import {
   ApiError, createLabelPlaceholder, updateLabelPlaceholder,
   type LabelPlaceholder, type LabelVocab,
 } from '../../lib/api';
+import { parseSortOrder } from '../../lib/variables';
 
 interface Props {
   value: LabelPlaceholder | null;   // null = create mode
@@ -55,11 +56,6 @@ function formFromValue(p: LabelPlaceholder): Form {
     sample_value: p.sample_value, applies_to: p.applies_to,
     sort_order: String(p.sort_order), is_active: p.is_active,
   };
-}
-
-function parseSortOrder(raw: string): number | null {
-  if (!/^\d+$/.test(raw.trim())) return null;
-  return Number(raw.trim());
 }
 
 const KEY_PATTERN = /^[a-z0-9_]+$/;

@@ -18,6 +18,7 @@
 import { useState, type FormEvent } from 'react';
 
 import { ApiError, createLabelVocab, updateLabelVocab, type LabelVocab } from '../../lib/api';
+import { parseSortOrder } from '../../lib/variables';
 import { sizeMeta, type VocabKind } from '../../lib/labels';
 
 interface Props {
@@ -72,11 +73,6 @@ function formFromValue(v: LabelVocab): Form {
     key: v.key, label: v.label, description: v.description,
     sort_order: String(v.sort_order), is_active: v.is_active,
   };
-}
-
-function parseSortOrder(raw: string): number | null {
-  if (!/^\d+$/.test(raw.trim())) return null;
-  return Number(raw.trim());
 }
 
 function buildMeta(kind: VocabKind, form: Form): Record<string, unknown> | null {
