@@ -29,7 +29,8 @@ def test_escp_orders_by_y_and_substitutes():
     assert out.index("ACME") < out.index("SN C7X")
     assert out.index("SN C7X") < out.index("10482")
     assert f"{ESC}E" in out and f"{ESC}F" in out  # bold on/off around ACME
-    assert "\x02" not in out.split("10482")[0].rsplit(ESC, 1)[-1]
+    # barcode height byte: h=0.25in -> round(0.25*180)=45 -> chr(45)
+    assert f"{ESC}it5h{chr(45)}r0z2b10482\\\\" in out
 
 
 def test_escp_keeps_tokens_without_subs():
