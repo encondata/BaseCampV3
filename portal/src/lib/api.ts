@@ -2775,3 +2775,154 @@ export async function listDeviceLeases(deviceId: string): Promise<DeviceLease[]>
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
+
+// ── Labels ───────────────────────────────────────────────────────────
+
+export interface LabelVocab {
+  kind: string; key: string; label: string; description: string;
+  meta: Record<string, unknown>; sort_order: number; is_active: boolean;
+  usage_count: number | null;
+}
+
+export interface LabelPlaceholder {
+  key: string; label: string; description: string; sample_value: string;
+  applies_to: string[]; sort_order: number; is_active: boolean;
+  usage_count: number | null;
+}
+
+export interface LabelTemplate {
+  id: string; name: string; description: string; label_type: string;
+  size_key: string; dpi_key: string; language_key: string;
+  kind: 'design' | 'code'; design: Record<string, unknown> | null;
+  code: string | null; version: number; is_active: boolean;
+  created_at: string; updated_at: string;
+}
+
+export async function listLabelVocab(kind?: string): Promise<LabelVocab[]> {
+  const resp = await apiFetch(kind ? `/labels/vocab?kind=${kind}` : '/labels/vocab');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createLabelVocab(
+  body: Record<string, unknown>,
+): Promise<LabelVocab> {
+  const resp = await apiFetch('/labels/vocab', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateLabelVocab(
+  kind: string, key: string, body: Record<string, unknown>,
+): Promise<LabelVocab> {
+  const resp = await apiFetch(`/labels/vocab/${kind}/${key}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listLabelPlaceholders(): Promise<LabelPlaceholder[]> {
+  const resp = await apiFetch('/labels/placeholders');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createLabelPlaceholder(
+  body: Record<string, unknown>,
+): Promise<LabelPlaceholder> {
+  const resp = await apiFetch('/labels/placeholders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateLabelPlaceholder(
+  key: string, body: Record<string, unknown>,
+): Promise<LabelPlaceholder> {
+  const resp = await apiFetch(`/labels/placeholders/${key}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listLabelTemplates(): Promise<LabelTemplate[]> {
+  const resp = await apiFetch('/labels/templates');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getLabelTemplate(id: string): Promise<LabelTemplate> {
+  const resp = await apiFetch(`/labels/templates/${id}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createLabelTemplate(
+  body: Record<string, unknown>,
+): Promise<LabelTemplate> {
+  const resp = await apiFetch('/labels/templates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateLabelTemplate(
+  id: string, body: Record<string, unknown>,
+): Promise<LabelTemplate> {
+  const resp = await apiFetch(`/labels/templates/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function deleteLabelTemplate(id: string): Promise<void> {
+  const resp = await apiFetch(`/labels/templates/${id}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function compileLabel(body: {
+  kind: 'design' | 'code';
+  design?: Record<string, unknown> | null;
+  code?: string | null;
+  size_key: string; dpi_key: string; language_key: string;
+  mode: 'placeholders' | 'sample';
+}): Promise<{ code: string }> {
+  const resp = await apiFetch('/labels/templates/compile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function previewZplRequest(body: {
+  zpl: string; size_key: string; dpi_key: string;
+}): Promise<Blob> {
+  const resp = await apiFetch('/labels/preview/zpl', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.blob();
+}
