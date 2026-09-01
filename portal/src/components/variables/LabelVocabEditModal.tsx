@@ -207,13 +207,13 @@ export default function LabelVocabEditModal({ kind, value, canChange, onClose, o
                 <>
                   <div>
                     <label>Width (in) *</label>
-                    <input type="number" min="0.1" step="0.125" value={form.width_in}
+                    <input type="number" min="0.1" step="any" value={form.width_in}
                            disabled={locked}
                            onChange={(e) => setField('width_in', e.target.value)} />
                   </div>
                   <div>
                     <label>Height (in) *</label>
-                    <input type="number" min="0.1" step="0.125" value={form.height_in}
+                    <input type="number" min="0.1" step="any" value={form.height_in}
                            disabled={locked}
                            onChange={(e) => setField('height_in', e.target.value)} />
                   </div>
