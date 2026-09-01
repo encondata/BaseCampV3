@@ -18,7 +18,13 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.alter_column("devices", "kiosk_type", new_column_name="sub_type")
+    op.execute("""
+        COMMENT ON COLUMN devices.sub_type IS
+          'per-family type: kiosk laptop/pi; handheld android/ios/zebra'
+    """)
 
 
 def downgrade() -> None:
     op.alter_column("devices", "sub_type", new_column_name="kiosk_type")
+    op.execute(
+        "COMMENT ON COLUMN devices.kiosk_type IS 'kiosk block; laptop / pi'")
