@@ -15,9 +15,10 @@ import CodePanel from '../components/labels/CodePanel';
 import EditorCanvas from '../components/labels/EditorCanvas';
 import ElementPalette from '../components/labels/ElementPalette';
 import PropertiesPanel from '../components/labels/PropertiesPanel';
+import TagInput from '../components/TagInput';
 import {
   ApiError, createLabelTemplate, getLabelTemplate, listLabelPlaceholders, listLabelVocab,
-  updateLabelTemplate, type LabelPlaceholder, type LabelVocab,
+  listSites, updateLabelTemplate, type LabelPlaceholder, type LabelVocab, type SiteItem,
 } from '../lib/api';
 import { sizeMeta, vocabOfKind, type VocabKind } from '../lib/labels';
 import {
@@ -52,6 +53,8 @@ export default function LabelTemplateEditor() {
     (searchParams.get('kind') === 'code' ? 'code' : 'design'));
   const [vocab, setVocab] = useState<LabelVocab[] | null>(null);
   const [placeholders, setPlaceholders] = useState<LabelPlaceholder[]>([]);
+  const [sites, setSites] = useState<SiteItem[]>([]);
+  const [siteIds, setSiteIds] = useState<string[]>([]);
   const [meta, setMeta] = useState<Meta>({
     name: '', description: '', label_type: '', size_key: '', dpi_key: '', language_key: '',
   });
@@ -66,10 +69,13 @@ export default function LabelTemplateEditor() {
     let cancelled = false;
     (async () => {
       try {
-        const [v, p] = await Promise.all([listLabelVocab(), listLabelPlaceholders()]);
+        const [v, p, s] = await Promise.all([
+          listLabelVocab(), listLabelPlaceholders(), listSites().catch(() => []),
+        ]);
         if (cancelled) return;
         setVocab(v);
         setPlaceholders(p);
+        setSites(s);
 
         if (id) {
           const t = await getLabelTemplate(id);
@@ -79,6 +85,7 @@ export default function LabelTemplateEditor() {
             name: t.name, description: t.description, label_type: t.label_type,
             size_key: t.size_key, dpi_key: t.dpi_key, language_key: t.language_key,
           });
+          setSiteIds(t.site_ids);
           setCodeText(t.code ?? '');
           if (t.kind === 'design' && t.design) {
             dispatch({ type: 'replace', design: t.design as unknown as LabelDesign });
@@ -115,6 +122,7 @@ export default function LabelTemplateEditor() {
     const body = {
       ...meta,
       kind,
+      site_ids: siteIds,
       design: kind === 'design' ? (state.design as unknown as Record<string, unknown>) : null,
       code: kind === 'code' ? codeText : null,
     };
@@ -220,6 +228,13 @@ export default function LabelTemplateEditor() {
           Save
         </button>
         {error && <span className="pf-error">{error}</span>}
+      </div>
+
+      <div className="label-editor-sites">
+        <span className="eyebrow-sm">Sites</span>
+        <TagInput value={siteIds} onChange={setSiteIds}
+                  options={sites.map((s) => ({ value: s.id, label: s.name }))}
+                  placeholder={siteIds.length ? 'Add a site…' : 'All sites — add to narrow'} />
       </div>
 
       {kind === 'code' ? (

@@ -40,6 +40,7 @@ vi.mock('../auth/AuthContext', () => ({
 const api = vi.hoisted(() => ({
   listLabelVocab: vi.fn(),
   listLabelPlaceholders: vi.fn(),
+  listSites: vi.fn(),
   getLabelTemplate: vi.fn(),
   createLabelTemplate: vi.fn(),
   updateLabelTemplate: vi.fn(),
@@ -67,11 +68,14 @@ const PLACEHOLDERS: LabelPlaceholder[] = [
     applies_to: ['top', 'front'], sort_order: 0, is_active: true, usage_count: null },
 ];
 
+const SITES = [{ id: 's1', name: 'NAP7' }, { id: 's2', name: 'NAP11' }] as never;
+
 beforeEach(() => {
   vi.clearAllMocks();
   auth.can = () => true;
   api.listLabelVocab.mockResolvedValue(VOCAB);
   api.listLabelPlaceholders.mockResolvedValue(PLACEHOLDERS);
+  api.listSites.mockResolvedValue(SITES);
   api.compileLabel.mockResolvedValue({ code: '^XA^FS^XZ' });
 });
 
@@ -117,7 +121,7 @@ it('edit route loads the template and patches on save', async () => {
     id: 't1', name: 'Front tag', description: '', label_type: 'front',
     size_key: '4x2', dpi_key: '203', language_key: 'zpl', kind: 'code',
     design: null, code: '^XA^XZ', version: 2, is_active: true,
-    created_at: '', updated_at: '' });
+    site_ids: [], created_at: '', updated_at: '' });
   api.updateLabelTemplate.mockResolvedValue({ id: 't1' });
   renderAt('/labels/templates/t1/edit');
   await waitFor(() =>
@@ -134,7 +138,7 @@ it('edit route with a deactivated current vocab value renders it selected', asyn
     id: 't1', name: 'Old size tag', description: '', label_type: 'top',
     size_key: '9x9', dpi_key: '203', language_key: 'zpl', kind: 'code',
     design: null, code: '^XA^XZ', version: 3, is_active: true,
-    created_at: '', updated_at: '' });
+    site_ids: [], created_at: '', updated_at: '' });
   api.listLabelVocab.mockResolvedValue([
     ...VOCAB,
     { kind: 'size', key: '9x9', label: '9 x 9 in', description: '',
@@ -157,4 +161,29 @@ it('save error surfaces the pf-error', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Save' }));
   await waitFor(() =>
     expect(screen.queryByText('A template with this name already exists.')).not.toBeNull());
+});
+
+it('edit loads site chips and save sends site_ids', async () => {
+  api.getLabelTemplate.mockResolvedValue({
+    id: 't1', name: 'Front tag', description: '', label_type: 'front',
+    size_key: '4x2', dpi_key: '203', language_key: 'zpl', kind: 'code',
+    design: null, code: '^XA^XZ', version: 2, is_active: true,
+    site_ids: ['s1'], created_at: '', updated_at: '' });
+  api.updateLabelTemplate.mockResolvedValue({ id: 't1' });
+  renderAt('/labels/templates/t1/edit');
+  await waitFor(() => expect(screen.queryByText('NAP7')).not.toBeNull());
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledWith(
+    't1', expect.objectContaining({ site_ids: ['s1'] })));
+});
+
+it('new template defaults to no sites (global)', async () => {
+  api.createLabelTemplate.mockResolvedValue({ id: 't-new', kind: 'code' });
+  renderAt('/labels/templates/new?kind=code');
+  await waitFor(() => expect(screen.queryByLabelText('Name')).not.toBeNull());
+  await userEvent.type(screen.getByLabelText('Name'), 'g');
+  await userEvent.type(screen.getByLabelText('Template code'), 'x');
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.createLabelTemplate).toHaveBeenCalled());
+  expect(api.createLabelTemplate.mock.calls[0][0].site_ids).toEqual([]);
 });

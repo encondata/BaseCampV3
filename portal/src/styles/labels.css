@@ -8,6 +8,17 @@
 /* Label editor layout — Tasks 15-18 */
 .label-editor-top { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
 .label-editor-top input, .label-editor-top select { min-width: 0; }
+.label-editor-sites { display: flex; align-items: center; gap: 10px; margin: -6px 0 12px; }
+/* directory.css/initiatives.css scope .eyebrow-sm to their own container — mirror it here */
+.label-editor-sites .eyebrow-sm {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  margin: 0;
+}
+.label-editor-sites .tag-input-wrap { flex: 1; max-width: 520px; }
 .label-editor-body { display: grid; grid-template-columns: 180px 1fr 260px; gap: 14px; align-items: start; }
 .label-editor-code textarea { width: 100%; font-family: var(--mono, monospace); }
 
