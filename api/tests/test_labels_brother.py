@@ -24,7 +24,7 @@ ESC = "\x1b"
 
 def test_escp_orders_by_y_and_substitutes():
     out = compile_escp(DESIGN, {"serial_number": "C7X", "asset_id": "10482"})
-    assert out.startswith(f"{ESC}@{ESC}ia\x00")
+    assert out.startswith(f"{ESC}@{ESC}ia\\x00")
     # y-order: ACME (0.1) before SN (0.5) before barcode (0.7)
     assert out.index("ACME") < out.index("SN C7X")
     assert out.index("SN C7X") < out.index("10482")
@@ -42,7 +42,7 @@ def test_escp_keeps_tokens_without_subs():
 def test_ptouch_stream_shape():
     out = compile_ptouch(DESIGN, {"serial_number": "C7X", "asset_id": "10482"})
     assert out.startswith("^II^TS001")
-    assert "^ONobj1\x00" in out and "^ONobj3\x00" in out
+    assert "^ONobj1\\x00" in out and "^ONobj3\\x00" in out
     assert out.endswith("^FF")
     assert "SN C7X" in out and "10482" in out
 
