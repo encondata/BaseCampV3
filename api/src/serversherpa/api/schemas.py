@@ -1802,6 +1802,13 @@ class DeviceItem(BaseModel):
     site_name: str | None
     wan_ip: str | None
     lan_ip: str | None
+    model: str | None
+    antennas_connected: int | None
+    connection_type: str | None
+    scan_status: str | None
+    scan_status_label: str | None
+    scan_status_color: str | None
+    tags_read_24h: int
     vpn_status: str | None
     token_expires_at: datetime | None
     connected_count: int

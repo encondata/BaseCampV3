@@ -770,7 +770,10 @@ class Device(Base):
     (initiatives-style unification). wan_ip/lan_ip/uptime_seconds are
     the router block — NULL for other families. serial is the future
     registration endpoint's upsert key. Hard-delete only; deletes are
-    audited."""
+    audited. A fixed reader's name = its reported raw_scans.device_id
+    (the tags-read derivation key) — renaming a reader zeroes its
+    tags-read count until new scans report under the new name. A fixed
+    reader's lan_ip doubles as its network address."""
 
     __tablename__ = "devices"
 
@@ -780,11 +783,17 @@ class Device(Base):
     type_record_type: Mapped[str] = mapped_column(
         server_default=text("'device_type'"))  # GENERATED; never written
     name: Mapped[str] = mapped_column(CITEXT)
+    model: Mapped[str | None]
     serial: Mapped[str | None] = mapped_column(CITEXT)
     mac: Mapped[str | None] = mapped_column(CITEXT)
     site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
     wan_ip: Mapped[str | None]
     lan_ip: Mapped[str | None]
+    antennas_connected: Mapped[int | None] = mapped_column(SmallInteger)
+    connection_type: Mapped[str | None]
+    scan_status: Mapped[str | None]
+    scan_status_record_type: Mapped[str] = mapped_column(
+        server_default=text("'asset'"))  # GENERATED; never written
     vpn_status: Mapped[str | None]
     uptime_seconds: Mapped[int | None] = mapped_column(BigInteger)
     last_seen_at: Mapped[datetime | None]

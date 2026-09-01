@@ -7,7 +7,9 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
-from serversherpa.db.models import AuditLog, Device, DeviceDhcpLease, Site
+from serversherpa.db.models import (
+    Asset, AuditLog, Device, DeviceDhcpLease, ProcessedScan, RawScan, Site,
+)
 from tests.test_access_roles_api import login_admin
 from tests.test_notification_groups_api import login_staff
 
@@ -222,3 +224,63 @@ async def test_leases_endpoint_ordering_404_403(client, db, seeded_user):
     hdrs_external = await login_staff(client, seeded_user)
     resp = await client.get(f"/devices/{d.id}/leases", headers=hdrs_external)
     assert resp.status_code == 403
+
+
+async def test_reader_fields_round_trip_and_fk(db):
+    r = Device(device_type="fixed_reader", name="dock-reader-1",
+               model="FX9600", antennas_connected=8,
+               connection_type="api", scan_status="rfid_1_cage_exit")
+    db.add(r)
+    await db.commit()
+    got = await db.scalar(select(Device).where(Device.id == r.id))
+    assert got.scan_status == "rfid_1_cage_exit"
+    assert got.antennas_connected == 8
+    db.add(Device(device_type="fixed_reader", name="bad",
+                  scan_status="not-a-status"))
+    with pytest.raises(IntegrityError):
+        await db.commit()
+
+
+async def test_list_derives_tags_read_24h(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+
+    now = datetime.now(UTC)
+    r = Device(device_type="fixed_reader", name="dock-reader-9",
+               scan_status="rfid_1_cage_exit")
+    other = Device(device_type="fixed_reader", name="idle-reader")
+    db.add_all([r, other])
+    await db.flush()
+    a = Asset(serial_number="TAGSCAN-1")
+    db.add(a)
+    await db.flush()
+    db.add_all([
+        # counted: raw, in-window, matching device_id
+        RawScan(scanned_value="T1", scan_type="rfid",
+                scanned_at=now - timedelta(hours=1),
+                device_id="dock-reader-9"),
+        RawScan(scanned_value="T2", scan_type="rfid",
+                scanned_at=now - timedelta(hours=23),
+                device_id="dock-reader-9"),
+        # NOT counted: outside the window
+        RawScan(scanned_value="T3", scan_type="rfid",
+                scanned_at=now - timedelta(hours=25),
+                device_id="dock-reader-9"),
+        # NOT counted: different device
+        RawScan(scanned_value="T4", scan_type="rfid",
+                scanned_at=now - timedelta(hours=1),
+                device_id="someone-else"),
+        # counted: processed scan, in-window, matching device_id
+        ProcessedScan(scanned_value="T5", scan_type="rfid",
+                      scanned_at=now - timedelta(hours=2),
+                      processed_at=now, device_id="dock-reader-9",
+                      match_type="asset", asset_id=a.id),
+    ])
+    await db.commit()
+    resp = await client.get("/devices", headers=hdrs,
+                            params={"device_type": "fixed_reader"})
+    by_name = {i["name"]: i for i in resp.json()}
+    assert by_name["dock-reader-9"]["tags_read_24h"] == 3   # 2 raw + 1 processed
+    assert by_name["idle-reader"]["tags_read_24h"] == 0
+    assert by_name["dock-reader-9"]["scan_status_label"] is not None
+    assert by_name["dock-reader-9"]["scan_status_color"] is not None
+    assert by_name["idle-reader"]["scan_status_label"] is None
