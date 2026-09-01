@@ -4,3 +4,9 @@
  *  holds what's specific to the Labels pages themselves. Starts near-
  *  empty at Task 13 (Templates directory list) and grows through the
  *  Task 15-18 template builder / print / generate pages. */
+
+/* Label editor layout — Tasks 15-18 */
+.label-editor-top { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+.label-editor-top input, .label-editor-top select { min-width: 0; }
+.label-editor-body { display: grid; grid-template-columns: 180px 1fr 260px; gap: 14px; align-items: start; }
+.label-editor-code textarea { width: 100%; font-family: var(--mono, monospace); }

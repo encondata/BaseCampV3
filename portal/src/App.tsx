@@ -21,6 +21,7 @@ import ImportMoveAssets from './pages/ImportMoveAssets';
 import Initiatives from './pages/Initiatives';
 import InitiativeDetailPage from './pages/InitiativeDetail';
 import KioskDevices from './pages/KioskDevices';
+import LabelTemplateEditor from './pages/LabelTemplateEditor';
 import LabelTemplates from './pages/LabelTemplates';
 import MoveAssetDetail from './pages/MoveAssetDetail';
 import Notifications from './pages/Notifications';
@@ -133,6 +134,10 @@ export default function App() {
             <Route path="/labels/templates" element={
               <ProtectedRoute resource="labels"><LabelTemplates /></ProtectedRoute>
             } />
+            <Route path="/labels/templates/new" element={
+              <ProtectedRoute resource="labels"><LabelTemplateEditor /></ProtectedRoute>} />
+            <Route path="/labels/templates/:id/edit" element={
+              <ProtectedRoute resource="labels"><LabelTemplateEditor /></ProtectedRoute>} />
             <Route path="/labels/generate" element={
               <ProtectedRoute resource="labels">
                 <Placeholder eyebrow="Labels" title="Generate Labels"

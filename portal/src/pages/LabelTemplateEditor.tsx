@@ -1,0 +1,208 @@
+/**
+ * Label template editor — full-page builder shell. Top bar: name +
+ * vocab-driven type/size/DPI/language selectors + Save. Design kind:
+ * palette / canvas / properties (slots filled by Tasks 16-17) over a
+ * CodePanel (Task 18). Code kind: a mono textarea (this file). The
+ * element model lives in a useReducer over lib/labelModel; size changes
+ * dispatch setSize so the canvas outline follows the size vocab row.
+ */
+
+import { useEffect, useReducer, useState } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+
+import { useAuth } from '../auth/AuthContext';
+import {
+  ApiError, createLabelTemplate, getLabelTemplate, listLabelPlaceholders, listLabelVocab,
+  updateLabelTemplate, type LabelPlaceholder, type LabelVocab,
+} from '../lib/api';
+import { sizeMeta, vocabOfKind } from '../lib/labels';
+import {
+  editorReducer, emptyDesign, initialEditorState, type LabelDesign,
+} from '../lib/labelModel';
+import '../styles/labels.css';
+
+const SAVE_ERROR_MAP: Record<string, string> = {
+  label_template_exists: 'A template with this name already exists.',
+  bad_design: 'The design has invalid elements.',
+  unknown_vocab: 'One of the selected options no longer exists.',
+};
+
+interface Meta {
+  name: string;
+  description: string;
+  label_type: string;
+  size_key: string;
+  dpi_key: string;
+  language_key: string;
+}
+
+export default function LabelTemplateEditor() {
+  const { id } = useParams();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { can } = useAuth();
+  const isCreate = !id;
+  const [kind, setKind] = useState<'design' | 'code'>(
+    (searchParams.get('kind') === 'code' ? 'code' : 'design'));
+  const [vocab, setVocab] = useState<LabelVocab[] | null>(null);
+  const [placeholders, setPlaceholders] = useState<LabelPlaceholder[]>([]);
+  const [meta, setMeta] = useState<Meta>({
+    name: '', description: '', label_type: '', size_key: '', dpi_key: '', language_key: '',
+  });
+  const [state, dispatch] = useReducer(editorReducer, emptyDesign(4, 2), initialEditorState);
+  const [codeText, setCodeText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [v, p] = await Promise.all([listLabelVocab(), listLabelPlaceholders()]);
+        if (cancelled) return;
+        setVocab(v);
+        setPlaceholders(p);
+
+        if (id) {
+          const t = await getLabelTemplate(id);
+          if (cancelled) return;
+          setKind(t.kind);
+          setMeta({
+            name: t.name, description: t.description, label_type: t.label_type,
+            size_key: t.size_key, dpi_key: t.dpi_key, language_key: t.language_key,
+          });
+          setCodeText(t.code ?? '');
+          if (t.kind === 'design' && t.design) {
+            dispatch({ type: 'replace', design: t.design as unknown as LabelDesign });
+          }
+        } else {
+          setMeta((m) => ({
+            ...m,
+            label_type: vocabOfKind(v, 'type')[0]?.key ?? '',
+            size_key: vocabOfKind(v, 'size')[0]?.key ?? '',
+            dpi_key: vocabOfKind(v, 'dpi')[0]?.key ?? '',
+            language_key: vocabOfKind(v, 'language')[0]?.key ?? '',
+          }));
+        }
+      } catch {
+        if (!cancelled) setLoadError("Couldn't load the label editor.");
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  const handleSizeChange = (sizeKey: string) => {
+    setMeta((m) => ({ ...m, size_key: sizeKey }));
+    const row = (vocab ?? []).find((v) => v.kind === 'size' && v.key === sizeKey);
+    if (row) {
+      const sm = sizeMeta(row);
+      dispatch({ type: 'setSize', w: sm.width_in, h: sm.height_in });
+    }
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setError('');
+    const body = {
+      ...meta,
+      kind,
+      design: kind === 'design' ? (state.design as unknown as Record<string, unknown>) : null,
+      code: kind === 'code' ? codeText : null,
+    };
+    try {
+      if (isCreate) {
+        const created = await createLabelTemplate(body);
+        navigate(`/labels/templates/${created.id}/edit`, { replace: true });
+      } else {
+        await updateLabelTemplate(id, body);
+      }
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(SAVE_ERROR_MAP[err.code] ?? 'Save failed.');
+      } else {
+        setError('Network error.');
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loadError) {
+    return (
+      <div className="portal-page">
+        <div className="dir-empty">{loadError}</div>
+      </div>
+    );
+  }
+
+  if (!vocab) {
+    return <div className="portal-page" />;
+  }
+
+  const typeOptions = vocabOfKind(vocab, 'type');
+  const sizeOptions = vocabOfKind(vocab, 'size');
+  const dpiOptions = vocabOfKind(vocab, 'dpi');
+  const languageOptions = vocabOfKind(vocab, 'language');
+
+  return (
+    <div className="portal-page">
+      <div className="label-editor-top">
+        <button type="button" className="mini-btn" onClick={() => navigate('/labels/templates')}>
+          ← Back
+        </button>
+        <input id="tpl-name" aria-label="Name" value={meta.name}
+               onChange={(e) => setMeta((m) => ({ ...m, name: e.target.value }))} />
+        <input id="tpl-description" aria-label="Description" value={meta.description}
+               onChange={(e) => setMeta((m) => ({ ...m, description: e.target.value }))} />
+        <label htmlFor="tpl-type">Type</label>
+        <select id="tpl-type" value={meta.label_type}
+                onChange={(e) => setMeta((m) => ({ ...m, label_type: e.target.value }))}>
+          {typeOptions.map((v) => <option key={v.key} value={v.key}>{v.label}</option>)}
+        </select>
+        <label htmlFor="tpl-size">Size</label>
+        <select id="tpl-size" value={meta.size_key}
+                onChange={(e) => handleSizeChange(e.target.value)}>
+          {sizeOptions.map((v) => <option key={v.key} value={v.key}>{v.label}</option>)}
+        </select>
+        <label htmlFor="tpl-dpi">DPI</label>
+        <select id="tpl-dpi" value={meta.dpi_key}
+                onChange={(e) => setMeta((m) => ({ ...m, dpi_key: e.target.value }))}>
+          {dpiOptions.map((v) => <option key={v.key} value={v.key}>{v.label}</option>)}
+        </select>
+        <label htmlFor="tpl-language">Language</label>
+        <select id="tpl-language" value={meta.language_key}
+                onChange={(e) => setMeta((m) => ({ ...m, language_key: e.target.value }))}>
+          {languageOptions.map((v) => <option key={v.key} value={v.key}>{v.label}</option>)}
+        </select>
+        <button type="button" className="btn-solid"
+                disabled={saving || !can('labels', isCreate ? 'add' : 'change')}
+                onClick={() => void save()}>
+          Save
+        </button>
+        {error && <span className="pf-error">{error}</span>}
+      </div>
+
+      {kind === 'code' ? (
+        <>
+          <div className="label-editor-code">
+            <label htmlFor="tpl-code">Template code</label>
+            <textarea id="tpl-code" className="mono" rows={18} value={codeText}
+                      onChange={(e) => setCodeText(e.target.value)} />
+          </div>
+          <div data-slot="code-panel" data-placeholder-count={placeholders.length} />
+        </>
+      ) : (
+        <>
+          <div className="label-editor-body">
+            <div data-slot="palette" data-placeholder-count={placeholders.length} />
+            <div data-slot="canvas" />
+            <div data-slot="props" />
+          </div>
+          <div data-slot="code-panel" />
+        </>
+      )}
+    </div>
+  );
+}
