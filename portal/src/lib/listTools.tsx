@@ -160,7 +160,7 @@ const CHECK = (
        strokeLinecap="round" strokeLinejoin="round"><path d="M2 6.5 4.8 9.5 10 2.8" /></svg>
 );
 
-function useOutsideClose<T extends HTMLElement>(onClose: () => void) {
+export function useOutsideClose<T extends HTMLElement>(onClose: () => void) {
   const ref = useRef<T>(null);
   useEffect(() => {
     const onDown = (e: MouseEvent) => {

@@ -8,12 +8,13 @@
  *
  *  Unlike Routers/FixedReaders, kiosks are provisioned from the portal
  *  (no device-agent self-registration yet), so this page owns the full
- *  create/edit/register lifecycle: "+ New kiosk" opens KioskEditModal in
- *  create mode; row Edit opens it prefilled; Register/Renew opens
+ *  create/edit/register lifecycle: "+ New kiosk" opens the shared
+ *  DeviceEditModal (kiosk deviceType/noun/typeOptions) in create mode;
+ *  row Actions → Edit opens it prefilled; Register/Renew opens
  *  RegisterDaysModal → registerDevice; De-Register confirms then
- *  deregisterDevice. Row action gating mirrors the API's permission
- *  split — 'add' for create, 'change' for edit/register/deregister,
- *  'delete' for delete. */
+ *  deregisterDevice. Row actions live behind the shared RowActionsMenu.
+ *  Row action gating mirrors the API's permission split — 'add' for
+ *  create, 'change' for edit/register/deregister, 'delete' for delete. */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
@@ -26,7 +27,7 @@ import {
   usePersistentListState, type CellText,
 } from '../lib/columnMenu';
 import {
-  deviceCellText, deviceSearchText, deviceSortValue, kioskTypeLabel, registrationLabel,
+  deviceCellText, deviceSearchText, deviceSortValue, registrationLabel, subTypeLabel,
   tokenExpiryState,
 } from '../lib/devices';
 import {
@@ -35,8 +36,9 @@ import {
   type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
-import KioskEditModal from '../components/hardware/KioskEditModal';
+import DeviceEditModal from '../components/hardware/DeviceEditModal';
 import RegisterDaysModal from '../components/hardware/RegisterDaysModal';
+import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';  /* .set-note */
@@ -44,7 +46,7 @@ import '../styles/hardware.css';
 
 const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: 'minmax(150px, 1.2fr)', default: true },
-  { key: 'kiosk_type', label: 'Type', width: '90px', default: true },
+  { key: 'sub_type', label: 'Type', width: '90px', default: true },
   { key: 'ip', label: 'IP', width: 'minmax(110px, 1fr)', default: true },
   { key: 'mac', label: 'MAC', width: 'minmax(150px, 1fr)', default: true },
   { key: 'version', label: 'Version', width: '90px', default: true },
@@ -64,7 +66,7 @@ const deviceCellTextTyped: CellText<DeviceItem> = (d, key) => deviceCellText(d, 
 const CSV_COLUMNS: [string, (d: DeviceItem) => string][] = [
   ['ID', (d) => d.id],
   ['Name', (d) => d.name],
-  ['Type', (d) => deviceCellText(d, 'kiosk_type')],
+  ['Type', (d) => deviceCellText(d, 'sub_type')],
   ['IP', (d) => deviceCellText(d, 'ip')],
   ['MAC', (d) => deviceCellText(d, 'mac')],
   ['Version', (d) => deviceCellText(d, 'version')],
@@ -118,16 +120,16 @@ export default function KioskDevices() {
   const haystack = useSearchHaystacks(devices, searchText);
 
   const facetGroups = useMemo<FacetGroup[]>(() => {
-    const kioskTypes = new Set<string>();
+    const subTypes = new Set<string>();
     const registrations = new Set<string>();
     const sites = new Set<string>();
     for (const d of devices ?? []) {
-      kioskTypes.add(kioskTypeLabel(d.kiosk_type));
+      subTypes.add(subTypeLabel(d.sub_type));
       registrations.add(registrationLabel(tokenExpiryState(d.token_expires_at)));
       sites.add(d.site_name ?? '—');
     }
     return [
-      { key: 'kiosk_type', title: 'Type', options: Array.from(kioskTypes).sort().map((v) => (
+      { key: 'sub_type', title: 'Type', options: Array.from(subTypes).sort().map((v) => (
         { value: v, label: v }
       )) },
       { key: 'registration', title: 'Registration', options: Array.from(registrations).sort()
@@ -139,7 +141,7 @@ export default function KioskDevices() {
   }, [devices]);
 
   const facetValues = (d: DeviceItem) => (groupKey: string): string[] => {
-    if (groupKey === 'kiosk_type') return [kioskTypeLabel(d.kiosk_type)];
+    if (groupKey === 'sub_type') return [subTypeLabel(d.sub_type)];
     if (groupKey === 'registration') return [registrationLabel(tokenExpiryState(d.token_expires_at))];
     if (groupKey === 'site') return [d.site_name ?? '—'];
     return [];
@@ -169,7 +171,7 @@ export default function KioskDevices() {
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 260px` };
+  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 110px` };
 
   const remove = async (d: DeviceItem) => {
     if (!window.confirm(`Delete "${d.name}"? This cannot be undone.`)) return;
@@ -208,10 +210,10 @@ export default function KioskDevices() {
     switch (key) {
       case 'mac':
         return <span className="mono">{deviceCellText(d, key)}</span>;
-      case 'kiosk_type':
-        return d.kiosk_type == null
+      case 'sub_type':
+        return d.sub_type == null
           ? <span>—</span>
-          : <span className="chip tag">{kioskTypeLabel(d.kiosk_type)}</span>;
+          : <span className="chip tag">{subTypeLabel(d.sub_type)}</span>;
       case 'registration': {
         const state = tokenExpiryState(d.token_expires_at);
         const cls = state === 'ok' ? 'chip c-green'
@@ -318,37 +320,18 @@ export default function KioskDevices() {
                     {shownCols.map((c) => (
                       <div className="cell" key={c.key}>{cellFor(d, c.key)}</div>
                     ))}
-                    <div className="cell" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                      {canChange && (
-                        <button className="mini-btn"
-                                onClick={(e) => { e.stopPropagation(); setEditing(d); }}>
-                          Edit
-                        </button>
-                      )}
-                      {canChange && state === 'none' && (
-                        <button className="mini-btn"
-                                onClick={(e) => { e.stopPropagation(); setRegistering(d); }}>
-                          Register
-                        </button>
-                      )}
-                      {canChange && state !== 'none' && (
-                        <>
-                          <button className="mini-btn"
-                                  onClick={(e) => { e.stopPropagation(); setRegistering(d); }}>
-                            Renew
-                          </button>
-                          <button className="mini-btn"
-                                  onClick={(e) => { e.stopPropagation(); void deregister(d); }}>
-                            De-Register
-                          </button>
-                        </>
-                      )}
-                      {canDelete && (
-                        <button className="mini-btn danger"
-                                onClick={(e) => { e.stopPropagation(); void remove(d); }}>
-                          Delete
-                        </button>
-                      )}
+                    <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      <RowActionsMenu actions={[
+                        ...(canChange ? [{ key: 'edit', label: 'Edit', onSelect: () => setEditing(d) }] : []),
+                        ...(canChange ? [state === 'none'
+                          ? { key: 'register', label: 'Register', onSelect: () => setRegistering(d) }
+                          : { key: 'renew', label: 'Renew', onSelect: () => setRegistering(d) }] : []),
+                        ...(canChange && state !== 'none'
+                          ? [{ key: 'deregister', label: 'De-Register',
+                               onSelect: () => void deregister(d) }] : []),
+                        ...(canDelete ? [{ key: 'delete', label: 'Delete', destructive: true,
+                                           onSelect: () => void remove(d) }] : []),
+                      ]} />
                     </div>
                   </div>
                 </div>
@@ -358,7 +341,9 @@ export default function KioskDevices() {
       )}
 
       {editing !== null && (
-        <KioskEditModal
+        <DeviceEditModal
+          deviceType="kiosk" noun="kiosk"
+          typeOptions={[{ value: 'laptop', label: 'Laptop' }, { value: 'pi', label: 'Pi' }]}
           device={editing === 'new' ? null : editing}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); void load(); }}

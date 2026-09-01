@@ -2703,7 +2703,7 @@ export interface DeviceItem {
   scan_status: string | null; scan_status_label: string | null;
   scan_status_color: string | null;
   tags_read_24h: number;
-  version: string | null; kiosk_type: string | null;
+  version: string | null; sub_type: string | null;
   current_initiative_id: string | null; current_initiative_name: string | null;
 }
 
@@ -2717,7 +2717,7 @@ export async function listDevices(deviceType?: string): Promise<DeviceItem[]> {
 }
 
 export interface DeviceWrite {
-  name?: string; kiosk_type?: string | null; mac?: string | null;
+  name?: string; sub_type?: string | null; mac?: string | null;
   lan_ip?: string | null; version?: string | null; site_id?: string | null;
   current_initiative_id?: string | null; scan_status?: string | null;
 }

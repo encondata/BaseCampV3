@@ -74,7 +74,7 @@ function kiosk(overrides: Partial<DeviceItem>): DeviceItem {
     model: null, antennas_connected: null, connection_type: null,
     scan_status: 'idle', scan_status_label: 'Idle', scan_status_color: '#178a4c',
     tags_read_24h: 0,
-    version: '2.4.1', kiosk_type: 'pi',
+    version: '2.4.1', sub_type: 'pi',
     current_initiative_id: 'i1', current_initiative_name: 'NAP11 Hall Migration (demo)',
     ...overrides,
   };
@@ -170,17 +170,21 @@ it('contextual actions: unregistered row shows Register only; registered row sho
     kiosk({ id: 'u2', name: 'registered-kiosk', token_expires_at: new Date(now + 50 * YEAR).toISOString() }),
   ];
   api.listDevices.mockResolvedValue(REG_DEVICES);
+  const user = userEvent.setup();
   render(<KioskDevices />);
 
   const unregRow = (await screen.findByText('unregistered-kiosk')).closest('.dir-row') as HTMLElement;
-  expect(within(unregRow).getByRole('button', { name: 'Register' })).not.toBeNull();
-  expect(within(unregRow).queryByRole('button', { name: 'Renew' })).toBeNull();
-  expect(within(unregRow).queryByRole('button', { name: 'De-Register' })).toBeNull();
+  await user.click(within(unregRow).getByRole('button', { name: /Actions/ }));
+  expect(within(unregRow).getByRole('menuitem', { name: 'Register' })).not.toBeNull();
+  expect(within(unregRow).queryByRole('menuitem', { name: 'Renew' })).toBeNull();
+  expect(within(unregRow).queryByRole('menuitem', { name: 'De-Register' })).toBeNull();
+  await user.click(within(unregRow).getByRole('button', { name: /Actions/ })); // close
 
   const regRow = screen.getByText('registered-kiosk').closest('.dir-row') as HTMLElement;
-  expect(within(regRow).getByRole('button', { name: 'Renew' })).not.toBeNull();
-  expect(within(regRow).getByRole('button', { name: 'De-Register' })).not.toBeNull();
-  expect(within(regRow).queryByRole('button', { name: 'Register' })).toBeNull();
+  await user.click(within(regRow).getByRole('button', { name: /Actions/ }));
+  expect(within(regRow).getByRole('menuitem', { name: 'Renew' })).not.toBeNull();
+  expect(within(regRow).getByRole('menuitem', { name: 'De-Register' })).not.toBeNull();
+  expect(within(regRow).queryByRole('menuitem', { name: 'Register' })).toBeNull();
 });
 
 it('Register flow: click Register, confirm the days modal, calls registerDevice and reloads', async () => {
@@ -192,7 +196,8 @@ it('Register flow: click Register, confirm the days modal, calls registerDevice 
   render(<KioskDevices />);
 
   const row = (await screen.findByText('unregistered-kiosk')).closest('.dir-row') as HTMLElement;
-  await user.click(within(row).getByRole('button', { name: 'Register' }));
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(within(row).getByRole('menuitem', { name: 'Register' }));
 
   expect(await screen.findByRole('heading', { name: /Register unregistered-kiosk/ })).not.toBeNull();
   await user.click(screen.getByRole('button', { name: 'Confirm' }));
@@ -211,7 +216,8 @@ it('De-Register: confirm calls deregisterDevice and reloads', async () => {
   render(<KioskDevices />);
 
   const row = (await screen.findByText('registered-kiosk')).closest('.dir-row') as HTMLElement;
-  await user.click(within(row).getByRole('button', { name: 'De-Register' }));
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(within(row).getByRole('menuitem', { name: 'De-Register' }));
 
   expect(confirmSpy).toHaveBeenCalled();
   await waitFor(() => expect(api.deregisterDevice).toHaveBeenCalledWith('u2'));
@@ -222,12 +228,22 @@ it('De-Register: confirm calls deregisterDevice and reloads', async () => {
 
 it('hides row actions when can(scanning_hardware, change) is false', async () => {
   auth.can = (resource, action) => !(resource === 'scanning_hardware' && action === 'change');
+  const user = userEvent.setup();
   render(<KioskDevices />);
-  await screen.findByText('kiosk-dock-1');
-  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Register' })).toBeNull();
-  expect(screen.queryByRole('button', { name: 'Renew' })).toBeNull();
-  expect(screen.queryByRole('button', { name: 'De-Register' })).toBeNull();
+  const row = (await screen.findByText('kiosk-dock-1')).closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  expect(within(row).queryByRole('menuitem', { name: 'Edit' })).toBeNull();
+  expect(within(row).queryByRole('menuitem', { name: 'Register' })).toBeNull();
+  expect(within(row).queryByRole('menuitem', { name: 'Renew' })).toBeNull();
+  expect(within(row).queryByRole('menuitem', { name: 'De-Register' })).toBeNull();
+});
+
+it('viewer with no change/delete grants sees NO Actions button', async () => {
+  auth.can = (resource, action) => !(resource === 'scanning_hardware'
+    && (action === 'change' || action === 'delete'));
+  render(<KioskDevices />);
+  const row = (await screen.findByText('kiosk-dock-1')).closest('.dir-row') as HTMLElement;
+  expect(within(row).queryByRole('button', { name: /Actions/ })).toBeNull();
 });
 
 it('clicking Delete + confirm calls deleteDevice and reloads', async () => {
@@ -237,7 +253,8 @@ it('clicking Delete + confirm calls deleteDevice and reloads', async () => {
   await screen.findByText('kiosk-dock-1');
 
   const row = screen.getByText('kiosk-dock-1').closest('.dir-row') as HTMLElement;
-  const deleteBtn = within(row).getByRole('button', { name: 'Delete' });
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  const deleteBtn = within(row).getByRole('menuitem', { name: 'Delete' });
   await user.click(deleteBtn);
 
   expect(confirmSpy).toHaveBeenCalledWith('Delete "kiosk-dock-1"? This cannot be undone.');

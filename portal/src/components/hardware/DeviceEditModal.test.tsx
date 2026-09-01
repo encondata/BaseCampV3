@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
 /**
- * KioskEditModal — create/edit for a kiosk device row. Covers: the exact
- * createDevice payload in create mode, the diff-only patchDevice payload
- * in edit mode, the move select's planned/in_progress-unarchived filter,
- * and the detail-code error surface.
+ * DeviceEditModal — create/edit for a single kiosk or handheld-reader
+ * device row (generalized from the kiosk-only KioskEditModal via
+ * deviceType/noun/typeOptions props). Covers: the exact createDevice
+ * payload in create mode, the diff-only patchDevice payload in edit mode,
+ * the move select's planned/in_progress-unarchived filter, the
+ * detail-code error surface, and that typeOptions drives the Type select
+ * (handheld types produce a handheld_reader create payload).
  */
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -93,7 +96,7 @@ const DEVICE: DeviceItem = {
   model: null, antennas_connected: null, connection_type: null,
   scan_status: 'idle', scan_status_label: 'Idle', scan_status_color: '#178a4c',
   tags_read_24h: 0,
-  version: '2.4.0', kiosk_type: 'laptop',
+  version: '2.4.0', sub_type: 'laptop',
   current_initiative_id: 'i1', current_initiative_name: 'NAP11 Hall Migration (demo)',
 };
 
@@ -106,19 +109,27 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-const { default: KioskEditModal } = await import('./KioskEditModal');
+const { default: DeviceEditModal } = await import('./DeviceEditModal');
 
-function renderCreate() {
+const KIOSK_TYPE_OPTIONS = [{ value: 'laptop', label: 'Laptop' }, { value: 'pi', label: 'Pi' }];
+const HANDHELD_TYPE_OPTIONS = [
+  { value: 'android', label: 'Android' }, { value: 'ios', label: 'iOS' },
+  { value: 'zebra', label: 'Zebra' },
+];
+
+function renderCreate(typeOptions = KIOSK_TYPE_OPTIONS) {
   const onClose = vi.fn();
   const onSaved = vi.fn();
-  render(<KioskEditModal device={null} onClose={onClose} onSaved={onSaved} />);
+  render(<DeviceEditModal deviceType="kiosk" noun="kiosk" typeOptions={typeOptions}
+                          device={null} onClose={onClose} onSaved={onSaved} />);
   return { onClose, onSaved };
 }
 
 function renderEdit(device: DeviceItem = DEVICE) {
   const onClose = vi.fn();
   const onSaved = vi.fn();
-  render(<KioskEditModal device={device} onClose={onClose} onSaved={onSaved} />);
+  render(<DeviceEditModal deviceType="kiosk" noun="kiosk" typeOptions={KIOSK_TYPE_OPTIONS}
+                          device={device} onClose={onClose} onSaved={onSaved} />);
   return { onClose, onSaved };
 }
 
@@ -137,9 +148,33 @@ it('create mode: fills name, type, scan type, and move, then submits the exact c
   await waitFor(() => expect(api.createDevice).toHaveBeenCalledTimes(1));
   expect(api.createDevice).toHaveBeenCalledWith({
     device_type: 'kiosk', name: 'kiosk-lobby-1',
-    kiosk_type: 'pi', mac: null, lan_ip: null, version: null,
+    sub_type: 'pi', mac: null, lan_ip: null, version: null,
     site_id: null, current_initiative_id: 'i1', scan_status: 'scanning',
   });
+  await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+});
+
+it('with handheld typeOptions, the Type select offers Android/iOS/Zebra and create posts device_type: handheld_reader', async () => {
+  const user = userEvent.setup();
+  api.createDevice.mockResolvedValue({ ...DEVICE, id: 'new-2' });
+  const onClose = vi.fn();
+  const onSaved = vi.fn();
+  render(<DeviceEditModal deviceType="handheld_reader" noun="handheld reader"
+                          typeOptions={HANDHELD_TYPE_OPTIONS}
+                          device={null} onClose={onClose} onSaved={onSaved} />);
+
+  const typeSelect = await screen.findByLabelText('Type') as HTMLSelectElement;
+  const labels = Array.from(typeSelect.options).map((o) => o.textContent);
+  expect(labels).toEqual(['— none', 'Android', 'iOS', 'Zebra']);
+
+  await user.type(screen.getByLabelText('Name'), 'handheld-1');
+  await user.selectOptions(typeSelect, 'zebra');
+  await user.click(screen.getByRole('button', { name: /Create handheld reader/i }));
+
+  await waitFor(() => expect(api.createDevice).toHaveBeenCalledTimes(1));
+  expect(api.createDevice).toHaveBeenCalledWith(expect.objectContaining({
+    device_type: 'handheld_reader', sub_type: 'zebra',
+  }));
   await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
 });
 

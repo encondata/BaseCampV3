@@ -25,3 +25,7 @@
 .lease-table th { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; opacity: .65; }
 .lease-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--c-slate); }
 .lease-dot.up { background: var(--c-green); }
+
+/* ── RowActionsMenu destructive item (Delete, etc.) ─────────────── */
+.pop-item.danger { color: var(--c-red); margin-top: 6px; }
+.pop-item.danger:hover { background: var(--c-red-bg); }

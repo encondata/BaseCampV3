@@ -59,7 +59,7 @@ const DEVICES: DeviceItem[] = [
     model: null, antennas_connected: null, connection_type: null,
     scan_status: null, scan_status_label: null, scan_status_color: null,
     tags_read_24h: 0,
-    version: null, kiosk_type: null,
+    version: null, sub_type: null,
     current_initiative_id: null, current_initiative_name: null,
   },
   {
@@ -73,7 +73,7 @@ const DEVICES: DeviceItem[] = [
     model: null, antennas_connected: null, connection_type: null,
     scan_status: null, scan_status_label: null, scan_status_color: null,
     tags_read_24h: 0,
-    version: null, kiosk_type: null,
+    version: null, sub_type: null,
     current_initiative_id: null, current_initiative_name: null,
   },
 ];
@@ -167,7 +167,7 @@ it('renders VPN chips and token-expiry chips per state', async () => {
       model: null, antennas_connected: null, connection_type: null,
       scan_status: null, scan_status_label: null, scan_status_color: null,
       tags_read_24h: 0,
-      version: null, kiosk_type: null,
+      version: null, sub_type: null,
       current_initiative_id: null, current_initiative_name: null,
     },
     {
@@ -182,7 +182,7 @@ it('renders VPN chips and token-expiry chips per state', async () => {
       model: null, antennas_connected: null, connection_type: null,
       scan_status: null, scan_status_label: null, scan_status_color: null,
       tags_read_24h: 0,
-      version: null, kiosk_type: null,
+      version: null, sub_type: null,
       current_initiative_id: null, current_initiative_name: null,
     },
     {
@@ -197,7 +197,7 @@ it('renders VPN chips and token-expiry chips per state', async () => {
       model: null, antennas_connected: null, connection_type: null,
       scan_status: null, scan_status_label: null, scan_status_color: null,
       tags_read_24h: 0,
-      version: null, kiosk_type: null,
+      version: null, sub_type: null,
       current_initiative_id: null, current_initiative_name: null,
     },
   ];

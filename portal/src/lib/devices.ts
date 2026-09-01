@@ -40,11 +40,13 @@ export function tokenExpiryState(
   return t - now.getTime() <= SOON_MS ? 'soon' : 'ok';
 }
 
-export function kioskTypeLabel(type: string | null): string {
+const SUB_TYPE_LABELS: Record<string, string> = {
+  laptop: 'Laptop', pi: 'Pi', android: 'Android', ios: 'iOS', zebra: 'Zebra',
+};
+
+export function subTypeLabel(type: string | null): string {
   if (type == null) return '—';
-  if (type === 'laptop') return 'Laptop';
-  if (type === 'pi') return 'Pi';
-  return type;
+  return SUB_TYPE_LABELS[type] ?? type;
 }
 
 export function registrationLabel(state: ReturnType<typeof tokenExpiryState>): string {
@@ -75,7 +77,7 @@ export function deviceCellText(d: DeviceItem, key: string): string {
     case 'antennas': return d.antennas_connected == null ? '—' : `${d.antennas_connected} / 8`;
     case 'connection': return connectionLabel(d.connection_type);
     case 'scan_status': return d.scan_status_label ?? (d.scan_status ?? '—');
-    case 'kiosk_type': return kioskTypeLabel(d.kiosk_type);
+    case 'sub_type': return subTypeLabel(d.sub_type);
     case 'version': return d.version ?? '—';
     case 'current_move': return d.current_initiative_name ?? '—';
     case 'registration': return registrationLabel(tokenExpiryState(d.token_expires_at));
@@ -88,7 +90,7 @@ export function deviceCellText(d: DeviceItem, key: string): string {
 export function deviceSearchText(d: DeviceItem): string {
   return [
     d.name, d.wan_ip, d.lan_ip, d.mac, d.serial, d.site_name, vpnLabel(d.vpn_status),
-    d.model, d.scan_status_label, d.version, kioskTypeLabel(d.kiosk_type),
+    d.model, d.scan_status_label, d.version, subTypeLabel(d.sub_type),
     d.current_initiative_name,
   ].filter(Boolean).join(' ');
 }

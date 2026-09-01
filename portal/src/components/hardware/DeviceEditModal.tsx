@@ -1,8 +1,13 @@
 /**
- * KioskEditModal — create/edit for a single kiosk device row. `device ===
- * null` opens in create mode; otherwise saves via patchDevice(id,
- * changedFieldsOnly). Follows the modal-scrim/modal-card/modal-head/
- * modal-body/modal-foot skeleton and error-mapping conventions of
+ * DeviceEditModal — create/edit for a single scanning-hardware device row
+ * (kiosk, handheld reader, …) that's provisioned from the portal rather
+ * than self-registering. `device === null` opens in create mode;
+ * otherwise saves via patchDevice(id, changedFieldsOnly). Generalized
+ * from the kiosk-only KioskEditModal: the caller supplies `deviceType`
+ * (the wire `device_type`), `noun` (used in copy — "New {noun}", "Create
+ * {noun}"), and `typeOptions` (the Type select's `sub_type` choices).
+ * Follows the modal-scrim/modal-card/modal-head/modal-body/modal-foot
+ * skeleton and error-mapping conventions of
  * components/statusRules/RuleEditorModal.tsx (house form styling: .pf-form
  * 2-col grid, .modal-section headings, .pf-error).
  *
@@ -10,7 +15,7 @@
  * listSites() itself on mount (Promise.all) rather than taking them as
  * props — the move/scan-type/site vocabularies are cheap lookups this
  * modal is the only consumer of. Moves are filtered to unarchived
- * planned/in_progress MOVE initiatives (the only ones a kiosk should be
+ * planned/in_progress MOVE initiatives (the only ones a device should be
  * assigned to); scan types to active asset-record-type status values.
  *
  * Registration dates (`token_expires_at`/`registered_at`) are never
@@ -25,7 +30,12 @@ import {
   type DeviceItem, type DeviceWrite, type InitiativeItem, type SiteItem, type StatusValue,
 } from '../../lib/api';
 
+interface TypeOption { value: string; label: string }
+
 interface Props {
+  deviceType: string; // wire device_type for create, e.g. 'kiosk' | 'handheld_reader'
+  noun: string; // e.g. 'kiosk' | 'handheld reader' — drives heading/button copy
+  typeOptions: TypeOption[]; // Type select choices (sub_type)
   device: DeviceItem | null; // null = create mode
   onClose: () => void;
   onSaved: () => void;
@@ -33,7 +43,7 @@ interface Props {
 
 interface FormState {
   name: string;
-  kioskType: string;
+  subType: string;
   mac: string;
   ip: string;
   version: string;
@@ -48,23 +58,23 @@ interface LoadedData {
   sites: SiteItem[];
 }
 
-const ERRORS: Record<string, string> = {
+const ERRORS = (noun: string): Record<string, string> => ({
   bad_scan_status: 'Pick a valid scan type.',
   bad_initiative: 'Pick a valid move.',
   bad_field: 'One of the fields is invalid.',
-  bad_name: 'Enter a name for this kiosk.',
+  bad_name: `Enter a name for this ${noun}.`,
   bad_device_type: 'Invalid device type.',
-};
+});
 
-const msgFor = (err: unknown): string =>
+const msgFor = (err: unknown, noun: string): string =>
   err instanceof ApiError
-    ? (ERRORS[err.code] ?? `Request failed (${err.code}).`)
+    ? (ERRORS(noun)[err.code] ?? `Request failed (${err.code}).`)
     : 'Network error — nothing was saved.';
 
 function formFromDevice(device: DeviceItem | null): FormState {
   return {
     name: device?.name ?? '',
-    kioskType: device?.kiosk_type ?? '',
+    subType: device?.sub_type ?? '',
     mac: device?.mac ?? '',
     ip: device?.lan_ip ?? '',
     version: device?.version ?? '',
@@ -80,8 +90,8 @@ function changedFields(device: DeviceItem, form: FormState): DeviceWrite {
   const patch: DeviceWrite = {};
   const name = form.name.trim();
   if (name !== device.name) patch.name = name;
-  const kioskType = form.kioskType || null;
-  if (kioskType !== device.kiosk_type) patch.kiosk_type = kioskType;
+  const subType = form.subType || null;
+  if (subType !== device.sub_type) patch.sub_type = subType;
   const mac = form.mac.trim() || null;
   if (mac !== device.mac) patch.mac = mac;
   const ip = form.ip.trim() || null;
@@ -97,11 +107,13 @@ function changedFields(device: DeviceItem, form: FormState): DeviceWrite {
   return patch;
 }
 
-function createPayload(form: FormState): DeviceWrite & { device_type: string; name: string } {
+function createPayload(
+  deviceType: string, form: FormState,
+): DeviceWrite & { device_type: string; name: string } {
   return {
-    device_type: 'kiosk',
+    device_type: deviceType,
     name: form.name.trim(),
-    kiosk_type: form.kioskType || null,
+    sub_type: form.subType || null,
     mac: form.mac.trim() || null,
     lan_ip: form.ip.trim() || null,
     version: form.version.trim() || null,
@@ -111,7 +123,9 @@ function createPayload(form: FormState): DeviceWrite & { device_type: string; na
   };
 }
 
-export default function KioskEditModal({ device, onClose, onSaved }: Props) {
+export default function DeviceEditModal({
+  deviceType, noun, typeOptions, device, onClose, onSaved,
+}: Props) {
   const isCreate = device === null;
 
   const [data, setData] = useState<LoadedData | null>(null);
@@ -150,7 +164,7 @@ export default function KioskEditModal({ device, onClose, onSaved }: Props) {
     setError('');
     try {
       if (isCreate) {
-        await createDevice(createPayload(form));
+        await createDevice(createPayload(deviceType, form));
       } else {
         const patch = changedFields(device, form);
         if (Object.keys(patch).length > 0) {
@@ -159,7 +173,7 @@ export default function KioskEditModal({ device, onClose, onSaved }: Props) {
       }
       onSaved();
     } catch (err) {
-      setError(msgFor(err));
+      setError(msgFor(err, noun));
     } finally {
       setSaving(false);
     }
@@ -173,7 +187,7 @@ export default function KioskEditModal({ device, onClose, onSaved }: Props) {
     }}>
       <div className="modal-card">
         <div className="modal-head">
-          <h3>{isCreate ? 'New kiosk' : `Edit — ${device.name}`}</h3>
+          <h3>{isCreate ? `New ${noun}` : `Edit — ${device.name}`}</h3>
           <button className="modal-close" aria-label="Close" onClick={onClose} disabled={saving}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
                  strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
@@ -196,11 +210,10 @@ export default function KioskEditModal({ device, onClose, onSaved }: Props) {
                 </div>
                 <div>
                   <label>Type</label>
-                  <select aria-label="Type" value={form.kioskType} disabled={locked}
-                          onChange={(e) => setForm((f) => ({ ...f, kioskType: e.target.value }))}>
+                  <select aria-label="Type" value={form.subType} disabled={locked}
+                          onChange={(e) => setForm((f) => ({ ...f, subType: e.target.value }))}>
                     <option value="">— none</option>
-                    <option value="laptop">Laptop</option>
-                    <option value="pi">Pi</option>
+                    {typeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
                 </div>
 
@@ -257,7 +270,7 @@ export default function KioskEditModal({ device, onClose, onSaved }: Props) {
           </div>
           <div className="modal-foot">
             <button className="btn-solid" type="submit" disabled={!canSave || saving}>
-              {saving ? 'Saving…' : (isCreate ? 'Create kiosk' : 'Save')}
+              {saving ? 'Saving…' : (isCreate ? `Create ${noun}` : 'Save')}
             </button>
             <button className="mini-btn" type="button" onClick={onClose} disabled={saving}>
               Cancel
