@@ -59,6 +59,8 @@ const DEVICES: DeviceItem[] = [
     model: 'FX9600', antennas_connected: 4, connection_type: 'mqtt',
     scan_status: 'rfid_1_cage_exit', scan_status_label: 'RFID 1 - Cage Exit',
     scan_status_color: '#31F527', tags_read_24h: 152,
+    version: null, kiosk_type: null,
+    current_initiative_id: null, current_initiative_name: null,
   },
   {
     id: 'd1', device_type: 'fixed_reader', name: 'dock-reader-1',
@@ -71,6 +73,8 @@ const DEVICES: DeviceItem[] = [
     model: 'FX9600', antennas_connected: 2, connection_type: 'api',
     scan_status: 'rfid_2_cage_entry', scan_status_label: 'RFID 2 - Cage Entry',
     scan_status_color: '#F5A623', tags_read_24h: 88,
+    version: null, kiosk_type: null,
+    current_initiative_id: null, current_initiative_name: null,
   },
 ];
 

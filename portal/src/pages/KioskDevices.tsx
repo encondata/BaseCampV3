@@ -1,0 +1,377 @@
+/** Kiosk Devices — the device-fleet directory list for web/iPad kiosk
+ *  stations. Standalone page (own .portal-page/.dir-head, model:
+ *  Notifications.tsx) built on the shared directory-list pattern (model:
+ *  components/statusRules/RulesTab.tsx — the freshest full-pattern list):
+ *  search + toolbar FilterButton facet (Type/Registration/Site) +
+ *  per-column ColumnMenu filters + persisted visible/sort/order state
+ *  (usePersistentListState) + CSV export + virtualized rows.
+ *
+ *  Unlike Routers/FixedReaders, kiosks are provisioned from the portal
+ *  (no device-agent self-registration yet), so this page owns the full
+ *  create/edit/register lifecycle: "+ New kiosk" opens KioskEditModal in
+ *  create mode; row Edit opens it prefilled; Register/Renew opens
+ *  RegisterDaysModal → registerDevice; De-Register confirms then
+ *  deregisterDevice. Row action gating mirrors the API's permission
+ *  split — 'add' for create, 'change' for edit/register/deregister,
+ *  'delete' for delete. */
+
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+
+import { useAuth } from '../auth/AuthContext';
+import {
+  ApiError, deleteDevice, deregisterDevice, listDevices, registerDevice, type DeviceItem,
+} from '../lib/api';
+import {
+  ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
+  usePersistentListState, type CellText,
+} from '../lib/columnMenu';
+import {
+  deviceCellText, deviceSearchText, deviceSortValue, kioskTypeLabel, registrationLabel,
+  tokenExpiryState,
+} from '../lib/devices';
+import {
+  ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
+  moveKey, passesFacets, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
+  type ColumnDef, type FacetGroup, type FacetState,
+} from '../lib/listTools';
+import { VirtualRows } from '../lib/virtualRows';
+import KioskEditModal from '../components/hardware/KioskEditModal';
+import RegisterDaysModal from '../components/hardware/RegisterDaysModal';
+import '../styles/directory.css';
+import '../styles/profile.css';
+import '../styles/settings.css';  /* .set-note */
+import '../styles/hardware.css';
+
+const COLUMNS: ColumnDef[] = [
+  { key: 'name', label: 'Name', width: 'minmax(150px, 1.2fr)', default: true },
+  { key: 'kiosk_type', label: 'Type', width: '90px', default: true },
+  { key: 'ip', label: 'IP', width: 'minmax(110px, 1fr)', default: true },
+  { key: 'mac', label: 'MAC', width: 'minmax(150px, 1fr)', default: true },
+  { key: 'version', label: 'Version', width: '90px', default: true },
+  { key: 'registration', label: 'Registration', width: '120px', default: true },
+  { key: 'current_move', label: 'Current Move', width: 'minmax(160px, 1.2fr)', default: true },
+  { key: 'scan_status', label: 'Scan Type', width: 'minmax(140px, 1fr)', default: true },
+  { key: 'site', label: 'Site', width: 'minmax(120px, 1fr)', default: true },
+  { key: 'expires', label: 'Expires', width: 'minmax(110px, 1fr)', default: false },
+  { key: 'last_seen', label: 'Last seen', width: 'minmax(150px, 1fr)', default: false },
+];
+
+const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
+const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+const deviceCellTextTyped: CellText<DeviceItem> = (d, key) => deviceCellText(d, key);
+
+const CSV_COLUMNS: [string, (d: DeviceItem) => string][] = [
+  ['ID', (d) => d.id],
+  ['Name', (d) => d.name],
+  ['Type', (d) => deviceCellText(d, 'kiosk_type')],
+  ['IP', (d) => deviceCellText(d, 'ip')],
+  ['MAC', (d) => deviceCellText(d, 'mac')],
+  ['Version', (d) => deviceCellText(d, 'version')],
+  ['Registration', (d) => deviceCellText(d, 'registration')],
+  ['Current Move', (d) => deviceCellText(d, 'current_move')],
+  ['Scan Type', (d) => deviceCellText(d, 'scan_status')],
+  ['Site', (d) => deviceCellText(d, 'site')],
+  ['Expires', (d) => deviceCellText(d, 'expires')],
+  ['Last seen', (d) => deviceCellText(d, 'last_seen')],
+];
+
+const msgFor = (err: unknown): string =>
+  err instanceof ApiError ? `Request failed (${err.code}).` : "Couldn't complete that action.";
+
+export default function KioskDevices() {
+  const { can } = useAuth();
+  const canAdd = can('scanning_hardware', 'add');
+  const canChange = can('scanning_hardware', 'change');
+  const canDelete = can('scanning_hardware', 'delete');
+
+  const [devices, setDevices] = useState<DeviceItem[] | null>(null);
+  const [error, setError] = useState('');
+  const [query, setQuery] = useState('');
+  const [facets, setFacets] = useState<FacetState>({});
+  const [editing, setEditing] = useState<DeviceItem | 'new' | null>(null);
+  const [registering, setRegistering] = useState<DeviceItem | null>(null);
+
+  const {
+    visibleCols, setVisibleCols,
+    sortKey, sortDir, setSort, toggleSort,
+    filters, setFilter, clearFilters,
+    colOrder, setColOrder,
+  } = usePersistentListState(
+    'hardware-kiosks', { visible: DEFAULT_VISIBLE, sortKey: 'name', sortDir: 1 }, ALL_COLUMN_KEYS,
+  );
+
+  const load = async () => {
+    try {
+      setDevices(await listDevices('kiosk'));
+      setError('');
+    } catch (err) {
+      setError(err instanceof ApiError && err.status === 403
+        ? "You don't have access to scanning hardware."
+        : "Couldn't load kiosks.");
+    }
+  };
+
+  useEffect(() => { void load(); }, []);
+
+  const searchText = (d: DeviceItem) => deviceSearchText(d).toLowerCase();
+  const haystack = useSearchHaystacks(devices, searchText);
+
+  const facetGroups = useMemo<FacetGroup[]>(() => {
+    const kioskTypes = new Set<string>();
+    const registrations = new Set<string>();
+    const sites = new Set<string>();
+    for (const d of devices ?? []) {
+      kioskTypes.add(kioskTypeLabel(d.kiosk_type));
+      registrations.add(registrationLabel(tokenExpiryState(d.token_expires_at)));
+      sites.add(d.site_name ?? '—');
+    }
+    return [
+      { key: 'kiosk_type', title: 'Type', options: Array.from(kioskTypes).sort().map((v) => (
+        { value: v, label: v }
+      )) },
+      { key: 'registration', title: 'Registration', options: Array.from(registrations).sort()
+        .map((v) => ({ value: v, label: v })) },
+      { key: 'site', title: 'Site', options: Array.from(sites).sort().map((v) => (
+        { value: v, label: v }
+      )) },
+    ];
+  }, [devices]);
+
+  const facetValues = (d: DeviceItem) => (groupKey: string): string[] => {
+    if (groupKey === 'kiosk_type') return [kioskTypeLabel(d.kiosk_type)];
+    if (groupKey === 'registration') return [registrationLabel(tokenExpiryState(d.token_expires_at))];
+    if (groupKey === 'site') return [d.site_name ?? '—'];
+    return [];
+  };
+
+  const visible = useMemo(() => {
+    if (!devices) return [];
+    const q = query.trim().toLowerCase();
+    const rows = devices.filter((d) => {
+      if (!passesFacets(facets, facetValues(d))) return false;
+      if (!passesColumnFilters(d, filters, deviceCellTextTyped)) return false;
+      if (!q) return true;
+      return haystack(d).includes(q);
+    });
+    return rows.sort((a, b) => {
+      const va = deviceSortValue(a, sortKey), vb = deviceSortValue(b, sortKey);
+      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+    });
+  }, [devices, facets, filters, query, sortKey, sortDir, haystack]);
+
+  const caret = (key: string) =>
+    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
+
+  const orderedCols = applyColumnOrder(COLUMNS, colOrder);
+  const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
+  const headerDrag = useReorderDrag(
+    (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
+    'x', { ignoreFrom: '.pop-menu' },
+  );
+  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 260px` };
+
+  const remove = async (d: DeviceItem) => {
+    if (!window.confirm(`Delete "${d.name}"? This cannot be undone.`)) return;
+    setError('');
+    try {
+      await deleteDevice(d.id);
+      await load();
+    } catch (err) {
+      setError(msgFor(err));
+    }
+  };
+
+  const doRegister = async (id: string, days: number) => {
+    setRegistering(null);
+    setError('');
+    try {
+      await registerDevice(id, days);
+      await load();
+    } catch (err) {
+      setError(msgFor(err));
+    }
+  };
+
+  const deregister = async (d: DeviceItem) => {
+    if (!window.confirm(`De-register "${d.name}"? Its scan token will be revoked immediately.`)) return;
+    setError('');
+    try {
+      await deregisterDevice(d.id);
+      await load();
+    } catch (err) {
+      setError(msgFor(err));
+    }
+  };
+
+  const cellFor = (d: DeviceItem, key: string) => {
+    switch (key) {
+      case 'mac':
+        return <span className="mono">{deviceCellText(d, key)}</span>;
+      case 'kiosk_type':
+        return d.kiosk_type == null
+          ? <span>—</span>
+          : <span className="chip tag">{kioskTypeLabel(d.kiosk_type)}</span>;
+      case 'registration': {
+        const state = tokenExpiryState(d.token_expires_at);
+        const cls = state === 'ok' ? 'chip c-green'
+          : state === 'soon' ? 'chip c-amber'
+          : state === 'expired' ? 'chip c-red'
+          : 'chip tag';
+        return <span className={cls}>{registrationLabel(state)}</span>;
+      }
+      case 'scan_status':
+        return d.scan_status == null
+          ? <span>—</span>
+          : (
+            <span className="chip custom" title={deviceCellText(d, 'scan_status')}
+                  style={{ '--chip': d.scan_status_color } as CSSProperties}>
+              <span className="dot" />{deviceCellText(d, 'scan_status')}
+            </span>
+          );
+      default:
+        return <span>{deviceCellText(d, key)}</span>;
+    }
+  };
+
+  return (
+    <div className="portal-page">
+      <div className="dir-head">
+        <div>
+          <div className="eyebrow">Scanning Hardware</div>
+          <h1 className="page-title">
+            Kiosk Devices
+            <span className="badge-count">{devices?.length ?? '…'}</span>
+          </h1>
+          <p className="page-hint">Web and iOS (iPad) kiosk stations, provisioned from the portal.</p>
+        </div>
+      </div>
+
+      <div className="dir-toolbar">
+        <div className="toolbar-right">
+          <div className="dir-search" style={{ marginLeft: 0 }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                 strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+            <input placeholder="Filter this list…" value={query}
+                   onChange={(e) => setQuery(e.target.value)} />
+          </div>
+          <span className="result-count">{visible.length} of {devices?.length ?? 0} shown</span>
+          <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
+          <FilterSummaryChip filters={filters} onClear={clearFilters} />
+          <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols}
+                         onReorder={setColOrder} />
+          <ExportButton onExport={() => exportCsv('kiosks', CSV_COLUMNS, visible)} />
+          {canAdd && (
+            <button type="button" className="btn-solid" onClick={() => setEditing('new')}>
+              + New kiosk
+            </button>
+          )}
+        </div>
+      </div>
+
+      {error && (
+        <div className="dir-empty" style={{ marginBottom: 12 }}>
+          <b>{devices ? "Couldn't complete that action" : 'Cannot load kiosks'}</b>{error}
+        </div>
+      )}
+
+      {devices && (
+        <div className="dir-list">
+          <div className="list-head" style={grid}>
+            {shownCols.map((c) => (
+              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
+                    {...headerDrag.dragProps(c.key)}>
+                <button className="sortable" onClick={() => toggleSort(c.key)}>
+                  {c.label} {caret(c.key)}
+                </button>
+                <ColumnMenu colKey={c.key} label={c.label}
+                            allRows={devices ?? []} filters={filters}
+                            text={deviceCellTextTyped}
+                            filter={filters[c.key]} onFilter={setFilter}
+                            sortDir={sortKey === c.key ? sortDir : null}
+                            onSort={(dir) => setSort(c.key, dir)} />
+              </span>
+            ))}
+            <span />
+          </div>
+
+          {visible.length === 0 && (
+            devices.length === 0 ? (
+              <div className="dir-empty">
+                No kiosks yet — provision the first one.
+              </div>
+            ) : (
+              <div className="dir-empty">
+                <b>No matches</b>Try a different filter.
+                <EmptyClearFilters filters={filters}
+                                    onClear={() => { clearFilters(); setFacets({}); }} />
+              </div>
+            )
+          )}
+
+          <VirtualRows rows={visible}
+            renderRow={(d, vp) => {
+              const state = tokenExpiryState(d.token_expires_at);
+              return (
+                <div key={d.id} className="dir-row" {...vp} style={vp?.style}>
+                  <div className="row-main" style={grid}>
+                    {shownCols.map((c) => (
+                      <div className="cell" key={c.key}>{cellFor(d, c.key)}</div>
+                    ))}
+                    <div className="cell" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                      {canChange && (
+                        <button className="mini-btn"
+                                onClick={(e) => { e.stopPropagation(); setEditing(d); }}>
+                          Edit
+                        </button>
+                      )}
+                      {canChange && state === 'none' && (
+                        <button className="mini-btn"
+                                onClick={(e) => { e.stopPropagation(); setRegistering(d); }}>
+                          Register
+                        </button>
+                      )}
+                      {canChange && state !== 'none' && (
+                        <>
+                          <button className="mini-btn"
+                                  onClick={(e) => { e.stopPropagation(); setRegistering(d); }}>
+                            Renew
+                          </button>
+                          <button className="mini-btn"
+                                  onClick={(e) => { e.stopPropagation(); void deregister(d); }}>
+                            De-Register
+                          </button>
+                        </>
+                      )}
+                      {canDelete && (
+                        <button className="mini-btn danger"
+                                onClick={(e) => { e.stopPropagation(); void remove(d); }}>
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            }} />
+        </div>
+      )}
+
+      {editing !== null && (
+        <KioskEditModal
+          device={editing === 'new' ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={() => { setEditing(null); void load(); }}
+        />
+      )}
+
+      {registering && (
+        <RegisterDaysModal
+          deviceName={registering.name}
+          onConfirm={(days) => void doRegister(registering.id, days)}
+          onClose={() => setRegistering(null)}
+        />
+      )}
+    </div>
+  );
+}

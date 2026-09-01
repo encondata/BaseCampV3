@@ -2703,6 +2703,8 @@ export interface DeviceItem {
   scan_status: string | null; scan_status_label: string | null;
   scan_status_color: string | null;
   tags_read_24h: number;
+  version: string | null; kiosk_type: string | null;
+  current_initiative_id: string | null; current_initiative_name: string | null;
 }
 
 export async function listDevices(deviceType?: string): Promise<DeviceItem[]> {
@@ -2710,6 +2712,50 @@ export async function listDevices(deviceType?: string): Promise<DeviceItem[]> {
   if (deviceType) qs.set('device_type', deviceType);
   const query = qs.toString();
   const resp = await apiFetch(`/devices${query ? `?${query}` : ''}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export interface DeviceWrite {
+  name?: string; kiosk_type?: string | null; mac?: string | null;
+  lan_ip?: string | null; version?: string | null; site_id?: string | null;
+  current_initiative_id?: string | null; scan_status?: string | null;
+}
+
+export async function createDevice(
+  body: DeviceWrite & { device_type: string; name: string },
+): Promise<DeviceItem> {
+  const resp = await apiFetch('/devices', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function patchDevice(id: string, body: DeviceWrite): Promise<DeviceItem> {
+  const resp = await apiFetch(`/devices/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function registerDevice(id: string, days: number): Promise<DeviceItem> {
+  const resp = await apiFetch(`/devices/${id}/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ days }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function deregisterDevice(id: string): Promise<DeviceItem> {
+  const resp = await apiFetch(`/devices/${id}/deregister`, { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

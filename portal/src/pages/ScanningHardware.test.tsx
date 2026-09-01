@@ -8,13 +8,12 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 
 import { NAV_SECTIONS } from '../layout/navSections';
-import { HandheldReaders, KioskDevices } from './ScanningHardware';
+import { HandheldReaders } from './ScanningHardware';
 
 afterEach(cleanup);
 
 const PAGES = [
   [HandheldReaders, 'Handheld Readers', /Zebra \(Android\)/],
-  [KioskDevices, 'Kiosk Devices', /iPad/],
 ] as const;
 
 for (const [Page, title, hint] of PAGES) {

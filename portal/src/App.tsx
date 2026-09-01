@@ -19,6 +19,7 @@ import Home from './pages/Home';
 import ImportMoveAssets from './pages/ImportMoveAssets';
 import Initiatives from './pages/Initiatives';
 import InitiativeDetailPage from './pages/InitiativeDetail';
+import KioskDevices from './pages/KioskDevices';
 import MoveAssetDetail from './pages/MoveAssetDetail';
 import Notifications from './pages/Notifications';
 import NotificationGroupDetailPage from './pages/NotificationGroupDetail';
@@ -27,9 +28,7 @@ import Placeholder from './pages/Placeholder';
 import Login from './pages/Login';
 import Profile from './pages/Profile';
 import ProcessLogs from './pages/ProcessLogs';
-import {
-  HandheldReaders, KioskDevices,
-} from './pages/ScanningHardware';
+import { HandheldReaders } from './pages/ScanningHardware';
 import Routers from './pages/Routers';
 import Scans from './pages/Scans';
 import Settings from './pages/Settings';

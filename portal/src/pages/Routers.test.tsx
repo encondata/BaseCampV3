@@ -59,6 +59,8 @@ const DEVICES: DeviceItem[] = [
     model: null, antennas_connected: null, connection_type: null,
     scan_status: null, scan_status_label: null, scan_status_color: null,
     tags_read_24h: 0,
+    version: null, kiosk_type: null,
+    current_initiative_id: null, current_initiative_name: null,
   },
   {
     id: 'd1', device_type: 'router', name: 'dock-router-1',
@@ -71,6 +73,8 @@ const DEVICES: DeviceItem[] = [
     model: null, antennas_connected: null, connection_type: null,
     scan_status: null, scan_status_label: null, scan_status_color: null,
     tags_read_24h: 0,
+    version: null, kiosk_type: null,
+    current_initiative_id: null, current_initiative_name: null,
   },
 ];
 
@@ -163,6 +167,8 @@ it('renders VPN chips and token-expiry chips per state', async () => {
       model: null, antennas_connected: null, connection_type: null,
       scan_status: null, scan_status_label: null, scan_status_color: null,
       tags_read_24h: 0,
+      version: null, kiosk_type: null,
+      current_initiative_id: null, current_initiative_name: null,
     },
     {
       id: 'c2', device_type: 'router', name: 'chip-router-disconnected',
@@ -176,6 +182,8 @@ it('renders VPN chips and token-expiry chips per state', async () => {
       model: null, antennas_connected: null, connection_type: null,
       scan_status: null, scan_status_label: null, scan_status_color: null,
       tags_read_24h: 0,
+      version: null, kiosk_type: null,
+      current_initiative_id: null, current_initiative_name: null,
     },
     {
       id: 'c3', device_type: 'router', name: 'chip-router-healthy',
@@ -189,6 +197,8 @@ it('renders VPN chips and token-expiry chips per state', async () => {
       model: null, antennas_connected: null, connection_type: null,
       scan_status: null, scan_status_label: null, scan_status_color: null,
       tags_read_24h: 0,
+      version: null, kiosk_type: null,
+      current_initiative_id: null, current_initiative_name: null,
     },
   ];
   api.listDevices.mockResolvedValue(CHIP_DEVICES);

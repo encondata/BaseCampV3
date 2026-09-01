@@ -40,6 +40,20 @@ export function tokenExpiryState(
   return t - now.getTime() <= SOON_MS ? 'soon' : 'ok';
 }
 
+export function kioskTypeLabel(type: string | null): string {
+  if (type == null) return '—';
+  if (type === 'laptop') return 'Laptop';
+  if (type === 'pi') return 'Pi';
+  return type;
+}
+
+export function registrationLabel(state: ReturnType<typeof tokenExpiryState>): string {
+  if (state === 'ok') return 'Registered';
+  if (state === 'soon') return 'Expires soon';
+  if (state === 'expired') return 'Expired';
+  return 'Unregistered';
+}
+
 export function deviceCellText(d: DeviceItem, key: string): string {
   switch (key) {
     case 'name': return d.name;
@@ -61,6 +75,12 @@ export function deviceCellText(d: DeviceItem, key: string): string {
     case 'antennas': return d.antennas_connected == null ? '—' : `${d.antennas_connected} / 8`;
     case 'connection': return connectionLabel(d.connection_type);
     case 'scan_status': return d.scan_status_label ?? (d.scan_status ?? '—');
+    case 'kiosk_type': return kioskTypeLabel(d.kiosk_type);
+    case 'version': return d.version ?? '—';
+    case 'current_move': return d.current_initiative_name ?? '—';
+    case 'registration': return registrationLabel(tokenExpiryState(d.token_expires_at));
+    case 'expires':
+      return d.token_expires_at ? new Date(d.token_expires_at).toLocaleDateString() : '—';
     default: return '';
   }
 }
@@ -68,7 +88,8 @@ export function deviceCellText(d: DeviceItem, key: string): string {
 export function deviceSearchText(d: DeviceItem): string {
   return [
     d.name, d.wan_ip, d.lan_ip, d.mac, d.serial, d.site_name, vpnLabel(d.vpn_status),
-    d.model, d.scan_status_label,
+    d.model, d.scan_status_label, d.version, kioskTypeLabel(d.kiosk_type),
+    d.current_initiative_name,
   ].filter(Boolean).join(' ');
 }
 
@@ -80,6 +101,9 @@ export function deviceSortValue(d: DeviceItem, key: string): string | number {
     case 'token_expires': return d.token_expires_at ?? '';
     case 'tags_24h': return d.tags_read_24h;
     case 'antennas': return d.antennas_connected ?? -1;
+    case 'registration': return registrationLabel(tokenExpiryState(d.token_expires_at)).toLowerCase();
+    case 'expires': return d.token_expires_at ?? '';
+    case 'current_move': return d.current_initiative_name ?? '';
     default: return deviceCellText(d, key).toLowerCase();
   }
 }

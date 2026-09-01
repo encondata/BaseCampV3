@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { DeviceItem } from './api';
 import {
   connectionLabel, deviceCellText, deviceSearchText, deviceSortValue, formatUptime,
-  tokenExpiryState, vpnLabel,
+  kioskTypeLabel, registrationLabel, tokenExpiryState, vpnLabel,
 } from './devices';
 
 const R: DeviceItem = {
@@ -17,6 +17,8 @@ const R: DeviceItem = {
   model: null, antennas_connected: null, connection_type: null,
   scan_status: null, scan_status_label: null, scan_status_color: null,
   tags_read_24h: 0,
+  version: null, kiosk_type: null,
+  current_initiative_id: null, current_initiative_name: null,
 };
 
 describe('formatUptime', () => {
@@ -121,5 +123,52 @@ describe('reader cell accessors', () => {
     expect(deviceSortValue(fr, 'tags_24h')).toBe(152);
     expect(deviceSortValue(fr, 'antennas')).toBe(4);
     expect(deviceSortValue({ ...fr, antennas_connected: null }, 'antennas')).toBe(-1);
+  });
+});
+
+// tokenExpiryState's 'registration'/'expires' cellText below computes off
+// real `now` (no override), so fixture dates must stay time-proof — ~50
+// years out/back — rather than the near-future/near-past dates other
+// describe blocks above use with an explicit `now`.
+describe('kiosk accessors', () => {
+  const k = {
+    ...R, kiosk_type: 'pi', version: '2.4.1',
+    current_initiative_id: 'i1',
+    current_initiative_name: 'NAP11 Hall Migration (demo)',
+    token_expires_at: '2076-11-29T00:00:00Z',
+  };
+  it('labels', () => {
+    expect(kioskTypeLabel('laptop')).toBe('Laptop');
+    expect(kioskTypeLabel('pi')).toBe('Pi');
+    expect(kioskTypeLabel(null)).toBe('—');
+    expect(registrationLabel('ok')).toBe('Registered');
+    expect(registrationLabel('soon')).toBe('Expires soon');
+    expect(registrationLabel('expired')).toBe('Expired');
+    expect(registrationLabel('none')).toBe('Unregistered');
+  });
+  it('cellText', () => {
+    expect(deviceCellText(k, 'kiosk_type')).toBe('Pi');
+    expect(deviceCellText(k, 'version')).toBe('2.4.1');
+    expect(deviceCellText(k, 'current_move')).toBe('NAP11 Hall Migration (demo)');
+    expect(deviceCellText({ ...k, current_initiative_name: null }, 'current_move')).toBe('—');
+    expect(deviceCellText(k, 'registration')).toBe('Registered');
+    expect(deviceCellText({ ...k, token_expires_at: null }, 'registration')).toBe('Unregistered');
+    expect(deviceCellText(k, 'expires'))
+      .toBe(new Date('2076-11-29T00:00:00Z').toLocaleDateString());
+  });
+  it('sortValue', () => {
+    expect(deviceSortValue(k, 'registration')).toBe('registered');
+    expect(deviceSortValue(k, 'expires')).toBe('2076-11-29T00:00:00Z');
+    expect(deviceSortValue({ ...k, token_expires_at: null }, 'expires')).toBe('');
+    expect(deviceSortValue(k, 'current_move')).toBe('NAP11 Hall Migration (demo)');
+    expect(deviceSortValue({ ...k, current_initiative_name: null }, 'current_move')).toBe('');
+    expect(deviceSortValue(k, 'kiosk_type')).toBe('pi');
+    expect(deviceSortValue(k, 'version')).toBe('2.4.1');
+  });
+  it('deviceSearchText includes version/kiosk type/current move', () => {
+    const hay = deviceSearchText(k).toLowerCase();
+    expect(hay).toContain('2.4.1');
+    expect(hay).toContain('pi');
+    expect(hay).toContain('nap11 hall migration (demo)');
   });
 });
