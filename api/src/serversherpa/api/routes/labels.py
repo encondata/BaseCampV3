@@ -417,6 +417,32 @@ async def _sample_values(db: DbSession) -> dict[str, str]:
     return {r.key: r.sample_value for r in rows}
 
 
+async def _compile_design(db: DbSession, design_json: dict, size_key: str,
+                          dpi_key: str, language_key: str,
+                          subs: dict[str, str] | None) -> str:
+    """Shared by the compile endpoint and convert-to-code: vocab lookups,
+    size override, parse, language dispatch."""
+    size = await db.get(LabelVocab, ("size", size_key))
+    dpi = await db.get(LabelVocab, ("dpi", dpi_key))
+    lang = await db.get(LabelVocab, ("language", language_key))
+    if size is None or dpi is None or lang is None:
+        raise _err(404, "unknown_vocab")
+    try:
+        design = parse_design({
+            **design_json,
+            "size": {"w": size.meta["width_in"], "h": size.meta["height_in"]},
+        })
+    except DesignError as e:
+        raise _err(422, "bad_design", problems=e.problems) from e
+    if lang.key == "zpl":
+        return compile_zpl(design, dpi.meta["dots"], subs)
+    if lang.key == "escp":
+        return compile_escp(design, subs)
+    if lang.key == "ptouch":
+        return compile_ptouch(design, subs)
+    raise _err(422, "unsupported_language", key=lang.key)
+
+
 @router.post("/templates/compile", response_model=LabelCompileOut)
 async def compile_template(
     body: LabelCompileIn, db: DbSession,
@@ -437,23 +463,38 @@ async def compile_template(
 
     if body.design is None:
         raise _err(422, "bad_payload", message="design kind needs design")
-    try:
-        design = parse_design({
-            **body.design,
-            "size": {"w": size.meta["width_in"], "h": size.meta["height_in"]},
-        })
-    except DesignError as e:
-        raise _err(422, "bad_design", problems=e.problems) from e
-
-    if lang.key == "zpl":
-        out = compile_zpl(design, dpi.meta["dots"], subs)
-    elif lang.key == "escp":
-        out = compile_escp(design, subs)
-    elif lang.key == "ptouch":
-        out = compile_ptouch(design, subs)
-    else:
-        raise _err(422, "unsupported_language", key=lang.key)
+    out = await _compile_design(db, body.design, body.size_key, body.dpi_key,
+                                body.language_key, subs)
     return LabelCompileOut(code=out)
+
+
+@router.post("/templates/{template_id}/convert-to-code",
+             response_model=LabelTemplateOut)
+async def convert_template_to_code(
+    template_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+) -> LabelTemplateOut:
+    row = (await db.execute(select(LabelTemplate)
+        .options(selectinload(LabelTemplate.site_links))
+        .where(LabelTemplate.id == template_id))).scalar_one_or_none()
+    if row is None:
+        raise _err(404, "unknown_template")
+    if row.kind != "design":
+        raise _err(409, "not_a_design_template")
+    code = await _compile_design(db, row.design, row.size_key, row.dpi_key,
+                                 row.language_key, None)
+    row.kind = "code"
+    row.code = code
+    row.design = None
+    row.version += 1
+    row.updated_at = datetime.now(UTC)
+    audit(db, actor_id=actor.person.id, entity_type="label_template",
+          entity_id=str(row.id), action="convert_to_code",
+          changes={"kind": {"from": "design", "to": "code"}})
+    await db.commit()
+    item = LabelTemplateOut.model_validate(row)
+    item.site_ids = [l.site_id for l in row.site_links]
+    return item
 
 
 _DPMM = {203: 8, 300: 12}
