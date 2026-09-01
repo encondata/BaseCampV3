@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import AssetCategoryEditModal from '../components/variables/AssetCategoryEditModal';
+import LabelsTab from '../components/variables/LabelsTab';
 import SiteTypeEditModal from '../components/variables/SiteTypeEditModal';
 import StatusEditModal, { ColorSwatch } from '../components/variables/StatusEditModal';
 import WorkerLevelEditModal from '../components/variables/WorkerLevelEditModal';
@@ -57,7 +58,7 @@ function ChevronIcon() {
   );
 }
 
-type Tab = 'statuses' | 'site-types' | 'worker-levels' | 'asset-categories';
+type Tab = 'statuses' | 'site-types' | 'worker-levels' | 'asset-categories' | 'labels';
 
 // Matches the server's status/labels.py UNKNOWN_COLOR fallback. Every site
 // type carries a colour after migration 0013, so this is defensive only —
@@ -69,6 +70,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'site-types', label: 'Site types' },
   { id: 'worker-levels', label: 'Worker levels' },
   { id: 'asset-categories', label: 'Asset categories' },
+  { id: 'labels', label: 'Labels' },
 ];
 
 export default function Variables() {
@@ -82,7 +84,7 @@ export default function Variables() {
           <h1 className="page-title">Variables</h1>
           <p className="page-hint">
             Controlled vocabularies shared across the portal — statuses, site types, worker
-            levels, and asset categories.
+            levels, asset categories, and label variables.
           </p>
         </div>
       </div>
@@ -102,6 +104,7 @@ export default function Variables() {
         {tab === 'site-types' && <SiteTypesTab />}
         {tab === 'worker-levels' && <WorkerLevelsTab />}
         {tab === 'asset-categories' && <AssetCategoriesTab />}
+        {tab === 'labels' && <LabelsTab />}
       </div>
     </div>
   );
