@@ -17,8 +17,9 @@ import ElementPalette from '../components/labels/ElementPalette';
 import PropertiesPanel from '../components/labels/PropertiesPanel';
 import TagInput from '../components/TagInput';
 import {
-  ApiError, createLabelTemplate, getLabelTemplate, listLabelPlaceholders, listLabelVocab,
-  listSites, updateLabelTemplate, type LabelPlaceholder, type LabelVocab, type SiteItem,
+  ApiError, convertLabelTemplate, createLabelTemplate, getLabelTemplate, listLabelPlaceholders,
+  listLabelVocab, listSites, updateLabelTemplate,
+  type LabelPlaceholder, type LabelVocab, type SiteItem,
 } from '../lib/api';
 import { sizeMeta, vocabOfKind, type VocabKind } from '../lib/labels';
 import {
@@ -145,6 +146,21 @@ export default function LabelTemplateEditor() {
     }
   };
 
+  const convertToCode = async () => {
+    if (!id) return;
+    if (!window.confirm(
+      'One-way: the draggable elements are discarded and this becomes a '
+      + 'raw-code template. Unsaved canvas edits are not included. Continue?')) return;
+    try {
+      const t = await convertLabelTemplate(id);
+      setKind('code');
+      setCodeText(t.code ?? '');
+      setError('');
+    } catch {
+      setError('Convert failed.');
+    }
+  };
+
   if (loadError) {
     return (
       <div className="portal-page">
@@ -221,6 +237,11 @@ export default function LabelTemplateEditor() {
               Redo
             </button>
           </>
+        )}
+        {!isCreate && kind === 'design' && can('labels', 'change') && (
+          <button className="mini-btn" type="button" onClick={() => void convertToCode()}>
+            {meta.language_key === 'zpl' ? 'Edit as raw ZPL' : 'Edit as raw code'}
+          </button>
         )}
         <button type="button" className="btn-solid"
                 disabled={saving || !can('labels', isCreate ? 'add' : 'change')}

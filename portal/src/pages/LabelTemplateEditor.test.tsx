@@ -45,6 +45,7 @@ const api = vi.hoisted(() => ({
   createLabelTemplate: vi.fn(),
   updateLabelTemplate: vi.fn(),
   compileLabel: vi.fn(),
+  convertLabelTemplate: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -175,6 +176,34 @@ it('edit loads site chips and save sends site_ids', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Save' }));
   await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledWith(
     't1', expect.objectContaining({ site_ids: ['s1'] })));
+});
+
+it('converts a design template to raw code after confirm', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  api.getLabelTemplate.mockResolvedValue({
+    id: 't9', name: 'Builder', description: '', label_type: 'top',
+    size_key: '4x2', dpi_key: '203', language_key: 'zpl', kind: 'design',
+    design: { size: { w: 4, h: 2 }, elements: [] }, code: null, version: 1,
+    is_active: true, site_ids: [], created_at: '', updated_at: '' });
+  api.convertLabelTemplate.mockResolvedValue({
+    id: 't9', kind: 'code', code: '^XA^CONVERTED^XZ', design: null,
+    name: 'Builder', description: '', label_type: 'top', size_key: '4x2',
+    dpi_key: '203', language_key: 'zpl', version: 2, is_active: true,
+    site_ids: [], created_at: '', updated_at: '' });
+  renderAt('/labels/templates/t9/edit');
+  await waitFor(() =>
+    expect(screen.queryByRole('button', { name: 'Edit as raw ZPL' })).not.toBeNull());
+  await userEvent.click(screen.getByRole('button', { name: 'Edit as raw ZPL' }));
+  expect(window.confirm).toHaveBeenCalled();
+  await waitFor(() => expect(api.convertLabelTemplate).toHaveBeenCalledWith('t9'));
+  const ta = await screen.findByLabelText('Template code') as HTMLTextAreaElement;
+  expect(ta.value).toBe('^XA^CONVERTED^XZ');
+});
+
+it('no convert button on new or code-kind templates', async () => {
+  renderAt('/labels/templates/new?kind=design');
+  await waitFor(() => expect(screen.queryByLabelText('Name')).not.toBeNull());
+  expect(screen.queryByRole('button', { name: /Edit as raw/ })).toBeNull();
 });
 
 it('new template defaults to no sites (global)', async () => {

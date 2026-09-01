@@ -19,8 +19,8 @@ import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import {
-  ApiError, deleteLabelTemplate, listLabelTemplates, listLabelVocab, listSites,
-  updateLabelTemplate,
+  ApiError, convertLabelTemplate, deleteLabelTemplate, listLabelTemplates, listLabelVocab,
+  listSites, updateLabelTemplate,
   type LabelTemplate, type LabelVocab, type SiteItem,
 } from '../lib/api';
 import {
@@ -373,6 +373,17 @@ export default function LabelTemplates() {
                       ...(canChange ? [{
                         key: 'edit', label: 'Edit',
                         onSelect: () => navigate(`/labels/templates/${t.id}/edit`),
+                      }] : []),
+                      ...(canChange && t.kind === 'design' ? [{
+                        key: 'convert',
+                        label: t.language_key === 'zpl' ? 'Edit as raw ZPL' : 'Edit as raw code',
+                        onSelect: () => {
+                          if (!window.confirm('One-way: the draggable elements are discarded '
+                            + 'and this becomes a raw-code template. Continue?')) return;
+                          void convertLabelTemplate(t.id)
+                            .then(() => navigate(`/labels/templates/${t.id}/edit`))
+                            .catch((err: unknown) => setError(msgFor(err)));
+                        },
                       }] : []),
                       ...(t.is_active
                         ? (canDelete ? [{

@@ -44,6 +44,7 @@ const api = vi.hoisted(() => ({
   updateLabelTemplate: vi.fn(),
   listLabelVocab: vi.fn(),
   listSites: vi.fn(),
+  convertLabelTemplate: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -91,6 +92,7 @@ beforeEach(() => {
   api.deleteLabelTemplate.mockResolvedValue(undefined);
   api.updateLabelTemplate.mockResolvedValue(TEMPLATES[0]);
   api.listSites.mockResolvedValue(SITES);
+  api.convertLabelTemplate.mockResolvedValue(TEMPLATES[0]);
 });
 
 afterEach(cleanup);
@@ -128,4 +130,18 @@ it('row menu deactivates via deleteLabelTemplate', async () => {
   await userEvent.click(within(row as HTMLElement).getByRole('button', { name: /Actions/ }));
   await userEvent.click(screen.getByText('Deactivate'));  // portal: query at screen level
   expect(api.deleteLabelTemplate).toHaveBeenCalledWith('t1');
+});
+
+it('row menu offers Edit as raw ZPL on design rows only', async () => {
+  render(<MemoryRouter><LabelTemplates /></MemoryRouter>);
+  await waitFor(() => expect(screen.queryByText('Front tag')).not.toBeNull());
+  const designRow = screen.getByText('Front tag').closest('.dir-row')!;
+  await userEvent.click(within(designRow as HTMLElement)
+    .getByRole('button', { name: /Actions/ }));
+  expect(screen.queryByText('Edit as raw ZPL')).not.toBeNull();
+  await userEvent.keyboard('{Escape}');
+  const codeRow = screen.getByText('Crate tag').closest('.dir-row')!;
+  await userEvent.click(within(codeRow as HTMLElement)
+    .getByRole('button', { name: /Actions/ }));
+  expect(screen.queryByText(/Edit as raw/)).toBeNull();
 });
