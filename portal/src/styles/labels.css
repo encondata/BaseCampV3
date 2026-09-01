@@ -1,0 +1,6 @@
+/** Labels feature — page-specific styles. The directory-list chrome
+ *  (.dir-head/.dir-toolbar/.dir-list/.dir-row/.chip/.pop-menu, etc.)
+ *  comes from styles/directory.css and column-menu.css; this file only
+ *  holds what's specific to the Labels pages themselves. Starts near-
+ *  empty at Task 13 (Templates directory list) and grows through the
+ *  Task 15-18 template builder / print / generate pages. */
