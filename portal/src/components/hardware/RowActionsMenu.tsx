@@ -115,15 +115,17 @@ export function RowActionsMenu({ label, actions }: {
               aria-expanded={open}
               onClick={(e) => {
                 e.stopPropagation();
-                setOpen((o) => {
-                  const next = !o;
-                  if (next) {
-                    menuCoordinator.dispatchEvent(
-                      new CustomEvent(CLOSE_OTHERS_EVENT, { detail: instanceId }),
-                    );
-                  }
-                  return next;
-                });
+                // Broadcast BEFORE setState, in the handler body — never
+                // inside the updater: React may run updaters during
+                // render, and the broadcast synchronously setStates the
+                // other instances (setState-during-render warning).
+                const next = !open;
+                if (next) {
+                  menuCoordinator.dispatchEvent(
+                    new CustomEvent(CLOSE_OTHERS_EVENT, { detail: instanceId }),
+                  );
+                }
+                setOpen(next);
               }}>
         {label ?? 'Actions'} ▾
       </button>
