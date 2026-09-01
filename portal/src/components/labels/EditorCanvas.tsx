@@ -40,6 +40,7 @@ interface DragState {
   ow: number;
   oh: number;
   mode: 'move' | 'resize';
+  patch: Partial<LabelEl> | null;
 }
 
 interface Overlay { id: string; patch: Partial<LabelEl> }
@@ -59,17 +60,14 @@ export default function EditorCanvas({
   const commitDrag = () => {
     const d = drag.current;
     drag.current = null;
-    if (!d) return;
-    setOverlay((cur) => {
-      if (cur && cur.id === d.id) {
-        const el = design.elements.find((e) => e.id === d.id);
-        if (el) {
-          const merged = { ...el, ...cur.patch } as LabelEl;
-          onPatch(d.id, { ...cur.patch, ...clampToLabel(merged, design.size) });
-        }
+    if (d && d.patch) {
+      const el = design.elements.find((e) => e.id === d.id);
+      if (el) {
+        const merged = { ...el, ...d.patch } as LabelEl;
+        onPatch(d.id, { ...d.patch, ...clampToLabel(merged, design.size) });
       }
-      return null;
-    });
+    }
+    setOverlay(null);
   };
 
   const startDrag = (el: LabelEl) => (e: PointerEvent<SVGGElement>) => {
@@ -79,7 +77,7 @@ export default function EditorCanvas({
       .setPointerCapture?.(e.pointerId);
     drag.current = {
       id: el.id, px: e.clientX, py: e.clientY, ox: el.x, oy: el.y, ow: el.w, oh: el.h,
-      mode: 'move',
+      mode: 'move', patch: null,
     };
   };
 
@@ -90,7 +88,7 @@ export default function EditorCanvas({
       .setPointerCapture?.(e.pointerId);
     drag.current = {
       id: el.id, px: e.clientX, py: e.clientY, ox: el.x, oy: el.y, ow: el.w, oh: el.h,
-      mode: 'resize',
+      mode: 'resize', patch: null,
     };
   };
 
@@ -99,14 +97,12 @@ export default function EditorCanvas({
     if (!d) return;
     const dxIn = (e.clientX - d.px) / (PPI * zoom);
     const dyIn = (e.clientY - d.py) / (PPI * zoom);
-    if (d.mode === 'move') {
-      setOverlay({ id: d.id, patch: { x: snap(d.ox + dxIn), y: snap(d.oy + dyIn) } });
-    } else {
-      setOverlay({
-        id: d.id,
-        patch: { w: Math.max(GRID, snap(d.ow + dxIn)), h: Math.max(GRID, snap(d.oh + dyIn)) },
-      });
-    }
+    const patch: Partial<LabelEl> =
+      d.mode === 'move'
+        ? { x: snap(d.ox + dxIn), y: snap(d.oy + dyIn) }
+        : { w: Math.max(GRID, snap(d.ow + dxIn)), h: Math.max(GRID, snap(d.oh + dyIn)) };
+    d.patch = patch;
+    setOverlay({ id: d.id, patch });
   };
 
   const nudge = (e: KeyboardEvent<SVGSVGElement>) => {
