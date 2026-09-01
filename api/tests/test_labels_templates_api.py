@@ -1,5 +1,7 @@
 """Template CRUD: filters, version bump, deactivate-on-delete, vocab checks."""
 
+from sqlalchemy import text
+
 from tests.test_sites_api import login
 from tests.test_status_values_write import _make
 
@@ -83,6 +85,31 @@ async def test_patch_bumps_version_once_per_change(client, db, seeded_user):
     resp = await client.patch(f"/labels/templates/{tid}", headers=hdrs,
                               json={"description": "front rack tag"})
     assert resp.json()["version"] == 2
+
+
+async def test_patch_unchanged_field_survives_deactivated_vocab(client, db, seeded_user):
+    hdrs = await _admin(db, client)
+    resp = await client.post("/labels/templates", headers=hdrs, json=_body())
+    tid = resp.json()["id"]
+    version = resp.json()["version"]
+
+    await db.execute(text(
+        "UPDATE label_vocab SET is_active=false WHERE kind='size' AND key='4x2'"))
+    await db.commit()
+
+    resp = await client.patch(f"/labels/templates/{tid}", headers=hdrs,
+                              json={"description": "still fine"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["version"] == version + 1
+
+    await db.execute(text(
+        "UPDATE label_vocab SET is_active=false WHERE kind='size' AND key='2x1'"))
+    await db.commit()
+
+    resp = await client.patch(f"/labels/templates/{tid}", headers=hdrs,
+                              json={"size_key": "2x1"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "unknown_vocab"
 
 
 async def test_kind_is_immutable(client, db, seeded_user):

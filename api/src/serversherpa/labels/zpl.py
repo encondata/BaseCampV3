@@ -64,7 +64,7 @@ def _barcode(el: BarcodeEl, dpi: int, subs) -> str:
 
 def _qr(el: QrEl, dpi: int, subs) -> str:
     mag = min(10, max(1, round(_dots(el.w, dpi) / 25)))
-    return (f"^FO{_dots(el.x, dpi)},{_dots(el.y, dpi)}^BQN,2,{mag}"
+    return (f"^FO{_dots(el.x, dpi)},{_dots(el.y, dpi)}^BQ{_ROT[el.rotation]},2,{mag}"
             f"^FH_^FDQA,{_fd(el.data, subs)}^FS")
 
 

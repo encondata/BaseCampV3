@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     sentry_dsn: str = ""
 
     # ── Labels ─────────────────────────────────────────────
-    labelary_base_url: str = "http://api.labelary.com"
+    labelary_base_url: str = "https://api.labelary.com"
 
     @property
     def sync_database_url(self) -> str:

@@ -32,10 +32,6 @@ router = APIRouter(prefix="/labels", tags=["labels"])
 
 VOCAB_FIELDS = ["label", "description", "meta", "sort_order", "is_active"]
 
-# which label_templates column each vocab kind is referenced from
-_KIND_COLUMN = {"type": "label_type", "size": "size_key",
-                "dpi": "dpi_key", "language": "language_key"}
-
 
 def _err(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
@@ -234,12 +230,20 @@ _TEMPLATE_VOCAB = (("type", "label_type"), ("size", "size_key"),
                    ("dpi", "dpi_key"), ("language", "language_key"))
 
 
-async def _check_template_vocab(db: DbSession, values: dict) -> None:
-    """422 unknown_vocab unless every referenced vocab row exists + active."""
+async def _check_template_vocab(
+    db: DbSession, values: dict, current: LabelTemplate | None = None,
+) -> None:
+    """422 unknown_vocab unless every referenced vocab row exists.
+
+    A changed value must also be active. An unchanged value (equal to
+    `current`'s existing value) only needs to exist — deactivating a vocab
+    row must not brick templates that already reference it."""
     for kind, field in _TEMPLATE_VOCAB:
         if field in values:
             row = await db.get(LabelVocab, (kind, values[field]))
-            if row is None or not row.is_active:
+            unchanged = (current is not None
+                         and values[field] == getattr(current, field))
+            if row is None or (not row.is_active and not unchanged):
                 raise _err(422, "unknown_vocab", field=field,
                            key=values[field])
 
@@ -329,7 +333,7 @@ async def update_template(
             parse_design(data["design"])
         except DesignError as e:
             raise _err(422, "bad_design", problems=e.problems) from e
-    await _check_template_vocab(db, data)
+    await _check_template_vocab(db, data, current=row)
     if "name" in data and data["name"].lower() != row.name.lower():
         dupe = (await db.execute(select(LabelTemplate).where(
             LabelTemplate.name == data["name"]))).scalar_one_or_none()

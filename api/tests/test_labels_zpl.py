@@ -77,3 +77,10 @@ def test_rotation_letters():
          "rotation": 90, "content": "R", "fontSizePt": 10,
          "bold": False, "align": "left"}]})
     assert "^A0R,28,28" in compile_zpl(d, 203)
+
+
+def test_qr_rotation_passthrough():
+    d = parse_design({"size": {"w": 2, "h": 2}, "elements": [
+        {"id": "q1", "type": "qr", "x": 0, "y": 0, "w": 0.7, "h": 0.7,
+         "rotation": 90, "data": "{asset_id}"}]})
+    assert "^BQR,2," in compile_zpl(d, 203)
