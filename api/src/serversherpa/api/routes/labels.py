@@ -13,11 +13,17 @@ from sqlalchemy import select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
+    LabelCompileIn, LabelCompileOut,
     LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
     LabelTemplateCreateIn, LabelTemplateOut, LabelTemplateUpdateIn,
     LabelVocabCreateIn, LabelVocabOut, LabelVocabUpdateIn,
 )
 from serversherpa.db.models import LabelPlaceholder, LabelTemplate, LabelVocab
+from serversherpa.labels.brother_escp import compile_escp
+from serversherpa.labels.brother_ptouch import compile_ptouch
+from serversherpa.labels.model import DesignError, parse_design
+from serversherpa.labels.tokens import apply_placeholders
+from serversherpa.labels.zpl import compile_zpl
 from serversherpa.services.audit import audit, diff, snapshot
 
 router = APIRouter(prefix="/labels", tags=["labels"])
@@ -275,6 +281,11 @@ async def create_template(
         raise _err(422, "bad_payload",
                    message="kind must match exactly one of design/code")
     values = body.model_dump()
+    if values.get("design") is not None:
+        try:
+            parse_design(values["design"])
+        except DesignError as e:
+            raise _err(422, "bad_design", problems=e.problems) from e
     await _check_template_vocab(db, values)
     existing = (await db.execute(select(LabelTemplate).where(
         LabelTemplate.name == body.name))).scalar_one_or_none()
@@ -311,6 +322,11 @@ async def update_template(
         raise _err(422, "bad_payload", message="design templates carry no code")
     if row.kind == "code" and "design" in data and data["design"] is not None:
         raise _err(422, "bad_payload", message="code templates carry no design")
+    if data.get("design") is not None:
+        try:
+            parse_design(data["design"])
+        except DesignError as e:
+            raise _err(422, "bad_design", problems=e.problems) from e
     await _check_template_vocab(db, data)
     if "name" in data and data["name"].lower() != row.name.lower():
         dupe = (await db.execute(select(LabelTemplate).where(
@@ -328,6 +344,50 @@ async def update_template(
               entity_id=str(row.id), action="update", changes=changes)
     await db.commit()
     return LabelTemplateOut.model_validate(row)
+
+
+async def _sample_values(db: DbSession) -> dict[str, str]:
+    rows = (await db.execute(select(LabelPlaceholder))).scalars().all()
+    return {r.key: r.sample_value for r in rows}
+
+
+@router.post("/templates/compile", response_model=LabelCompileOut)
+async def compile_template(
+    body: LabelCompileIn, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+) -> LabelCompileOut:
+    size = await db.get(LabelVocab, ("size", body.size_key))
+    dpi = await db.get(LabelVocab, ("dpi", body.dpi_key))
+    lang = await db.get(LabelVocab, ("language", body.language_key))
+    if size is None or dpi is None or lang is None:
+        raise _err(404, "unknown_vocab")
+    subs = await _sample_values(db) if body.mode == "sample" else None
+
+    if body.kind == "code":
+        if body.code is None:
+            raise _err(422, "bad_payload", message="code kind needs code")
+        out = body.code if subs is None else apply_placeholders(body.code, subs)
+        return LabelCompileOut(code=out)
+
+    if body.design is None:
+        raise _err(422, "bad_payload", message="design kind needs design")
+    try:
+        design = parse_design({
+            **body.design,
+            "size": {"w": size.meta["width_in"], "h": size.meta["height_in"]},
+        })
+    except DesignError as e:
+        raise _err(422, "bad_design", problems=e.problems) from e
+
+    if lang.key == "zpl":
+        out = compile_zpl(design, dpi.meta["dots"], subs)
+    elif lang.key == "escp":
+        out = compile_escp(design, subs)
+    elif lang.key == "ptouch":
+        out = compile_ptouch(design, subs)
+    else:
+        raise _err(422, "unsupported_language", key=lang.key)
+    return LabelCompileOut(code=out)
 
 
 @router.delete("/templates/{template_id}", status_code=204)

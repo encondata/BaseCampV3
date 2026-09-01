@@ -1972,3 +1972,19 @@ class LabelTemplateUpdateIn(BaseModel):
     design: dict | None = None
     code: str | None = None
     is_active: bool | None = None
+
+
+class LabelCompileIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["design", "code"]
+    design: dict | None = None
+    code: str | None = Field(None, max_length=20000)
+    size_key: str
+    dpi_key: str
+    language_key: str
+    mode: Literal["placeholders", "sample"] = "placeholders"
+
+
+class LabelCompileOut(BaseModel):
+    code: str
