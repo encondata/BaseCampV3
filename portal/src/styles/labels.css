@@ -61,3 +61,10 @@
 }
 .lbl-props .pf-form select { width: 100%; box-sizing: border-box; }
 .lbl-props .mini-btn.danger { align-self: flex-start; }
+
+/* CodePanel — Task 18 */
+.lbl-code-panel { margin-top: 14px; }
+.lbl-code-panel-body { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.lbl-code-actions { display: flex; gap: 8px; }
+.lbl-code { max-height: 240px; overflow: auto; background: #0e141b0d; padding: 10px 12px; border-radius: 8px; white-space: pre-wrap; }
+.lbl-preview-img { max-width: 100%; border: 1px solid var(--line, #ccc); }

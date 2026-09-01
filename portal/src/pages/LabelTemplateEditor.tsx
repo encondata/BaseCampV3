@@ -11,6 +11,7 @@ import { useEffect, useReducer, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import CodePanel from '../components/labels/CodePanel';
 import EditorCanvas from '../components/labels/EditorCanvas';
 import ElementPalette from '../components/labels/ElementPalette';
 import PropertiesPanel from '../components/labels/PropertiesPanel';
@@ -217,7 +218,9 @@ export default function LabelTemplateEditor() {
             <textarea id="tpl-code" className="mono" rows={18} value={codeText}
                       onChange={(e) => setCodeText(e.target.value)} />
           </div>
-          <div data-slot="code-panel" />
+          <CodePanel kind={kind} design={null}
+                     codeText={codeText} sizeKey={meta.size_key} dpiKey={meta.dpi_key}
+                     languageKey={meta.language_key} />
         </>
       ) : (
         <>
@@ -246,7 +249,9 @@ export default function LabelTemplateEditor() {
               onRemove={(elId) => dispatch({ type: 'remove', id: elId })}
             />
           </div>
-          <div data-slot="code-panel" />
+          <CodePanel kind={kind} design={kind === 'design' ? state.design : null}
+                     codeText={codeText} sizeKey={meta.size_key} dpiKey={meta.dpi_key}
+                     languageKey={meta.language_key} />
         </>
       )}
     </div>
