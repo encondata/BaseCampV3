@@ -254,6 +254,49 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    label: 'Labels',
+    items: [
+      {
+        to: '/labels/print',
+        label: 'Print Labels',
+        resource: 'labels',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M6 9V3h12v6" />
+            <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+            <rect x="6" y="14" width="12" height="7" rx="1" />
+          </svg>
+        ),
+      },
+      {
+        to: '/labels/templates',
+        label: 'Templates',
+        resource: 'labels',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M20.59 13.41 12 22l-9-9 8.59-8.59A2 2 0 0 1 13 4h5a2 2 0 0 1 2 2v5a2 2 0 0 1-.59 1.41z" />
+            <circle cx="16.5" cy="7.5" r="1.3" />
+          </svg>
+        ),
+      },
+      {
+        to: '/labels/generate',
+        label: 'Generate Labels',
+        resource: 'labels',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="5" width="13" height="8" rx="1.5" />
+            <rect x="8" y="11" width="13" height="8" rx="1.5" />
+            <path d="M6 8.5h5M11.5 14.5h5" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
     label: 'Scanning Hardware',
     items: [
       {

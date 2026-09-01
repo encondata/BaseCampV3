@@ -123,6 +123,24 @@ export default function App() {
             <Route path="/stakeholders/partners/:id" element={
               <ProtectedRoute resource="partners"><StakeholderDetail kind="partner" /></ProtectedRoute>
             } />
+            <Route path="/labels/print" element={
+              <ProtectedRoute resource="labels">
+                <Placeholder eyebrow="Labels" title="Print Labels"
+                             hint="Download cached labels and print at the dock — even offline." />
+              </ProtectedRoute>
+            } />
+            <Route path="/labels/templates" element={
+              <ProtectedRoute resource="labels">
+                <Placeholder eyebrow="Labels" title="Templates"
+                             hint="Label templates and the on-screen label builder." />
+              </ProtectedRoute>
+            } />
+            <Route path="/labels/generate" element={
+              <ProtectedRoute resource="labels">
+                <Placeholder eyebrow="Labels" title="Generate Labels"
+                             hint="Bulk-generate labels for initiatives, assets, and containers." />
+              </ProtectedRoute>
+            } />
             <Route path="/hardware/handheld-readers" element={
               <ProtectedRoute resource="scanning_hardware"><HandheldReaders /></ProtectedRoute>} />
             <Route path="/hardware/fixed-readers" element={
