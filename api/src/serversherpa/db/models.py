@@ -1185,3 +1185,17 @@ class LabelTemplate(Base):
     is_active: Mapped[bool] = mapped_column(server_default=text("true"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    site_links: Mapped[list["LabelTemplateSite"]] = relationship(
+        cascade="all, delete-orphan")
+
+
+class LabelTemplateSite(Base):
+    """One row per template-site assignment; no rows = global template."""
+    __tablename__ = "label_template_sites"
+
+    template_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("label_templates.id", ondelete="CASCADE"),
+        primary_key=True)
+    site_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sites.id", ondelete="CASCADE"), primary_key=True)

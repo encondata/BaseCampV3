@@ -1942,6 +1942,8 @@ class LabelTemplateOut(BaseModel):
     code: str | None
     version: int
     is_active: bool
+    # assignment set; [] = global. Populated by the route, not from_attributes.
+    site_ids: list[uuid.UUID] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -1958,6 +1960,7 @@ class LabelTemplateCreateIn(BaseModel):
     kind: Literal["design", "code"]
     design: dict | None = None
     code: str | None = None
+    site_ids: list[uuid.UUID] | None = None
 
 
 class LabelTemplateUpdateIn(BaseModel):
@@ -1972,6 +1975,7 @@ class LabelTemplateUpdateIn(BaseModel):
     design: dict | None = None
     code: str | None = None
     is_active: bool | None = None
+    site_ids: list[uuid.UUID] | None = None
 
 
 class LabelCompileIn(BaseModel):

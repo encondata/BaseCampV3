@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
@@ -19,7 +20,9 @@ from serversherpa.api.schemas import (
     LabelVocabCreateIn, LabelVocabOut, LabelVocabUpdateIn,
     LabelZplPreviewIn,
 )
-from serversherpa.db.models import LabelPlaceholder, LabelTemplate, LabelVocab
+from serversherpa.db.models import (
+    LabelPlaceholder, LabelTemplate, LabelTemplateSite, LabelVocab, Site,
+)
 from serversherpa.labels import labelary
 from serversherpa.labels.brother_escp import compile_escp
 from serversherpa.labels.brother_ptouch import compile_ptouch
@@ -248,11 +251,26 @@ async def _check_template_vocab(
                            key=values[field])
 
 
+async def _check_site_ids(db: DbSession, site_ids: list[uuid.UUID]) -> None:
+    for sid in site_ids:
+        if await db.get(Site, sid) is None:
+            raise _err(422, "unknown_site", site_id=str(sid))
+
+
+async def _site_ids_map(db: DbSession) -> dict[uuid.UUID, list[uuid.UUID]]:
+    rows = (await db.execute(select(
+        LabelTemplateSite.template_id, LabelTemplateSite.site_id))).all()
+    out: dict[uuid.UUID, list[uuid.UUID]] = {}
+    for tid, sid in rows:
+        out.setdefault(tid, []).append(sid)
+    return out
+
+
 @router.get("/templates", response_model=list[LabelTemplateOut])
 async def list_templates(
     db: DbSession, label_type: str | None = None, size_key: str | None = None,
     dpi_key: str | None = None, language_key: str | None = None,
-    active: bool | None = None,
+    active: bool | None = None, site_id: uuid.UUID | None = None,
     _actor: AuthContext = require_permission("labels", "view"),
 ) -> list:
     q = select(LabelTemplate).order_by(LabelTemplate.name)
@@ -263,7 +281,20 @@ async def list_templates(
                      (LabelTemplate.is_active, active)):
         if val is not None:
             q = q.where(col == val)
-    return (await db.execute(q)).scalars().all()
+    if site_id is not None:
+        assigned = select(LabelTemplateSite.template_id).where(
+            LabelTemplateSite.site_id == site_id)
+        has_any = select(LabelTemplateSite.template_id)
+        q = q.where(LabelTemplate.id.in_(assigned)
+                    | LabelTemplate.id.not_in(has_any))
+    rows = (await db.execute(q)).scalars().all()
+    site_map = await _site_ids_map(db)
+    out = []
+    for r in rows:
+        item = LabelTemplateOut.model_validate(r)
+        item.site_ids = site_map.get(r.id, [])
+        out.append(item)
+    return out
 
 
 @router.get("/templates/{template_id}", response_model=LabelTemplateOut)
@@ -271,10 +302,14 @@ async def get_template(
     template_id: uuid.UUID, db: DbSession,
     _actor: AuthContext = require_permission("labels", "view"),
 ) -> LabelTemplateOut:
-    row = await db.get(LabelTemplate, template_id)
+    row = (await db.execute(select(LabelTemplate)
+        .options(selectinload(LabelTemplate.site_links))
+        .where(LabelTemplate.id == template_id))).scalar_one_or_none()
     if row is None:
         raise _err(404, "unknown_template")
-    return LabelTemplateOut.model_validate(row)
+    item = LabelTemplateOut.model_validate(row)
+    item.site_ids = [l.site_id for l in row.site_links]
+    return item
 
 
 @router.post("/templates", response_model=LabelTemplateOut, status_code=201)
@@ -287,12 +322,14 @@ async def create_template(
         raise _err(422, "bad_payload",
                    message="kind must match exactly one of design/code")
     values = body.model_dump()
+    site_ids = values.pop("site_ids", None) or []
     if values.get("design") is not None:
         try:
             parse_design(values["design"])
         except DesignError as e:
             raise _err(422, "bad_design", problems=e.problems) from e
     await _check_template_vocab(db, values)
+    await _check_site_ids(db, site_ids)
     existing = (await db.execute(select(LabelTemplate).where(
         LabelTemplate.name == body.name))).scalar_one_or_none()
     if existing is not None:
@@ -300,11 +337,17 @@ async def create_template(
     row = LabelTemplate(**values)
     db.add(row)
     await db.flush()  # server-generated UUID for the audit row
+    for sid in site_ids:
+        db.add(LabelTemplateSite(template_id=row.id, site_id=sid))
+    changes = diff({}, snapshot(row, TEMPLATE_FIELDS))
+    if site_ids:
+        changes["site_ids"] = {"from": [], "to": sorted(str(s) for s in site_ids)}
     audit(db, actor_id=actor.person.id, entity_type="label_template",
-          entity_id=str(row.id), action="create",
-          changes=diff({}, snapshot(row, TEMPLATE_FIELDS)))
+          entity_id=str(row.id), action="create", changes=changes)
     await db.commit()
-    return LabelTemplateOut.model_validate(row)
+    item = LabelTemplateOut.model_validate(row)
+    item.site_ids = site_ids
+    return item
 
 
 @router.patch("/templates/{template_id}", response_model=LabelTemplateOut)
@@ -312,10 +355,13 @@ async def update_template(
     template_id: uuid.UUID, body: LabelTemplateUpdateIn, db: DbSession,
     actor: AuthContext = require_permission("labels", "change"),
 ) -> LabelTemplateOut:
-    row = await db.get(LabelTemplate, template_id)
+    row = (await db.execute(select(LabelTemplate)
+        .options(selectinload(LabelTemplate.site_links))
+        .where(LabelTemplate.id == template_id))).scalar_one_or_none()
     if row is None:
         raise _err(404, "unknown_template")
     data = body.model_dump(exclude_unset=True)
+    new_site_ids = data.pop("site_ids", None)
     # design/code nullability is owned by kind; other fields reject null
     for f, v in data.items():
         if v is None and f not in ("design", "code"):
@@ -343,13 +389,24 @@ async def update_template(
     for field, value in data.items():
         setattr(row, field, value)
     changes = diff(before, snapshot(row, TEMPLATE_FIELDS))
+    if new_site_ids is not None:
+        await _check_site_ids(db, new_site_ids)
+        current = sorted(str(l.site_id) for l in row.site_links)
+        incoming = sorted(str(s) for s in new_site_ids)
+        if current != incoming:
+            changes["site_ids"] = {"from": current, "to": incoming}
+            row.site_links = [LabelTemplateSite(template_id=row.id,
+                                                site_id=sid)
+                              for sid in new_site_ids]
     if changes:
         row.version += 1
         row.updated_at = datetime.now(UTC)
         audit(db, actor_id=actor.person.id, entity_type="label_template",
               entity_id=str(row.id), action="update", changes=changes)
     await db.commit()
-    return LabelTemplateOut.model_validate(row)
+    item = LabelTemplateOut.model_validate(row)
+    item.site_ids = [l.site_id for l in row.site_links]
+    return item
 
 
 async def _sample_values(db: DbSession) -> dict[str, str]:
