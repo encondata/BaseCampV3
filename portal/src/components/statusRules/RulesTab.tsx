@@ -231,7 +231,8 @@ export default function RulesTab({ onCount }: {
         if (!schema) return null;
         const opt = statusOption(schema, rule.trigger_status);
         return (
-          <span className="chip custom" style={{ '--chip': opt?.color } as CSSProperties}>
+          <span className="chip custom" title={opt?.label ?? rule.trigger_status}
+                style={{ '--chip': opt?.color } as CSSProperties}>
             <span className="dot" />{cellText(rule, 'trigger_status')}
           </span>
         );

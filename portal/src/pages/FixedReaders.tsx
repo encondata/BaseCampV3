@@ -185,7 +185,8 @@ export default function FixedReaders() {
         return d.scan_status == null
           ? <span>—</span>
           : (
-            <span className="chip custom" style={{ '--chip': d.scan_status_color } as CSSProperties}>
+            <span className="chip custom" title={deviceCellText(d, 'scan_status')}
+                  style={{ '--chip': d.scan_status_color } as CSSProperties}>
               <span className="dot" />{deviceCellText(d, 'scan_status')}
             </span>
           );

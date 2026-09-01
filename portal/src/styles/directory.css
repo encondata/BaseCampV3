@@ -314,6 +314,24 @@
   font-weight: 500;
   white-space: nowrap;
 }
+/* Inside a grid cell a chip must truncate, never paint over the next
+   column: inline-block (text-overflow needs a block container — flex
+   text nodes can't ellipsize) with the dot re-aligned for inline flow.
+   Toolbar/facet/modal chips keep the inline-flex layout above. */
+.cell .chip {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 22px;
+}
+.cell .chip .dot {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+  margin-top: -2px;
+}
+
 .chip .dot {
   width: 6px;
   height: 6px;
