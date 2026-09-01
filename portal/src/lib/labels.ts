@@ -72,6 +72,20 @@ export function placeholderSearchText(p: LabelPlaceholder): string {
     .toLowerCase();
 }
 
+export function siteNames(
+  siteIds: string[], sites: { id: string; name: string }[],
+): string[] {
+  return siteIds.map((id) => sites.find((s) => s.id === id)?.name ?? id);
+}
+
+export function sitesCellText(
+  siteIds: string[], sites: { id: string; name: string }[],
+): string {
+  if (siteIds.length === 0) return 'All sites';
+  const names = siteNames(siteIds, sites);
+  return names.length === 1 ? names[0] : `${names[0]} +${names.length - 1}`;
+}
+
 export function templateSearchText(t: LabelTemplate): string {
   return `${t.name} ${t.description} ${t.label_type} ${t.size_key} ${t.dpi_key} ${t.language_key} ${t.kind}`
     .toLowerCase();

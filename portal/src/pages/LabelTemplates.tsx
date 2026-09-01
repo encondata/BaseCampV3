@@ -19,14 +19,15 @@ import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import {
-  ApiError, deleteLabelTemplate, listLabelTemplates, listLabelVocab, updateLabelTemplate,
-  type LabelTemplate, type LabelVocab,
+  ApiError, deleteLabelTemplate, listLabelTemplates, listLabelVocab, listSites,
+  updateLabelTemplate,
+  type LabelTemplate, type LabelVocab, type SiteItem,
 } from '../lib/api';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState, type CellText,
 } from '../lib/columnMenu';
-import { templateSearchText, vocabLabel, vocabOfKind } from '../lib/labels';
+import { siteNames, sitesCellText, templateSearchText, vocabLabel, vocabOfKind } from '../lib/labels';
 import {
   ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
   moveKey, passesFacets, useOutsideClose, useReorderDrag, useSearchHaystacks,
@@ -46,6 +47,7 @@ const COLUMNS: ColumnDef[] = [
   { key: 'kind', label: 'Kind', width: '0.8fr', default: true },
   { key: 'version', label: 'Ver', width: '0.5fr', default: true },
   { key: 'is_active', label: 'Active', width: '0.7fr', default: true },
+  { key: 'sites', label: 'Sites', width: '1.1fr', default: true },
   { key: 'description', label: 'Description', width: '1.6fr', default: false },
   { key: 'updated_at', label: 'Updated', width: '1fr', default: false },
 ];
@@ -93,6 +95,7 @@ export default function LabelTemplates() {
 
   const [templates, setTemplates] = useState<LabelTemplate[] | null>(null);
   const [vocab, setVocab] = useState<LabelVocab[]>([]);
+  const [sites, setSites] = useState<SiteItem[]>([]);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [facets, setFacets] = useState<FacetState>({});
@@ -108,9 +111,12 @@ export default function LabelTemplates() {
 
   const load = async () => {
     try {
-      const [t, v] = await Promise.all([listLabelTemplates(), listLabelVocab()]);
+      const [t, v, s] = await Promise.all([
+        listLabelTemplates(), listLabelVocab(), listSites().catch(() => []),
+      ]);
       setTemplates(t);
       setVocab(v);
+      setSites(s);
       setError('');
     } catch (err) {
       setError(err instanceof ApiError && err.status === 403
@@ -130,6 +136,7 @@ export default function LabelTemplates() {
       case 'kind': return kindLabel(t.kind);
       case 'version': return String(t.version);
       case 'is_active': return activeLabel(t.is_active);
+      case 'sites': return sitesCellText(t.site_ids, sites);
       case 'description': return t.description;
       case 'updated_at': return t.updated_at;
       default: return t.name;
@@ -152,11 +159,13 @@ export default function LabelTemplates() {
     ['Kind', (t) => cellText(t, 'kind')],
     ['Ver', (t) => cellText(t, 'version')],
     ['Active', (t) => cellText(t, 'is_active')],
+    ['Sites', (t) => siteNames(t.site_ids, sites).join('; ')],
     ['Description', (t) => t.description],
     ['Updated', (t) => t.updated_at],
   ];
 
-  const searchText = (t: LabelTemplate) => templateSearchText(t);
+  const searchText = (t: LabelTemplate) =>
+    `${templateSearchText(t)} ${siteNames(t.site_ids, sites).join(' ').toLowerCase()}`;
   const haystack = useSearchHaystacks(templates, searchText);
 
   const facetGroups = useMemo<FacetGroup[]>(() => [
@@ -180,7 +189,15 @@ export default function LabelTemplates() {
       key: 'is_active', title: 'Active',
       options: [{ value: 'true', label: 'Active' }, { value: 'false', label: 'Inactive' }],
     },
-  ], [vocab]);
+    {
+      key: 'sites', title: 'Sites',
+      options: [
+        { value: '', label: 'All sites (global)' },
+        ...Array.from(new Set((templates ?? []).flatMap((t) => t.site_ids)))
+          .map((id) => ({ value: id, label: siteNames([id], sites)[0] })),
+      ],
+    },
+  ], [vocab, templates, sites]);
 
   const facetValues = (t: LabelTemplate) => (groupKey: string): string[] => {
     if (groupKey === 'label_type') return [t.label_type];
@@ -188,6 +205,7 @@ export default function LabelTemplates() {
     if (groupKey === 'language_key') return [t.language_key];
     if (groupKey === 'kind') return [t.kind];
     if (groupKey === 'is_active') return [String(t.is_active)];
+    if (groupKey === 'sites') return t.site_ids.length ? t.site_ids : [''];
     return [];
   };
 
@@ -205,7 +223,7 @@ export default function LabelTemplates() {
       return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templates, vocab, facets, filters, query, sortKey, sortDir, haystack]);
+  }, [templates, vocab, sites, facets, filters, query, sortKey, sortDir, haystack]);
 
   const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
@@ -255,6 +273,12 @@ export default function LabelTemplates() {
             {activeLabel(t.is_active)}
           </span>
         );
+      case 'sites': {
+        const text = sitesCellText(t.site_ids, sites);
+        return t.site_ids.length === 0
+          ? <span className="cell-sub">{text}</span>
+          : <span>{text}</span>;
+      }
       case 'description':
         return <span>{t.description || '—'}</span>;
       case 'updated_at':

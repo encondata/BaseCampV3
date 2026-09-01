@@ -14,7 +14,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { LabelTemplate, LabelVocab, UiPreferences } from '../lib/api';
+import type { LabelTemplate, LabelVocab, SiteItem, UiPreferences } from '../lib/api';
 
 const auth = vi.hoisted(() => {
   const state: { can: (resource: string, action: string) => boolean } = {
@@ -43,6 +43,7 @@ const api = vi.hoisted(() => ({
   deleteLabelTemplate: vi.fn(),
   updateLabelTemplate: vi.fn(),
   listLabelVocab: vi.fn(),
+  listSites: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -55,14 +56,21 @@ const TEMPLATES: LabelTemplate[] = [
     id: 't1', name: 'Front tag', description: 'Front-of-cage tag',
     label_type: 'top', size_key: '4x2', dpi_key: '203', language_key: 'zpl',
     kind: 'design', design: {}, code: null, version: 3, is_active: true,
+    site_ids: ['s1', 's2'],
     created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-20T00:00:00Z',
   },
   {
     id: 't2', name: 'Crate tag', description: 'Container crate tag',
     label_type: 'container', size_key: '6x4', dpi_key: '203', language_key: 'escp',
     kind: 'code', design: null, code: '! 0 200 200 400 1\r\n', version: 1, is_active: false,
+    site_ids: [],
     created_at: '2026-07-01T00:00:00Z', updated_at: '2026-07-15T00:00:00Z',
   },
+];
+
+const SITES: SiteItem[] = [
+  { id: 's1', name: 'NAP7' } as SiteItem,
+  { id: 's2', name: 'NAP11' } as SiteItem,
 ];
 
 const VOCAB: LabelVocab[] = [
@@ -82,6 +90,7 @@ beforeEach(() => {
   api.listLabelVocab.mockResolvedValue(VOCAB);
   api.deleteLabelTemplate.mockResolvedValue(undefined);
   api.updateLabelTemplate.mockResolvedValue(TEMPLATES[0]);
+  api.listSites.mockResolvedValue(SITES);
 });
 
 afterEach(cleanup);
@@ -94,6 +103,13 @@ it('lists templates with vocab labels and kind chips', async () => {
   expect(screen.queryByText('Top Label')).not.toBeNull();     // vocabLabel applied
   expect(screen.queryByText('Builder')).not.toBeNull();       // kind chip design
   expect(screen.queryByText('Raw code')).not.toBeNull();      // kind chip code
+});
+
+it('Sites column shows names with overflow and All sites for globals', async () => {
+  render(<MemoryRouter><LabelTemplates /></MemoryRouter>);
+  await waitFor(() => expect(screen.queryByText('Front tag')).not.toBeNull());
+  expect(screen.queryByText('NAP7 +1')).not.toBeNull();
+  expect(screen.queryByText('All sites')).not.toBeNull();
 });
 
 it('New template menu offers both kinds', async () => {

@@ -2795,6 +2795,7 @@ export interface LabelTemplate {
   size_key: string; dpi_key: string; language_key: string;
   kind: 'design' | 'code'; design: Record<string, unknown> | null;
   code: string | null; version: number; is_active: boolean;
+  site_ids: string[];
   created_at: string; updated_at: string;
 }
 
@@ -2897,6 +2898,14 @@ export async function updateLabelTemplate(
 export async function deleteLabelTemplate(id: string): Promise<void> {
   const resp = await apiFetch(`/labels/templates/${id}`, { method: 'DELETE' });
   if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function convertLabelTemplate(id: string): Promise<LabelTemplate> {
+  const resp = await apiFetch(`/labels/templates/${id}/convert-to-code`, {
+    method: 'POST',
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
 }
 
 export async function compileLabel(body: {

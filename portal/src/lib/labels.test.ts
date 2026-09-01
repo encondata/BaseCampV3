@@ -2,8 +2,8 @@ import { expect, it } from 'vitest';
 
 import type { LabelPlaceholder, LabelVocab } from './api';
 import {
-  dpiDots, metaSummary, placeholdersFor, sizeMeta, templateSearchText,
-  vocabLabel, vocabOfKind,
+  dpiDots, metaSummary, placeholdersFor, siteNames, sitesCellText, sizeMeta,
+  templateSearchText, vocabLabel, vocabOfKind,
 } from './labels';
 
 const V = (over: Partial<LabelVocab>): LabelVocab => ({
@@ -62,10 +62,22 @@ it('placeholdersFor filters on label type and active', () => {
     .toEqual(['container_name']);
 });
 
+const SITES = [{ id: 's1', name: 'NAP7' }, { id: 's2', name: 'NAP11' }];
+
+it('siteNames maps ids and keeps unknown ids raw', () => {
+  expect(siteNames(['s2', 'ghost'], SITES)).toEqual(['NAP11', 'ghost']);
+});
+
+it('sitesCellText renders global, single, and overflow states', () => {
+  expect(sitesCellText([], SITES)).toBe('All sites');
+  expect(sitesCellText(['s1'], SITES)).toBe('NAP7');
+  expect(sitesCellText(['s1', 's2'], SITES)).toBe('NAP7 +1');
+});
+
 it('templateSearchText covers the visible columns', () => {
   const t = { id: '1', name: 'Front tag', description: 'main', label_type: 'front',
     size_key: '4x2', dpi_key: '203', language_key: 'zpl', kind: 'design',
-    design: null, code: null, version: 3, is_active: true,
+    design: null, code: null, version: 3, is_active: true, site_ids: [] as string[],
     created_at: '', updated_at: '' } as const;
   const hay = templateSearchText(t);
   for (const frag of ['front tag', 'main', 'front', '4x2', 'zpl', 'design']) {
