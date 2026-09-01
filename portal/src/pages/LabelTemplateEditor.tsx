@@ -13,6 +13,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import EditorCanvas from '../components/labels/EditorCanvas';
 import ElementPalette from '../components/labels/ElementPalette';
+import PropertiesPanel from '../components/labels/PropertiesPanel';
 import {
   ApiError, createLabelTemplate, getLabelTemplate, listLabelPlaceholders, listLabelVocab,
   updateLabelTemplate, type LabelPlaceholder, type LabelVocab,
@@ -152,6 +153,7 @@ export default function LabelTemplateEditor() {
   const languageOptions = vocabOfKind(vocab, 'language');
   const sizeRow = vocab.find((v) => v.kind === 'size' && v.key === meta.size_key);
   const hasTab = sizeRow ? sizeMeta(sizeRow).has_tab : false;
+  const selected = state.design.elements.find((e) => e.id === state.selectedId) ?? null;
 
   return (
     <div className="portal-page">
@@ -215,7 +217,7 @@ export default function LabelTemplateEditor() {
             <textarea id="tpl-code" className="mono" rows={18} value={codeText}
                       onChange={(e) => setCodeText(e.target.value)} />
           </div>
-          <div data-slot="code-panel" data-placeholder-count={placeholders.length} />
+          <div data-slot="code-panel" />
         </>
       ) : (
         <>
@@ -236,7 +238,13 @@ export default function LabelTemplateEditor() {
               onSelect={(elId) => dispatch({ type: 'select', id: elId })}
               onPatch={(elId, patch) => dispatch({ type: 'patch', id: elId, patch })}
             />
-            <div data-slot="props" />
+            <PropertiesPanel
+              element={selected}
+              placeholders={placeholders}
+              labelType={meta.label_type}
+              onPatch={(elId, patch) => dispatch({ type: 'patch', id: elId, patch })}
+              onRemove={(elId) => dispatch({ type: 'remove', id: elId })}
+            />
           </div>
           <div data-slot="code-panel" />
         </>

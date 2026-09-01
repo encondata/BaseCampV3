@@ -41,3 +41,23 @@
 .lbl-layer.on { background: var(--accent-soft, #e8f0fe); }
 .lbl-layer-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lbl-layer .mini-btn { padding: 0 6px; height: 22px; font-size: 11px; }
+
+/* PropertiesPanel — Task 17 */
+.lbl-props { display: flex; flex-direction: column; gap: 14px; }
+.lbl-props-hint { font-size: 12.5px; color: var(--text-mute); }
+.lbl-props .pf-form { grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+.lbl-props .pf-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  color: var(--text-dark);
+  background: var(--surface-2, #f5f7fa);
+  border: 1px solid var(--paper-line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  outline: none;
+  resize: vertical;
+}
+.lbl-props .pf-form select { width: 100%; box-sizing: border-box; }
+.lbl-props .mini-btn.danger { align-self: flex-start; }
