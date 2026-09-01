@@ -19,7 +19,7 @@ import {
   ApiError, createLabelTemplate, getLabelTemplate, listLabelPlaceholders, listLabelVocab,
   updateLabelTemplate, type LabelPlaceholder, type LabelVocab,
 } from '../lib/api';
-import { sizeMeta, vocabOfKind } from '../lib/labels';
+import { sizeMeta, vocabOfKind, type VocabKind } from '../lib/labels';
 import {
   editorReducer, emptyDesign, initialEditorState, newElement, type LabelDesign,
 } from '../lib/labelModel';
@@ -149,10 +149,20 @@ export default function LabelTemplateEditor() {
     return <div className="portal-page" />;
   }
 
-  const typeOptions = vocabOfKind(vocab, 'type');
-  const sizeOptions = vocabOfKind(vocab, 'size');
-  const dpiOptions = vocabOfKind(vocab, 'dpi');
-  const languageOptions = vocabOfKind(vocab, 'language');
+  // A template's current vocab value may have since been deactivated; the
+  // active-only list would then have no matching <option> and the select
+  // would render blank even though meta.<field> holds a valid value. When
+  // editing (not creating), splice that row back in from the full list.
+  const withCurrent = (kind: VocabKind, options: LabelVocab[], currentKey: string) => {
+    if (isCreate || options.some((v) => v.key === currentKey)) return options;
+    const row = vocabOfKind(vocab, kind, { activeOnly: false })
+      .find((v) => v.key === currentKey);
+    return row ? [...options, row] : options;
+  };
+  const typeOptions = withCurrent('type', vocabOfKind(vocab, 'type'), meta.label_type);
+  const sizeOptions = withCurrent('size', vocabOfKind(vocab, 'size'), meta.size_key);
+  const dpiOptions = withCurrent('dpi', vocabOfKind(vocab, 'dpi'), meta.dpi_key);
+  const languageOptions = withCurrent('language', vocabOfKind(vocab, 'language'), meta.language_key);
   const sizeRow = vocab.find((v) => v.kind === 'size' && v.key === meta.size_key);
   const hasTab = sizeRow ? sizeMeta(sizeRow).has_tab : false;
   const selected = state.design.elements.find((e) => e.id === state.selectedId) ?? null;

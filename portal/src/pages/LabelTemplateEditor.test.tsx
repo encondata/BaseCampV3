@@ -129,6 +129,24 @@ it('edit route loads the template and patches on save', async () => {
   expect(api.updateLabelTemplate.mock.calls[0][1]).not.toHaveProperty('kind');
 });
 
+it('edit route with a deactivated current vocab value renders it selected', async () => {
+  api.getLabelTemplate.mockResolvedValue({
+    id: 't1', name: 'Old size tag', description: '', label_type: 'top',
+    size_key: '9x9', dpi_key: '203', language_key: 'zpl', kind: 'code',
+    design: null, code: '^XA^XZ', version: 3, is_active: true,
+    created_at: '', updated_at: '' });
+  api.listLabelVocab.mockResolvedValue([
+    ...VOCAB,
+    { kind: 'size', key: '9x9', label: '9 x 9 in', description: '',
+      meta: { width_in: 9, height_in: 9 }, sort_order: 2, is_active: false,
+      usage_count: null },
+  ]);
+  renderAt('/labels/templates/t1/edit');
+  await waitFor(() =>
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Old size tag'));
+  expect((screen.getByLabelText('Size') as HTMLSelectElement).value).toBe('9x9');
+});
+
 it('save error surfaces the pf-error', async () => {
   const { ApiError } = await import('../lib/api');
   api.createLabelTemplate.mockRejectedValue(new ApiError(409, 'label_template_exists'));
