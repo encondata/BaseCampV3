@@ -5,6 +5,7 @@ vocab + placeholder mutations are devtools-gated (god-only), matching the
 rest of the Variables surface. All mutations audit into the caller's txn.
 """
 
+import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
@@ -13,6 +14,7 @@ from sqlalchemy import select
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
+    LabelTemplateCreateIn, LabelTemplateOut, LabelTemplateUpdateIn,
     LabelVocabCreateIn, LabelVocabOut, LabelVocabUpdateIn,
 )
 from serversherpa.db.models import LabelPlaceholder, LabelTemplate, LabelVocab
@@ -215,3 +217,131 @@ async def update_placeholder(
               entity_id=key, action="update", changes=changes)
     await db.commit()
     return LabelPlaceholderOut.model_validate(row)
+
+
+TEMPLATE_FIELDS = ["name", "description", "label_type", "size_key",
+                   "dpi_key", "language_key", "design", "code", "is_active"]
+
+_TEMPLATE_VOCAB = (("type", "label_type"), ("size", "size_key"),
+                   ("dpi", "dpi_key"), ("language", "language_key"))
+
+
+async def _check_template_vocab(db: DbSession, values: dict) -> None:
+    """422 unknown_vocab unless every referenced vocab row exists + active."""
+    for kind, field in _TEMPLATE_VOCAB:
+        if field in values:
+            row = await db.get(LabelVocab, (kind, values[field]))
+            if row is None or not row.is_active:
+                raise _err(422, "unknown_vocab", field=field,
+                           key=values[field])
+
+
+@router.get("/templates", response_model=list[LabelTemplateOut])
+async def list_templates(
+    db: DbSession, label_type: str | None = None, size_key: str | None = None,
+    dpi_key: str | None = None, language_key: str | None = None,
+    active: bool | None = None,
+    _actor: AuthContext = require_permission("labels", "view"),
+) -> list:
+    q = select(LabelTemplate).order_by(LabelTemplate.name)
+    for col, val in ((LabelTemplate.label_type, label_type),
+                     (LabelTemplate.size_key, size_key),
+                     (LabelTemplate.dpi_key, dpi_key),
+                     (LabelTemplate.language_key, language_key),
+                     (LabelTemplate.is_active, active)):
+        if val is not None:
+            q = q.where(col == val)
+    return (await db.execute(q)).scalars().all()
+
+
+@router.get("/templates/{template_id}", response_model=LabelTemplateOut)
+async def get_template(
+    template_id: uuid.UUID, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+) -> LabelTemplateOut:
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    return LabelTemplateOut.model_validate(row)
+
+
+@router.post("/templates", response_model=LabelTemplateOut, status_code=201)
+async def create_template(
+    body: LabelTemplateCreateIn, db: DbSession,
+    actor: AuthContext = require_permission("labels", "add"),
+) -> LabelTemplateOut:
+    if (body.kind == "design") != (body.design is not None) or \
+       (body.kind == "code") != (body.code is not None):
+        raise _err(422, "bad_payload",
+                   message="kind must match exactly one of design/code")
+    values = body.model_dump()
+    await _check_template_vocab(db, values)
+    existing = (await db.execute(select(LabelTemplate).where(
+        LabelTemplate.name == body.name))).scalar_one_or_none()
+    if existing is not None:
+        raise _err(409, "label_template_exists")
+    row = LabelTemplate(**values)
+    db.add(row)
+    await db.flush()  # server-generated UUID for the audit row
+    audit(db, actor_id=actor.person.id, entity_type="label_template",
+          entity_id=str(row.id), action="create",
+          changes=diff({}, snapshot(row, TEMPLATE_FIELDS)))
+    await db.commit()
+    return LabelTemplateOut.model_validate(row)
+
+
+@router.patch("/templates/{template_id}", response_model=LabelTemplateOut)
+async def update_template(
+    template_id: uuid.UUID, body: LabelTemplateUpdateIn, db: DbSession,
+    actor: AuthContext = require_permission("labels", "change"),
+) -> LabelTemplateOut:
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    data = body.model_dump(exclude_unset=True)
+    # design/code nullability is owned by kind; other fields reject null
+    for f, v in data.items():
+        if v is None and f not in ("design", "code"):
+            raise _err(422, "bad_field", field=f)
+    if row.kind == "design" and data.get("design", row.design) is None:
+        raise _err(422, "bad_payload", message="design templates need design")
+    if row.kind == "code" and data.get("code", row.code) is None:
+        raise _err(422, "bad_payload", message="code templates need code")
+    if row.kind == "design" and "code" in data and data["code"] is not None:
+        raise _err(422, "bad_payload", message="design templates carry no code")
+    if row.kind == "code" and "design" in data and data["design"] is not None:
+        raise _err(422, "bad_payload", message="code templates carry no design")
+    await _check_template_vocab(db, data)
+    if "name" in data and data["name"].lower() != row.name.lower():
+        dupe = (await db.execute(select(LabelTemplate).where(
+            LabelTemplate.name == data["name"]))).scalar_one_or_none()
+        if dupe is not None:
+            raise _err(409, "label_template_exists")
+    before = snapshot(row, TEMPLATE_FIELDS)
+    for field, value in data.items():
+        setattr(row, field, value)
+    changes = diff(before, snapshot(row, TEMPLATE_FIELDS))
+    if changes:
+        row.version += 1
+        row.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="update", changes=changes)
+    await db.commit()
+    return LabelTemplateOut.model_validate(row)
+
+
+@router.delete("/templates/{template_id}", status_code=204)
+async def deactivate_template(
+    template_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("labels", "delete"),
+) -> None:
+    row = await db.get(LabelTemplate, template_id)
+    if row is None:
+        raise _err(404, "unknown_template")
+    if row.is_active:
+        row.is_active = False
+        row.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor.person.id, entity_type="label_template",
+              entity_id=str(row.id), action="deactivate",
+              changes={"name": row.name})
+    await db.commit()

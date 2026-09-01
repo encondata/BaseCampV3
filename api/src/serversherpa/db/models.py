@@ -1176,7 +1176,10 @@ class LabelTemplate(Base):
     dpi_key: Mapped[str]
     language_key: Mapped[str]
     kind: Mapped[str]
-    design: Mapped[dict | None] = mapped_column(JSONB)
+    # none_as_null: a bare JSONB type stores Python None as a JSON 'null'
+    # literal (still non-NULL), which would defeat the payload CHECK's
+    # "exactly one of design/code is populated" contract.
+    design: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     code: Mapped[str | None]
     version: Mapped[int] = mapped_column(Integer, server_default="1")
     is_active: Mapped[bool] = mapped_column(server_default=text("true"))

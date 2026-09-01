@@ -1925,3 +1925,50 @@ class LabelPlaceholderUpdateIn(BaseModel):
     applies_to: list[str] | None = None
     sort_order: int | None = None
     is_active: bool | None = None
+
+
+class LabelTemplateOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    description: str
+    label_type: str
+    size_key: str
+    dpi_key: str
+    language_key: str
+    kind: str
+    design: dict | None
+    code: str | None
+    version: int
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class LabelTemplateCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    description: str = ""
+    label_type: str
+    size_key: str
+    dpi_key: str
+    language_key: str
+    kind: Literal["design", "code"]
+    design: dict | None = None
+    code: str | None = None
+
+
+class LabelTemplateUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(None, min_length=1, max_length=120)
+    description: str | None = None
+    label_type: str | None = None
+    size_key: str | None = None
+    dpi_key: str | None = None
+    language_key: str | None = None
+    design: dict | None = None
+    code: str | None = None
+    is_active: bool | None = None
