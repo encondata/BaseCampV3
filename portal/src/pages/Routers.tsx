@@ -20,15 +20,20 @@ import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState, type CellText,
 } from '../lib/columnMenu';
-import { deviceCellText, deviceSearchText, deviceSortValue } from '../lib/devices';
+import {
+  deviceCellText, deviceSearchText, deviceSortValue, tokenExpiryState, vpnLabel,
+} from '../lib/devices';
 import {
   ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
   moveKey, passesFacets, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
   type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
+import RouterLeases from '../components/hardware/RouterLeases';
 import '../styles/directory.css';
 import '../styles/profile.css';
+import '../styles/settings.css';  /* .set-note */
+import '../styles/hardware.css';
 
 const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: 'minmax(180px, 1.4fr)', default: true },
@@ -36,6 +41,9 @@ const COLUMNS: ColumnDef[] = [
   { key: 'lan_ip', label: 'LAN IP', width: 'minmax(120px, 1fr)', default: true },
   { key: 'mac', label: 'MAC', width: 'minmax(150px, 1fr)', default: true },
   { key: 'serial', label: 'Serial', width: 'minmax(150px, 1fr)', default: true },
+  { key: 'vpn', label: 'VPN', width: '110px', default: true },
+  { key: 'connected', label: 'Devices', width: '90px', default: true },
+  { key: 'token_expires', label: 'Token expires', width: 'minmax(120px, 1fr)', default: true },
   { key: 'uptime', label: 'Uptime', width: '110px', default: true },
   { key: 'last_seen', label: 'Last seen', width: 'minmax(150px, 1fr)', default: false },
   { key: 'site', label: 'Site', width: 'minmax(130px, 1fr)', default: false },
@@ -53,6 +61,9 @@ const CSV_COLUMNS: [string, (d: DeviceItem) => string][] = [
   ['LAN IP', (d) => deviceCellText(d, 'lan_ip')],
   ['MAC', (d) => deviceCellText(d, 'mac')],
   ['Serial', (d) => deviceCellText(d, 'serial')],
+  ['VPN', (d) => deviceCellText(d, 'vpn')],
+  ['Devices', (d) => deviceCellText(d, 'connected')],
+  ['Token expires', (d) => deviceCellText(d, 'token_expires')],
   ['Uptime', (d) => deviceCellText(d, 'uptime')],
   ['Last seen', (d) => deviceCellText(d, 'last_seen')],
   ['Site', (d) => deviceCellText(d, 'site')],
@@ -69,6 +80,7 @@ export default function Routers() {
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [facets, setFacets] = useState<FacetState>({});
+  const [openId, setOpenId] = useState<string | null>(null);
 
   const {
     visibleCols, setVisibleCols,
@@ -97,9 +109,16 @@ export default function Routers() {
 
   const facetGroups = useMemo<FacetGroup[]>(() => {
     const sites = new Set<string>();
-    for (const d of devices ?? []) sites.add(d.site_name ?? '—');
+    const vpns = new Set<string>();
+    for (const d of devices ?? []) {
+      sites.add(d.site_name ?? '—');
+      vpns.add(vpnLabel(d.vpn_status));
+    }
     return [
       { key: 'site', title: 'Site', options: Array.from(sites).sort().map((v) => (
+        { value: v, label: v }
+      )) },
+      { key: 'vpn', title: 'VPN', options: Array.from(vpns).sort().map((v) => (
         { value: v, label: v }
       )) },
     ];
@@ -107,6 +126,7 @@ export default function Routers() {
 
   const facetValues = (d: DeviceItem) => (groupKey: string): string[] => {
     if (groupKey === 'site') return [d.site_name ?? '—'];
+    if (groupKey === 'vpn') return [vpnLabel(d.vpn_status)];
     return [];
   };
 
@@ -134,7 +154,7 @@ export default function Routers() {
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 90px` };
+  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 90px 30px` };
 
   const remove = async (d: DeviceItem) => {
     if (!window.confirm(`Delete "${d.name}"? This cannot be undone.`)) return;
@@ -152,6 +172,22 @@ export default function Routers() {
       case 'mac':
       case 'serial':
         return <span className="mono">{deviceCellText(d, key)}</span>;
+      case 'vpn':
+        return d.vpn_status == null
+          ? <span>—</span>
+          : (
+            <span className={'chip' + (d.vpn_status === 'connected' ? ' c-green'
+              : d.vpn_status === 'disconnected' ? ' c-red' : '')}>
+              {vpnLabel(d.vpn_status)}
+            </span>
+          );
+      case 'token_expires': {
+        const state = tokenExpiryState(d.token_expires_at);
+        const text = deviceCellText(d, 'token_expires');
+        if (state === 'expired') return <span className="chip c-red">expired</span>;
+        if (state === 'soon') return <span className="chip c-amber">{text}</span>;
+        return <span>{text}</span>;
+      }
       default:
         return <span>{deviceCellText(d, key)}</span>;
     }
@@ -215,6 +251,7 @@ export default function Routers() {
               </span>
             ))}
             <span />
+            <span />
           </div>
 
           {visible.length === 0 && (
@@ -232,22 +269,39 @@ export default function Routers() {
           )}
 
           <VirtualRows rows={visible}
-            renderRow={(d, vp) => (
-              <div key={d.id} className="dir-row" {...vp} style={vp?.style}>
-                <div className="row-main" style={grid}>
-                  {shownCols.map((c) => (
-                    <div className="cell" key={c.key}>{cellFor(d, c.key)}</div>
-                  ))}
-                  <div className="cell" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                    {canDelete && (
-                      <button className="mini-btn danger" onClick={() => void remove(d)}>
-                        Delete
-                      </button>
-                    )}
+            renderRow={(d, vp) => {
+              const open = openId === d.id;
+              return (
+                <div key={d.id} className={`dir-row ${open ? 'open' : ''}`} {...vp} style={vp?.style}>
+                  <div className="row-main" style={grid}
+                       onClick={() => setOpenId(open ? null : d.id)}>
+                    {shownCols.map((c) => (
+                      <div className="cell" key={c.key}>{cellFor(d, c.key)}</div>
+                    ))}
+                    <div className="cell" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                      {canDelete && (
+                        <button className="mini-btn danger"
+                                onClick={(e) => { e.stopPropagation(); void remove(d); }}>
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                    <div className="cell chevron-cell">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                           strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+                    </div>
+                  </div>
+
+                  <div className="detail">
+                    <div className="detail-clip">
+                      <div className="detail-inner">
+                        {open && <RouterLeases deviceId={d.id} />}
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )} />
+              );
+            }} />
         </div>
       )}
     </div>

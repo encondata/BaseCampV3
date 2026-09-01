@@ -2696,6 +2696,8 @@ export interface DeviceItem {
   wan_ip: string | null; lan_ip: string | null;
   uptime_seconds: number | null; last_seen_at: string | null;
   raw_info: Record<string, unknown>; registered_at: string;
+  vpn_status: string | null; token_expires_at: string | null;
+  connected_count: number;
 }
 
 export async function listDevices(deviceType?: string): Promise<DeviceItem[]> {
@@ -2710,4 +2712,15 @@ export async function listDevices(deviceType?: string): Promise<DeviceItem[]> {
 export async function deleteDevice(id: string): Promise<void> {
   const resp = await apiFetch(`/devices/${id}`, { method: 'DELETE' });
   if (!resp.ok) throw await errorFrom(resp);
+}
+
+export interface DeviceLease {
+  id: string; mac: string; ip: string | null; hostname: string | null;
+  reserved: boolean; up: boolean; last_seen_at: string | null;
+}
+
+export async function listDeviceLeases(deviceId: string): Promise<DeviceLease[]> {
+  const resp = await apiFetch(`/devices/${deviceId}/leases`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
 }

@@ -39,6 +39,7 @@ vi.mock('../auth/AuthContext', () => ({
 const api = vi.hoisted(() => ({
   listDevices: vi.fn(),
   deleteDevice: vi.fn(),
+  listDeviceLeases: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -54,6 +55,7 @@ const DEVICES: DeviceItem[] = [
     wan_ip: '203.0.113.22', lan_ip: '192.168.8.2',
     uptime_seconds: 3 * 3600 + 12 * 60, last_seen_at: '2026-08-31T10:00:00Z',
     raw_info: {}, registered_at: '2026-08-19T10:00:00Z',
+    vpn_status: 'disconnected', token_expires_at: '2026-11-29T00:00:00Z', connected_count: 2,
   },
   {
     id: 'd1', device_type: 'router', name: 'dock-router-1',
@@ -62,6 +64,7 @@ const DEVICES: DeviceItem[] = [
     wan_ip: '203.0.113.14', lan_ip: '192.168.8.1',
     uptime_seconds: 1_036_800, last_seen_at: '2026-08-31T09:00:00Z',
     raw_info: {}, registered_at: '2026-08-18T10:00:00Z',
+    vpn_status: 'connected', token_expires_at: '2026-08-30T00:00:00Z', connected_count: 5,
   },
 ];
 
@@ -70,6 +73,7 @@ beforeEach(() => {
   auth.can = () => true;
   api.listDevices.mockResolvedValue(DEVICES);
   api.deleteDevice.mockResolvedValue(undefined);
+  api.listDeviceLeases.mockResolvedValue([]);
 });
 
 afterEach(cleanup);
@@ -136,4 +140,82 @@ it('shows the load-error banner when listDevices rejects', async () => {
   render(<Routers />);
 
   expect(await screen.findByText(/Couldn.t load routers/i)).not.toBeNull();
+});
+
+it('renders VPN chips and token-expiry chips per state', async () => {
+  const DAY = 24 * 3600 * 1000;
+  const CHIP_DEVICES: DeviceItem[] = [
+    {
+      id: 'c1', device_type: 'router', name: 'chip-router-connected',
+      serial: 'GL-1', mac: '94:83:C4:00:01:01',
+      site_id: 's1', site_name: 'NAP 11',
+      wan_ip: '203.0.113.1', lan_ip: '192.168.8.1',
+      uptime_seconds: 100, last_seen_at: '2026-08-31T10:00:00Z',
+      raw_info: {}, registered_at: '2026-08-19T10:00:00Z',
+      vpn_status: 'connected', connected_count: 3,
+      token_expires_at: new Date(Date.now() - DAY).toISOString(), // expired
+    },
+    {
+      id: 'c2', device_type: 'router', name: 'chip-router-disconnected',
+      serial: 'GL-2', mac: '94:83:C4:00:01:02',
+      site_id: 's2', site_name: 'NAP 22',
+      wan_ip: '203.0.113.2', lan_ip: '192.168.8.2',
+      uptime_seconds: 100, last_seen_at: '2026-08-31T10:00:00Z',
+      raw_info: {}, registered_at: '2026-08-19T10:00:00Z',
+      vpn_status: 'disconnected', connected_count: 0,
+      token_expires_at: new Date(Date.now() + 3 * DAY).toISOString(), // soon
+    },
+    {
+      id: 'c3', device_type: 'router', name: 'chip-router-healthy',
+      serial: 'GL-3', mac: '94:83:C4:00:01:03',
+      site_id: 's1', site_name: 'NAP 11',
+      wan_ip: '203.0.113.3', lan_ip: '192.168.8.3',
+      uptime_seconds: 100, last_seen_at: '2026-08-31T10:00:00Z',
+      raw_info: {}, registered_at: '2026-08-19T10:00:00Z',
+      vpn_status: null, connected_count: 1,
+      token_expires_at: new Date(Date.now() + 60 * DAY).toISOString(), // healthy
+    },
+  ];
+  api.listDevices.mockResolvedValue(CHIP_DEVICES);
+  render(<Routers />);
+
+  const connectedRow = (await screen.findByText('chip-router-connected')).closest('.dir-row') as HTMLElement;
+  expect(within(connectedRow).getByText('Connected')).not.toBeNull();
+  expect(within(connectedRow).getByText('expired')).not.toBeNull();
+  expect(within(connectedRow).getByText('expired').className).toContain('c-red');
+
+  const disconnectedRow = screen.getByText('chip-router-disconnected').closest('.dir-row') as HTMLElement;
+  expect(within(disconnectedRow).getByText('Disconnected')).not.toBeNull();
+  const amberChip = disconnectedRow.querySelector('.chip.c-amber');
+  expect(amberChip).not.toBeNull();
+
+  const healthyRow = screen.getByText('chip-router-healthy').closest('.dir-row') as HTMLElement;
+  expect(within(healthyRow).getByText('—')).not.toBeNull(); // vpn null, unchipped
+  const healthyText = new Date(CHIP_DEVICES[2].token_expires_at!).toLocaleDateString();
+  expect(within(healthyRow).getByText(healthyText)).not.toBeNull();
+});
+
+it('clicking a row toggles the expansion; clicking Delete does not open it', async () => {
+  const user = userEvent.setup();
+  render(<Routers />);
+  await screen.findByText('dock-router-1');
+
+  const row = screen.getByText('dock-router-1').closest('.dir-row') as HTMLElement;
+  expect(row.className).not.toContain('open');
+
+  await user.click(within(row).getByText('dock-router-1'));
+  expect(row.className).toContain('open');
+  await waitFor(() => expect(api.listDeviceLeases).toHaveBeenCalledWith('d1'));
+
+  await user.click(within(row).getByText('dock-router-1'));
+  expect(row.className).not.toContain('open');
+
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  const deleteBtn = within(row).getByRole('button', { name: 'Delete' });
+  await user.click(deleteBtn);
+  expect(confirmSpy).toHaveBeenCalled();
+  expect(row.className).not.toContain('open');
+  expect(api.deleteDevice).not.toHaveBeenCalled();
+
+  confirmSpy.mockRestore();
 });

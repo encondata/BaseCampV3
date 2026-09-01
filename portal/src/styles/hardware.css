@@ -1,0 +1,27 @@
+/* Scanning-hardware detail surfaces only (lease expansion). Builds on
+ * directory.css's .detail plumbing — nothing here duplicates it. */
+
+.lease-tabs { display: flex; gap: 8px; margin: 2px 0 10px; }
+
+.lease-tab {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px; /* sit flush on the row's hairline, mirrors .sysconf-tab */
+  background: transparent;
+  padding: 0 0 8px;
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-mute);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.lease-tab:hover { color: var(--text-dark); }
+.lease-tab:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.lease-tab[aria-pressed='true'] { color: var(--text-dark); border-bottom-color: var(--amber); }
+
+.lease-table { width: 100%; border-collapse: collapse; }
+.lease-table th, .lease-table td { text-align: left; padding: 6px 12px 6px 0; }
+.lease-table th { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; opacity: .65; }
+.lease-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--c-slate); }
+.lease-dot.up { background: var(--c-green); }
