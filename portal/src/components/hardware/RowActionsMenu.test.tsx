@@ -113,3 +113,33 @@ it('supports a custom label', async () => {
   render(<RowActionsMenu label="Row" actions={actions()} />);
   expect(screen.getByRole('button', { name: 'Row ▾' })).not.toBeNull();
 });
+
+it('when menu flips upward (spaceBelow < 200px), clears the CSS class top rule by setting inline top: auto', async () => {
+  const user = userEvent.setup();
+  render(<RowActionsMenu actions={actions()} />);
+
+  const trigger = screen.getByRole('button', { name: 'Actions ▾' });
+
+  // Stub getBoundingClientRect to force upward flip: trigger near bottom, not enough space below
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+    top: 700,
+    bottom: 750,
+    left: 100,
+    right: 150,
+    width: 50,
+    height: 50,
+    x: 100,
+    y: 700,
+    toJSON: () => ({}),
+  });
+
+  await user.click(trigger);
+
+  const menu = screen.getByRole('menu');
+  // When flipping upward, both top and bottom must be set to clear the CSS class rules
+  expect(menu.style.top).toBe('auto');
+  expect(menu.style.bottom).not.toBe('');
+  expect(menu.style.bottom).not.toBe('auto');
+  // Verify bottom is a numeric value (the portal position is calculated)
+  expect(Number.isFinite(parseFloat(menu.style.bottom))).toBe(true);
+});

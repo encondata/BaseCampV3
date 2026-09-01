@@ -24,7 +24,7 @@ export interface RowAction {
   destructive?: boolean;
 }
 
-interface MenuPos { top?: number; bottom?: number; right: number }
+interface MenuPos { top: number | 'auto'; bottom: number | 'auto'; right: number }
 
 const OPEN_UPWARD_THRESHOLD = 200;
 const GAP = 6;
@@ -75,9 +75,9 @@ export function RowActionsMenu({ label, actions }: {
     const spaceBelow = window.innerHeight - rect.bottom;
     const right = window.innerWidth - rect.right;
     if (spaceBelow < OPEN_UPWARD_THRESHOLD) {
-      setPos({ bottom: window.innerHeight - rect.top + GAP, right });
+      setPos({ bottom: window.innerHeight - rect.top + GAP, top: 'auto', right });
     } else {
-      setPos({ top: rect.bottom + GAP, right });
+      setPos({ top: rect.bottom + GAP, bottom: 'auto', right });
     }
     const onScroll = () => setOpen(false);
     window.addEventListener('scroll', onScroll, true);
