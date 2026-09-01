@@ -96,7 +96,7 @@ export default function CodePanel({
               </button>
             )}
           </div>
-          {previewUrl && !previewError && (
+          {previewUrl && (
             <img className="lbl-preview-img" alt="Printer preview" src={previewUrl} />
           )}
           {previewError && <div className="pf-error">Printer preview unavailable.</div>}
