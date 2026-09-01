@@ -190,7 +190,7 @@ async def register_device(
     device = await db.get(Device, device_id)
     if device is None:
         raise _err(404, "device_not_found")
-    days = (body.days if body is not None else 30)
+    days = 30 if body is None or body.days is None else body.days
     if not 1 <= days <= 365:
         raise _err(422, "bad_days")
     now = datetime.now(UTC)

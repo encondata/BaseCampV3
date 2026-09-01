@@ -1841,7 +1841,7 @@ class DeviceCreate(DevicePatch):
 
 
 class DeviceRegisterIn(BaseModel):
-    days: int = 30
+    days: int | None = None
 
 
 class DeviceLeaseItem(BaseModel):

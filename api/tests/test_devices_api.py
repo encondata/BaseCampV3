@@ -410,6 +410,13 @@ async def test_register_deregister_lifecycle(client, db, seeded_user):
               .total_seconds()) < 10
 
     resp = await client.post(f"/devices/{device_id}/register", headers=hdrs,
+                             json={"days": None})
+    assert resp.status_code == 200, resp.text
+    expires_at = datetime.fromisoformat(resp.json()["token_expires_at"])
+    assert abs((expires_at - (before + timedelta(days=30)))
+              .total_seconds()) < 10
+
+    resp = await client.post(f"/devices/{device_id}/register", headers=hdrs,
                              json={"days": 0})
     assert resp.status_code == 422, resp.text
     assert resp.json()["detail"]["code"] == "bad_days"
