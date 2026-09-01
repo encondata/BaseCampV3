@@ -323,6 +323,7 @@ async def create_template(
                    message="kind must match exactly one of design/code")
     values = body.model_dump()
     site_ids = values.pop("site_ids", None) or []
+    site_ids = list(dict.fromkeys(site_ids))
     if values.get("design") is not None:
         try:
             parse_design(values["design"])
@@ -362,6 +363,8 @@ async def update_template(
         raise _err(404, "unknown_template")
     data = body.model_dump(exclude_unset=True)
     new_site_ids = data.pop("site_ids", None)
+    if new_site_ids is not None:
+        new_site_ids = list(dict.fromkeys(new_site_ids))
     # design/code nullability is owned by kind; other fields reject null
     for f, v in data.items():
         if v is None and f not in ("design", "code"):

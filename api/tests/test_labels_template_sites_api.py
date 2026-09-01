@@ -115,3 +115,17 @@ async def test_listing_carries_site_ids(client, db, seeded_user):
                       json=_body("t1", site_ids=[sa]))
     rows = (await client.get("/labels/templates", headers=hdrs)).json()
     assert rows[0]["site_ids"] == [sa]
+
+
+async def test_duplicate_site_ids_are_deduped(client, db, seeded_user):
+    sa, _sb = await _two_sites(db)
+    hdrs = await _admin(db, client)
+    resp = await client.post("/labels/templates", headers=hdrs,
+                             json=_body("dupes", site_ids=[sa, sa]))
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["site_ids"] == [sa]
+    tid = resp.json()["id"]
+    resp = await client.patch(f"/labels/templates/{tid}", headers=hdrs,
+                              json={"site_ids": [sa, sa]})
+    assert resp.status_code == 200
+    assert resp.json()["site_ids"] == [sa]
