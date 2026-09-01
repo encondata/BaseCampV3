@@ -114,6 +114,39 @@ it('supports a custom label', async () => {
   expect(screen.getByRole('button', { name: 'Row ▾' })).not.toBeNull();
 });
 
+it('only one menu is open at a time, even for keyboard activation with no mousedown', () => {
+  // Reproduces the live-verification bug: keyboard Enter/Space fires a
+  // click with no preceding mousedown, so the outside-mousedown handler
+  // (which incidentally saves mouse users) never runs. Without the
+  // module-level singleton coordination, both portaled menus would
+  // stack and a click could land on the wrong row's action.
+  render(
+    <>
+      <RowActionsMenu
+        actions={[{ key: 'a', label: 'First-Only Action', onSelect: vi.fn() }]}
+      />
+      <RowActionsMenu
+        actions={[{ key: 'b', label: 'Second-Only Action', onSelect: vi.fn() }]}
+      />
+    </>,
+  );
+
+  const triggers = screen.getAllByRole('button', { name: 'Actions ▾' });
+  expect(triggers).toHaveLength(2);
+
+  // Keyboard activation dispatches a plain click with no mousedown.
+  fireEvent.click(triggers[0]);
+  expect(screen.getAllByRole('menu')).toHaveLength(1);
+  expect(screen.getByRole('menuitem', { name: 'First-Only Action' })).not.toBeNull();
+
+  fireEvent.click(triggers[1]);
+
+  const menus = screen.getAllByRole('menu');
+  expect(menus).toHaveLength(1);
+  expect(screen.queryByRole('menuitem', { name: 'First-Only Action' })).toBeNull();
+  expect(screen.getByRole('menuitem', { name: 'Second-Only Action' })).not.toBeNull();
+});
+
 it('when menu flips upward (spaceBelow < 200px), clears the CSS class top rule by setting inline top: auto', async () => {
   const user = userEvent.setup();
   render(<RowActionsMenu actions={actions()} />);

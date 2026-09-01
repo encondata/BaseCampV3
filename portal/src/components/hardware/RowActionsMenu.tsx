@@ -29,6 +29,18 @@ interface MenuPos { top: number | 'auto'; bottom: number | 'auto'; right: number
 const OPEN_UPWARD_THRESHOLD = 200;
 const GAP = 6;
 
+// Module-scoped singleton coordination: only one RowActionsMenu may be
+// open at a time across the whole page. Mouse users are saved
+// incidentally by the outside-mousedown handler below (opening a second
+// trigger fires a mousedown that closes the first), but keyboard
+// activation (Enter/Space on a <button>) fires a click with no
+// preceding mousedown, so two portaled menus could otherwise stack and
+// the user could hit an item belonging to the wrong row. Every mounted
+// instance listens on this bus; opening broadcasts the opener's own
+// identity, and every other instance closes itself on hearing it.
+const CLOSE_OTHERS_EVENT = 'row-actions-menu:close-others';
+const menuCoordinator = new EventTarget();
+
 export function RowActionsMenu({ label, actions }: {
   label?: string; actions: RowAction[];
 }) {
@@ -36,6 +48,18 @@ export function RowActionsMenu({ label, actions }: {
   const [pos, setPos] = useState<MenuPos | null>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const instanceId = useRef(Symbol('row-actions-menu')).current;
+
+  // Close this instance whenever a different instance announces that it
+  // just opened. Listens for the component's whole lifetime (not just
+  // while open) so it's ready the instant another menu opens.
+  useEffect(() => {
+    const onCloseOthers = (e: Event) => {
+      if ((e as CustomEvent<symbol>).detail !== instanceId) setOpen(false);
+    };
+    menuCoordinator.addEventListener(CLOSE_OTHERS_EVENT, onCloseOthers);
+    return () => menuCoordinator.removeEventListener(CLOSE_OTHERS_EVENT, onCloseOthers);
+  }, [instanceId]);
 
   // Outside-mousedown close, hand-rolled rather than listTools'
   // useOutsideClose: once open, the menu lives in a portal under
@@ -89,7 +113,18 @@ export function RowActionsMenu({ label, actions }: {
     <div className="row-actions" ref={triggerRef} style={{ position: 'relative' }}>
       <button type="button" className="mini-btn" aria-haspopup="menu"
               aria-expanded={open}
-              onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}>
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpen((o) => {
+                  const next = !o;
+                  if (next) {
+                    menuCoordinator.dispatchEvent(
+                      new CustomEvent(CLOSE_OTHERS_EVENT, { detail: instanceId }),
+                    );
+                  }
+                  return next;
+                });
+              }}>
         {label ?? 'Actions'} ▾
       </button>
       {open && pos && createPortal(
