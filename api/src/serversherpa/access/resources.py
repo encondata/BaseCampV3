@@ -74,6 +74,9 @@ _RESOURCES = [
                      "/hardware/kiosks", "/hardware/routers"),
              # internal-only: device fleet records are house operations data.
              visible_to=frozenset({"global"})),
+    Resource("labels", "Labels",
+             routes=("/labels/print", "/labels/templates", "/labels/generate"),
+             visible_to=frozenset({"global"})),
     Resource("time", "Time", routes=("/people/time",),
              visible_to=frozenset({"global"})),
     Resource("attachments", "Files & attachments",

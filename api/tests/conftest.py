@@ -16,6 +16,46 @@ API_DIR = Path(__file__).resolve().parents[1]
 # heads — both collide): SS_TEST_DB=serversherpa_test_<branch> pytest …
 TEST_DB = os.environ.get("SS_TEST_DB", "serversherpa_test")
 
+# 0042 labels seeds — duplicated verbatim from the migration
+LABEL_VOCAB_SEEDS = """
+    INSERT INTO label_vocab (kind, key, label, description, meta, sort_order) VALUES
+      ('type','top','Top Label','Placed on the asset''s top face.','{}',1),
+      ('type','front','Front Label','Placed on the asset''s front face.','{}',2),
+      ('type','rail','Rail Label','Placed on the rack rail at the destination RU.','{}',3),
+      ('type','container','Container Label','Placed on crates and containers.','{}',4),
+      ('size','4x2','4" x 2"','','{"width_in": 4, "height_in": 2, "has_tab": false}',1),
+      ('size','2x1','2" x 1"','','{"width_in": 2, "height_in": 1, "has_tab": false}',2),
+      ('size','4x3-tab','4" x 3" (w/ tab)','','{"width_in": 4, "height_in": 3, "has_tab": true}',3),
+      ('size','1x1','1" x 1"','','{"width_in": 1, "height_in": 1, "has_tab": false}',4),
+      ('size','6x4','6" x 4"','','{"width_in": 6, "height_in": 4, "has_tab": false}',5),
+      ('size','id-badge','ID Badge','CR80 card, 3.375" x 2.125".','{"width_in": 3.375, "height_in": 2.125, "has_tab": false}',6),
+      ('dpi','203','203 DPI','','{"dots": 203}',1),
+      ('dpi','300','300 DPI','','{"dots": 300}',2),
+      ('language','zpl','ZPL','Zebra Programming Language.','{"family": "zebra"}',1),
+      ('language','escp','Brother ESC/P','','{"family": "brother"}',2),
+      ('language','ptouch','Brother P-Touch Template','','{"family": "brother"}',3)
+"""
+
+LABEL_PLACEHOLDER_SEEDS = """
+    INSERT INTO label_placeholders (key, label, description, sample_value, applies_to, sort_order) VALUES
+      ('asset_id','Asset ID','','10482','{top,front,rail}',1),
+      ('asset_name','Asset name','','core-sw-01','{top,front,rail}',2),
+      ('serial_number','Serial number','','C7X-00412-A','{top,front,rail}',3),
+      ('make','Make','','Cisco','{top,front,rail}',4),
+      ('model','Model','','Nexus 9336C','{top,front,rail}',5),
+      ('make_model','Make + model','','Cisco Nexus 9336C','{top,front,rail}',6),
+      ('source_raw','Source (raw)','','NAP7 A12','{top,front,rail}',7),
+      ('source_ru','Source RU','','U14','{top,front,rail}',8),
+      ('source_site','Source site','','NAP7','{top,front,rail}',9),
+      ('destination_raw','Destination (raw)','','NAP11 C03','{top,front,rail}',10),
+      ('destination_ru','Destination RU','','U22','{top,front,rail}',11),
+      ('destination_site','Destination site','','NAP11','{top,front,rail}',12),
+      ('move_name','Initiative / move name','','NAP11 Hall Migration','{top,front,rail,container}',13),
+      ('move_date','Move date','','09/15/2026','{top,front,rail,container}',14),
+      ('container_name','Container name','','crate-17','{container}',15),
+      ('container_id','Container ID','','C-0017','{container}',16)
+"""
+
 
 def _prepare_environment() -> None:
     """Point SS_DATABASE_URL at serversherpa_test (creating it if needed) and
@@ -77,7 +117,8 @@ async def clean_db():
             "asset_model_aliases, asset_models, container_assets, "
             "log_entries, processes, "
             "initiative_links, initiative_people, initiatives, import_jobs, "
-            "containers, pending_deletes CASCADE"))
+            "containers, pending_deletes, label_templates, "
+            "label_placeholders, label_vocab CASCADE"))
         # role matrix is editable seed data — restore defaults & drop customs
         await session.execute(text("DELETE FROM roles WHERE is_system = false"))
         await session.execute(text("DELETE FROM role_permissions"))
@@ -315,6 +356,9 @@ async def clean_db():
                 "syslog": {"host": "", "port": 514, "protocol": "udp"}}'::jsonb),
               ('logging_cursor', '{"last_forwarded_id": 0}'::jsonb)
         """))
+        # 0042 labels seeds
+        await session.execute(text(LABEL_VOCAB_SEEDS))
+        await session.execute(text(LABEL_PLACEHOLDER_SEEDS))
         await session.commit()
     yield
     await dispose_engine()

@@ -1125,3 +1125,60 @@ class DbBackup(Base):
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("people.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class LabelVocab(Base):
+    """Label dropdown vocabularies; `kind` discriminates type/size/dpi/
+    language. Kind-specific facts live in meta (sizes: width_in/height_in/
+    has_tab; dpis: dots; languages: family). Codegen keys off well-known
+    `key` values — rows only control what the UI offers."""
+    __tablename__ = "label_vocab"
+
+    kind: Mapped[str] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(primary_key=True)
+    label: Mapped[str]
+    description: Mapped[str] = mapped_column(server_default="")
+    meta: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    sort_order: Mapped[int] = mapped_column(Integer, server_default="0")
+    is_active: Mapped[bool] = mapped_column(server_default=text("true"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class LabelPlaceholder(Base):
+    """Catalog of {token} fields the builder offers; sample_value drives
+    editor previews; applies_to filters by label-type key."""
+    __tablename__ = "label_placeholders"
+
+    key: Mapped[str] = mapped_column(primary_key=True)
+    label: Mapped[str]
+    description: Mapped[str] = mapped_column(server_default="")
+    sample_value: Mapped[str] = mapped_column(server_default="")
+    applies_to: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("'{}'::text[]"))
+    sort_order: Mapped[int] = mapped_column(Integer, server_default="0")
+    is_active: Mapped[bool] = mapped_column(server_default=text("true"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class LabelTemplate(Base):
+    """kind='design' rows own element-model JSON (inches; compiled to
+    printer code on demand); kind='code' rows own raw pasted code with
+    {placeholder} tokens. Exactly one payload per row (CHECK, 0042).
+    Delete is deactivation; the creator is captured by the audit log."""
+    __tablename__ = "label_templates"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    name: Mapped[str] = mapped_column(CITEXT, unique=True)
+    description: Mapped[str] = mapped_column(server_default="")
+    label_type: Mapped[str]
+    size_key: Mapped[str]
+    dpi_key: Mapped[str]
+    language_key: Mapped[str]
+    kind: Mapped[str]
+    design: Mapped[dict | None] = mapped_column(JSONB)
+    code: Mapped[str | None]
+    version: Mapped[int] = mapped_column(Integer, server_default="1")
+    is_active: Mapped[bool] = mapped_column(server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
