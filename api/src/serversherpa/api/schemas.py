@@ -1804,7 +1804,7 @@ class DeviceItem(BaseModel):
     lan_ip: str | None
     model: str | None
     version: str | None
-    kiosk_type: str | None
+    sub_type: str | None
     current_initiative_id: uuid.UUID | None
     current_initiative_name: str | None
     antennas_connected: int | None
@@ -1826,7 +1826,7 @@ class DevicePatch(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     name: str | None = None
-    kiosk_type: str | None = None
+    sub_type: str | None = None
     mac: str | None = None
     lan_ip: str | None = None
     version: str | None = None

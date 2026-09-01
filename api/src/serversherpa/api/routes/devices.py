@@ -61,7 +61,7 @@ def _row_to_item(row) -> dict:
         "site_id": d.site_id, "site_name": site_name,
         "wan_ip": d.wan_ip, "lan_ip": d.lan_ip,
         "model": d.model, "version": d.version,
-        "kiosk_type": d.kiosk_type,
+        "sub_type": d.sub_type,
         "current_initiative_id": d.current_initiative_id,
         "current_initiative_name": initiative_name,
         "antennas_connected": d.antennas_connected,
@@ -85,7 +85,7 @@ async def _item_for(db: DbSession, device_id: uuid.UUID) -> dict:
     return _row_to_item(row)
 
 
-_PATCH_FIELDS = {"name", "kiosk_type", "mac", "lan_ip", "version",
+_PATCH_FIELDS = {"name", "sub_type", "mac", "lan_ip", "version",
                  "site_id", "current_initiative_id", "scan_status"}
 
 

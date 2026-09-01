@@ -298,7 +298,7 @@ async def test_create_kiosk_and_initiative_join(client, db, seeded_user):
 
     resp = await client.post("/devices", headers=hdrs, json={
         "device_type": "kiosk", "name": "lobby-kiosk-2",
-        "kiosk_type": "laptop", "mac": "AA:BB:CC:00:00:99",
+        "sub_type": "laptop", "mac": "AA:BB:CC:00:00:99",
         "lan_ip": "192.168.9.50", "version": "1.2.3",
         "scan_status": "rfid_1_cage_exit",
         "current_initiative_id": str(move.id),
@@ -306,7 +306,7 @@ async def test_create_kiosk_and_initiative_join(client, db, seeded_user):
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["device_type"] == "kiosk"
-    assert body["kiosk_type"] == "laptop"
+    assert body["sub_type"] == "laptop"
     assert body["version"] == "1.2.3"
     assert body["current_initiative_id"] == str(move.id)
     device_id = body["id"]
@@ -382,6 +382,11 @@ async def test_patch_allowed_fields_and_guards(client, db, seeded_user):
                               json={"name": None})
     assert resp.status_code == 422, resp.text
     assert resp.json()["detail"]["code"] == "bad_name"
+
+    resp = await client.patch(f"/devices/{device_id}", headers=hdrs,
+                              json={"kiosk_type": "laptop"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "bad_field"
 
 
 async def test_register_deregister_lifecycle(client, db, seeded_user):

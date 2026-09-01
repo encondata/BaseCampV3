@@ -795,7 +795,7 @@ class Device(Base):
     scan_status: Mapped[str | None]
     scan_status_record_type: Mapped[str] = mapped_column(
         server_default=text("'asset'"))  # GENERATED; never written
-    kiosk_type: Mapped[str | None]
+    sub_type: Mapped[str | None]
     current_initiative_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("initiatives.id"))
     vpn_status: Mapped[str | None]
