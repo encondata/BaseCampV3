@@ -173,18 +173,23 @@ it('contextual actions: unregistered row shows Register only; registered row sho
   const user = userEvent.setup();
   render(<KioskDevices />);
 
+  // Menuitems are asserted via `screen`, not `within(row)`: RowActionsMenu
+  // portals the open menu to document.body (escaping .dir-list's
+  // overflow:hidden — see RowActionsMenu.tsx), so its items no longer sit
+  // inside the row's DOM subtree once open. Only one row's menu is ever
+  // open at a time here, so screen-level queries stay unambiguous.
   const unregRow = (await screen.findByText('unregistered-kiosk')).closest('.dir-row') as HTMLElement;
   await user.click(within(unregRow).getByRole('button', { name: /Actions/ }));
-  expect(within(unregRow).getByRole('menuitem', { name: 'Register' })).not.toBeNull();
-  expect(within(unregRow).queryByRole('menuitem', { name: 'Renew' })).toBeNull();
-  expect(within(unregRow).queryByRole('menuitem', { name: 'De-Register' })).toBeNull();
+  expect(screen.getByRole('menuitem', { name: 'Register' })).not.toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Renew' })).toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'De-Register' })).toBeNull();
   await user.click(within(unregRow).getByRole('button', { name: /Actions/ })); // close
 
   const regRow = screen.getByText('registered-kiosk').closest('.dir-row') as HTMLElement;
   await user.click(within(regRow).getByRole('button', { name: /Actions/ }));
-  expect(within(regRow).getByRole('menuitem', { name: 'Renew' })).not.toBeNull();
-  expect(within(regRow).getByRole('menuitem', { name: 'De-Register' })).not.toBeNull();
-  expect(within(regRow).queryByRole('menuitem', { name: 'Register' })).toBeNull();
+  expect(screen.getByRole('menuitem', { name: 'Renew' })).not.toBeNull();
+  expect(screen.getByRole('menuitem', { name: 'De-Register' })).not.toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Register' })).toBeNull();
 });
 
 it('Register flow: click Register, confirm the days modal, calls registerDevice and reloads', async () => {
@@ -197,7 +202,8 @@ it('Register flow: click Register, confirm the days modal, calls registerDevice 
 
   const row = (await screen.findByText('unregistered-kiosk')).closest('.dir-row') as HTMLElement;
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
-  await user.click(within(row).getByRole('menuitem', { name: 'Register' }));
+  // Portaled to document.body once open — see the comment above.
+  await user.click(screen.getByRole('menuitem', { name: 'Register' }));
 
   expect(await screen.findByRole('heading', { name: /Register unregistered-kiosk/ })).not.toBeNull();
   await user.click(screen.getByRole('button', { name: 'Confirm' }));
@@ -217,7 +223,8 @@ it('De-Register: confirm calls deregisterDevice and reloads', async () => {
 
   const row = (await screen.findByText('registered-kiosk')).closest('.dir-row') as HTMLElement;
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
-  await user.click(within(row).getByRole('menuitem', { name: 'De-Register' }));
+  // Portaled to document.body once open — see the comment above.
+  await user.click(screen.getByRole('menuitem', { name: 'De-Register' }));
 
   expect(confirmSpy).toHaveBeenCalled();
   await waitFor(() => expect(api.deregisterDevice).toHaveBeenCalledWith('u2'));
@@ -254,7 +261,8 @@ it('clicking Delete + confirm calls deleteDevice and reloads', async () => {
 
   const row = screen.getByText('kiosk-dock-1').closest('.dir-row') as HTMLElement;
   await user.click(within(row).getByRole('button', { name: /Actions/ }));
-  const deleteBtn = within(row).getByRole('menuitem', { name: 'Delete' });
+  // Portaled to document.body once open — see the comment above.
+  const deleteBtn = screen.getByRole('menuitem', { name: 'Delete' });
   await user.click(deleteBtn);
 
   expect(confirmSpy).toHaveBeenCalledWith('Delete "kiosk-dock-1"? This cannot be undone.');

@@ -4,7 +4,10 @@
  * per-row button strips on the device lists. Covers: trigger label,
  * items hidden until opened, click order + destructive class, select
  * closes the menu and fires onSelect, Escape closes, outside mousedown
- * closes, and an empty actions list renders nothing at all.
+ * closes (including a mousedown on the portaled menu itself NOT
+ * counting as outside), the menu portaling to document.body so
+ * .dir-list's overflow:hidden can't clip it, and an empty actions list
+ * renders nothing at all.
  */
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -71,6 +74,33 @@ it('a mousedown outside the menu closes it', async () => {
 
   fireEvent.mouseDown(document.body);
   expect(screen.queryAllByRole('menuitem')).toHaveLength(0);
+});
+
+it('a mousedown on the portaled menu itself is not treated as outside', async () => {
+  const user = userEvent.setup();
+  render(<RowActionsMenu actions={actions()} />);
+
+  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+  const items = screen.getAllByRole('menuitem');
+  expect(items).not.toHaveLength(0);
+
+  // The menu is portaled straight onto document.body, outside the
+  // trigger's own subtree, so a mousedown on a menu item must not be
+  // caught by the outside-close check the way a mousedown on
+  // document.body itself is above.
+  fireEvent.mouseDown(items[0]);
+  expect(screen.queryAllByRole('menuitem')).not.toHaveLength(0);
+});
+
+it('renders the open menu as a child of document.body, not the .row-actions wrapper', async () => {
+  const user = userEvent.setup();
+  const { container } = render(<RowActionsMenu actions={actions()} />);
+
+  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+
+  const menu = screen.getByRole('menu');
+  expect(menu.parentElement).toBe(document.body);
+  expect(container.querySelector('.row-actions')?.contains(menu)).toBe(false);
 });
 
 it('renders nothing at all when actions is empty', () => {
