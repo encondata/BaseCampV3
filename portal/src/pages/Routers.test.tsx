@@ -56,6 +56,9 @@ const DEVICES: DeviceItem[] = [
     uptime_seconds: 3 * 3600 + 12 * 60, last_seen_at: '2026-08-31T10:00:00Z',
     raw_info: {}, registered_at: '2026-08-19T10:00:00Z',
     vpn_status: 'disconnected', token_expires_at: '2026-11-29T00:00:00Z', connected_count: 2,
+    model: null, antennas_connected: null, connection_type: null,
+    scan_status: null, scan_status_label: null, scan_status_color: null,
+    tags_read_24h: 0,
   },
   {
     id: 'd1', device_type: 'router', name: 'dock-router-1',
@@ -65,6 +68,9 @@ const DEVICES: DeviceItem[] = [
     uptime_seconds: 1_036_800, last_seen_at: '2026-08-31T09:00:00Z',
     raw_info: {}, registered_at: '2026-08-18T10:00:00Z',
     vpn_status: 'connected', token_expires_at: '2026-08-30T00:00:00Z', connected_count: 5,
+    model: null, antennas_connected: null, connection_type: null,
+    scan_status: null, scan_status_label: null, scan_status_color: null,
+    tags_read_24h: 0,
   },
 ];
 
@@ -154,6 +160,9 @@ it('renders VPN chips and token-expiry chips per state', async () => {
       raw_info: {}, registered_at: '2026-08-19T10:00:00Z',
       vpn_status: 'connected', connected_count: 3,
       token_expires_at: new Date(Date.now() - DAY).toISOString(), // expired
+      model: null, antennas_connected: null, connection_type: null,
+      scan_status: null, scan_status_label: null, scan_status_color: null,
+      tags_read_24h: 0,
     },
     {
       id: 'c2', device_type: 'router', name: 'chip-router-disconnected',
@@ -164,6 +173,9 @@ it('renders VPN chips and token-expiry chips per state', async () => {
       raw_info: {}, registered_at: '2026-08-19T10:00:00Z',
       vpn_status: 'disconnected', connected_count: 0,
       token_expires_at: new Date(Date.now() + 3 * DAY).toISOString(), // soon
+      model: null, antennas_connected: null, connection_type: null,
+      scan_status: null, scan_status_label: null, scan_status_color: null,
+      tags_read_24h: 0,
     },
     {
       id: 'c3', device_type: 'router', name: 'chip-router-healthy',
@@ -174,6 +186,9 @@ it('renders VPN chips and token-expiry chips per state', async () => {
       raw_info: {}, registered_at: '2026-08-19T10:00:00Z',
       vpn_status: null, connected_count: 1,
       token_expires_at: new Date(Date.now() + 60 * DAY).toISOString(), // healthy
+      model: null, antennas_connected: null, connection_type: null,
+      scan_status: null, scan_status_label: null, scan_status_color: null,
+      tags_read_24h: 0,
     },
   ];
   api.listDevices.mockResolvedValue(CHIP_DEVICES);

@@ -2698,6 +2698,11 @@ export interface DeviceItem {
   raw_info: Record<string, unknown>; registered_at: string;
   vpn_status: string | null; token_expires_at: string | null;
   connected_count: number;
+  model: string | null; antennas_connected: number | null;
+  connection_type: string | null;
+  scan_status: string | null; scan_status_label: string | null;
+  scan_status_color: string | null;
+  tags_read_24h: number;
 }
 
 export async function listDevices(deviceType?: string): Promise<DeviceItem[]> {

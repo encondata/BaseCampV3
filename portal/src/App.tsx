@@ -14,6 +14,7 @@ import Dev from './pages/Dev';
 import MoveDashboard from './pages/MoveDashboard';
 import DevDatabase from './pages/DevDatabase';
 import External from './pages/External';
+import FixedReaders from './pages/FixedReaders';
 import Home from './pages/Home';
 import ImportMoveAssets from './pages/ImportMoveAssets';
 import Initiatives from './pages/Initiatives';
@@ -27,7 +28,7 @@ import Login from './pages/Login';
 import Profile from './pages/Profile';
 import ProcessLogs from './pages/ProcessLogs';
 import {
-  FixedReaders, HandheldReaders, KioskDevices,
+  HandheldReaders, KioskDevices,
 } from './pages/ScanningHardware';
 import Routers from './pages/Routers';
 import Scans from './pages/Scans';

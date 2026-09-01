@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DeviceItem } from './api';
 import {
-  deviceCellText, deviceSearchText, deviceSortValue, formatUptime,
+  connectionLabel, deviceCellText, deviceSearchText, deviceSortValue, formatUptime,
   tokenExpiryState, vpnLabel,
 } from './devices';
 
@@ -14,6 +14,9 @@ const R: DeviceItem = {
   uptime_seconds: 1_036_800, last_seen_at: '2026-08-31T10:00:00Z',
   raw_info: {}, registered_at: '2026-08-19T10:00:00Z',
   vpn_status: null, token_expires_at: null, connected_count: 0,
+  model: null, antennas_connected: null, connection_type: null,
+  scan_status: null, scan_status_label: null, scan_status_color: null,
+  tags_read_24h: 0,
 };
 
 describe('formatUptime', () => {
@@ -85,5 +88,38 @@ describe('new cell accessors', () => {
     expect(deviceSortValue(r2, 'connected')).toBe(4);
     expect(deviceSortValue(r2, 'token_expires')).toBe('2026-11-29T00:00:00Z');
     expect(deviceSortValue({ ...r2, token_expires_at: null }, 'token_expires')).toBe('');
+  });
+});
+
+describe('connectionLabel', () => {
+  it('maps known, passes through unknown', () => {
+    expect(connectionLabel('api')).toBe('API');
+    expect(connectionLabel('mqtt')).toBe('MQTT');
+    expect(connectionLabel('local_api')).toBe('Local API');
+    expect(connectionLabel('serial-console')).toBe('serial-console');
+    expect(connectionLabel(null)).toBe('—');
+  });
+});
+
+describe('reader cell accessors', () => {
+  const fr = { ...R, model: 'FX9600', antennas_connected: 4,
+               connection_type: 'mqtt', scan_status: 'rfid_1_cage_exit',
+               scan_status_label: 'RFID 1 - Cage Exit',
+               scan_status_color: '#31F527', tags_read_24h: 152 };
+  it('cellText for the reader keys', () => {
+    expect(deviceCellText(fr, 'model')).toBe('FX9600');
+    expect(deviceCellText(fr, 'ip')).toBe('192.168.8.1');
+    expect(deviceCellText(fr, 'tags_24h')).toBe('152');
+    expect(deviceCellText(fr, 'antennas')).toBe('4 / 8');
+    expect(deviceCellText(fr, 'connection')).toBe('MQTT');
+    expect(deviceCellText(fr, 'scan_status')).toBe('RFID 1 - Cage Exit');
+    expect(deviceCellText({ ...fr, antennas_connected: null }, 'antennas')).toBe('—');
+    expect(deviceCellText({ ...fr, scan_status: null, scan_status_label: null },
+                          'scan_status')).toBe('—');
+  });
+  it('sortValue numeric for tags/antennas', () => {
+    expect(deviceSortValue(fr, 'tags_24h')).toBe(152);
+    expect(deviceSortValue(fr, 'antennas')).toBe(4);
+    expect(deviceSortValue({ ...fr, antennas_connected: null }, 'antennas')).toBe(-1);
   });
 });
