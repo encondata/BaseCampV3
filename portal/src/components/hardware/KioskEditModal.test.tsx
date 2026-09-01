@@ -58,6 +58,8 @@ const INITIATIVES: InitiativeItem[] = [
   move({ id: 'i3', name: 'Old Done Move', status: 'done' }),
   move({ id: 'i4', name: 'Archived Planned Move', status: 'planned',
          archived_at: '2026-01-01T00:00:00Z' }),
+  move({ id: 'i5', name: 'Server Upgrade Project', status: 'planned',
+         initiative_type: 'project' }),
 ];
 
 const STATUSES: StatusValue[] = [
@@ -174,7 +176,7 @@ it('edit mode: prefills from the device, changing only version submits patchDevi
   await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
 });
 
-it('move select offers only unarchived planned/in_progress moves from the loaded initiatives', async () => {
+it('move select offers only unarchived planned/in_progress MOVE initiatives', async () => {
   renderCreate();
   const select = await screen.findByLabelText('Current Move') as HTMLSelectElement;
   const labels = Array.from(select.options).map((o) => o.textContent);
@@ -183,6 +185,7 @@ it('move select offers only unarchived planned/in_progress moves from the loaded
   expect(labels).toContain('Dock B Refresh');
   expect(labels).not.toContain('Old Done Move');
   expect(labels).not.toContain('Archived Planned Move');
+  expect(labels).not.toContain('Server Upgrade Project');
 });
 
 it('shows the mapped error text when the save call rejects with bad_scan_status', async () => {

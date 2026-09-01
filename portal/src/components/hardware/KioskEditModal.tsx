@@ -10,7 +10,7 @@
  * listSites() itself on mount (Promise.all) rather than taking them as
  * props — the move/scan-type/site vocabularies are cheap lookups this
  * modal is the only consumer of. Moves are filtered to unarchived
- * planned/in_progress initiatives (the only ones a kiosk should be
+ * planned/in_progress MOVE initiatives (the only ones a kiosk should be
  * assigned to); scan types to active asset-record-type status values.
  *
  * Registration dates (`token_expires_at`/`registered_at`) are never
@@ -133,7 +133,7 @@ export default function KioskEditModal({ device, onClose, onSaved }: Props) {
   }, []);
 
   const moveOptions = useMemo(() => (data?.initiatives ?? []).filter((i) =>
-    (i.status === 'planned' || i.status === 'in_progress') && i.archived_at == null,
+    i.initiative_type === 'move' && (i.status === 'planned' || i.status === 'in_progress') && i.archived_at == null,
   ), [data]);
 
   const scanOptions = useMemo(() => (data?.statuses ?? []).filter((s) =>
