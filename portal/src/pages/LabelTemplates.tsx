@@ -89,6 +89,7 @@ export default function LabelTemplates() {
   const navigate = useNavigate();
   const canAdd = can('labels', 'add');
   const canChange = can('labels', 'change');
+  const canDelete = can('labels', 'delete');
 
   const [templates, setTemplates] = useState<LabelTemplate[] | null>(null);
   const [vocab, setVocab] = useState<LabelVocab[]>([]);
@@ -349,13 +350,15 @@ export default function LabelTemplates() {
                         key: 'edit', label: 'Edit',
                         onSelect: () => navigate(`/labels/templates/${t.id}/edit`),
                       }] : []),
-                      ...(canChange ? [t.is_active ? {
-                        key: 'deactivate', label: 'Deactivate', destructive: true,
-                        onSelect: () => void deactivate(t),
-                      } : {
-                        key: 'activate', label: 'Activate',
-                        onSelect: () => void activate(t),
-                      }] : []),
+                      ...(t.is_active
+                        ? (canDelete ? [{
+                            key: 'deactivate', label: 'Deactivate', destructive: true,
+                            onSelect: () => void deactivate(t),
+                          }] : [])
+                        : (canChange ? [{
+                            key: 'activate', label: 'Activate',
+                            onSelect: () => void activate(t),
+                          }] : [])),
                     ]} />
                   </div>
                 </div>
