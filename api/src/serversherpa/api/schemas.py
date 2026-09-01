@@ -1988,3 +1988,11 @@ class LabelCompileIn(BaseModel):
 
 class LabelCompileOut(BaseModel):
     code: str
+
+
+class LabelZplPreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    zpl: str = Field(min_length=1, max_length=20000)
+    size_key: str
+    dpi_key: str

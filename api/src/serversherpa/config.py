@@ -87,6 +87,9 @@ class Settings(BaseSettings):
     # ── Observability ──────────────────────────────────────
     sentry_dsn: str = ""
 
+    # ── Labels ─────────────────────────────────────────────
+    labelary_base_url: str = "http://api.labelary.com"
+
     @property
     def sync_database_url(self) -> str:
         """Database URL for synchronous drivers (Alembic uses psycopg)."""

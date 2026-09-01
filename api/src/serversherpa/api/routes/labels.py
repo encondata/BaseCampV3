@@ -8,7 +8,7 @@ rest of the Variables surface. All mutations audit into the caller's txn.
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
@@ -17,8 +17,10 @@ from serversherpa.api.schemas import (
     LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
     LabelTemplateCreateIn, LabelTemplateOut, LabelTemplateUpdateIn,
     LabelVocabCreateIn, LabelVocabOut, LabelVocabUpdateIn,
+    LabelZplPreviewIn,
 )
 from serversherpa.db.models import LabelPlaceholder, LabelTemplate, LabelVocab
+from serversherpa.labels import labelary
 from serversherpa.labels.brother_escp import compile_escp
 from serversherpa.labels.brother_ptouch import compile_ptouch
 from serversherpa.labels.model import DesignError, parse_design
@@ -388,6 +390,29 @@ async def compile_template(
     else:
         raise _err(422, "unsupported_language", key=lang.key)
     return LabelCompileOut(code=out)
+
+
+_DPMM = {203: 8, 300: 12}
+
+
+@router.post("/preview/zpl")
+async def preview_zpl(
+    body: LabelZplPreviewIn, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+) -> Response:
+    size = await db.get(LabelVocab, ("size", body.size_key))
+    dpi = await db.get(LabelVocab, ("dpi", body.dpi_key))
+    if size is None or dpi is None:
+        raise _err(404, "unknown_vocab")
+    dpmm = _DPMM.get(dpi.meta["dots"])
+    if dpmm is None:
+        raise _err(422, "unsupported_dpi", dots=dpi.meta["dots"])
+    try:
+        png = await labelary.render_png(
+            body.zpl, size.meta["width_in"], size.meta["height_in"], dpmm)
+    except Exception:
+        raise _err(502, "labelary_unavailable") from None
+    return Response(png, media_type="image/png")
 
 
 @router.delete("/templates/{template_id}", status_code=204)
