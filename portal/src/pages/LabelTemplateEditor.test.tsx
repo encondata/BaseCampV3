@@ -126,6 +126,7 @@ it('edit route loads the template and patches on save', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Save' }));
   await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledWith(
     't1', expect.objectContaining({ name: 'Front tag v2' })));
+  expect(api.updateLabelTemplate.mock.calls[0][1]).not.toHaveProperty('kind');
 });
 
 it('save error surfaces the pf-error', async () => {

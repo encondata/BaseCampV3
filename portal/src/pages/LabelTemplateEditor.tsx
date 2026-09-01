@@ -123,7 +123,8 @@ export default function LabelTemplateEditor() {
         const created = await createLabelTemplate(body);
         navigate(`/labels/templates/${created.id}/edit`, { replace: true });
       } else {
-        await updateLabelTemplate(id, body);
+        const { kind: _omit, ...patch } = body;
+        await updateLabelTemplate(id, patch);
       }
     } catch (err) {
       if (err instanceof ApiError) {
