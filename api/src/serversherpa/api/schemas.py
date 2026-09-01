@@ -1852,3 +1852,41 @@ class DeviceLeaseItem(BaseModel):
     reserved: bool
     up: bool
     last_seen_at: datetime | None
+
+
+# ── Labels ──
+
+
+class LabelVocabOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    kind: str
+    key: str
+    label: str
+    description: str
+    meta: dict
+    sort_order: int
+    is_active: bool
+    # populated on every listing — counts label_templates referencing the key
+    usage_count: int | None = None
+
+
+class LabelVocabCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["type", "size", "dpi", "language"]
+    key: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9_-]+$")
+    label: str = Field(min_length=1, max_length=80)
+    description: str = ""
+    meta: dict = Field(default_factory=dict)
+    sort_order: int = 0
+
+
+class LabelVocabUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str | None = Field(None, min_length=1, max_length=80)
+    description: str | None = None
+    meta: dict | None = None
+    sort_order: int | None = None
+    is_active: bool | None = None
