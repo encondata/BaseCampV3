@@ -97,21 +97,30 @@ def translate_code(code: str) -> tuple[str, list[str]]:
 
 
 def infer_size(code: str,
-               sizes: list[tuple[str, float, float]]) -> tuple[str, str]:
-    """Match the template's own ^PW/^LL (dots at 203 dpi) to a size key.
+               sizes: list[tuple[str, float, float]]) -> tuple[str, str, str]:
+    """Match the template's own ^PW/^LL dots to a size key, trying 203 dpi
+    first and falling back to 300 dpi.
 
     `sizes` = [(key, width_in, height_in), ...] for ACTIVE size vocab rows.
-    Returns (size_key, human note for the import log)."""
+    Returns (size_key, dpi_key, human note for the import log)."""
     pw = re.search(r"\^PW(\d+)", code)
     ll = re.search(r"\^LL(\d+)", code)
     if not pw or not ll:
-        return "4x2", "no literal ^PW/^LL found — defaulted to 4x2"
-    w, h = int(pw.group(1)) / 203, int(ll.group(1)) / 203
+        return "4x2", "203", "no literal ^PW/^LL found — defaulted to 4x2 @203"
+    pw_dots, ll_dots = int(pw.group(1)), int(ll.group(1))
+    w203, h203 = pw_dots / 203, ll_dots / 203
     for key, sw, sh in sizes:
-        if abs(sw - w) <= 0.05 and abs(sh - h) <= 0.05:
-            return key, f"^PW/^LL {pw.group(1)}x{ll.group(1)} -> {key}"
-    return "4x2", (f"^PW/^LL gives {w:.2f}x{h:.2f} in — "
-                   "no vocab match, defaulted to 4x2")
+        if abs(sw - w203) <= 0.05 and abs(sh - h203) <= 0.05:
+            return (key, "203",
+                    f"^PW/^LL {pw_dots}x{ll_dots} -> {key} @203dpi")
+    w300, h300 = pw_dots / 300, ll_dots / 300
+    for key, sw, sh in sizes:
+        if abs(sw - w300) <= 0.05 and abs(sh - h300) <= 0.05:
+            return (key, "300",
+                    f"^PW/^LL {pw_dots}x{ll_dots} -> {key} @300dpi")
+    return "4x2", "203", (
+        f"^PW/^LL gives {w203:.2f}x{h203:.2f} in @203 / "
+        f"{w300:.2f}x{h300:.2f} in @300 — no vocab match, defaulted to 4x2 @203")
 
 
 def map_label_type(v2_type: str | None) -> tuple[str, str | None]:
@@ -168,7 +177,7 @@ async def import_label_templates(db: AsyncSession, dump_path: str) -> dict:
 
         code, missed = translate_code(row["template_code"] or "")
         label_type, type_note = map_label_type(row["type"])
-        size_key, size_note = infer_size(code, sizes)
+        size_key, dpi_key, size_note = infer_size(code, sizes)
         for token in missed:
             stats["notes"].append(f"{name}: untranslated {token}")
         if type_note:
@@ -190,7 +199,7 @@ async def import_label_templates(db: AsyncSession, dump_path: str) -> dict:
         mapped = {"code": code,
                   "description": f"Imported from V2 backup (v2 id {row['id']}).",
                   "label_type": label_type, "size_key": size_key,
-                  "dpi_key": "203", "language_key": "zpl"}
+                  "dpi_key": dpi_key, "language_key": "zpl"}
 
         existing = (await db.execute(select(LabelTemplate)
             .options(selectinload(LabelTemplate.site_links))

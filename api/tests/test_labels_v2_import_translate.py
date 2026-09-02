@@ -52,19 +52,31 @@ def test_handlebars_untouched_and_reported():
 
 
 def test_infer_size_exact_and_tolerance():
-    key, note = infer_size("^XA^PW812^LL406^XZ", SIZES)
-    assert key == "4x2" and "812x406" in note
-    key, _ = infer_size("^XA^PW406^LL203^XZ", SIZES)   # 2.0 x 1.0 exactly
-    assert key == "2x1"
-    key, _ = infer_size("^XA^PW410^LL200^XZ", SIZES)   # within 0.05in
-    assert key == "2x1"
+    key, dpi, note = infer_size("^XA^PW812^LL406^XZ", SIZES)
+    assert key == "4x2" and dpi == "203" and "812x406" in note
+    key, dpi, _ = infer_size("^XA^PW406^LL203^XZ", SIZES)   # 2.0 x 1.0 exactly
+    assert key == "2x1" and dpi == "203"
+    key, dpi, _ = infer_size("^XA^PW410^LL200^XZ", SIZES)   # within 0.05in
+    assert key == "2x1" and dpi == "203"
 
 
 def test_infer_size_fallbacks():
-    key, note = infer_size("^XA^PW999^LL999^XZ", SIZES)
-    assert key == "4x2" and "no vocab match" in note
-    key, note = infer_size("^XA^LL{{CALCULATED}}^PW609^XZ", SIZES)
-    assert key == "4x2" and "no literal" in note
+    key, dpi, note = infer_size("^XA^PW999^LL999^XZ", SIZES)
+    assert key == "4x2" and dpi == "203" and "no vocab match" in note
+    key, dpi, note = infer_size("^XA^LL{{CALCULATED}}^PW609^XZ", SIZES)
+    assert key == "4x2" and dpi == "203" and "no literal" in note
+
+
+def test_infer_size_300dpi_fallback():
+    key, dpi, note = infer_size("^XA^PW1200^LL600^XZ", SIZES)
+    assert (key, dpi) == ("4x2", "300")
+    assert "@300dpi" in note
+
+
+def test_infer_size_prefers_203_when_both_match():
+    # 406x203 dots: 2x1 @203 AND ~1.35x0.68 @300 (no match) -> stays 203
+    key, dpi, _ = infer_size("^XA^PW406^LL203^XZ", SIZES)
+    assert (key, dpi) == ("2x1", "203")
 
 
 def test_map_label_type():
