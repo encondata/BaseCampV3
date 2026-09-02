@@ -426,6 +426,26 @@ class ContactUpdateIn(BaseModel):
     functions: list[str] | None = None
 
 
+class ClientActivityItem(BaseModel):
+    """One processed scan on a client's asset, joined for display."""
+
+    id: uuid.UUID
+    scanned_at: datetime
+    asset_id: uuid.UUID
+    asset_name: str | None
+    serial_number: str | None
+    status: str
+    status_label: str
+    status_color: str
+    site_name: str | None
+    device_id: str
+
+
+class ClientActivityOut(BaseModel):
+    events: list[ClientActivityItem]
+    activity_7d: int
+
+
 # ── external directory (client/partner contacts + external role) ──
 
 class ExternalLinkItem(BaseModel):

@@ -5,9 +5,9 @@ rides the existing person_roles machinery.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +16,8 @@ from serversherpa.access.resolver import can_touch_rank
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
+    ClientActivityItem,
+    ClientActivityOut,
     ContactAddIn,
     ContactItem,
     ContactUpdateIn,
@@ -30,12 +32,15 @@ from serversherpa.api.schemas import (
     WorkerItem,
 )
 from serversherpa.db.models import (
+    Asset,
     Client,
     ContactProfile,
     Partner,
     Person,
     PersonRole,
+    ProcessedScan,
     Role,
+    Site,
     StatusValue,
     UserAccount,
     WorkerProfile,
@@ -531,6 +536,64 @@ clients_router = _make_org_router(
 partners_router = _make_org_router(
     prefix="/partners", model=Partner, contact_role="vendor_viewer",
     scope_col="partner_id", resource="partners")
+
+
+# ── client activity feed (rollup via processed_scans.asset_id) ─────
+# _get_org lives inside the factory closure above and isn't reachable from
+# here — duplicate its org-lookup + scope-404 shape instead, same as
+# list_partner_workers does below for the partners side.
+
+@clients_router.get("/{org_id}/activity", response_model=ClientActivityOut)
+async def client_activity(
+    org_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("clients", "view"),
+    limit: int = Query(30, ge=1, le=100),
+) -> ClientActivityOut:
+    """Recent processed scans on the client's assets — the dashboard's
+    read-only activity feed. activity_7d spans the trailing 7 days
+    regardless of limit. Lives under `clients` so client anchors need no
+    scans grant."""
+    if await db.get(Client, org_id) is None:
+        raise _err(404, "org_not_found")
+    cond = scope_conditions("clients", actor.access, actor.person.id)
+    if cond is not None:
+        visible = await db.scalar(
+            select(Client.id).where(Client.id == org_id, cond))
+        if visible is None:
+            raise _err(404, "org_not_found")
+
+    asset_ids = select(Asset.id).where(Asset.client_id == org_id,
+                                       Asset.archived_at.is_(None))
+    base = (ProcessedScan.asset_id.in_(asset_ids)
+            & ProcessedScan.archived_at.is_(None))
+    week_ago = datetime.now(UTC) - timedelta(days=7)
+    activity_7d = (await db.execute(select(func.count()).where(
+        base, ProcessedScan.scanned_at >= week_ago))).scalar_one()
+    rows = (await db.execute(select(ProcessedScan).where(base)
+        .order_by(ProcessedScan.scanned_at.desc()).limit(limit))
+        ).scalars().all()
+
+    assets = {r.id: r for r in (await db.execute(select(Asset).where(
+        Asset.id.in_({s.asset_id for s in rows})))).scalars()} if rows else {}
+    site_ids = {s.site_id for s in rows if s.site_id}
+    sites = {r.id: r.name for r in (await db.execute(select(Site).where(
+        Site.id.in_(site_ids)))).scalars()} if site_ids else {}
+    vocab = {v.key: v for v in (await db.execute(select(StatusValue).where(
+        StatusValue.record_type == "asset"))).scalars()}
+
+    events = []
+    for s in rows:
+        a = assets.get(s.asset_id)
+        sv = vocab.get(s.status)
+        events.append(ClientActivityItem(
+            id=s.id, scanned_at=s.scanned_at, asset_id=s.asset_id,
+            asset_name=a.name if a else None,
+            serial_number=a.serial_number if a else None,
+            status=s.status,
+            status_label=sv.label if sv else s.status,
+            status_color=sv.color if sv else "#51606f",
+            site_name=sites.get(s.site_id), device_id=s.device_id))
+    return ClientActivityOut(events=events, activity_7d=activity_7d)
 
 
 # ── partner-supplied workers (rollup via worker_profiles.partner_id) ─
