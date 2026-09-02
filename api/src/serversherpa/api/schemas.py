@@ -1561,6 +1561,18 @@ class TimeSummaryOut(BaseModel):
     people: list[TimeSummaryPerson]
 
 
+class TimeDayStat(BaseModel):
+    day: date
+    minutes: int
+
+
+class TimeStatsSummaryOut(BaseModel):
+    clocked_in: int
+    pending_entries: int
+    minutes_today: int
+    days: list[TimeDayStat]
+
+
 class PunchOption(BaseModel):
     id: uuid.UUID
     name: str

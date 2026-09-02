@@ -4,17 +4,18 @@ the caller's own person id and carry no resource gate; everything that
 reads or edits OTHER people's entries sits behind the `time` resource."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from datetime import time as dt_time
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
 from serversherpa.api.schemas import (
-    ClockInIn, ClockOutIn, PunchOption, TimeEntryCreateIn, TimeEntryItem,
-    TimeEntryPatchIn, TimeEntryRejectIn, TimeMeOut, TimePunchOptionsOut,
-    TimeSummaryOut, TimeSummaryPerson,
+    ClockInIn, ClockOutIn, PunchOption, TimeDayStat, TimeEntryCreateIn,
+    TimeEntryItem, TimeEntryPatchIn, TimeEntryRejectIn, TimeMeOut,
+    TimePunchOptionsOut, TimeStatsSummaryOut, TimeSummaryOut, TimeSummaryPerson,
 )
 from serversherpa.db.models import Initiative, Person, Site, StatusValue, TimeEntry
 from serversherpa.services.audit import audit, diff, snapshot
@@ -446,3 +447,40 @@ async def time_summary(
         approved_minutes=sum(p.approved_minutes for p in people_out),
         pending_minutes=sum(p.pending_minutes for p in people_out),
         open_count=open_count, people=people_out)
+
+
+@router.get("/stats/summary", response_model=TimeStatsSummaryOut)
+async def time_stats_summary(
+    db: DbSession,
+    _actor: AuthContext = require_permission("time", "view"),
+    days: int = Query(14, ge=1, le=90),
+) -> TimeStatsSummaryOut:
+    """Dashboard aggregates: open/pending counts + worked minutes per UTC
+    day, zero-filled oldest-first with today included (the
+    /scans/stats/daily convention). Minutes follow _minutes(): open
+    entries contribute 0; closed span minus break, clamped >= 0.
+    Aggregated in Python — time_entries stays small (one row per shift).
+    """
+    clocked_in = (await db.execute(
+        select(func.count()).select_from(TimeEntry)
+        .where(TimeEntry.clock_out_at.is_(None)))).scalar_one()
+    pending = (await db.execute(
+        select(func.count()).select_from(TimeEntry)
+        .where(TimeEntry.status == "pending"))).scalar_one()
+
+    start_day = datetime.now(UTC).date() - timedelta(days=days - 1)
+    start = datetime.combine(start_day, dt_time.min, tzinfo=UTC)
+    rows = (await db.execute(select(TimeEntry).where(
+        TimeEntry.clock_in_at >= start))).scalars().all()
+    per_day: dict = {}
+    for e in rows:
+        d = e.clock_in_at.date()
+        per_day[d] = per_day.get(d, 0) + _minutes(e)
+    out_days = [
+        TimeDayStat(day=start_day + timedelta(days=i),
+                    minutes=per_day.get(start_day + timedelta(days=i), 0))
+        for i in range(days)
+    ]
+    return TimeStatsSummaryOut(
+        clocked_in=clocked_in, pending_entries=pending,
+        minutes_today=out_days[-1].minutes, days=out_days)
