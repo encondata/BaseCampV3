@@ -27,6 +27,7 @@ import MoveAssetDetail from './pages/MoveAssetDetail';
 import Notifications from './pages/Notifications';
 import NotificationGroupDetailPage from './pages/NotificationGroupDetail';
 import Partners from './pages/Partners';
+import PeopleDashboard from './pages/PeopleDashboard';
 import Placeholder from './pages/Placeholder';
 import Printers from './pages/Printers';
 import Login from './pages/Login';
@@ -67,10 +68,7 @@ export default function App() {
               <ProtectedRoute resource="dashboard"><MoveDashboard /></ProtectedRoute>
             } />
             <Route path="/dashboards/people" element={
-              <ProtectedRoute resource="dashboard">
-                <Placeholder eyebrow="Dashboards" title="People Dashboard"
-                             hint="Nothing here yet — this dashboard is coming soon." />
-              </ProtectedRoute>
+              <ProtectedRoute resource="dashboard"><PeopleDashboard /></ProtectedRoute>
             } />
             <Route path="/dashboards/clients" element={
               <ProtectedRoute resource="dashboard">
