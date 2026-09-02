@@ -2935,3 +2935,35 @@ export async function previewZplRequest(body: {
   if (!resp.ok) throw await errorFrom(resp);
   return resp.blob();
 }
+
+// ── People dashboard ──────────────────────────────────────────────────
+
+export interface TimeDayStat { day: string; minutes: number }
+
+export interface TimeStatsSummary {
+  clocked_in: number; pending_entries: number; minutes_today: number;
+  days: TimeDayStat[];
+}
+
+export interface PeopleFlowEvent {
+  person_id: string; display_name: string; avatar_url: string | null;
+  device_id: string; site_name: string | null; scanned_at: string;
+}
+
+export interface PeopleFlowOut {
+  events: PeopleFlowEvent[];
+  distinct_people_today: number;
+  person_scans_today: number;
+}
+
+export async function getTimeStatsSummary(): Promise<TimeStatsSummary> {
+  const resp = await apiFetch('/time/stats/summary');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getPeopleFlow(): Promise<PeopleFlowOut> {
+  const resp = await apiFetch('/scans/people-flow');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
