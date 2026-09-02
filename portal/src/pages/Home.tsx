@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import {
@@ -71,7 +71,10 @@ function boardOrder(a: InitiativeItem, b: InitiativeItem): number {
 }
 
 export default function Home() {
-  const { can, mustChangePassword } = useAuth();
+  const { can, mustChangePassword, scope } = useAuth();
+  if (scope && !scope.global && scope.client_ids.length > 0) {
+    return <Navigate to="/dashboards/clients" replace />;
+  }
   const navigate = useNavigate();
 
   const [assets, setAssets] = useState<AssetItem[] | null>(null);

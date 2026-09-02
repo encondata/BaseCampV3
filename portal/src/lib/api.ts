@@ -2967,3 +2967,23 @@ export async function getPeopleFlow(): Promise<PeopleFlowOut> {
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
+
+// ── Client dashboard ──
+
+export interface ClientActivityItem {
+  id: string; scanned_at: string; asset_id: string; asset_name: string | null;
+  serial_number: string | null; status: string | null;
+  status_label: string | null; status_color: string;
+  site_name: string | null; device_id: string;
+}
+
+export interface ClientActivityOut {
+  events: ClientActivityItem[];
+  activity_7d: number;
+}
+
+export async function getClientActivity(clientId: string): Promise<ClientActivityOut> {
+  const resp = await apiFetch(`/clients/${clientId}/activity`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}

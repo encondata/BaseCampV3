@@ -9,22 +9,32 @@ const canAllBut = (denied: string) => (resource: string) => resource !== denied;
 describe('isNavItemVisible', () => {
   it('shows an ordinary item whenever permission allows, god mode irrelevant', () => {
     const item = { resource: 'sites' };
-    expect(isNavItemVisible(item, canAll, false, 0)).toBe(true);
-    expect(isNavItemVisible(item, canAll, true, 0)).toBe(true);
-    expect(isNavItemVisible(item, canNone, false, 0)).toBe(false);
-    expect(isNavItemVisible(item, canNone, true, 0)).toBe(false);
+    expect(isNavItemVisible(item, canAll, false, 0, true)).toBe(true);
+    expect(isNavItemVisible(item, canAll, true, 0, true)).toBe(true);
+    expect(isNavItemVisible(item, canNone, false, 0, true)).toBe(false);
+    expect(isNavItemVisible(item, canNone, true, 0, true)).toBe(false);
   });
 
   it('hides a godOnly item until god mode is active', () => {
     const item = { resource: 'devtools', godOnly: true };
-    expect(isNavItemVisible(item, canAll, false, 0)).toBe(false);
-    expect(isNavItemVisible(item, canAll, true, 0)).toBe(true);
+    expect(isNavItemVisible(item, canAll, false, 0, true)).toBe(false);
+    expect(isNavItemVisible(item, canAll, true, 0, true)).toBe(true);
   });
 
   it('keeps a godOnly item hidden without the permission, even in god mode', () => {
     // god mode reveals; it never grants
     const item = { resource: 'devtools', godOnly: true };
-    expect(isNavItemVisible(item, canAllBut('devtools'), true, 0)).toBe(false);
+    expect(isNavItemVisible(item, canAllBut('devtools'), true, 0, true)).toBe(false);
+  });
+
+  it('globalOnly items hide for non-global users', () => {
+    const item = { to: '/x', label: 'X', resource: 'dashboard', icon: null,
+                   globalOnly: true };
+    const canAll = () => true;
+    expect(isNavItemVisible(item, canAll, false, 100, true)).toBe(true);
+    expect(isNavItemVisible(item, canAll, false, 100, false)).toBe(false);
+    const plain = { ...item, globalOnly: undefined };
+    expect(isNavItemVisible(plain, canAll, false, 100, false)).toBe(true);
   });
 });
 
@@ -32,11 +42,11 @@ describe('minRank gating', () => {
   const yes = () => true;
   it('hides items below the rank floor', () => {
     const item = { resource: 'dashboard', minRank: 80 };
-    expect(isNavItemVisible(item, yes, false, 60)).toBe(false);
-    expect(isNavItemVisible(item, yes, false, 80)).toBe(true);
+    expect(isNavItemVisible(item, yes, false, 60, true)).toBe(false);
+    expect(isNavItemVisible(item, yes, false, 80, true)).toBe(true);
   });
   it('items without minRank ignore rank', () => {
-    expect(isNavItemVisible({ resource: 'dashboard' }, yes, false, 0))
+    expect(isNavItemVisible({ resource: 'dashboard' }, yes, false, 0, true))
       .toBe(true);
   });
 });
@@ -51,8 +61,8 @@ describe('NAV_SECTIONS', () => {
       .find((i) => i.to === '/dev/database/variables');
 
     expect(item, 'no nav item for /dev/database/variables').toBeDefined();
-    expect(isNavItemVisible(item!, canAll, false, 0)).toBe(false);
-    expect(isNavItemVisible(item!, canAll, true, 0)).toBe(true);
+    expect(isNavItemVisible(item!, canAll, false, 0, true)).toBe(false);
+    expect(isNavItemVisible(item!, canAll, true, 0, true)).toBe(true);
   });
 
   it('registers Dashboards above Assets and Admin above System', () => {
@@ -65,14 +75,14 @@ describe('NAV_SECTIONS', () => {
     const assets = NAV_SECTIONS.flatMap((s) => s.items).find((i) => i.to === '/assets');
     expect(assets, 'no nav item for /assets').toBeDefined();
     expect(assets!.resource).toBe('assets');
-    expect(isNavItemVisible(assets!, canAllBut('assets'), false, 0)).toBe(false);
-    expect(isNavItemVisible(assets!, canAll, false, 0)).toBe(true);
+    expect(isNavItemVisible(assets!, canAllBut('assets'), false, 0, true)).toBe(false);
+    expect(isNavItemVisible(assets!, canAll, false, 0, true)).toBe(true);
 
     const models = NAV_SECTIONS.flatMap((s) => s.items)
       .find((i) => i.to === '/admin/asset-models');
     expect(models, 'no nav item for /admin/asset-models').toBeDefined();
     expect(models!.resource).toBe('asset_models');
-    expect(isNavItemVisible(models!, canAllBut('asset_models'), false, 0)).toBe(false);
+    expect(isNavItemVisible(models!, canAllBut('asset_models'), false, 0, true)).toBe(false);
 
     // Exactly one Admin section — our Makes/Models item and main's Audit
     // log item must share it, not each get their own.

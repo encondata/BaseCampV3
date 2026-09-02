@@ -37,6 +37,7 @@ vi.mock('../auth/AuthContext', () => ({
     godMode: auth.godMode,
     godNavColor: '#ff00ff',
     exitGodMode: vi.fn(),
+    scope: { global: true, client_ids: [], partner_ids: [] },
   }),
 }));
 

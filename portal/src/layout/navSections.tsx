@@ -11,7 +11,7 @@
 
 import { type ReactNode } from 'react';
 
-export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number }
+export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean }
 export interface NavSection { label: string; items: NavItem[] }
 
 export const NAV_SECTIONS: NavSection[] = [
@@ -22,6 +22,7 @@ export const NAV_SECTIONS: NavSection[] = [
         to: '/',
         label: 'Main Dashboard',
         resource: 'dashboard',
+        globalOnly: true,
         icon: (
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
                strokeLinecap="round" strokeLinejoin="round">
@@ -36,6 +37,7 @@ export const NAV_SECTIONS: NavSection[] = [
         to: '/dashboards/move',
         label: 'Move Dashboard',
         resource: 'dashboard',
+        globalOnly: true,
         icon: (
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
                strokeLinecap="round" strokeLinejoin="round">
@@ -48,6 +50,7 @@ export const NAV_SECTIONS: NavSection[] = [
         to: '/dashboards/people',
         label: 'People Dashboard',
         resource: 'dashboard',
+        globalOnly: true,
         icon: (
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
                strokeLinecap="round" strokeLinejoin="round">
