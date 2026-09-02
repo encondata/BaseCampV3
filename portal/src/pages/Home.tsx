@@ -72,9 +72,6 @@ function boardOrder(a: InitiativeItem, b: InitiativeItem): number {
 
 export default function Home() {
   const { can, mustChangePassword, scope } = useAuth();
-  if (scope && !scope.global && scope.client_ids.length > 0) {
-    return <Navigate to="/dashboards/clients" replace />;
-  }
   const navigate = useNavigate();
 
   const [assets, setAssets] = useState<AssetItem[] | null>(null);
@@ -192,6 +189,10 @@ export default function Home() {
   /* ── render ──────────────────────────────────────────────── */
 
   const skel = <span className="dash-skel" aria-label="loading" />;
+
+  if (scope && !scope.global && scope.client_ids.length > 0) {
+    return <Navigate to="/dashboards/clients" replace />;
+  }
 
   return (
     <div className="portal-page">

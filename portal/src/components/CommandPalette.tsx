@@ -72,7 +72,7 @@ export default function CommandPalette() {
                       godOnly = false): Command[] =>
       isNavItemVisible({ resource, godOnly }, can, godMode, maxRank, isGlobal) ? [nav(label, to)] : [];
     const cmds: Command[] = [
-      ...navGated('Dashboard', '/', 'dashboard'),
+      ...(isGlobal ? navGated('Dashboard', '/', 'dashboard') : []),
       ...navGated('Sites', '/sites', 'sites'),
       ...navGated('Assets', '/assets', 'assets'),
       ...navGated('Containers', '/logistics/containers', 'containers'),
