@@ -67,7 +67,13 @@ export default function ClientDashboard() {
   const canClients = can('clients', 'view');
   const canInitiatives = can('initiatives', 'view');
   const canAssets = can('assets', 'view');
-  const showGrid = canClients || canInitiatives || canAssets;
+  // `clients:view` is the page's functional prerequisite — the picker,
+  // identity band, Recent Activity panel, and the Activity·7d KPI all
+  // read through the client entity itself. Without it there is no client
+  // to scope anything to, so the whole grid (including the initiatives
+  // and asset-fleet panels, despite their own separate grants) stays
+  // hidden behind the permission-poor note.
+  const showGrid = canClients;
 
   const [clients, setClients] = useState<OrgRef[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -120,6 +126,8 @@ export default function ClientDashboard() {
           })
           .catch(quiet),
       );
+    }
+    if (canClients) {
       jobs.push(
         getClientActivity(id)
           .then((out) => { setActivityEvents(out.events); setActivity7d(out.activity_7d); })
@@ -309,7 +317,7 @@ export default function ClientDashboard() {
                 </span>
               </div>
             )}
-            {canAssets && (
+            {canClients && (
               <div className="dash-kpi">
                 <span className="dash-kpi-label">Activity · 7d</span>
                 <span className="dash-kpi-value">
@@ -328,7 +336,7 @@ export default function ClientDashboard() {
               </div>
               {initiatives === null && <div className="dash-panel-empty">Loading…</div>}
               {initiatives !== null && initiatives.length === 0 && (
-                <div className="dash-panel-empty">No initiatives for this client yet.</div>
+                <div className="dash-panel-empty">No initiatives yet.</div>
               )}
               {initiatives !== null && initiatives.map((i) => {
                 const progress = progressById[i.id];
@@ -336,6 +344,7 @@ export default function ClientDashboard() {
                   <div key={i.id} className="cdash-init-row">
                     <Link className="cdash-init-name" to={`/initiatives/${i.id}`}>{i.name}</Link>
                     {chip(i.type_label, i.type_color)}
+                    {chip(i.status_label, i.status_color)}
                     <span className="cdash-init-dates">
                       {longDate(i.scheduled_start)} – {longDate(i.scheduled_end)}
                     </span>
@@ -362,12 +371,17 @@ export default function ClientDashboard() {
           {canAssets && (
             <section className="dash-panel dash-span-5 dash-rise" aria-label="Asset fleet">
               <div className="dash-panel-head">
-                <span className="dash-panel-title">Asset fleet</span>
-                <Link className="dash-panel-link" to="/assets">All assets</Link>
+                <span className="dash-panel-title">Asset fleet by status</span>
+                <span className="dash-panel-head-right">
+                  {clientAssets !== null && (
+                    <span className="dash-panel-count">{nf.format(liveAssets.length)}</span>
+                  )}
+                  <Link className="dash-panel-link" to="/assets">All assets</Link>
+                </span>
               </div>
               {clientAssets === null && <div className="dash-panel-empty">Loading…</div>}
               {clientAssets !== null && liveAssets.length === 0 && (
-                <div className="dash-panel-empty">No assets for this client yet.</div>
+                <div className="dash-panel-empty">No assets on file.</div>
               )}
               {clientAssets !== null && liveAssets.length > 0 && (
                 <Distribution entries={dist} total={liveAssets.length} />
@@ -376,14 +390,14 @@ export default function ClientDashboard() {
           )}
 
           {/* ── recent activity ── */}
-          {canAssets && (
+          {canClients && (
             <section className="dash-panel dash-span-7 dash-rise" aria-label="Recent activity">
               <div className="dash-panel-head">
                 <span className="dash-panel-title">Recent activity</span>
               </div>
               {activityEvents === null && <div className="dash-panel-empty">Loading…</div>}
               {activityEvents !== null && activityEvents.length === 0 && (
-                <div className="dash-panel-empty">No recent activity.</div>
+                <div className="dash-panel-empty">No scan activity yet.</div>
               )}
               {activityEvents !== null && activityEvents.map((row) => (
                 // Deep link mirrors lib/scans.ts's matchedHref asset branch

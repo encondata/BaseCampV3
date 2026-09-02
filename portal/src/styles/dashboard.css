@@ -140,6 +140,17 @@ a.dash-kpi:hover {
   text-transform: uppercase;
   color: var(--text-mute);
 }
+.dash-panel-head-right {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.dash-panel-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
 .dash-panel-link {
   font-size: 12px;
   font-weight: 500;

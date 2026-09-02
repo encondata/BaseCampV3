@@ -137,7 +137,13 @@ beforeEach(() => {
     Promise.resolve(org({ id, name: id === 'c2' ? 'Beta' : 'Acme' })));
   api.listInitiatives.mockResolvedValue([
     initiative(),
-    initiative({ id: 'i2', name: 'Acme finished move', real_end_at: '2026-08-01T00:00:00Z' }),
+    initiative({
+      id: 'i2', name: 'Acme finished move', real_end_at: '2026-08-01T00:00:00Z',
+      // Distinct status from the active fixture's 'In Progress' — a
+      // finished initiative wouldn't still show that status anyway, and
+      // it keeps 'In Progress' unique to the active row's status chip.
+      status: 'completed', status_label: 'Completed', status_color: '#178a4c',
+    }),
   ]);
   api.listInitiativeAssets.mockResolvedValue([]);
   api.listAssets.mockResolvedValue(ASSETS);
@@ -153,6 +159,7 @@ it('internal user gets a client select and panels for the first client', async (
   render(<MemoryRouter><ClientDashboard /></MemoryRouter>);
   await waitFor(() => expect(screen.queryByLabelText('Client')).not.toBeNull());
   expect(screen.queryByText('Acme move')).not.toBeNull();     // initiatives
+  expect(screen.queryByText('In Progress')).not.toBeNull();   // initiative status chip
   expect(screen.queryByText('In Transit')).not.toBeNull();    // fleet dist
   expect(screen.queryByText('9')).not.toBeNull();             // activity 7d KPI
 });
@@ -178,6 +185,16 @@ it('permission-poor user sees the empty note', async () => {
   render(<MemoryRouter><ClientDashboard /></MemoryRouter>);
   await waitFor(() =>
     expect(screen.queryByText(/Nothing your permissions/)).not.toBeNull());
+});
+
+it('clients:view is the functional prerequisite — holding only initiatives:view still shows the empty note, no picker or grid', async () => {
+  auth.can = (r: string) => r === 'dashboard' || r === 'initiatives';
+  render(<MemoryRouter><ClientDashboard /></MemoryRouter>);
+  await waitFor(() =>
+    expect(screen.queryByText(/Nothing your permissions/)).not.toBeNull());
+  expect(screen.queryByLabelText('Client')).toBeNull();
+  expect(screen.queryByText('Acme move')).toBeNull();
+  expect(api.listClients).not.toHaveBeenCalled();
 });
 
 it('activity rows render with status label and relative time', async () => {
