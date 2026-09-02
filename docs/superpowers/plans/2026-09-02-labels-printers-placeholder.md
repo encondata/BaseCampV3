@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A Printers placeholder page as the LAST item of the Labels nav section.
+**Goal:** A Printers placeholder page as the LAST item of the Labels nav section, AND Generate Labels moved ahead of Templates (user-requested order: Print Labels, Generate Labels, Templates, Printers — reorder the existing item objects in navSections.tsx; Topbar PAGES / CommandPalette line order follows suit for consistency).
 
 **Architecture:** Pure registration-point change mirroring the section's existing items; no new components, no schema.
 
@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Suites FOREGROUND, one continuous call, timeout 600000ms — never background/Monitor/end-turn-waiting. Portal: `cd portal && npm test` (747) + `npm run build`. API: only if `access/resources.py` edits trigger test changes — run `cd api && .venv/bin/pytest tests/test_access_registry.py -v` focused; full API suite NOT required for a routes-tuple addition unless that focused run fails.
-- Item order after the change: `/labels/print`, `/labels/templates`, `/labels/generate`, `/labels/printers`.
+- Item order after the change: `/labels/print`, `/labels/generate`, `/labels/templates`, `/labels/printers`.
 - Resource stays `labels` everywhere; no grants/migration changes.
 
 ---
@@ -35,7 +35,7 @@
 
 ```ts
   expect(section.items.map((i) => i.to)).toEqual([
-    '/labels/print', '/labels/templates', '/labels/generate',
+    '/labels/print', '/labels/generate', '/labels/templates',
     '/labels/printers',
   ]);
 ```

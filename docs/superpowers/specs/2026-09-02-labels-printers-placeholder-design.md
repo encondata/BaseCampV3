@@ -3,7 +3,7 @@
 **Date:** 2026-09-02  **Branch:** `labels`  **Status:** Approved design
 
 Add a fourth item to the Labels nav section: **Printers**, LAST in the
-section (Print Labels, Templates, Generate Labels, Printers) — hardware
+section (Print Labels, Generate Labels, Templates, Printers) — hardware
 config belongs at the end, mirroring how Routers ends Scanning Hardware.
 
 - Route `/labels/printers`, resource `labels`, standard `Placeholder`
