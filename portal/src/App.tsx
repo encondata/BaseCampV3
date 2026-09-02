@@ -28,6 +28,7 @@ import Notifications from './pages/Notifications';
 import NotificationGroupDetailPage from './pages/NotificationGroupDetail';
 import Partners from './pages/Partners';
 import Placeholder from './pages/Placeholder';
+import Printers from './pages/Printers';
 import Login from './pages/Login';
 import Profile from './pages/Profile';
 import ProcessLogs from './pages/ProcessLogs';
@@ -145,10 +146,7 @@ export default function App() {
               </ProtectedRoute>
             } />
             <Route path="/labels/printers" element={
-              <ProtectedRoute resource="labels">
-                <Placeholder eyebrow="Labels" title="Printers"
-                             hint="Registered Zebra and Brother label printers — configuration and status." />
-              </ProtectedRoute>
+              <ProtectedRoute resource="labels"><Printers /></ProtectedRoute>
             } />
             <Route path="/hardware/handheld-readers" element={
               <ProtectedRoute resource="scanning_hardware"><HandheldReaders /></ProtectedRoute>} />
