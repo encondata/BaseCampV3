@@ -1102,6 +1102,26 @@ class ProcessedScanPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PeopleFlowEvent(BaseModel):
+    """One debounced walk-by — a person badge read, folded per burst."""
+
+    person_id: uuid.UUID
+    display_name: str
+    avatar_url: str | None
+    device_id: str
+    site_name: str | None
+    scanned_at: datetime
+
+
+class PeopleFlowOut(BaseModel):
+    """The People Dashboard's walk-by rail: debounced events plus the
+    day's raw (pre-debounce) counts, so the KPIs ride the same call."""
+
+    events: list[PeopleFlowEvent]
+    distinct_people_today: int
+    person_scans_today: int
+
+
 class AssetScanItem(BaseModel):
     """One processed scan of a given asset — the per-asset history row
     (initiative roster expansion). Match fields omitted: they are the

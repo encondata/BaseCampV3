@@ -11,14 +11,15 @@ from sqlalchemy import func, select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    AssetScanItem, ProcessedScanItem, ProcessedScanPatch, RawScanItem,
-    ScanDailyStat,
+    AssetScanItem, PeopleFlowEvent, PeopleFlowOut, ProcessedScanItem,
+    ProcessedScanPatch, RawScanItem, ScanDailyStat,
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Asset, Container, Person, ProcessedScan, RawScan, Site, StatusValue,
 )
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.storage import presign_get
 
 router = APIRouter(prefix="/scans", tags=["scans"])
 
@@ -287,3 +288,73 @@ async def update_processed_scan(
               entity_id=str(scan_id), action="update", changes=changes)
     await db.commit()
     return await _processed_item(db, scan)
+
+
+FLOW_DEBOUNCE_MINUTES = 5
+
+
+@router.get("/people-flow", response_model=PeopleFlowOut)
+async def people_flow(
+    db: DbSession,
+    _actor: AuthContext = require_permission("scans", "view"),
+    since: datetime | None = None,
+    limit: int = Query(60, ge=1, le=200),
+) -> PeopleFlowOut:
+    """Debounced person-badge walk-bys for the People Dashboard.
+
+    Bursts (same person, same reader, reads within FLOW_DEBOUNCE_MINUTES
+    of the kept read) fold into ONE event stamped at the burst's EARLIEST
+    read — when the person arrived at the reader. A later read or a
+    different reader starts a new event. The two counts cover ALL of
+    today's person scans (pre-debounce; distinct people), regardless of
+    since/limit, so the dashboard KPIs ride the same call.
+    """
+    today_start = datetime.combine(datetime.now(UTC).date(), time.min,
+                                   tzinfo=UTC)
+    if since is None:
+        since = today_start
+    person_match = (
+        (ProcessedScan.match_type == "person")
+        & ProcessedScan.person_id.is_not(None)
+        & ProcessedScan.archived_at.is_(None))
+
+    scans_today, people_today = (await db.execute(
+        select(func.count(),
+               func.count(func.distinct(ProcessedScan.person_id)))
+        .where(person_match, ProcessedScan.scanned_at >= today_start))).one()
+
+    rows = (await db.execute(select(ProcessedScan)
+        .where(person_match, ProcessedScan.scanned_at >= since)
+        .order_by(ProcessedScan.scanned_at))).scalars().all()
+
+    kept: list[ProcessedScan] = []
+    last_kept_at: dict[tuple, datetime] = {}
+    for s in rows:  # oldest -> newest so a burst keeps its first read
+        k = (s.person_id, s.device_id)
+        prev = last_kept_at.get(k)
+        if prev is not None and (s.scanned_at - prev) <= timedelta(
+                minutes=FLOW_DEBOUNCE_MINUTES):
+            continue
+        last_kept_at[k] = s.scanned_at
+        kept.append(s)
+    kept.reverse()  # newest first
+    kept = kept[:limit]
+
+    person_ids = {s.person_id for s in kept}
+    people = {p.id: p for p in (await db.execute(
+        select(Person).where(Person.id.in_(person_ids)))).scalars()}
+    site_ids = {s.site_id for s in kept if s.site_id is not None}
+    sites = {r.id: r.name for r in (await db.execute(
+        select(Site).where(Site.id.in_(site_ids)))).scalars()} if site_ids else {}
+    avatar = {pid: presign_get(p.avatar_key) for pid, p in people.items()}
+
+    events = [PeopleFlowEvent(
+        person_id=s.person_id,
+        display_name=people[s.person_id].display_name if s.person_id in people else "Unknown",
+        avatar_url=avatar.get(s.person_id),
+        device_id=s.device_id,
+        site_name=sites.get(s.site_id),
+        scanned_at=s.scanned_at,
+    ) for s in kept]
+    return PeopleFlowOut(events=events, distinct_people_today=people_today,
+                         person_scans_today=scans_today)
