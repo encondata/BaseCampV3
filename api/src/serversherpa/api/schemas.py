@@ -434,9 +434,9 @@ class ClientActivityItem(BaseModel):
     asset_id: uuid.UUID
     asset_name: str | None
     serial_number: str | None
-    status: str
-    status_label: str
-    status_color: str
+    status: str | None
+    status_label: str | None
+    status_color: str  # dashboard dot always renders; null-status uses fallback "#51606f"
     site_name: str | None
     device_id: str
 

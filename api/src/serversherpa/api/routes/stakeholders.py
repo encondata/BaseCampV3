@@ -584,7 +584,7 @@ async def client_activity(
     events = []
     for s in rows:
         a = assets.get(s.asset_id)
-        sv = vocab.get(s.status)
+        sv = vocab.get(s.status) if s.status is not None else None
         events.append(ClientActivityItem(
             id=s.id, scanned_at=s.scanned_at, asset_id=s.asset_id,
             asset_name=a.name if a else None,
