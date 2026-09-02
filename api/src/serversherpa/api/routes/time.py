@@ -187,10 +187,12 @@ async def my_time(
 
 @router.get("/punch-options", response_model=TimePunchOptionsOut)
 async def punch_options(db: DbSession, user: CurrentUser) -> TimePunchOptionsOut:
-    # Sites and initiatives are internal-only resources (visible_to global,
-    # see access/resources.py) — a client/partner-scoped actor gets empty
-    # lists here rather than a leak of internal names. Punching still works;
-    # the entry is just unattributed to an initiative/site.
+    # Sites stay internal-only (visible_to global, see access/resources.py);
+    # initiatives are now client-visible for reads elsewhere, but this
+    # picker still keys on is_global rather than initiatives:view/scope —
+    # a client/partner-scoped actor gets empty lists here rather than a
+    # roster of every open initiative/site name. Punching still works; the
+    # entry is just unattributed to an initiative/site.
     if not user.access.is_global:
         return TimePunchOptionsOut(initiatives=[], sites=[])
     initiatives = list(await db.scalars(

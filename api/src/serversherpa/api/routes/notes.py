@@ -2,7 +2,12 @@
 Permission derives from the HOST's resource: viewing notes requires viewing
 the host row (scope included); writing requires change on the host resource
 and a global anchor. Only 'asset' is registered in V1; new hosts are one
-NOTE_HOSTS entry (plus grants) away."""
+NOTE_HOSTS entry (plus grants) away.
+
+Exception: 'initiative' notes are global-only for BOTH read and write —
+client read access to initiative notes is deferred to a future product
+decision, so the generic "view = host view + scope" rule is overridden for
+this one host in _authorize_host."""
 
 import uuid
 from datetime import UTC, datetime
@@ -60,6 +65,12 @@ async def _authorize_host(
     if not actor.access.can(resource, needed):
         raise _err(403, "forbidden")
     if action != "view" and not actor.access.is_global:
+        raise _err(403, "forbidden")
+    # Initiative notes stay internal-only for now, including reads — whether
+    # clients should ever see notes on their own initiatives is a future
+    # product decision, not something to fall out of the generic host rule.
+    if entity_type == "initiative" and action == "view" \
+            and not actor.access.is_global:
         raise _err(403, "forbidden")
     row = await db.get(model, entity_id)
     if row is None:

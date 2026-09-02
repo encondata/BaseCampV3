@@ -5,7 +5,8 @@ import uuid
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    Client, Initiative, Person, PersonRole, UserAccount,
+    Client, Initiative, InitiativeLink, InitiativePerson, Person, PersonRole,
+    UserAccount,
 )
 from serversherpa.security.passwords import hash_password
 
@@ -98,3 +99,69 @@ async def test_time_summary_scope_probe(client, db, seeded_user):
     ghost = await client.get(f"/time/summary?initiative_id={uuid.uuid4()}",
                              headers=hdrs)
     assert ghost.status_code == 404
+
+
+async def test_search_is_client_scoped(client, db, seeded_user):
+    a, _b, _ia, _ib, _n = await _two_clients_with_initiatives(db)
+    hdrs = await client_login(db, client, a.id)
+    resp = await client.get("/search?q=move", headers=hdrs)
+    assert resp.status_code == 200
+    text = resp.text
+    assert "Acme move" in text
+    assert "Bravo move" not in text
+    # searching the other client's NAME surfaces nothing of theirs
+    resp = await client.get("/search?q=Bravo", headers=hdrs)
+    assert "Bravo move" not in resp.text
+
+
+async def test_link_rows_hide_foreign_initiatives(client, db, seeded_user):
+    a, _b, ia, ib, _n = await _two_clients_with_initiatives(db)
+    # link Acme's initiative to Bravo's (staff action, direct insert)
+    db.add(InitiativeLink(parent_id=ia.id, child_id=ib.id))
+    await db.commit()
+    hdrs = await client_login(db, client, a.id)
+    detail = (await client.get(f"/initiatives/{ia.id}", headers=hdrs)).json()
+    joined = str(detail)
+    assert "Bravo move" not in joined
+
+
+async def test_people_ratings_hidden_from_clients(client, db, seeded_user):
+    a, _b, ia, _ib, _n = await _two_clients_with_initiatives(db)
+    worker = Person(first_name="Wor", last_name="Ker",
+                    email="worker@test.example.com")
+    db.add(worker)
+    await db.flush()
+    db.add(InitiativePerson(initiative_id=ia.id, person_id=worker.id,
+                            rating=4))
+    await db.commit()
+    hdrs = await client_login(db, client, a.id)
+    rows = (await client.get(f"/initiatives/{ia.id}/people",
+                             headers=hdrs)).json()
+    assert all(r["rating"] is None for r in rows)
+    adm = await _make(db, client, "admin", "adm2@test.example.com")
+    rows = (await client.get(f"/initiatives/{ia.id}/people",
+                             headers=adm)).json()
+    assert any(r["rating"] == 4 for r in rows)
+
+
+async def test_initiative_notes_internal_only(client, db, seeded_user):
+    a, _b, ia, *_ = await _two_clients_with_initiatives(db)
+    hdrs = await client_login(db, client, a.id)
+    resp = await client.get(
+        f"/notes?entity_type=initiative&entity_id={ia.id}", headers=hdrs)
+    assert resp.status_code == 403
+
+
+async def test_provenance_scoped(client, db, seeded_user):
+    a, _b, ia, ib, _n = await _two_clients_with_initiatives(db)
+    hdrs = await client_login(db, client, a.id)
+    ok = await client.get(
+        f"/status/provenance?entity_type=initiative&entity_id={ia.id}"
+        f"&status=planned",
+        headers=hdrs)
+    assert ok.status_code in (200, 404)  # 404 acceptable when no history
+    foreign = await client.get(
+        f"/status/provenance?entity_type=initiative&entity_id={ib.id}"
+        f"&status=planned",
+        headers=hdrs)
+    assert foreign.status_code == 404

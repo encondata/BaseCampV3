@@ -167,8 +167,8 @@ def _item(i: Initiative, vocab: dict, sites: dict, clients: dict,
     }
 
 
-async def _people_rows(db: DbSession,
-                       initiative_id: uuid.UUID) -> list[InitiativePersonRow]:
+async def _people_rows(db: DbSession, initiative_id: uuid.UUID,
+                       actor: AuthContext) -> list[InitiativePersonRow]:
     rows = (await db.execute(
         select(InitiativePerson, Person)
         .join(Person, Person.id == InitiativePerson.person_id)
@@ -193,12 +193,15 @@ async def _people_rows(db: DbSession,
             work_type_label=wt_label, work_type_color=wt_color,
             site_worked_id=m.site_worked_id,
             site_worked_name=sites.get(m.site_worked_id),
-            rating=m.rating, created_at=m.created_at))
+            # internal performance ratings never leave the org — a
+            # client-anchored actor gets None regardless of the stored value
+            rating=m.rating if actor.access.is_global else None,
+            created_at=m.created_at))
     return out
 
 
 async def _link_rows(
-    db: DbSession, initiative_id: uuid.UUID,
+    db: DbSession, initiative_id: uuid.UUID, actor: AuthContext,
 ) -> tuple[list[InitiativeLinkRow], list[InitiativeLinkRow]]:
     vocab = await _vocab(db)
 
@@ -215,26 +218,34 @@ async def _link_rows(
             role=link.role, sort_order=link.sort_order, notes=link.notes,
             created_at=link.created_at)
 
-    children = (await db.execute(
-        select(InitiativeLink, Initiative)
-        .join(Initiative, Initiative.id == InitiativeLink.child_id)
-        .where(InitiativeLink.parent_id == initiative_id)
-        .order_by(InitiativeLink.sort_order, InitiativeLink.created_at))).all()
-    parents = (await db.execute(
-        select(InitiativeLink, Initiative)
-        .join(Initiative, Initiative.id == InitiativeLink.parent_id)
-        .where(InitiativeLink.child_id == initiative_id)
-        .order_by(InitiativeLink.sort_order, InitiativeLink.created_at))).all()
+    children_q = (select(InitiativeLink, Initiative)
+                 .join(Initiative, Initiative.id == InitiativeLink.child_id)
+                 .where(InitiativeLink.parent_id == initiative_id))
+    parents_q = (select(InitiativeLink, Initiative)
+                .join(Initiative, Initiative.id == InitiativeLink.parent_id)
+                .where(InitiativeLink.child_id == initiative_id))
+    # A linked initiative outside the actor's own scope must not leak its
+    # name/type/status into this initiative's link list — drop those rows
+    # entirely for non-global actors instead of exposing the other side.
+    cond = scope_conditions("initiatives", actor.access, actor.person.id)
+    if cond is not None:
+        children_q = children_q.where(cond)
+        parents_q = parents_q.where(cond)
+    children = (await db.execute(children_q.order_by(
+        InitiativeLink.sort_order, InitiativeLink.created_at))).all()
+    parents = (await db.execute(parents_q.order_by(
+        InitiativeLink.sort_order, InitiativeLink.created_at))).all()
     return ([row(l, o) for l, o in children],
             [row(l, o) for l, o in parents])
 
 
-async def _detail(db: DbSession, initiative: Initiative) -> InitiativeDetailOut:
+async def _detail(db: DbSession, initiative: Initiative,
+                  actor: AuthContext) -> InitiativeDetailOut:
     ctx = await _context(db, [initiative])
-    children, parents = await _link_rows(db, initiative.id)
+    children, parents = await _link_rows(db, initiative.id, actor)
     return InitiativeDetailOut(
         **_item(initiative, *ctx),
-        people=await _people_rows(db, initiative.id),
+        people=await _people_rows(db, initiative.id, actor),
         links_children=children, links_parents=parents)
 
 
@@ -258,7 +269,8 @@ async def get_initiative(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "view"),
 ) -> InitiativeDetailOut:
-    return await _detail(db, await _get_initiative(db, initiative_id, actor))
+    return await _detail(
+        db, await _get_initiative(db, initiative_id, actor), actor)
 
 
 async def _check_refs(db: DbSession, data: dict) -> None:
@@ -310,7 +322,7 @@ async def create_initiative(
     audit(db, actor_id=actor.person.id, entity_type="initiative",
           entity_id=str(initiative.id), action="create", changes=changes)
     await db.commit()
-    return await _detail(db, initiative)
+    return await _detail(db, initiative, actor)
 
 
 @router.patch("/{initiative_id}", response_model=InitiativeDetailOut)
@@ -341,7 +353,7 @@ async def update_initiative(
         audit(db, actor_id=actor.person.id, entity_type="initiative",
               entity_id=str(initiative_id), action="update", changes=changes)
     await db.commit()
-    return await _detail(db, initiative)
+    return await _detail(db, initiative, actor)
 
 
 @router.post("/{initiative_id}/archive", status_code=204)
@@ -400,7 +412,7 @@ async def list_initiative_people(
     actor: AuthContext = require_permission("initiatives", "view"),
 ) -> list[InitiativePersonRow]:
     await _get_initiative(db, initiative_id, actor)
-    return await _people_rows(db, initiative_id)
+    return await _people_rows(db, initiative_id, actor)
 
 
 @router.post("/{initiative_id}/people",
@@ -431,7 +443,7 @@ async def add_initiative_person(
         # same (initiative, person) pair — initiative_people_uniq fired
         await db.rollback()
         raise _err(409, "duplicate_person") from None
-    return await _people_rows(db, initiative_id)
+    return await _people_rows(db, initiative_id, actor)
 
 
 async def _get_assignment(db: DbSession,
@@ -464,7 +476,7 @@ async def update_initiative_person(
               entity_id=str(assoc.initiative_id), action="person_update",
               changes=changes)
     await db.commit()
-    rows = await _people_rows(db, assoc.initiative_id)
+    rows = await _people_rows(db, assoc.initiative_id, actor)
     return next(r for r in rows if r.id == assoc_id)
 
 
@@ -517,7 +529,7 @@ async def list_initiative_links(
     actor: AuthContext = require_permission("initiatives", "view"),
 ) -> InitiativeLinksOut:
     await _get_initiative(db, initiative_id, actor)
-    children, parents = await _link_rows(db, initiative_id)
+    children, parents = await _link_rows(db, initiative_id, actor)
     return InitiativeLinksOut(children=children, parents=parents)
 
 
@@ -556,7 +568,7 @@ async def add_initiative_link(
         # (e.g. an edge written outside this route)
         await db.rollback()
         raise _err(409, "duplicate_link") from None
-    return await _detail(db, initiative)
+    return await _detail(db, initiative, actor)
 
 
 async def _get_link(db: DbSession, link_id: uuid.UUID) -> InitiativeLink:
@@ -585,7 +597,7 @@ async def update_initiative_link(
               entity_id=str(link.parent_id), action="link_update",
               changes=changes)
     await db.commit()
-    children, _ = await _link_rows(db, link.parent_id)
+    children, _ = await _link_rows(db, link.parent_id, actor)
     return next(r for r in children if r.id == link_id)
 
 

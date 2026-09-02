@@ -143,7 +143,8 @@ async def global_search(
         )
 
     # initiatives — name / location / sky-command ref / client name / site
-    # names; internal-only resource
+    # names; row-scoped for client actors (client-visible since the
+    # client-anchored initiative-visibility work)
     if user.access.can("initiatives", "view"):
         client_ids = select(Client.id).where(Client.name.ilike(needle))
         site_ids = select(Site.id).where(Site.name.ilike(needle))
@@ -156,6 +157,9 @@ async def global_search(
             Initiative.origin_site_id.in_(site_ids),
             Initiative.destination_site_id.in_(site_ids),
         ))
+        cond = scope_conditions("initiatives", user.access, user.person.id)
+        if cond is not None:
+            query = query.where(cond)
         initiatives = (await db.scalars(
             query.order_by(Initiative.name).limit(LIMIT_PER_KIND))).all()
         type_labels = {s.key: s.label for s in await db.scalars(
