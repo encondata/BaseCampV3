@@ -21,3 +21,25 @@ config belongs at the end, mirroring how Routers ends Scanning Hardware.
 - Tests: extend `labelsNav.test.tsx`'s item-order assertion to the four
   routes; full portal suite + build stay green. The real Printers page
   (registration, status, driver config) is a future spec.
+
+## Amendment (2026-09-02, user request): structured page, not bare Placeholder
+
+`/labels/printers` becomes a real page component `portal/src/pages/Printers.tsx`
+(App.tsx route swaps `Placeholder` for it; nav/crumbs/palette unchanged):
+
+- Page head: eyebrow "Labels", title "Printers", hint as before.
+- `.subs-tabs` tab strip (Variables pattern, role=tablist/tab,
+  aria-selected): **Zebra Printers** (default) and **Brother Printers**.
+- Zebra tab: three option rows — **Test Label Alignment**, **Install
+  Fonts**, **Full Printer Setup** — each a `.dir-list`-style row with a
+  one-line description and a `chip tag` "Coming soon" badge; rows are
+  inert (no click behavior yet).
+  - Descriptions: alignment = "Print a calibration label and dial in
+    offsets."; fonts = "Push the house label fonts to the printer's
+    storage."; setup = "Guided first-time configuration for a new Zebra
+    printer."
+- Brother tab: a `.dir-empty` body — "Brother printer tools are coming
+  soon." (no options yet).
+- Test `portal/src/pages/Printers.test.tsx`: default tab shows the three
+  options each with a Coming soon chip; switching tabs shows the Brother
+  empty state.
