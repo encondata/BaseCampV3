@@ -43,12 +43,13 @@ name collides with the zebra twin. Five Zebra templates import.
 - `label_type`: `asset_top`→`top`, `asset_front`→`front`,
   `manifest`→`container`; unknown → `top` + warning.
 - `language_key`: `zebra`/`Zebra` → `zpl` (case-insensitive).
-- `dpi_key`: `203`.
-- `size_key`: read the template's own `^PW<w>` / `^LL<h>` (first occurrence
-  of literal digits); convert to inches at 203 dpi; match against active
-  size-vocab rows within ±0.05 in on both dimensions; no match (or
-  non-literal `^LL{{...}}`) → `4x2`. The inference and its result are
-  logged per template.
+- `dpi_key` + `size_key`: read the template's own `^PW<w>` / `^LL<h>`
+  (first occurrence of literal digits); convert to inches at 203 dpi and,
+  if no active size-vocab row matches within ±0.05 in on both dimensions,
+  retry at 300 dpi — a clean match at exactly one DPI sets BOTH keys
+  (the real dump's three destination tags are ^PW1200/^LL600 = 4x2 @300).
+  No match at either DPI (or non-literal `^LL{{...}}`) → `4x2` @ `203`.
+  The inference and its result are logged per template.
 - `site_ids`: split the V2 `sites` CSV; resolve each id via
   `Site.source_ref == "backup_20260825_193157:sites/<id>"`; unresolvable
   ids are logged and skipped; NULL/empty → no assignments (global).
