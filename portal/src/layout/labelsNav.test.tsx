@@ -10,7 +10,8 @@ it('Labels sits between Stakeholders and Scanning Hardware, gated on labels', ()
   expect(idx).toBeLessThan(labels.indexOf('Scanning Hardware'));
   const section = NAV_SECTIONS[idx];
   expect(section.items.map((i) => i.to)).toEqual([
-    '/labels/print', '/labels/templates', '/labels/generate',
+    '/labels/print', '/labels/generate', '/labels/templates',
+    '/labels/printers',
   ]);
   expect(new Set(section.items.map((i) => i.resource)))
     .toEqual(new Set(['labels']));

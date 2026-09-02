@@ -270,6 +270,19 @@ export const NAV_SECTIONS: NavSection[] = [
         ),
       },
       {
+        to: '/labels/generate',
+        label: 'Generate Labels',
+        resource: 'labels',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="5" width="13" height="8" rx="1.5" />
+            <rect x="8" y="11" width="13" height="8" rx="1.5" />
+            <path d="M6 8.5h5M11.5 14.5h5" />
+          </svg>
+        ),
+      },
+      {
         to: '/labels/templates',
         label: 'Templates',
         resource: 'labels',
@@ -282,15 +295,15 @@ export const NAV_SECTIONS: NavSection[] = [
         ),
       },
       {
-        to: '/labels/generate',
-        label: 'Generate Labels',
+        to: '/labels/printers',
+        label: 'Printers',
         resource: 'labels',
         icon: (
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
                strokeLinecap="round" strokeLinejoin="round">
-            <rect x="3" y="5" width="13" height="8" rx="1.5" />
-            <rect x="8" y="11" width="13" height="8" rx="1.5" />
-            <path d="M6 8.5h5M11.5 14.5h5" />
+            <rect x="3" y="7" width="18" height="10" rx="2" />
+            <path d="M7 7V4h10v3M8 17v3h8v-3" />
+            <path d="M17 11h.01" />
           </svg>
         ),
       },

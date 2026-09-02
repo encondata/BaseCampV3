@@ -144,6 +144,12 @@ export default function App() {
                              hint="Bulk-generate labels for initiatives, assets, and containers." />
               </ProtectedRoute>
             } />
+            <Route path="/labels/printers" element={
+              <ProtectedRoute resource="labels">
+                <Placeholder eyebrow="Labels" title="Printers"
+                             hint="Registered Zebra and Brother label printers — configuration and status." />
+              </ProtectedRoute>
+            } />
             <Route path="/hardware/handheld-readers" element={
               <ProtectedRoute resource="scanning_hardware"><HandheldReaders /></ProtectedRoute>} />
             <Route path="/hardware/fixed-readers" element={
