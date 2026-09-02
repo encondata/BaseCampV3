@@ -74,10 +74,12 @@ function ZebraTab() {
         <div key={opt.key} className="dir-row">
           <div className="row-main" style={{ gridTemplateColumns: '1fr auto', cursor: 'default' }}>
             <div className="cell">
-              <span className="cell-top"><b>{opt.title}</b></span>
-              <span className="cell-sub">{opt.description}</span>
+              <div className="cell-top"><b>{opt.title}</b></div>
+              <div className="cell-sub">{opt.description}</div>
             </div>
-            <div className="cell"><span className="chip tag">Coming soon</span></div>
+            <div className="cell" style={{ display: 'flex', alignItems: 'center' }}>
+              <span className="chip tag">Coming soon</span>
+            </div>
           </div>
         </div>
       ))}
