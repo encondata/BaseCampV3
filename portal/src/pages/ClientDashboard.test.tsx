@@ -1,0 +1,187 @@
+// @vitest-environment jsdom
+/**
+ * /dashboards/clients — the client-facing landing page: a client picker
+ * (or a static name for a single-client scoped viewer), an identity band,
+ * a KPI strip, that client's initiatives, its asset fleet distribution,
+ * and recent scan activity. Refresh idiom mirrors PeopleDashboard (quiet
+ * catches, panels never blank on a refetch); per-resource panel gating
+ * follows Home.tsx.
+ */
+
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+
+import type { ScopeInfo } from '../lib/access';
+import type {
+  AssetItem, ClientActivityOut, InitiativeItem, OrgRef, StatusValue,
+} from '../lib/api';
+import type { OrgItem } from '../lib/orgs';
+
+const auth = vi.hoisted(() => {
+  const state: {
+    can: (resource: string, action?: string) => boolean;
+    scope: ScopeInfo | null;
+  } = {
+    can: () => true,
+    scope: { global: true, client_ids: [], partner_ids: [] },
+  };
+  return state;
+});
+
+vi.mock('../auth/AuthContext', () => ({
+  useAuth: () => ({ can: auth.can, scope: auth.scope }),
+}));
+
+const api = vi.hoisted(() => ({
+  listClients: vi.fn(),
+  getOrg: vi.fn(),
+  listInitiatives: vi.fn(),
+  listInitiativeAssets: vi.fn(),
+  listAssets: vi.fn(),
+  listAssetStatuses: vi.fn(),
+  getClientActivity: vi.fn(),
+}));
+
+vi.mock('../lib/api', async (importActual) => ({
+  ...(await importActual<typeof import('../lib/api')>()),
+  ...api,
+}));
+
+const { default: ClientDashboard } = await import('./ClientDashboard');
+
+const clientRef = (id: string, name: string): OrgRef => ({ id, name });
+
+const org = (over: Partial<OrgItem> = {}): OrgItem => ({
+  id: 'c1', name: 'Acme', code: null, partner_types: [], status: 'active',
+  tier: 'preferred', service_region: null, phone: null,
+  website: 'https://acme.example',
+  address_line1: null, address_line2: null, city: 'Denver', region: 'CO',
+  postal_code: null, country: 'US', notes: null,
+  account_manager: { id: 'm1', display_name: 'Jim Manager' },
+  contact_count: 0, logo_url: null, archived_at: null,
+  created_at: '2026-01-01T00:00:00Z',
+  ...over,
+});
+
+const initiative = (over: Partial<InitiativeItem> = {}): InitiativeItem => ({
+  id: 'i1', name: 'Acme move', description: null,
+  initiative_type: 'move', type_label: 'Move', type_color: '#1668a7',
+  sub_type: null, sub_type_label: null, sub_type_color: null,
+  status: 'in_progress', status_label: 'In Progress', status_color: '#1668a7',
+  client_id: 'c1', client_name: 'Acme',
+  site_id: null, site_name: null, location: null,
+  scheduled_start: '2026-09-01', scheduled_end: '2026-09-15',
+  sky_command_project_id: null,
+  origin_site_id: null, origin_site_name: 'DC1',
+  destination_site_id: null, destination_site_name: 'DC2',
+  real_start_at: null, real_end_at: null,
+  priority_devices: null, shipping_types: [],
+  shipping_partner_id: null, shipping_partner_name: null,
+  origin_tech_partner_id: null, origin_cable_partner_id: null,
+  origin_logistics_partner_id: null,
+  destination_tech_partner_id: null, destination_cable_partner_id: null,
+  destination_logistics_partner_id: null,
+  origin_vendor_involved: null, destination_vendor_involved: null,
+  people_count: 0, links_count: 0,
+  archived_at: null, created_at: '2026-01-01T00:00:00Z',
+  ...over,
+});
+
+const asset = (over: Partial<AssetItem> = {}): AssetItem => ({
+  id: 'a1', serial_number: 'SN1', name: 'core-sw-01', rfid_tag: null,
+  model_id: null, model: null, client_id: 'c1', client_name: 'Acme',
+  site_id: null, site_name: null, location_detail: '', status: 'in_transit',
+  status_label: 'In Transit', status_color: '#1668a7', has_rails: null,
+  last_seen_at: null, archived_at: null, created_at: '2026-01-01T00:00:00Z',
+  ...over,
+});
+
+const STATUSES: StatusValue[] = [
+  { record_type: 'asset', key: 'in_transit', label: 'In Transit',
+    description: '', color: '#1668a7', sort_order: 1, is_active: true,
+    usage_count: null, progress_weight: 50 },
+  { record_type: 'asset', key: 'labeled', label: 'Labeled',
+    description: '', color: '#178a4c', sort_order: 2, is_active: true,
+    usage_count: null, progress_weight: 10 },
+];
+
+const ASSETS: AssetItem[] = [
+  asset({ id: 'a1' }),
+  asset({ id: 'a2' }),
+  asset({ id: 'a3', name: 'edge-rt-04', status: 'labeled', status_label: 'Labeled', status_color: '#178a4c' }),
+];
+
+const ACTIVITY: ClientActivityOut = {
+  // status/status_label are nullable on this row (a scan that hasn't
+  // resolved to a known asset status) — deliberately null here so the
+  // fixture also exercises ClientDashboard's `status_label ?? 'Scanned'`
+  // fallback, and so this fixed "In Transit" text stays unique to the
+  // asset-fleet panel's aggregated status row (avoiding an ambiguous
+  // queryByText match across two panels showing the same label).
+  events: [{
+    id: 'ev1', scanned_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+    asset_id: 'a1', asset_name: 'core-sw-01', serial_number: 'SN1',
+    status: null, status_label: null, status_color: '#51606f',
+    site_name: 'DC1', device_id: 'RDR-1',
+  }],
+  activity_7d: 9,
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  auth.can = () => true;
+  auth.scope = { global: true, client_ids: [], partner_ids: [] };
+  api.listClients.mockResolvedValue([clientRef('c1', 'Acme'), clientRef('c2', 'Beta')]);
+  api.getOrg.mockImplementation((_kind: string, id: string) =>
+    Promise.resolve(org({ id, name: id === 'c2' ? 'Beta' : 'Acme' })));
+  api.listInitiatives.mockResolvedValue([
+    initiative(),
+    initiative({ id: 'i2', name: 'Acme finished move', real_end_at: '2026-08-01T00:00:00Z' }),
+  ]);
+  api.listInitiativeAssets.mockResolvedValue([]);
+  api.listAssets.mockResolvedValue(ASSETS);
+  api.listAssetStatuses.mockResolvedValue(STATUSES);
+  api.getClientActivity.mockResolvedValue(ACTIVITY);
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+it('internal user gets a client select and panels for the first client', async () => {
+  render(<MemoryRouter><ClientDashboard /></MemoryRouter>);
+  await waitFor(() => expect(screen.queryByLabelText('Client')).not.toBeNull());
+  expect(screen.queryByText('Acme move')).not.toBeNull();     // initiatives
+  expect(screen.queryByText('In Transit')).not.toBeNull();    // fleet dist
+  expect(screen.queryByText('9')).not.toBeNull();             // activity 7d KPI
+});
+
+it('switching client reloads panels', async () => {
+  render(<MemoryRouter><ClientDashboard /></MemoryRouter>);
+  await waitFor(() => expect(screen.queryByLabelText('Client')).not.toBeNull());
+  api.getClientActivity.mockClear();
+  fireEvent.change(screen.getByLabelText('Client'), { target: { value: 'c2' } });
+  await waitFor(() => expect(api.getClientActivity).toHaveBeenCalledWith('c2'));
+});
+
+it('single-client user sees static name, no select', async () => {
+  auth.scope = { global: false, client_ids: ['c1'], partner_ids: [] };
+  api.listClients.mockResolvedValue([{ id: 'c1', name: 'Acme' }]);
+  render(<MemoryRouter><ClientDashboard /></MemoryRouter>);
+  await waitFor(() => expect(screen.queryAllByText('Acme').length).toBeGreaterThan(0));
+  expect(screen.queryByLabelText('Client')).toBeNull();
+});
+
+it('permission-poor user sees the empty note', async () => {
+  auth.can = (r: string) => r === 'dashboard';
+  render(<MemoryRouter><ClientDashboard /></MemoryRouter>);
+  await waitFor(() =>
+    expect(screen.queryByText(/Nothing your permissions/)).not.toBeNull());
+});
+
+it('activity rows render with status label and relative time', async () => {
+  render(<MemoryRouter><ClientDashboard /></MemoryRouter>);
+  await waitFor(() => expect(screen.queryByText('core-sw-01')).not.toBeNull());
+  expect(screen.queryByText('In Transit')).not.toBeNull();
+});

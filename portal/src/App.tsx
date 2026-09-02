@@ -9,6 +9,7 @@ import AssetDetail from './pages/AssetDetail';
 import AssetModels from './pages/AssetModels';
 import Audit from './pages/Audit';
 import Clients from './pages/Clients';
+import ClientDashboard from './pages/ClientDashboard';
 import Containers from './pages/Containers';
 import Dev from './pages/Dev';
 import MoveDashboard from './pages/MoveDashboard';
@@ -71,10 +72,7 @@ export default function App() {
               <ProtectedRoute resource="dashboard"><PeopleDashboard /></ProtectedRoute>
             } />
             <Route path="/dashboards/clients" element={
-              <ProtectedRoute resource="dashboard">
-                <Placeholder eyebrow="Dashboards" title="Client Dashboard"
-                             hint="Nothing here yet — this dashboard is coming soon." />
-              </ProtectedRoute>
+              <ProtectedRoute resource="dashboard"><ClientDashboard /></ProtectedRoute>
             } />
             <Route path="/assets" element={<ProtectedRoute resource="assets"><Assets /></ProtectedRoute>} />
             <Route path="/assets/:assetId" element={
