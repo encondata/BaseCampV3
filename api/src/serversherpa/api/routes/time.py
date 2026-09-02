@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
+from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
 from serversherpa.api.schemas import (
     ClockInIn, ClockOutIn, PunchOption, TimeDayStat, TimeEntryCreateIn,
@@ -410,6 +411,13 @@ async def time_summary(
     db: DbSession, initiative_id: uuid.UUID,
     actor: AuthContext = require_permission("initiatives", "view"),
 ) -> TimeSummaryOut:
+    query = select(Initiative).where(Initiative.id == initiative_id)
+    cond = scope_conditions("initiatives", actor.access, actor.person.id)
+    if cond is not None:
+        query = query.where(cond)
+    if (await db.execute(query)).scalar_one_or_none() is None:
+        raise _err(404, "unknown_initiative")
+
     entries = list(await db.scalars(
         select(TimeEntry).where(TimeEntry.initiative_id == initiative_id)))
     open_count = sum(1 for e in entries if e.clock_out_at is None)

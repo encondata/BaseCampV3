@@ -1,6 +1,7 @@
 """Initiatives — unified V2 projects/events/moves (one entity, an
-initiative_type vocabulary field, nullable move-only block). Internal-only
-resource for this slice; all actors are globally anchored. People
+initiative_type vocabulary field, nullable move-only block). Reads are
+client-scoped (a client-anchored actor sees only their own client_id's
+rows, 404 on anything else); writes stay globally anchored. People
 assignments and initiative↔initiative links live here too (the
 initiative is the aggregate root)."""
 
@@ -13,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.defaults import GATE_BYPASS_RANK
+from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     ImportJobOut, InitiativeAssetOut, InitiativeAssetsAddIn,
@@ -57,11 +59,17 @@ def _err(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
-async def _get_initiative(db: DbSession,
-                          initiative_id: uuid.UUID) -> Initiative:
+async def _get_initiative(db: DbSession, initiative_id: uuid.UUID,
+                          actor: AuthContext) -> Initiative:
     initiative = await db.get(Initiative, initiative_id)
     if initiative is None:
         raise _err(404, "initiative_not_found")
+    cond = scope_conditions("initiatives", actor.access, actor.person.id)
+    if cond is not None:
+        visible = await db.scalar(
+            select(Initiative.id).where(Initiative.id == initiative_id, cond))
+        if visible is None:
+            raise _err(404, "initiative_not_found")
     return initiative
 
 
@@ -235,8 +243,11 @@ async def list_initiatives(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "view"),
 ) -> list[InitiativeItem]:
-    initiatives = list(await db.scalars(
-        select(Initiative).order_by(Initiative.created_at.desc())))
+    query = select(Initiative).order_by(Initiative.created_at.desc())
+    cond = scope_conditions("initiatives", actor.access, actor.person.id)
+    if cond is not None:
+        query = query.where(cond)
+    initiatives = list(await db.scalars(query))
     ctx = await _context(db, initiatives)
     return [InitiativeItem(**_item(i, *ctx)) for i in initiatives]
 
@@ -247,7 +258,7 @@ async def get_initiative(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "view"),
 ) -> InitiativeDetailOut:
-    return await _detail(db, await _get_initiative(db, initiative_id))
+    return await _detail(db, await _get_initiative(db, initiative_id, actor))
 
 
 async def _check_refs(db: DbSession, data: dict) -> None:
@@ -309,7 +320,7 @@ async def update_initiative(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> InitiativeDetailOut:
-    initiative = await _get_initiative(db, initiative_id)
+    initiative = await _get_initiative(db, initiative_id, actor)
     data = body.model_dump(exclude_unset=True)
     for field in NON_NULLABLE_FIELDS:
         if field in data and not data[field]:
@@ -339,7 +350,7 @@ async def archive_initiative(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> None:
-    initiative = await _get_initiative(db, initiative_id)
+    initiative = await _get_initiative(db, initiative_id, actor)
     initiative.archived_at = datetime.now(UTC)
     initiative.updated_at = initiative.archived_at
     audit(db, actor_id=actor.person.id, entity_type="initiative",
@@ -353,7 +364,7 @@ async def unarchive_initiative(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> None:
-    initiative = await _get_initiative(db, initiative_id)
+    initiative = await _get_initiative(db, initiative_id, actor)
     initiative.archived_at = None
     initiative.updated_at = datetime.now(UTC)
     audit(db, actor_id=actor.person.id, entity_type="initiative",
@@ -388,7 +399,7 @@ async def list_initiative_people(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "view"),
 ) -> list[InitiativePersonRow]:
-    await _get_initiative(db, initiative_id)
+    await _get_initiative(db, initiative_id, actor)
     return await _people_rows(db, initiative_id)
 
 
@@ -400,7 +411,7 @@ async def add_initiative_person(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> list[InitiativePersonRow]:
-    initiative = await _get_initiative(db, initiative_id)
+    initiative = await _get_initiative(db, initiative_id, actor)
     data = body.model_dump(exclude_none=True)
     if await db.get(Person, data["person_id"]) is None:
         raise _err(422, "person_not_found")
@@ -505,7 +516,7 @@ async def list_initiative_links(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "view"),
 ) -> InitiativeLinksOut:
-    await _get_initiative(db, initiative_id)
+    await _get_initiative(db, initiative_id, actor)
     children, parents = await _link_rows(db, initiative_id)
     return InitiativeLinksOut(children=children, parents=parents)
 
@@ -518,7 +529,7 @@ async def add_initiative_link(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> InitiativeDetailOut:
-    initiative = await _get_initiative(db, initiative_id)
+    initiative = await _get_initiative(db, initiative_id, actor)
     if body.child_id == initiative_id:
         raise _err(422, "self_link")
     if await db.get(Initiative, body.child_id) is None:
@@ -667,7 +678,7 @@ async def list_initiative_assets(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "view"),
 ) -> list[InitiativeAssetOut]:
-    await _get_initiative(db, initiative_id)
+    await _get_initiative(db, initiative_id, actor)
     return await _initiative_asset_rows(db, initiative_id)
 
 
@@ -687,7 +698,7 @@ async def add_initiative_assets(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> list[InitiativeAssetOut]:
-    initiative = await _get_initiative(db, initiative_id)
+    initiative = await _get_initiative(db, initiative_id, actor)
     if initiative.initiative_type != "move":
         raise _err(422, "not_a_move")
     ids = list(dict.fromkeys(body.asset_ids))  # dedupe, keep order
@@ -823,7 +834,7 @@ async def create_move_asset_import_job(
     generate_serials: bool = Form(False),
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> ImportJob:
-    initiative = await _get_initiative(db, initiative_id)
+    initiative = await _get_initiative(db, initiative_id, actor)
     if initiative.initiative_type != "move":
         raise _err(422, "not_a_move")
     if make_model_mode not in MAKE_MODEL_MODES:

@@ -60,9 +60,10 @@ _RESOURCES = [
              # internal-only, like sites — no client/partner visibility.
              visible_to=frozenset({"global"})),
     Resource("initiatives", "Initiatives", routes=("/initiatives",),
-             # internal-only for the first slice — client visibility is a
-             # future decision (V2 exposed a client work-history view).
-             visible_to=frozenset({"global"})),
+             # client-visible: client org roles see their own org's
+             # initiatives read-only via SCOPE_COLUMNS (the client
+             # work-history view); writes stay globally anchored.
+             visible_to=frozenset({"global", "client"})),
     Resource("scans", "Scans", routes=("/admin/scans",),
              # internal-only Admin forensic surface, same posture as audit.
              visible_to=frozenset({"global"})),
