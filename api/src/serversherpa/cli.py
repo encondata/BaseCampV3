@@ -203,6 +203,39 @@ def import_v2_status_rules(
 
 
 @app.command()
+def import_v2_label_templates(
+    dump: str = typer.Option(..., help="Path to the V2 pg_dump .sql file"),
+    dry_run: bool = typer.Option(False, help="Parse and report; write nothing"),
+) -> None:
+    """Import V2 label templates as inactive raw-code V3 templates.
+    Upserts by name; skips non-Zebra printers and design-kind name
+    collisions; placeholders translated where mappable."""
+
+    async def _run() -> None:
+        from serversherpa.labels.v2_import import import_label_templates
+
+        async with get_sessionmaker()() as db:
+            stats = await import_label_templates(db, dump)
+            for name, reason in stats["skipped"]:
+                typer.secho(f"skipped: {name} — {reason}", fg="yellow")
+            for note in stats["notes"]:
+                typer.secho(f"note: {note}", fg="yellow")
+            summary = (f"{len(stats['created'])} created (inactive), "
+                       f"{len(stats['updated'])} updated, "
+                       f"{len(stats['unchanged'])} unchanged, "
+                       f"{len(stats['skipped'])} skipped")
+            if dry_run:
+                await db.rollback()
+                typer.secho(f"[dry-run] {summary}", fg="yellow")
+            else:
+                await db.commit()
+                typer.secho(summary, fg="green")
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def set_password(
     email: str = typer.Option(..., help="Login email of the existing account"),
     password: str = typer.Option(
