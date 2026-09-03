@@ -8,9 +8,12 @@
  *
  * Print-friendly redesign: two independent, self-contained rack frames
  * (FRONT and REAR) side by side, each with its own posts/caps and U
- * numbering (clean outlined rails — no cage-nut hole pattern), rendered in
- * a light, high-contrast, grayscale-safe palette (no gradients, no
- * color-only distinctions) so it holds up printed on paper. The REAR
+ * numbering (clean outlined rails — no cage-nut hole pattern). Faceplates
+ * are filled with the asset's category color (contrast-picked label text
+ * via `readableTextColor`, uncategorized assets fall back to
+ * `UNCATEGORIZED_FILL`), with verified vs. planned kept distinguishable
+ * even in grayscale by border alone — solid green for verified, dashed
+ * dark for planned — rather than by fill or an LED. The REAR
  * frame is omitted entirely — not just emptied — when no asset in this
  * rack/side carries a "rear" position note. Each elevation also shows a
  * blank "ghost" box for every asset actually mounted on the OPPOSITE
@@ -23,9 +26,10 @@
  */
 import { useRef, useState, useEffect } from 'react';
 
-import { rackLayout } from '../../lib/initiatives';
+import { rackLayout, UNCATEGORIZED_FILL } from '../../lib/initiatives';
 import type { RackBlock } from '../../lib/initiatives';
 import type { InitiativeAssetRow } from '../../lib/api';
+import { readableTextColor } from '../../lib/color';
 
 const RU_COUNT = 54;
 const U_PX = 16;
@@ -189,23 +193,29 @@ export function ghostBlocksFor(sourceBlocks: RackBlock[]): DisplayBlock[] {
 export interface TooltipRow { label: string; value: string; }
 
 /** Assembles the hover tooltip's detail rows below the name header: Serial,
- *  Make/Model, and RU always show; Position is omitted entirely when the
- *  side has no position note, or when it's just "front" (case-insensitive)
- *  — "front" is the unmarked default for most devices and would tell the
- *  viewer nothing a plain faceplate on the FRONT elevation doesn't already
- *  say, whereas "rear", "left", etc. are worth surfacing. Pure and
- *  exported so the suppression rule is testable without a hover/mount. */
+ *  Make/Model, and RU always show; Category shows next, only when the
+ *  asset's model has a category label; Position comes last and is omitted
+ *  entirely when the side has no position note, or when it's just "front"
+ *  (case-insensitive) — "front" is the unmarked default for most devices
+ *  and would tell the viewer nothing a plain faceplate on the FRONT
+ *  elevation doesn't already say, whereas "rear", "left", etc. are worth
+ *  surfacing. Pure and exported so the suppression rules are testable
+ *  without a hover/mount. */
 export function tooltipRows(info: {
   serial: string | null | undefined;
   makeModel: string | null | undefined;
   ru: number;
   position: string | null | undefined;
+  categoryLabel?: string | null | undefined;
 }): TooltipRow[] {
   const rows: TooltipRow[] = [
     { label: 'Serial', value: info.serial ?? '—' },
     { label: 'Make/Model', value: info.makeModel || '—' },
     { label: 'RU', value: String(info.ru) },
   ];
+  if (info.categoryLabel) {
+    rows.push({ label: 'Category', value: info.categoryLabel });
+  }
   const position = info.position?.trim();
   if (position && position.toLowerCase() !== 'front') {
     rows.push({ label: 'Position', value: position });
@@ -306,25 +316,17 @@ function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock 
               </g>
             );
           }
-          const showVents = height >= 12;
           const label = rackLabel(b.label, b.position, width);
-          const ledCx = x + width - 10;
-          const ledCy = y + height / 2;
+          const fill = b.categoryColor ?? UNCATEGORIZED_FILL;
+          const border = b.verified
+            ? { stroke: '#15803d', strokeWidth: 2 }
+            : { stroke: '#111827', strokeWidth: 1.25, strokeDasharray: '4 3' };
           return (
             <g key={b.id} onMouseEnter={(e) => onHoverBlock(b, e)} onMouseLeave={onLeaveBlock}>
               <rect x={x} y={y} width={width} height={height} rx={2}
-                    className={`rack-faceplate ${b.verified ? 'rack-faceplate-verified'
-                      : 'rack-faceplate-unverified'}`} />
-              {showVents && [0.6, 0.75, 0.9].map((frac) => (
-                <line key={frac} x1={x + 8} x2={x + 8 + width * 0.6}
-                      y1={y + height * frac} y2={y + height * frac}
-                      className="rack-faceplate-vent" />
-              ))}
-              <circle cx={ledCx} cy={ledCy} r={3}
-                      className={b.verified ? 'rack-led-verified' : 'rack-led-unverified'} />
+                    fill={fill} {...border} className="rack-faceplate" />
               <text x={x + 8} y={y + height / 2} dominantBaseline="middle"
-                    className={`rack-block-label ${b.verified ? ''
-                      : 'rack-block-label-unverified'}`}>
+                    fill={readableTextColor(fill)} className="rack-block-label">
                 {label}
               </text>
             </g>
@@ -387,6 +389,7 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
     makeModel: hoveredMakeModel,
     ru: hover.block.ru,
     position: hover.block.position,
+    categoryLabel: hover.block.categoryLabel,
   }) : [];
 
   return (

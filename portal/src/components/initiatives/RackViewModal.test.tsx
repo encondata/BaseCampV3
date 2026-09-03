@@ -280,4 +280,16 @@ describe('tooltipRows', () => {
     expect(rows.find((r) => r.label === 'Serial')!.value).toBe('—');
     expect(rows.find((r) => r.label === 'Make/Model')!.value).toBe('—');
   });
+
+  it('includes a Category row before Position when the model has a category label', () => {
+    const rows = tooltipRows({ ...base, position: 'rear', categoryLabel: 'Server' });
+    expect(rows.map((r) => r.label)).toEqual(['Serial', 'Make/Model', 'RU', 'Category', 'Position']);
+    expect(rows.find((r) => r.label === 'Category')!.value).toBe('Server');
+  });
+
+  it('omits the Category row when there is no category label', () => {
+    expect(tooltipRows({ ...base, position: null }).some((r) => r.label === 'Category')).toBe(false);
+    expect(tooltipRows({ ...base, position: null, categoryLabel: null })
+      .some((r) => r.label === 'Category')).toBe(false);
+  });
 });

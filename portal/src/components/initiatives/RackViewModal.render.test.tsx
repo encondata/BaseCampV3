@@ -314,4 +314,77 @@ describe('RackViewModal (render smoke)', () => {
     expect(foot.textContent).toContain('Verified');
     expect(foot.textContent).toContain('Planned');
   });
+
+  it('fills faceplates with the category color and contrast label', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ source_position: null, asset: makeAsset({
+        model_category: 'server', model_category_label: 'Server',
+        model_category_color: '#1668a7' }) }),
+    ]} />);
+    const plate = document.querySelector('rect.rack-faceplate')!;
+    expect(plate.getAttribute('fill')).toBe('#1668a7');
+    const label = document.querySelector('text.rack-block-label')!;
+    expect(label.getAttribute('fill')).toBe('#ffffff'); // dark blue → white text
+  });
+
+  it('uses neutral fill + dark text when uncategorized', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}}
+           rows={[makeRow({ source_position: null })]} />);
+    const plate = document.querySelector('rect.rack-faceplate')!;
+    expect(plate.getAttribute('fill')).toBe('#eef0f3');
+    expect(document.querySelector('text.rack-block-label')!.getAttribute('fill'))
+      .toBe('#111827');
+  });
+
+  it('borders: verified solid green, planned dashed dark; no vents or LED', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ id: 'v', source_ru: 10, source_verified: true, source_position: null }),
+      makeRow({ id: 'p', source_ru: 20, source_verified: false, source_position: null,
+                asset: makeAsset({ id: 'a2', serial_number: 'SN-2', name: 'dev-2' }) }),
+    ]} />);
+    const plates = [...document.querySelectorAll('rect.rack-faceplate')];
+    const verified = plates.find((p) => p.getAttribute('stroke') === '#15803d')!;
+    expect(verified.getAttribute('stroke-width')).toBe('2');
+    expect(verified.hasAttribute('stroke-dasharray')).toBe(false);
+    const planned = plates.find((p) => p.getAttribute('stroke') === '#111827')!;
+    expect(planned.getAttribute('stroke-dasharray')).toBe('4 3');
+    expect(document.querySelector('.rack-faceplate-vent')).toBeNull();
+    expect(document.querySelector('.rack-led-verified')).toBeNull();
+    expect(document.querySelector('.rack-led-unverified')).toBeNull();
+  });
+
+  it('tooltip shows a Category row when the model has one', () => {
+    const rows: InitiativeAssetRow[] = [
+      makeRow({
+        id: 'row-1', source_ru: 12, source_position: 'front',
+        asset: makeAsset({
+          id: 'asset-1', name: 'db-primary-01', serial_number: 'SN-XYZ-99',
+          model_category: 'server', model_category_label: 'Server',
+          model_category_color: '#1668a7',
+        }),
+      }),
+    ];
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+    );
+    const faceplateGroup = container.querySelector('.rack-faceplate')!.parentElement!;
+    fireEvent.mouseEnter(faceplateGroup);
+    expect(screen.getByText('Category')).toBeTruthy();
+    expect(screen.getByText('Server')).toBeTruthy();
+  });
+
+  it('omits the tooltip Category row for an uncategorized asset', () => {
+    const rows: InitiativeAssetRow[] = [
+      makeRow({
+        id: 'row-1', source_ru: 12, source_position: 'front',
+        asset: makeAsset({ id: 'asset-1', name: 'db-primary-01', serial_number: 'SN-XYZ-99' }),
+      }),
+    ];
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+    );
+    const faceplateGroup = container.querySelector('.rack-faceplate')!.parentElement!;
+    fireEvent.mouseEnter(faceplateGroup);
+    expect(screen.queryByText('Category')).toBeNull();
+  });
 });
