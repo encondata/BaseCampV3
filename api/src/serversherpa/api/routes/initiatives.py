@@ -31,8 +31,10 @@ from serversherpa.db.models import (
 from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx,
 )
+from serversherpa.scans.manual import record_status_edit
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import put_object
+from serversherpa.status_rules.engine import RuleExecutionError
 
 router = APIRouter(prefix="/initiatives", tags=["initiatives"])
 
@@ -807,6 +809,19 @@ async def update_initiative_asset(
         audit(db, actor_id=actor.person.id, entity_type="initiative",
               entity_id=str(assoc.initiative_id), action="asset_update",
               changes=changes)
+    if "status" in changes:
+        # A status edit is a scan event: record it and run the rules
+        # engine here, anchored to THIS initiative. A failing rule rolls
+        # the whole edit back — history and dependent fields never drift.
+        asset = await db.get(Asset, assoc.asset_id)
+        try:
+            await record_status_edit(db, assoc=assoc, asset=asset,
+                                     status=assoc.status,
+                                     actor_person_id=actor.person.id)
+        except RuleExecutionError as err:
+            await db.rollback()
+            raise _err(409, "rule_failed", rule_name=err.rule_name,
+                       reason=str(err.__cause__ or err)) from err
     await db.commit()
     rows = await _initiative_asset_rows(db, assoc.initiative_id)
     return next(r for r in rows if r.id == assoc_id)
