@@ -1799,6 +1799,8 @@ export interface InitiativeAssetSummary {
   model_make: string | null; model_name: string | null;
   ru_size: number | null; location_detail: string | null;
   client_name: string | null;
+  model_category: string | null; model_category_label: string | null;
+  model_category_color: string | null;
   status: string; status_label: string; status_color: string;
 }
 

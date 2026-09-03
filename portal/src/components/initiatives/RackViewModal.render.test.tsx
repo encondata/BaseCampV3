@@ -25,6 +25,7 @@ function makeAsset(overrides: Partial<InitiativeAssetSummary> = {}): InitiativeA
     id: 'asset-1', legacy_id: null, serial_number: 'SN-1', name: 'w1-hs4-m0407',
     rfid_tag: null, model_make: null, model_name: null, ru_size: 1,
     location_detail: null, client_name: null,
+    model_category: null, model_category_label: null, model_category_color: null,
     status: 'active', status_label: 'Active', status_color: '#000',
     ...overrides,
   };

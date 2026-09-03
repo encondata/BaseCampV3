@@ -473,6 +473,8 @@ export function MOVE_ASSET_EDIT_FIELDS(
 export interface RackBlock {
   id: string; label: string; ru: number; height: number;
   verified: boolean; position: string | null;
+  categoryLabel: string | null; categoryColor: string | null;
+  makeModel: string;
 }
 
 /** Filters a move's asset rows down to the ones racked in `rackName` on the
@@ -501,5 +503,53 @@ export function rackLayout(
       height: r.asset.ru_size ?? 1,
       verified: verifiedOf(r),
       position: positionOf(r),
+      categoryLabel: r.asset.model_category_label,
+      categoryColor: r.asset.model_category_color,
+      makeModel: [r.asset.model_make, r.asset.model_name]
+        .filter(Boolean).join(' '),
     }));
+}
+
+export interface DeviceListRow {
+  id: string; name: string; makeModel: string; ruText: string;
+  categoryColor: string | null; group: 'FRONT' | 'REAR';
+}
+
+/** Rack-order device list rows: each elevation's REAL blocks sorted top
+ *  of rack first (descending top RU, ties by name), FRONT group before
+ *  REAR. RU text is a range ("40–42") for multi-U devices. */
+export function deviceListRows(
+  front: RackBlock[], rear: RackBlock[],
+): DeviceListRow[] {
+  const toRows = (blocks: RackBlock[], group: 'FRONT' | 'REAR') =>
+    [...blocks]
+      .sort((a, b) => (b.ru + b.height) - (a.ru + a.height)
+        || a.label.localeCompare(b.label))
+      .map((b) => ({
+        id: b.id, name: b.label,
+        makeModel: b.makeModel || '—',
+        ruText: b.height > 1 ? `${b.ru}–${b.ru + b.height - 1}` : String(b.ru),
+        categoryColor: b.categoryColor, group,
+      }));
+  return [...toRows(front, 'FRONT'), ...toRows(rear, 'REAR')];
+}
+
+export interface LegendCategory { label: string; color: string; }
+
+export const UNCATEGORIZED_FILL = '#eef0f3';
+
+/** Distinct categories present among REAL blocks, sorted by label, with a
+ *  trailing "Uncategorized" neutral swatch only when some block lacks a
+ *  category. */
+export function legendCategories(blocks: RackBlock[]): LegendCategory[] {
+  const byLabel = new Map<string, string>();
+  let uncategorized = false;
+  for (const b of blocks) {
+    if (b.categoryLabel && b.categoryColor) byLabel.set(b.categoryLabel, b.categoryColor);
+    else uncategorized = true;
+  }
+  const out = [...byLabel].map(([label, color]) => ({ label, color }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  if (uncategorized) out.push({ label: 'Uncategorized', color: UNCATEGORIZED_FILL });
+  return out;
 }

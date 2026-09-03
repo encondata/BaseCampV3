@@ -218,7 +218,8 @@ describe('ghostBlocksFor', () => {
 
   it('mirrors each source block with the same id/ru/height/position, tagged isGhost', () => {
     const source = [
-      { id: 'a', label: 'server-a', ru: 12, height: 2, verified: true, position: 'rear' },
+      { id: 'a', label: 'server-a', ru: 12, height: 2, verified: true, position: 'rear',
+        categoryLabel: null, categoryColor: null, makeModel: '' },
     ];
     const ghosts = ghostBlocksFor(source);
     expect(ghosts).toHaveLength(1);
@@ -229,8 +230,10 @@ describe('ghostBlocksFor', () => {
 
   it('preserves the source array length and each id 1:1 for multiple blocks', () => {
     const source = [
-      { id: 'a', label: 'x', ru: 1, height: 1, verified: false, position: null },
-      { id: 'b', label: 'y', ru: 5, height: 1, verified: true, position: 'front' },
+      { id: 'a', label: 'x', ru: 1, height: 1, verified: false, position: null,
+        categoryLabel: null, categoryColor: null, makeModel: '' },
+      { id: 'b', label: 'y', ru: 5, height: 1, verified: true, position: 'front',
+        categoryLabel: null, categoryColor: null, makeModel: '' },
     ];
     const ghosts = ghostBlocksFor(source);
     expect(ghosts.map((g) => g.id)).toEqual(['a', 'b']);
