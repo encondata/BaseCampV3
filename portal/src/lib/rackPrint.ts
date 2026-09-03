@@ -3,8 +3,9 @@
  * elevation SVGs (fills/strokes/label colors are inline attributes — see
  * RackViewModal — so only structural line-work needs the small stylesheet
  * here), the device manifest, and the legend. Sized to the INTERSECTION
- * of Letter and A4 printable areas (7.2in × 10in content box, 0.5in
- * margins) so one sheet prints on either paper without clipping.
+ * of Letter and A4 printable areas (7.2in wide, 0.5in margins) and
+ * zoomed down to a 9.3in height budget before printing (see fitScript)
+ * so the sheet always lands on ONE page on either paper.
  * Escaped with a plain text-escaper — every dynamic string passes through
  * esc() — since this document is written into a user-opened window.
  */
@@ -19,9 +20,12 @@ const SHEET_CSS = `
   * { box-sizing: border-box; }
   body { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace;
          color: #111827; background: #fff; width: 7.2in; }
-  h1 { font-size: 14pt; margin: 0 0 0.15in; font-weight: 600; }
+  h1 { font-size: 14pt; margin: 0 0 0.1in; font-weight: 600; }
+  /* the whole sheet prints as ONE unbreakable block; the onload script
+     below zooms it down to the page budget, so it can never paginate */
+  #page { break-inside: avoid; }
   .sheet { display: flex; gap: 0.25in; align-items: stretch; }
-  .elevations { display: flex; gap: 0.2in; height: 9.2in; flex: none; }
+  .elevations { display: flex; gap: 0.2in; height: 8.7in; flex: none; }
   .elevations svg { height: 100%; width: auto; }
   .elev { display: flex; flex-direction: column; align-items: center; height: 100%; }
   .elev .cap { font-size: 8pt; font-weight: 600; letter-spacing: 0.08em; }
@@ -85,13 +89,25 @@ export function buildRackPrintHtml(input: {
     '<span><span class="swatch key-verified"></span>Verified</span>',
     '<span><span class="swatch key-planned"></span>Planned</span>',
   ].join('');
+  // Scale-to-fit: browsers reserve headers/footers and printer margins
+  // beyond @page's 0.5in, and the fixed-height elevation block cannot
+  // split across pages — without the zoom guard a sheet a hair over the
+  // printable height paginates to three pages (h1 / rack / legend). A
+  // conservative 9.3in budget fits Letter AND A4 with room for chrome.
+  const fitScript = 'window.onload = () => {'
+    + " const page = document.getElementById('page');"
+    + ' const budget = 9.3 * 96;'
+    + ' if (page.scrollHeight > budget)'
+    + ' page.style.zoom = String(budget / page.scrollHeight);'
+    + ' window.print();'
+    + ' };';
   return `<!doctype html><html><head><meta charset="utf-8">`
     + `<title>Rack ${esc(input.rackName)} — ${esc(input.sideLabel)}</title>`
-    + `<style>${SHEET_CSS}</style></head><body>`
+    + `<style>${SHEET_CSS}</style></head><body><div id="page">`
     + `<h1>Rack ${esc(input.rackName)} — ${esc(input.sideLabel)}</h1>`
     + `<div class="sheet"><div class="elevations">${elevationsHtml}</div>`
     + `<div class="list">${listHtml}</div></div>`
     + `<div class="legend">${legendHtml}</div>`
-    + `<script>window.onload = () => window.print();</script>`
+    + `</div><script>${fitScript}</script>`
     + `</body></html>`;
 }

@@ -22,6 +22,11 @@ describe('buildRackPrintHtml', () => {
     expect(html).toContain('Server');
     expect(html).toContain('@page { margin: 0.5in; }');
     expect(html).toContain('window.print()');
+    // one-page guard: content wrapped in #page and zoomed to the 9.3in
+    // budget before the print dialog opens
+    expect(html).toContain('<div id="page">');
+    expect(html).toContain('9.3 * 96');
+    expect(html).toContain('page.style.zoom');
   });
   it('escapes HTML in names', () => {
     const html = buildRackPrintHtml({

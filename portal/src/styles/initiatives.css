@@ -437,6 +437,10 @@
 }
 .rack-modal-body {
   max-height: 70vh;
+  /* the elevations scale themselves to the 70vh budget (see .rack-svg),
+     so the body never needs a scrollbar for the rack itself; auto (not
+     hidden) stays as the fallback for a device list taller than the
+     scaled rack */
   overflow-y: auto;
   display: flex;
   justify-content: center;
@@ -453,7 +457,11 @@
   gap: 24px;
   width: 100%;
 }
-.rack-elevation { display: flex; flex-direction: column; align-items: center; width: 190px; flex: none; }
+/* The elevation sizes to its SVG, and the SVG scales to the modal's 70vh
+   budget (minus body padding + heading) so the whole rack is visible
+   without scrolling — width follows from the viewBox aspect ratio, capped
+   at the design's natural 190px column. */
+.rack-elevation { display: flex; flex-direction: column; align-items: center; width: auto; flex: none; }
 .rack-elevation-heading {
   font-family: var(--font-mono);
   font-size: 9px;
@@ -466,7 +474,12 @@
    explicitly here: at this element's small on-screen size, anything that
    ever crept past the viewBox (or an anti-aliased edge bleeding past it)
    must be guaranteed clipped rather than relying on a UA default. */
-.rack-svg { width: 100%; height: auto; display: block; overflow: hidden; }
+.rack-svg {
+  height: min(884px, calc(70vh - 62px)); /* 62px = body padding + heading */
+  width: auto;
+  display: block;
+  overflow: hidden;
+}
 
 .rack-post { fill: #f9fafb; stroke: #111827; stroke-width: 1.5; }
 .rack-cap { fill: #f9fafb; stroke: #111827; stroke-width: 1.5; }
