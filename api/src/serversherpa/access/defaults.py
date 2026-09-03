@@ -11,12 +11,12 @@ FULL = ("view", "add", "change", "delete")
 _ALL = ["dashboard", "users", "workers", "clients", "partners",
         "attachments", "settings", "access", "audit", "devtools", "sites",
         "assets", "asset_models", "containers", "initiatives", "scans",
-        "status_rules", "scanning_hardware", "labels", "time", "notifications"]
+        "status_rules", "scanning_hardware", "labels", "time", "notifications", "ai"]
 
 DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
-    "developer":   {r: FULL for r in _ALL},
-    "founder":     {r: FULL for r in _ALL if r != "devtools"},
-    "super_admin": {r: FULL for r in _ALL if r != "devtools"},
+    "developer":   {r: FULL if r != "ai" else ("use",) for r in _ALL},
+    "founder":     {r: FULL for r in _ALL if r != "devtools" and r != "ai"},
+    "super_admin": {r: FULL for r in _ALL if r != "devtools" and r != "ai"},
     "admin": {"dashboard": ("view",), "users": FULL, "workers": FULL,
               "clients": FULL, "partners": FULL, "attachments": FULL,
               "settings": ("view", "change"), "access": ("view", "change"),
@@ -24,7 +24,7 @@ DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
               "asset_models": FULL, "containers": FULL, "initiatives": FULL,
               "scans": ("view", "change", "delete"), "status_rules": FULL,
               "scanning_hardware": FULL, "labels": FULL, "time": FULL,
-              "notifications": FULL},
+              "notifications": FULL, "ai": ("use",)},
     "staff": {"dashboard": ("view",), "users": ("view", "add", "change"),
               "workers": FULL, "clients": FULL, "partners": FULL,
               "attachments": FULL, "settings": ("view",), "access": ("view",),

@@ -3,7 +3,7 @@ knows about. Deploys introduce resources; the DB stores only grants."""
 
 from dataclasses import dataclass, field
 
-ACTIONS: tuple[str, ...] = ("view", "add", "change", "delete")
+ACTIONS: tuple[str, ...] = ("view", "add", "change", "delete", "use")
 
 
 @dataclass(frozen=True)
@@ -89,6 +89,7 @@ _RESOURCES = [
     Resource("audit", "Audit log", routes=("/audit",)),
     Resource("devtools", "Developer tools", developer_only=True),
     Resource("notifications", "Notifications", routes=("/system/notifications",)),
+    Resource("ai", "AI assistant", routes=("/ai/chat",)),
 ]
 
 REGISTRY: dict[str, Resource] = {r.id: r for r in _RESOURCES}
