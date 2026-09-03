@@ -303,7 +303,10 @@ async def run_import(
                         "status": "review",
                         "message": message,
                         "match_method": "review",
-                        "serial_generated": r["serial_generated"]})
+                        "serial_generated": r["serial_generated"],
+                        "make_model": r["make_model_str"],
+                        "suggested_make": mk,
+                        "suggested_model": md})
                     return
             if write:
                 asset = Asset(

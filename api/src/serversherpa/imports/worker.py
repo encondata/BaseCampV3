@@ -52,6 +52,10 @@ async def process_job(db: AsyncSession, job: ImportJob) -> None:
     parsed = [parse_row(n, canonical, raw,
                         generate_serials=bool(opts.get("generate_serials")))
               for n, canonical, raw in numbered]
+
+    only_rows = set(opts.get("only_rows") or [])
+    if only_rows:
+        parsed = [r for r in parsed if r["row"] in only_rows]
     job.total_rows = len(parsed)
 
     async def _progress(processed: int, created: int, updated: int,
