@@ -125,12 +125,13 @@ async def run_once(maker) -> bool:
 
 async def run_forever(poll_seconds: float = 2.0) -> None:
     from serversherpa.db.engine import get_sessionmaker
-    from serversherpa.system.admin_config import workers_paused
+    from serversherpa.system.admin_config import poll_workers_paused
     from serversherpa.system.db_logging import install
     from serversherpa.system.registry import start_heartbeat
 
     install("scan-matching-worker")
     pause_state = {"paused": False}
+    check_state = {}
     heartbeat = start_heartbeat("scan-matching-worker", "worker",
                                 meta_fn=lambda: dict(pause_state))
     logger.info("scan-matching worker online — batch %d, sweep every %ds",
@@ -140,7 +141,7 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
         while True:
             # read-only mode's "also pause background services": idle (still
             # heart-beating as paused) until the flag clears — no work lost
-            if await workers_paused(maker):
+            if await poll_workers_paused(maker, check_state):
                 if not pause_state["paused"]:
                     logger.info("paused by read-only maintenance mode")
                 pause_state["paused"] = True

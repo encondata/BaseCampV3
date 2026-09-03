@@ -197,3 +197,58 @@ async def test_scan_worker_idles_while_paused(client, db, seeded_user, monkeypat
     assert len(calls) >= 1                               # resumed within a poll
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_poll_workers_paused_swallows_db_blip_and_logs_once(monkeypatch, caplog):
+    import logging
+
+    from serversherpa.system import admin_config
+
+    state: dict = {}
+
+    async def boom(sessionmaker):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(admin_config, "workers_paused", boom)
+    with caplog.at_level(logging.WARNING, logger="serversherpa.system.admin_config"):
+        assert await admin_config.poll_workers_paused(None, state) is False
+        assert await admin_config.poll_workers_paused(None, state) is False
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1                    # logged once per outage
+    assert state["pause_check_failed"] is True
+
+    async def ok(sessionmaker):
+        return True
+
+    monkeypatch.setattr(admin_config, "workers_paused", ok)
+    assert await admin_config.poll_workers_paused(None, state) is True
+    assert state["pause_check_failed"] is False   # a good read re-arms the warning
+
+    caplog.clear()
+    monkeypatch.setattr(admin_config, "workers_paused", boom)
+    with caplog.at_level(logging.WARNING, logger="serversherpa.system.admin_config"):
+        assert await admin_config.poll_workers_paused(None, state) is False
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1                     # re-armed: logs again
+
+
+async def test_scan_worker_survives_pause_check_blip(client, db, seeded_user, monkeypatch):
+    calls: list[int] = []
+
+    async def fake_run_once(maker):
+        calls.append(1)
+        return False
+
+    async def boom(sessionmaker):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(scan_worker, "run_once", fake_run_once)
+    monkeypatch.setattr("serversherpa.system.db_logging.install", lambda name: None)
+    monkeypatch.setattr("serversherpa.system.admin_config.workers_paused", boom)
+
+    task = asyncio.create_task(scan_worker.run_forever(poll_seconds=0.05))
+    await asyncio.sleep(0.3)
+    assert not task.done()               # a DB blip on the pause check must not kill it
+    assert len(calls) >= 1               # treated as "not paused" — work keeps flowing
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
