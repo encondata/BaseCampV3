@@ -8,11 +8,12 @@
 import { useState } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
+import AdminControls from '../components/settings/AdminControls';
 import type { UiPreferences } from '../lib/api';
 import { ACCENTS } from '../lib/settings';
 import '../styles/settings.css';
 
-function Switch({ checked, onChange, disabled = false }: {
+export function Switch({ checked, onChange, disabled = false }: {
   checked: boolean;
   onChange?: (v: boolean) => void;
   disabled?: boolean;
@@ -171,20 +172,7 @@ export default function Settings() {
               <h3>Administration</h3>
               <p>Console-wide controls. Visible to admins only.</p>
             </div>
-            <div className="set-row">
-              <div className="set-label">
-                <b>Read-only maintenance mode</b>
-                <span>Freeze all writes across the portal during cutovers. Coming soon.</span>
-              </div>
-              <Switch checked={false} disabled />
-            </div>
-            <div className="set-row">
-              <div className="set-label">
-                <b>Broadcast banner</b>
-                <span>Show an announcement to everyone. Coming soon.</span>
-              </div>
-              <Switch checked={false} disabled />
-            </div>
+            <AdminControls />
           </section>
         )}
       </div>
