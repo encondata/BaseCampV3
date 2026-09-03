@@ -110,7 +110,9 @@ function sortValueFor(i: InitiativeItem, key: string): string {
   }
 }
 
-const CSV_COLUMNS: [string, (i: InitiativeItem) => string][] = [
+const csvColumnsFor = (
+  shippingLabels: Record<string, string>,
+): [string, (i: InitiativeItem) => string][] => [
   ['ID', (i) => i.id],
   ['Name', (i) => i.name],
   ['Type', (i) => i.type_label],
@@ -123,7 +125,8 @@ const CSV_COLUMNS: [string, (i: InitiativeItem) => string][] = [
   ['Scheduled end', (i) => i.scheduled_end ?? ''],
   ['Origin', (i) => i.origin_site_name ?? ''],
   ['Destination', (i) => i.destination_site_name ?? ''],
-  ['Shipping', (i) => i.shipping_types.join('; ')],
+  ['Shipping',
+   (i) => i.shipping_types.map((k) => shippingLabels[k] ?? k).join('; ')],
   ['People', (i) => String(i.people_count)],
   ['Links', (i) => String(i.links_count)],
   ['Created', (i) => i.created_at],
@@ -224,6 +227,14 @@ export default function Initiatives() {
   const replaceRow = (u: InitiativeItem) =>
     setInitiatives((xs) => xs?.map((x) => (x.id === u.id ? u : x)) ?? xs);
 
+  const shippingLabels = useMemo(
+    () => Object.fromEntries(shippingTypes.map((s) => [s.key, s.label])),
+    [shippingTypes]);
+  const cellText = useMemo(
+    () => (i: InitiativeItem, colKey: string) =>
+      initiativeCellText(i, colKey, shippingLabels),
+    [shippingLabels]);
+
   const typeCounts = useMemo(() => {
     const c: Record<string, number> = { all: initiatives?.length ?? 0 };
     for (const pl of TYPE_PILLS.slice(1)) c[pl.key] = 0;
@@ -242,13 +253,13 @@ export default function Initiatives() {
     const rows = initiatives.filter((i) => {
       if (!showArchived && i.archived_at) return false;
       if (typePill !== 'all' && i.initiative_type !== typePill) return false;
-      if (!passesColumnFilters(i, filters, initiativeCellText)) return false;
+      if (!passesColumnFilters(i, filters, cellText)) return false;
       if (!q) return true;
       return haystack(i).includes(q);
     });
     return rows.sort((a, b) =>
       naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
-  }, [initiatives, filters, query, sortKey, sortDir, typePill, haystack]);
+  }, [initiatives, filters, query, sortKey, sortDir, typePill, haystack, cellText]);
 
   // Deep-link vs persisted-filter interplay — cloned from Containers.tsx.
   useEffect(() => {
@@ -262,14 +273,14 @@ export default function Initiatives() {
           setTypePill('all');
           return;
         }
-        if (!passesColumnFilters(target, filters, initiativeCellText)) {
+        if (!passesColumnFilters(target, filters, cellText)) {
           clearFilters();
           return;
         }
       }
     }
     setOpenId(null);
-  }, [initiatives, visible, openId, filters, clearFilters, typePill]);
+  }, [initiatives, visible, openId, filters, clearFilters, typePill, cellText]);
 
   useEffect(() => {
     if (deepLinkTarget.current
@@ -327,19 +338,19 @@ export default function Initiatives() {
       case 'site': return <span className="cell-top">{i.site_name ?? '—'}</span>;
       case 'location': return <span className="cell-top">{i.location || '—'}</span>;
       case 'start':
-        return <span className="cell-top">{initiativeCellText(i, 'start')}</span>;
+        return <span className="cell-top">{cellText(i, 'start')}</span>;
       case 'end':
-        return <span className="cell-top">{initiativeCellText(i, 'end')}</span>;
+        return <span className="cell-top">{cellText(i, 'end')}</span>;
       case 'origin':
         return <span className="cell-top">{i.origin_site_name ?? '—'}</span>;
       case 'destination':
         return <span className="cell-top">{i.destination_site_name ?? '—'}</span>;
       case 'shipping':
-        return <span className="cell-top">{initiativeCellText(i, 'shipping')}</span>;
+        return <span className="cell-top">{cellText(i, 'shipping')}</span>;
       case 'people': return <span className="mono">{i.people_count}</span>;
       case 'links': return <span className="mono">{i.links_count}</span>;
       case 'created':
-        return <span className="cell-top">{initiativeCellText(i, 'created')}</span>;
+        return <span className="cell-top">{cellText(i, 'created')}</span>;
       default: return null;
     }
   };
@@ -383,7 +394,7 @@ export default function Initiatives() {
                          onChange={setVisibleCols} godMode={godMode}
                          onReorder={setColOrder} />
           <ExportButton onExport={() =>
-            exportCsv('initiatives', CSV_COLUMNS, visible)} />
+            exportCsv('initiatives', csvColumnsFor(shippingLabels), visible)} />
           <GodEditToggle editing={god.editing} onToggle={god.toggle}
                          visible={godMode && canChange} />
           {canAdd && (
@@ -408,7 +419,7 @@ export default function Initiatives() {
               </button>
               <ColumnMenu colKey="primary" label="Name"
                           allRows={initiatives ?? []} filters={filters}
-                          text={initiativeCellText}
+                          text={cellText}
                           filter={filters.primary} onFilter={setFilter}
                           sortDir={sortKey === 'primary' ? sortDir : null}
                           onSort={(dir) => setSort('primary', dir)} />
@@ -421,7 +432,7 @@ export default function Initiatives() {
                 </button>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={initiatives ?? []} filters={filters}
-                            text={initiativeCellText}
+                            text={cellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
@@ -429,7 +440,7 @@ export default function Initiatives() {
             ))}
             <ColumnMenu colKey="archived" label="Archived"
                         allRows={initiatives ?? []} filters={filters}
-                        text={initiativeCellText}
+                        text={cellText}
                         filter={filters.archived} onFilter={setFilter}
                         sortDir={sortKey === 'archived' ? sortDir : null}
                         onSort={(dir) => setSort('archived', dir)} />
@@ -486,6 +497,7 @@ export default function Initiatives() {
                           canEdit={canChange}
                           workTypes={workTypes}
                           workers={workers}
+                          shippingLabels={shippingLabels}
                           allInitiatives={initiatives ?? []}
                           onEdit={() => setEditingId(i.id)}
                           onChanged={() => void load()}
@@ -535,7 +547,7 @@ export default function Initiatives() {
       here (the modal owns field edits). ─────────────────────────── */
 
 function InitiativeRowDetail({
-  initiative, canEdit, workTypes, workers, allInitiatives,
+  initiative, canEdit, workTypes, workers, allInitiatives, shippingLabels,
   onEdit, onChanged, onNavigate, godVisible, pending, onMark, onUnmark,
 }: {
   initiative: InitiativeItem;
@@ -543,6 +555,7 @@ function InitiativeRowDetail({
   workTypes: StatusValue[];
   workers: WorkerOption[];
   allInitiatives: InitiativeItem[];
+  shippingLabels: Record<string, string>;
   onEdit: () => void;
   onChanged: () => void;
   onNavigate: (id: string) => void;
@@ -629,7 +642,8 @@ function InitiativeRowDetail({
           <dl className="kv">
             {kv('Origin', initiative.origin_site_name)}
             {kv('Destination', initiative.destination_site_name)}
-            {kv('Shipping', initiative.shipping_types.join(', '))}
+            {kv('Shipping', initiative.shipping_types
+              .map((k) => shippingLabels[k] ?? k).join(', '))}
             {kv('Shipping partner', initiative.shipping_partner_name)}
             {kv('Priority devices',
                 initiative.priority_devices == null ? null

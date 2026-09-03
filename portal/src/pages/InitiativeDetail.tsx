@@ -246,6 +246,9 @@ export default function InitiativeDetail() {
     sites: () => (canViewSites ? sites.map((s) => ({ value: s.id, label: s.name })) : []),
   }), [workTypes, sites, canViewSites]);
   const godFieldFor = (column: string) => godFields.find((f) => f.column === column);
+  const shippingLabels = useMemo(
+    () => Object.fromEntries(shippingTypes.map((s) => [s.key, s.label])),
+    [shippingTypes]);
   // Direct state splice, not a load() refetch — people live on the
   // InitiativeDetail object held in `initiative`, not a separate array.
   const replacePerson = (u: InitiativePersonRow) =>
@@ -704,7 +707,8 @@ export default function InitiativeDetail() {
               {kv('Origin → Destination', [initiative.origin_site_name,
                                            initiative.destination_site_name]
                 .filter(Boolean).join(' → ') || '—')}
-              {kv('Shipping types', initiative.shipping_types.join(', '))}
+              {kv('Shipping types', initiative.shipping_types
+                .map((k) => shippingLabels[k] ?? k).join(', '))}
               {kv('Shipping partner', initiative.shipping_partner_name)}
               {kv('Priority devices',
                   initiative.priority_devices == null ? null

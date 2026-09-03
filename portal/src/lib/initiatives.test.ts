@@ -56,6 +56,19 @@ describe('initiativeCellText', () => {
     expect(initiativeCellText(row, 'people')).toBe('3');
     expect(initiativeCellText(row, 'archived')).toBe('No');
   });
+
+  it('maps shipping keys to labels via the vocab map', () => {
+    const labels = { truck: 'Truck', rail: 'Rail' };
+    expect(initiativeCellText(row, 'shipping', labels)).toBe('Truck, Rail');
+    expect(initiativeCellText({ ...row, shipping_types: [] }, 'shipping', labels))
+      .toBe('—');
+  });
+
+  it('falls back to the raw key when a label is missing', () => {
+    expect(initiativeCellText(row, 'shipping', { truck: 'Truck' }))
+      .toBe('Truck, rail');
+    expect(initiativeCellText(row, 'shipping')).toBe('truck, rail');
+  });
 });
 
 describe('sectionsForType', () => {

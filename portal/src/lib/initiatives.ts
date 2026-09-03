@@ -28,8 +28,13 @@ export function initiativeSearchText(i: InitiativeItem): string {
 
 /** Column-menu accessor — one row's display text per column key, mirroring
  *  the page's cell renderer exactly (including '—' fallbacks). 'primary'
- *  is the always-shown name cell; 'archived' is the chevron pseudo-column. */
-export function initiativeCellText(i: InitiativeItem, colKey: string): string {
+ *  is the always-shown name cell; 'archived' is the chevron pseudo-column.
+ *  `shippingLabels` maps shipping_type vocab keys to their labels (the page
+ *  builds it from the fetched status-values); unknown keys fall back raw. */
+export function initiativeCellText(
+  i: InitiativeItem, colKey: string,
+  shippingLabels: Record<string, string> = {},
+): string {
   switch (colKey) {
     case 'primary': return i.name;
     case 'type': return i.type_label;
@@ -42,7 +47,9 @@ export function initiativeCellText(i: InitiativeItem, colKey: string): string {
     case 'end': return dateOnly(i.scheduled_end);
     case 'origin': return i.origin_site_name ?? '';
     case 'destination': return i.destination_site_name ?? '';
-    case 'shipping': return i.shipping_types.join(', ') || '—';
+    case 'shipping':
+      return i.shipping_types.map((k) => shippingLabels[k] ?? k).join(', ')
+        || '—';
     case 'people': return String(i.people_count);
     case 'links': return String(i.links_count);
     case 'created': return day(i.created_at);
