@@ -5,8 +5,10 @@
  * modes: "Create model" (hands off to ModelEditModal, then appends the
  * original CSV string as an alias on the just-created record — only when
  * that string doesn't already read like the saved "make model") and "Map
- * to existing" (ComboBox pick + read-modify-write alias append). Mocking
- * style mirrors NotificationGroupDetail.test.tsx (hoisted lib/api mock).
+ * to existing" (ComboBox pick + read-modify-write alias append), plus the
+ * permission-aware mode chooser and the alias-append failure/retry screen.
+ * Mocking style mirrors NotificationGroupDetail.test.tsx (hoisted lib/api
+ * mock) and ImportMoveAssets.test.tsx (hoisted AuthContext mock).
  */
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -14,6 +16,15 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import FixMakeModelDialog from './FixMakeModelDialog';
+
+const auth = vi.hoisted(() => {
+  const s: { can: (resource: string, action: string) => boolean } = { can: () => true };
+  return s;
+});
+
+vi.mock('../../auth/AuthContext', () => ({
+  useAuth: () => ({ can: auth.can }),
+}));
 
 const api = vi.hoisted(() => ({
   listAssetModels: vi.fn(),
@@ -31,6 +42,7 @@ vi.mock('../../lib/api', async (importActual) => ({
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  auth.can = () => true;
 });
 
 it('map-to-existing appends the csv string as an alias', async () => {
@@ -116,4 +128,45 @@ it('create-model flow skips the alias append when the csv string already matches
   await waitFor(() => expect(api.createAssetModel).toHaveBeenCalled());
   await waitFor(() => expect(onFixed).toHaveBeenCalledWith('dell poweredge r720'));
   expect(api.setAssetModelAliases).not.toHaveBeenCalled();
+});
+
+it('a change-only user skips the chooser and lands directly in map mode', async () => {
+  auth.can = (resource, action) => resource === 'asset_models' && action === 'change';
+  api.listAssetCategories.mockResolvedValue([]);
+  api.listAssetModels.mockResolvedValue([
+    { id: 'm1', make: 'Dell', model: 'PowerEdge R720', aliases: [] },
+  ] as never);
+  render(<FixMakeModelDialog text="Dell Dell PowerEdge R720" make="Dell"
+    model="PowerEdge R720" onClose={() => {}} onFixed={() => {}} />);
+
+  // Map mode's ComboBox shows up with no chooser click needed.
+  await screen.findByRole('combobox');
+  expect(screen.queryByText('Create model')).toBeNull();
+  expect(screen.queryByText('Map to existing')).toBeNull();
+});
+
+it('keeps the dialog open and lets the user retry when the alias append fails after create', async () => {
+  api.listAssetCategories.mockResolvedValue([]);
+  api.createAssetModel.mockResolvedValue({
+    id: 'm9', make: 'Dell', model: 'PowerEdge R720', aliases: [],
+  } as never);
+  api.setAssetModelAliases.mockRejectedValueOnce(new Error('network'));
+  const onFixed = vi.fn();
+  render(<FixMakeModelDialog text="Dell Dell PowerEdge R720" make="Dell"
+    model="PowerEdge R720" onClose={() => {}} onFixed={onFixed} />);
+
+  await userEvent.click(await screen.findByText('Create model'));
+  await userEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+
+  await waitFor(() => expect(api.setAssetModelAliases).toHaveBeenCalledTimes(1));
+  await screen.findByText(/adding the alias failed/i);
+  expect(onFixed).not.toHaveBeenCalled();
+
+  api.setAssetModelAliases.mockResolvedValueOnce({});
+  await userEvent.click(screen.getByRole('button', { name: 'Retry alias' }));
+
+  await waitFor(() => expect(api.setAssetModelAliases).toHaveBeenCalledTimes(2));
+  expect(api.setAssetModelAliases).toHaveBeenLastCalledWith(
+    'm9', ['Dell Dell PowerEdge R720']);
+  expect(onFixed).toHaveBeenCalledWith('Dell Dell PowerEdge R720');
 });
