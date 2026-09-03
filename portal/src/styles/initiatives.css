@@ -408,9 +408,10 @@
 .rack-modal-title h3 { white-space: nowrap; }
 /* legend chips live in the modal FOOTER (below the elevations), not the
    header — .modal-foot is the app's normal footer bar (chrome.css); this
-   just re-centers its one row of content instead of the default
-   left-aligned button row other modals use it for. */
-.rack-modal-foot { justify-content: center; }
+   spreads the legend to the left and the Print layout button (Task 6) to
+   the right instead of the default left-aligned button row other modals
+   use it for. */
+.rack-modal-foot { justify-content: space-between; }
 .rack-legend {
   display: flex;
   align-items: center;

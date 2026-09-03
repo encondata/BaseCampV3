@@ -13,7 +13,7 @@
  * chips moved from the modal header to its footer).
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import RackViewModal, { FACEPLATE_USABLE_WIDTH } from './RackViewModal';
 import type { InitiativeAssetRow, InitiativeAssetSummary } from '../../lib/api';
@@ -431,5 +431,18 @@ describe('RackViewModal (render smoke)', () => {
     expect(screen.getByText('Verified')).toBeTruthy();
     expect(screen.getByText('Planned')).toBeTruthy();
     expect(screen.queryByText('Uncategorized')).toBeNull();
+  });
+
+  it('Print layout opens a window and writes the sheet', () => {
+    const write = vi.fn();
+    const win = { document: { write, close: vi.fn() } };
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(win as unknown as Window);
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}}
+           rows={[makeRow({ source_position: null })]} />);
+    fireEvent.click(screen.getByText('Print layout'));
+    expect(openSpy).toHaveBeenCalledWith('', '_blank');
+    expect(write.mock.calls[0][0]).toContain('Rack R1 — Source');
+    expect(write.mock.calls[0][0]).toContain('<svg');
+    openSpy.mockRestore();
   });
 });

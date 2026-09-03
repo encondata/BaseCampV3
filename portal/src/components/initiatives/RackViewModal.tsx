@@ -32,6 +32,7 @@ import {
 import type { RackBlock } from '../../lib/initiatives';
 import type { InitiativeAssetRow } from '../../lib/api';
 import { readableTextColor } from '../../lib/color';
+import { buildRackPrintHtml } from '../../lib/rackPrint';
 import RackDeviceList from './RackDeviceList';
 
 const RU_COUNT = 54;
@@ -383,6 +384,18 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   };
   const handleLeave = () => setHover(null);
 
+  const handlePrint = () => {
+    const svgs = [...(containerRef.current?.querySelectorAll('.rack-svg') ?? [])]
+      .map((el) => el.outerHTML);
+    const win = window.open('', '_blank');
+    if (!win) return; // popup blocked — quiet no-op
+    win.document.write(buildRackPrintHtml({
+      rackName, sideLabel, svgs, listRows, grouped: showRear,
+      legend: categories,
+    }));
+    win.document.close();
+  };
+
   const sideLabel = side === 'source' ? 'Source' : 'Destination';
   const hoveredRow = hover ? rowsById.get(hover.block.id) : undefined;
   const hoveredAsset = hoveredRow?.asset;
@@ -458,6 +471,9 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
               Planned
             </span>
           </div>
+          <button className="mini-btn" type="button" onClick={handlePrint}>
+            Print layout
+          </button>
         </div>
       </div>
     </div>
