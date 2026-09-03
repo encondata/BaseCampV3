@@ -26,7 +26,10 @@ async def _people(db):
 
 
 async def test_burst_debounce_and_order(client, db, seeded_user):
-    now = datetime.now(UTC).replace(microsecond=0)
+    # Anchor mid-day UTC: offsets up to -60m must stay on TODAY for the
+    # person_scans_today assertions (near-midnight runs flaked otherwise).
+    now = datetime.now(UTC).replace(hour=12, minute=0, second=0,
+                                    microsecond=0)
     a, b = await _people(db)
     site = Site(name="NAP11 - Switch")
     db.add(site)
@@ -64,7 +67,8 @@ async def test_burst_debounce_and_order(client, db, seeded_user):
 
 
 async def test_limit_and_since(client, db, seeded_user):
-    now = datetime.now(UTC)
+    now = datetime.now(UTC).replace(hour=12, minute=0, second=0,
+                                    microsecond=0)
     a, _b = await _people(db)
     for i in range(3):
         db.add(_scan(a, now - timedelta(minutes=30 * i), device=f"r{i}"))
