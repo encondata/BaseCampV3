@@ -43,8 +43,11 @@ export default function AdminControls() {
     try {
       const next = await updateAdminConfig(patch);
       setCfg(next);
-      setReadOnlyDraft(next.read_only_message);
-      setBannerDraft(next.banner_message);
+      // Only resync the draft for a message this write actually saved —
+      // otherwise toggling a switch would discard an unsaved message the
+      // admin is still typing in the other field.
+      if ('read_only_message' in patch) setReadOnlyDraft(next.read_only_message);
+      if ('banner_message' in patch) setBannerDraft(next.banner_message);
       refreshSystemStatus();
     } catch (e) {
       setError(describe(e));

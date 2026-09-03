@@ -63,6 +63,19 @@ describe('AdminControls', () => {
       .toHaveBeenCalledWith({ read_only_message: 'Back at 14:00' }));
   });
 
+  it('keeps an unsaved message draft when a switch is toggled', async () => {
+    render(<AdminControls />);
+    await waitFor(() => expect(api.getAdminConfig).toHaveBeenCalled());
+    const input = screen.getByPlaceholderText(/Cutover in progress/) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'Cutover until 14:00' } });
+    // toggling read-only PUTs only {read_only} and must not wipe the draft
+    fireEvent.click(switches()[0]);
+    await waitFor(() => expect(api.updateAdminConfig)
+      .toHaveBeenCalledWith({ read_only: true }));
+    expect(input.value).toBe('Cutover until 14:00');
+    expect(screen.getByText('Save')).toBeTruthy();   // still dirty, still saveable
+  });
+
   it('refuses to enable the broadcast banner with a blank message', async () => {
     render(<AdminControls />);
     await waitFor(() => expect(api.getAdminConfig).toHaveBeenCalled());
