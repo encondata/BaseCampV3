@@ -14,8 +14,8 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import (
-    Asset, AssetModel, Client, Initiative, Partner, Person, PersonRole,
-    ProcessedScan, Site,
+    Asset, AssetModel, Client, Initiative, InitiativeAsset, Partner, Person,
+    PersonRole, ProcessedScan, Site,
 )
 
 LIMIT = 10
@@ -96,6 +96,15 @@ TOOLS: list[dict] = [
                 "days": {"type": "integer"}},
                 "additionalProperties": False}},
             "required": ["entity"], "additionalProperties": False}}},
+    {"type": "function", "function": {
+        "name": "move_summary",
+        "description": "Summarize one move's asset roster: total asset "
+                       "count plus counts by category and by make/model. "
+                       "Use for questions about a move's assets or size.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string",
+                      "description": "Move name fragment"}},
+            "required": ["query"], "additionalProperties": False}}},
 ]
 
 
@@ -245,6 +254,49 @@ async def _count_records(db: AsyncSession, args: dict) -> dict:
     return {"count": (await db.scalar(q)) or 0}
 
 
+async def _move_summary(db: AsyncSession, args: dict) -> dict:
+    """One move's roster in aggregate. Multiple name matches come back as
+    candidates so the model can ask which; a single match returns counts."""
+    needle = f"%{args.get('query', '')}%"
+    moves = (await db.scalars(
+        select(Initiative)
+        .where(Initiative.initiative_type == "move")
+        .where(Initiative.name.ilike(needle))
+        .order_by(Initiative.name).limit(LIMIT))).all()
+    if len(moves) != 1:
+        return {"moves": [{"id": str(m.id), "name": m.name,
+                           "status": m.status} for m in moves]}
+    move = moves[0]
+    total = (await db.scalar(
+        select(func.count(InitiativeAsset.id))
+        .where(InitiativeAsset.initiative_id == move.id))) or 0
+    roster = (select(InitiativeAsset.asset_id)
+              .where(InitiativeAsset.initiative_id == move.id)
+              .subquery())
+    by_category = (await db.execute(
+        select(AssetModel.category, func.count(Asset.id))
+        .select_from(Asset)
+        .outerjoin(AssetModel, Asset.model_id == AssetModel.id)
+        .where(Asset.id.in_(select(roster.c.asset_id)))
+        .group_by(AssetModel.category)
+        .order_by(func.count(Asset.id).desc()))).all()
+    by_model = (await db.execute(
+        select(AssetModel.make, AssetModel.model, func.count(Asset.id))
+        .select_from(Asset)
+        .join(AssetModel, Asset.model_id == AssetModel.id)
+        .where(Asset.id.in_(select(roster.c.asset_id)))
+        .group_by(AssetModel.make, AssetModel.model)
+        .order_by(func.count(Asset.id).desc()).limit(LIMIT))).all()
+    return {
+        "move": {"id": str(move.id), "name": move.name,
+                 "status": move.status},
+        "asset_count": total,
+        "by_category": [{"category": c, "count": n} for c, n in by_category],
+        "by_model": [{"model": f"{mk} {md}", "count": n}
+                     for mk, md, n in by_model],
+    }
+
+
 # tool name -> (permission resource, executor). navigate is intercepted
 # by the route and never dispatched here.
 _EXECUTORS = {
@@ -254,6 +306,7 @@ _EXECUTORS = {
     "find_sites": ("sites", _find_sites),
     "find_stakeholders": ("clients", _find_stakeholders),
     "count_records": (None, _count_records),
+    "move_summary": ("initiatives", _move_summary),
 }
 
 _COUNT_RESOURCES = {"assets": "assets", "moves": "initiatives",

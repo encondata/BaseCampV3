@@ -27,6 +27,34 @@ async def test_text_turn_parsed():
     await c.aclose()
 
 
+async def test_reasoning_effort_in_payload_when_configured():
+    seen: dict = {}
+
+    async def handler(request):
+        seen.update(__import__("json").loads(request.content))
+        return _ok({"choices": [{"message": {
+            "role": "assistant", "content": "ok"}}]})
+    c = AiClient("http://ai.test/v1", "qwen3:8b", 5.0,
+                 transport=httpx.MockTransport(handler),
+                 reasoning_effort="none")
+    await c.chat([{"role": "user", "content": "hi"}], tools=[])
+    assert seen["reasoning_effort"] == "none"
+    await c.aclose()
+
+
+async def test_reasoning_effort_omitted_by_default():
+    seen: dict = {}
+
+    async def handler(request):
+        seen.update(__import__("json").loads(request.content))
+        return _ok({"choices": [{"message": {
+            "role": "assistant", "content": "ok"}}]})
+    c = _client(handler)
+    await c.chat([{"role": "user", "content": "hi"}], tools=[])
+    assert "reasoning_effort" not in seen
+    await c.aclose()
+
+
 async def test_tool_call_turn_parsed():
     async def handler(request):
         return _ok({"choices": [{"message": {

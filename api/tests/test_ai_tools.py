@@ -18,7 +18,8 @@ def test_schemas_are_wellformed():
     names = [t["function"]["name"] for t in tools.TOOLS]
     assert sorted(names) == sorted([
         "navigate", "find_moves", "find_assets", "find_people",
-        "find_sites", "find_stakeholders", "count_records"])
+        "find_sites", "find_stakeholders", "count_records",
+        "move_summary"])
     for t in tools.TOOLS:
         assert t["type"] == "function"
         params = t["function"]["parameters"]
@@ -129,3 +130,59 @@ async def test_count_records_unknown_entity_error(db):
         {"entity": "trucks"},
         db, _user())
     assert out == {"error": "unknown entity: 'trucks'"}
+
+
+async def _seed_move_with_assets(db):
+    from serversherpa.db.models import Asset, AssetModel, InitiativeAsset
+    move = Initiative(name="NAP11 Hall Migration", initiative_type="move",
+                      status="in_progress")
+    db.add(move)
+    r740 = AssetModel(make="Dell", model="R740", category="server")
+    nexus = AssetModel(make="Cisco", model="Nexus 9336C-FX2",
+                       category="network")
+    db.add_all([r740, nexus])
+    await db.flush()
+    assets = [Asset(name=f"a{i}", model_id=r740.id) for i in range(3)]
+    assets.append(Asset(name="sw1", model_id=nexus.id))
+    assets.append(Asset(name="mystery"))          # no catalog model
+    db.add_all(assets)
+    await db.flush()
+    db.add_all([InitiativeAsset(initiative_id=move.id, asset_id=a.id)
+                for a in assets])
+    await db.commit()
+    return move
+
+
+async def test_move_summary_counts_by_category_and_model(db):
+    move = await _seed_move_with_assets(db)
+    out = await tools.run_tool("move_summary", {"query": "nap11"}, db, _user())
+    assert out["move"]["id"] == str(move.id)
+    assert out["move"]["name"] == "NAP11 Hall Migration"
+    assert out["asset_count"] == 5
+    assert {"category": "server", "count": 3} in out["by_category"]
+    assert {"category": "network", "count": 1} in out["by_category"]
+    assert {"category": None, "count": 1} in out["by_category"]
+    assert out["by_model"][0] == {"model": "Dell R740", "count": 3}
+
+
+async def test_move_summary_multiple_matches_lists_candidates(db):
+    db.add(Initiative(name="NAP11 Hall Migration", initiative_type="move",
+                      status="in_progress"))
+    db.add(Initiative(name="NAP11 Decommission", initiative_type="move",
+                      status="planned"))
+    await db.commit()
+    out = await tools.run_tool("move_summary", {"query": "nap11"}, db, _user())
+    assert "moves" in out and len(out["moves"]) == 2
+    assert "asset_count" not in out
+
+
+async def test_move_summary_no_match(db):
+    out = await tools.run_tool("move_summary", {"query": "dallas"}, db,
+                               _user())
+    assert out == {"moves": []}
+
+
+async def test_move_summary_permission_denied(db):
+    out = await tools.run_tool("move_summary", {"query": "x"}, db,
+                               _user(allow=False))
+    assert out == {"error": "permission_denied"}

@@ -38,8 +38,10 @@ class AiTurn:
 
 class AiClient:
     def __init__(self, base_url: str, model: str, timeout: float,
-                 transport: httpx.AsyncBaseTransport | None = None) -> None:
+                 transport: httpx.AsyncBaseTransport | None = None,
+                 reasoning_effort: str | None = None) -> None:
         self._model = model
+        self._reasoning_effort = reasoning_effort or None
         self._http = httpx.AsyncClient(
             base_url=base_url, timeout=timeout, transport=transport)
 
@@ -51,6 +53,10 @@ class AiClient:
                          "stream": False}
         if tools:
             payload["tools"] = tools
+        if self._reasoning_effort:
+            # "none" tames thinking models (qwen3: ~50s/900 hidden tokens
+            # per round with thinking vs ~2s/30 tokens without).
+            payload["reasoning_effort"] = self._reasoning_effort
         try:
             resp = await self._http.post("/chat/completions", json=payload)
             resp.raise_for_status()
@@ -92,4 +98,5 @@ def get_client() -> AiClient | None:
     s = get_settings()
     if not s.ai_enabled:
         return None
-    return AiClient(s.ai_base_url, s.ai_model, s.ai_timeout_seconds)
+    return AiClient(s.ai_base_url, s.ai_model, s.ai_timeout_seconds,
+                    reasoning_effort=s.ai_reasoning_effort)

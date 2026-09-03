@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     ai_base_url: str = "http://localhost:11434/v1"
     ai_model: str = "qwen3:8b"
     ai_timeout_seconds: float = 60.0
+    ai_reasoning_effort: str = ""  # "none" disables thinking on e.g. qwen3
 
     @property
     def sync_database_url(self) -> str:

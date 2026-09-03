@@ -74,6 +74,9 @@ def _prepare_environment() -> None:
 
     test_url = base_url.set(database=TEST_DB).render_as_string(hide_password=False)
     os.environ["SS_DATABASE_URL"] = test_url
+    # Tests never talk to a real model: pin the AI assistant off regardless
+    # of the developer's .env (routes under test monkeypatch get_client).
+    os.environ["SS_AI_ENABLED"] = "false"
     get_settings.cache_clear()
 
     subprocess.run(
