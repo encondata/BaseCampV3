@@ -47,6 +47,8 @@
 .login-shell .pane:before { content:"";position:absolute;left:0;top:0;bottom:0;width:1px;background:repeating-linear-gradient(180deg,var(--amber) 0 14px,transparent 14px 28px);opacity:.55 }
 .login-shell .form-wrap { width:100%;max-width:384px }
 .login-shell .form-title { margin:14px 0 0;font-size:clamp(26px,2.4vw,34px);font-weight:600;letter-spacing:-.02em }
+.login-banners { margin-bottom:14px }
+.login-banners .sys-banner { border-radius:8px;border-width:1px }
 .login-shell .form-hint { margin:8px 0 0;font-weight:300;font-size:14.5px;color:var(--text-mute);line-height:1.55 }
 .login-shell form { margin:34px 0 0 }
 .login-shell .eyebrow,.auth-scrim .eyebrow { font-family:var(--font-mono);font-size:10.5px;letter-spacing:.3em;color:var(--amber);text-transform:uppercase;display:flex;align-items:center;gap:12px }

@@ -9,6 +9,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import CommandPalette from '../components/CommandPalette';
+import SystemBanners from '../components/SystemBanners';
 import Topbar from '../components/Topbar';
 import { isNavItemVisible } from '../lib/godmode';
 import { applyPreferences } from '../lib/settings';
@@ -201,6 +202,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </nav>
 
         <div className="portal-main-col">
+          <SystemBanners />
           <Topbar />
           <main className="portal-main">{children}</main>
         </div>

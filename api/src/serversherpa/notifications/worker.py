@@ -44,11 +44,14 @@ async def run_once(maker) -> None:
 
 async def run_forever(poll_seconds: float = 5.0) -> None:
     from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.system.admin_config import workers_paused
     from serversherpa.system.db_logging import install
     from serversherpa.system.registry import start_heartbeat
 
     install("notification-worker")
-    heartbeat = start_heartbeat("notification-worker", "worker")
+    pause_state = {"paused": False}
+    heartbeat = start_heartbeat("notification-worker", "worker",
+                                meta_fn=lambda: dict(pause_state))
 
     logger.info("notification worker online — placeholder: "
                 "status/logs only, no delivery yet")
@@ -59,6 +62,17 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
         # interval in the past so the first loop iteration always logs.
         last_log = time.monotonic() - IDLE_LOG_SECONDS
         while True:
+            # read-only mode's "also pause background services": idle (still
+            # heart-beating as paused) until the flag clears — no work lost
+            if await workers_paused(maker):
+                if not pause_state["paused"]:
+                    logger.info("paused by read-only maintenance mode")
+                pause_state["paused"] = True
+                await asyncio.sleep(poll_seconds)
+                continue
+            if pause_state["paused"]:
+                logger.info("resumed")
+            pause_state["paused"] = False
             now = time.monotonic()
             if now - last_log >= IDLE_LOG_SECONDS:
                 await run_once(maker)

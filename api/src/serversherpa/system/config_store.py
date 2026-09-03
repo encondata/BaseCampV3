@@ -16,6 +16,13 @@ DEFAULTS: dict[str, dict] = {
                  "tenant_id": ""},
         "syslog": {"host": "", "port": 514, "protocol": "udp"},
     },
+    "admin": {
+        "read_only": False,
+        "read_only_message": "",
+        "pause_workers": False,
+        "banner_enabled": False,
+        "banner_message": "",
+    },
 }
 
 

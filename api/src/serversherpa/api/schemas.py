@@ -1530,7 +1530,7 @@ class ImportJobOut(BaseModel):
 class SystemProcessOut(BaseModel):
     name: str
     kind: str
-    status: str                      # derived: running | stopped | failed
+    status: str                      # derived: running | paused | stopped | failed
     pid: int | None = None
     hostname: str
     started_at: datetime | None = None
@@ -1538,6 +1538,35 @@ class SystemProcessOut(BaseModel):
     stopped_at: datetime | None = None
     uptime_seconds: int | None = None
     meta: dict
+
+
+class SystemStatusOut(BaseModel):
+    """Public (unauthenticated) portal status — banners + read-only state."""
+
+    read_only: bool
+    read_only_message: str
+    workers_paused: bool
+    banner: str | None
+
+
+class AdminConfigOut(BaseModel):
+    read_only: bool
+    read_only_message: str
+    pause_workers: bool
+    banner_enabled: bool
+    banner_message: str
+
+
+class AdminConfigIn(BaseModel):
+    """Partial update — only sent fields change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    read_only: bool | None = None
+    read_only_message: str | None = Field(default=None, max_length=300)
+    pause_workers: bool | None = None
+    banner_enabled: bool | None = None
+    banner_message: str | None = Field(default=None, max_length=300)
 
 
 class LogEntryOut(BaseModel):

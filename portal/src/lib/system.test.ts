@@ -13,6 +13,10 @@ describe('statusMeta', () => {
     expect(statusMeta('weird')).toEqual(
       { label: 'weird', className: 'sys-dot-stopped' });
   });
+
+  it('statusMeta knows paused', () => {
+    expect(statusMeta('paused')).toEqual({ label: 'Paused', className: 'sys-dot-paused' });
+  });
 });
 
 describe('formatAge', () => {

@@ -76,13 +76,45 @@ async def authenticate_token(db: AsyncSession, token: str) -> AuthContext:
     )
 
 
+MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# Never frozen: sign-in/out/refresh/password/preferences, and the admin
+# toggle itself — whoever could turn read-only on can always turn it off.
+READ_ONLY_EXEMPT_PREFIXES = ("/auth/",)
+READ_ONLY_EXEMPT_PATHS = frozenset({"/system/admin"})
+
+
+def _read_only_exempt(path: str) -> bool:
+    return path in READ_ONLY_EXEMPT_PATHS or path.startswith(READ_ONLY_EXEMPT_PREFIXES)
+
+
+async def enforce_read_only(db: AsyncSession, request: Request,
+                            user: AuthContext) -> None:
+    """Read-only maintenance mode: reject mutating calls from everyone but
+    developers with 423. Only mutating methods pay the one-row lookup."""
+    if (request.method not in MUTATING_METHODS
+            or _read_only_exempt(request.url.path)
+            or "developer" in user.roles):
+        return
+    from serversherpa.system.admin_config import read_admin_config
+
+    cfg = await read_admin_config(db)
+    if cfg["read_only"]:
+        raise HTTPException(
+            status_code=423,
+            detail={"code": "read_only_mode",
+                    "message": cfg["read_only_message"]})
+
+
 async def get_current_user(
+    request: Request,
     db: DbSession,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> AuthContext:
     if credentials is None:
         raise _unauthorized("missing_token")
-    return await authenticate_token(db, credentials.credentials)
+    user = await authenticate_token(db, credentials.credentials)
+    await enforce_read_only(db, request, user)
+    return user
 
 
 CurrentUser = Annotated[AuthContext, Depends(get_current_user)]

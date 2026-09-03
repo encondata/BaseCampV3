@@ -14,6 +14,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import SystemBanners from '../components/SystemBanners';
 import { ApiError } from '../lib/api';
 import '../styles/auth-theme.css';
 
@@ -407,6 +408,7 @@ export default function Login() {
       <section className="pane">
         <div className="form-wrap" ref={formWrapRef}>
           <div className="eyebrow" data-reveal="">ServerSherpa Portal</div>
+          <div className="login-banners"><SystemBanners /></div>
           <h2 className="form-title" data-reveal="">Sign in</h2>
           <p className="form-hint" data-reveal="">Use the account credentials provided by your migration coordination team.</p>
 

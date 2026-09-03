@@ -200,3 +200,12 @@
   padding: 0;
   border: 0;
 }
+
+.set-subrow { padding-left: 22px; }
+.set-inline { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+.set-inline input {
+  flex: 1; min-width: 0; height: 32px; padding: 0 10px;
+  border: 1px solid var(--paper-line); border-radius: 8px;
+  font: inherit; font-size: 12.5px; background: var(--surface);
+}
+.set-error { color: var(--c-red, #c03540); }

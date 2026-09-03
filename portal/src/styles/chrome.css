@@ -517,3 +517,23 @@ kbd {
   font: inherit; font-size: 12px;
 }
 .god-exit:hover { background: rgba(255, 255, 255, .06); }
+
+/* ── console-wide banners (read-only mode / broadcast) ───────────────── */
+.sys-banner {
+  padding: 8px 20px;
+  font-family: var(--font-display);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: center;
+  border-bottom: 1px solid transparent;
+}
+.sys-banner-readonly {
+  background: var(--c-amber-bg, #fff4e0);
+  color: var(--c-amber, #7a4b00);
+  border-color: var(--c-amber-bd, #f2c880);
+}
+.sys-banner-broadcast {
+  background: var(--c-blue-bg, #e8f1fb);
+  color: var(--c-blue, #1668a7);
+  border-color: var(--c-blue-bd, #b9d4ee);
+}

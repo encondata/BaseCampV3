@@ -117,11 +117,14 @@ async def run_once(sessionmaker) -> bool:
 
 async def run_forever(poll_seconds: float = 2.0) -> None:
     from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.system.admin_config import workers_paused
     from serversherpa.system.db_logging import install
     from serversherpa.system.registry import start_heartbeat
 
     install("import-worker")
-    heartbeat = start_heartbeat("import-worker", "worker")
+    pause_state = {"paused": False}
+    heartbeat = start_heartbeat("import-worker", "worker",
+                                meta_fn=lambda: dict(pause_state))
 
     maker = get_sessionmaker()
     try:
@@ -131,6 +134,17 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
                 logger.info("re-queued %d stale job(s)", requeued)
         logger.info("watching the queue")
         while True:
+            # read-only mode's "also pause background services": idle (still
+            # heart-beating as paused) until the flag clears — no work lost
+            if await workers_paused(maker):
+                if not pause_state["paused"]:
+                    logger.info("paused by read-only maintenance mode")
+                pause_state["paused"] = True
+                await asyncio.sleep(poll_seconds)
+                continue
+            if pause_state["paused"]:
+                logger.info("resumed")
+            pause_state["paused"] = False
             worked = await run_once(maker)
             if not worked:
                 await asyncio.sleep(poll_seconds)

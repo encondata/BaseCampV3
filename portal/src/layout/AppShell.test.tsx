@@ -46,6 +46,14 @@ vi.mock('../lib/api', () => ({
   apiFetch: vi.fn(() => new Promise(() => {})),
   unlockGodMode: vi.fn(),
   onSessionEnded: vi.fn(() => () => {}),
+  onSystemStatusRefresh: vi.fn(() => () => {}),
+}));
+
+vi.mock('../lib/systemStatusContext', () => ({
+  useSystemStatus: () => ({
+    status: { read_only: true, read_only_message: 'Cutover', workers_paused: false, banner: 'Hello' },
+    refresh: vi.fn(),
+  }),
 }));
 
 beforeEach(() => {
@@ -95,4 +103,12 @@ it('hides an item the user cannot view even in god mode', () => {
   renderShell();
 
   expect(screen.queryByText('Variables')).toBeNull();
+});
+
+it('renders the system banners above the topbar', () => {
+  renderShell();
+  const col = document.querySelector('.portal-main-col')!;
+  const first = col.firstElementChild!;
+  expect(first.className).toContain('sys-banner-readonly');
+  expect(screen.getByText('Hello').className).toContain('sys-banner-broadcast');
 });
