@@ -99,6 +99,37 @@ def import_v2_assets(
 
 
 @app.command()
+def import_v2_models(
+    dump: str = typer.Option(..., help="Path to the V2 pg_dump .sql file "
+                                       "(INSERT-statement format)"),
+    dry_run: bool = typer.Option(False, help="Parse and report; write nothing"),
+) -> None:
+    """Import the entire V2 make/model catalog (+ fuzzy-lookup aliases)
+    from a legacy BaseCamp V2 dump. Each created row notes its V2
+    provenance in the knowledge field. Additive: re-runs skip existing
+    legacy_ids and (make, model) pairs."""
+
+    async def _run() -> None:
+        from serversherpa.assets.v2_import import import_model_catalog
+        from serversherpa.services.audit import audit
+
+        async with get_sessionmaker()() as db:
+            stats = await import_model_catalog(db, dump)
+            if dry_run:
+                await db.rollback()
+                typer.secho(f"[dry-run] would import: {stats}", fg="yellow")
+            else:
+                audit(db, actor_id=None, entity_type="asset_model",
+                      entity_id=None, action="import",
+                      changes={"source": dump.rsplit("/", 1)[-1], **stats})
+                await db.commit()
+                typer.secho(f"Imported: {stats}", fg="green")
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def import_v2_sites(
     dump: str = typer.Option(..., help="Path to the V2 pg_dump .sql file"),
     limit: int = typer.Option(100, help="Max sites to import this run"),

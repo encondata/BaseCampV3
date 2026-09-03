@@ -15,8 +15,9 @@ Deliberate mappings, per the assets spec:
   computed by apply_unit_pairs, same as interactive entry.
 """
 
+import os
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Iterator
 
 from sqlalchemy import select
@@ -258,3 +259,63 @@ async def import_assets(
             "aliases": aliases_created,
             "skipped_already_imported": len(candidates) - len(
                 [c for c in candidates if c["legacy_id"] not in already])}
+
+
+async def import_model_catalog(db: AsyncSession, dump_path: str) -> dict:
+    """Import the ENTIRE V2 make/model catalog (assets_make_model +
+    assets_make_model_fuzzy aliases) from an INSERT-format dump — unlike
+    import_assets above, which only brings the models its picked assets
+    reference. Every created row gets a provenance note appended to its
+    knowledge field. Additive and idempotent: existing legacy_ids and
+    (make, model) pairs are mapped, never duplicated or mutated."""
+    from serversherpa.sites.v2_import import insert_rows
+
+    note = (f"[imported from V2 {os.path.basename(dump_path)} "
+            f"on {date.today().isoformat()}]")
+
+    existing = {(m.make.casefold(), m.model.casefold()): m
+                for m in await db.scalars(select(AssetModel))}
+    legacy_to_model: dict[int, AssetModel] = {
+        m.legacy_id: m for m in existing.values() if m.legacy_id is not None}
+
+    created = existed = merged_duplicates = 0
+    for raw in insert_rows(dump_path, "assets_make_model"):
+        row = [v if v is None else str(v) for v in raw[:10]]
+        legacy_id = int(row[0])
+        if legacy_id in legacy_to_model:
+            existed += 1
+            continue
+        kwargs = build_model_kwargs(row)
+        key = (kwargs["make"].casefold(), kwargs["model"].casefold())
+        if key in existing:                # same catalog entry, other legacy id
+            legacy_to_model[legacy_id] = existing[key]
+            if existing[key].legacy_id is None:
+                existed += 1
+            else:
+                merged_duplicates += 1
+            continue
+        kwargs["knowledge"] = f"{kwargs['knowledge']}\n{note}".strip()
+        model = AssetModel(**kwargs)
+        db.add(model)
+        existing[key] = model
+        legacy_to_model[legacy_id] = model
+        created += 1
+    await db.flush()
+
+    taken = {a.casefold() for a in await db.scalars(
+        select(AssetModelAlias.alias))}
+    aliases_created = aliases_skipped = 0
+    for _rid, legacy_model_id, alias in (
+            r[:3] for r in insert_rows(dump_path, "assets_make_model_fuzzy")):
+        model = legacy_to_model.get(int(legacy_model_id))
+        if not alias or model is None or alias.casefold() in taken:
+            aliases_skipped += 1
+            continue
+        db.add(AssetModelAlias(model_id=model.id, alias=alias))
+        taken.add(alias.casefold())
+        aliases_created += 1
+
+    return {"models_created": created, "models_existing": existed,
+            "duplicates_merged": merged_duplicates,
+            "aliases_created": aliases_created,
+            "aliases_skipped": aliases_skipped}
