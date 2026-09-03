@@ -12,6 +12,7 @@ import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
 import GodDeleteButton from '../components/GodDeleteButton';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
+import InlineTextField from '../components/InlineTextField';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import {
   ApiError,
@@ -31,6 +32,7 @@ import {
   removeInitiativeLink,
   removeInitiativePerson,
   updateInitiative,
+  updateInitiativeLink,
   type InitiativeDetail,
   type InitiativeItem,
   type OrgRef,
@@ -569,6 +571,7 @@ function InitiativeRowDetail({
   const [pendingPerson, setPendingPerson] = useState('');
   const [pendingWorkType, setPendingWorkType] = useState('');
   const [pendingChild, setPendingChild] = useState('');
+  const [pendingRole, setPendingRole] = useState('');
   const [panelError, setPanelError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -669,7 +672,15 @@ function InitiativeRowDetail({
                   {l.other_name}
                 </button>
                 {typeChip(l.other_type_label, l.other_type_color)}
-                {l.role && <span className="init-sub">{l.role}</span>}
+                {canEdit ? (
+                  <InlineTextField value={l.role} placeholder="Role…"
+                                   maxWidth={140} disabled={busy}
+                                   onCommit={(v) => void run(
+                                     () => updateInitiativeLink(
+                                       l.id, { role: v }))} />
+                ) : (
+                  l.role && <span className="init-sub">{l.role}</span>
+                )}
                 {canEdit && (
                   <button type="button" className="mini-btn sm danger spacer"
                           disabled={busy}
@@ -704,12 +715,21 @@ function InitiativeRowDetail({
                 options={childOptions}
               />
             </div>
+            <div className="init-field">
+              <label>Role</label>
+              <input type="text" className="org-select" value={pendingRole}
+                     disabled={busy} placeholder="e.g. Phase 1"
+                     onChange={(e) => setPendingRole(e.target.value)} />
+            </div>
             <button type="button" className="mini-btn"
                     disabled={busy || !pendingChild}
                     onClick={() => void run(async () => {
-                      await addInitiativeLink(initiative.id,
-                                              { child_id: pendingChild });
+                      await addInitiativeLink(initiative.id, {
+                        child_id: pendingChild,
+                        role: pendingRole.trim() || null,
+                      });
                       setPendingChild('');
+                      setPendingRole('');
                     })}>
               Link
             </button>

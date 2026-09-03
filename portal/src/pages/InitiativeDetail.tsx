@@ -19,6 +19,7 @@ import ComboBox, { type ComboOption } from '../components/ComboBox';
 import AssetEditDialog from '../components/initiatives/AssetEditDialog';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
 import RackViewModal from '../components/initiatives/RackViewModal';
+import InlineTextField from '../components/InlineTextField';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import ScanHistoryTable from '../components/scans/ScanHistoryTable';
 import {
@@ -43,6 +44,7 @@ import {
   removeInitiativeLink,
   removeInitiativePerson,
   updateInitiativeAsset,
+  updateInitiativeLink,
   updateInitiativePerson,
   type InitiativeAssetRow,
   type InitiativeDetail as InitiativeDetailOut,
@@ -347,6 +349,7 @@ export default function InitiativeDetail() {
 
   // Linked initiatives section
   const [pendingChild, setPendingChild] = useState('');
+  const [pendingRole, setPendingRole] = useState('');
   const [linksBusy, setLinksBusy] = useState(false);
   const [linksError, setLinksError] = useState('');
 
@@ -887,7 +890,15 @@ export default function InitiativeDetail() {
                       {l.other_name}
                     </button>
                     {chip(l.other_type_label, l.other_type_color)}
-                    {l.role && <span className="init-sub">{l.role}</span>}
+                    {canChange ? (
+                      <InlineTextField value={l.role} placeholder="Role…"
+                                       maxWidth={140} disabled={linksBusy}
+                                       onCommit={(v) => void runLinks(
+                                         () => updateInitiativeLink(
+                                           l.id, { role: v }))} />
+                    ) : (
+                      l.role && <span className="init-sub">{l.role}</span>
+                    )}
                     {canChange && (
                       <button type="button" className="mini-btn sm danger spacer"
                               disabled={linksBusy}
@@ -922,12 +933,21 @@ export default function InitiativeDetail() {
                   options={childOptions}
                 />
               </div>
+              <div className="init-field">
+                <label>Role</label>
+                <input type="text" className="org-select" value={pendingRole}
+                       disabled={linksBusy} placeholder="e.g. Phase 1"
+                       onChange={(e) => setPendingRole(e.target.value)} />
+              </div>
               <button type="button" className="mini-btn"
                       disabled={linksBusy || !pendingChild}
                       onClick={() => void runLinks(async () => {
-                        await addInitiativeLink(initiative.id,
-                                                { child_id: pendingChild });
+                        await addInitiativeLink(initiative.id, {
+                          child_id: pendingChild,
+                          role: pendingRole.trim() || null,
+                        });
                         setPendingChild('');
+                        setPendingRole('');
                       })}>
                 Link
               </button>

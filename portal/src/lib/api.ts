@@ -2090,6 +2090,18 @@ export async function addInitiativeLink(
   return resp.json();
 }
 
+export async function updateInitiativeLink(
+  linkId: string, body: Record<string, unknown>,
+): Promise<InitiativeLinkRow> {
+  const resp = await apiFetch(`/initiatives/links/${linkId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export async function removeInitiativeLink(linkId: string): Promise<void> {
   const resp = await apiFetch(`/initiatives/links/${linkId}`,
     { method: 'DELETE' });
