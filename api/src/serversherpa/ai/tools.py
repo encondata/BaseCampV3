@@ -196,6 +196,26 @@ async def _find_stakeholders(db: AsyncSession, args: dict) -> dict:
 async def _count_records(db: AsyncSession, args: dict) -> dict:
     entity = args.get("entity")
     filters = args.get("filters") or {}
+
+    # Define which filter keys each entity supports
+    SUPPORTED_FILTERS = {
+        "assets": {"client", "site", "status"},
+        "moves": {"status"},
+        "scans": {"days"},
+        "workers": set(),
+        "sites": set(),
+    }
+
+    # Check for unknown entity
+    if entity not in SUPPORTED_FILTERS:
+        return {"error": f"unknown entity: {entity!r}"}
+
+    # Check for unsupported filters
+    supported = SUPPORTED_FILTERS[entity]
+    unsupported = {k for k in filters if k and filters.get(k) is not None} - supported
+    if unsupported:
+        return {"error": f"count for {entity} does not support filter(s): {sorted(unsupported)}"}
+
     if entity == "assets":
         q = select(func.count(Asset.id))
         if filters.get("client"):
@@ -222,8 +242,6 @@ async def _count_records(db: AsyncSession, args: dict) -> dict:
             q = q.where(ProcessedScan.scanned_at
                         >= func.now() - func.make_interval(0, 0, 0,
                                                            filters["days"]))
-    else:
-        return {"error": f"unknown entity: {entity!r}"}
     return {"count": (await db.scalar(q)) or 0}
 
 
@@ -249,7 +267,11 @@ async def run_tool(name: str, args: dict, db: AsyncSession, user) -> dict:
         return {"error": f"unknown tool: {name!r}"}
     resource, fn = entry
     if resource is None:  # count_records gates per entity
-        resource = _COUNT_RESOURCES.get(str(args.get("entity")))
+        entity = str(args.get("entity"))
+        # Check for unknown entity before permission check
+        if entity not in _COUNT_RESOURCES:
+            return {"error": f"unknown entity: {entity!r}"}
+        resource = _COUNT_RESOURCES.get(entity)
     if resource is None or not user.access.can(resource, "view"):
         return {"error": "permission_denied"}
     try:

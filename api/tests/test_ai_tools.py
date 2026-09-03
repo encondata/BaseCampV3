@@ -101,3 +101,31 @@ async def test_find_people_matches_name(db):
 async def test_unknown_tool_is_error(db):
     out = await tools.run_tool("explode", {}, db, _user())
     assert "error" in out
+
+
+async def test_count_records_rejects_unsupported_filters(db):
+    """Workers don't support site filter; scans don't support client filter."""
+    out = await tools.run_tool(
+        "count_records",
+        {"entity": "workers", "filters": {"site": "NAP11"}},
+        db, _user())
+    assert "error" in out
+    assert "site" in out["error"]
+    assert "workers" in out["error"]
+
+    out = await tools.run_tool(
+        "count_records",
+        {"entity": "scans", "filters": {"client": "Broadcom"}},
+        db, _user())
+    assert "error" in out
+    assert "client" in out["error"]
+    assert "scans" in out["error"]
+
+
+async def test_count_records_unknown_entity_error(db):
+    """Unknown entity should return unknown entity error, not permission_denied."""
+    out = await tools.run_tool(
+        "count_records",
+        {"entity": "trucks"},
+        db, _user())
+    assert out == {"error": "unknown entity: 'trucks'"}
