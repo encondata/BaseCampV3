@@ -311,7 +311,7 @@ function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock 
           const y = yForRu(b.ru + b.height) + 1;
           const height = fullHeight - 2;
           if (b.isGhost) {
-            // Blank box: no label, no vents, no LED — just the outline
+            // Blank box: no label, no category fill — just the outline
             // marking the space as occupied from the opposite side.
             return (
               <g key={b.id} onMouseEnter={(e) => onHoverBlock(b, e)} onMouseLeave={onLeaveBlock}>

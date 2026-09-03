@@ -23,6 +23,9 @@ const SHEET_CSS = `
   .sheet { display: flex; gap: 0.25in; align-items: stretch; }
   .elevations { display: flex; gap: 0.2in; height: 9.2in; flex: none; }
   .elevations svg { height: 100%; width: auto; }
+  .elev { display: flex; flex-direction: column; align-items: center; height: 100%; }
+  .elev .cap { font-size: 8pt; font-weight: 600; letter-spacing: 0.08em; }
+  .elev svg { flex: 1; min-height: 0; }
   .list { flex: 1; font-size: 8pt; min-width: 0;
           display: flex; flex-direction: column; justify-content: flex-end; }
   .group { font-size: 7pt; letter-spacing: 0.08em; color: #6b7280;
@@ -38,7 +41,10 @@ const SHEET_CSS = `
   .legend .swatch { display: inline-block; vertical-align: -1px; margin-right: 4px; }
   .key-verified { background: #fff; border: 2px solid #15803d; }
   .key-planned { background: #fff; border: 1.5px dashed #111827; }
-  /* structural rack line-work (classes come through with the serialized SVG) */
+  /* structural rack line-work (classes come through with the serialized
+     SVG). Values deliberately diverge from initiatives.css — tuned darker
+     caps/posts and finer hairlines for paper — so a modal palette change
+     need not carry over, but check both when restyling the frame. */
   .rack-post { fill: #f4f6f8; stroke: #111827; stroke-width: 1.5; }
   .rack-cap { fill: #e5e8ec; stroke: #111827; stroke-width: 1.5; }
   .rack-interior { fill: #fff; stroke: #111827; stroke-width: 1; }
@@ -66,6 +72,13 @@ export function buildRackPrintHtml(input: {
       + `<span class="model">${esc(r.makeModel)}</span>`
       + `<span class="ru">${esc(r.ruText)}</span></div>`;
   }).join('');
+  // A two-elevation sheet captions each frame FRONT / REAR — on paper the
+  // reader has no hover to disambiguate; a lone frame needs no caption.
+  const elevationsHtml = input.svgs.length === 2
+    ? input.svgs.map((svg, i) =>
+        `<div class="elev"><div class="cap">${i === 0 ? 'FRONT' : 'REAR'}</div>${svg}</div>`)
+        .join('')
+    : input.svgs.join('');
   const legendHtml = [
     ...input.legend.map((c) =>
       `<span><span class="swatch" style="background:${esc(c.color)}"></span>${esc(c.label)}</span>`),
@@ -76,7 +89,7 @@ export function buildRackPrintHtml(input: {
     + `<title>Rack ${esc(input.rackName)} — ${esc(input.sideLabel)}</title>`
     + `<style>${SHEET_CSS}</style></head><body>`
     + `<h1>Rack ${esc(input.rackName)} — ${esc(input.sideLabel)}</h1>`
-    + `<div class="sheet"><div class="elevations">${input.svgs.join('')}</div>`
+    + `<div class="sheet"><div class="elevations">${elevationsHtml}</div>`
     + `<div class="list">${listHtml}</div></div>`
     + `<div class="legend">${legendHtml}</div>`
     + `<script>window.onload = () => window.print();</script>`

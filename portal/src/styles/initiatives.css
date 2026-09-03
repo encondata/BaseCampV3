@@ -395,9 +395,10 @@
    rack/side has no rear-mounted assets. The palette is intentionally
    self-contained/light (hardcoded hex, not the app's --surface/--text
    tokens) — designed to print legibly in grayscale: white interior,
-   near-black line work, no gradients, no color-only distinctions
-   (verified vs. planned differ by fill AND solid-vs-dashed border AND
-   label color). Only the modal chrome itself (card, head, legend
+   near-black line work, no gradients. Faceplates fill with the model's
+   category color (contrast-picked label); verified vs. planned stays
+   grayscale-safe via solid vs. dashed borders (colors are inline on the
+   SVG, not here). Only the modal chrome itself (card, head, legend
    caption) follows the app's normal light/dark theme. ───────────────── */
 /* Widened past the original single-elevation 460px so the FRONT/REAR
    elevations (190px each + 24px gap) can sit beside the 240–340px device

@@ -41,4 +41,19 @@ describe('buildRackPrintHtml', () => {
     expect(html).toContain('>FRONT<');
     expect(html).toContain('>REAR<');
   });
+
+  it('captions the elevations FRONT/REAR only when both are printed', () => {
+    const two = buildRackPrintHtml({
+      rackName: 'R1', sideLabel: 'Source',
+      svgs: ['<svg data-x="f"></svg>', '<svg data-x="r"></svg>'],
+      listRows: [], grouped: true, legend: [],
+    });
+    expect(two).toContain('<div class="cap">FRONT</div><svg data-x="f">');
+    expect(two).toContain('<div class="cap">REAR</div><svg data-x="r">');
+    const one = buildRackPrintHtml({
+      rackName: 'R1', sideLabel: 'Source', svgs: ['<svg data-x="f"></svg>'],
+      listRows: [], grouped: false, legend: [],
+    });
+    expect(one).not.toContain('class="cap"');
+  });
 });
