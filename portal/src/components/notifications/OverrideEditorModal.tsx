@@ -54,7 +54,7 @@ function sameArr(a: string[], b: string[]): boolean {
   return a.every((x) => setB.has(x));
 }
 
-/** Local copy of pages/Settings.tsx's aligned labeled switch — a bare
+/** Local copy of components/Switch.tsx's aligned labeled switch — a bare
  *  <input type="checkbox"> would violate the "never a raw floating
  *  checkbox" form rule, so every boolean here is one of these. */
 function Switch({ checked, onChange, disabled = false, label }: {

@@ -41,7 +41,7 @@ function sameMembers(a: string[], b: string[]): boolean {
   return a.every((x) => setB.has(x));
 }
 
-/** Reused from pages/Settings.tsx (33-62) — the app's aligned labeled
+/** Reused from components/Switch.tsx — the app's aligned labeled
  *  switch: a bare <input type="checkbox"> would violate the "never a raw
  *  floating checkbox" form rule, so every boolean in this modal is one of
  *  these, paired with a sibling label in a flex row. `label` sets the

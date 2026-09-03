@@ -11,7 +11,7 @@ import {
   ApiError, getAdminConfig, refreshSystemStatus, updateAdminConfig,
 } from '../../lib/api';
 import type { AdminConfig } from '../../lib/api';
-import { Switch } from '../../pages/Settings';
+import { Switch } from '../Switch';
 
 const ERRORS: Record<string, string> = {
   banner_message_required: 'Enter a message first.',

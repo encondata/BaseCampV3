@@ -9,23 +9,10 @@ import { useState } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import AdminControls from '../components/settings/AdminControls';
+import { Switch } from '../components/Switch';
 import type { UiPreferences } from '../lib/api';
 import { ACCENTS } from '../lib/settings';
 import '../styles/settings.css';
-
-export function Switch({ checked, onChange, disabled = false }: {
-  checked: boolean;
-  onChange?: (v: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <label className="switch">
-      <input type="checkbox" checked={checked} disabled={disabled}
-             onChange={(e) => onChange?.(e.target.checked)} />
-      <span className="track" />
-    </label>
-  );
-}
 
 export default function Settings() {
   const { person, roles, can, preferences, updatePreferences } = useAuth();
