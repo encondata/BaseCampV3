@@ -395,18 +395,24 @@
    rack/side has no rear-mounted assets. The palette is intentionally
    self-contained/light (hardcoded hex, not the app's --surface/--text
    tokens) — designed to print legibly in grayscale: white interior,
-   near-black line work, no gradients, no color-only distinctions
-   (verified vs. planned differ by fill AND solid-vs-dashed border AND
-   label color). Only the modal chrome itself (card, head, legend
+   near-black line work, no gradients. Faceplates fill with the model's
+   category color (contrast-picked label); verified vs. planned stays
+   grayscale-safe via solid vs. dashed borders (colors are inline on the
+   SVG, not here). Only the modal chrome itself (card, head, legend
    caption) follows the app's normal light/dark theme. ───────────────── */
-.modal-card.rack-modal-card { width: min(460px, 94vw); }
+/* Widened past the original single-elevation 460px so the FRONT/REAR
+   elevations (190px each + 24px gap) can sit beside the 240–340px device
+   list (Task 5) without wrapping under them — 190+24+190+24+340 = 768,
+   plus .modal-body's 20px side padding. */
+.modal-card.rack-modal-card { width: min(820px, 96vw); }
 .rack-modal-title { min-width: 0; }
 .rack-modal-title h3 { white-space: nowrap; }
 /* legend chips live in the modal FOOTER (below the elevations), not the
    header — .modal-foot is the app's normal footer bar (chrome.css); this
-   just re-centers its one row of content instead of the default
-   left-aligned button row other modals use it for. */
-.rack-modal-foot { justify-content: center; }
+   spreads the legend to the left and the Print layout button (Task 6) to
+   the right instead of the default left-aligned button row other modals
+   use it for. */
+.rack-modal-foot { justify-content: space-between; }
 .rack-legend {
   display: flex;
   align-items: center;
@@ -424,16 +430,24 @@
   border-radius: 2px;
   flex: none;
 }
-.rack-legend-swatch-verified { background: #eef0f3; border: 1.5px solid #111827; }
+.rack-legend-swatch-verified { background: #fff; border: 2px solid #15803d; }
 .rack-legend-swatch-planned {
   background: #fff;
   border: 1.5px dashed #111827;
 }
 .rack-modal-body {
   max-height: 70vh;
+  /* the elevations scale themselves to the 70vh budget (see .rack-svg),
+     so the body never needs a scrollbar for the rack itself; auto (not
+     hidden) stays as the fallback for a device list taller than the
+     scaled rack */
   overflow-y: auto;
   display: flex;
   justify-content: center;
+  /* without this, .rack-elevations (a flex child) stretches to the 70vh
+     scrollport instead of growing with the rack, so the bottom-anchored
+     device list anchors to the scrollport bottom, not the rack's */
+  align-items: flex-start;
 }
 .rack-elevations {
   position: relative; /* anchors the hover tooltip's absolute positioning */
@@ -443,7 +457,11 @@
   gap: 24px;
   width: 100%;
 }
-.rack-elevation { display: flex; flex-direction: column; align-items: center; width: 190px; flex: none; }
+/* The elevation sizes to its SVG, and the SVG scales to the modal's 70vh
+   budget (minus body padding + heading) so the whole rack is visible
+   without scrolling — width follows from the viewBox aspect ratio, capped
+   at the design's natural 190px column. */
+.rack-elevation { display: flex; flex-direction: column; align-items: center; width: auto; flex: none; }
 .rack-elevation-heading {
   font-family: var(--font-mono);
   font-size: 9px;
@@ -456,7 +474,12 @@
    explicitly here: at this element's small on-screen size, anything that
    ever crept past the viewBox (or an anti-aliased edge bleeding past it)
    must be guaranteed clipped rather than relying on a UA default. */
-.rack-svg { width: 100%; height: auto; display: block; overflow: hidden; }
+.rack-svg {
+  height: min(884px, calc(70vh - 62px)); /* 62px = body padding + heading */
+  width: auto;
+  display: block;
+  overflow: hidden;
+}
 
 .rack-post { fill: #f9fafb; stroke: #111827; stroke-width: 1.5; }
 .rack-cap { fill: #f9fafb; stroke: #111827; stroke-width: 1.5; }
@@ -477,25 +500,39 @@
   fill: #6b7280;
 }
 
-/* verified = light-gray fill, solid border; planned/unverified = white
-   fill, dashed border, muted label — distinguishable in pure grayscale
-   without relying on the LED alone. */
-.rack-faceplate-verified { fill: #eef0f3; stroke: #111827; stroke-width: 1.5; }
-.rack-faceplate-unverified { fill: #fff; stroke: #111827; stroke-width: 1.25; stroke-dasharray: 4 3; }
+/* device manifest beside the elevations — mono, tight, reads top-down
+   like the rack itself */
+.rack-device-list {
+  min-width: 240px; max-width: 340px; flex: 1;
+  font-family: var(--font-mono); font-size: 12px;
+  align-self: stretch; display: flex; flex-direction: column;
+  justify-content: flex-end;
+}
+.rack-list-group {
+  font-size: 10.5px; letter-spacing: 0.08em; color: #6b7280;
+  margin: 10px 0 4px; font-weight: 600;
+}
+.rack-list-row {
+  display: grid; grid-template-columns: 12px 1fr auto auto;
+  gap: 8px; align-items: center; padding: 3px 0;
+  border-bottom: 1px solid #eceff3;
+}
+.rack-list-swatch {
+  width: 10px; height: 10px; border-radius: 2px;
+  border: 1px solid rgba(17, 24, 39, 0.25);
+}
+.rack-list-model { color: #6b7280; }
+.rack-list-ru { text-align: right; min-width: 44px; }
+
 /* ghost box: something is mounted here from the OPPOSITE physical side —
    an opaque white fill (not literally transparent) so the whole box, not
    just its 1px outline, is hoverable; a light (not near-black) border
    keeps it visually receding behind real verified/planned faceplates. */
 .rack-faceplate-ghost { fill: #fff; stroke: #c9ced6; stroke-width: 1; }
-.rack-faceplate-vent { stroke: #d1d5db; stroke-width: 1; }
-.rack-led-verified { fill: #111827; }
-.rack-led-unverified { fill: none; stroke: #111827; stroke-width: 1; }
-.rack-block-label {
-  font-family: var(--font-mono);
-  font-size: 8.5px;
-  fill: #111827;
-}
-.rack-block-label-unverified { fill: #6b7280; }
+/* fill / stroke / label color are INLINE on the SVG (category colors are
+   data-driven and the print window serializes the live DOM without app
+   CSS) — classes here carry only shared font/shape styling. */
+.rack-block-label { font-family: var(--font-mono); font-size: 8.5px; }
 
 /* hover detail tooltip — real HTML element (not a native title tooltip),
    positioned off the hovered faceplate's bounding rect; styled like the

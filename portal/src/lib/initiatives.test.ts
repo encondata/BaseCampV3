@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { InitiativeAssetRow, InitiativeItem, StatusValue } from './api';
 import {
-  formFromInitiative, initiativeCellText, initiativePayload,
-  initiativeSearchText, MOVE_ASSET_EDIT_FIELDS, moveAssetCellText, moveAssetProgress,
-  moveAssetStatusBreakdown,
+  deviceListRows, formFromInitiative, initiativeCellText, initiativePayload,
+  initiativeSearchText, legendCategories, MOVE_ASSET_EDIT_FIELDS, moveAssetCellText,
+  moveAssetProgress, moveAssetStatusBreakdown,
   partnerOptionsForRole, rackLayout, sectionsForType, siteOptionsForClient,
 } from './initiatives';
+import type { RackBlock } from './initiatives';
 
 const row: InitiativeItem = {
   id: 'i1', name: 'Denver DC migration', description: null,
@@ -195,6 +196,7 @@ function assetRow(overrides: Partial<InitiativeAssetRow> = {}): InitiativeAssetR
       id: 'a1', legacy_id: 4021, serial_number: 'SN-001', name: 'Server A',
       rfid_tag: 'RFID-1', model_make: 'Dell', model_name: 'R740',
       ru_size: 2, location_detail: 'Row 3', client_name: 'Acme',
+      model_category: null, model_category_label: null, model_category_color: null,
       status: 'active', status_label: 'Active', status_color: '#31F527',
     },
     ...overrides,
@@ -535,5 +537,68 @@ describe('rackLayout', () => {
     const blocks = rackLayout(rows, 'BJ08', 'source');
     expect(blocks.find((b) => b.id === 'a')?.label).toBe('Server A');
     expect(blocks.find((b) => b.id === 'b')?.label).toBe('SN-9');
+  });
+
+  it('carries make/model text and category label/color from the asset', () => {
+    const rows = [assetRow({
+      id: 'a', source_rack: 'BJ08', source_ru: 10,
+      asset: {
+        ...assetRow().asset,
+        model_make: 'Dell', model_name: 'R740',
+        model_category_label: 'Server', model_category_color: '#1668a7',
+      },
+    })];
+    const [b] = rackLayout(rows, 'BJ08', 'source');
+    expect(b.makeModel).toBe('Dell R740');
+    expect(b.categoryLabel).toBe('Server');
+    expect(b.categoryColor).toBe('#1668a7');
+  });
+});
+
+/* ── device list + legend helpers (Task 3) ───────────────────────────── */
+
+const block = (over: Partial<RackBlock>): RackBlock => ({
+  id: 'b1', label: 'dev', ru: 1, height: 1, verified: false, position: null,
+  categoryLabel: null, categoryColor: null, makeModel: '', ...over,
+});
+
+describe('deviceListRows', () => {
+  it('sorts each group top of rack first (descending top RU), ties by name', () => {
+    const front = [
+      block({ id: 'a', label: 'alpha', ru: 10, height: 2 }),  // top 11
+      block({ id: 'b', label: 'bravo', ru: 40, height: 1 }),  // top 40
+      block({ id: 'c', label: 'chuck', ru: 9, height: 3 }),   // top 11 — tie
+    ];
+    const rear = [block({ id: 'r', label: 'rear-sw', ru: 50, height: 1 })];
+    const rows = deviceListRows(front, rear);
+    expect(rows.map((r) => r.id)).toEqual(['b', 'a', 'c', 'r']);
+    expect(rows.map((r) => r.group)).toEqual(['FRONT', 'FRONT', 'FRONT', 'REAR']);
+  });
+  it('formats RU ranges and model fallback', () => {
+    const rows = deviceListRows(
+      [block({ ru: 40, height: 3, makeModel: 'Dell R740' }),
+       block({ id: 'x', ru: 1, height: 1 })], []);
+    expect(rows[0].ruText).toBe('40..42');
+    expect(rows[0].makeModel).toBe('Dell R740');
+    expect(rows[1].ruText).toBe('1');
+    expect(rows[1].makeModel).toBe('—');
+  });
+});
+
+describe('legendCategories', () => {
+  it('dedupes by label, sorts, and adds Uncategorized only when present', () => {
+    const cats = legendCategories([
+      block({ categoryLabel: 'Server', categoryColor: '#1668a7' }),
+      block({ id: 'b2', categoryLabel: 'Server', categoryColor: '#1668a7' }),
+      block({ id: 'b3', categoryLabel: 'Network', categoryColor: '#0f7c86' }),
+      block({ id: 'b4' }), // uncategorized
+    ]);
+    expect(cats).toEqual([
+      { label: 'Network', color: '#0f7c86' },
+      { label: 'Server', color: '#1668a7' },
+      { label: 'Uncategorized', color: '#eef0f3' },
+    ]);
+    expect(legendCategories([block({ categoryLabel: 'Power', categoryColor: '#a36207' })]))
+      .toEqual([{ label: 'Power', color: '#a36207' }]);
   });
 });
