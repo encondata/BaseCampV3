@@ -25,7 +25,7 @@ from serversherpa.api.schemas import (
     InitiativeUpdateIn,
 )
 from serversherpa.db.models import (
-    Asset, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
+    Asset, AssetCategory, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
     InitiativeLink, InitiativePerson, Partner, Person, Site, StatusValue,
 )
 from serversherpa.imports.parsing import (
@@ -646,6 +646,10 @@ async def _initiative_asset_rows(
     models = {m.id: m for m in await db.scalars(
         select(AssetModel).where(AssetModel.id.in_(model_ids)))} \
         if model_ids else {}
+    cat_keys = {m.category for m in models.values() if m.category}
+    categories = {c.key: c for c in await db.scalars(
+        select(AssetCategory).where(AssetCategory.key.in_(cat_keys)))} \
+        if cat_keys else {}
     client_ids = {a.client_id for _, a in rows if a.client_id}
     clients = dict((await db.execute(
         select(Client.id, Client.name).where(Client.id.in_(client_ids))
@@ -657,6 +661,7 @@ async def _initiative_asset_rows(
         a_label, a_color = statuses.get(asset.status,
                                         (asset.status, "#51606f"))
         model = models.get(asset.model_id)
+        cat = categories.get(model.category) if model and model.category else None
         out.append(InitiativeAssetOut(
             id=ia.id, asset_id=ia.asset_id,
             priority_wave=ia.priority_wave, disposition=ia.disposition,
@@ -677,6 +682,9 @@ async def _initiative_asset_rows(
                 model_make=model.make if model else None,
                 model_name=model.model if model else None,
                 ru_size=model.ru_size if model else None,
+                model_category=cat.key if cat else None,
+                model_category_label=cat.label if cat else None,
+                model_category_color=cat.color if cat else None,
                 location_detail=asset.location_detail,
                 client_name=clients.get(asset.client_id),
                 status=asset.status, status_label=a_label,
