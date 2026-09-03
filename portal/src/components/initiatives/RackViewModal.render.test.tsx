@@ -12,7 +12,7 @@
  * (U numbers mirrored onto both rails with no every-5 emphasis, legend
  * chips moved from the modal header to its footer).
  */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import RackViewModal, { FACEPLATE_USABLE_WIDTH } from './RackViewModal';
@@ -90,12 +90,18 @@ describe('RackViewModal (render smoke)', () => {
         asset: makeAsset({ id: 'asset-b', name: null, serial_number: 'SN-B', ru_size: 2 }),
       }),
     ];
-    render(<RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />);
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+    );
     // Squeezed to a 2-lane width here, so the label truncates (exact
     // truncation math is covered by the dedicated `rackLabel` unit tests
     // above) — a prefix match is enough to confirm both blocks rendered.
-    expect(screen.getByText(/^server-a/)).toBeTruthy();
-    expect(screen.getByText(/^SN-B/)).toBeTruthy();
+    // Scoped to the SVG faceplate labels since the device list (Task 5)
+    // now also renders each device's full (untruncated) name.
+    const labels = [...container.querySelectorAll('.rack-block-label')]
+      .map((n) => n.textContent);
+    expect(labels.some((t) => /^server-a/.test(t ?? ''))).toBe(true);
+    expect(labels.some((t) => /^SN-B/.test(t ?? ''))).toBe(true);
   });
 
   it('splits front/rear devices at the same RU into two independent elevations, each showing a ghost of the other', () => {
@@ -113,8 +119,9 @@ describe('RackViewModal (render smoke)', () => {
       <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
     );
 
-    expect(screen.getByText('FRONT')).toBeTruthy();
-    expect(screen.getByText('REAR')).toBeTruthy();
+    const headings = [...container.querySelectorAll('.rack-elevation-heading')]
+      .map((n) => n.textContent);
+    expect(headings).toEqual(['FRONT', 'REAR']);
     expect(container.querySelectorAll('.rack-elevation')).toHaveLength(2);
     expect(container.querySelectorAll('svg.rack-svg')).toHaveLength(2);
 
@@ -369,8 +376,9 @@ describe('RackViewModal (render smoke)', () => {
     );
     const faceplateGroup = container.querySelector('.rack-faceplate')!.parentElement!;
     fireEvent.mouseEnter(faceplateGroup);
-    expect(screen.getByText('Category')).toBeTruthy();
-    expect(screen.getByText('Server')).toBeTruthy();
+    const tooltip = within(container.querySelector('.rack-tooltip')!);
+    expect(tooltip.getByText('Category')).toBeTruthy();
+    expect(tooltip.getByText('Server')).toBeTruthy();
   });
 
   it('omits the tooltip Category row for an uncategorized asset', () => {
@@ -386,5 +394,42 @@ describe('RackViewModal (render smoke)', () => {
     const faceplateGroup = container.querySelector('.rack-faceplate')!.parentElement!;
     fireEvent.mouseEnter(faceplateGroup);
     expect(screen.queryByText('Category')).toBeNull();
+  });
+
+  it('lists devices top-down beside the elevations', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ id: 'low', source_ru: 5, source_position: null }),
+      makeRow({ id: 'high', source_ru: 40, source_position: null,
+                asset: makeAsset({ id: 'a2', serial_number: 'SN-9', name: 'top-dev',
+                  model_make: 'Dell', model_name: 'R740', ru_size: 2 }) }),
+    ]} />);
+    const cells = [...document.querySelectorAll('.rack-list-name')].map((n) => n.textContent);
+    expect(cells).toEqual(['top-dev', 'w1-hs4-m0407']);
+    expect(document.querySelector('.rack-list-ru')!.textContent).toBe('40–41');
+    expect(screen.getByText('Dell R740')).toBeTruthy();
+    // no rear devices → no group subheads
+    expect(document.querySelector('.rack-list-group')).toBeNull();
+  });
+
+  it('groups the list under FRONT/REAR when a rear elevation renders', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ id: 'f', source_ru: 5, source_position: null }),
+      makeRow({ id: 'r', source_ru: 40, source_position: 'rear',
+                asset: makeAsset({ id: 'a2', serial_number: 'SN-9', name: 'rear-dev' }) }),
+    ]} />);
+    const heads = [...document.querySelectorAll('.rack-list-group')].map((n) => n.textContent);
+    expect(heads).toEqual(['FRONT', 'REAR']);
+  });
+
+  it('legend shows categories present plus the border key', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ source_position: null, asset: makeAsset({
+        model_category: 'server', model_category_label: 'Server',
+        model_category_color: '#1668a7' }) }),
+    ]} />);
+    expect(screen.getByText('Server')).toBeTruthy();
+    expect(screen.getByText('Verified')).toBeTruthy();
+    expect(screen.getByText('Planned')).toBeTruthy();
+    expect(screen.queryByText('Uncategorized')).toBeNull();
   });
 });

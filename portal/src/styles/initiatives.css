@@ -399,7 +399,11 @@
    (verified vs. planned differ by fill AND solid-vs-dashed border AND
    label color). Only the modal chrome itself (card, head, legend
    caption) follows the app's normal light/dark theme. ───────────────── */
-.modal-card.rack-modal-card { width: min(460px, 94vw); }
+/* Widened past the original single-elevation 460px so the FRONT/REAR
+   elevations (190px each + 24px gap) can sit beside the 240–340px device
+   list (Task 5) without wrapping under them — 190+24+190+24+340 = 768,
+   plus .modal-body's 20px side padding. */
+.modal-card.rack-modal-card { width: min(820px, 96vw); }
 .rack-modal-title { min-width: 0; }
 .rack-modal-title h3 { white-space: nowrap; }
 /* legend chips live in the modal FOOTER (below the elevations), not the
@@ -424,7 +428,7 @@
   border-radius: 2px;
   flex: none;
 }
-.rack-legend-swatch-verified { background: #eef0f3; border: 1.5px solid #111827; }
+.rack-legend-swatch-verified { background: #fff; border: 2px solid #15803d; }
 .rack-legend-swatch-planned {
   background: #fff;
   border: 1.5px dashed #111827;
@@ -476,6 +480,29 @@
   font-size: 10px;
   fill: #6b7280;
 }
+
+/* device manifest beside the elevations — mono, tight, reads top-down
+   like the rack itself */
+.rack-device-list {
+  min-width: 240px; max-width: 340px; flex: 1;
+  font-family: var(--font-mono); font-size: 12px;
+  align-self: flex-start; position: sticky; top: 0;
+}
+.rack-list-group {
+  font-size: 10.5px; letter-spacing: 0.08em; color: #6b7280;
+  margin: 10px 0 4px; font-weight: 600;
+}
+.rack-list-row {
+  display: grid; grid-template-columns: 12px 1fr auto auto;
+  gap: 8px; align-items: center; padding: 3px 0;
+  border-bottom: 1px solid #eceff3;
+}
+.rack-list-swatch {
+  width: 10px; height: 10px; border-radius: 2px;
+  border: 1px solid rgba(17, 24, 39, 0.25);
+}
+.rack-list-model { color: #6b7280; }
+.rack-list-ru { text-align: right; min-width: 44px; }
 
 /* ghost box: something is mounted here from the OPPOSITE physical side —
    an opaque white fill (not literally transparent) so the whole box, not

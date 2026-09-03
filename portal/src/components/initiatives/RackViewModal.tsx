@@ -26,10 +26,13 @@
  */
 import { useRef, useState, useEffect } from 'react';
 
-import { rackLayout, UNCATEGORIZED_FILL } from '../../lib/initiatives';
+import {
+  rackLayout, UNCATEGORIZED_FILL, deviceListRows, legendCategories,
+} from '../../lib/initiatives';
 import type { RackBlock } from '../../lib/initiatives';
 import type { InitiativeAssetRow } from '../../lib/api';
 import { readableTextColor } from '../../lib/color';
+import RackDeviceList from './RackDeviceList';
 
 const RU_COUNT = 54;
 const U_PX = 16;
@@ -364,6 +367,8 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   const frontDisplay: DisplayBlock[] = [...frontBlocks, ...ghostBlocksFor(rearBlocks)];
   const rearDisplay: DisplayBlock[] = [...rearBlocks, ...ghostBlocksFor(frontBlocks)];
   const rowsById = new Map(rows.map((r) => [r.id, r]));
+  const listRows = deviceListRows(frontBlocks, rearBlocks);
+  const categories = legendCategories(blocks);
 
   const handleHover = (block: DisplayBlock, e: React.MouseEvent<SVGGElement>) => {
     const container = containerRef.current;
@@ -420,6 +425,7 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
                 onHoverBlock={handleHover} onLeaveBlock={handleLeave}
               />
             )}
+            <RackDeviceList rows={listRows} grouped={showRear} />
             {hover && (
               <div className="rack-tooltip" style={{ left: hover.x, top: hover.y }}>
                 <div className="rack-tooltip-name">
@@ -437,6 +443,12 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
         </div>
         <div className="modal-foot rack-modal-foot">
           <div className="rack-legend" aria-hidden="true">
+            {categories.map((c) => (
+              <span key={c.label} className="rack-legend-item">
+                <span className="rack-legend-swatch" style={{ background: c.color }} />
+                {c.label}
+              </span>
+            ))}
             <span className="rack-legend-item">
               <span className="rack-legend-swatch rack-legend-swatch-verified" />
               Verified
