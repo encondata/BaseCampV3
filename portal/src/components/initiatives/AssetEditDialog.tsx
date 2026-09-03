@@ -70,9 +70,14 @@ export default function AssetEditDialog({ asset, moveStatuses, onClose, onSaved 
       await onSaved();
       onClose();
     } catch (err) {
-      setError(err instanceof ApiError
-        ? (MOVE_ASSET_ERRORS[err.code] ?? 'Could not save — try again.')
-        : 'Network error.');
+      if (err instanceof ApiError && err.code === 'rule_failed') {
+        const d = err.detail as { rule_name?: string; reason?: string } | undefined;
+        setError(`Rule '${d?.rule_name ?? '?'}' failed: ${d?.reason ?? 'unknown error'}`);
+      } else {
+        setError(err instanceof ApiError
+          ? (MOVE_ASSET_ERRORS[err.code] ?? 'Could not save — try again.')
+          : 'Network error.');
+      }
     } finally {
       setSaving(false);
     }
