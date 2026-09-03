@@ -107,6 +107,14 @@ async def test_rule_failure_blocks_the_edit(client, db, seeded_user):
         AuditLog.action == "asset_update"))).all()
     assert audits == []
 
+    # ...but the failure itself left a server-side trace for the admin UI
+    executions = (await db.scalars(select(StatusRuleExecution))).all()
+    assert len(executions) == 1
+    ex = executions[0]
+    assert ex.rule_name == "Broken"
+    assert ex.processed_scan_id is None
+    assert ex.error
+
 
 async def test_provenance_reports_the_manual_scan(client, db, seeded_user):
     hdrs = await login(client)

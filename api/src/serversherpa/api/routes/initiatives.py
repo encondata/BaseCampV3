@@ -5,6 +5,7 @@ rows, 404 on anything else); writes stay globally anchored. People
 assignments and initiative↔initiative links live here too (the
 initiative is the aggregate root)."""
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -26,7 +27,8 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.db.models import (
     Asset, AssetCategory, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
-    InitiativeLink, InitiativePerson, Partner, Person, Site, StatusValue,
+    InitiativeLink, InitiativePerson, Partner, Person, Site, StatusRuleExecution,
+    StatusValue,
 )
 from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx,
@@ -37,6 +39,7 @@ from serversherpa.services.storage import put_object
 from serversherpa.status_rules.engine import RuleExecutionError
 
 router = APIRouter(prefix="/initiatives", tags=["initiatives"])
+logger = logging.getLogger(__name__)
 
 PARTNER_FIELDS = (
     "shipping_partner_id",
@@ -774,6 +777,27 @@ def _parse_ru(value: object) -> Decimal | None:
     return parsed
 
 
+async def _stamp_rule_failure(err: RuleExecutionError) -> None:
+    """A failing rule on the status-edit path rolls back the whole
+    request (no scan, no status change) — but that leaves no trace for
+    the rules admin UI. Stamp an error execution row in a FRESH,
+    short-lived transaction (the caller's session was just rolled back
+    and record_status_edit's scan never committed), mirroring
+    scans/worker.py::_stamp_error. Best-effort: never let a failure here
+    mask the 409 the caller is about to raise."""
+    from serversherpa.db.engine import get_sessionmaker
+
+    try:
+        async with get_sessionmaker()() as fresh:
+            fresh.add(StatusRuleExecution(
+                rule_id=err.rule_id, rule_name=err.rule_name,
+                processed_scan_id=None, conditions_met=True,
+                actions_applied=[], error=str(err)[:2000]))
+            await fresh.commit()
+    except Exception:
+        logger.exception("failed to record rule-failure execution")
+
+
 async def _check_asset_status(db: DbSession, data: dict) -> None:
     if "status" in data and (data["status"] is None or await db.scalar(
         select(StatusValue).where(
@@ -814,14 +838,19 @@ async def update_initiative_asset(
         # engine here, anchored to THIS initiative. A failing rule rolls
         # the whole edit back — history and dependent fields never drift.
         asset = await db.get(Asset, assoc.asset_id)
-        try:
-            await record_status_edit(db, assoc=assoc, asset=asset,
-                                     status=assoc.status,
-                                     actor_person_id=actor.person.id)
-        except RuleExecutionError as err:
-            await db.rollback()
-            raise _err(409, "rule_failed", rule_name=err.rule_name,
-                       reason=str(err.__cause__ or err)) from err
+        if asset is not None:
+            try:
+                await record_status_edit(db, assoc=assoc, asset=asset,
+                                         status=assoc.status,
+                                         actor_person_id=actor.person.id)
+            except RuleExecutionError as err:
+                await db.rollback()
+                logger.warning(
+                    "initiative asset %s: rule %r failed on status edit: %s",
+                    assoc_id, err.rule_name, err)
+                await _stamp_rule_failure(err)
+                raise _err(409, "rule_failed", rule_name=err.rule_name,
+                           reason=str(err.__cause__ or err)) from err
     await db.commit()
     rows = await _initiative_asset_rows(db, assoc.initiative_id)
     return next(r for r in rows if r.id == assoc_id)

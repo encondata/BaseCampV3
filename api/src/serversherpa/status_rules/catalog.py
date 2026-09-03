@@ -182,10 +182,20 @@ async def _set_asset_location_from_scan(db, ctx, params) -> ActionOutcome:
         return ActionOutcome(False, "no_asset")
     # Older rows may predate the fields param — absent means both.
     fields = params.get("fields", "both")
-    if fields in ("site", "both"):
+    # Copy only what the scan actually carries. A manual keyboard edit's
+    # scan has no site/location at all (see scans/manual.py) — without
+    # this guard this action would blank out real location data on
+    # every plain status edit. The same guard protects worker scans from
+    # readers that were never configured with a site/location.
+    copied = False
+    if fields in ("site", "both") and ctx.scan.site_id is not None:
         ctx.asset.site_id = ctx.scan.site_id
-    if fields in ("location", "both"):
+        copied = True
+    if fields in ("location", "both") and ctx.scan.location_detail:
         ctx.asset.location_detail = ctx.scan.location_detail
+        copied = True
+    if not copied:
+        return ActionOutcome(False, "no_scan_location")
     _touch(ctx.asset)
     return ActionOutcome(True)
 
@@ -220,9 +230,19 @@ async def _set_initiative_asset_verified(db, ctx, params) -> ActionOutcome:
     return ActionOutcome(True)
 
 
+def _is_presence_read(scan) -> bool:
+    """True only for a scan that came from an actual physical read (the
+    worker always stamps raw_scan_id from the RawScan row it matched).
+    A manual keyboard edit (scans/manual.py) never carries a raw_scan_id
+    — it records intent, not a body-in-front-of-the-reader event."""
+    return scan.raw_scan_id is not None
+
+
 async def _touch_container_audit(db, ctx, params) -> ActionOutcome:
     if ctx.container is None:
         return ActionOutcome(False, "no_container")
+    if not _is_presence_read(ctx.scan):
+        return ActionOutcome(False, "not_a_presence_read")
     ctx.container.last_audit_at = ctx.scan.scanned_at
     ctx.container.audit_by = ctx.scan.operator_id
     _touch(ctx.container)

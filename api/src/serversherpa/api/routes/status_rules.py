@@ -25,6 +25,7 @@ from serversherpa.services.audit import audit
 from serversherpa.status_rules.catalog import (
     ACTIONS, CONDITION_FIELDS, OPERATORS, validate_action, validate_condition,
 )
+from serversherpa.status_rules.engine import invalidate_cache
 
 router = APIRouter(prefix="/status-rules", tags=["status-rules"])
 
@@ -128,6 +129,7 @@ async def create_rule(
           entity_id=str(rule.id), action="create",
           changes=body.model_dump(mode="json"))
     await db.commit()
+    invalidate_cache()
     return _out(await _get(db, rule.id))
 
 
@@ -256,6 +258,7 @@ async def replace_rule(
           entity_id=str(rule.id), action="update",
           changes=body.model_dump(mode="json"))
     await db.commit()
+    invalidate_cache()
     return _out(await _get(db, rule.id))
 
 
@@ -271,6 +274,7 @@ async def toggle_rule(
           entity_id=str(rule.id), action="toggle",
           changes={"enabled": body.enabled})
     await db.commit()
+    invalidate_cache()
     return _out(await _get(db, rule.id))
 
 
@@ -285,3 +289,4 @@ async def delete_rule(
           changes={"name": rule.name})
     await db.delete(rule)
     await db.commit()
+    invalidate_cache()

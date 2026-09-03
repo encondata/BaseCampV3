@@ -1,5 +1,6 @@
 """API tests for /status-rules — CRUD + toggle, catalog validation, audit."""
 
+import time
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, text
@@ -7,9 +8,14 @@ from sqlalchemy import select, text
 from serversherpa.db.models import (
     AuditLog, Asset, ProcessedScan, StatusRule, StatusRuleExecution,
 )
+from serversherpa.status_rules import engine
 from serversherpa.status_rules.catalog import ACTIONS, OPERATORS
 from tests.test_access_roles_api import login_admin
 from tests.test_notification_groups_api import login_staff
+
+
+def _prime_cache():
+    engine._cache[("x", "asset")] = (time.monotonic(), [])
 
 
 def _body(**over):
@@ -59,6 +65,14 @@ async def test_create_and_list_round_trip(client, db, seeded_user):
     row = await db.scalar(select(AuditLog).where(
         AuditLog.entity_type == "status_rule", AuditLog.action == "create"))
     assert row is not None and row.entity_id == created["id"]
+
+
+async def test_create_invalidates_engine_cache(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    _prime_cache()
+    resp = await client.post("/status-rules", headers=hdrs, json=_body())
+    assert resp.status_code == 201, resp.text
+    assert engine._cache == {}
 
 
 async def test_create_rejects_bad_trigger_status(client, db, seeded_user):
@@ -128,6 +142,18 @@ async def test_put_replaces_children(client, db, seeded_user):
     assert remaining_actions[0].action_type == "set_container_status"
 
 
+async def test_put_invalidates_engine_cache(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/status-rules", headers=hdrs, json=_body())
+    rule_id = resp.json()["id"]
+
+    _prime_cache()
+    resp = await client.put(f"/status-rules/{rule_id}", headers=hdrs,
+                            json=_body())
+    assert resp.status_code == 200, resp.text
+    assert engine._cache == {}
+
+
 async def test_patch_toggles_enabled(client, db, seeded_user):
     hdrs = await login_admin(client, db, seeded_user)
     resp = await client.post("/status-rules", headers=hdrs, json=_body())
@@ -144,6 +170,18 @@ async def test_patch_toggles_enabled(client, db, seeded_user):
     row = await db.scalar(select(AuditLog).where(
         AuditLog.entity_type == "status_rule", AuditLog.action == "toggle"))
     assert row is not None and row.entity_id == rule_id
+
+
+async def test_patch_toggle_invalidates_engine_cache(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/status-rules", headers=hdrs, json=_body())
+    rule_id = resp.json()["id"]
+
+    _prime_cache()
+    resp = await client.patch(f"/status-rules/{rule_id}", headers=hdrs,
+                              json={"enabled": False})
+    assert resp.status_code == 200, resp.text
+    assert engine._cache == {}
 
 
 async def test_delete_removes_rule(client, db, seeded_user):
@@ -163,6 +201,17 @@ async def test_delete_removes_rule(client, db, seeded_user):
     row = await db.scalar(select(AuditLog).where(
         AuditLog.entity_type == "status_rule", AuditLog.action == "delete"))
     assert row is not None and row.entity_id == rule_id
+
+
+async def test_delete_invalidates_engine_cache(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/status-rules", headers=hdrs, json=_body())
+    rule_id = resp.json()["id"]
+
+    _prime_cache()
+    resp = await client.delete(f"/status-rules/{rule_id}", headers=hdrs)
+    assert resp.status_code == 204
+    assert engine._cache == {}
 
 
 async def test_permission_denied_without_grant(client, db, seeded_user):
