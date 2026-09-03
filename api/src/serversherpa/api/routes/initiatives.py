@@ -933,6 +933,43 @@ async def cancel_move_asset_import_job(
     return job
 
 
+@router.post("/assets/import-jobs/{job_id}/reprocess",
+             response_model=ImportJobOut, status_code=201)
+async def reprocess_move_asset_import_job(
+    job_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> ImportJob:
+    """Re-run ONLY the rows the parent flagged for review, as a fresh
+    child job over the same stored file — full validate -> commit loop.
+    The parent is never mutated; reprocessing twice makes two children."""
+    parent = await _get_import_job(db, job_id)
+    if parent.status != "completed":
+        raise _err(409, "job_not_ready")
+    details = (parent.results or {}).get("details") or []
+    review_rows = sorted(d["row"] for d in details
+                         if d.get("status") == "review")
+    if not review_rows:
+        raise _err(409, "no_review_rows")
+    child = ImportJob(
+        kind=parent.kind, initiative_id=parent.initiative_id,
+        created_by=actor.person.id, filename=parent.filename,
+        file_key=parent.file_key,
+        options={**(parent.options or {}),
+                 "only_rows": review_rows,
+                 "reprocess_of": str(parent.id)},
+        phase="validate", status="queued")
+    db.add(child)
+    await db.flush()
+    audit(db, actor_id=actor.person.id, entity_type="initiative",
+          entity_id=str(parent.initiative_id), action="asset_import_reprocess",
+          changes={"job_id": {"from": None, "to": str(child.id)},
+                   "reprocess_of": str(parent.id),
+                   "only_rows": len(review_rows)})
+    await db.commit()
+    return child
+
+
 @router.get("/assets/import-template")
 async def move_asset_import_template(
     format: str = "csv",
