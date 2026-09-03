@@ -14,7 +14,7 @@ _ALL = ["dashboard", "users", "workers", "clients", "partners",
         "status_rules", "scanning_hardware", "labels", "time", "notifications", "ai"]
 
 DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
-    "developer":   {r: FULL if r != "ai" else ("use",) for r in _ALL},
+    "developer":   {r: FULL if r != "ai" else ("view",) for r in _ALL},
     "founder":     {r: FULL for r in _ALL if r != "devtools" and r != "ai"},
     "super_admin": {r: FULL for r in _ALL if r != "devtools" and r != "ai"},
     "admin": {"dashboard": ("view",), "users": FULL, "workers": FULL,
@@ -24,7 +24,7 @@ DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
               "asset_models": FULL, "containers": FULL, "initiatives": FULL,
               "scans": ("view", "change", "delete"), "status_rules": FULL,
               "scanning_hardware": FULL, "labels": FULL, "time": FULL,
-              "notifications": FULL, "ai": ("use",)},
+              "notifications": FULL, "ai": ("view",)},
     "staff": {"dashboard": ("view",), "users": ("view", "add", "change"),
               "workers": FULL, "clients": FULL, "partners": FULL,
               "attachments": FULL, "settings": ("view",), "access": ("view",),

@@ -3,7 +3,7 @@ knows about. Deploys introduce resources; the DB stores only grants."""
 
 from dataclasses import dataclass, field
 
-ACTIONS: tuple[str, ...] = ("view", "add", "change", "delete", "use")
+ACTIONS: tuple[str, ...] = ("view", "add", "change", "delete")
 
 
 @dataclass(frozen=True)
@@ -89,7 +89,9 @@ _RESOURCES = [
     Resource("audit", "Audit log", routes=("/audit",)),
     Resource("devtools", "Developer tools", developer_only=True),
     Resource("notifications", "Notifications", routes=("/system/notifications",)),
-    Resource("ai", "AI assistant", routes=("/ai/chat",)),
+    # /ai/chat is a backend API endpoint, not a frontend page route (unlike
+    # the routes= entries above), so it's left out of the route map.
+    Resource("ai", "AI assistant"),
 ]
 
 REGISTRY: dict[str, Resource] = {r.id: r for r in _RESOURCES}

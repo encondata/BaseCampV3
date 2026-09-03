@@ -25,8 +25,11 @@ router = APIRouter(prefix="/ai", tags=["ai"])
 MAX_ROUNDS = 5
 MAX_MESSAGES = 20
 FAIL_REPLY = "Sorry - I couldn't finish that request. Try rephrasing."
-_OFFLINE = HTTPException(status_code=503, detail={
-    "code": "ai_offline", "message": "AI assistant is offline."})
+
+
+def _offline() -> HTTPException:
+    return HTTPException(status_code=503, detail={
+        "code": "ai_offline", "message": "AI assistant is offline."})
 
 
 class AiChatMessage(BaseModel):
@@ -59,11 +62,11 @@ def _assistant_msg(turn: AiTurn) -> dict:
 async def ai_chat(
     payload: AiChatIn,
     db: DbSession,
-    actor: AuthContext = require_permission("ai", "use"),
+    actor: AuthContext = require_permission("ai", "view"),
 ) -> AiChatOut:
     ai = ai_client_mod.get_client()
     if ai is None:
-        raise _OFFLINE
+        raise _offline()
     history = [m.model_dump() for m in payload.messages[-MAX_MESSAGES:]]
     convo: list[dict] = [{"role": "system",
                           "content": SYSTEM_PROMPT}] + history
@@ -74,7 +77,7 @@ async def ai_chat(
             try:
                 turn = await ai.chat(convo, TOOLS)
             except AiUnavailableError:
-                raise _OFFLINE from None
+                raise _offline() from None
             except AiProtocolError:
                 if retried:
                     return AiChatOut(reply=FAIL_REPLY, navigate=navigate)
