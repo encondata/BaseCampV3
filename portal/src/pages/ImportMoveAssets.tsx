@@ -571,6 +571,15 @@ export default function ImportMoveAssets() {
                                 onClick={() => void run(() => commitImportJob(job.id))}>
                           {busy ? 'Importing…' : `Import ${committable} rows`}
                         </button>
+                        {counts.review > 0 && can('initiatives', 'change') && (
+                          <button className="mini-btn" type="button" disabled={busy}
+                                  onClick={() => {
+                                    setFixedTexts(new Set());
+                                    void run(() => reprocessImportJob(job.id));
+                                  }}>
+                            {busy ? 'Reprocessing…' : `Reprocess ${counts.review} flagged`}
+                          </button>
+                        )}
                         {skippable > 0 && (
                           <span className="page-hint">
                             Review and error rows will be skipped.
