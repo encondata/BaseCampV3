@@ -160,12 +160,20 @@ async def status_provenance(
         if scan.site_id is not None:
             site_name = await db.scalar(
                 select(Site.name).where(Site.id == scan.site_id))
+        # operator = who ran the scanner — for a manual portal edit, the
+        # signed-in person who changed the status
+        actor_name = None
+        if scan.operator_id is not None:
+            actor_name = await db.scalar(
+                select(Person.first_name + " " + Person.last_name)
+                .where(Person.id == scan.operator_id))
         return StatusProvenanceOut(
             status=status, changed_at=scan.scanned_at, source="scan",
             scan_type=scan.scan_type,
             scan_type_label=st.label if st else scan.scan_type,
             scan_type_color=st.color if st else None,
-            device_id=scan.device_id or None, site_name=site_name)
+            device_id=scan.device_id or None, site_name=site_name,
+            actor_name=actor_name)
 
     if edit_at is not None:
         actor_name = None

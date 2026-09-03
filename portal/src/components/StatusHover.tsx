@@ -116,6 +116,7 @@ export default function StatusHover({ entityType, entityId, status, children }: 
                       <span className="sh-kind">{card.data.scan_type_label ?? 'Scan'} scan</span>
                       {card.data.device_id && <> · {card.data.device_id}</>}
                       {card.data.site_name && <> · {card.data.site_name}</>}
+                      {card.data.actor_name && <> · by <span className="sh-kind">{card.data.actor_name}</span></>}
                     </>
                   ) : (
                     <>Edited{card.data.actor_name ? <> by <span className="sh-kind">{card.data.actor_name}</span></> : ''}</>

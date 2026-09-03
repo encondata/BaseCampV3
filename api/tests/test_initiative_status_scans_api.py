@@ -122,3 +122,4 @@ async def test_provenance_reports_the_manual_scan(client, db, seeded_user):
     assert body["source"] == "scan"
     assert body["scan_type"] == "manual"
     assert body["device_id"] == "portal"
+    assert body["actor_name"] == "Alice Anderson"   # the signed-in editor
