@@ -92,3 +92,65 @@ async def test_status_hides_banner_when_disabled_and_reports_pause(client, db, s
     status = (await client.get("/system/status")).json()
     assert status["banner"] is None
     assert status["workers_paused"] is True
+
+
+STATUS_PAYLOAD = {
+    "record_type": "site", "key": "mothballed", "label": "Mothballed",
+    "description": "Shut down, retained.", "color": "#8e44ad", "sort_order": 5,
+}
+
+
+async def _freeze(db, client, message="Cutover in progress"):
+    hdrs = await _admin(db, client)
+    resp = await client.put("/system/admin", headers=hdrs,
+                            json={"read_only": True, "read_only_message": message})
+    assert resp.status_code == 200, resp.text
+    return hdrs
+
+
+async def test_read_only_blocks_non_developer_writes(client, db, seeded_user):
+    sa = await _freeze(db, client)
+    resp = await client.post("/status-values", headers=sa, json=STATUS_PAYLOAD)
+    assert resp.status_code == 423, resp.text
+    assert resp.json()["detail"] == {"code": "read_only_mode",
+                                     "message": "Cutover in progress"}
+    # reads are untouched (record_type=site follows sites:view, which
+    # super_admin holds; the unfiltered listing is devtools-gated and
+    # super_admin can never see it, freeze or no freeze)
+    assert (await client.get("/status-values?record_type=site",
+                             headers=sa)).status_code == 200
+
+
+async def test_read_only_exempts_developers(client, db, seeded_user):
+    await _freeze(db, client)
+    dev = await _make(db, client, "developer", "dev@test.example.com")
+    resp = await client.post("/status-values", headers=dev, json=STATUS_PAYLOAD)
+    assert resp.status_code == 201, resp.text
+
+
+async def test_read_only_allowlists_auth_and_the_toggle(client, db, seeded_user):
+    sa = await _freeze(db, client)
+    # the admin who froze the portal can always lift it
+    resp = await client.put("/system/admin", headers=sa, json={"read_only": False})
+    assert resp.status_code == 200
+    # ...and writes flow again (status-values is devtools-gated, so a
+    # developer is the actor that can actually reach 201 here)
+    dev = await _make(db, client, "developer", "dev2@test.example.com")
+    resp = await client.post("/status-values", headers=dev, json=STATUS_PAYLOAD)
+    assert resp.status_code == 201
+    # freeze again, reusing the same admin (calling _freeze again would
+    # re-create sa@test.example.com and trip the email-uniqueness constraint)
+    resp = await client.put("/system/admin", headers=sa, json={
+        "read_only": True, "read_only_message": "Cutover in progress"})
+    assert resp.status_code == 200
+    # auth routes are never frozen (logout is a POST)
+    resp = await client.post("/auth/logout", headers=sa)
+    assert resp.status_code != 423
+
+
+async def test_read_only_off_is_transparent(client, db, seeded_user):
+    # baseline: with read_only untouched (default off), a developer's
+    # ordinary write is unaffected by the enforce_read_only dependency
+    dev = await _make(db, client, "developer", "dev5@test.example.com")
+    resp = await client.post("/status-values", headers=dev, json=STATUS_PAYLOAD)
+    assert resp.status_code == 201
