@@ -1,6 +1,8 @@
 """System surface: process registry (super_admin+) and per-process logs
 (developer-only): paged reads, a 1 s-tailing WebSocket stream, and an
-audited clear. Config endpoints arrive with Plan 2."""
+audited clear. Also: logging/env config, and the admin controls
+(read-only maintenance mode, worker pause, broadcast banner) — a public
+status endpoint plus a settings:change-gated get/put."""
 
 import asyncio
 import contextlib
@@ -17,13 +19,15 @@ from serversherpa.api.deps import (
     AuthContext, DbSession, authenticate_token, require_permission,
 )
 from serversherpa.api.schemas import (
-    LogEntryOut, LogPageOut, SystemProcessOut,
+    AdminConfigIn, AdminConfigOut, LogEntryOut, LogPageOut, SystemProcessOut,
+    SystemStatusOut,
 )
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     AuthSession, LogEntry, SystemConfig, SystemProcess,
 )
 from serversherpa.services.audit import audit
+from serversherpa.system.admin_config import read_admin_config
 from serversherpa.system.config_store import read_section
 from serversherpa.system.forwarders import (
     send_loki, send_syslog, transport_configured,
@@ -76,6 +80,64 @@ async def list_processes(
             uptime_seconds=uptime, meta=p.meta))
     out.sort(key=lambda p: (_KIND_ORDER.get(p.kind, 9), p.name))
     return out
+
+
+# ── admin controls (read-only mode / worker pause / broadcast banner) ──
+
+def _status_from(cfg: dict) -> SystemStatusOut:
+    banner = cfg["banner_message"].strip() if cfg["banner_enabled"] else ""
+    return SystemStatusOut(
+        read_only=cfg["read_only"],
+        read_only_message=cfg["read_only_message"],
+        workers_paused=bool(cfg["read_only"] and cfg["pause_workers"]),
+        banner=banner or None)
+
+
+@router.get("/status", response_model=SystemStatusOut)
+async def system_status(db: DbSession) -> SystemStatusOut:
+    """Public: the login page shows banners before anyone signs in."""
+    return _status_from(await read_admin_config(db))
+
+
+@router.get("/admin", response_model=AdminConfigOut)
+async def get_admin_config(
+    db: DbSession,
+    actor: AuthContext = require_permission("settings", "change"),
+) -> AdminConfigOut:
+    return AdminConfigOut(**await read_admin_config(db))
+
+
+@router.put("/admin", response_model=AdminConfigOut)
+async def put_admin_config(
+    body: AdminConfigIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("settings", "change"),
+) -> AdminConfigOut:
+    stored = await read_admin_config(db)
+    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items()
+             if v is not None}
+    for key in ("read_only_message", "banner_message"):
+        if key in patch:
+            patch[key] = patch[key].strip()
+    data = {**stored, **patch}
+    if data["banner_enabled"] and not data["banner_message"]:
+        raise _err(422, "banner_message_required")
+
+    row = await db.get(SystemConfig, "admin")
+    if row is None:
+        row = SystemConfig(section="admin")
+        db.add(row)
+    row.data = data
+    row.updated_at = datetime.now(UTC)
+    row.updated_by = actor.person.id
+    changes = {key: {"from": stored.get(key), "to": data[key]}
+               for key in data if stored.get(key) != data[key]}
+    if changes:
+        audit(db, actor_id=actor.person.id, entity_type="system",
+              entity_id="admin", action="admin_config_update",
+              changes=changes)
+    await db.commit()
+    return AdminConfigOut(**data)
 
 
 async def _no_probe(db: DbSession, name: str) -> None:
