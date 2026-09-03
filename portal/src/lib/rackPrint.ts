@@ -20,10 +20,11 @@ const SHEET_CSS = `
   body { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace;
          color: #111827; background: #fff; width: 7.2in; }
   h1 { font-size: 14pt; margin: 0 0 0.15in; font-weight: 600; }
-  .sheet { display: flex; gap: 0.25in; align-items: flex-start; }
+  .sheet { display: flex; gap: 0.25in; align-items: stretch; }
   .elevations { display: flex; gap: 0.2in; height: 9.2in; flex: none; }
   .elevations svg { height: 100%; width: auto; }
-  .list { flex: 1; font-size: 8pt; min-width: 0; }
+  .list { flex: 1; font-size: 8pt; min-width: 0;
+          display: flex; flex-direction: column; justify-content: flex-end; }
   .group { font-size: 7pt; letter-spacing: 0.08em; color: #6b7280;
            margin: 0.08in 0 0.03in; font-weight: 600; }
   .row { display: grid; grid-template-columns: 10px 1fr auto auto; gap: 6px;

@@ -565,7 +565,7 @@ describe('deviceListRows', () => {
     const rows = deviceListRows(
       [block({ ru: 40, height: 3, makeModel: 'Dell R740' }),
        block({ id: 'x', ru: 1, height: 1 })], []);
-    expect(rows[0].ruText).toBe('40–42');
+    expect(rows[0].ruText).toBe('40..42');
     expect(rows[0].makeModel).toBe('Dell R740');
     expect(rows[1].ruText).toBe('1');
     expect(rows[1].makeModel).toBe('—');

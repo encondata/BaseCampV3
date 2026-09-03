@@ -90,7 +90,7 @@ the elevations inside `.rack-elevations`' flex row.
 - One row per REAL device (ghosts excluded), sorted **top of rack first**:
   descending by top RU (`ru + height - 1`), ties by name.
 - Columns: category swatch (10px square, category color, neutral when
-  none), Name, Model (`makeModel` or '—'), RU (`40–42` range for
+  none), Name, Model (`makeModel` or '—'), RU (`40..42` range for
   multi-U, single number for 1U).
 - When REAR renders, the list groups under FRONT / REAR subheadings
   (each group top-down); otherwise no subheading.

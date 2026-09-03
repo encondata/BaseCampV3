@@ -405,7 +405,7 @@ describe('RackViewModal (render smoke)', () => {
     ]} />);
     const cells = [...document.querySelectorAll('.rack-list-name')].map((n) => n.textContent);
     expect(cells).toEqual(['top-dev', 'w1-hs4-m0407']);
-    expect(document.querySelector('.rack-list-ru')!.textContent).toBe('40–41');
+    expect(document.querySelector('.rack-list-ru')!.textContent).toBe('40..41');
     expect(screen.getByText('Dell R740')).toBeTruthy();
     // no rear devices → no group subheads
     expect(document.querySelector('.rack-list-group')).toBeNull();

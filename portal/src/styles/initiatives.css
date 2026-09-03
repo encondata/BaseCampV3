@@ -487,7 +487,8 @@
 .rack-device-list {
   min-width: 240px; max-width: 340px; flex: 1;
   font-family: var(--font-mono); font-size: 12px;
-  align-self: flex-start; position: sticky; top: 0;
+  align-self: stretch; display: flex; flex-direction: column;
+  justify-content: flex-end;
 }
 .rack-list-group {
   font-size: 10.5px; letter-spacing: 0.08em; color: #6b7280;

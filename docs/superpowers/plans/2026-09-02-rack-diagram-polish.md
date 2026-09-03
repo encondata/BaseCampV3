@@ -222,7 +222,7 @@ describe('deviceListRows', () => {
     const rows = deviceListRows(
       [block({ ru: 40, height: 3, makeModel: 'Dell R740' }),
        block({ id: 'x', ru: 1, height: 1 })], []);
-    expect(rows[0].ruText).toBe('40–42');
+    expect(rows[0].ruText).toBe('40..42');
     expect(rows[0].makeModel).toBe('Dell R740');
     expect(rows[1].ruText).toBe('1');
     expect(rows[1].makeModel).toBe('—');
@@ -288,7 +288,7 @@ export interface DeviceListRow {
 
 /** Rack-order device list rows: each elevation's REAL blocks sorted top
  *  of rack first (descending top RU, ties by name), FRONT group before
- *  REAR. RU text is a range ("40–42") for multi-U devices. */
+ *  REAR. RU text is a dot-range ("40..42") for multi-U devices. */
 export function deviceListRows(
   front: RackBlock[], rear: RackBlock[],
 ): DeviceListRow[] {
@@ -299,7 +299,7 @@ export function deviceListRows(
       .map((b) => ({
         id: b.id, name: b.label,
         makeModel: b.makeModel || '—',
-        ruText: b.height > 1 ? `${b.ru}–${b.ru + b.height - 1}` : String(b.ru),
+        ruText: b.height > 1 ? `${b.ru}..${b.ru + b.height - 1}` : String(b.ru),
         categoryColor: b.categoryColor, group,
       }));
   return [...toRows(front, 'FRONT'), ...toRows(rear, 'REAR')];
@@ -471,7 +471,7 @@ it('lists devices top-down beside the elevations', () => {
   ]} />);
   const cells = [...document.querySelectorAll('.rack-list-name')].map((n) => n.textContent);
   expect(cells).toEqual(['top-dev', 'w1-hs4-m0407']);
-  expect(document.querySelector('.rack-list-ru')!.textContent).toBe('40–41');
+  expect(document.querySelector('.rack-list-ru')!.textContent).toBe('40..41');
   expect(screen.getByText('Dell R740')).toBeTruthy();
   // no rear devices → no group subheads
   expect(document.querySelector('.rack-list-group')).toBeNull();
@@ -636,7 +636,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildRackPrintHtml } from './rackPrint';
 
-const row = { id: 'a', name: 'top-dev', makeModel: 'Dell R740', ruText: '40–41',
+const row = { id: 'a', name: 'top-dev', makeModel: 'Dell R740', ruText: '40..41',
   categoryColor: '#1668a7', group: 'FRONT' as const };
 
 describe('buildRackPrintHtml', () => {
@@ -652,7 +652,7 @@ describe('buildRackPrintHtml', () => {
     expect(html).toContain('data-x="2"');
     expect(html).toContain('top-dev');
     expect(html).toContain('Dell R740');
-    expect(html).toContain('40–41');
+    expect(html).toContain('40..41');
     expect(html).toContain('Server');
     expect(html).toContain('@page { margin: 0.5in; }');
     expect(html).toContain('window.print()');

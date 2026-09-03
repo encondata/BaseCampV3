@@ -517,7 +517,8 @@ export interface DeviceListRow {
 
 /** Rack-order device list rows: each elevation's REAL blocks sorted top
  *  of rack first (descending top RU, ties by name), FRONT group before
- *  REAR. RU text is a range ("40–42") for multi-U devices. */
+ *  REAR. RU text is a dot-range ("40..42") for multi-U devices, per the
+ *  rack/RU convention (a device at RU 4-5 is "4..5"). */
 export function deviceListRows(
   front: RackBlock[], rear: RackBlock[],
 ): DeviceListRow[] {
@@ -528,7 +529,7 @@ export function deviceListRows(
       .map((b) => ({
         id: b.id, name: b.label,
         makeModel: b.makeModel || '—',
-        ruText: b.height > 1 ? `${b.ru}–${b.ru + b.height - 1}` : String(b.ru),
+        ruText: b.height > 1 ? `${b.ru}..${b.ru + b.height - 1}` : String(b.ru),
         categoryColor: b.categoryColor, group,
       }));
   return [...toRows(front, 'FRONT'), ...toRows(rear, 'REAR')];
