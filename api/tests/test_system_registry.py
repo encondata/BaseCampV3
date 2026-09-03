@@ -24,6 +24,33 @@ def test_derive_status():
     assert derive_status(fresh, NOW, NOW) == "stopped"
 
 
+def test_derive_status_paused():
+    fresh = NOW - timedelta(seconds=3)
+    stale = NOW - timedelta(seconds=60)
+    assert derive_status(fresh, None, NOW, meta={"paused": True}) == "paused"
+    assert derive_status(fresh, None, NOW, meta={"paused": False}) == "running"
+    assert derive_status(fresh, None, NOW, meta={}) == "running"
+    # a stale or stopped process is never "paused"
+    assert derive_status(stale, None, NOW, meta={"paused": True}) == "failed"
+    assert derive_status(fresh, NOW, NOW, meta={"paused": True}) == "stopped"
+
+
+async def test_heartbeat_writes_meta_from_callable(db):
+    flag = {"paused": False}
+    task = asyncio.create_task(heartbeat_loop(
+        "testproc", "worker", interval=0.05,
+        meta_fn=lambda: {"paused": flag["paused"]}))
+    await asyncio.sleep(0.15)
+    row = await db.get(SystemProcess, "testproc")
+    assert row.meta == {"paused": False}
+    flag["paused"] = True
+    await asyncio.sleep(0.15)
+    await db.refresh(row)
+    assert row.meta == {"paused": True}
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_heartbeat_loop_upserts_and_marks_stop(db):
     task = asyncio.create_task(
         heartbeat_loop("testproc", "worker", interval=0.05))

@@ -1,8 +1,13 @@
 """Admin controls: public status, gated admin config get/put, audit."""
 
+import asyncio
+
 from sqlalchemy import select
 
+from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import AuditLog, SystemConfig
+from serversherpa.scans import worker as scan_worker
+from serversherpa.system.admin_config import workers_paused
 
 from tests.test_status_values_write import _make
 
@@ -161,3 +166,34 @@ async def test_read_only_allowlists_auth_and_the_toggle(client, db, seeded_user)
     # auth routes are never frozen (logout is a POST)
     resp = await client.post("/auth/logout", headers=sa)
     assert resp.status_code != 423
+
+
+async def test_workers_paused_helper(client, db, seeded_user):
+    assert await workers_paused(get_sessionmaker()) is False
+    hdrs = await _admin(db, client)
+    await client.put("/system/admin", headers=hdrs,
+                     json={"read_only": True, "pause_workers": True})
+    assert await workers_paused(get_sessionmaker()) is True
+
+
+async def test_scan_worker_idles_while_paused(client, db, seeded_user, monkeypatch):
+    calls: list[int] = []
+
+    async def fake_run_once(maker):
+        calls.append(1)
+        return False
+
+    monkeypatch.setattr(scan_worker, "run_once", fake_run_once)
+    monkeypatch.setattr("serversherpa.system.db_logging.install", lambda name: None)
+    hdrs = await _admin(db, client)
+    await client.put("/system/admin", headers=hdrs,
+                     json={"read_only": True, "pause_workers": True})
+
+    task = asyncio.create_task(scan_worker.run_forever(poll_seconds=0.05))
+    await asyncio.sleep(0.3)
+    assert calls == []                                   # paused: no work
+    await client.put("/system/admin", headers=hdrs, json={"pause_workers": False})
+    await asyncio.sleep(0.3)
+    assert len(calls) >= 1                               # resumed within a poll
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)

@@ -69,9 +69,9 @@ async def list_processes(
     rows = (await db.scalars(select(SystemProcess))).all()
     out = []
     for p in rows:
-        status = derive_status(p.heartbeat_at, p.stopped_at, now)
+        status = derive_status(p.heartbeat_at, p.stopped_at, now, meta=p.meta)
         uptime = None
-        if status == "running" and p.started_at is not None:
+        if status in ("running", "paused") and p.started_at is not None:
             uptime = int((now - p.started_at).total_seconds())
         out.append(SystemProcessOut(
             name=p.name, kind=p.kind, status=status, pid=p.pid,

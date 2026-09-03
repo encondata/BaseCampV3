@@ -1527,7 +1527,7 @@ class ImportJobOut(BaseModel):
 class SystemProcessOut(BaseModel):
     name: str
     kind: str
-    status: str                      # derived: running | stopped | failed
+    status: str                      # derived: running | paused | stopped | failed
     pid: int | None = None
     hostname: str
     started_at: datetime | None = None

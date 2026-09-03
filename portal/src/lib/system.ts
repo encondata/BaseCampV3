@@ -3,6 +3,7 @@
 export function statusMeta(status: string): { label: string; className: string } {
   switch (status) {
     case 'running': return { label: 'Running', className: 'sys-dot-running' };
+    case 'paused': return { label: 'Paused', className: 'sys-dot-paused' };
     case 'failed': return { label: 'Failed', className: 'sys-dot-failed' };
     case 'stopped': return { label: 'Stopped', className: 'sys-dot-stopped' };
     default: return { label: status, className: 'sys-dot-stopped' };
