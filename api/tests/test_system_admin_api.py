@@ -70,6 +70,25 @@ async def test_put_merges_trims_and_audits(client, db, seeded_user):
                       "workers_paused": False, "banner": "Hello all"}
 
 
+async def test_status_hides_read_only_message_until_mode_is_on(client, db, seeded_user):
+    hdrs = await _admin(db, client)
+    resp = await client.put("/system/admin", headers=hdrs, json={
+        "read_only_message": "Cutover soon", "read_only": False,
+    })
+    assert resp.status_code == 200, resp.text
+    # staged but not live: the public status blanks it, the admin view
+    # still shows the draft so the editor doesn't lose it
+    status = (await client.get("/system/status")).json()
+    assert status["read_only_message"] == ""
+    admin = (await client.get("/system/admin", headers=hdrs)).json()
+    assert admin["read_only_message"] == "Cutover soon"
+
+    resp = await client.put("/system/admin", headers=hdrs, json={"read_only": True})
+    assert resp.status_code == 200, resp.text
+    status = (await client.get("/system/status")).json()
+    assert status["read_only_message"] == "Cutover soon"
+
+
 async def test_put_rejects_blank_banner_and_unknown_fields(client, db, seeded_user):
     hdrs = await _admin(db, client)
     resp = await client.put("/system/admin", headers=hdrs,
@@ -163,7 +182,16 @@ async def test_read_only_allowlists_auth_and_the_toggle(client, db, seeded_user)
     # would re-create sa@test.example.com and trip the email-uniqueness
     # constraint)
     await _freeze(db, client, hdrs=sa)
-    # auth routes are never frozen (logout is a POST)
+    # allowlisted auth routes are never frozen: preferences and revoking
+    # your own session are sign-in/out housekeeping
+    resp = await client.put("/auth/me/preferences", headers=sa, json={})
+    assert resp.status_code != 423
+    # but a profile edit is an ordinary content write and freezes like
+    # anything else under /auth/me
+    resp = await client.patch("/auth/me/profile", headers=sa, json={})
+    assert resp.status_code == 423
+    assert resp.json()["detail"]["code"] == "read_only_mode"
+    # logout itself is allowlisted too (checked last: it ends the session)
     resp = await client.post("/auth/logout", headers=sa)
     assert resp.status_code != 423
 

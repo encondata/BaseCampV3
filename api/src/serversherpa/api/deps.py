@@ -77,10 +77,15 @@ async def authenticate_token(db: AsyncSession, token: str) -> AuthContext:
 
 
 MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-# Never frozen: sign-in/out/refresh/password/preferences, and the admin
-# toggle itself — whoever could turn read-only on can always turn it off.
-READ_ONLY_EXEMPT_PREFIXES = ("/auth/",)
-READ_ONLY_EXEMPT_PATHS = frozenset({"/system/admin"})
+# Never frozen: sign-in/out/refresh/password/preferences/session revocation,
+# and the admin toggle itself — whoever could turn read-only on can always
+# turn it off. Everything else under /auth/me (profile edits) freezes like
+# any other write.
+READ_ONLY_EXEMPT_PATHS = frozenset({
+    "/auth/login", "/auth/refresh", "/auth/logout",
+    "/auth/me/preferences", "/auth/me/password", "/system/admin",
+})
+READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/",)
 
 
 def _read_only_exempt(path: str) -> bool:

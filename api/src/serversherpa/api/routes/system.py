@@ -88,7 +88,7 @@ def _status_from(cfg: dict) -> SystemStatusOut:
     banner = cfg["banner_message"].strip() if cfg["banner_enabled"] else ""
     return SystemStatusOut(
         read_only=cfg["read_only"],
-        read_only_message=cfg["read_only_message"],
+        read_only_message=cfg["read_only_message"] if cfg["read_only"] else "",
         workers_paused=bool(cfg["read_only"] and cfg["pause_workers"]),
         banner=banner or None)
 
