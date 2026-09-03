@@ -1985,6 +1985,9 @@ export interface ImportRowDetail {
   serial_generated?: boolean;
   match_method?: string;
   make_model_final?: string;
+  make_model?: string;
+  suggested_make?: string;
+  suggested_model?: string;
 }
 
 export interface ImportJobResults {
@@ -2036,6 +2039,13 @@ export async function getImportJob(jobId: string): Promise<ImportJobOut> {
 export async function commitImportJob(jobId: string): Promise<ImportJobOut> {
   const resp = await apiFetch(
     `/initiatives/assets/import-jobs/${jobId}/commit`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function reprocessImportJob(jobId: string): Promise<ImportJobOut> {
+  const resp = await apiFetch(
+    `/initiatives/assets/import-jobs/${jobId}/reprocess`, { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

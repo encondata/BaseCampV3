@@ -63,6 +63,7 @@ export const IMPORT_ERRORS: Record<string, string> = {
   job_not_ready: 'Validation must finish before the import can run.',
   job_already_finished: 'This import has already finished.',
   unknown_format: 'Unknown template format.',
+  no_review_rows: 'Nothing is flagged for review.',
 };
 
 // ApiError stores the FastAPI detail code directly on `.code` (api.ts:141,
@@ -74,4 +75,50 @@ export function importErrorMessage(e: unknown): string {
     return IMPORT_ERRORS[e.code] ?? 'Something went wrong — try again.';
   }
   return 'Something went wrong — try again.';
+}
+
+// ── review-row make/model helpers ────────────────────────────────────
+// Rows the worker flags for review carry the unmatched make/model text
+// either as a structured field or embedded in the row's message; these
+// helpers surface that text and suggest a make/model split for the fix.
+
+const REVIEW_RE = /Make\/Model '(.+)' not found/;
+
+export function reviewMakeModel(d: ImportRowDetail): string | null {
+  if (d.make_model) return d.make_model;
+  const m = d.message?.match(REVIEW_RE);
+  return m ? m[1] : null;
+}
+
+export function suggestSplit(text: string): { make: string; model: string } {
+  const tokens = text.trim().split(/\s+/);
+  if (tokens.length === 1) return { make: tokens[0], model: tokens[0] };
+  let drops = 0;
+  while (tokens.length > 2 && drops < 2
+         && tokens[0].toLowerCase() === tokens[1].toLowerCase()) {
+    tokens.splice(1, 1);
+    drops += 1;
+  }
+  return { make: tokens[0], model: tokens.slice(1).join(' ') };
+}
+
+export function missingMakeModels(details: ImportRowDetail[]) {
+  const groups = new Map<string, { text: string; rows: number[];
+    make: string; model: string }>();
+  for (const d of details) {
+    if (d.status !== 'review') continue;
+    const text = reviewMakeModel(d);
+    if (!text) continue;
+    const key = text.toLowerCase();
+    const existing = groups.get(key);
+    if (existing) {
+      existing.rows.push(d.row);
+    } else {
+      const split = d.suggested_make && d.suggested_model
+        ? { make: d.suggested_make, model: d.suggested_model }
+        : suggestSplit(text);
+      groups.set(key, { text, rows: [d.row], ...split });
+    }
+  }
+  return [...groups.values()].map((g) => ({ ...g, rows: [...g.rows].sort((a, b) => a - b) }));
 }

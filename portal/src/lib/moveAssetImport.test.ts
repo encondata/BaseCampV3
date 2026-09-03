@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { ApiError, type ImportJobOut, type ImportRowDetail } from './api';
 import {
   countDetails, etaSeconds, importErrorMessage, jobIsActive,
-  jobProgressPct, rowsPerSecond,
+  jobProgressPct, missingMakeModels, reviewMakeModel, rowsPerSecond,
+  suggestSplit,
 } from './moveAssetImport';
 
 const detail = (status: ImportRowDetail['status']): ImportRowDetail => ({
@@ -79,4 +80,41 @@ describe('importErrorMessage', () => {
   it('falls back for unknown input', () => {
     expect(importErrorMessage(new Error('boom'))).toMatch(/wrong/i);
   });
+});
+
+const R = (over: Record<string, unknown>) => ({
+  row: 1, serial_number: 's', status: 'review',
+  message: "Make/Model 'X' not found — needs review",
+  match_method: 'review', serial_generated: false, ...over,
+});
+
+it('reviewMakeModel prefers the field, falls back to the message', () => {
+  expect(reviewMakeModel(R({ make_model: 'HPE DL380' }) as never)).toBe('HPE DL380');
+  expect(reviewMakeModel(R({
+    message: "Make/Model 'Dell Dell PowerEdge R720' not found — needs review",
+  }) as never)).toBe('Dell Dell PowerEdge R720');
+  expect(reviewMakeModel(R({ message: 'Serial missing' }) as never)).toBeNull();
+});
+
+it('suggestSplit strips doubled makes and splits make/model', () => {
+  expect(suggestSplit('Dell Dell PowerEdge R720'))
+    .toEqual({ make: 'Dell', model: 'PowerEdge R720' });
+  expect(suggestSplit('HPE DL380')).toEqual({ make: 'HPE', model: 'DL380' });
+  expect(suggestSplit('Arista')).toEqual({ make: 'Arista', model: 'Arista' });
+});
+
+it('missingMakeModels groups case-insensitively with row lists', () => {
+  const details = [
+    R({ row: 5, make_model: 'Dell Dell PowerEdge R720',
+        suggested_make: 'Dell', suggested_model: 'PowerEdge R720' }),
+    R({ row: 9, message: "Make/Model 'dell dell poweredge r720' not found — needs review" }),
+    R({ row: 12, make_model: 'HPE DL380' }),
+    R({ row: 2, status: 'created', message: 'ok' }),
+  ] as never[];
+  const groups = missingMakeModels(details);
+  expect(groups).toHaveLength(2);
+  expect(groups[0]).toMatchObject({
+    text: 'Dell Dell PowerEdge R720', rows: [5, 9],
+    make: 'Dell', model: 'PowerEdge R720' });
+  expect(groups[1]).toMatchObject({ text: 'HPE DL380', rows: [12] });
 });
