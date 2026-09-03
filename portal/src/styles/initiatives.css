@@ -439,6 +439,10 @@
   overflow-y: auto;
   display: flex;
   justify-content: center;
+  /* without this, .rack-elevations (a flex child) stretches to the 70vh
+     scrollport instead of growing with the rack, so the bottom-anchored
+     device list anchors to the scrollport bottom, not the rack's */
+  align-items: flex-start;
 }
 .rack-elevations {
   position: relative; /* anchors the hover tooltip's absolute positioning */
