@@ -136,12 +136,16 @@ export interface SessionData {
   password_min_length: number;
 }
 
+export const READ_ONLY_MESSAGE =
+  "The portal is in read-only maintenance mode — changes are disabled until it's lifted.";
+
 export class ApiError extends Error {
   // `detail` is the raw FastAPI error-detail object (e.g. { code, conflicts }
   // for the container-membership 409) — callers that need more than `code`
   // narrow it themselves, same as ContainerEditModal's mapError does.
-  constructor(public status: number, public code: string, public detail?: unknown) {
-    super(code);
+  constructor(public status: number, public code: string, public detail?: unknown,
+              message?: string) {
+    super(message ?? code);
   }
 }
 
@@ -154,6 +158,11 @@ async function errorFrom(resp: Response): Promise<ApiError> {
     code = body?.detail?.code ?? code;
   } catch {
     /* non-JSON error body */
+  }
+  if (code === 'read_only_mode') {
+    // the banner is the primary signal — make sure it appears at once
+    refreshSystemStatus();
+    return new ApiError(resp.status, code, detail, READ_ONLY_MESSAGE);
   }
   return new ApiError(resp.status, code, detail);
 }
@@ -169,6 +178,18 @@ const sessionEndedListeners = new Set<() => void>();
 export function onSessionEnded(listener: () => void): () => void {
   sessionEndedListeners.add(listener);
   return () => sessionEndedListeners.delete(listener);
+}
+
+// ── public system status refresh bus (banners) ──────────────────────
+const statusRefreshListeners = new Set<() => void>();
+
+export function onSystemStatusRefresh(listener: () => void): () => void {
+  statusRefreshListeners.add(listener);
+  return () => statusRefreshListeners.delete(listener);
+}
+
+export function refreshSystemStatus(): void {
+  statusRefreshListeners.forEach((fn) => fn());
 }
 
 function notifySessionEnded(): void {
@@ -2427,6 +2448,29 @@ export async function putEnvConfig(config: {
 
 export async function restartProcesses(): Promise<{ restarting: boolean }> {
   const resp = await apiFetch('/system/env/restart', { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+// ── system config: admin controls (read-only mode + broadcast banner) ──
+
+export interface AdminConfig {
+  read_only: boolean; read_only_message: string; pause_workers: boolean;
+  banner_enabled: boolean; banner_message: string;
+}
+
+export async function getAdminConfig(): Promise<AdminConfig> {
+  const resp = await apiFetch('/system/admin');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateAdminConfig(patch: Partial<AdminConfig>): Promise<AdminConfig> {
+  const resp = await apiFetch('/system/admin', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
