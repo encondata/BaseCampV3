@@ -15,8 +15,10 @@ _ALL = ["dashboard", "users", "workers", "clients", "partners",
 
 DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
     "developer":   {r: FULL if r != "ai" else ("view",) for r in _ALL},
-    "founder":     {r: FULL for r in _ALL if r != "devtools" and r != "ai"},
-    "super_admin": {r: FULL for r in _ALL if r != "devtools" and r != "ai"},
+    "founder":     {**{r: FULL for r in _ALL if r != "devtools" and r != "ai"},
+                    "ai": ("view",)},
+    "super_admin": {**{r: FULL for r in _ALL if r != "devtools" and r != "ai"},
+                    "ai": ("view",)},
     "admin": {"dashboard": ("view",), "users": FULL, "workers": FULL,
               "clients": FULL, "partners": FULL, "attachments": FULL,
               "settings": ("view", "change"), "access": ("view", "change"),

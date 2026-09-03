@@ -24,7 +24,20 @@ router = APIRouter(prefix="/ai", tags=["ai"])
 
 MAX_ROUNDS = 5
 MAX_MESSAGES = 20
+MAX_HISTORY_CHARS = 8000
 FAIL_REPLY = "Sorry - I couldn't finish that request. Try rephrasing."
+
+
+def _clamp_history(messages: list[dict]) -> list[dict]:
+    """Trim to the last MAX_MESSAGES, then drop OLDEST messages until the
+    total content length is within MAX_HISTORY_CHARS, always keeping at
+    least the newest message even if it alone exceeds the budget."""
+    kept = list(messages[-MAX_MESSAGES:])
+    total = sum(len(m["content"]) for m in kept)
+    while len(kept) > 1 and total > MAX_HISTORY_CHARS:
+        total -= len(kept[0]["content"])
+        kept.pop(0)
+    return kept
 
 
 def _offline() -> HTTPException:
@@ -67,7 +80,7 @@ async def ai_chat(
     ai = ai_client_mod.get_client()
     if ai is None:
         raise _offline()
-    history = [m.model_dump() for m in payload.messages[-MAX_MESSAGES:]]
+    history = _clamp_history([m.model_dump() for m in payload.messages])
     convo: list[dict] = [{"role": "system",
                           "content": SYSTEM_PROMPT}] + history
     navigate: NavigateOut | None = None
@@ -80,7 +93,10 @@ async def ai_chat(
                 raise _offline() from None
             except AiProtocolError:
                 if retried:
-                    return AiChatOut(reply=FAIL_REPLY, navigate=navigate)
+                    # a failure reply must never carry a navigate — even
+                    # one validated in an earlier round — or the portal
+                    # navigates and closes the panel, hiding this text.
+                    return AiChatOut(reply=FAIL_REPLY, navigate=None)
                 retried = True
                 convo.append({"role": "user", "content":
                               "Your last reply was malformed. Answer "
@@ -102,6 +118,7 @@ async def ai_chat(
                     result = await run_tool(call.name, call.args, db, actor)
                 convo.append({"role": "tool", "tool_call_id": call.id,
                               "content": json.dumps(result, default=str)})
-        return AiChatOut(reply=FAIL_REPLY, navigate=navigate)
+        # loop cap: same rule — a failure reply carries no navigate.
+        return AiChatOut(reply=FAIL_REPLY, navigate=None)
     finally:
         await ai.aclose()

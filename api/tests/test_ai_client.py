@@ -60,6 +60,21 @@ async def test_http_500_is_unavailable():
     await c.aclose()
 
 
+async def test_parts_list_content_is_joined():
+    async def handler(request):
+        return _ok({"choices": [{"message": {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "joined "},
+                {"type": "text", "text": "text"},
+                {"type": "image", "image_url": "http://example.test/x.png"},
+            ]}}]})
+    c = _client(handler)
+    turn = await c.chat([{"role": "user", "content": "hi"}], tools=[])
+    assert turn.text == "joined text"
+    await c.aclose()
+
+
 async def test_malformed_arguments_is_protocol_error():
     async def handler(request):
         return _ok({"choices": [{"message": {

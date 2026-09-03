@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import AiAssistant from './AiAssistant';
+import { ApiError } from '../lib/api';
 
 const aiChatRequest = vi.hoisted(() => vi.fn());
 vi.mock('../lib/api', async (orig) => ({
@@ -62,5 +63,26 @@ describe('AiAssistant', () => {
     await send('hello');
     await waitFor(() => expect(
       screen.getByText('AI assistant is offline.')).toBeDefined());
+  });
+
+  it('shows the read-only banner message when the portal is read-only', async () => {
+    // Shape matches errorFrom's read_only_mode branch in lib/api.ts:
+    // ApiError(status, code, detail, READ_ONLY_MESSAGE).
+    const READ_ONLY_MESSAGE =
+      "The portal is in read-only maintenance mode — changes are disabled until it's lifted.";
+    aiChatRequest.mockRejectedValueOnce(
+      new ApiError(403, 'read_only_mode', undefined, READ_ONLY_MESSAGE));
+    mount();
+    await send('hello');
+    await waitFor(() => expect(
+      screen.getByText(READ_ONLY_MESSAGE)).toBeDefined());
+  });
+
+  it('shows the generic error for any other failure', async () => {
+    aiChatRequest.mockRejectedValueOnce(new ApiError(500, 'unknown_error'));
+    mount();
+    await send('hello');
+    await waitFor(() => expect(
+      screen.getByText('Something went wrong — try again.')).toBeDefined());
   });
 });

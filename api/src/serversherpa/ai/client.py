@@ -64,9 +64,26 @@ class AiClient:
                     id=c.get("id") or f"call_{i}",
                     name=c["function"]["name"],
                     args=json.loads(c["function"]["arguments"] or "{}")))
-            return AiTurn(text=msg.get("content"), tool_calls=calls)
+            content = msg.get("content")
+            text = self._coerce_content(content)
+            return AiTurn(text=text, tool_calls=calls)
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise AiProtocolError(str(exc)) from exc
+
+    @staticmethod
+    def _coerce_content(content: object) -> str | None:
+        """Some OpenAI-compatible servers return `content` as a list of
+        part objects (e.g. [{"type": "text", "text": "..."}]) instead of
+        a plain string. Join the text parts; fall back to None for
+        anything else so it never lands un-coerced in AiTurn.text."""
+        if content is None or isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            joined = "".join(
+                part.get("text", "") for part in content
+                if isinstance(part, dict) and part.get("type") == "text")
+            return joined or None
+        return None
 
 
 def get_client() -> AiClient | None:

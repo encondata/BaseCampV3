@@ -1,4 +1,5 @@
-"""AI assistant: admin + developer roles gain ai:view.
+"""AI assistant: admin, developer, founder, and super_admin roles gain
+ai:view.
 
 Revision ID: 0045
 Revises: 0044
@@ -14,7 +15,7 @@ down_revision: str | None = "0044"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-ROLES = ("admin", "developer")
+ROLES = ("admin", "developer", "founder", "super_admin")
 
 
 def upgrade() -> None:

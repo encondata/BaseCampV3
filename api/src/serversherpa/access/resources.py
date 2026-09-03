@@ -91,6 +91,9 @@ _RESOURCES = [
     Resource("notifications", "Notifications", routes=("/system/notifications",)),
     # /ai/chat is a backend API endpoint, not a frontend page route (unlike
     # the routes= entries above), so it's left out of the route map.
+    # The AI tools' flat can()-based gate (see ai/tools.py) is safe only
+    # because this resource keeps the default visible_to = {"global"} — it
+    # has no scope-aware row filtering, so do not widen visible_to here.
     Resource("ai", "AI assistant"),
 ]
 

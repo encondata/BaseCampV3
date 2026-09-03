@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
+import { useAuth } from '../auth/AuthContext';
 import { apiFetch } from '../lib/api';
 import { avatarGradient, initials } from '../lib/format';
 import { useTopbar } from '../lib/topbar';
@@ -91,6 +92,7 @@ function isTyping(e: KeyboardEvent): boolean {
 }
 
 export default function Topbar() {
+  const { can } = useAuth();
   const { setPaletteOpen, searchRef } = useTopbar();
   const location = useLocation();
   const navigate = useNavigate();
@@ -315,22 +317,24 @@ export default function Topbar() {
       </div>
 
       <div className="tb-actions" ref={popRef}>
-        <div className="pop-wrap">
-          <button className="icon-btn ai-glow" title="AI assistant"
-                  onClick={() => setPop(pop === 'ai' ? null : 'ai')}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
-                 strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 3v2M12 19v2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M3 12h2M19 12h2M5.6 18.4 7 17M17 7l1.4-1.4" />
-              <circle cx="12" cy="12" r="4" />
-            </svg>
-          </button>
-          {pop === 'ai' && (
-            <div className="pop-menu pop-menu-ai">
-              <div className="pop-title">AI Assistant</div>
-              <AiAssistant onClose={() => setPop(null)} />
-            </div>
-          )}
-        </div>
+        {can('ai') && (
+          <div className="pop-wrap">
+            <button className="icon-btn ai-glow" title="AI assistant"
+                    onClick={() => setPop(pop === 'ai' ? null : 'ai')}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
+                   strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 3v2M12 19v2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M3 12h2M19 12h2M5.6 18.4 7 17M17 7l1.4-1.4" />
+                <circle cx="12" cy="12" r="4" />
+              </svg>
+            </button>
+            {pop === 'ai' && (
+              <div className="pop-menu pop-menu-ai">
+                <div className="pop-title">AI Assistant</div>
+                <AiAssistant onClose={() => setPop(null)} />
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="pop-wrap">
           <button className="icon-btn" title="Notifications"

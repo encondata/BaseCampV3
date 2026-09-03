@@ -3,7 +3,7 @@
 import { FormEvent, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { AiChatMessage, aiChatRequest } from '../lib/api';
+import { AiChatMessage, aiChatRequest, ApiError } from '../lib/api';
 import '../styles/ai.css';
 
 // Keep in sync with App.tsx's route table — a page key the server sends
@@ -49,9 +49,13 @@ export default function AiAssistant({ onClose }: { onClose: () => void }) {
         onClose();
       }
     } catch (err) {
-      setError(err instanceof Error && err.message === 'ai_offline'
-        ? 'AI assistant is offline.'
-        : 'Something went wrong — try again.');
+      if (err instanceof Error && err.message === 'ai_offline') {
+        setError('AI assistant is offline.');
+      } else if (err instanceof ApiError && err.code === 'read_only_mode') {
+        setError(err.message);
+      } else {
+        setError('Something went wrong — try again.');
+      }
     } finally {
       setBusy(false);
       const list = listRef.current;

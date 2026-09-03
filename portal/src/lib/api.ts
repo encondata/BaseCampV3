@@ -3073,6 +3073,6 @@ export async function aiChatRequest(
     body: JSON.stringify({ messages }),
   });
   if (resp.status === 503) throw new Error('ai_offline');
-  if (!resp.ok) throw new Error('ai_chat_failed');
+  if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
