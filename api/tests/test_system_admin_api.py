@@ -94,37 +94,55 @@ async def test_status_hides_banner_when_disabled_and_reports_pause(client, db, s
     assert status["workers_paused"] is True
 
 
-STATUS_PAYLOAD = {
-    "record_type": "site", "key": "mothballed", "label": "Mothballed",
-    "description": "Shut down, retained.", "color": "#8e44ad", "sort_order": 5,
-}
+def _site_payload(name):
+    # POST /sites requires only "name"; a fresh name per call avoids any
+    # cross-test collisions even though the column isn't unique-constrained.
+    return {"name": name}
 
 
-async def _freeze(db, client, message="Cutover in progress"):
-    hdrs = await _admin(db, client)
+async def _freeze(db, client, hdrs=None, message="Cutover in progress"):
+    """Turn read-only on. Reuses `hdrs` when given instead of minting a new
+    super_admin — calling `_admin` twice in one test would try to create
+    sa@test.example.com again and trip the people_email_uniq constraint."""
+    hdrs = hdrs or await _admin(db, client)
     resp = await client.put("/system/admin", headers=hdrs,
                             json={"read_only": True, "read_only_message": message})
     assert resp.status_code == 200, resp.text
     return hdrs
 
 
+# /sites is chosen for these tests over /status-values because POST
+# /status-values is gated to the devtools resource (developer_only=True),
+# which super_admin never holds by design (access/defaults.py: super_admin
+# gets FULL for every resource except devtools). A 423 from a devtools-gated
+# route wouldn't prove anything about the read-only OFF branch, since the
+# permission check and the read-only check would be indistinguishable.
+# super_admin holds FULL on "sites" (a genuine, non-allowlisted, mutating
+# resource), so a 423 there is unambiguously caused by read-only mode.
+
+
+async def test_read_only_off_is_transparent(client, db, seeded_user):
+    # baseline: with read_only untouched (default off), a super_admin's
+    # ordinary write is unaffected by the enforce_read_only dependency
+    sa = await _admin(db, client)
+    resp = await client.post("/sites", headers=sa, json=_site_payload("Site Off"))
+    assert resp.status_code == 201, resp.text
+
+
 async def test_read_only_blocks_non_developer_writes(client, db, seeded_user):
     sa = await _freeze(db, client)
-    resp = await client.post("/status-values", headers=sa, json=STATUS_PAYLOAD)
+    resp = await client.post("/sites", headers=sa, json=_site_payload("Site Blocked"))
     assert resp.status_code == 423, resp.text
     assert resp.json()["detail"] == {"code": "read_only_mode",
                                      "message": "Cutover in progress"}
-    # reads are untouched (record_type=site follows sites:view, which
-    # super_admin holds; the unfiltered listing is devtools-gated and
-    # super_admin can never see it, freeze or no freeze)
-    assert (await client.get("/status-values?record_type=site",
-                             headers=sa)).status_code == 200
+    # reads are untouched
+    assert (await client.get("/sites", headers=sa)).status_code == 200
 
 
 async def test_read_only_exempts_developers(client, db, seeded_user):
     await _freeze(db, client)
     dev = await _make(db, client, "developer", "dev@test.example.com")
-    resp = await client.post("/status-values", headers=dev, json=STATUS_PAYLOAD)
+    resp = await client.post("/sites", headers=dev, json=_site_payload("Site Dev"))
     assert resp.status_code == 201, resp.text
 
 
@@ -133,24 +151,13 @@ async def test_read_only_allowlists_auth_and_the_toggle(client, db, seeded_user)
     # the admin who froze the portal can always lift it
     resp = await client.put("/system/admin", headers=sa, json={"read_only": False})
     assert resp.status_code == 200
-    # ...and writes flow again (status-values is devtools-gated, so a
-    # developer is the actor that can actually reach 201 here)
-    dev = await _make(db, client, "developer", "dev2@test.example.com")
-    resp = await client.post("/status-values", headers=dev, json=STATUS_PAYLOAD)
+    # ...and writes flow again, for the same super_admin actor
+    resp = await client.post("/sites", headers=sa, json=_site_payload("Site Lifted"))
     assert resp.status_code == 201
-    # freeze again, reusing the same admin (calling _freeze again would
-    # re-create sa@test.example.com and trip the email-uniqueness constraint)
-    resp = await client.put("/system/admin", headers=sa, json={
-        "read_only": True, "read_only_message": "Cutover in progress"})
-    assert resp.status_code == 200
+    # freeze again, reusing the same admin (calling _freeze without hdrs
+    # would re-create sa@test.example.com and trip the email-uniqueness
+    # constraint)
+    await _freeze(db, client, hdrs=sa)
     # auth routes are never frozen (logout is a POST)
     resp = await client.post("/auth/logout", headers=sa)
     assert resp.status_code != 423
-
-
-async def test_read_only_off_is_transparent(client, db, seeded_user):
-    # baseline: with read_only untouched (default off), a developer's
-    # ordinary write is unaffected by the enforce_read_only dependency
-    dev = await _make(db, client, "developer", "dev5@test.example.com")
-    resp = await client.post("/status-values", headers=dev, json=STATUS_PAYLOAD)
-    assert resp.status_code == 201
