@@ -2000,7 +2000,11 @@ export interface ImportJobOut {
   initiative_id: string;
   kind: string;
   filename: string;
-  options: { make_model_mode?: string; generate_serials?: boolean };
+  options: {
+    make_model_mode?: string; generate_serials?: boolean;
+    // set on a reprocess child job — see reprocessImportJob below
+    reprocess_of?: string; only_rows?: number[];
+  };
   phase: ImportJobPhase;
   status: ImportJobStatus;
   total_rows: number;

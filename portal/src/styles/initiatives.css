@@ -874,6 +874,26 @@
 }
 .imp-pagination .page-hint { margin: 0 0 0 4px; }
 
+/* ── missing make/models card + fix dialog's choice screen ───────────── */
+.imp-missing-card { margin-bottom: 16px; }
+.imp-missing-card .eyebrow-sm { margin: 0 0 8px; }
+.imp-missing-list { display: flex; flex-direction: column; gap: 8px; }
+.imp-missing-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+}
+.imp-missing-row .page-hint { margin: 0; }
+.imp-missing-actions { display: flex; gap: 8px; margin-left: auto; }
+
+.imp-reprocess-banner { margin: -6px 0 16px; }
+
+.imp-fix-choices { display: flex; gap: 10px; margin-top: 16px; }
+
 /* asset expansion: tab bar left, page links right; nowrap timestamps */
 .idet-expand-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .idet-expand-bar .sysconf-tabbar { margin: 0; }

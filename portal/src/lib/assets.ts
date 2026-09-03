@@ -192,9 +192,11 @@ export interface ModelFormState {
 
 const numStr = (v: number | null): string => (v === null ? '' : String(v));
 
-export function formFromModel(m: AssetModelItem | null): ModelFormState {
+export function formFromModel(
+  m: AssetModelItem | null, initial?: { make: string; model: string },
+): ModelFormState {
   return {
-    make: m?.make ?? '', model: m?.model ?? '',
+    make: m?.make ?? initial?.make ?? '', model: m?.model ?? initial?.model ?? '',
     category: m?.category ?? '', ru_size: numStr(m?.ru_size ?? null),
     weight_lbs: numStr(m?.weight_lbs ?? null), weight_kg: numStr(m?.weight_kg ?? null),
     length_in: numStr(m?.length_in ?? null), width_in: numStr(m?.width_in ?? null),

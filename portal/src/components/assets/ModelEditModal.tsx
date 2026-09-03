@@ -35,8 +35,14 @@ interface Props {
   model: AssetModelItem | null;   // null = create mode
   categories: AssetCategoryOut[];
   canChange: boolean;
+  // Create-mode-only prefill (e.g. a fix-flow's suggested make/model split);
+  // ignored when editing an existing model.
+  initial?: { make: string; model: string };
   onClose: () => void;
-  onSaved: () => Promise<void> | void;   // parent refetches
+  // parent refetches; also receives the model that was actually written
+  // (created or updated) so a caller can act on it — e.g. append an alias
+  // right after create — without a second round trip.
+  onSaved: (saved?: AssetModelItem) => Promise<void> | void;
 }
 
 const MOUNT_TYPES = [
@@ -63,7 +69,7 @@ function sameAliasSet(a: string[], b: string[]): boolean {
 }
 
 export default function ModelEditModal({
-  model, categories, canChange, onClose, onSaved,
+  model, categories, canChange, initial, onClose, onSaved,
 }: Props) {
   const isCreateMode = model === null;
 
@@ -74,7 +80,7 @@ export default function ModelEditModal({
                                                    // just-created one when recovering
   const needsCreate = needsModelCreate({ isCreateMode, createdId });
 
-  const [form, setForm] = useState<ModelFormState>(() => formFromModel(model));
+  const [form, setForm] = useState<ModelFormState>(() => formFromModel(model, initial));
   const [aliases, setAliases] = useState<string[]>(() => model?.aliases ?? []);
   const [aliasInput, setAliasInput] = useState('');
   const [saving, setSaving] = useState(false);
@@ -181,14 +187,16 @@ export default function ModelEditModal({
     }
 
     let id = editingId;
+    let saved: AssetModelItem | undefined = originalForDiff ?? undefined;
     try {
       if (needsCreate) {
         const created = await createAssetModel(payload);
         id = created.id;
         setCreatedId(created.id);
         setCreatedModel(created);
+        saved = created;
       } else if (Object.keys(payload).length > 0) {
-        await updateAssetModel(id as string, payload);
+        saved = await updateAssetModel(id as string, payload);
       }
     } catch (err) {
       setError(mapError(err, 'Could not save — try again.'));
@@ -198,17 +206,17 @@ export default function ModelEditModal({
 
     if (aliasesChanged && id) {
       try {
-        await setAssetModelAliases(id, aliases);
+        saved = await setAssetModelAliases(id, aliases);
       } catch (err) {
         setError(`Model saved, but: ${mapError(err, 'could not save aliases — try again.')}`);
         setSaving(false);
-        await onSaved();   // the model fields already persisted — reflect them
+        await onSaved(saved);   // the model fields already persisted — reflect them
         return;
       }
     }
 
     setError('');
-    await onSaved();
+    await onSaved(saved);
     setSaving(false);
     onClose();
   };

@@ -8,18 +8,21 @@
  *  (see `currentStep` below). */
 
 import {
-  useCallback, useEffect, useRef, useState, type DragEvent,
+  useCallback, useEffect, useMemo, useRef, useState, type DragEvent,
 } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
+import { useAuth } from '../auth/AuthContext';
+import FixMakeModelDialog from '../components/initiatives/FixMakeModelDialog';
 import {
   cancelImportJob, commitImportJob, createMoveAssetImportJob,
-  downloadMoveAssetTemplate, getImportJob, getInitiative,
-  type ImportJobOut, type InitiativeDetail,
+  downloadMoveAssetTemplate, getImportJob, getInitiative, reprocessImportJob,
+  type ImportJobOut, type ImportRowDetail, type InitiativeDetail,
 } from '../lib/api';
 import {
   countDetails, etaSeconds, IMPORT_ERRORS, importErrorMessage, jobIsActive,
-  jobProgressPct, rowsPerSecond, type SpeedSample,
+  jobProgressPct, missingMakeModels, reviewMakeModel, rowsPerSecond, suggestSplit,
+  type SpeedSample,
 } from '../lib/moveAssetImport';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
@@ -112,6 +115,9 @@ function ImportStepper({ step }: { step: 1 | 2 | 3 }) {
 
 export default function ImportMoveAssets() {
   const { id } = useParams<{ id: string }>();
+  const { can } = useAuth();
+  const canAddModels = can('asset_models', 'add');
+  const canChangeModels = can('asset_models', 'change');
   const [initiative, setInitiative] = useState<InitiativeDetail | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -124,6 +130,25 @@ export default function ImportMoveAssets() {
   const samplesRef = useRef<SpeedSample[]>([]);
   const [speed, setSpeed] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Which unmatched make/model strings have been fixed (created/mapped) this
+  // session, keyed lowercase — flips a group's card entry to "ready to
+  // reprocess" without waiting on a refetch. Reset whenever the polled job
+  // itself changes (a fresh upload or a reprocess child both start clean).
+  const [fixedTexts, setFixedTexts] = useState<Set<string>>(new Set());
+  useEffect(() => { setFixedTexts(new Set()); }, [job?.id]);
+
+  // The row/group currently open in FixMakeModelDialog, or null when closed.
+  const [fixTarget, setFixTarget] = useState<
+    { text: string; make: string; model: string } | null>(null);
+  const closeFix = useCallback(() => setFixTarget(null), []);
+  const markFixed = useCallback((text: string) => {
+    setFixedTexts((s) => new Set(s).add(text.toLowerCase()));
+    setFixTarget(null);
+  }, []);
+
+  const reviewDetails: ImportRowDetail[] = job?.results?.details ?? [];
+  const missing = useMemo(() => missingMakeModels(reviewDetails), [reviewDetails]);
 
   useEffect(() => {
     if (!id) return;
@@ -205,6 +230,12 @@ export default function ImportMoveAssets() {
       {isMove && (
         <>
           <ImportStepper step={step} />
+
+          {job?.options?.reprocess_of && (
+            <p className="page-hint imp-reprocess-banner">
+              Reprocessing {job.options.only_rows?.length ?? ''} flagged rows from the earlier run.
+            </p>
+          )}
 
           {error && <p className="pf-error" style={{ marginTop: -6, marginBottom: 16 }}>{error}</p>}
 
@@ -431,6 +462,50 @@ export default function ImportMoveAssets() {
                       )}
                     </div>
 
+                    {missing.length > 0 && (
+                      <div className="init-panel imp-missing-card">
+                        <p className="eyebrow-sm">
+                          {missing.length} missing make/model{missing.length === 1 ? '' : 's'}
+                        </p>
+                        {!canAddModels && !canChangeModels && (
+                          <p className="page-hint">Ask an admin to add these models.</p>
+                        )}
+                        <div className="imp-missing-list">
+                          {missing.map((g) => {
+                            const fixed = fixedTexts.has(g.text.toLowerCase());
+                            return (
+                              <div key={g.text} className="imp-missing-row">
+                                <span className="mono">{g.text}</span>
+                                <span className="page-hint">{g.rows.length} rows</span>
+                                {fixed ? (
+                                  <span className="chip c-green">
+                                    <span className="dot" />Ready — reprocess to apply
+                                  </span>
+                                ) : (
+                                  <span className="imp-missing-actions">
+                                    {canAddModels && (
+                                      <button type="button" className="mini-btn"
+                                              onClick={() => setFixTarget(
+                                                { text: g.text, make: g.make, model: g.model })}>
+                                        Create model…
+                                      </button>
+                                    )}
+                                    {canChangeModels && (
+                                      <button type="button" className="mini-btn"
+                                              onClick={() => setFixTarget(
+                                                { text: g.text, make: g.make, model: g.model })}>
+                                        Map to existing…
+                                      </button>
+                                    )}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
                     <div className="dir-list imp-report-list">
                       <div className="list-head imp-report-grid">
                         <span className="col-head">Row</span>
@@ -450,7 +525,24 @@ export default function ImportMoveAssets() {
                                 <span className="dot" />{d.status}
                               </span>
                             </div>
-                            <div className="cell"><span className="cell-top">{d.message}</span></div>
+                            <div className="cell">
+                              <span className="cell-top">{d.message}</span>
+                              {(() => {
+                                const text = reviewMakeModel(d);
+                                if (!text || fixedTexts.has(text.toLowerCase())) return null;
+                                if (!canAddModels && !canChangeModels) return null;
+                                const split = d.suggested_make && d.suggested_model
+                                  ? { make: d.suggested_make, model: d.suggested_model }
+                                  : suggestSplit(text);
+                                return (
+                                  <button type="button" className="mini-btn"
+                                          style={{ marginLeft: 8 }}
+                                          onClick={() => setFixTarget({ text, ...split })}>
+                                    Fix…
+                                  </button>
+                                );
+                              })()}
+                            </div>
                           </div>
                         </div>
                       ))}
@@ -495,6 +587,15 @@ export default function ImportMoveAssets() {
                         <button className="mini-btn" type="button" onClick={resetImport}>
                           Import another file
                         </button>
+                        {counts.review > 0 && can('initiatives', 'change') && (
+                          <button className="btn-solid" type="button" disabled={busy}
+                                  onClick={() => {
+                                    setFixedTexts(new Set());
+                                    void run(() => reprocessImportJob(job.id));
+                                  }}>
+                            {busy ? 'Reprocessing…' : `Reprocess ${counts.review} flagged`}
+                          </button>
+                        )}
                       </div>
                     )}
                   </>
@@ -503,6 +604,16 @@ export default function ImportMoveAssets() {
             </div>
           )}
         </>
+      )}
+
+      {fixTarget && (
+        <FixMakeModelDialog
+          text={fixTarget.text}
+          make={fixTarget.make}
+          model={fixTarget.model}
+          onClose={closeFix}
+          onFixed={markFixed}
+        />
       )}
     </div>
   );
