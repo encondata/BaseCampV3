@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     # ── Labels ─────────────────────────────────────────────
     labelary_base_url: str = "https://api.labelary.com"
 
+    # ── AI assistant ───────────────────────────────────────
+    ai_enabled: bool = False
+    ai_base_url: str = "http://localhost:11434/v1"
+    ai_model: str = "qwen3:8b"
+    ai_timeout_seconds: float = 60.0
+
     @property
     def sync_database_url(self) -> str:
         """Database URL for synchronous drivers (Alembic uses psycopg)."""
