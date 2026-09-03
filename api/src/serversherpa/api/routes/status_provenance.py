@@ -24,8 +24,8 @@ from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import CurrentUser, DbSession
 from serversherpa.api.schemas import StatusProvenanceOut
 from serversherpa.db.models import (
-    Asset, AuditLog, Client, Initiative, InitiativeAsset, Person,
-    ProcessedScan, Site, StatusValue, TimeEntry,
+    Asset, AuditLog, Client, Initiative, InitiativeAsset, Partner, Person,
+    ProcessedScan, Site, StatusValue, TimeEntry, WorkerProfile,
 )
 
 router = APIRouter(prefix="/status", tags=["status"])
@@ -47,14 +47,19 @@ ENTITY_RESOURCE: dict[str, str] = {
 # giving up — bounded so a chatty entity can't make hovers expensive.
 AUDIT_SCAN_LIMIT = 200
 
-# entity_type -> the model to row-scope against, for the entity types whose
+# entity_type -> the column to row-scope against, for the entity types whose
 # resource carries a SCOPE_COLUMNS entry (access/scope.py). A row outside
 # the actor's scope 404s exactly like a nonexistent one — never a 403,
-# which would leak that the id belongs to someone else.
-SCOPE_PROBE_MODEL: dict[str, type] = {
-    "initiative": Initiative,
-    "asset": Asset,
-    "client": Client,
+# which would leak that the id belongs to someone else. Worker entity ids
+# are person ids, probed via the worker's profile row like workers.py's
+# _check_worker_scope (a worker without a profile is out of scope for any
+# non-global actor).
+SCOPE_PROBE_COLUMN = {
+    "initiative": Initiative.id,
+    "asset": Asset.id,
+    "client": Client.id,
+    "partner": Partner.id,
+    "worker": WorkerProfile.person_id,
 }
 
 
@@ -100,20 +105,21 @@ async def status_provenance(
     elif entity_type == "asset":
         asset_id = entity_id
 
-    # Row-scope probe: initiative/asset/client rows carry a scope column,
-    # so a foreign row must 404 (never 403) for a non-global actor.
-    # initiative_asset resolves to its parent initiative and probes that.
-    scope_model = SCOPE_PROBE_MODEL.get(entity_type)
+    # Row-scope probe: initiative/asset/client/partner/worker rows carry a
+    # scope column, so a foreign row must 404 (never 403) for a non-global
+    # actor. initiative_asset resolves to its parent initiative and probes
+    # that.
+    probe_col = SCOPE_PROBE_COLUMN.get(entity_type)
     scope_target_id = entity_id
     if entity_type == "initiative_asset":
-        scope_model = Initiative
+        probe_col = Initiative.id
         scope_target_id = assoc.initiative_id
-    if scope_model is not None:
+    if probe_col is not None:
         cond = scope_conditions(resource, user.access, user.person.id)
         if cond is not None:
             visible = await db.scalar(
-                select(scope_model.id).where(
-                    scope_model.id == scope_target_id, cond))
+                select(probe_col).where(
+                    probe_col == scope_target_id, cond))
             if visible is None:
                 raise _err(404, "not_found")
 

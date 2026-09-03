@@ -5,8 +5,8 @@ import uuid
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    Client, Initiative, InitiativeLink, InitiativePerson, Person, PersonRole,
-    UserAccount,
+    Client, Initiative, InitiativeLink, InitiativePerson, Partner, Person,
+    PersonRole, UserAccount, WorkerProfile,
 )
 from serversherpa.security.passwords import hash_password
 
@@ -28,6 +28,40 @@ async def client_login(db, client_api, client_id, role="client_viewer",
     db.add(PersonRole(person_id=p.id, role=role, client_id=client_id))
     await db.commit()
     return await login(client_api, email=email)
+
+
+async def partner_login(db, client_api, partner_id, role="vendor_viewer",
+                        email="pa@test.example.com"):
+    """A ready-to-use partner-anchored login for the given partner."""
+    p = Person(first_name="Ven", last_name="Dor", email=email)
+    db.add(p)
+    await db.flush()
+    db.add(UserAccount(person_id=p.id, email=email,
+        password_hash=hash_password(
+            PW, pepper=get_settings().password_pepper.get_secret_value())))
+    db.add(PersonRole(person_id=p.id, role=role, partner_id=partner_id))
+    await db.commit()
+    return await login(client_api, email=email)
+
+
+async def _two_partners_with_workers(db):
+    a, b = Partner(name="Alpha Crew"), Partner(name="Beta Crew")
+    db.add(a)
+    db.add(b)
+    await db.flush()
+    wa = Person(first_name="Alph", last_name="Worker",
+                email="wa@test.example.com")
+    wb = Person(first_name="Beta", last_name="Worker",
+                email="wb@test.example.com")
+    db.add(wa)
+    db.add(wb)
+    await db.flush()
+    db.add(PersonRole(person_id=wa.id, role="worker"))
+    db.add(PersonRole(person_id=wb.id, role="worker"))
+    db.add(WorkerProfile(person_id=wa.id, partner_id=a.id))
+    db.add(WorkerProfile(person_id=wb.id, partner_id=b.id))
+    await db.commit()
+    return a, b, wa, wb
 
 
 async def _two_clients_with_initiatives(db):
@@ -165,3 +199,49 @@ async def test_provenance_scoped(client, db, seeded_user):
         f"&status=planned",
         headers=hdrs)
     assert foreign.status_code == 404
+
+
+async def test_provenance_partner_scoped(client, db, seeded_user):
+    a, b, _wa, _wb = await _two_partners_with_workers(db)
+    hdrs = await partner_login(db, client, a.id)
+    ok = await client.get(
+        f"/status/provenance?entity_type=partner&entity_id={a.id}"
+        f"&status=active",
+        headers=hdrs)
+    assert ok.status_code in (200, 404)  # 404 acceptable when no history
+    foreign = await client.get(
+        f"/status/provenance?entity_type=partner&entity_id={b.id}"
+        f"&status=active",
+        headers=hdrs)
+    assert foreign.status_code == 404
+    ghost = await client.get(
+        f"/status/provenance?entity_type=partner&entity_id={uuid.uuid4()}"
+        f"&status=active",
+        headers=hdrs)
+    assert ghost.status_code == 404
+
+
+async def test_provenance_worker_scoped(client, db, seeded_user):
+    a, _b, wa, wb = await _two_partners_with_workers(db)
+    hdrs = await partner_login(db, client, a.id, role="vendor_admin")
+    ok = await client.get(
+        f"/status/provenance?entity_type=worker&entity_id={wa.id}"
+        f"&status=active",
+        headers=hdrs)
+    assert ok.status_code in (200, 404)  # 404 acceptable when no history
+    foreign = await client.get(
+        f"/status/provenance?entity_type=worker&entity_id={wb.id}"
+        f"&status=active",
+        headers=hdrs)
+    assert foreign.status_code == 404
+
+
+async def test_provenance_global_actor_sees_partner_and_worker(
+        client, db, seeded_user):
+    _a, b, _wa, wb = await _two_partners_with_workers(db)
+    adm = await _make(db, client, "admin", "adm3@test.example.com")
+    for qs in (f"entity_type=partner&entity_id={b.id}",
+               f"entity_type=worker&entity_id={wb.id}"):
+        resp = await client.get(
+            f"/status/provenance?{qs}&status=active", headers=adm)
+        assert resp.status_code == 200, resp.text
