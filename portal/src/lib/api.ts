@@ -3057,3 +3057,22 @@ export async function getClientActivity(clientId: string): Promise<ClientActivit
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }
+
+/* ── AI assistant ─────────────────────────────────────────────────── */
+
+export type AiChatMessage = { role: 'user' | 'assistant'; content: string };
+export type AiNavigate = { page: string; id?: string | null };
+export type AiChatOut = { reply: string; navigate: AiNavigate | null };
+
+export async function aiChatRequest(
+  messages: AiChatMessage[],
+): Promise<AiChatOut> {
+  const resp = await apiFetch('/ai/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages }),
+  });
+  if (resp.status === 503) throw new Error('ai_offline');
+  if (!resp.ok) throw new Error('ai_chat_failed');
+  return resp.json();
+}

@@ -1,6 +1,6 @@
 /**
  * Topbar — crumbs, GLOBAL search (as-you-type dropdown over pages +
- * records, click-through to the record), AI (coming soon), notifications,
+ * records, click-through to the record), AI assistant, notifications,
  * and the ⌘K commands button. Hotkeys per fibertrace search-and-hotkeys.md.
  */
 
@@ -10,6 +10,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
 import { avatarGradient, initials } from '../lib/format';
 import { useTopbar } from '../lib/topbar';
+import AiAssistant from './AiAssistant';
 
 const CRUMBS: Record<string, string[]> = {
   '/': ['Dashboards', 'Main Dashboard'],
@@ -315,7 +316,7 @@ export default function Topbar() {
 
       <div className="tb-actions" ref={popRef}>
         <div className="pop-wrap">
-          <button className="icon-btn ai-glow" title="AI assistant (coming soon)"
+          <button className="icon-btn ai-glow" title="AI assistant"
                   onClick={() => setPop(pop === 'ai' ? null : 'ai')}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
                  strokeLinecap="round" strokeLinejoin="round">
@@ -324,12 +325,9 @@ export default function Topbar() {
             </svg>
           </button>
           {pop === 'ai' && (
-            <div className="pop-menu">
+            <div className="pop-menu pop-menu-ai">
               <div className="pop-title">AI Assistant</div>
-              <div className="pop-empty">
-                Ask-the-portal AI is coming soon — natural-language answers
-                about your moves, assets, and people.
-              </div>
+              <AiAssistant onClose={() => setPop(null)} />
             </div>
           )}
         </div>
