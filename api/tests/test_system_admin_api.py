@@ -1,6 +1,7 @@
 """Admin controls: public status, gated admin config get/put, audit."""
 
 import asyncio
+from uuid import uuid4
 
 from sqlalchemy import select
 
@@ -185,7 +186,12 @@ async def test_read_only_allowlists_auth_and_the_toggle(client, db, seeded_user)
     # allowlisted auth routes are never frozen: preferences and revoking
     # your own session are sign-in/out housekeeping
     resp = await client.put("/auth/me/preferences", headers=sa, json={})
-    assert resp.status_code != 423
+    assert resp.status_code == 200
+    # revoking a session is allowlisted too; a 404 for an unknown id
+    # proves the request cleared the read-only gate (a frozen route
+    # would return 423, not 404)
+    resp = await client.delete(f"/auth/me/sessions/{uuid4()}", headers=sa)
+    assert resp.status_code == 404
     # but a profile edit is an ordinary content write and freezes like
     # anything else under /auth/me
     resp = await client.patch("/auth/me/profile", headers=sa, json={})
@@ -193,7 +199,7 @@ async def test_read_only_allowlists_auth_and_the_toggle(client, db, seeded_user)
     assert resp.json()["detail"]["code"] == "read_only_mode"
     # logout itself is allowlisted too (checked last: it ends the session)
     resp = await client.post("/auth/logout", headers=sa)
-    assert resp.status_code != 423
+    assert resp.status_code == 204
 
 
 async def test_workers_paused_helper(client, db, seeded_user):
@@ -241,7 +247,9 @@ async def test_poll_workers_paused_swallows_db_blip_and_logs_once(monkeypatch, c
     with caplog.at_level(logging.WARNING, logger="serversherpa.system.admin_config"):
         assert await admin_config.poll_workers_paused(None, state) is False
         assert await admin_config.poll_workers_paused(None, state) is False
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    warnings = [r for r in caplog.records
+                if r.levelno == logging.WARNING
+                and r.name == "serversherpa.system.admin_config"]
     assert len(warnings) == 1                    # logged once per outage
     assert state["pause_check_failed"] is True
 
@@ -256,7 +264,9 @@ async def test_poll_workers_paused_swallows_db_blip_and_logs_once(monkeypatch, c
     monkeypatch.setattr(admin_config, "workers_paused", boom)
     with caplog.at_level(logging.WARNING, logger="serversherpa.system.admin_config"):
         assert await admin_config.poll_workers_paused(None, state) is False
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    warnings = [r for r in caplog.records
+                if r.levelno == logging.WARNING
+                and r.name == "serversherpa.system.admin_config"]
     assert len(warnings) == 1                     # re-armed: logs again
 
 

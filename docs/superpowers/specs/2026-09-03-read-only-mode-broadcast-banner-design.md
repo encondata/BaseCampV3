@@ -69,7 +69,10 @@ No auth. Returns:
 
 `banner` = `banner_message` when `banner_enabled` and the message is
 non-blank, else `null`. `workers_paused` = `read_only and pause_workers`.
-One PK lookup; no caching layer.
+One PK lookup; no caching layer. `read_only_message` is returned only
+while `read_only` is true (blank otherwise, so a staged draft is not
+publicly visible early); `GET /system/admin` always returns the stored
+draft.
 
 ### `PUT /system/admin` — gate `settings:change`
 
@@ -90,12 +93,15 @@ After building the `AuthContext`, when the request method is one of
 **and** `"developer" not in roles` **and** the path is not allowlisted →
 raise **423** `{"detail": {"code": "read_only_mode", "message": <read_only_message>}}`.
 
-Allowlist (prefix match on `request.url.path`): `/auth/` (login, logout,
-refresh, password change, preferences) and exactly `/system/admin` — so
-any `settings:change` user who can turn the mode on can always turn it
-off. The lookup runs only for mutating methods (GET/WebSocket routes pay
-nothing). Login itself never uses `get_current_user`, so the login page
-keeps working.
+Allowlist (`request.url.path`): the exact paths `/auth/login`,
+`/auth/refresh`, `/auth/logout`, `/auth/me/preferences`,
+`/auth/me/password`, `/system/admin`, plus the prefix
+`/auth/me/sessions/` (revoking your own sessions is sign-out
+housekeeping) — so any `settings:change` user who can turn the mode on
+can always turn it off. Everything else under `/auth/me` (profile edits)
+freezes like any other write. The lookup runs only for mutating methods
+(GET/WebSocket routes pay nothing). Login itself never uses
+`get_current_user`, so the login page keeps working.
 
 ### Worker pause
 

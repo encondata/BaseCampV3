@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Error code for frozen writes: HTTP **423**, body `{"detail": {"code": "read_only_mode", "message": <read_only_message>}}`. Only `POST/PUT/PATCH/DELETE` are checked. Exempt: callers with role `developer`; paths starting with `/auth/`; exact path `/system/admin`.
+- Error code for frozen writes: HTTP **423**, body `{"detail": {"code": "read_only_mode", "message": <read_only_message>}}`. Only `POST/PUT/PATCH/DELETE` are checked. Exempt: callers with role `developer`; the exact paths `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me/preferences`, `/auth/me/password`, `/system/admin`, plus the prefix `/auth/me/sessions/` (see spec's "Write freeze" section for the full enumerated allowlist).
 - `admin` section defaults (verbatim): `read_only=False, read_only_message="", pause_workers=False, banner_enabled=False, banner_message=""`. Messages max 300 chars, trimmed. Enabling the banner with a blank message → 422 `banner_message_required`.
 - Audit for PUT: `entity_type="system"`, `entity_id="admin"`, `action="admin_config_update"`, `changes={field: {"from","to"}}` for changed fields only.
 - Copy (verbatim): read-only banner `Read-only maintenance mode — {message}` (just `Read-only maintenance mode` when blank); friendly error `The portal is in read-only maintenance mode — changes are disabled until it's lifted.`; Settings sub-row `Also pause background services`; button `Resume workers`; hint `Workers idle while paused; resume lifts the pause within a few seconds.`; blank-banner inline error `Enter a message first.`; Processes status label `Paused`.
