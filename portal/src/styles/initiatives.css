@@ -1,3 +1,4 @@
+@import './rack-svg.css';
 /**
  * Initiatives — row-detail section cards and the wide edit modal.
  * Tokens come from chrome.css / directory.css (--surface, --paper-line, …).
@@ -452,50 +453,6 @@
   color: #111827;
   margin-bottom: 6px;
 }
-/* overflow:hidden is the SVG-spec default for a root <svg>, but stated
-   explicitly here: at this element's small on-screen size, anything that
-   ever crept past the viewBox (or an anti-aliased edge bleeding past it)
-   must be guaranteed clipped rather than relying on a UA default. */
-.rack-svg { width: 100%; height: auto; display: block; overflow: hidden; }
-
-.rack-post { fill: #f9fafb; stroke: #111827; stroke-width: 1.5; }
-.rack-cap { fill: #f9fafb; stroke: #111827; stroke-width: 1.5; }
-.rack-interior { fill: #fff; }
-/* crispEdges: hairlines are thin repeated strokes; at the modal's small
-   render size, ordinary anti-aliasing can blur/fringe a line this thin. */
-.rack-u-hairline { stroke: #e5e7eb; stroke-width: 1; shape-rendering: crispEdges; }
-/* every U number is the same size/weight/color on both rails (round 4
-   dropped the every-5 bold/emphasis look entirely). */
-.rack-u-label {
-  font-family: var(--font-mono);
-  font-size: 7px;
-  fill: #374151;
-}
-.rack-empty-label {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  fill: #6b7280;
-}
-
-/* verified = light-gray fill, solid border; planned/unverified = white
-   fill, dashed border, muted label — distinguishable in pure grayscale
-   without relying on the LED alone. */
-.rack-faceplate-verified { fill: #eef0f3; stroke: #111827; stroke-width: 1.5; }
-.rack-faceplate-unverified { fill: #fff; stroke: #111827; stroke-width: 1.25; stroke-dasharray: 4 3; }
-/* ghost box: something is mounted here from the OPPOSITE physical side —
-   an opaque white fill (not literally transparent) so the whole box, not
-   just its 1px outline, is hoverable; a light (not near-black) border
-   keeps it visually receding behind real verified/planned faceplates. */
-.rack-faceplate-ghost { fill: #fff; stroke: #c9ced6; stroke-width: 1; }
-.rack-faceplate-vent { stroke: #d1d5db; stroke-width: 1; }
-.rack-led-verified { fill: #111827; }
-.rack-led-unverified { fill: none; stroke: #111827; stroke-width: 1; }
-.rack-block-label {
-  font-family: var(--font-mono);
-  font-size: 8.5px;
-  fill: #111827;
-}
-.rack-block-label-unverified { fill: #6b7280; }
 
 /* hover detail tooltip — real HTML element (not a native title tooltip),
    positioned off the hovered faceplate's bounding rect; styled like the

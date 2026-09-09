@@ -97,6 +97,12 @@ class Settings(BaseSettings):
     ai_timeout_seconds: float = 60.0
     ai_reasoning_effort: str = ""  # "none" disables thinking on e.g. qwen3
 
+    # ── Reports ────────────────────────────────────────────
+    # Node script that renders rack elevations (portal's RackElevation, SSR).
+    # Empty = <repo>/portal/dist-node/render-rack.js.
+    report_rack_renderer: str = ""
+    report_node_bin: str = "node"
+
     @property
     def sync_database_url(self) -> str:
         """Database URL for synchronous drivers (Alembic uses psycopg)."""
