@@ -1,0 +1,174 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{{ ctx.title }}</title>
+<style>
+  @page { size: Letter portrait; margin: 16mm 14mm 18mm 14mm;
+          @top-center { content: "{{ ctx.data.name }} — Move Report"; font: 9pt sans-serif; color: #555; }
+          @bottom-left { content: "Generated {{ ctx.generated_stamp }} by {{ ctx.generated_by }}"; font: 8pt sans-serif; color: #555; }
+          @bottom-right { content: "Page " counter(page) " of " counter(pages); font: 8pt sans-serif; color: #555; } }
+  body { font: 10pt/1.35 Helvetica, Arial, sans-serif; color: #111; }
+  h1 { font-size: 20pt; text-align: center; text-transform: uppercase; margin: 0 0 2mm; }
+  .subtitle { text-align: center; color: #555; margin-bottom: 8mm; }
+  h2 { font-size: 13pt; border-bottom: 1.5px solid #111; padding-bottom: 1mm; margin: 0 0 4mm; }
+  section { page-break-before: always; }
+  section.first, body > section:first-of-type { page-break-before: auto; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 5mm; font-size: 8.5pt; }
+  th, td { border: 0.5px solid #999; padding: 1.2mm 1.6mm; text-align: left; vertical-align: top; }
+  th { background: #eee; font-weight: bold; }
+  td.num, th.num { text-align: right; }
+  tr { page-break-inside: avoid; }
+  .cards { display: flex; gap: 6mm; margin-bottom: 5mm; }
+  .card { flex: 1; border: 0.5px solid #999; padding: 3mm; }
+  .card .label { font-size: 8pt; text-transform: uppercase; color: #555; }
+  .card .name { font-weight: bold; font-size: 11pt; }
+  .kv { display: grid; grid-template-columns: 38mm 1fr; row-gap: 1mm; margin-bottom: 5mm; }
+  .kv div:nth-child(odd) { color: #555; }
+  .totals { display: flex; gap: 6mm; margin-bottom: 5mm; }
+  .totals .t { border: 0.5px solid #999; padding: 2mm 3mm; min-width: 30mm; }
+  .totals .t b { display: block; font-size: 13pt; }
+  .rack-page { display: flex; gap: 8mm; align-items: flex-start; }
+  .rack-page .elev { flex: none; }
+  /* The fragment's own CSS sizes each elevation column at 190px, which at a
+     42U rack's aspect ratio is ~234mm tall — taller than the text area, so
+     the heading and the elevation would land on separate pages. Narrow the
+     column (one per side: FRONT, and REAR when it has blocks) so a rack page
+     stays a single page. */
+  .rack-page .elev .rack-elevation { width: 44mm; }
+  .rack-page .elev svg { width: 100%; height: auto; }
+  .rack-page .list { flex: 1; }
+  .note { color: #555; font-style: italic; }
+  pre.addr { font: inherit; margin: 0; white-space: pre-line; }
+</style>
+</head>
+<body>
+<h1>{{ ctx.data.name }}</h1>
+<div class="subtitle">Move Report · {{ ctx.data.type_label }} · {{ ctx.data.status_label }}</div>
+
+{% if ctx.options.summary %}
+<section class="first">
+  <h2>Summary</h2>
+  <div class="kv">
+    <div>Initiative</div><div>{{ ctx.data.name }}</div>
+    <div>Type / Status</div><div>{{ ctx.data.type_label }} / {{ ctx.data.status_label }}</div>
+    <div>Client</div><div>{{ ctx.data.client_name or "—" }}</div>
+    <div>Scheduled</div><div>{{ ctx.scheduled }}</div>
+  </div>
+  <div class="cards">
+    <div class="card"><div class="label">Origin</div>
+      <div class="name">{{ ctx.data.origin_site.name if ctx.data.origin_site else "—" }}</div>
+      <pre class="addr">{{ ctx.data.origin_site.address if ctx.data.origin_site else "" }}</pre></div>
+    <div class="card"><div class="label">Destination</div>
+      <div class="name">{{ ctx.data.destination_site.name if ctx.data.destination_site else "—" }}</div>
+      <pre class="addr">{{ ctx.data.destination_site.address if ctx.data.destination_site else "" }}</pre></div>
+  </div>
+  {% if not ctx.data.assets %}<p class="note">No assets on this move.</p>{% endif %}
+  <div class="totals">
+    <div class="t">Assets<b>{{ ctx.load.total_assets }}</b></div>
+    <div class="t">Total RU<b>{{ ctx.load.total_ru }}</b></div>
+    <div class="t">Weight<b>{{ "%.1f"|format(ctx.load.total_weight_lbs) }} lb</b>{{ "%.1f"|format(ctx.load.total_weight_kg) }} kg</div>
+    <div class="t">Collisions<b>{{ ctx.collisions.collision_count }}</b>{{ ctx.collisions.assets_flagged }} assets flagged</div>
+  </div>
+</section>
+{% endif %}
+
+{% macro asset_table(rows) -%}
+<table>
+  <thead><tr><th>Serial</th><th>Name</th><th>Make</th><th>Model</th><th>Src Rack</th>
+    <th class="num">Src RU</th><th>Dest Rack</th><th class="num">Dest RU</th><th>Wave</th></tr></thead>
+  <tbody>
+  {% for a in rows %}
+  <tr><td>{{ a.serial or "—" }}</td><td>{{ a.name or "—" }}</td><td>{{ a.make or "—" }}</td>
+    <td>{{ a.model or "—" }}</td><td>{{ a.source_rack or "—" }}</td>
+    <td class="num">{{ ctx.ru(a.source_ru) }}</td><td>{{ a.destination_rack or "—" }}</td>
+    <td class="num">{{ ctx.ru(a.destination_ru) }}</td><td>{{ a.priority_wave or "—" }}</td></tr>
+  {% else %}<tr><td colspan="9" class="note">No assets on this move.</td></tr>{% endfor %}
+  </tbody>
+</table>
+{%- endmacro %}
+
+{% if ctx.options.assets_by_source %}
+<section><h2>Asset List - By Source</h2>{{ asset_table(ctx.by_source) }}</section>
+{% endif %}
+{% if ctx.options.assets_by_destination %}
+<section><h2>Asset List - By Destination</h2>{{ asset_table(ctx.by_destination) }}</section>
+{% endif %}
+
+{% if ctx.options.size_weight %}
+<section>
+  <h2>Size and Weight Report</h2>
+  <div class="totals">
+    <div class="t">Assets<b>{{ ctx.load.total_assets }}</b></div>
+    <div class="t">Total RU<b>{{ ctx.load.total_ru }}</b></div>
+    <div class="t">Total weight<b>{{ "%.1f"|format(ctx.load.total_weight_lbs) }} lb</b>{{ "%.1f"|format(ctx.load.total_weight_kg) }} kg</div>
+  </div>
+  <table>
+    <thead><tr><th>Make/Model</th><th class="num">Count</th><th class="num">RU Size</th>
+      <th class="num">Total RU</th><th class="num">Weight (lb)</th><th>Dimensions</th></tr></thead>
+    <tbody>{% for m in ctx.load.models %}
+    <tr><td>{{ (m.make or "") ~ " " ~ (m.model or "") }}</td><td class="num">{{ m.count }}</td>
+      <td class="num">{{ m.ru_size }}</td><td class="num">{{ m.total_ru }}</td>
+      <td class="num">{{ "%.1f"|format(m.weight_per_unit_lbs) }} × {{ m.count }} = {{ "%.1f"|format(m.total_weight_lbs) }}</td>
+      <td>{{ m.dimensions }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+</section>
+{% endif %}
+
+{% if ctx.options.rail_usage %}
+<section>
+  <h2>Rail Usage Report</h2>
+  <table><thead><tr><th>Rail Type</th><th class="num">Count</th></tr></thead>
+    <tbody>{% for r in ctx.rails.rail_types %}<tr><td>{{ r.rail_type }}</td><td class="num">{{ r.count }}</td></tr>{% endfor %}</tbody></table>
+  <table><thead><tr><th>Make/Model</th><th class="num">Count</th><th>Rail Type</th><th class="num">RU Size</th></tr></thead>
+    <tbody>{% for m in ctx.rails.models %}
+    <tr><td>{{ (m.make or "") ~ " " ~ (m.model or "") }}</td><td class="num">{{ m.count }}</td><td>{{ m.rail_type }}</td><td class="num">{{ m.ru_size }}</td></tr>
+    {% endfor %}</tbody></table>
+</section>
+{% endif %}
+
+{% if ctx.options.collisions %}
+<section>
+  <h2>Collision Report</h2>
+  <p>{{ ctx.collisions.assets_checked }} assets with destination assignments checked ·
+     {{ ctx.collisions.collision_count }} collisions · {{ ctx.collisions.assets_flagged }} assets flagged</p>
+  {% if ctx.collisions.items %}
+  <table>
+    <thead><tr><th>Rack</th><th>Type</th><th>Overlapping RUs</th><th>Asset A</th><th>Asset B</th></tr></thead>
+    <tbody>{% for c in ctx.collisions.items %}
+    <tr><td>{{ c.rack }}</td><td>{{ ctx.collision_label(c.collision_type) }}</td>
+      <td>{{ c.overlapping_rus|join(", ") }}{% if c.slot_conflict %} (slot {{ c.slot_conflict }}){% endif %}</td>
+      <td>{{ c.asset_a.name }}<br><small>{{ c.asset_a.asset.serial or "" }} · {{ c.asset_a.asset.make_model }} · RU {{ ctx.ru(c.asset_a.asset.destination_ru) }} × {{ c.asset_a.asset.ru_size or 1 }}U</small></td>
+      <td>{{ c.asset_b.name }}<br><small>{{ c.asset_b.asset.serial or "" }} · {{ c.asset_b.asset.make_model }} · RU {{ ctx.ru(c.asset_b.asset.destination_ru) }} × {{ c.asset_b.asset.ru_size or 1 }}U</small></td></tr>
+    {% endfor %}</tbody>
+  </table>
+  {% else %}<p class="note">No collisions.</p>{% endif %}
+</section>
+{% endif %}
+
+{% macro rack_pages(heading, racks, side) -%}
+{% for r in racks %}
+<section>
+  <h2>{{ heading }} — Rack {{ r.rack_name }}</h2>
+  <div class="rack-page">
+    <div class="elev">{{ r.svg|safe }}</div>
+    <div class="list">
+      <table><thead><tr><th>Name</th><th>Serial</th><th class="num">RU</th><th>Wave</th></tr></thead>
+        <tbody>{% for a in r.assets %}
+        <tr><td>{{ a.label }}</td><td>{{ a.serial or "—" }}</td>
+          <td class="num">{{ ctx.ru(a.source_ru if side == "source" else a.destination_ru) }}</td>
+          <td>{{ a.priority_wave or "—" }}</td></tr>
+        {% endfor %}</tbody></table>
+    </div>
+  </div>
+</section>
+{% else %}
+<section><h2>{{ heading }}</h2><p class="note">No racked assets on this side.</p></section>
+{% endfor %}
+{%- endmacro %}
+
+{% if ctx.options.source_racks %}{{ rack_pages("Source Rack Elevations", ctx.source_racks, "source") }}{% endif %}
+{% if ctx.options.destination_racks %}{{ rack_pages("Destination Rack Elevations", ctx.destination_racks, "destination") }}{% endif %}
+</body>
+</html>

@@ -48,6 +48,8 @@ docker compose -f docker-compose.dev.yml up -d
 cd api
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
+# WeasyPrint (PDF reports) needs Pango: brew install pango  (Debian: apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0)
+# macOS/Homebrew: if `import weasyprint` still fails, export DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib
 .venv/bin/alembic upgrade head
 .venv/bin/serversherpa bootstrap-admin --email you@example.com \
     --first-name You --last-name Name          # prompts for password
