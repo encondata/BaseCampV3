@@ -2121,3 +2121,43 @@ class ReportDefinitionUpdateIn(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=120)
     description: str | None = Field(None, max_length=1000)
     options: dict | None = None
+
+
+class ReportRunCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    definition_id: uuid.UUID
+    initiative_id: uuid.UUID
+    options: dict = Field(default_factory=dict)
+    notify: bool = False
+
+
+class ReportRunNotifyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    notify: bool
+
+
+class ReportRunOut(BaseModel):
+    id: uuid.UUID
+    definition_id: uuid.UUID
+    definition_name: str
+    report_type: str
+    initiative_id: uuid.UUID
+    initiative_name: str
+    options: dict
+    status: str
+    error: str | None = None
+    requested_by: uuid.UUID
+    requested_by_name: str
+    requested_rank: int
+    notify: bool
+    filename: str | None = None
+    size_bytes: int | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    created_at: datetime
+
+
+class ReportDownloadOut(BaseModel):
+    url: str
