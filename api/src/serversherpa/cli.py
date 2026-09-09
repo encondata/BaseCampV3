@@ -352,6 +352,57 @@ def import_worker(
     asyncio.run(_run())
 
 
+def _run_report_worker_process(poll_seconds: float) -> None:
+    """Reload-mode child entry point (see _run_worker_process)."""
+
+    async def _run() -> None:
+        from serversherpa.reports import worker
+
+        await worker.run_forever(poll_seconds)
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass
+
+
+@app.command()
+def report_worker(
+    poll_seconds: float = typer.Option(2.0, help="Idle sleep between queue polls"),
+    once: bool = typer.Option(False, help="Process at most one run, then exit"),
+    reload: bool = typer.Option(
+        False, help="Dev mode: restart the worker whenever api/src changes"),
+) -> None:
+    """Run the report worker — renders queued report_runs into PDFs, stores
+    them in Spaces, attaches them to the initiative, and notifies."""
+
+    if reload and once:
+        typer.secho("--once cannot be combined with --reload", fg="red")
+        raise typer.Exit(code=1)
+    if reload:
+        import watchfiles
+
+        src_dir = Path(__file__).resolve().parents[1]
+        typer.secho(f"[report-worker] dev reload — watching {src_dir}", fg="cyan")
+        watchfiles.run_process(src_dir, target=_run_report_worker_process,
+                               args=(poll_seconds,))
+        return
+
+    async def _run() -> None:
+        from serversherpa.db.engine import get_sessionmaker
+        from serversherpa.reports import worker
+
+        if once:
+            worked = await worker.run_once(get_sessionmaker())
+            typer.secho("processed 1 run" if worked else "queue empty",
+                        fg="green" if worked else "yellow")
+        else:
+            await worker.run_forever(poll_seconds)
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
 def _run_log_service_process(poll_seconds: float) -> None:
     """Reload-mode child entry point (picklable, like the import
     worker's)."""

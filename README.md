@@ -69,6 +69,10 @@ import worker + portal, all auto-reloading) in a single terminal:
 api/.venv/bin/honcho start -f Procfile.dev
 ```
 
+honcho loads `.env` from this directory, so on macOS/Homebrew make sure
+`.env` sets `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` (see `.env.example`)
+or the report worker's WeasyPrint import will fail at startup.
+
 Background workers also reload standalone, uvicorn-style:
 
 ```bash
