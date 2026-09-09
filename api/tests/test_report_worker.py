@@ -6,7 +6,7 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
@@ -60,6 +60,15 @@ class FakeModule:
         if self.fail:
             raise self.fail
         return ReportResult(pdf=b"%PDF-1.4 fake", filename="Move Report - NAP11 - 2026-09-09 1200.pdf")
+
+
+class DbErrorModule(FakeModule):
+    """Builds by poisoning the build session's transaction — the shape of a
+    real bad query inside a report module."""
+
+    async def build(self, db, run, *, renderer=None):
+        await db.execute(text("SELECT * FROM table_that_does_not_exist"))
+        raise AssertionError("unreachable")             # pragma: no cover
 
 
 async def test_claim_next_oldest_first_and_requeue_stale(db):
@@ -129,6 +138,118 @@ async def test_initiative_unavailable_and_timeout(db, monkeypatch):
     await worker.run_once(get_sessionmaker())
     run = await db.get(ReportRun, run_id)
     assert run.status == "failed" and "timed out" in run.error
+    # the cancelled build must not leave the run half-finished or still claimed
+    assert run.finished_at is not None
+    assert await worker.run_once(get_sessionmaker()) is False    # queue empty
+
+
+async def test_notify_failure_does_not_flip_a_completed_run(db, monkeypatch, caplog):
+    """An inbox write is best-effort: it happens in its own session after the
+    terminal state is committed, so it can never undo a finished report."""
+    monkeypatch.setattr(worker, "get_module", lambda t: FakeModule())
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("inbox down")
+
+    monkeypatch.setattr(worker, "notify", boom)
+    run_id, person_id, ini_id = await _run(db, notify=True)
+    with caplog.at_level(logging.WARNING, logger="serversherpa.reports.worker"):
+        assert await worker.run_once(get_sessionmaker()) is True
+    run = await db.get(ReportRun, run_id)
+    assert run.status == "completed" and run.error is None
+    assert run.storage_key == f"reports/{ini_id}/{run_id}.pdf"
+    assert run.attachment_id is not None
+    assert await db.get(Attachment, run.attachment_id) is not None
+    assert await db.scalar(select(Notification)) is None
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any(str(run_id) in m for m in warnings), warnings
+
+
+async def test_db_error_during_build_reports_the_real_error(db, monkeypatch):
+    """A build that poisons its own transaction must still report ITS error —
+    not the PendingRollbackError of a session reused after the fact."""
+    monkeypatch.setattr(worker, "get_module", lambda t: DbErrorModule())
+    run_id, person_id, _ = await _run(db, notify=True)
+    assert await worker.run_once(get_sessionmaker()) is True
+    run = await db.get(ReportRun, run_id)
+    assert run.status == "failed" and run.attachment_id is None
+    assert run.error.startswith("ProgrammingError:"), run.error
+    assert "rolled back" not in run.error
+    n = await db.scalar(select(Notification).where(Notification.person_id == person_id))
+    assert n is not None and n.kind == "report_failed" and n.body == run.error
+
+
+async def test_run_forever_sweeps_stale_runs_periodically(db, monkeypatch):
+    monkeypatch.setattr("serversherpa.system.db_logging.install", lambda name: None)
+    monkeypatch.setattr(worker, "STALE_SWEEP_SECONDS", 0.05)
+
+    async def no_claim(session):
+        return None
+
+    monkeypatch.setattr(worker, "claim_next", no_claim)
+    task = asyncio.create_task(worker.run_forever(poll_seconds=0.05))
+    try:
+        await asyncio.sleep(0.1)
+        # queued AFTER the startup sweep — only a periodic sweep can catch it
+        run_id, *_ = await _run(db, status="running",
+                                started_at=datetime.now(UTC)
+                                - timedelta(minutes=STALE_MINUTES + 1))
+        for _ in range(60):
+            await asyncio.sleep(0.05)
+            row = await db.scalar(
+                select(ReportRun).where(ReportRun.id == run_id)
+                .execution_options(populate_existing=True))
+            if row.status == "queued":
+                break
+        assert row.status == "queued" and row.started_at is None
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_run_forever_idles_while_paused_then_resumes(db, monkeypatch):
+    from serversherpa.system import registry
+
+    monkeypatch.setattr("serversherpa.system.db_logging.install", lambda name: None)
+    monkeypatch.setattr(registry, "start_heartbeat",                 # 5 s is too slow here
+                        lambda name, kind, meta_fn=None: asyncio.create_task(
+                            registry.heartbeat_loop(name, kind, interval=0.05,
+                                                    meta_fn=meta_fn)))
+    paused = {"on": True}
+
+    async def fake_paused(sessionmaker):
+        return paused["on"]
+
+    monkeypatch.setattr("serversherpa.system.admin_config.workers_paused", fake_paused)
+    calls = {"n": 0}
+
+    async def counting_claim(session):
+        calls["n"] += 1
+        return None
+
+    monkeypatch.setattr(worker, "claim_next", counting_claim)
+    task = asyncio.create_task(worker.run_forever(poll_seconds=0.05))
+    try:
+        row = None
+        for _ in range(60):
+            await asyncio.sleep(0.05)
+            row = await db.scalar(
+                select(SystemProcess).where(SystemProcess.name == "report-worker")
+                .execution_options(populate_existing=True))
+            if row is not None and row.meta == {"paused": True}:
+                break
+        assert row is not None and row.meta == {"paused": True}
+        assert calls["n"] == 0                          # nothing claimed while paused
+        paused["on"] = False
+        for _ in range(60):
+            await asyncio.sleep(0.05)
+            if calls["n"]:
+                break
+        assert calls["n"] > 0                           # claims resume
+        assert not task.done()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 async def test_run_forever_heartbeats_idles_when_paused_and_survives_claim_blip(db, monkeypatch, caplog):

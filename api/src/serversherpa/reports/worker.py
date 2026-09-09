@@ -3,11 +3,21 @@ process from the API. Claims queued report_runs, renders the PDF through
 the module registry, uploads it, attaches it to the initiative, and
 writes an inbox row when asked. A bad run never kills the loop; a DB blip
 on the claim is swallowed and logged once (same rule as the pause check
-and the heartbeat: a DB blip must never kill the host process)."""
+and the heartbeat: a DB blip must never kill the host process).
+
+Session discipline — the build gets its own session and nothing else
+does. A build can poison its transaction (a bad query) or leave a
+cancelled statement behind (the timeout), so once it has failed that
+session is only ever rolled back, never reused. The terminal status is
+written through a FRESH session, and the inbox row through another one
+AFTER that status is committed. That ordering is what keeps a completed
+report completed when the inbox is down, and what keeps a build's real
+error from being overwritten by the PendingRollbackError of a session
+someone tried to reuse."""
 
 import asyncio
 import logging
-import uuid
+import time
 from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +33,7 @@ from serversherpa.services.storage import put_object
 logger = logging.getLogger("serversherpa.reports.worker")
 
 RUN_TIMEOUT_SECONDS = 300.0
+STALE_SWEEP_SECONDS = 60
 ERROR_MAX = 2000
 
 
@@ -47,17 +58,22 @@ async def _notify(db: AsyncSession, run: ReportRun, definition_name: str,
                      body=run.error or "unknown error", link=link, payload=payload)
 
 
-async def process_run(db: AsyncSession, run: ReportRun, *, renderer=None) -> None:
-    """Run one claimed (status='running') run to a terminal status."""
+async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
+                      renderer=None) -> str:
+    """Run one claimed (status='running') run to a terminal status, and
+    return it. `db` is the BUILD session and is never used once the build
+    has failed (see the module docstring)."""
+    run_id = run.id
     definition = await db.get(ReportDefinition, run.definition_id)
     initiative = await db.get(Initiative, run.initiative_id)
     definition_name = definition.name if definition else run.report_type
     initiative_name = initiative.name if initiative else "?"
+    error: str | None = None
     try:
         module = get_module(run.report_type)
         kwargs = {"renderer": renderer} if renderer is not None else {}
         result = await asyncio.wait_for(module.build(db, run, **kwargs), RUN_TIMEOUT_SECONDS)
-        key = f"reports/{run.initiative_id}/{run.id}.pdf"
+        key = f"reports/{run.initiative_id}/{run_id}.pdf"
         await put_object(key, result.pdf, "application/pdf")
         attachment = Attachment(
             entity_type="initiative", entity_id=run.initiative_id, kind="document",
@@ -70,35 +86,84 @@ async def process_run(db: AsyncSession, run: ReportRun, *, renderer=None) -> Non
         run.filename = result.filename
         run.size_bytes = len(result.pdf)
         _finish(run, "completed")
+        await db.commit()                   # a failure here is a failed run too
     except InitiativeUnavailable:
-        _finish(run, "failed", "initiative_unavailable")
+        error = "initiative_unavailable"
     except RackRendererUnavailable as exc:
-        _finish(run, "failed", f"rack renderer unavailable: {exc}")
+        error = f"rack renderer unavailable: {exc}"
     except TimeoutError:
-        _finish(run, "failed", f"timed out after {RUN_TIMEOUT_SECONDS:g}s")
+        error = f"timed out after {RUN_TIMEOUT_SECONDS:g}s"
     except Exception as exc:                                    # run must terminate
-        logger.exception("run %s failed: %s", run.id, exc)
-        _finish(run, "failed", f"{type(exc).__name__}: {exc}")
-    await _notify(db, run, definition_name, initiative_name)
-    await db.commit()
+        logger.exception("run %s failed: %s", run_id, exc)
+        error = f"{type(exc).__name__}: {exc}"
+
+    status = "completed" if error is None else "failed"
+    if error is not None:
+        try:
+            await db.rollback()             # the ONLY thing the build session
+        except Exception:                   # is still good for — and even this
+            logger.warning("could not roll back the build session for run %s",
+                           run_id, exc_info=True)
+        async with sessionmaker() as fin:   # terminal state through a fresh one
+            row = await fin.get(ReportRun, run_id)
+            if row is not None:
+                _finish(row, "failed", error)
+                await fin.commit()
+    try:                                    # best-effort, and always last
+        async with sessionmaker() as nb:
+            row = await nb.get(ReportRun, run_id)
+            if row is not None:
+                await _notify(nb, row, definition_name, initiative_name)
+                await nb.commit()
+    except Exception:
+        logger.warning("could not write the inbox row for run %s", run_id, exc_info=True)
+    return status
 
 
 async def run_once(sessionmaker, *, renderer=None) -> bool:
     """Claim and process at most one run. False when the queue is empty."""
+    from serversherpa.system.db_logging import install
+    install("report-worker")
+
     async with sessionmaker() as db:
         run = await claim_next(db)
         if run is None:
             return False
-        logger.info("claimed run %s (%s)", run.id, run.report_type)
+        run_id = run.id
+        logger.info("claimed run %s (%s)", run_id, run.report_type)
         try:
-            await process_run(db, run, renderer=renderer)
-        except Exception as exc:                                # e.g. commit failed
-            logger.exception("run %s crashed in worker: %s", run.id, exc)
-            await db.rollback()
-            _finish(run, "failed", f"worker_error: {exc}")
-            await db.commit()
-        logger.info("run %s finished status=%s", run.id, run.status)
+            status = await process_run(db, run, sessionmaker=sessionmaker,
+                                       renderer=renderer)
+        except Exception as exc:            # last resort: process_run owns its
+            logger.exception("run %s crashed in worker: %s", run_id, exc)
+            try:
+                await db.rollback()
+            except Exception:
+                logger.warning("could not roll back the build session for run %s",
+                               run_id, exc_info=True)
+            async with sessionmaker() as fin:
+                row = await fin.get(ReportRun, run_id)
+                if row is not None:
+                    _finish(row, "failed", f"worker_error: {exc}")
+                    await fin.commit()
+            status = "failed"
+        logger.info("run %s finished status=%s", run_id, status)
         return True
+
+
+async def _sweep_stale(maker, state: dict) -> None:
+    """Re-queue runs a dead worker left 'running'. A DB blip must never kill
+    the loop: log once per outage, same rule as the claim and pause checks."""
+    try:
+        async with maker() as db:
+            requeued = await requeue_stale(db)
+        if requeued:
+            logger.info("re-queued %d stale run(s)", requeued)
+        state["failed"] = False
+    except Exception:
+        if not state["failed"]:
+            logger.warning("could not re-queue stale runs — retrying", exc_info=True)
+        state["failed"] = True
 
 
 async def run_forever(poll_seconds: float = 2.0) -> None:
@@ -111,16 +176,12 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
     pause_state = {"paused": False}
     check_state: dict = {}
     claim_state = {"failed": False}
+    sweep_state = {"failed": False}
     heartbeat = start_heartbeat("report-worker", "worker", meta_fn=lambda: dict(pause_state))
     maker = get_sessionmaker()
     try:
-        try:
-            async with maker() as db:
-                requeued = await requeue_stale(db)
-                if requeued:
-                    logger.info("re-queued %d stale run(s)", requeued)
-        except Exception:
-            logger.warning("could not re-queue stale runs at startup", exc_info=True)
+        await _sweep_stale(maker, sweep_state)          # startup sweep
+        swept_at = time.monotonic()
         logger.info("report worker online — watching the queue")
         while True:
             if await poll_workers_paused(maker, check_state):
@@ -132,6 +193,12 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
             if pause_state["paused"]:
                 logger.info("resumed")
             pause_state["paused"] = False
+            # a worker that died mid-run leaves its row 'running' forever
+            # unless somebody sweeps: at startup is not enough for a process
+            # that then stays up for weeks.
+            if time.monotonic() - swept_at >= STALE_SWEEP_SECONDS:
+                swept_at = time.monotonic()
+                await _sweep_stale(maker, sweep_state)
             try:
                 worked = await run_once(maker)
                 claim_state["failed"] = False

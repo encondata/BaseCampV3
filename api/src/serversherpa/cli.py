@@ -7,6 +7,8 @@ never as standalone scripts with their own DB code.
 """
 
 import asyncio
+import os
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -352,6 +354,41 @@ def import_worker(
     asyncio.run(_run())
 
 
+_HOMEBREW_LIB = Path("/opt/homebrew/lib")
+
+
+def _ensure_pango_on_macos(*, exec_self: bool) -> None:
+    """Dev-only: make WeasyPrint's dylibs findable under honcho.
+
+    Homebrew's Pango lives outside dyld's default search path, so
+    WeasyPrint needs DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib — and
+    that variable cannot be handed down: honcho starts every Procfile
+    line through `/bin/sh -c` (Popen(shell=True)), and SIP strips every
+    DYLD_* variable whenever a protected system binary such as /bin/sh is
+    exec'd. Setting it in `.env` or exporting it in the parent shell
+    therefore does nothing at all. Verified 2026-09-09:
+    `honcho run … python -c 'os.environ'` shows the .env's SS_* variables
+    arriving and DYLD_FALLBACK_LIBRARY_PATH gone.
+
+    So set it here instead, in the worker's own process tree, where no
+    protected binary sits in the way. dyld only reads DYLD_* at process
+    start, so a process that is about to load WeasyPrint itself has to
+    re-exec (`exec_self=True`); the reload supervisor does not — it only
+    needs the variable in os.environ so the worker children it spawns from
+    this same python inherit it. SS_DYLD_SHIM stops any of it happening
+    twice.
+    """
+    if (sys.platform != "darwin"
+            or os.environ.get("SS_DYLD_SHIM")
+            or os.environ.get("DYLD_FALLBACK_LIBRARY_PATH")
+            or not (_HOMEBREW_LIB / "libpango-1.0.dylib").exists()):
+        return
+    os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = str(_HOMEBREW_LIB)
+    os.environ["SS_DYLD_SHIM"] = "1"
+    if exec_self:
+        os.execve(sys.executable, [sys.executable, *sys.argv], os.environ)
+
+
 def _run_report_worker_process(poll_seconds: float) -> None:
     """Reload-mode child entry point (see _run_worker_process)."""
 
@@ -382,11 +419,17 @@ def report_worker(
     if reload:
         import watchfiles
 
+        # the supervisor never loads WeasyPrint — its children do, and they
+        # are spawned from this python, so os.environ is enough here
+        _ensure_pango_on_macos(exec_self=False)
         src_dir = Path(__file__).resolve().parents[1]
         typer.secho(f"[report-worker] dev reload — watching {src_dir}", fg="cyan")
         watchfiles.run_process(src_dir, target=_run_report_worker_process,
                                args=(poll_seconds,))
         return
+
+    _ensure_pango_on_macos(exec_self=True)      # re-execs; nothing above may
+                                                # have imported WeasyPrint yet
 
     async def _run() -> None:
         from serversherpa.db.engine import get_sessionmaker

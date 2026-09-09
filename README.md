@@ -49,7 +49,9 @@ cd api
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
 # WeasyPrint (PDF reports) needs Pango: brew install pango  (Debian: apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libgdk-pixbuf-2.0-0)
-# macOS/Homebrew: if `import weasyprint` still fails, export DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib
+# macOS/Homebrew: `serversherpa report-worker` finds those dylibs itself; anything ELSE that
+# imports weasyprint (pytest, a REPL) needs DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib set
+# in that command's own shell — it cannot be inherited through /bin/sh (SIP strips DYLD_*).
 .venv/bin/alembic upgrade head
 .venv/bin/serversherpa bootstrap-admin --email you@example.com \
     --first-name You --last-name Name          # prompts for password
@@ -69,9 +71,13 @@ import worker + portal, all auto-reloading) in a single terminal:
 api/.venv/bin/honcho start -f Procfile.dev
 ```
 
-honcho loads `.env` from this directory, so on macOS/Homebrew make sure
-`.env` sets `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib` (see `.env.example`)
-or the report worker's WeasyPrint import will fail at startup.
+On macOS the report worker needs no extra setup here: `serversherpa
+report-worker` points itself at Homebrew's Pango when it has to. Do **not**
+try to fix this by putting `DYLD_FALLBACK_LIBRARY_PATH` in `.env` — honcho
+does load `.env`, but it starts every Procfile line through `/bin/sh`, and
+macOS SIP strips every `DYLD_*` variable when a protected system binary is
+exec'd, so the value never reaches the worker (the same goes for exporting
+it in the shell you launch honcho from).
 
 Background workers also reload standalone, uvicorn-style:
 
@@ -83,6 +89,8 @@ Tests (spin up a dedicated `serversherpa_test` database automatically):
 
 ```bash
 cd api && .venv/bin/pytest
+# macOS/Homebrew: prefix with DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib for the
+# report tests — pytest imports WeasyPrint directly, without the worker's CLI shim
 ```
 
 Portal typecheck: `cd portal && npx tsc -b`
