@@ -32,6 +32,7 @@ import Partners from './pages/Partners';
 import PeopleDashboard from './pages/PeopleDashboard';
 import Placeholder from './pages/Placeholder';
 import Printers from './pages/Printers';
+import Reports from './pages/Reports';
 import Login from './pages/Login';
 import Profile from './pages/Profile';
 import ProcessLogs from './pages/ProcessLogs';
@@ -145,6 +146,9 @@ export default function App() {
               } />
               <Route path="/labels/printers" element={
                 <ProtectedRoute resource="labels"><Printers /></ProtectedRoute>
+              } />
+              <Route path="/reports" element={
+                <ProtectedRoute resource="reports"><Reports /></ProtectedRoute>
               } />
               <Route path="/hardware/handheld-readers" element={
                 <ProtectedRoute resource="scanning_hardware"><HandheldReaders /></ProtectedRoute>} />
