@@ -8,6 +8,7 @@ import type {
 } from './api';
 import { boolTriToPatch, numberToPatch, type GodField } from './godEdit';
 import type { ColumnDef } from './listTools';
+import { displayRfid } from './format';
 
 const day = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString() : '—';
@@ -328,7 +329,7 @@ export function moveAssetCellText(row: InitiativeAssetRow, colKey: string): stri
     case 'cable_info': return row.cable_info ?? BLANK;
     case 'vendor_involved': return yesNo(row.vendor_involved);
     case 'asset_status': return row.asset.status_label;
-    case 'rfid_tag': return row.asset.rfid_tag ?? BLANK;
+    case 'rfid_tag': return displayRfid(row.asset.rfid_tag);
     case 'location': return row.asset.location_detail ?? BLANK;
     case 'client': return row.asset.client_name ?? BLANK;
     case 'added': return dayOf(row.created_at);

@@ -67,3 +67,19 @@ export function generateTempPassword(): string {
   crypto.getRandomValues(buf);
   return Array.from(buf, (v) => chars[v % chars.length]).join('') + '!';
 }
+
+/** RFID tags arrive as zero-padded EPCs ("000000000000000000100418");
+ *  every list and detail view shows the significant tail ("100418") and
+ *  keeps the raw tag one hover away via a title attribute. Search, CSV
+ *  export and edit forms keep the stored value. At least one character
+ *  survives ("0000" -> "0"); a missing tag renders as the usual dash. */
+export function displayRfid(tag: string | null | undefined): string {
+  if (!tag) return '—';
+  return tag.replace(/^0+(?=.)/, '');
+}
+
+/** Scan-inbox value column: trim only RFID reads — barcodes and manual
+ *  entries are shown exactly as reported. */
+export function displayScanValue(value: string, scanType: string | null | undefined): string {
+  return scanType === 'rfid' ? displayRfid(value) : value;
+}

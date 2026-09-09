@@ -53,3 +53,10 @@ describe('form round-trip', () => {
     expect(form.name).toBe('');
   });
 });
+
+describe('containerCellText rfid', () => {
+  it('shows the EPC without its zero padding', () => {
+    expect(containerCellText({ ...row, rfid_tag: '000000000000000000100204' }, 'rfid')).toBe('100204');
+    expect(containerCellText({ ...row, rfid_tag: null }, 'rfid')).toBe('—');
+  });
+});

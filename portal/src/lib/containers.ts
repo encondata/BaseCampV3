@@ -4,6 +4,7 @@
  */
 import type { ComboOption } from '../components/ComboBox';
 import type { ContainerItem } from './api';
+import { displayRfid } from './format';
 import type { GodField } from './godEdit';
 
 export function containerSearchText(c: ContainerItem): string {
@@ -19,7 +20,7 @@ export function containerCellText(c: ContainerItem, colKey: string): string {
   switch (colKey) {
     case 'primary': return c.name;
     case 'type': return c.type_label ?? '';
-    case 'rfid': return c.rfid_tag ?? '—';
+    case 'rfid': return displayRfid(c.rfid_tag);
     case 'assets': return String(c.asset_count);
     case 'status': return c.status_label;
     case 'site': return c.site_name ?? '';

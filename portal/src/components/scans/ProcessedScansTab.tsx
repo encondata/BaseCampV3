@@ -45,6 +45,7 @@ import {
   type ColumnDef,
 } from '../../lib/listTools';
 import { VirtualRows } from '../../lib/virtualRows';
+import { displayScanValue } from '../../lib/format';
 
 const COLUMNS: ColumnDef[] = [
   { key: 'match', label: 'Match', width: '1fr', default: true },
@@ -343,7 +344,7 @@ export default function ProcessedScansTab({ onCount }: {
                   <div className="row-main" style={grid}
                        onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : s.id); }}>
                     <div className="cell cell-primary">
-                      <div className="pn"><b className="mono">{s.scanned_value}</b>
+                      <div className="pn"><b className="mono" title={s.scanned_value}>{displayScanValue(s.scanned_value, s.scan_type)}</b>
                         <span>{s.matched_name ?? s.match_type_label}</span></div>
                     </div>
                     {shownCols.map((col) => (

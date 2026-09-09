@@ -537,3 +537,10 @@ describe('rackLayout', () => {
     expect(blocks.find((b) => b.id === 'b')?.label).toBe('SN-9');
   });
 });
+
+describe('moveAssetCellText rfid_tag', () => {
+  it('shows the EPC without its zero padding', () => {
+    const r = { asset: { rfid_tag: '000000000000000000100418' } } as unknown as InitiativeAssetRow;
+    expect(moveAssetCellText(r, 'rfid_tag')).toBe('100418');
+  });
+});

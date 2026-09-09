@@ -392,3 +392,12 @@ describe('ASSET_ERRORS / MODEL_ERRORS', () => {
     expect(MODEL_ERRORS.forbidden).toBeTruthy();
   });
 });
+
+describe('assetCellText rfid', () => {
+  it('shows the EPC without its zero padding (raw stays in the row)', () => {
+    const a = asset({ rfid_tag: '000000000000000000100418' });
+    expect(assetCellText(a, 'rfid')).toBe('100418');
+    expect(a.rfid_tag).toBe('000000000000000000100418');
+    expect(assetCellText(asset({ rfid_tag: null }), 'rfid')).toBe('—');
+  });
+});

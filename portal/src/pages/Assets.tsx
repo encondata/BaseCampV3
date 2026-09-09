@@ -55,6 +55,7 @@ import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
 import '../styles/assets.css';
+import { displayRfid } from '../lib/format';
 
 const COLUMNS: ColumnDef[] = [
   { key: 'model', label: 'Make / Model', width: '1.5fr', default: true },
@@ -309,7 +310,7 @@ export default function Assets() {
       case 'location':
         return <span className="cell-top">{a.location_detail || '—'}</span>;
       case 'rfid':
-        return <span className="mono">{a.rfid_tag ?? '—'}</span>;
+        return <span className="mono" title={a.rfid_tag ?? undefined}>{displayRfid(a.rfid_tag)}</span>;
       case 'last_seen':
         return <span className="cell-top">
           {a.last_seen_at ? new Date(a.last_seen_at).toLocaleDateString() : '—'}
@@ -505,7 +506,7 @@ function AssetRowDetail({
         <dl className="kv">
           <dt>Serial</dt><dd className="mono">{asset.serial_number ?? '—'}</dd>
           <dt>Name</dt><dd>{asset.name ?? '—'}</dd>
-          <dt>RFID tag</dt><dd className="mono">{asset.rfid_tag ?? '—'}</dd>
+          <dt>RFID tag</dt><dd className="mono" title={asset.rfid_tag ?? undefined}>{displayRfid(asset.rfid_tag)}</dd>
           <dt>Model</dt><dd>{asset.model ? `${asset.model.make} ${asset.model.model}` : '—'}</dd>
           <dt>RU</dt><dd>{asset.model?.ru_size ?? '—'}</dd>
           <dt>Rails present</dt>

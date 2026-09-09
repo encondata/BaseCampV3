@@ -18,6 +18,7 @@ import '../styles/initiatives.css';
 import '../styles/system.css';
 
 import StatusHover from '../components/StatusHover';
+import { displayRfid } from '../lib/format';
 
 const chip = (label: string | null, color: string | null) =>
   label && color ? (
@@ -127,7 +128,7 @@ export default function MoveAssetDetail() {
         <dl className="kv">
           <dt>Name</dt><dd>{asset?.name ?? '—'}</dd>
           <dt>Serial</dt><dd className="mono">{asset?.serial_number ?? '—'}</dd>
-          <dt>RFID tag</dt><dd className="mono">{asset?.rfid_tag ?? '—'}</dd>
+          <dt>RFID tag</dt><dd className="mono" title={asset?.rfid_tag ?? undefined}>{displayRfid(asset?.rfid_tag)}</dd>
           <dt>Model</dt>
           <dd>{asset?.model ? `${asset.model.make} ${asset.model.model}` : '—'}</dd>
           <dt>Category</dt><dd>{asset?.model?.category_label ?? '—'}</dd>
