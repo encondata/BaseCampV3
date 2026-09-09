@@ -65,7 +65,16 @@ export function renderRackSvg(input: RenderRackInput): string {
       )}
     </div>,
   );
-  return `<style>${rackCss}</style>${markup}`;
+  // WeasyPrint does not cascade document-level CSS into an inline <svg>, so a
+  // single outer <style> leaves every shape at the SVG default `fill: black`.
+  // Keep the outer copy (the HTML container rules .rack-elevations /
+  // .rack-elevation / .rack-elevation-heading need it) and inject a second copy
+  // as the first child of each <svg>. CSS comments are stripped because
+  // rack-svg.css contains the literal text `<svg>` in a comment, which the HTML
+  // parser would treat as a tag once inside foreign content.
+  const css = rackCss.replace(/\/\*[\s\S]*?\*\//g, '');
+  const styled = markup.replace(/<svg\b[^>]*>/g, (tag) => `${tag}<style>${css}</style>`);
+  return `<style>${css}</style>${styled}`;
 }
 
 async function main(): Promise<void> {

@@ -1,9 +1,12 @@
 """Jinja2 template: each section toggles independently; WeasyPrint smoke
 test produces a real PDF."""
 
+import re
 import zlib
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 from serversherpa.reports.move_report.gather import MoveAsset, MoveData, SiteInfo
 from serversherpa.reports.move_report.racks import RackSvg
@@ -94,4 +97,66 @@ def _pdf_objects(pdf: bytes) -> bytes:
 def test_render_pdf_smoke():
     pdf = render_pdf(render_html(_ctx()))
     assert pdf[:5] == b"%PDF-"
-    assert _pdf_objects(pdf).count(b"/Type /Page") >= 1
+    # `/Type /Pages` is the page *tree* node, not a page — exclude it.
+    assert len(re.findall(rb"/Type\s*/Page\b(?!s)", _pdf_objects(pdf))) >= 1
+
+
+def test_page_margin_strings_are_css_escaped_not_html_escaped():
+    """`<style>` is raw text: HTML entities would print literally in the
+    running header/footer, so those values take the `cssstr` filter."""
+    data = replace(_data(), name='Acme & Co "x"')
+    ctx = build_context(data, ALL_ON, source_racks=[], destination_racks=[],
+                        generated_by="Sean O'Brien",
+                        generated_at=datetime(2026, 9, 9, 14, 30, tzinfo=UTC))
+    html = render_html(ctx)
+    style = html.split("<style>", 1)[1].split("</style>", 1)[0]
+    # `\26 ` — the trailing space terminates the hex escape (C is a hex digit,
+    # so `\26C` would be U+026C), which is why the real space needs a second one.
+    assert 'Acme \\26  Co \\"x\\"' in style
+    assert "Sean O'Brien" in style
+    assert "&amp;" not in style and "&#39;" not in style
+    assert "Acme &amp; Co" in html.split("<h1>", 1)[1].split("</h1>", 1)[0]
+
+
+FIXTURE = Path(__file__).parent / "fixtures" / "rack_fragment.html"
+
+
+def _boxes_by_class(page, name):
+    out = []
+    for box in page._page_box.descendants():
+        element = getattr(box, "element", None)
+        if element is None or box.element_tag != "div":
+            continue
+        if name in (element.get("class") or "").split():
+            out.append(box)
+    return out
+
+
+def test_rack_page_layout_keeps_elevations_on_page_and_clear_of_table():
+    """The real Node-rendered fragment, laid out by WeasyPrint: both
+    elevations inside the .elev column, on the page, left of the asset table."""
+    from weasyprint import HTML
+
+    svg = RackSvg("R1", FIXTURE.read_text(), [_asset(1)])
+    html = render_html(_ctx(options={**ALL_ON, "destination_racks": False}, racks=[svg]))
+    assert re.search(r"<svg[^>]*><style>", html)          # CSS inlined inside the <svg>
+
+    pages = HTML(string=html).render().pages
+    elevations = []
+    for page in pages:
+        elevs = _boxes_by_class(page, "elev")
+        if not elevs:
+            continue
+        elev, = elevs
+        lst, = _boxes_by_class(page, "list")
+        for box in _boxes_by_class(page, "rack-elevation"):
+            assert box.position_x >= 0, "elevation runs off the left edge of the paper"
+            assert box.position_x + box.width <= elev.position_x + elev.width + 0.01
+            elevations.append((page, box))
+        assert elev.position_x + elev.width <= lst.position_x + 0.01
+
+    assert len(elevations) == 2, "FRONT and REAR elevations"
+    (page_a, front), (page_b, rear) = elevations
+    assert page_a is page_b, "FRONT and REAR must share a page"
+    assert front.position_y == rear.position_y, "FRONT and REAR sit side by side"
+    assert front.position_x < rear.position_x

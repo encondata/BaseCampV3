@@ -5,8 +5,8 @@
 <title>{{ ctx.title }}</title>
 <style>
   @page { size: Letter portrait; margin: 16mm 14mm 18mm 14mm;
-          @top-center { content: "{{ ctx.data.name }} — Move Report"; font: 9pt sans-serif; color: #555; }
-          @bottom-left { content: "Generated {{ ctx.generated_stamp }} by {{ ctx.generated_by }}"; font: 8pt sans-serif; color: #555; }
+          @top-center { content: "{{ ctx.data.name|cssstr }} — Move Report"; font: 9pt sans-serif; color: #555; }
+          @bottom-left { content: "Generated {{ ctx.generated_stamp|cssstr }} by {{ ctx.generated_by|cssstr }}"; font: 8pt sans-serif; color: #555; }
           @bottom-right { content: "Page " counter(page) " of " counter(pages); font: 8pt sans-serif; color: #555; } }
   body { font: 10pt/1.35 Helvetica, Arial, sans-serif; color: #111; }
   h1 { font-size: 20pt; text-align: center; text-transform: uppercase; margin: 0 0 2mm; }
@@ -29,7 +29,13 @@
   .totals .t { border: 0.5px solid #999; padding: 2mm 3mm; min-width: 30mm; }
   .totals .t b { display: block; font-size: 13pt; }
   .rack-page { display: flex; gap: 8mm; align-items: flex-start; }
-  .rack-page .elev { flex: none; }
+  /* The elevation column must be sized explicitly: without a width, WeasyPrint's
+     flex sizing shrinks .elev to the heading's width and the fragment's own
+     `justify-content: center` then centres two 44mm elevations inside it,
+     pushing FRONT off the left edge of the paper. 96mm holds FRONT + REAR
+     (2 × 44mm + the fragment's 24px gap) with a little slack. */
+  .rack-page .elev { width: 96mm; flex: none; }
+  .rack-page .elev .rack-elevations { justify-content: flex-start; }
   /* The fragment's own CSS sizes each elevation column at 190px, which at a
      42U rack's aspect ratio is ~234mm tall — taller than the text area, so
      the heading and the elevation would land on separate pages. Narrow the
@@ -37,7 +43,7 @@
      stays a single page. */
   .rack-page .elev .rack-elevation { width: 44mm; }
   .rack-page .elev svg { width: 100%; height: auto; }
-  .rack-page .list { flex: 1; }
+  .rack-page .list { flex: 1; min-width: 0; }
   .note { color: #555; font-style: italic; }
   pre.addr { font: inherit; margin: 0; white-space: pre-line; }
 </style>

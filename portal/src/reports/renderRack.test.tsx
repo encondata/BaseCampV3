@@ -30,6 +30,17 @@ describe('renderRackSvg', () => {
     expect(out).toContain('REAR');
     expect(out).toContain('pdu-1');
   });
+  it('inlines the CSS inside each <svg> so WeasyPrint applies it', () => {
+    // WeasyPrint does not cascade document CSS into inline SVG: without a
+    // <style> *inside* the <svg> every shape prints as solid black.
+    const out = renderRackSvg({ rackName: 'R1', side: 'source', rows: [row({})] });
+    expect(out).toMatch(/<svg[^>]*><style>[^<]*\.rack-faceplate-verified/);
+    // rack-svg.css has a comment containing the literal text `<svg>`; left in,
+    // the HTML parser would treat it as a tag inside foreign content.
+    for (const block of out.match(/<style>[\s\S]*?<\/style>/g) ?? []) {
+      expect(block).not.toContain('<svg>');
+    }
+  });
   it('ignores rows on other racks or the other side', () => {
     const out = renderRackSvg({ rackName: 'R1', side: 'destination', rows: [row({})] });
     expect(out).toContain('No assets recorded at this rack');

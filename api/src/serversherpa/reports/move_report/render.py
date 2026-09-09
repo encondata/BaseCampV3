@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup
 
 from serversherpa.reports.move_report.compute import (
     CollisionReport, LoadSummary, RailSummary, collisions, load_summary, rail_summary,
@@ -16,6 +17,25 @@ from serversherpa.reports.move_report.racks import RackSvg
 
 _ENV = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"),
                    autoescape=select_autoescape(["html"]), trim_blocks=True, lstrip_blocks=True)
+
+
+def _css_string(value: str) -> Markup:
+    """Escape a value for a CSS string literal (`@page` margin-box `content`).
+
+    `<style>` is raw text, so HTML autoescaping there is wrong twice over: the
+    entities print literally (`Acme &amp; Co`) and `&`/`<` never needed escaping
+    in the first place. Escape for CSS instead, and mark the result safe so
+    autoescape leaves it alone. `<` and `>` still get CSS escapes so the value
+    can never close the `<style>` element.
+    """
+    out = str(value).replace("\r\n", "\n").replace("\\", "\\\\").replace('"', '\\"')
+    for char, esc in (("<", "\\3C "), (">", "\\3E "), ("&", "\\26 "),
+                      ("\n", "\\A "), ("\r", "\\A ")):
+        out = out.replace(char, esc)
+    return Markup(out)
+
+
+_ENV.filters["cssstr"] = _css_string
 
 COLLISION_LABELS = {"ru_overlap": "RU overlap", "slot_conflict": "Slot conflict",
                     "ru_and_slot_conflict": "RU overlap + slot conflict"}
