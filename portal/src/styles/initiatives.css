@@ -436,24 +436,6 @@
   display: flex;
   justify-content: center;
 }
-.rack-elevations {
-  position: relative; /* anchors the hover tooltip's absolute positioning */
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  gap: 24px;
-  width: 100%;
-}
-.rack-elevation { display: flex; flex-direction: column; align-items: center; width: 190px; flex: none; }
-.rack-elevation-heading {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  color: #111827;
-  margin-bottom: 6px;
-}
-
 /* hover detail tooltip — real HTML element (not a native title tooltip),
    positioned off the hovered faceplate's bounding rect; styled like the
    app's other popovers (chrome.css .pop-menu) but tighter and mono. */

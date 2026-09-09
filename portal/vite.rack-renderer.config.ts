@@ -6,6 +6,7 @@ import { defineConfig } from 'vite';
 // node_modules next to it.
 export default defineConfig({
   plugins: [react()],
+  publicDir: false,
   build: {
     outDir: 'dist-node',
     emptyOutDir: true,

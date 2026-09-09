@@ -30,7 +30,8 @@ def racks_on(assets: list[MoveAsset], side: str) -> dict[str, list[MoveAsset]]:
 async def rack_svgs(assets: list[MoveAsset], side: str,
                     renderer: Renderer = rack_renderer.render) -> list[RackSvg]:
     out = []
-    for name, rows in racks_on(assets, side).items():
-        svg = await renderer([a.to_row() for a in assets], name, side)
-        out.append(RackSvg(rack_name=name, svg=svg, assets=rows))
+    rows = [a.to_row() for a in assets]
+    for name, rack_rows in racks_on(assets, side).items():
+        svg = await renderer(rows, name, side)
+        out.append(RackSvg(rack_name=name, svg=svg, assets=rack_rows))
     return out

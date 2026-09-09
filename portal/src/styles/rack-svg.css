@@ -5,6 +5,24 @@
  * imports this file with `?raw`). initiatives.css @imports it, so the
  * portal keeps loading them together.
  */
+.rack-elevations {
+  position: relative; /* anchors the hover tooltip's absolute positioning */
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 24px;
+  width: 100%;
+}
+.rack-elevation { display: flex; flex-direction: column; align-items: center; width: 190px; flex: none; }
+.rack-elevation-heading {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: #111827;
+  margin-bottom: 6px;
+}
+
 /* overflow:hidden is the SVG-spec default for a root <svg>, but stated
    explicitly here: at this element's small on-screen size, anything that
    ever crept past the viewBox (or an anti-aliased edge bleeding past it)
@@ -20,12 +38,12 @@
 /* every U number is the same size/weight/color on both rails (round 4
    dropped the every-5 bold/emphasis look entirely). */
 .rack-u-label {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 7px;
   fill: #374151;
 }
 .rack-empty-label {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 10px;
   fill: #6b7280;
 }
@@ -44,7 +62,7 @@
 .rack-led-verified { fill: #111827; }
 .rack-led-unverified { fill: none; stroke: #111827; stroke-width: 1; }
 .rack-block-label {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 8.5px;
   fill: #111827;
 }
