@@ -119,6 +119,7 @@ async def clean_db():
             "contact_profiles, sites, site_clients, notes, assets, "
             "asset_model_aliases, asset_models, container_assets, "
             "log_entries, processes, "
+            "report_runs, report_definitions, notifications, "
             "initiative_links, initiative_people, initiatives, import_jobs, "
             "containers, pending_deletes, label_template_sites, "
             "label_templates, label_placeholders, label_vocab CASCADE"))

@@ -1199,3 +1199,63 @@ class LabelTemplateSite(Base):
         primary_key=True)
     site_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("sites.id", ondelete="CASCADE"), primary_key=True)
+
+
+class ReportDefinition(Base):
+    """The Reports page's Available tab: a named report type + default
+    section options. System rows are seeded and cannot be deleted."""
+    __tablename__ = "report_definitions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    name: Mapped[str] = mapped_column(CITEXT)
+    description: Mapped[str] = mapped_column(server_default="")
+    report_type: Mapped[str]
+    options: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    is_system: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    archived_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class ReportRun(Base):
+    """One generation of a report: queued by the API, executed by the
+    report-worker, stored in Spaces + attached to the initiative."""
+    __tablename__ = "report_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    definition_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("report_definitions.id"))
+    report_type: Mapped[str]
+    initiative_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("initiatives.id"))
+    options: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    status: Mapped[str] = mapped_column(server_default="queued")
+    error: Mapped[str | None]
+    requested_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.id"))
+    requested_rank: Mapped[int] = mapped_column(Integer, server_default="0")
+    notify: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    storage_key: Mapped[str | None]
+    attachment_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("attachments.id"))
+    filename: Mapped[str | None]
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    started_at: Mapped[datetime | None]
+    finished_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class Notification(Base):
+    """Per-person in-app inbox row. Written only via notifications/inbox.py
+    notify(); future channels (email…) fan out from that function."""
+    __tablename__ = "notifications"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    person_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.id"))
+    kind: Mapped[str]
+    title: Mapped[str]
+    body: Mapped[str] = mapped_column(server_default="")
+    link: Mapped[str | None]
+    payload: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    read_at: Mapped[datetime | None]

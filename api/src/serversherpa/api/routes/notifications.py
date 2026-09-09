@@ -10,18 +10,18 @@ import uuid
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import func, select
 
-from serversherpa.api.deps import AuthContext, DbSession, require_permission
+from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
 from serversherpa.api.schemas import (
     NotificationEffectiveSettings, NotificationGroupCreateIn,
     NotificationGroupDetailOut, NotificationGroupOut, NotificationGroupPatchIn,
-    NotificationMemberAddIn, NotificationMemberOut, NotificationMemberOverrides,
-    NotificationRecipientOut,
+    NotificationInboxItemOut, NotificationInboxOut, NotificationMemberAddIn,
+    NotificationMemberOut, NotificationMemberOverrides, NotificationRecipientOut,
 )
 from serversherpa.db.models import (
-    NotificationGroup, NotificationGroupMember, Person, UserAccount,
+    Notification, NotificationGroup, NotificationGroupMember, Person, UserAccount,
 )
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import presign_get
@@ -413,3 +413,48 @@ async def list_recipients(
             email=person.email, phone=person.phone, has_account=has_account,
             **caps))
     return out
+
+
+# ── in-app inbox (any signed-in person; no resource permission) ──────
+
+INBOX_LIMIT = 50
+
+
+@router.get("/inbox", response_model=NotificationInboxOut)
+async def inbox(user: CurrentUser, db: DbSession,
+                unread_only: bool = False) -> NotificationInboxOut:
+    base = select(Notification).where(Notification.person_id == user.person.id)
+    unread = await db.scalar(
+        select(func.count()).select_from(Notification).where(
+            Notification.person_id == user.person.id, Notification.read_at.is_(None)))
+    q = base.order_by(Notification.created_at.desc()).limit(INBOX_LIMIT)
+    if unread_only:
+        q = q.where(Notification.read_at.is_(None))
+    items = (await db.scalars(q)).all()
+    return NotificationInboxOut(unread_count=int(unread or 0), items=items)
+
+
+@router.post("/inbox/{notification_id}/read", status_code=204)
+async def inbox_mark_read(notification_id: uuid.UUID, user: CurrentUser,
+                          db: DbSession) -> Response:
+    row = await db.scalar(select(Notification).where(
+        Notification.id == notification_id,
+        Notification.person_id == user.person.id))
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "notification_not_found"})
+    if row.read_at is None:
+        row.read_at = datetime.now(UTC)
+        await db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/inbox/read-all", status_code=204)
+async def inbox_mark_all_read(user: CurrentUser, db: DbSession) -> Response:
+    rows = (await db.scalars(select(Notification).where(
+        Notification.person_id == user.person.id,
+        Notification.read_at.is_(None)))).all()
+    now = datetime.now(UTC)
+    for row in rows:
+        row.read_at = now
+    await db.commit()
+    return Response(status_code=204)

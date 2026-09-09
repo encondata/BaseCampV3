@@ -1807,6 +1807,24 @@ class NotificationRecipientOut(BaseModel):
     can_web: bool
 
 
+class NotificationInboxItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    kind: str
+    title: str
+    body: str
+    link: str | None = None
+    payload: dict
+    created_at: datetime
+    read_at: datetime | None = None
+
+
+class NotificationInboxOut(BaseModel):
+    unread_count: int
+    items: list[NotificationInboxItemOut]
+
+
 # ── status rules ─────────────────────────────────────────────────────
 
 class StatusRuleConditionIn(BaseModel):
