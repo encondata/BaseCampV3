@@ -4,6 +4,7 @@
  */
 import type { ComboOption } from '../components/ComboBox';
 import type { AssetItem, AssetModelItem } from './api';
+import { displayRfid } from './format';
 import { boolTriToPatch, numberToPatch, type GodField } from './godEdit';
 
 export const LB_TO_KG = 0.453592;
@@ -56,7 +57,7 @@ export function assetCellText(a: AssetItem, colKey: string): string {
     case 'site': return a.site_name ?? '';
     case 'model': return a.model ? `${a.model.make} ${a.model.model}` : '';
     case 'location': return a.location_detail || '—';
-    case 'rfid': return a.rfid_tag ?? '—';
+    case 'rfid': return displayRfid(a.rfid_tag);
     case 'ru': return a.model?.ru_size != null ? String(a.model.ru_size) : '—';
     case 'last_seen': return a.last_seen_at ? new Date(a.last_seen_at).toLocaleDateString() : '—';
     case 'has_rails': return a.has_rails === null ? '—' : a.has_rails ? 'Yes' : 'No';

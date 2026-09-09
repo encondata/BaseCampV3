@@ -55,6 +55,7 @@ import '../styles/profile.css';
 import '../styles/settings.css';
 import '../styles/assets.css';
 import '../styles/containers.css';
+import { displayRfid } from '../lib/format';
 
 const COLUMNS: ColumnDef[] = [
   { key: 'type', label: 'Type', width: '1fr', default: true },
@@ -230,7 +231,7 @@ export default function Containers() {
           )
           : <span className="cell-top">—</span>;
       case 'rfid':
-        return <span className="mono">{c.rfid_tag ?? '—'}</span>;
+        return <span className="mono" title={c.rfid_tag ?? undefined}>{displayRfid(c.rfid_tag)}</span>;
       case 'assets':
         return <span className="mono">{c.asset_count}</span>;
       case 'status':
@@ -446,7 +447,7 @@ function ContainerRowDetail({
         <dl className="kv">
           <dt>Name</dt><dd>{container.name}</dd>
           <dt>Type</dt><dd>{container.type_label ?? '—'}</dd>
-          <dt>RFID tag</dt><dd className="mono">{container.rfid_tag ?? '—'}</dd>
+          <dt>RFID tag</dt><dd className="mono" title={container.rfid_tag ?? undefined}>{displayRfid(container.rfid_tag)}</dd>
           <dt>Last audit</dt>
           <dd>{container.last_audit_at
             ? new Date(container.last_audit_at).toLocaleString() : '—'}</dd>

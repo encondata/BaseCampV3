@@ -146,3 +146,13 @@ describe('SCANS_ERRORS', () => {
     }
   });
 });
+
+describe('scan value column trims rfid padding only', () => {
+  it('processed and raw rows', () => {
+    expect(processedScanCellText({ ...row, scanned_value: '000000000000000000100418', scan_type: 'rfid' }, 'primary')).toBe('100418');
+    expect(processedScanCellText({ ...row, scanned_value: '000123', scan_type: 'barcode' }, 'primary')).toBe('000123');
+    expect(processedScanCellText({ ...row, scanned_value: '0000', scan_type: 'rfid' }, 'primary')).toBe('0');
+    expect(rawScanCellText({ ...rawRow, scanned_value: '000000000000000000100418', scan_type: 'rfid' }, 'primary')).toBe('100418');
+    expect(rawScanCellText({ ...rawRow, scanned_value: '000123', scan_type: 'barcode' }, 'primary')).toBe('000123');
+  });
+});
