@@ -158,10 +158,13 @@ afterEach(() => {
 it('internal user gets a client select and panels for the first client', async () => {
   render(<MemoryRouter><ClientDashboard /></MemoryRouter>);
   await waitFor(() => expect(screen.queryByLabelText('Client')).not.toBeNull());
-  expect(screen.queryByText('Acme move')).not.toBeNull();     // initiatives
-  expect(screen.queryByText('In Progress')).not.toBeNull();   // initiative status chip
-  expect(screen.queryByText('In Transit')).not.toBeNull();    // fleet dist
-  expect(screen.queryByText('9')).not.toBeNull();             // activity 7d KPI
+  // The panels resolve from their own fetches after the select appears —
+  // wait for each rather than asserting synchronously (a race that lost
+  // under a loaded full-suite run).
+  expect(await screen.findByText('Acme move')).toBeTruthy();    // initiatives
+  expect(await screen.findByText('In Progress')).toBeTruthy();  // initiative status chip
+  expect(await screen.findByText('In Transit')).toBeTruthy();   // fleet dist
+  expect(await screen.findByText('9')).toBeTruthy();            // activity 7d KPI
 });
 
 it('switching client reloads panels', async () => {
