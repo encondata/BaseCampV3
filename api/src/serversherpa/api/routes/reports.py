@@ -135,13 +135,14 @@ RUNS_MAX_LIMIT = 500
 
 
 def _run_out(run: ReportRun, definition_name: str, initiative_name: str,
-             first: str, last: str) -> ReportRunOut:
+             preferred: str | None, first: str, last: str) -> ReportRunOut:
     return ReportRunOut(
         id=run.id, definition_id=run.definition_id, definition_name=definition_name,
         report_type=run.report_type, initiative_id=run.initiative_id,
         initiative_name=initiative_name, options=run.options, status=run.status,
         error=run.error, requested_by=run.requested_by,
-        requested_by_name=f"{first} {last}".strip(), requested_rank=run.requested_rank,
+        requested_by_name=f"{preferred or first} {last}".strip(),
+        requested_rank=run.requested_rank,
         notify=run.notify, filename=run.filename, size_bytes=run.size_bytes,
         started_at=run.started_at, finished_at=run.finished_at, created_at=run.created_at)
 
@@ -151,7 +152,7 @@ def _visible_runs(actor: AuthContext):
     runs requested at or below the actor's rank; and the initiative must be
     in the actor's scope."""
     q = (select(ReportRun, ReportDefinition.name, Initiative.name,
-                Person.first_name, Person.last_name)
+                Person.preferred_name, Person.first_name, Person.last_name)
          .join(ReportDefinition, ReportDefinition.id == ReportRun.definition_id)
          .join(Initiative, Initiative.id == ReportRun.initiative_id)
          .join(Person, Person.id == ReportRun.requested_by)
@@ -211,7 +212,8 @@ async def list_runs(
         q = q.where(ReportRun.initiative_id == initiative_id)
     if before is not None:
         q = q.where(ReportRun.created_at < before)
-    q = q.order_by(ReportRun.created_at.desc()).limit(max(1, min(limit, RUNS_MAX_LIMIT)))
+    q = (q.order_by(ReportRun.created_at.desc(), ReportRun.id.desc())
+          .limit(max(1, min(limit, RUNS_MAX_LIMIT))))
     return [_run_out(*row) for row in (await db.execute(q)).all()]
 
 

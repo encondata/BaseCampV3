@@ -183,6 +183,7 @@ async def test_download_requires_completion_then_presigns(client, db, seeded_use
     resp = await client.get(f"/reports/runs/{run['id']}/download", headers=hdrs)
     assert resp.status_code == 200, resp.text
     assert row.storage_key in resp.json()["url"]
+    assert "Move%20Report" in resp.json()["url"]
 
 
 async def test_notify_patch_is_requester_only(client, db, seeded_user):
