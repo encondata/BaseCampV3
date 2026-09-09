@@ -5,6 +5,7 @@
 import type { ComboOption } from '../components/ComboBox';
 import type { ProcessedScanRow, RawScanRow } from './api';
 import type { GodField } from './godEdit';
+import { displayScanValue } from './format';
 
 export function processedScanSearchText(s: ProcessedScanRow): string {
   return [s.scanned_value, s.matched_name, s.match_type_label,
@@ -18,7 +19,7 @@ export function processedScanSearchText(s: ProcessedScanRow): string {
  *  is the always-shown scanned-value cell; 'archived' is the pseudo-column. */
 export function processedScanCellText(s: ProcessedScanRow, colKey: string): string {
   switch (colKey) {
-    case 'primary': return s.scanned_value;
+    case 'primary': return displayScanValue(s.scanned_value, s.scan_type);
     case 'match': return s.match_type_label;
     case 'matched': return s.matched_name ?? '—';
     case 'scan_type': return s.scan_type_label;
@@ -61,7 +62,7 @@ export function rawScanSearchText(r: RawScanRow): string {
  *  raw scans have no archived_at. */
 export function rawScanCellText(r: RawScanRow, colKey: string): string {
   switch (colKey) {
-    case 'primary': return r.scanned_value;
+    case 'primary': return displayScanValue(r.scanned_value, r.scan_type);
     case 'scan_type': return r.scan_type_label;
     case 'scanned': return new Date(r.scanned_at).toLocaleString();
     case 'device': return r.device_id || '—';

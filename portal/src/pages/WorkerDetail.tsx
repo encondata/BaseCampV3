@@ -44,6 +44,7 @@ const PERSON_FIELDS = [
   { key: 'postal_code', label: 'Postal code', full: false, required: false },
   { key: 'country', label: 'Country (2-letter)', full: false, required: true },
 ] as const;
+import { displayRfid } from '../lib/format';
 type PersonKey = (typeof PERSON_FIELDS)[number]['key'];
 
 // WorkerDetailItem carries email as contact_email; the PATCH speaks person
@@ -284,7 +285,7 @@ export default function WorkerDetailPage() {
                       .join(' · ') || '—'}
                   </dd>
                   <dt>Badge ID</dt><dd className="mono">{worker.badge_uid}</dd>
-                  <dt>RFID tag</dt><dd className="mono">{worker.rfid_tag ?? '—'}</dd>
+                  <dt>RFID tag</dt><dd className="mono" title={worker.rfid_tag ?? undefined}>{displayRfid(worker.rfid_tag)}</dd>
                   <dt>Added</dt><dd className="mono">{longDate(worker.created_at)}</dd>
                 </dl>
               )}

@@ -29,6 +29,7 @@ import {
   type ColumnDef,
 } from '../../lib/listTools';
 import { VirtualRows } from '../../lib/virtualRows';
+import { displayScanValue } from '../../lib/format';
 
 const COLUMNS: ColumnDef[] = [
   { key: 'status', label: 'Scan status', width: '1.1fr', default: true },
@@ -235,7 +236,7 @@ export default function RawScansTab({ onCount }: {
                   <div className="row-main" style={grid}
                        onClick={() => setOpenId(open ? null : r.id)}>
                     <div className="cell cell-primary">
-                      <div className="pn"><b className="mono">{r.scanned_value}</b>
+                      <div className="pn"><b className="mono" title={r.scanned_value}>{displayScanValue(r.scanned_value, r.scan_type)}</b>
                         <span>{r.scan_type_label}</span></div>
                     </div>
                     {shownCols.map((col) => (
@@ -271,7 +272,7 @@ function RawScanRowDetail({ scan }: { scan: RawScanRow }) {
       <div className="detail-block">
         <p className="eyebrow-sm">Scan</p>
         <dl className="kv">
-          <dt>Value</dt><dd className="mono">{scan.scanned_value}</dd>
+          <dt>Value</dt><dd className="mono" title={scan.scanned_value}>{displayScanValue(scan.scanned_value, scan.scan_type)}</dd>
           <dt>Method</dt><dd>{scan.scan_type_label}</dd>
           <dt>Scanned</dt><dd>{new Date(scan.scanned_at).toLocaleString()}</dd>
           <dt>Device</dt><dd className="mono">{scan.device_id || '—'}</dd>
