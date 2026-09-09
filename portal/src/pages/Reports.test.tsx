@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -134,4 +134,51 @@ it('tab query switches to History', async () => {
   renderPage('/reports?tab=history');
   await waitFor(() => expect(api.listReportRuns).toHaveBeenCalled());
   expect(screen.getByRole('tab', { name: /History/ }).className).toContain('on');
+});
+
+const RUN: ReportRun = {
+  id: 'r1', definition_id: 'd1', definition_name: 'Move Report', report_type: 'move_report',
+  initiative_id: 'i1', initiative_name: 'NAP11', options: DEFS[0].options, status: 'completed',
+  error: null, requested_by: 'p1', requested_by_name: 'Alice Anderson', requested_rank: 40,
+  notify: false, filename: 'Move Report - NAP11.pdf', size_bytes: 234567,
+  started_at: '2026-09-09T12:00:01Z', finished_at: '2026-09-09T12:00:09Z',
+  created_at: '2026-09-09T12:00:00Z',
+};
+
+it('History lists runs with status, duration, size and a Download action', async () => {
+  const user = userEvent.setup();
+  // The failed run gets its own initiative and finish time so the
+  // NAP11 link and the 8s duration below name exactly one row.
+  api.listReportRuns.mockResolvedValue([RUN, { ...RUN, id: 'r2', initiative_id: 'i2',
+    initiative_name: 'DAL02', status: 'failed', error: 'boom', filename: null, size_bytes: null,
+    finished_at: '2026-09-09T12:00:04Z' }]);
+  api.getReportRunDownloadUrl.mockResolvedValue('https://spaces/r1.pdf');
+  const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+  renderPage('/reports?tab=history');
+  await screen.findByText('NAP11', { selector: 'a' });
+  expect(screen.getByText('Completed')).toBeTruthy();
+  expect(screen.getByText('8s')).toBeTruthy();
+  expect(screen.getByText('229 KB')).toBeTruthy();
+  expect(screen.getByText('Failed')).toBeTruthy();
+  const triggers = screen.getAllByRole('button', { name: /actions/i });
+  await user.click(triggers[0]);
+  await user.click(screen.getByText('Download'));
+  await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://spaces/r1.pdf', '_blank'));
+  await user.click(triggers[1]);
+  await user.click(screen.getByText('View error'));
+  expect(await screen.findByText('boom')).toBeTruthy();
+});
+
+it('History polls while a run is active and stops when idle', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  api.listReportRuns
+    .mockResolvedValueOnce([{ ...RUN, status: 'running', finished_at: null }])
+    .mockResolvedValue([RUN]);
+  renderPage('/reports?tab=history');
+  await waitFor(() => expect(api.listReportRuns).toHaveBeenCalledTimes(1));
+  await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
+  expect(api.listReportRuns).toHaveBeenCalledTimes(2);
+  await act(async () => { await vi.advanceTimersByTimeAsync(6500); });
+  expect(api.listReportRuns).toHaveBeenCalledTimes(2);      // idle: no more polls
+  vi.useRealTimers();
 });
