@@ -1,7 +1,8 @@
 """Notification groups CRUD. A group carries the default delivery
 channels, quiet hours, active days, and DND behavior for its members.
 Task 2 adds member endpoints (with per-member overrides); the React UI
-is a later task still — this file is groups-only.
+is a later task still. This file also hosts the per-person in-app
+inbox routes (/inbox, mark-one-read, mark-all-read).
 
 CHANNELS/DAYS are the source of truth other modules (the future
 notification sender, Task 2's member validation) should import from."""

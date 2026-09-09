@@ -2099,3 +2099,25 @@ class LabelZplPreviewIn(BaseModel):
     zpl: str = Field(min_length=1, max_length=20000)
     size_key: str
     dpi_key: str
+
+
+# ── reports ───────────────────────────────────────────────────────
+
+class ReportDefinitionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    description: str
+    report_type: str
+    options: dict
+    is_system: bool
+    updated_at: datetime
+
+
+class ReportDefinitionUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(None, min_length=1, max_length=120)
+    description: str | None = Field(None, max_length=1000)
+    options: dict | None = None

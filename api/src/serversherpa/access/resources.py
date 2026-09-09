@@ -79,6 +79,8 @@ _RESOURCES = [
              routes=("/labels/print", "/labels/templates", "/labels/generate",
                      "/labels/printers"),
              visible_to=frozenset({"global"})),
+    Resource("reports", "Reports", routes=("/reports",),
+             visible_to=frozenset({"global"})),
     Resource("time", "Time", routes=("/people/time",),
              visible_to=frozenset({"global"})),
     Resource("attachments", "Files & attachments",
