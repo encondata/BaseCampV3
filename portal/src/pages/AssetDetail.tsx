@@ -3,7 +3,7 @@
  * status, notes/files, scan history. Editable via the shared
  * AssetEditModal; chrome mirrors MoveAssetDetail (idet- classes, init-panel).
  */
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -14,19 +14,13 @@ import {
   getAsset, listAssetStatuses, listAssets, listClients, listSites,
   type AssetItem, type OrgRef, type SiteItem, type StatusValue,
 } from '../lib/api';
+import { statusChip as chip } from '../lib/chips';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/system.css';
 
 import StatusHover from '../components/StatusHover';
 import { displayRfid } from '../lib/format';
-
-const chip = (label: string | null, color: string | null) =>
-  label && color ? (
-    <span className="chip custom" style={{ '--chip': color } as CSSProperties}>
-      <span className="dot" />{label}
-    </span>
-  ) : null;
 
 export default function AssetDetail() {
   const { assetId } = useParams<{ assetId: string }>();
@@ -126,8 +120,7 @@ export default function AssetDetail() {
           <dt>Status</dt>
           <dd>
             <StatusHover entityType="asset" entityId={asset.id} status={asset.status}>
-              {chip(asset.status_label, asset.status_color)
-                ?? <span className="chip tag">{asset.status_label}</span>}
+              {chip(asset.status_label, asset.status_color)}
             </StatusHover>
           </dd>
           <dt>Client</dt><dd>{asset.client_name ?? 'House'}</dd>

@@ -171,7 +171,7 @@ export default function ActivityHistory({ rows }: { rows: MyActivityItem[] }) {
               <div className="row-main" style={grid}
                    onClick={() => setOpenId(open ? null : r.id)}>
                 <div className="cell" title={new Date(r.at).toLocaleString()}>
-                  {relativeTime(r.at)}
+                  <span className="mono">{relativeTime(r.at)}</span>
                 </div>
                 {shownCols.map((c) => (
                   <div className="cell" key={c.key}

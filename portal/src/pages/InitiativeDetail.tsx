@@ -10,7 +10,7 @@
 
 import {
   useCallback, useEffect, useMemo, useRef, useState,
-  type CSSProperties, type FormEvent, type MouseEvent as ReactMouseEvent,
+  type FormEvent, type MouseEvent as ReactMouseEvent,
 } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
@@ -57,6 +57,7 @@ import {
   type WorkerOption,
 } from '../lib/api';
 import { ADMIN_RANK } from '../lib/access';
+import { statusChip as chip } from '../lib/chips';
 import { relativeTime } from '../lib/format';
 import {
   INITIATIVE_ERRORS, MOVE_ASSET_COLUMNS, MOVE_ASSET_EDIT_FIELDS, MOVE_ASSET_ERRORS,
@@ -468,15 +469,6 @@ export default function InitiativeDetail() {
     <><dt>{label}</dt><dd>{value || '—'}</dd></>
   );
 
-  const chip = (label: string | null | undefined, color: string | null | undefined) =>
-    label && color
-      ? (
-        <span className="chip custom" style={{ '--chip': color } as CSSProperties}>
-          <span className="dot" />{label}
-        </span>
-      )
-      : null;
-
   const partnerName = (partnerId: string | null) => {
     if (!partnerId || !canViewPartners) return null;
     return partners.find((p) => p.id === partnerId)?.name ?? null;
@@ -551,15 +543,14 @@ export default function InitiativeDetail() {
       case 'name': return <span className="cell-top">{p.person_name}</span>;
       case 'work_type':
         return p.work_type_label
-          ? (chip(p.work_type_label, p.work_type_color)
-             ?? <span className="chip tag">{p.work_type_label}</span>)
+          ? chip(p.work_type_label, p.work_type_color)
           : <span className="cell-top">—</span>;
       case 'site_worked':
         return <span className="cell-top">{p.site_worked_name || '—'}</span>;
       case 'rating':
         return <span className="cell-top">{p.rating != null ? `★ ${p.rating}` : '—'}</span>;
       case 'added':
-        return <span className="cell-top">{personCellText(p, 'added')}</span>;
+        return <span className="mono">{personCellText(p, 'added')}</span>;
       default: return null;
     }
   };
@@ -588,16 +579,14 @@ export default function InitiativeDetail() {
     if (key === 'status') {
       return (
         <StatusHover entityType="initiative_asset" entityId={a.id} status={a.status}>
-          {chip(a.status_label, a.status_color)
-            ?? <span className="chip tag">{a.status_label}</span>}
+          {chip(a.status_label, a.status_color)}
         </StatusHover>
       );
     }
     if (key === 'asset_status') {
       return (
         <StatusHover entityType="asset" entityId={a.asset_id} status={a.asset.status}>
-          {chip(a.asset.status_label, a.asset.status_color)
-            ?? <span className="chip tag">{a.asset.status_label}</span>}
+          {chip(a.asset.status_label, a.asset.status_color)}
         </StatusHover>
       );
     }
@@ -1298,14 +1287,6 @@ function MoveAssetExpansion({ row, initiativeId, canViewScans }: {
 }) {
   const [view, setView] = useState<'move' | 'scans'>('move');
   const yesNo = (v: boolean | null) => (v === null ? '—' : v ? 'Yes' : 'No');
-  const chip = (label: string | null | undefined, color: string | null | undefined) =>
-    label && color
-      ? (
-        <span className="chip custom" style={{ '--chip': color } as CSSProperties}>
-          <span className="dot" />{label}
-        </span>
-      )
-      : null;
   return (
     <div>
       <div className="idet-expand-bar">
@@ -1362,11 +1343,9 @@ function MoveAssetExpansion({ row, initiativeId, canViewScans }: {
             <p className="eyebrow-sm">Status</p>
             <dl className="kv">
               <dt>Move status</dt>
-              <dd>{chip(row.status_label, row.status_color)
-                ?? <span className="chip tag">{row.status_label}</span>}</dd>
+              <dd>{chip(row.status_label, row.status_color)}</dd>
               <dt>Asset status</dt>
-              <dd>{chip(row.asset.status_label, row.asset.status_color)
-                ?? <span className="chip tag">{row.asset.status_label}</span>}</dd>
+              <dd>{chip(row.asset.status_label, row.asset.status_color)}</dd>
               <dt>Added</dt><dd>{new Date(row.created_at).toLocaleDateString()}</dd>
               <dt>Updated</dt><dd>{new Date(row.updated_at).toLocaleDateString()}</dd>
             </dl>

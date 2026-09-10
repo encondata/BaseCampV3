@@ -260,7 +260,14 @@ export default function LabelTemplates() {
   const cellFor = (t: LabelTemplate, key: string) => {
     switch (key) {
       case 'name':
-        return <span className="cell-primary">{t.name}</span>;
+        return <b className="cell-top">{t.name}</b>;
+      case 'label_type':
+      case 'size_key':
+      case 'language_key':
+      case 'dpi_key':
+        return <span className="chip tag">{cellText(t, key)}</span>;
+      case 'version':
+        return <span className="mono">{cellText(t, key)}</span>;
       case 'kind':
         return (
           <span className={`chip ${t.kind === 'design' ? 'c-violet' : 'c-slate'}`}>
@@ -273,16 +280,12 @@ export default function LabelTemplates() {
             {activeLabel(t.is_active)}
           </span>
         );
-      case 'sites': {
-        const text = sitesCellText(t.site_ids, sites);
-        return t.site_ids.length === 0
-          ? <span className="cell-sub">{text}</span>
-          : <span>{text}</span>;
-      }
+      case 'sites':
+        return <span className="cell-sub">{sitesCellText(t.site_ids, sites)}</span>;
       case 'description':
-        return <span>{t.description || '—'}</span>;
+        return <span className="cell-sub">{t.description || '—'}</span>;
       case 'updated_at':
-        return <span>{new Date(t.updated_at).toLocaleDateString()}</span>;
+        return <span className="mono">{new Date(t.updated_at).toLocaleDateString()}</span>;
       default:
         return <span>{cellText(t, key)}</span>;
     }

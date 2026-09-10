@@ -139,9 +139,11 @@ export default function Reports() {
 
   const cellFor = (d: ReportDefinition, key: string) => {
     switch (key) {
-      case 'name': return <span className="cell-primary">{d.name}</span>;
-      case 'description': return <span>{d.description || '—'}</span>;
-      case 'updated_at': return <span>{new Date(d.updated_at).toLocaleDateString()}</span>;
+      case 'name': return <b className="cell-primary cell-top">{d.name}</b>;
+      case 'report_type': return <span className="chip tag">{cellText(d, key)}</span>;
+      case 'description': return <span className="cell-sub">{d.description || '—'}</span>;
+      case 'sections': return <span className="mono">{cellText(d, key)}</span>;
+      case 'updated_at': return <span className="mono">{new Date(d.updated_at).toLocaleDateString()}</span>;
       case 'is_system': return d.is_system
         ? <span className="chip c-slate">System</span>
         : <span className="cell-sub">—</span>;

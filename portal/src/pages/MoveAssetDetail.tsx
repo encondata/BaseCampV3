@@ -3,7 +3,7 @@
  * complete move details, scan history. Editable via the shared
  * AssetEditDialog; chrome mirrors InitiativeDetail (idet-*).
  */
-import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -13,19 +13,13 @@ import {
   getAsset, getInitiative, listAssetStatuses, listInitiativeAssets,
   type AssetItem, type InitiativeAssetRow, type StatusValue,
 } from '../lib/api';
+import { statusChip as chip } from '../lib/chips';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/system.css';
 
 import StatusHover from '../components/StatusHover';
 import { displayRfid } from '../lib/format';
-
-const chip = (label: string | null, color: string | null) =>
-  label && color ? (
-    <span className="chip custom" style={{ '--chip': color } as CSSProperties}>
-      <span className="dot" />{label}
-    </span>
-  ) : null;
 
 export default function MoveAssetDetail() {
   const { id, rowId } = useParams<{ id: string; rowId: string }>();
@@ -133,8 +127,7 @@ export default function MoveAssetDetail() {
           <dd>{asset?.model ? `${asset.model.make} ${asset.model.model}` : '—'}</dd>
           <dt>Category</dt><dd>{asset?.model?.category_label ?? '—'}</dd>
           <dt>Status</dt>
-          <dd>{asset ? (chip(asset.status_label, asset.status_color)
-            ?? <span className="chip tag">{asset.status_label}</span>) : '—'}</dd>
+          <dd>{asset ? chip(asset.status_label, asset.status_color) : '—'}</dd>
           <dt>Client</dt><dd>{asset?.client_name ?? 'House'}</dd>
           <dt>Site</dt><dd>{asset?.site_name ?? '—'}</dd>
           <dt>Location</dt><dd>{asset?.location_detail || '—'}</dd>
@@ -176,15 +169,13 @@ export default function MoveAssetDetail() {
               <dt>Move status</dt>
               <dd>
                 <StatusHover entityType="initiative_asset" entityId={row.id} status={row.status}>
-                  {chip(row.status_label, row.status_color)
-                    ?? <span className="chip tag">{row.status_label}</span>}
+                  {chip(row.status_label, row.status_color)}
                 </StatusHover>
               </dd>
               <dt>Asset status</dt>
               <dd>
                 <StatusHover entityType="asset" entityId={row.asset_id} status={row.asset.status}>
-                  {chip(row.asset.status_label, row.asset.status_color)
-                    ?? <span className="chip tag">{row.asset.status_label}</span>}
+                  {chip(row.asset.status_label, row.asset.status_color)}
                 </StatusHover>
               </dd>
               <dt>Added</dt><dd>{new Date(row.created_at).toLocaleDateString()}</dd>

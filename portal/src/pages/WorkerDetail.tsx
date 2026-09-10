@@ -4,7 +4,7 @@
  * certifications, initiative history, import provenance, notes/files.
  * Chrome mirrors Profile.tsx (hero/panels) + SiteDetail.tsx (back link).
  */
-import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -19,6 +19,7 @@ import {
   apiFetch, listTimeEntries, listWorkerStatuses,
   type StatusValue, type TimeEntryItem,
 } from '../lib/api';
+import { statusChip as chip } from '../lib/chips';
 import { longDate } from '../lib/format';
 import { formatMinutes } from '../lib/timeFormat';
 import {
@@ -58,13 +59,6 @@ const fmtClock = (iso: string | null): string =>
 
 const fmtDay = (iso: string): string =>
   new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-
-const chip = (label: string | null, color: string | null) =>
-  label ? (
-    <span className="chip custom" style={{ '--chip': color ?? '#51606f' } as CSSProperties}>
-      <span className="dot" />{label}
-    </span>
-  ) : null;
 
 export default function WorkerDetailPage() {
   const { personId } = useParams<{ personId: string }>();

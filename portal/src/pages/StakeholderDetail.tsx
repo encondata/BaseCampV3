@@ -30,6 +30,7 @@ import {
   type InitiativeItem,
   type StatusValue,
 } from '../lib/api';
+import { statusChip as chip } from '../lib/chips';
 import {
   partnerTypeColor, partnerTypeLabel, STATUS_META, type OrgItem,
 } from '../lib/orgs';
@@ -83,16 +84,6 @@ const PARTNER_ROLE_FIELDS: { key: keyof InitiativeItem; label: string }[] = [
 
 function roleFor(i: InitiativeItem, orgId: string): string {
   return PARTNER_ROLE_FIELDS.filter((f) => i[f.key] === orgId).map((f) => f.label).join(', ');
-}
-
-function chip(label: string | null | undefined, color: string | null | undefined) {
-  return label
-    ? (
-      <span className="chip custom" style={{ '--chip': color ?? '#51606f' } as CSSProperties}>
-        <span className="dot" />{label}
-      </span>
-    )
-    : <span className="cell-top">—</span>;
 }
 
 /* ── Previous initiatives — standard list ───────────────────────────── */

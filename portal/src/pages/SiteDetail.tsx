@@ -18,19 +18,13 @@ import {
   getSite, listClients, listPartners, listSiteStatuses, listSiteTypes,
   type OrgRef, type SiteDetailOut, type SiteLookup,
 } from '../lib/api';
+import { statusChip as chip } from '../lib/chips';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/sites.css';
 import '../styles/system.css';
 
 import StatusHover from '../components/StatusHover';
-
-const chip = (label: string | null, color: string | null) =>
-  label && color ? (
-    <span className="chip custom" style={{ '--chip': color } as CSSProperties}>
-      <span className="dot" />{label}
-    </span>
-  ) : null;
 
 export default function SiteDetail() {
   const { siteId } = useParams<{ siteId: string }>();

@@ -9,7 +9,7 @@
  */
 
 import {
-  useCallback, useEffect, useMemo, useState, type CSSProperties,
+  useCallback, useEffect, useMemo, useState,
 } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -20,6 +20,7 @@ import {
   type AssetItem, type ClientActivityItem, type InitiativeItem,
   type OrgRef, type StatusValue,
 } from '../lib/api';
+import { statusChip as chip } from '../lib/chips';
 import { assetDistribution, sortClientInitiatives } from '../lib/clientDashboard';
 import { moveAssetProgress } from '../lib/initiatives';
 import { avatarGradient, initials, longDate, relativeTime } from '../lib/format';
@@ -47,20 +48,6 @@ const skel = <span className="dash-skel" aria-label="loading" />;
 const TIER_META: Record<string, string> = {
   standard: 'tag', preferred: 'c-blue', strategic: 'c-amber',
 };
-
-/** House chip convention (StakeholderDetail.tsx's local `chip` helper,
- *  copied here): a colored dot chip driven by a `--chip` custom property,
- *  with directory.css supplying the `#51606f` fallback for a missing
- *  color via `@property --chip`. */
-function chip(label: string | null | undefined, color: string | null | undefined) {
-  return label
-    ? (
-      <span className="chip custom" style={{ '--chip': color ?? '#51606f' } as CSSProperties}>
-        <span className="dot" />{label}
-      </span>
-    )
-    : null;
-}
 
 export default function ClientDashboard() {
   const { can } = useAuth();

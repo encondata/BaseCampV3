@@ -120,17 +120,19 @@ export default function HistoryTab({ highlightRunId, onCount }: {
         <div key={r.id} className={`dir-row ${r.id === highlightRunId ? 'row-highlight' : ''}`}>
           <div className="row-main" style={grid}>
             <div className="cell">
-              <span className="cell-primary">{r.definition_name}</span>
+              <b className="cell-top">{r.definition_name}</b>
               {r.id === pinned?.id && <span className="chip c-slate pinned-run">Linked run</span>}
             </div>
-            <div className="cell"><Link to={`/initiatives/${r.initiative_id}`}>{r.initiative_name}</Link></div>
-            <div className="cell">{r.requested_by_name}</div>
-            <div className="cell">{new Date(r.created_at).toLocaleString()}</div>
+            <div className="cell">
+              <Link className="cell-top" to={`/initiatives/${r.initiative_id}`}>{r.initiative_name}</Link>
+            </div>
+            <div className="cell"><span className="cell-top">{r.requested_by_name}</span></div>
+            <div className="cell"><span className="mono">{new Date(r.created_at).toLocaleString()}</span></div>
             <div className="cell">
               <span className={`chip ${STATUS_CHIP[r.status]}`}>{STATUS_LABEL[r.status]}</span>
               {duration(r) && <span className="mono" style={{ marginLeft: 6 }}>{duration(r)}</span>}
             </div>
-            <div className="cell">{formatBytes(r.size_bytes)}</div>
+            <div className="cell"><span className="mono">{formatBytes(r.size_bytes)}</span></div>
             <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <RowActionsMenu actions={[
                 ...(r.status === 'completed'

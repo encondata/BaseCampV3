@@ -46,6 +46,7 @@ import {
 } from '../lib/initiatives';
 import { ADMIN_RANK } from '../lib/access';
 import { initialOpenId } from '../lib/auditFormat';
+import { statusChip as chip } from '../lib/chips';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState,
@@ -304,15 +305,6 @@ export default function Initiatives() {
   const grid = { gridTemplateColumns:
     `2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
 
-  const chip = (label: string | null, color: string | null) =>
-    label && color
-      ? (
-        <span className="chip custom" style={{ '--chip': color } as CSSProperties}>
-          <span className="dot" />{label}
-        </span>
-      )
-      : <span className="cell-top">—</span>;
-
   const cellFor = (i: InitiativeItem, key: string) => {
     if (god.editing) {
       const gf = godFieldFor(key);
@@ -325,7 +317,9 @@ export default function Initiatives() {
     }
     switch (key) {
       case 'type': return chip(i.type_label, i.type_color);
-      case 'sub_type': return chip(i.sub_type_label, i.sub_type_color);
+      case 'sub_type':
+        return chip(i.sub_type_label, i.sub_type_color)
+          ?? <span className="cell-top">—</span>;
       case 'status':
         return (
           <div className="chips">
