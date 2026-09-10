@@ -1529,6 +1529,170 @@ export async function downloadContainerTemplate(): Promise<Blob> {
   return resp.blob();
 }
 
+/* ── trucks ───────────────────────────────────────────────────────── */
+
+export interface TruckLastUpdate {
+  recorded_at: string;
+  lat: number | null;
+  lng: number | null;
+  approximate_address: string;
+}
+
+export interface TruckItem {
+  id: string;
+  legacy_id: number | null;
+  name: string;
+  driver_name: string | null;
+  co_driver_name: string | null;
+  team_drive: boolean;
+  contact_info: string;
+  status: string;
+  status_label: string;
+  status_color: string;
+  load_number: string | null;
+  seal_id: string | null;
+  tracking_type: Record<string, unknown>;
+  initiative_id: string | null;
+  initiative_name: string | null;
+  start_site_id: string | null;
+  start_site_name: string | null;
+  end_site_id: string | null;
+  end_site_name: string | null;
+  container_count: number;
+  last_update: TruckLastUpdate | null;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TruckContainerRow {
+  id: string;
+  name: string;
+  status: string;
+  status_label: string;
+  status_color: string;
+  asset_count: number;
+}
+
+export interface TruckDetail extends TruckItem {
+  containers: TruckContainerRow[];
+}
+
+export interface TruckUpdate {
+  id: string;
+  truck_id: string;
+  recorded_at: string;
+  location: string;
+  lat: number | null;
+  lng: number | null;
+  approximate_address: string;
+  source: string;
+}
+
+export interface TruckTrailPoint {
+  recorded_at: string;
+  lat: number;
+  lng: number;
+}
+
+export interface TruckMapPoint {
+  id: string;
+  name: string;
+  status: string;
+  status_label: string;
+  status_color: string;
+  driver_name: string | null;
+  load_number: string | null;
+  seal_id: string | null;
+  last_update: TruckLastUpdate;
+  trail: TruckTrailPoint[];
+}
+
+export async function listTrucks(includeArchived = false): Promise<TruckItem[]> {
+  const resp = await apiFetch(
+    `/trucks${includeArchived ? '?include_archived=true' : ''}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getTruck(id: string): Promise<TruckDetail> {
+  const resp = await apiFetch(`/trucks/${id}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createTruck(
+  body: Record<string, unknown>,
+): Promise<TruckDetail> {
+  const resp = await apiFetch('/trucks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateTruck(
+  id: string, body: Record<string, unknown>,
+): Promise<TruckDetail> {
+  const resp = await apiFetch(`/trucks/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function archiveTruck(
+  id: string, archived: boolean,
+): Promise<void> {
+  const resp = await apiFetch(
+    `/trucks/${id}/${archived ? 'archive' : 'unarchive'}`,
+    { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function listTruckStatuses(): Promise<StatusValue[]> {
+  const resp = await apiFetch('/status-values?record_type=truck');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listTruckUpdates(id: string): Promise<TruckUpdate[]> {
+  const resp = await apiFetch(`/trucks/${id}/updates`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function addTruckUpdate(
+  id: string,
+  body: {
+    location: string; approximate_address?: string;
+    recorded_at?: string; source?: string;
+  },
+): Promise<TruckUpdate> {
+  const resp = await apiFetch(`/trucks/${id}/updates`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function clearTruckUpdates(id: string): Promise<void> {
+  const resp = await apiFetch(`/trucks/${id}/updates`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function getTrucksMap(trails: boolean): Promise<TruckMapPoint[]> {
+  const resp = await apiFetch(`/trucks/map?trails=${trails}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /* ── scans ────────────────────────────────────────────────────────── */
 
 export interface RawScanRow {
