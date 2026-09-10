@@ -96,11 +96,12 @@ export default function CommandPalette() {
       ...navGated('Scans', '/admin/scans', 'scans'),
       ...navGated('Status rules', '/admin/status-rules', 'status_rules'),
       ...navGated('Access control', '/access', 'access'),
-      ...navGated('Settings', '/settings', 'settings'),
+      ...navGated('System settings', '/settings', 'settings'),
       ...navGated('Developer tools', '/dev', 'devtools', true),
       ...navGated('Database', '/dev/database', 'devtools', true),
       ...navGated('Variables', '/dev/database/variables', 'devtools', true),
       { group: 'Navigate', label: 'View my profile', icon: NAV_ICON, run: () => navigate('/me') },
+      { group: 'Navigate', label: 'My preferences', icon: NAV_ICON, run: () => navigate('/me/preferences') },
       ...(can('users', 'add') ? [{
         group: 'Actions', label: 'Add person', sub: 'Users', icon: ACTION_ICON,
         run: () => navigate('/people/users', { state: { openAdd: true } }),

@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useState, type FormEvent } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import ActivityHistory from '../components/ActivityHistory';
@@ -21,6 +22,7 @@ import {
   type SessionInfo,
 } from '../lib/api';
 import { describeUserAgent, longDate, relativeTime } from '../lib/format';
+import MePreferences from './me/MePreferences';
 import '../styles/directory.css';
 import '../styles/profile.css';
 
@@ -49,6 +51,8 @@ function formStateFrom(p: PersonDetail): Record<EditKey, string> {
 
 export default function Profile() {
   const { roles, applyProfile } = useAuth();
+  const navigate = useNavigate();
+  const onPrefs = useLocation().pathname.startsWith('/me/preferences');
   const [profile, setProfile] = useState<PersonDetail | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [editing, setEditing] = useState(false);
@@ -151,13 +155,25 @@ export default function Profile() {
             </div>
           </div>
           <div className="profile-actions">
-            {!editing && (
+            {!editing && !onPrefs && (
               <button className="btn-solid" onClick={startEdit}>Edit details</button>
             )}
           </div>
         </div>
       </div>
 
+      <div className="segmented me-tabs" role="tablist">
+        <button role="tab" aria-selected={!onPrefs} className={!onPrefs ? 'on' : ''}
+                onClick={() => navigate('/me')}>
+          Profile
+        </button>
+        <button role="tab" aria-selected={onPrefs} className={onPrefs ? 'on' : ''}
+                onClick={() => navigate('/me/preferences')}>
+          Preferences
+        </button>
+      </div>
+
+      {onPrefs ? <MePreferences /> : (
       <div className="profile-grid">
         <div>
           <div className="panel">
@@ -292,6 +308,7 @@ export default function Profile() {
           </div>
         </div>
       </div>
+      )}
 
       <ActivityHistory rows={activity} />
     </div>

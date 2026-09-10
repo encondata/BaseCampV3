@@ -3,6 +3,8 @@
    user-menu-and-account.md §5), V3 theme. Fluid width.
    ============================================================ */
 
+.me-tabs { margin: 14px 0 18px; }
+
 .profile-hero {
   background: var(--surface, #fff);
   border: 1px solid var(--paper-line);

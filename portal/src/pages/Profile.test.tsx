@@ -1,0 +1,150 @@
+// @vitest-environment jsdom
+/**
+ * /me tab strip: Profile vs Preferences (see
+ * docs/superpowers/specs/2026-09-10-me-preferences-design.md). The
+ * Preferences tab renders MePreferences.tsx for real (not mocked) — both
+ * modules import '../auth/AuthContext' from the same resolved path, so
+ * mocking it once here covers both.
+ */
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { afterEach, expect, it, vi } from 'vitest';
+
+import type { PersonDetail, UiPreferences } from '../lib/api';
+
+const auth = vi.hoisted(() => ({
+  updatePreferences: vi.fn(async () => true),
+  applyProfile: vi.fn(),
+}));
+
+const api = vi.hoisted(() => ({
+  getProfileRequest: vi.fn(),
+  getSessionsRequest: vi.fn(async () => []),
+  getMyActivityRequest: vi.fn(async () => []),
+  revokeSessionRequest: vi.fn(async () => {}),
+  updateProfileRequest: vi.fn(),
+}));
+
+const PROFILE: PersonDetail = {
+  id: 'p1',
+  first_name: 'Ada',
+  last_name: 'Lovelace',
+  preferred_name: null,
+  display_name: 'Ada Lovelace',
+  email: 'ada@test.example.com',
+  phone: null,
+  job_title: 'Developer',
+  address_line1: null,
+  address_line2: null,
+  city: null,
+  region: null,
+  postal_code: null,
+  country: 'US',
+  badge_uid: 'BADGE-1',
+  created_at: '2024-01-01T00:00:00Z',
+  avatar_key: null,
+  avatar_url: null,
+  password_updated_at: null,
+};
+
+api.getProfileRequest.mockImplementation(async () => PROFILE);
+
+vi.mock('../auth/AuthContext', () => ({
+  useAuth: () => ({
+    roles: ['developer'],
+    applyProfile: auth.applyProfile,
+    preferences: {
+      accent: 'amber',
+      theme: 'light',
+      density: 'comfortable',
+      list_size: 'default',
+      motion: true,
+      nav_mode: 'expanded',
+      nav_bg: 'default',
+      nav_size: 'default',
+      notif: { critical: true, email: true, maint: true, digest: false },
+      list_prefs: {},
+    } satisfies UiPreferences,
+    updatePreferences: auth.updatePreferences,
+    can: () => false,
+  }),
+}));
+
+vi.mock('../lib/api', () => api);
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+  api.getProfileRequest.mockImplementation(async () => PROFILE);
+  api.getSessionsRequest.mockImplementation(async () => []);
+  api.getMyActivityRequest.mockImplementation(async () => []);
+});
+
+const { default: Profile } = await import('./Profile');
+
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-testid="loc">{location.pathname}</span>;
+}
+
+function renderAt(path: string) {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <LocationProbe />
+      <Routes>
+        <Route path="/me" element={<Profile />} />
+        <Route path="/me/preferences" element={<Profile />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+it('shows two tabs, Profile active by default at /me', async () => {
+  renderAt('/me');
+
+  await waitFor(() => expect(screen.getByRole('tablist')).toBeTruthy());
+
+  const profileTab = screen.getByRole('tab', { name: 'Profile' });
+  const prefsTab = screen.getByRole('tab', { name: 'Preferences' });
+  expect(profileTab.getAttribute('aria-selected')).toBe('true');
+  expect(prefsTab.getAttribute('aria-selected')).toBe('false');
+});
+
+it('/me shows the Profile panel and not the preferences sections', async () => {
+  renderAt('/me');
+
+  await waitFor(() => expect(
+    screen.getByRole('heading', { name: 'Profile', level: 3 }),
+  ).toBeTruthy());
+
+  expect(screen.queryByText('Appearance')).toBeNull();
+  expect(screen.queryByText('Notifications')).toBeNull();
+});
+
+it('/me/preferences shows Appearance and Notifications, not the Profile panel', async () => {
+  renderAt('/me/preferences');
+
+  await waitFor(() => expect(screen.getByText('Appearance')).toBeTruthy());
+
+  expect(screen.getByText('Notifications')).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Profile', level: 3 })).toBeNull();
+});
+
+it('clicking the Preferences tab navigates to /me/preferences', async () => {
+  renderAt('/me');
+
+  await waitFor(() => expect(screen.getByRole('tablist')).toBeTruthy());
+
+  fireEvent.click(screen.getByRole('tab', { name: 'Preferences' }));
+
+  await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/me/preferences'));
+  expect(screen.getByText('Appearance')).toBeTruthy();
+});
+
+it('hides the hero Edit details button on the Preferences tab', async () => {
+  renderAt('/me/preferences');
+
+  await waitFor(() => expect(screen.getByText('Appearance')).toBeTruthy());
+
+  expect(screen.queryByText('Edit details')).toBeNull();
+});

@@ -191,6 +191,7 @@ export default function App() {
                   <ProtectedRoute resource="devtools"><Variables /></ProtectedRoute>
                 } />
                 <Route path="/me" element={<Profile />} />
+                <Route path="/me/preferences" element={<Profile />} />
               </Route>
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
