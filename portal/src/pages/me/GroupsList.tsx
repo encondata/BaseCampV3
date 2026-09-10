@@ -49,9 +49,11 @@ function StatusChip({ group }: { group: MyNotificationGroup }) {
 
 export type GroupsListKind = 'member' | 'joinable';
 
+// last column holds the "Actions ▾" menu trigger, so it sizes to content
+// (the 30px slot other lists use is for a chevron only)
 const GRID: Record<GroupsListKind, CSSProperties> = {
-  member: { gridTemplateColumns: 'minmax(220px, 2fr) 1.4fr 1.3fr 0.8fr 1fr 30px' },
-  joinable: { gridTemplateColumns: 'minmax(220px, 2fr) 1.6fr 0.8fr 1fr 30px' },
+  member: { gridTemplateColumns: 'minmax(220px, 2fr) minmax(160px, 1.2fr) minmax(200px, 1.2fr) minmax(90px, 0.7fr) minmax(130px, 0.9fr) max-content' },
+  joinable: { gridTemplateColumns: 'minmax(220px, 2fr) minmax(220px, 1.4fr) minmax(100px, 0.7fr) minmax(130px, 0.9fr) max-content' },
 };
 
 export default function GroupsList({
@@ -132,7 +134,7 @@ export default function GroupsList({
           {kind === 'member' && <span className="col-head">Days</span>}
           {kind === 'joinable' && <span className="col-head">Members</span>}
           <span className="col-head">Status</span>
-          <span />
+          <span className="col-head" style={{ justifySelf: 'end' }}>Actions</span>
         </div>
 
         {loaded && visible.length === 0 && (
@@ -152,7 +154,7 @@ export default function GroupsList({
                 <div className="cell mono">{g.member_count} member{g.member_count === 1 ? '' : 's'}</div>
               )}
               <div className="cell"><StatusChip group={g} /></div>
-              <div className="cell row-actions-cell" onClick={(e) => e.stopPropagation()}>
+              <div className="cell row-actions-cell" style={{ justifySelf: 'end' }} onClick={(e) => e.stopPropagation()}>
                 <RowActionsMenu actions={actionsFor(g)} />
               </div>
             </div>
