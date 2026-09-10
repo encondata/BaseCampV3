@@ -580,12 +580,6 @@
     "check": "inline"
   },
   {
-    "file": "components/trucks/TruckEditModal.tsx",
-    "selector": "<p style={{ fontSize: 12.5, color: 'var(--c-amber)', margin: '0 0 14px' }}>",
-    "reason": "not list content: same SiteEditModal warning-paragraph idiom, surfacing the getTruck-detail-fetch-failed notice, not a list row",
-    "check": "inline"
-  },
-  {
     "file": "styles/initiatives.css",
     "selector": ".imp-missing-row",
     "reason": "genuine exception (finding #6): a bordered warning-card tile, not a divided list row \u2014 padding/border are the card's own chrome, not a duplicate of the primitive's shared-divider look",

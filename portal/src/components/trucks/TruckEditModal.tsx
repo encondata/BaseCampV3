@@ -157,7 +157,7 @@ export default function TruckEditModal({ truck, onClose, onSaved }: Props) {
           <form onSubmit={(e) => void submit(e)} noValidate>
             <div className="modal-body">
               {detailNotice && (
-                <p style={{ fontSize: 12.5, color: 'var(--c-amber)', margin: '0 0 14px' }}>
+                <p className="pf-notice">
                   {detailNotice}
                 </p>
               )}
