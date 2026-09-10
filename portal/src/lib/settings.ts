@@ -17,7 +17,7 @@ export const DEFAULT_PREFERENCES: UiPreferences = {
   nav_mode: 'expanded',
   nav_bg: 'default',
   nav_size: 'default',
-  notif: { critical: true, email: true, maint: true, digest: false },
+  notif: { critical: true, email: true, maint: true, digest: false, sound: 'chime' },
   list_prefs: {},
 };
 

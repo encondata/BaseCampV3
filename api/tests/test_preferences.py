@@ -8,7 +8,7 @@ PREFS = {
     "density": "compact",
     "list_size": "default",
     "motion": False,
-    "notif": {"critical": True, "email": False, "maint": True, "digest": True},
+    "notif": {"critical": True, "email": False, "maint": True, "digest": True, "sound": "ping"},
     "list_prefs": {
         "sites": {
             "visible": ["name", "status", "city"],
@@ -35,7 +35,7 @@ async def test_login_returns_default_preferences(client, seeded_user):
         "accent": "amber", "theme": "light", "density": "comfortable",
         "list_size": "default",
         "motion": True,
-        "notif": {"critical": True, "email": True, "maint": True, "digest": False},
+        "notif": {"critical": True, "email": True, "maint": True, "digest": False, "sound": "chime"},
         "list_prefs": {},
         "nav_mode": "expanded",
         "nav_bg": "default",
@@ -166,3 +166,11 @@ async def test_invalid_nav_values_rejected(client, seeded_user):
     )
     assert resp.status_code == 200
     assert resp.json()["nav_bg"] == "#0F2A4A"
+
+
+async def test_invalid_notification_sound_rejected(client, seeded_user):
+    body = await _login(client)
+    hdrs = {"Authorization": f"Bearer {body['access_token']}"}
+    bad = {**body["preferences"], "notif": {**body["preferences"]["notif"], "sound": "klaxon"}}
+    resp = await client.put("/auth/me/preferences", headers=hdrs, json=bad)
+    assert resp.status_code == 422

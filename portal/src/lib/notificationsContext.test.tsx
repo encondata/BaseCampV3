@@ -9,7 +9,12 @@ const api = vi.hoisted(() => ({
   markInboxUnread: vi.fn(), hideInboxItem: vi.fn(), clearReadInbox: vi.fn(),
 }));
 vi.mock('./api', async (importActual) => ({ ...(await importActual<typeof import('./api')>()), ...api }));
-const auth = vi.hoisted(() => ({ person: { id: 'p1' } as { id: string } | null }));
+const sounds = vi.hoisted(() => ({ playNotificationSound: vi.fn(() => true), installAudioUnlock: vi.fn(() => () => {}) }));
+vi.mock('./notificationSounds', () => sounds);
+const auth = vi.hoisted(() => ({
+  person: { id: 'p1' } as { id: string } | null,
+  preferences: { notif: { critical: true, email: true, maint: true, digest: false, sound: 'ping' } },
+}));
 vi.mock('../auth/AuthContext', () => ({ useAuth: () => auth }));
 
 const { NotificationsProvider, useNotifications, INBOX_POLL_MS } = await import('./notificationsContext');
@@ -102,4 +107,18 @@ it('markUnread, hide and clearRead call the API optimistically and refresh', asy
   await act(async () => { screen.getByText('clear').click(); });
   await waitFor(() => expect(api.clearReadInbox).toHaveBeenCalled());
   expect(api.listInbox.mock.calls.length).toBeGreaterThanOrEqual(4);   // refresh after each
+});
+
+it('plays the chosen sound only when NEW items arrive after the first poll', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:1 new:');
+  expect(sounds.playNotificationSound).not.toHaveBeenCalled();      // first poll is silent
+  api.listInbox.mockResolvedValue(inbox([item('b'), item('a')]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:2 new:b');
+  expect(sounds.playNotificationSound).toHaveBeenCalledTimes(1);
+  expect(sounds.playNotificationSound).toHaveBeenCalledWith('ping');
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  expect(sounds.playNotificationSound).toHaveBeenCalledTimes(1);    // same items again: no replay
 });

@@ -13,6 +13,7 @@ import {
   clearReadInbox, hideInboxItem, listInbox, markAllInboxRead, markInboxRead, markInboxUnread,
 } from './api';
 import type { InboxItem } from './api';
+import { installAudioUnlock, playNotificationSound } from './notificationSounds';
 
 export const INBOX_POLL_MS = 30_000;
 export const LOCAL_TOAST_MS = 4_000;
@@ -38,7 +39,11 @@ interface Value {
 const Ctx = createContext<Value | null>(null);
 
 export function NotificationsProvider({ children }: { children: ReactNode }) {
-  const { person } = useAuth();
+  const { person, preferences } = useAuth();
+  // read inside the poll callback without re-creating it on every preference save
+  const soundRef = useRef(preferences?.notif?.sound ?? 'chime');
+  soundRef.current = preferences?.notif?.sound ?? 'chime';
+  useEffect(() => installAudioUnlock(), []);
   const [items, setItems] = useState<InboxItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [newItems, setNewItems] = useState<InboxItem[]>([]);
@@ -57,7 +62,10 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       } else {
         const fresh = inbox.items.filter((i) => !i.read_at && !seen.current!.has(i.id));
         inbox.items.forEach((i) => seen.current!.add(i.id));
-        if (fresh.length) setNewItems((cur) => [...fresh, ...cur].slice(0, 3));
+        if (fresh.length) {
+          setNewItems((cur) => [...fresh, ...cur].slice(0, 3));
+          playNotificationSound(soundRef.current);
+        }
       }
     } catch {
       /* transient: keep the last value */

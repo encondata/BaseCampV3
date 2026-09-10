@@ -40,11 +40,14 @@ export interface PersonOut {
   avatar_url: string | null;   // presigned, short-lived
 }
 
+export type NotificationSound = 'none' | 'chime' | 'ping' | 'pop' | 'bell';
+
 export interface NotifPrefs {
   critical: boolean;
   email: boolean;
   maint: boolean;
   digest: boolean;
+  sound: NotificationSound; // in-app sound for new inbox items
 }
 
 export type NamedAccent = 'amber' | 'aqua' | 'blue' | 'violet' | 'pink' | 'green';

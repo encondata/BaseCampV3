@@ -4,7 +4,8 @@
  */
 
 import { Switch } from '../../components/Switch';
-import type { UiPreferences } from '../../lib/api';
+import type { NotificationSound, UiPreferences } from '../../lib/api';
+import { NOTIFICATION_SOUNDS, playNotificationSound } from '../../lib/notificationSounds';
 import SaveHint from './SaveHint';
 import { usePreferenceSave } from './usePreferenceSave';
 import '../../styles/settings.css';
@@ -12,7 +13,7 @@ import '../../styles/settings.css';
 export default function MeNotifications() {
   const { preferences, update, saveState } = usePreferenceSave();
 
-  const notifRow = (key: keyof UiPreferences['notif'], label: string, sub: string) => (
+  const notifRow = (key: Exclude<keyof UiPreferences['notif'], 'sound'>, label: string, sub: string) => (
     <div className="set-row">
       <div className="set-label"><b>{label}</b><span>{sub}</span></div>
       <Switch checked={preferences.notif[key]}
@@ -36,6 +37,28 @@ export default function MeNotifications() {
           {notifRow('email', 'Email alerts', 'Send notifications to your contact email.')}
           {notifRow('maint', 'Maintenance windows', 'Scheduled downtime and system maintenance notices.')}
           {notifRow('digest', 'Weekly digest', 'A summary of activity across your projects.')}
+          <div className="set-row">
+            <div className="set-label">
+              <b>Sound</b>
+              <span>Played in the portal when a new notification arrives. Preview to hear it.</span>
+            </div>
+            <div className="set-inline">
+              <div className="seg-mini" role="radiogroup" aria-label="Notification sound">
+                {NOTIFICATION_SOUNDS.map((o) => (
+                  <button key={o.key} type="button" role="radio"
+                          aria-checked={preferences.notif.sound === o.key}
+                          className={preferences.notif.sound === o.key ? 'on' : ''}
+                          onClick={() => update({ notif: { ...preferences.notif, sound: o.key as NotificationSound } })}>
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+              <button type="button" className="mini-btn" disabled={preferences.notif.sound === 'none'}
+                      onClick={() => playNotificationSound(preferences.notif.sound)}>
+                Preview
+              </button>
+            </div>
+          </div>
         </section>
       </div>
     </>

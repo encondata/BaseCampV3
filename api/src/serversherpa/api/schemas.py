@@ -51,6 +51,8 @@ class NotifPrefs(BaseModel):
     email: bool = True
     maint: bool = True
     digest: bool = False
+    # in-app sound played when a new inbox item arrives while the portal is open
+    sound: Literal["none", "chime", "ping", "pop", "bell"] = "chime"
 
 
 NAMED_ACCENTS = {"amber", "aqua", "blue", "violet", "pink", "green"}

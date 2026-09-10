@@ -21,7 +21,7 @@ vi.mock('../../auth/AuthContext', () => ({
       nav_mode: 'expanded',
       nav_bg: 'default',
       nav_size: 'default',
-      notif: { critical: true, email: true, maint: true, digest: false },
+      notif: { critical: true, email: true, maint: true, digest: false, sound: 'chime' },
       list_prefs: {},
     } satisfies UiPreferences,
     updatePreferences: auth.updatePreferences,
@@ -33,6 +33,11 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
+
+const sounds = vi.hoisted(() => ({ playNotificationSound: vi.fn(() => true) }));
+vi.mock('../../lib/notificationSounds', async (importActual) => ({
+  ...(await importActual<typeof import('../../lib/notificationSounds')>()), ...sounds,
+}));
 
 const { default: MeNotifications } = await import('./MeNotifications');
 
@@ -50,7 +55,18 @@ it('toggling a switch saves the merged notif object', async () => {
   fireEvent.click(within(row).getByRole('checkbox'));
   await waitFor(() => expect(auth.updatePreferences).toHaveBeenCalledTimes(1));
   const sent = auth.updatePreferences.mock.calls[0][0];
-  expect(sent.notif).toEqual({ critical: true, email: true, maint: true, digest: true });
+  expect(sent.notif).toEqual({ critical: true, email: true, maint: true, digest: true, sound: 'chime' });
   expect(sent.accent).toBe('amber');
   await waitFor(() => expect(screen.getByText('saved')).toBeTruthy());
+});
+
+it('Sound row saves the chosen sound and Preview plays the current one', async () => {
+  render(<MeNotifications />);
+  const row = screen.getByText('Sound').closest('.set-row') as HTMLElement;
+  expect(within(row).getByRole('radio', { name: 'Chime' }).getAttribute('aria-checked')).toBe('true');
+  fireEvent.click(within(row).getByRole('radio', { name: 'Ping' }));
+  await waitFor(() => expect(auth.updatePreferences).toHaveBeenCalledTimes(1));
+  expect(auth.updatePreferences.mock.calls[0][0].notif.sound).toBe('ping');
+  fireEvent.click(within(row).getByRole('button', { name: 'Preview' }));
+  expect(sounds.playNotificationSound).toHaveBeenCalledWith('chime'); // mock prefs still say chime
 });
