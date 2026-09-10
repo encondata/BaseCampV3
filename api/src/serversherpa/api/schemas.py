@@ -2301,3 +2301,101 @@ class TruckMapPoint(BaseModel):
     seal_id: str | None = None
     last_update: TruckLastUpdate
     trail: list[TruckTrailPoint] = []
+
+
+# ── warehouse ─────────────────────────────────────────────────────────
+
+class AssetRef(BaseModel):
+    id: uuid.UUID
+    legacy_id: int | None = None
+    serial_number: str | None = None
+    name: str | None = None
+    model_name: str | None = None
+    status: str
+    status_label: str
+    status_color: str
+    location_detail: str = ""
+
+
+class StockLineOut(BaseModel):
+    id: uuid.UUID
+    site_id: uuid.UUID
+    site_name: str
+    container_id: uuid.UUID | None = None
+    container_name: str | None = None
+    model_id: uuid.UUID | None = None
+    model_make: str | None = None
+    model_model: str | None = None
+    description: str
+    quantity: int
+    unit: str
+    location_detail: str = ""
+    notes: str = ""
+    archived_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class StockLineCreateIn(BaseModel):
+    site_id: uuid.UUID
+    container_id: uuid.UUID | None = None
+    model_id: uuid.UUID | None = None
+    description: str
+    quantity: int = Field(ge=0)
+    unit: str = "each"
+    location_detail: str = ""
+    notes: str = ""
+    model_config = ConfigDict(extra="forbid")
+
+
+class StockLineUpdateIn(BaseModel):
+    """PATCH — every field optional; None (unset) means unchanged EXCEPT
+    container_id/model_id where an explicit null means 'clear'."""
+
+    site_id: uuid.UUID | None = None
+    container_id: uuid.UUID | None = None
+    model_id: uuid.UUID | None = None
+    description: str | None = None
+    quantity: int | None = Field(default=None, ge=0)
+    unit: str | None = None
+    location_detail: str | None = None
+    notes: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class WarehouseSiteOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    code: str | None = None
+    city: str | None = None
+    region: str | None = None
+    status: str
+    status_label: str
+    status_color: str
+    container_count: int = 0
+    asset_count: int = 0
+    stock_line_count: int = 0
+    stock_units: int = 0
+
+
+class WarehouseContainerOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    rfid_tag: str | None = None
+    container_type: str | None = None
+    type_label: str | None = None
+    type_color: str | None = None
+    status: str
+    status_label: str
+    status_color: str
+    location_detail: str = ""
+    updated_at: datetime
+    assets: list[AssetRef] = []
+    stock: list[StockLineOut] = []
+
+
+class WarehouseInventoryOut(BaseModel):
+    site: WarehouseSiteOut
+    containers: list[WarehouseContainerOut] = []
+    loose_assets: list[AssetRef] = []
+    loose_stock: list[StockLineOut] = []
