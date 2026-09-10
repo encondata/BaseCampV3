@@ -65,6 +65,7 @@ class UiPreferences(BaseModel):
     accent: str = "amber"  # a named accent or a custom #rrggbb color
     theme: Literal["light", "dark"] = "light"
     density: Literal["comfortable", "compact"] = "comfortable"
+    list_size: Literal["small", "default", "large", "xlarge"] = "default"
     motion: bool = True
     notif: NotifPrefs = NotifPrefs()
     # Per-page list UI state (visible columns, sort, column filters), keyed

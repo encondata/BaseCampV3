@@ -114,6 +114,20 @@ export default function Settings() {
           </div>
           <div className="set-row">
             <div className="set-label">
+              <b>List text size</b>
+              <span>Scales every list and table — pick what reads best on your screen.</span>
+            </div>
+            <div className="seg-mini">
+              {([['small', 'Small'], ['default', 'Default'], ['large', 'Large'], ['xlarge', 'Extra large']] as const).map(([key, label]) => (
+                <button key={key} className={preferences.list_size === key ? 'on' : ''}
+                        onClick={() => update({ list_size: key })}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="set-row">
+            <div className="set-label">
               <b>Interface motion</b>
               <span>Entrance and disclosure animations. Your OS reduced-motion setting always wins.</span>
             </div>

@@ -29,6 +29,7 @@ vi.mock('../auth/AuthContext', () => ({
       accent: 'blue',
       theme: 'dark',
       density: 'comfortable',
+      list_size: 'default',
       motion: true,
       notif: { critical: true, email: true, maint: true, digest: true },
       list_prefs: {},

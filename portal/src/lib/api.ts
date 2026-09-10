@@ -53,6 +53,7 @@ export interface UiPreferences {
   accent: string; // NamedAccent or a custom '#rrggbb'
   theme: 'light' | 'dark';
   density: 'comfortable' | 'compact';
+  list_size: 'small' | 'default' | 'large' | 'xlarge';
   motion: boolean;
   notif: NotifPrefs;
   // Per-page list UI state (visible columns, sort, column filters), keyed by

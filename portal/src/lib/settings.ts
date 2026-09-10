@@ -11,6 +11,7 @@ export const DEFAULT_PREFERENCES: UiPreferences = {
   accent: 'amber',
   theme: 'light',
   density: 'comfortable',
+  list_size: 'default',
   motion: true,
   notif: { critical: true, email: true, maint: true, digest: false },
   list_prefs: {},
@@ -60,6 +61,7 @@ export function applyPreferences(prefs: UiPreferences): void {
 
   shell.setAttribute('data-theme', prefs.theme);
   shell.setAttribute('data-density', prefs.density);
+  shell.setAttribute('data-list-size', prefs.list_size ?? 'default');
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   shell.setAttribute('data-motion', prefs.motion && !reduced ? 'on' : 'off');
 }

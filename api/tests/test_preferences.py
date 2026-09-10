@@ -6,6 +6,7 @@ PREFS = {
     "accent": "aqua",
     "theme": "dark",
     "density": "compact",
+    "list_size": "default",
     "motion": False,
     "notif": {"critical": True, "email": False, "maint": True, "digest": True},
     "list_prefs": {
@@ -29,6 +30,7 @@ async def test_login_returns_default_preferences(client, seeded_user):
     body = await _login(client)
     assert body["preferences"] == {
         "accent": "amber", "theme": "light", "density": "comfortable",
+        "list_size": "default",
         "motion": True,
         "notif": {"critical": True, "email": True, "maint": True, "digest": False},
         "list_prefs": {},
@@ -90,3 +92,21 @@ async def test_invalid_accent_rejected(client, seeded_user):
 
 async def test_preferences_require_auth(client):
     assert (await client.put("/auth/me/preferences", json=PREFS)).status_code == 401
+
+
+async def test_list_size_round_trips_and_defaults(client, seeded_user):
+    body = await _login(client)
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+
+    resp = await client.get("/auth/me", headers=headers)
+    assert resp.json()["preferences"]["list_size"] == "default"
+
+    prefs = {**resp.json()["preferences"], "list_size": "xlarge"}
+    resp = await client.put("/auth/me/preferences", headers=headers, json=prefs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["list_size"] == "xlarge"
+
+    resp = await client.put(
+        "/auth/me/preferences", headers=headers, json={**prefs, "list_size": "huge"},
+    )
+    assert resp.status_code == 422

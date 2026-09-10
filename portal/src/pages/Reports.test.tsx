@@ -10,7 +10,7 @@ const auth = vi.hoisted(() => ({ can: (_r: string, _a?: string): boolean => true
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     can: auth.can, godMode: false,
-    preferences: { accent: 'blue', theme: 'dark', density: 'comfortable', motion: true,
+    preferences: { accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default', motion: true,
       notif: { critical: true, email: true, maint: true, digest: true }, list_prefs: {} } satisfies UiPreferences,
     updatePreferences: vi.fn(() => Promise.resolve()),
   }),

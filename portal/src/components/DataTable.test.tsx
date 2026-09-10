@@ -14,6 +14,7 @@ describe('DataTable', () => {
     const table = screen.getByRole('table', { name: 'Leases' });
     expect(table.className).toContain('data-table');
     expect(screen.getByText('Hostname').tagName).toBe('TH');
+    expect(screen.getByText('Hostname').getAttribute('scope')).toBe('col');
     const mac = screen.getByText('AA:BB');
     expect(mac.tagName).toBe('TD');
     expect(mac.className).toContain('mono');

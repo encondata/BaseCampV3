@@ -23,7 +23,7 @@ export default function DataTable({ columns, rows, className, emptyText, ariaLab
         {columns.map((c) => <col key={c.key} style={c.width ? { width: c.width } : undefined} />)}
       </colgroup>
       <thead>
-        <tr>{columns.map((c) => <th key={c.key} className={c.align ?? 'left'}>{c.label}</th>)}</tr>
+        <tr>{columns.map((c) => <th key={c.key} scope="col" className={c.align ?? 'left'}>{c.label}</th>)}</tr>
       </thead>
       <tbody>
         {rows.length === 0 ? (
