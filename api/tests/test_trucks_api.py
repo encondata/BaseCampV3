@@ -199,3 +199,21 @@ async def test_gates(client, db, seeded_user):
 
     resp = await client.get("/trucks", headers=hdrs)
     assert resp.status_code == 403
+
+
+async def test_patch_rejects_null_for_required_fields(client, db, seeded_user):
+    hdrs = await login(client)
+    resp = await client.post("/trucks", headers=hdrs, json={"name": "Req"})
+    assert resp.status_code == 201, resp.text
+    truck_id = resp.json()["id"]
+
+    for field in ("status", "contact_info", "team_drive", "tracking_type"):
+        resp = await client.patch(f"/trucks/{truck_id}", headers=hdrs,
+                                  json={field: None})
+        assert resp.status_code == 422, (field, resp.text)
+        assert resp.json()["detail"]["code"] == f"{field}_required"
+
+    resp = await client.patch(f"/trucks/{truck_id}", headers=hdrs,
+                              json={"driver_name": None})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["driver_name"] is None

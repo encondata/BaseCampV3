@@ -27,6 +27,7 @@ TRUCK_FIELDS = [
     "status", "load_number", "seal_id", "tracking_type",
     "initiative_id", "start_site_id", "end_site_id",
 ]
+NON_NULLABLE_FIELDS = ("name", "status", "contact_info", "team_drive", "tracking_type")
 
 
 def _err(status: int, code: str, **extra) -> HTTPException:
@@ -271,6 +272,9 @@ async def update_truck(
 ) -> TruckDetail:
     truck = await _get_truck(db, truck_id)
     data = body.model_dump(exclude_unset=True)
+    for field in NON_NULLABLE_FIELDS:
+        if field in data and data[field] is None:
+            raise _err(422, f"{field}_required")
     container_ids = data.pop("container_ids", None)
     if "name" in data:
         data["name"] = (data["name"] or "").strip()
