@@ -54,7 +54,7 @@ function MembershipRequestStrip({ payload, refresh }: {
     const label = payload.state === 'approved' ? `Approved by ${who}`
       : payload.state === 'rejected' ? `Rejected by ${who}`
       : 'Cancelled';
-    return <span className="notif-outcome">{label}</span>;
+    return <span className="notif-body notif-outcome">{label}</span>;
   }
 
   const approve = async () => {
