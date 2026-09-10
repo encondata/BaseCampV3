@@ -438,14 +438,14 @@ export default function MoveDashboard() {
             {roster !== null && rows.length === 0 && (
               <div className="dash-panel-empty">No assets on this move yet.</div>
             )}
-            <div className="mdash-waves">
+            <div className="mini-list mdash-waves">
               {waves.map((w) => (
-                <div key={w.label} className="mdash-wave-row">
-                  <span className="mdash-wave-label">{w.label}</span>
+                <div key={w.label} className="mini-row mdash-wave-row">
+                  <span className="cell-top mdash-wave-label">{w.label}</span>
                   <span className="mdash-wave-track">
                     <span className="mdash-wave-fill" style={{ width: `${(w.count / maxWave) * 100}%` }} />
                   </span>
-                  <span className="mdash-wave-count">{nf.format(w.count)}</span>
+                  <span className="mdash-wave-count mono">{nf.format(w.count)}</span>
                 </div>
               ))}
             </div>
@@ -467,9 +467,9 @@ export default function MoveDashboard() {
                   ['Destination racks', destVerified],
                 ] as const).map(([label, n]) => (
                   <div key={label} className="mdash-verify-row">
-                    <div className="mdash-verify-head">
-                      <span>{label}</span>
-                      <span className="mdash-verify-n">{nf.format(n)} / {nf.format(rows.length)}</span>
+                    <div className="mdash-verify-head cell">
+                      <span className="cell-top">{label}</span>
+                      <span className="mdash-verify-n mono">{nf.format(n)} / {nf.format(rows.length)}</span>
                     </div>
                     <div className="mdash-verify-track">
                       <div className="mdash-verify-fill"

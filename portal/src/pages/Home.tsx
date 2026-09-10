@@ -271,7 +271,7 @@ export default function Home() {
               <span className="dash-panel-title">Flight board — active initiatives</span>
               <Link className="dash-panel-link" to="/initiatives">All initiatives</Link>
             </div>
-            <div className="dash-board-rows">
+            <div className="mini-list dash-board-rows">
               {initiatives === null && <div className="dash-panel-empty" style={{ padding: '18px 20px' }}>Loading…</div>}
               {initiatives !== null && board.length === 0 && (
                 <div className="dash-panel-empty" style={{ padding: '18px 20px' }}>
@@ -282,14 +282,16 @@ export default function Home() {
                 const progress = progressById[init.id];
                 const isMove = init.initiative_type === 'move';
                 return (
-                  <Link key={init.id} to={`/initiatives/${init.id}`} className="dash-board-row">
-                    <span className="dash-board-name">
-                      <span className="dash-board-name-text">{init.name}</span>
-                      <span className="dash-board-type">
-                        {init.type_label}{init.sub_type_label ? ` · ${init.sub_type_label}` : ''}
-                      </span>
-                    </span>
-                    <span className="dash-board-route">
+                  <Link key={init.id} to={`/initiatives/${init.id}`} className="mini-row dash-board-row">
+                    <div className="cell-primary">
+                      <div className="pn">
+                        <b>{init.name}</b>
+                        <span>
+                          {init.type_label}{init.sub_type_label ? ` · ${init.sub_type_label}` : ''}
+                        </span>
+                      </div>
+                    </div>
+                    <span className="dash-board-route mono">
                       {isMove ? (
                         <>
                           <span className="code" title={init.origin_site_name ?? undefined}>
@@ -306,18 +308,18 @@ export default function Home() {
                         </span>
                       )}
                     </span>
-                    <span className="dash-board-window">
+                    <span className="dash-board-window mono">
                       {windowLines(init.scheduled_start, init.scheduled_end).map((line) => (
                         <span key={line}>{line}</span>
                       ))}
                     </span>
                     {progress ? (
                       <span className="dash-board-progress">
-                        <span className="pct">{progress.pct}%</span>
+                        <span className="pct mono">{progress.pct}%</span>
                         <span className="track"><span className="fill" style={{ width: `${progress.pct}%` }} /></span>
                       </span>
                     ) : (
-                      <span className="dash-board-chip">{init.status_label}</span>
+                      <span className="dash-board-chip chip c-slate">{init.status_label}</span>
                     )}
                   </Link>
                 );
@@ -408,18 +410,18 @@ export default function Home() {
             {recentScans !== null && latestScans.length === 0 && (
               <div className="dash-panel-empty">No processed scans yet.</div>
             )}
-            <div className="dash-scan-list">
+            <div className="mini-list dash-scan-list">
               {latestScans.map((s) => (
-                <div key={s.id} className="dash-scan-row">
+                <div key={s.id} className="mini-row dash-scan-row">
                   <span className="dash-scan-dot" style={{ background: s.match_type_color }} aria-hidden="true" />
-                  <span className="dash-scan-name" title={s.scanned_value}>
+                  <span className="cell-top dash-scan-name" title={s.scanned_value}>
                     {s.matched_name ?? s.scanned_value}
                   </span>
-                  <span className="dash-scan-kind">{s.match_type_label}</span>
-                  <span className="dash-scan-site" title={s.site_name ?? undefined}>
+                  <span className="dash-scan-kind mono">{s.match_type_label}</span>
+                  <span className="cell-sub dash-scan-site" title={s.site_name ?? undefined}>
                     {s.site_name ?? '—'}
                   </span>
-                  <span className="dash-scan-time">{relativeTime(s.scanned_at)}</span>
+                  <span className="dash-scan-time mono">{relativeTime(s.scanned_at)}</span>
                 </div>
               ))}
             </div>
@@ -437,12 +439,12 @@ export default function Home() {
             {audit !== null && feed.length === 0 && (
               <div className="dash-panel-empty">Nothing recorded yet.</div>
             )}
-            <div className="dash-feed">
+            <div className="mini-list dash-feed">
               {feed.map((row) => (
-                <div key={row.id} className="dash-feed-row">
-                  <span className="dash-feed-time">{relativeTime(row.at)}</span>
+                <div key={row.id} className="mini-row dash-feed-row">
+                  <span className="dash-feed-time mono">{relativeTime(row.at)}</span>
                   <span className="dash-feed-text">
-                    <span className="who">{row.actor_name ?? 'System'}</span>{' '}
+                    <b>{row.actor_name ?? 'System'}</b>{' '}
                     <span className="what">{actionLabel(row).toLowerCase()}</span>{' '}
                     {targetLabel(row, { hideAuthTarget: true }) !== '—' && targetLabel(row)}
                   </span>

@@ -341,15 +341,15 @@ export default function ClientDashboard() {
               {initiatives !== null && initiatives.map((i) => {
                 const progress = progressById[i.id];
                 return (
-                  <div key={i.id} className="cdash-init-row">
-                    <Link className="cdash-init-name" to={`/initiatives/${i.id}`}>{i.name}</Link>
+                  <div key={i.id} className="mini-row cdash-init-row">
+                    <Link className="cdash-init-name" to={`/initiatives/${i.id}`}><b>{i.name}</b></Link>
                     {chip(i.type_label, i.type_color)}
                     {chip(i.status_label, i.status_color)}
-                    <span className="cdash-init-dates">
+                    <span className="cdash-init-dates mono">
                       {longDate(i.scheduled_start)} – {longDate(i.scheduled_end)}
                     </span>
                     {i.origin_site_name && i.destination_site_name && (
-                      <span className="cdash-init-dates">
+                      <span className="cdash-init-dates mono">
                         {i.origin_site_name} → {i.destination_site_name}
                       </span>
                     )}
@@ -358,7 +358,7 @@ export default function ClientDashboard() {
                         <span className="cdash-progress">
                           <span className="fill" style={{ width: `${progress.pct}%` }} />
                         </span>
-                        <span className="cdash-progress-pct">{progress.pct}%</span>
+                        <span className="cdash-progress-pct mono">{progress.pct}%</span>
                       </>
                     )}
                   </div>
@@ -403,21 +403,21 @@ export default function ClientDashboard() {
                 // Deep link mirrors lib/scans.ts's matchedHref asset branch
                 // (`/assets?open=...`) — ClientActivityItem already carries
                 // the asset id directly, so there's no match_type to switch on.
-                <Link key={row.id} className="cdash-act-row"
+                <Link key={row.id} className="mini-row cdash-act-row"
                       to={`/assets?open=${encodeURIComponent(row.asset_id)}`}>
                   <span className="cdash-act-dot" style={{ background: row.status_color }} aria-hidden="true" />
                   <span>
                     <b>{row.asset_name ?? 'Unnamed asset'}</b>
-                    {row.serial_number && <span className="cdash-act-serial"> {row.serial_number}</span>}
+                    {row.serial_number && <span className="cdash-act-serial mono"> {row.serial_number}</span>}
                   </span>
                   {/* status is nullable on this row (a scan that hasn't
                       resolved to a known asset status yet) — "Scanned" is
                       the neutral fallback copy for that case. */}
                   <span className="chip tag">{row.status_label ?? 'Scanned'}</span>
-                  <span className="cdash-act-serial">
+                  <span className="cdash-act-serial mono">
                     {[row.site_name, row.device_id].filter(Boolean).join(' · ')}
                   </span>
-                  <span className="cdash-act-time">{relativeTime(row.scanned_at)}</span>
+                  <span className="cdash-act-time mono">{relativeTime(row.scanned_at)}</span>
                 </Link>
               ))}
             </section>

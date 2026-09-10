@@ -50,51 +50,6 @@
     "reason": "not list content: toolbar column-filter summary badge, not a row chip"
   },
   {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-board-chip",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-dist-row",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-scan-row",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-feed-row",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".mdash-verify-head",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".pdash-clock-row .dir-avatar",
-    "reason": "baseline — migrate in Task 4 (one of the two known golden-class overrides; deleted once avatar size is fully token-driven)"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".pdash-event-row",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".cdash-init-row",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".cdash-act-row",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
     "file": "styles/god-edit.css",
     "selector": ".god-cell input, .god-cell select",
     "reason": "baseline — inline god-mode cell editor rendered inside list rows across many pages; not itemized in the audit's Task 4-7 file map, needs its own follow-up migration"
@@ -447,76 +402,6 @@
   },
   {
     "file": "styles/dashboard.css",
-    "selector": ".dash-board-name",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-board-name .dash-board-type",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-board-route",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-board-window",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-board-progress .pct",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-dist-count",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-dist-pct",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-scan-name",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-scan-kind",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-scan-site",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-scan-time",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-feed-time",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-feed-text .who",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-feed-text .what",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
     "selector": ".mdash-summary-name",
     "reason": "not list content: Move Dashboard summary strip — single selected-move hero (aria-label=\"Move summary\"), not a repeating row"
   },
@@ -529,61 +414,6 @@
     "file": "styles/dashboard.css",
     "selector": ".mdash-summary-window",
     "reason": "not list content: Move Dashboard summary strip window (see .mdash-summary-name)"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".mdash-wave-label",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".mdash-wave-count",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".mdash-verify-n",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".pdash-clock-name",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".pdash-clock-meta",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".pdash-clock-elapsed",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".pdash-event-time",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".cdash-init-name",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".cdash-init-dates",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".cdash-act-serial",
-    "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".cdash-act-time",
-    "reason": "baseline — migrate in Task 4"
   },
   {
     "file": "styles/hardware.css",

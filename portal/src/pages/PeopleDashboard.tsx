@@ -244,23 +244,27 @@ export default function PeopleDashboard() {
                 <div className="dash-panel-empty">Nobody is clocked in.</div>
               )}
               {active !== null && active.length > 0 && (
-                <div className="pdash-clock-list">
+                <div className="mini-list pdash-clock-list">
                   {active.map((e) => {
                     const mins = elapsedSince(e.clock_in_at);
                     const avatarUrl = avatarByPerson.get(e.person_id) ?? null;
                     const context = e.initiative_name ?? e.site_name ?? null;
                     return (
-                      <div key={e.id} className="pdash-clock-row">
+                      <div key={e.id} className="mini-row pdash-clock-row">
                         <div className="dir-avatar"
                              style={{ background: avatarUrl ? 'var(--surface-2)' : avatarGradient(e.person_name) }}>
                           {avatarUrl ? <img src={avatarUrl} alt="" /> : initials(e.person_name)}
                         </div>
-                        <Link className="pdash-clock-name" to={`/people/workers/${e.person_id}`}>
-                          {e.person_name}
-                        </Link>
-                        <span className="pdash-clock-meta">since {fmtClockTime(e.clock_in_at)}</span>
+                        <div className="cell-primary">
+                          <div className="pn">
+                            <Link className="pdash-clock-name" to={`/people/workers/${e.person_id}`}>
+                              <b>{e.person_name}</b>
+                            </Link>
+                            <span>since {fmtClockTime(e.clock_in_at)}</span>
+                          </div>
+                        </div>
                         {context && <span className="chip tag">{context}</span>}
-                        <span className="pdash-clock-elapsed">{formatMinutes(mins)}</span>
+                        <span className="pdash-clock-elapsed mono">{formatMinutes(mins)}</span>
                         {mins >= MISSED_PUNCH_MINUTES && (
                           <span className="chip tag time-flag">12h+ — missed punch?</span>
                         )}
@@ -300,9 +304,9 @@ export default function PeopleDashboard() {
                 <div className="dash-panel-empty">No timeclock activity yet.</div>
               )}
               {entries !== null && events.length > 0 && (
-                <div className="pdash-event-list">
+                <div className="mini-list pdash-event-list">
                   {events.map((ev) => (
-                    <Link key={ev.key} className="pdash-event-row" to="/people/time">
+                    <Link key={ev.key} className="mini-row pdash-event-row" to="/people/time">
                       <span className="pdash-event-dot"
                             style={{ background: ev.kind === 'in' ? '#178a4c' : '#51606f' }}
                             aria-hidden="true" />
@@ -311,7 +315,7 @@ export default function PeopleDashboard() {
                         {ev.kind === 'in' ? 'clocked in' : `clocked out · ${formatMinutes(ev.minutes ?? 0)}`}
                       </span>
                       {ev.context && <span className="chip tag">{ev.context}</span>}
-                      <span className="pdash-event-time">{relativeTime(ev.at)}</span>
+                      <span className="pdash-event-time mono">{relativeTime(ev.at)}</span>
                     </Link>
                   ))}
                 </div>

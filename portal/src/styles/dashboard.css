@@ -199,31 +199,7 @@ a.dash-kpi:hover {
 .dash-board-row:hover { background: var(--surface-2, #f5f7fa); }
 .dash-board-row:focus-visible { outline: 2px solid var(--amber); outline-offset: -2px; }
 
-.dash-board-name {
-  font-size: 13.5px;
-  font-weight: 500;
-  min-width: 0;
-}
-.dash-board-name .dash-board-name-text {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.dash-board-name .dash-board-type {
-  display: block;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--text-mute);
-  margin-top: 2px;
-}
 .dash-board-route {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.5;
-  letter-spacing: 0.04em;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -239,16 +215,11 @@ a.dash-kpi:hover {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1.4;
   color: var(--text-mute);
   white-space: nowrap;
 }
 .dash-board-progress { display: flex; flex-direction: column; gap: 5px; }
 .dash-board-progress .pct {
-  font-family: var(--font-mono);
-  font-size: 11px;
   color: var(--c-amber, #a36207);
 }
 .dash-board-progress .track {
@@ -263,19 +234,10 @@ a.dash-kpi:hover {
   background: var(--amber);
   transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
 }
-/* planned (no roster yet): quiet slate chip instead of a bar */
-.dash-board-chip {
-  justify-self: start;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  padding: 3px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--paper-line);
-  color: var(--text-mute);
-  white-space: nowrap;
-}
+/* planned (no roster yet): quiet slate chip instead of a bar — colors
+   and sizing come from the golden .chip.c-slate; this rule is layout
+   only (grid self-alignment in the row's 4th column). */
+.dash-board-chip { justify-self: start; }
 
 @media (max-width: 900px) {
   .dash-board-row { grid-template-columns: 1fr 96px; }
@@ -339,7 +301,6 @@ a.dash-kpi:hover {
   gap: 10px;
   padding: 7px 0;
   border-bottom: 1px solid var(--paper-line);
-  font-size: 13px;
 }
 .dash-dist-row:last-child { border-bottom: none; }
 .dash-dist-swatch {
@@ -354,19 +315,8 @@ a.dash-kpi:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.dash-dist-count {
-  margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-dark);
-}
-.dash-dist-pct {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-mute);
-  width: 4ch;
-  text-align: right;
-}
+.dash-dist-count { margin-left: auto; }
+.dash-dist-pct { width: 4ch; text-align: right; }
 
 /* ── in transit (truck tracking placeholder) ──────────────── */
 
@@ -415,34 +365,25 @@ a.dash-kpi:hover {
   align-items: center;
   padding: 7px 0;
   border-bottom: 1px solid var(--paper-line);
-  font-size: 12.5px;
 }
 .dash-scan-row:last-child { border-bottom: none; }
 .dash-scan-dot { width: 9px; height: 9px; border-radius: 3px; }
 .dash-scan-name {
-  font-weight: 500;
-  color: var(--text-dark);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .dash-scan-kind {
-  font-family: var(--font-mono);
-  font-size: 10px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-mute);
 }
 .dash-scan-site {
-  color: var(--text-mute);
-  font-weight: 300;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .dash-scan-time {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
   color: var(--text-mute);
   white-space: nowrap;
   text-align: right;
@@ -457,12 +398,9 @@ a.dash-kpi:hover {
   gap: 12px;
   padding: 8px 0;
   border-bottom: 1px solid var(--paper-line);
-  font-size: 12.5px;
 }
 .dash-feed-row:last-child { border-bottom: none; }
 .dash-feed-time {
-  font-family: var(--font-mono);
-  font-size: 10.5px;
   color: var(--text-mute);
   flex: none;
   min-width: 7ch;
@@ -492,8 +430,7 @@ a.dash-kpi:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.dash-feed-text .who { font-weight: 500; }
-.dash-feed-text .what { color: var(--text-mute); font-weight: 300; }
+.dash-feed-text .what { color: var(--text-mute); }
 
 /* ── Move Dashboard (/dashboards/move) ────────────────────── */
 
@@ -576,8 +513,6 @@ a.dash-kpi:hover {
 .mdash-wave-row { display: flex; align-items: center; gap: 12px; }
 .mdash-wave-label {
   flex: 0 0 92px;
-  font-size: 12.5px;
-  color: var(--text-dark);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -598,9 +533,6 @@ a.dash-kpi:hover {
 }
 .mdash-wave-count {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-dark);
   min-width: 3ch;
   text-align: right;
 }
@@ -611,11 +543,8 @@ a.dash-kpi:hover {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  font-size: 12.5px;
-  color: var(--text-dark);
   margin-bottom: 6px;
 }
-.mdash-verify-n { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-mute); }
 .mdash-verify-track {
   height: 8px;
   border-radius: 999px;
@@ -709,20 +638,18 @@ a.dash-kpi:hover {
   border-bottom: 1px solid var(--paper-line, #eee7da);
 }
 .pdash-clock-row:last-child { border-bottom: 0; }
-.pdash-clock-row .dir-avatar { width: 36px; height: 36px; border-radius: 10px; font-size: 12px; }
-.pdash-clock-name { font-weight: 600; font-size: 13.5px; color: inherit; text-decoration: none; }
+.pdash-clock-name { color: inherit; text-decoration: none; }
 .pdash-clock-name:hover { text-decoration: underline; }
-.pdash-clock-meta { font-size: 12px; color: var(--text-mute); }
-.pdash-clock-elapsed { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; }
+.pdash-clock-elapsed { margin-left: auto; font-variant-numeric: tabular-nums; }
 
 .pdash-event-row {
   display: flex; align-items: center; gap: 10px; padding: 7px 0;
   border-bottom: 1px solid var(--paper-line, #eee7da);
-  color: inherit; text-decoration: none; font-size: 13px;
+  color: inherit; text-decoration: none;
 }
 .pdash-event-row:last-child { border-bottom: 0; }
 .pdash-event-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.pdash-event-time { margin-left: auto; font-size: 12px; color: var(--text-mute); }
+.pdash-event-time { margin-left: auto; color: var(--text-mute); }
 
 /* ── Client dashboard ─────────────────────────────────────────────── */
 .dash-ctrl-static {
@@ -742,19 +669,19 @@ a.dash-kpi:hover {
 .cdash-hero-meta { font-size: 12.5px; color: var(--text-mute); }
 .cdash-hero-spacer { margin-left: auto; }
 .cdash-init-row { display: flex; align-items: center; gap: 10px; padding: 9px 0;
-  border-bottom: 1px solid var(--paper-line, #eee7da); font-size: 13px; }
+  border-bottom: 1px solid var(--paper-line, #eee7da); }
 .cdash-init-row:last-child { border-bottom: 0; }
-.cdash-init-name { font-weight: 600; color: inherit; text-decoration: none; }
+.cdash-init-name { color: inherit; text-decoration: none; }
 .cdash-init-name:hover { text-decoration: underline; }
-.cdash-init-dates { color: var(--text-mute); font-size: 12px; }
+.cdash-init-dates { color: var(--text-mute); }
 .cdash-progress { width: 140px; height: 6px; border-radius: 4px;
   background: rgba(var(--accent-rgb), 0.14); overflow: hidden; margin-left: auto; }
 .cdash-progress .fill { height: 100%; background: var(--accent); }
-.cdash-progress-pct { font-variant-numeric: tabular-nums; font-size: 12px; font-weight: 600; width: 36px; text-align: right; }
+.cdash-progress-pct { font-variant-numeric: tabular-nums; width: 36px; text-align: right; }
 .cdash-act-row { display: flex; align-items: center; gap: 10px; padding: 7px 0;
-  border-bottom: 1px solid var(--paper-line, #eee7da); font-size: 13px;
+  border-bottom: 1px solid var(--paper-line, #eee7da);
   color: inherit; text-decoration: none; }
 .cdash-act-row:last-child { border-bottom: 0; }
 .cdash-act-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.cdash-act-serial { color: var(--text-mute); font-size: 12px; }
-.cdash-act-time { margin-left: auto; font-size: 12px; color: var(--text-mute); }
+.cdash-act-serial { color: var(--text-mute); }
+.cdash-act-time { margin-left: auto; color: var(--text-mute); }

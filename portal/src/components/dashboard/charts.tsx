@@ -128,13 +128,13 @@ export function Distribution({ entries, total }: { entries: DistEntry[]; total: 
                 style={{ background: e.color, flexGrow: e.count }} />
         ))}
       </div>
-      <div className="dash-dist-rows">
+      <div className="mini-list dash-dist-rows">
         {shown.map((e) => (
-          <div key={e.key} className="dash-dist-row">
+          <div key={e.key} className="mini-row dash-dist-row">
             <span className="dash-dist-swatch" style={{ background: e.color }} aria-hidden="true" />
-            <span className="dash-dist-label">{e.label}</span>
-            <span className="dash-dist-count">{e.count}</span>
-            <span className="dash-dist-pct">{Math.round((e.count / total) * 100)}%</span>
+            <span className="cell-top dash-dist-label">{e.label}</span>
+            <span className="dash-dist-count mono">{e.count}</span>
+            <span className="dash-dist-pct mono">{Math.round((e.count / total) * 100)}%</span>
           </div>
         ))}
       </div>
