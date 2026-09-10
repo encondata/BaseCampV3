@@ -372,8 +372,9 @@ async def create_truck_update(
         lat, lng = parse_location(body.location)
     except LocationError as exc:
         raise _err(422, "invalid_location") from exc
-    location = (body.location if isinstance(body.location, str)
-               else format_location(lat, lng))
+    # Always store the canonical "lat, lng" text — a hand-typed "34.0007,-81"
+    # and a tracker's {lat, lng} render identically in the updates table.
+    location = format_location(lat, lng)
     update = TruckUpdate(
         truck_id=truck_id, recorded_at=body.recorded_at or datetime.now(UTC),
         location=location, lat=lat, lng=lng,
