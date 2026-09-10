@@ -240,6 +240,9 @@
 .dir-row { border-bottom: 1px solid var(--paper-line); }
 .dir-row:last-child { border-bottom: 0; }
 
+/* base for any unclassed text — the golden cell classes refine it */
+.row-main, .mini-row { font-size: var(--list-fs-cell); color: var(--text-dark); }
+
 .row-main {
   display: grid;
   align-items: center;

@@ -342,7 +342,7 @@ export default function ClientDashboard() {
                 const progress = progressById[i.id];
                 return (
                   <div key={i.id} className="mini-row cdash-init-row">
-                    <Link className="cdash-init-name" to={`/initiatives/${i.id}`}><b>{i.name}</b></Link>
+                    <Link className="cdash-init-name" to={`/initiatives/${i.id}`}><b className="cell-top">{i.name}</b></Link>
                     {chip(i.type_label, i.type_color)}
                     {chip(i.status_label, i.status_color)}
                     <span className="cdash-init-dates mono">
@@ -407,7 +407,7 @@ export default function ClientDashboard() {
                       to={`/assets?open=${encodeURIComponent(row.asset_id)}`}>
                   <span className="cdash-act-dot" style={{ background: row.status_color }} aria-hidden="true" />
                   <span>
-                    <b>{row.asset_name ?? 'Unnamed asset'}</b>
+                    <b className="cell-top">{row.asset_name ?? 'Unnamed asset'}</b>
                     {row.serial_number && <span className="cdash-act-serial mono"> {row.serial_number}</span>}
                   </span>
                   {/* status is nullable on this row (a scan that hasn't

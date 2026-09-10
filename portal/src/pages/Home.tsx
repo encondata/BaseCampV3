@@ -444,8 +444,8 @@ export default function Home() {
                 <div key={row.id} className="mini-row dash-feed-row">
                   <span className="dash-feed-time mono">{relativeTime(row.at)}</span>
                   <span className="dash-feed-text">
-                    <b>{row.actor_name ?? 'System'}</b>{' '}
-                    <span className="what">{actionLabel(row).toLowerCase()}</span>{' '}
+                    <b className="cell-top">{row.actor_name ?? 'System'}</b>{' '}
+                    <span className="what cell-sub">{actionLabel(row).toLowerCase()}</span>{' '}
                     {targetLabel(row, { hideAuthTarget: true }) !== '—' && targetLabel(row)}
                   </span>
                 </div>

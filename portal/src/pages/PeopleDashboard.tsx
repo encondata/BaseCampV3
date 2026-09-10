@@ -310,8 +310,8 @@ export default function PeopleDashboard() {
                       <span className="pdash-event-dot"
                             style={{ background: ev.kind === 'in' ? '#178a4c' : '#51606f' }}
                             aria-hidden="true" />
-                      <b>{ev.person_name}</b>
-                      <span>
+                      <b className="cell-top">{ev.person_name}</b>
+                      <span className="cell-sub">
                         {ev.kind === 'in' ? 'clocked in' : `clocked out · ${formatMinutes(ev.minutes ?? 0)}`}
                       </span>
                       {ev.context && <span className="chip tag">{ev.context}</span>}
