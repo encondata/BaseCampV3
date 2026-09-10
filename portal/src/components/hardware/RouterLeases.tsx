@@ -5,6 +5,7 @@
 
 import { useEffect, useState } from 'react';
 
+import DataTable from '../DataTable';
 import { listDeviceLeases, type DeviceLease } from '../../lib/api';
 
 type View = 'active' | 'reserved';
@@ -61,30 +62,26 @@ export default function RouterLeases({ deviceId }: { deviceId: string }) {
           {view === 'active' ? 'No active leases.' : 'No reservations.'}
         </p>
       ) : (
-        <table className="lease-table">
-          <thead>
-            <tr>
-              <th>Up</th>
-              <th>Hostname</th>
-              <th>IP</th>
-              <th>MAC</th>
-              <th>Last seen</th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((l) => (
-              <tr key={l.id}>
-                <td>
-                  <span className={l.up ? 'lease-dot up' : 'lease-dot'} title={l.up ? 'Up' : 'Down'} />
-                </td>
-                <td>{l.hostname ?? '—'}</td>
-                <td>{l.ip ?? '—'}</td>
-                <td className="mono">{l.mac}</td>
-                <td>{l.last_seen_at ? new Date(l.last_seen_at).toLocaleString() : '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <DataTable
+          ariaLabel="DHCP leases"
+          columns={[
+            { key: 'up', label: 'Up', width: '44px', align: 'center' },
+            { key: 'host', label: 'Hostname' },
+            { key: 'ip', label: 'IP', mono: true },
+            { key: 'mac', label: 'MAC', mono: true },
+            { key: 'seen', label: 'Last seen', mono: true },
+          ]}
+          rows={shown.map((l) => ({
+            key: l.id,
+            cells: [
+              <span className={l.up ? 'lease-dot up' : 'lease-dot'} title={l.up ? 'Up' : 'Down'} />,
+              l.hostname ?? '—',
+              l.ip ?? '—',
+              l.mac,
+              l.last_seen_at ? new Date(l.last_seen_at).toLocaleString() : '—',
+            ],
+          }))}
+        />
       )}
     </div>
   );

@@ -564,9 +564,9 @@ function ExternalDetail({
         {person.links.map((l) => (
           <div className="session-item" key={orgKey(l.kind, l.org_id)}
                style={{ flexWrap: 'wrap', alignItems: 'flex-start' }}>
-            <div className="session-main">
-              <b>{l.org_name}</b>
-              <p>{l.kind === 'client' ? 'Client' : 'Partner'}</p>
+            <div className="session-main cell">
+              <div className="cell-top"><b>{l.org_name}</b></div>
+              <div className="cell-sub mono">{l.kind === 'client' ? 'Client' : 'Partner'}</div>
             </div>
             <span className="chip tag">{l.tier}</span>
             <div style={{
@@ -715,9 +715,9 @@ function EditPersonModal({
             {person.links.map((l) => (
               <div className="session-item" key={orgKey(l.kind, l.org_id)}
                    style={{ flexWrap: 'wrap', alignItems: 'flex-start' }}>
-                <div className="session-main">
-                  <b>{l.org_name}</b>
-                  <p>{l.kind === 'client' ? 'Client' : 'Partner'}</p>
+                <div className="session-main cell">
+                  <div className="cell-top"><b>{l.org_name}</b></div>
+                  <div className="cell-sub mono">{l.kind === 'client' ? 'Client' : 'Partner'}</div>
                 </div>
                 {canManageLink(l.kind) ? (
                   <TierSelect value={l.tier} disabled={busy}

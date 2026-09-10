@@ -809,9 +809,9 @@ function SuppliedWorkersModal({ workers, onClose, onPick }: {
               }}>
                 {w.avatar_url ? <img src={w.avatar_url} alt="" /> : initials(w.display_name)}
               </div>
-              <div className="session-main">
-                <b>{w.display_name}</b>
-                <p>{[w.trade, w.level].filter(Boolean).join(' · ') || 'no profile'}</p>
+              <div className="session-main cell">
+                <div className="cell-top"><b>{w.display_name}</b></div>
+                <div className="cell-sub mono">{[w.trade, w.level].filter(Boolean).join(' · ') || 'no profile'}</div>
               </div>
               {w.level && (
                 <span className="lvl-badge">
@@ -893,9 +893,9 @@ function ContactsPanel({ cfg, orgId, contacts, canManage, onChanged }: {
           }}>
             {c.avatar_url ? <img src={c.avatar_url} alt="" /> : initials(c.display_name)}
           </div>
-          <div className="session-main">
-            <b>{c.display_name}</b>
-            <p>{[c.email, c.phone].filter(Boolean).join(' · ') || '—'}</p>
+          <div className="session-main cell">
+            <div className="cell-top"><b>{c.display_name}</b></div>
+            <div className="cell-sub mono">{[c.email, c.phone].filter(Boolean).join(' · ') || '—'}</div>
           </div>
           {c.has_account
             ? <span className="chip c-green" title="Has portal access"><span className="dot" />portal</span>

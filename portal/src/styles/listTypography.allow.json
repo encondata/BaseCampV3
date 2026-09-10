@@ -45,21 +45,6 @@
     "reason": "not list content: toolbar column-filter summary badge, not a row chip"
   },
   {
-    "file": "styles/god-edit.css",
-    "selector": ".god-cell input, .god-cell select",
-    "reason": "baseline \u2014 inline god-mode cell editor rendered inside list rows across many pages; not itemized in the audit's Task 4-7 file map, needs its own follow-up migration"
-  },
-  {
-    "file": "styles/god-edit.css",
-    "selector": ".god-cell-msg",
-    "reason": "baseline \u2014 inline god-mode cell editor error message rendered inside list rows; not itemized in the audit's Task 4-7 file map, needs its own follow-up migration"
-  },
-  {
-    "file": "styles/hardware.css",
-    "selector": ".lease-table th",
-    "reason": "baseline \u2014 migrate in Task 7"
-  },
-  {
     "file": "styles/initiatives.css",
     "selector": ".init-panel .eyebrow-sm",
     "reason": "not list content: eyebrow label (out of scope per spec)"
@@ -155,10 +140,6 @@
     "reason": "not list content: eyebrow label (out of scope per spec)"
   },
   {
-    "file": "components/hardware/RouterLeases.tsx",
-    "reason": "baseline \u2014 migrate in Task 7"
-  },
-  {
     "file": "styles/assets.css",
     "selector": ".nf-lightbox-caption",
     "reason": "not list content: full-screen lightbox single-image caption, not a list row"
@@ -201,11 +182,6 @@
   {
     "file": "styles/auth-theme.css",
     "selector": ".auth-scrim .otp-foot button.link",
-    "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
-  },
-  {
-    "file": "styles/auth-theme.css",
-    "selector": ".auth-scrim .otp-inputs input",
     "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
   },
   {
@@ -267,11 +243,6 @@
     "file": "styles/dashboard.css",
     "selector": ".mdash-summary-window",
     "reason": "not list content: Move Dashboard summary strip window (see .mdash-summary-name)"
-  },
-  {
-    "file": "styles/hardware.css",
-    "selector": ".lease-tab",
-    "reason": "not list content: router-leases tab button, sibling of the .lease-table (not a table cell)"
   },
   {
     "file": "styles/initiatives.css",

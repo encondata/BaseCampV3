@@ -77,14 +77,14 @@ export default function CertsPanel({ personId, onChanged }: {
         const state = certState(c);
         return (
           <div className="session-item" key={c.id}>
-            <div className="session-main">
-              <b>{c.name}</b>
-              <p>
+            <div className="session-main cell">
+              <div className="cell-top"><b>{c.name}</b></div>
+              <div className="cell-sub mono">
                 {[c.issuer,
                   c.issued_on ? `issued ${longDate(c.issued_on)}` : null,
                   c.expires_on ? `expires ${longDate(c.expires_on)}` : 'no expiry',
                 ].filter(Boolean).join(' · ')}
-              </p>
+              </div>
             </div>
             {state && (
               <span className={`chip ${state.cls}`}><span className="dot" />{state.label}</span>

@@ -231,12 +231,12 @@ export default function Profile() {
                       <path d="M8 21h8M12 17v4" />
                     </svg>
                   </div>
-                  <div className="session-main">
-                    <b>{describeUserAgent(s.user_agent)}</b>
-                    <p>
+                  <div className="session-main cell">
+                    <div className="cell-top"><b>{describeUserAgent(s.user_agent)}</b></div>
+                    <div className="cell-sub mono">
                       {s.ip_address ?? 'unknown ip'} · started {relativeTime(s.started_at)} ·
                       expires {relativeTime(s.expires_at)}
-                    </p>
+                    </div>
                   </div>
                   {s.current
                     ? <span className="chip c-green"><span className="dot" />Current</span>
