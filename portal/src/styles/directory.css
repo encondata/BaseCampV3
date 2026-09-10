@@ -756,10 +756,18 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
-.cf-native {
+/* Doubled selector on purpose: `.pf-form input { width: 100% }` (the
+   modal form's generic input rule) outranks a lone `.cf-native`, which
+   stretched the 40px picker to full width and pushed the hex field off
+   the modal (horizontal scrollbar). `.cf-row .cf-native` wins on
+   specificity regardless of which form the field sits in. */
+.cf-native,
+.cf-row .cf-native {
   flex: none;
   width: 40px;
+  min-width: 40px;
   height: 40px;
   padding: 0;
   border: 1px solid var(--paper-line);
@@ -770,7 +778,7 @@
 .cf-native::-webkit-color-swatch-wrapper { padding: 3px; }
 .cf-native::-webkit-color-swatch { border: none; border-radius: 6px; }
 
-.cf-hex-wrap { flex: 1; min-width: 0; }
+.cf-hex-wrap { flex: 1 1 120px; min-width: 0; }
 .cf-hex-wrap label {
   font-family: var(--font-mono);
   font-size: 9.5px;
