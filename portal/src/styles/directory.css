@@ -351,6 +351,14 @@
   letter-spacing: 0.02em;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
 }
+/* Smaller avatar for compact embedded rows (org-picker dropdown, contact
+   rows) that want a tighter footprint than the golden 38px slot — still
+   scales with --list-avatar/--list-fs-avatar, just at a fixed fraction. */
+.dir-avatar.sm {
+  width: calc(var(--list-avatar) * 0.8);
+  height: calc(var(--list-avatar) * 0.8);
+  font-size: calc(var(--list-fs-avatar) * 0.85);
+}
 
 /* ── chips ────────────────────────────────────────────────── */
 
@@ -895,12 +903,12 @@ button.combo-caret:hover { color: var(--text-dark); }
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  height: 24px;
+  height: var(--list-chip-h);
   padding: 0 9px 0 0;
   border-radius: 999px;
   border: 1px solid var(--paper-line);
   background: var(--surface-2, #f5f7fa);
-  font-size: 12px;
+  font-size: var(--list-fs-chip);
   font-weight: 500;
   color: var(--text-dark);
   white-space: nowrap;
@@ -908,12 +916,12 @@ button.combo-caret:hover { color: var(--text-dark); }
 .lvl-badge b {
   display: grid;
   place-items: center;
-  height: 22px;
+  height: calc(var(--list-chip-h) - 2px);
   min-width: 26px;
   padding: 0 5px;
   border-radius: 999px 0 0 999px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--list-fs-chip-tag);
   font-weight: 700;
   color: #0c1117;
 }

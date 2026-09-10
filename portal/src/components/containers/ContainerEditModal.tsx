@@ -264,15 +264,15 @@ export default function ContainerEditModal({
                     </div>
                   </div>
                 )}
-                <div className="contents-list">
+                <div className="mini-list contents-list">
                   {contents === null && <p className="page-hint">Loading…</p>}
                   {contents?.length === 0 && (
                     <p className="page-hint">No assets in this container yet.</p>
                   )}
                   {contents?.map((r) => (
-                    <div key={r.asset_id} className="contents-row">
+                    <div key={r.asset_id} className="mini-row contents-row">
                       <span className="mono">{r.serial_number ?? '—'}</span>
-                      <span>{r.name ?? r.model_name ?? '—'}</span>
+                      <span className="cell-top">{r.name ?? r.model_name ?? '—'}</span>
                       <span className="chip custom"
                             style={{ '--chip': r.status_color } as CSSProperties}>
                         <span className="dot" />{r.status_label}

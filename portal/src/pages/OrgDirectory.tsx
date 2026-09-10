@@ -803,8 +803,8 @@ function SuppliedWorkersModal({ workers, onClose, onPick }: {
           {visible.map((w) => (
             <button className="supplied-modal-row" key={w.person_id}
                     onClick={() => onPick(w.person_id)}>
-              <div className="dir-avatar" style={{
-                width: 32, height: 32, borderRadius: 9, fontSize: 11,
+              <div className="dir-avatar sm" style={{
+                borderRadius: 9,
                 background: w.avatar_url ? 'var(--surface-2)' : avatarGradient(w.display_name),
               }}>
                 {w.avatar_url ? <img src={w.avatar_url} alt="" /> : initials(w.display_name)}
@@ -887,8 +887,8 @@ function ContactsPanel({ cfg, orgId, contacts, canManage, onChanged }: {
       )}
       {contacts?.map((c) => (
         <div className="session-item" key={c.person_id} style={{ flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          <div className="dir-avatar" style={{
-            width: 30, height: 30, borderRadius: 9, fontSize: 11,
+          <div className="dir-avatar sm" style={{
+            borderRadius: 9,
             background: c.avatar_url ? 'var(--surface-2)' : avatarGradient(c.display_name),
           }}>
             {c.avatar_url ? <img src={c.avatar_url} alt="" /> : initials(c.display_name)}

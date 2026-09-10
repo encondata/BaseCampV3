@@ -2,7 +2,7 @@
   {
     "file": "styles/directory.css",
     "selector": ".mini-btn",
-    "reason": "not list content: detail-panel action button (regex matches the 'mini-' substring meant for the future .mini-row/.mini-list primitives)"
+    "reason": "not list content: detail-panel action button (regex matches the 'mini-' substring it shares with the .mini-row/.mini-list list primitives, not a coincidence to migrate)"
   },
   {
     "file": "styles/access.css",
@@ -378,5 +378,125 @@
     "file": "styles/time.css",
     "selector": ".time-section-title",
     "reason": "not list content: Timesheet section heading, not a list row"
+  },
+  {
+    "file": "pages/DevDatabase.tsx",
+    "selector": "color: 'var(--text-mute)', fontSize: 12,",
+    "reason": "not list content: Reconcile dry-run results tree (dev-only diagnostic list of orphaned references) — a nested note under one failed entity, not a list row",
+    "check": "inline"
+  },
+  {
+    "file": "pages/DevDatabase.tsx",
+    "selector": "<div style={{ marginTop: 6, fontSize: 12",
+    "reason": "not list content: Reconcile dry-run results tree — the cannot-force-delete note below one failed entity, not a list row",
+    "check": "inline"
+  },
+  {
+    "file": "pages/DevDatabase.tsx",
+    "selector": "<p className=\"page-hint\" style={{ fontFa",
+    "reason": "not list content: encrypted-backup \"Decrypt with\" hint text, not a list row",
+    "check": "inline"
+  },
+  {
+    "file": "pages/External.tsx",
+    "selector": "<div style={{ fontSize: 14, fontWeight: ",
+    "reason": "not list content: person detail-header name next to AvatarUpload, not a list row",
+    "check": "inline"
+  },
+  {
+    "file": "pages/External.tsx",
+    "selector": "<div className=\"mono\" style={{ fontSize:",
+    "reason": "not list content: person detail-header email/phone line under the name (see the sibling entry above), not a list row",
+    "check": "inline"
+  },
+  {
+    "file": "pages/Workers.tsx",
+    "selector": "<div style={{ fontSize: 14, fontWeight: ",
+    "reason": "not list content: worker detail-header name next to AvatarUpload, not a list row",
+    "check": "inline"
+  },
+  {
+    "file": "pages/Workers.tsx",
+    "selector": "<div className=\"mono\" style={{ fontSize:",
+    "reason": "not list content: worker detail-header email/phone line under the name (see the sibling entry above), not a list row",
+    "check": "inline"
+  },
+  {
+    "file": "components/AvatarUpload.tsx",
+    "selector": "fontSize: size * 0.33,",
+    "reason": "not list content: shared avatar component — the initials scale with its own `size` prop and it's used in detail headers/dropdowns, never rendered as list-row markup itself",
+    "check": "inline"
+  },
+  {
+    "file": "components/CommandPalette.tsx",
+    "selector": "placeItems: 'center', color: '#fff', fon",
+    "reason": "not list content: ⌘K command-palette result icon — a global overlay, not the directory-list pattern (see the existing .kbar-item family exceptions)",
+    "check": "inline"
+  },
+  {
+    "file": "components/ForceChangePassword.tsx",
+    "selector": "fontFamily: \"'Geologica', sans-serif\",",
+    "reason": "not list content: the forced-password-change screen renders INSTEAD of .portal-shell, so it has no theme/list tokens available and is styled entirely inline",
+    "check": "inline"
+  },
+  {
+    "file": "components/ForceChangePassword.tsx",
+    "selector": "fontFamily: \"'Fragment Mono', monospace\"",
+    "reason": "not list content: forced-password-change screen (see the file-level entry above) — the \"ServerSherpa Portal\" eyebrow",
+    "check": "inline"
+  },
+  {
+    "file": "components/ForceChangePassword.tsx",
+    "selector": "<h1 style={{ margin: '10px 0 6px', fontS",
+    "reason": "not list content: forced-password-change screen (see the file-level entry above) — the \"Set your password\" heading",
+    "check": "inline"
+  },
+  {
+    "file": "components/ForceChangePassword.tsx",
+    "selector": "<p style={{ margin: '0 0 22px', fontSize",
+    "reason": "not list content: forced-password-change screen (see the file-level entry above) — the explanatory paragraph",
+    "check": "inline"
+  },
+  {
+    "file": "components/ForceChangePassword.tsx",
+    "selector": "<p style={{ margin: '18px 0 0', fontSize",
+    "reason": "not list content: forced-password-change screen (see the file-level entry above) — the \"Not you?\" footer line",
+    "check": "inline"
+  },
+  {
+    "file": "components/ForceChangePassword.tsx",
+    "selector": "font: 'inherit', fontWeight: 500, cursor",
+    "reason": "not list content: forced-password-change screen (see the file-level entry above) — the inline Sign out link",
+    "check": "inline"
+  },
+  {
+    "file": "components/Topbar.tsx",
+    "selector": "fontSize: 10.5, fontWeight: 600,",
+    "reason": "not list content: global search-as-you-type dropdown result icon — an overlay result, not the directory-list pattern",
+    "check": "inline"
+  },
+  {
+    "file": "components/UserAdminModals.tsx",
+    "selector": "<input id=\"rp-temp\" value={temp} style={",
+    "reason": "not list content: Reset password modal's temporary-password field, not a list row",
+    "check": "inline"
+  },
+  {
+    "file": "components/UserAdminModals.tsx",
+    "selector": "<label style={{ textTransform: 'none', l",
+    "reason": "not list content: Reset password modal's \"require new password\" checkbox label, not a list row",
+    "check": "inline"
+  },
+  {
+    "file": "components/UserAdminModals.tsx",
+    "selector": "style={{ flex: 1, fontFamily: 'var(--fon",
+    "reason": "not list content: Reset password modal's read-only temporary-password display, not a list row",
+    "check": "inline"
+  },
+  {
+    "file": "components/sites/SiteEditModal.tsx",
+    "selector": "<p style={{ fontSize: 12.5, color: 'var(",
+    "reason": "not list content: site-edit modal warning paragraph, not a list row",
+    "check": "inline"
   }
 ]

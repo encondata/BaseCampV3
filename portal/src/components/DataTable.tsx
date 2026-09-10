@@ -30,7 +30,7 @@ export default function DataTable({ columns, rows, className, emptyText, ariaLab
           <tr><td className="data-table-empty" colSpan={columns.length}>{emptyText ?? 'Nothing here yet.'}</td></tr>
         ) : rows.map((r) => (
           <tr key={r.key} className={r.className}>
-            {r.cells.map((cell, i) => <td key={columns[i]?.key ?? i} className={cls(columns[i])}>{cell}</td>)}
+            {r.cells.map((cell, i) => <td key={columns[i]?.key ?? i} className={columns[i] ? cls(columns[i]) : ''}>{cell}</td>)}
           </tr>
         ))}
       </tbody>

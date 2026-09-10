@@ -57,14 +57,14 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
             </div>
           </div>
           <div className="modal-section">Default sections</div>
-          <div className="report-sections">
+          <div className="mini-list report-sections">
             {MOVE_REPORT_SECTIONS.map((s) => (
-              <label key={s.key} className="report-section-row">
+              <label key={s.key} className="mini-row report-section-row">
                 <Switch checked={!!options[s.key]}
                         onChange={(v) => setOptions((o) => ({ ...o, [s.key]: v }))} />
                 <span className="report-section-text">
-                  <span className="report-section-title">{s.title}</span>
-                  <span className="report-section-desc">{s.description}</span>
+                  <span className="cell-top">{s.title}</span>
+                  <span className="cell-sub">{s.description}</span>
                 </span>
               </label>
             ))}

@@ -213,8 +213,8 @@ export default function EnvTab() {
       lastRenderedSection = entry.section;
       rows.push({
         node: (
-          <div key={`section-${entry.key}`} className="envtab-section-row" style={grid}>
-            <b className="mono envtab-section-label">{entry.section}</b>
+          <div key={`section-${entry.key}`} className="mini-list-head envtab-section-row" style={grid}>
+            <b className="envtab-section-label">{entry.section}</b>
           </div>
         ),
       });

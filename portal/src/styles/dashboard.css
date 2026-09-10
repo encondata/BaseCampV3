@@ -391,7 +391,6 @@ a.dash-kpi:hover {
 
 /* ── activity feed ────────────────────────────────────────── */
 
-.dash-feed { display: flex; flex-direction: column; }
 .dash-feed-row {
   display: flex;
   align-items: baseline;

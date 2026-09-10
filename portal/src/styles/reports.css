@@ -54,6 +54,7 @@
    subgrid column tracks the picker's rows borrow from the list. */
 .ini-picker-row {
   grid-column: 1 / -1; grid-template-columns: subgrid;
+  padding: 0 10px;
   white-space: nowrap; cursor: pointer;
 }
 /* last resort only: once the card hits max-width: 94vw the columns shrink

@@ -1,10 +1,16 @@
 /**
  * Guardrail: list typography lives ONLY in directory.css, as tokens.
- * (a) no other stylesheet sets font-size/font-family/font-weight/
- *     line-height/min-height on a list-ish selector;
- * (b) no page/component renders a raw <table> (use <DataTable>);
+ * (a) no other stylesheet — anywhere under src/, not just styles/ — sets
+ *     font-size/font-family/font-weight/line-height/min-height (or the
+ *     `font` shorthand, `font: inherit` exempted) on a list-ish selector;
+ * (b) no .tsx under pages/, components/, lib/, or layout/ (other than
+ *     components/DataTable.tsx) renders a raw <table> (use <DataTable>);
  * (c) directory.css list rules use var(--list-…) tokens, never literal px,
- *     for those properties.
+ *     for those properties;
+ * (e) no .tsx under pages/, components/, lib/, or layout/ sets
+ *     fontSize/fontFamily/fontWeight/lineHeight inline via `style={{…}}`
+ *     — the same loophole as (a)/(c) but through React's style prop
+ *     instead of a stylesheet rule.
  * Deliberate exceptions live in listTypography.allow.json with a reason.
  * Violations print a ready-to-paste allowlist snippet — but the fix is
  * almost always to use the tokens/primitives, not to allowlist.
@@ -88,21 +94,38 @@
  *     file-level (any offending line in that file is allowed) since (d)
  *     violations don't have a stable CSS selector to key on.
  *
- * A 6th test keeps listTypography.allow.json honest as migration tasks
+ * `check: "inline"` allowlist entries key on `file` + `selector`, where
+ * `selector` is the offending line's own text (trimmed, first 40 chars) —
+ * (e) violations, unlike (a)/(b)/(c), don't have a CSS selector, but
+ * unlike (d) they DO have a stable single-line text to key on, so they
+ * get their own line-level granularity instead of (d)'s file-level one.
+ *
+ * A 7th test keeps listTypography.allow.json honest as migration tasks
  * land: every allowlist entry must still match at least one *raw*
  * violation (computed without consulting the allowlist) in one of (a)/
- * (b)/(c)/(d) — otherwise it's a stale entry for a violation that no
+ * (b)/(c)/(d)/(e) — otherwise it's a stale entry for a violation that no
  * longer exists and should be deleted.
  */
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const SRC = join(__dirname, '..');
 const LIST_SELECTOR = /(row|cell|list|table|chip|mono|\bpn\b|\bps\b|head|\b(?:tr|td|th|thead|tbody)\b)/i;
-const TYPO_PROPS = /^(font-size|font-family|font-weight|line-height|min-height)\s*:/;
+/** `font` shorthand counts too (a bare `font: 700 14px/1.4 sans-serif`
+ *  is just as much a typography-outside-directory.css bug as the
+ *  longhand props) — except `font: inherit`, the common "don't apply my
+ *  own type scale, use the ancestor's" reset used on button/label chrome,
+ *  which sets no size/family/weight/line-height of its own to leak. */
+const TYPO_PROPS = /^(?:(?:font-size|font-family|font-weight|line-height|min-height)\s*:|font\s*:(?!\s*inherit\s*$))/;
 const DIRECTORY_LIST_RULE = /\.(dir-list|list-head|dir-row|row-main|cell|chip|kv|mini-|data-table)/;
 const FAMILY_PREFIX = /\.([a-zA-Z0-9-]+)-(?:row|rows|cell|cells|list|table|grid|feed)\b/g;
+/** (e)-only: an inline `style={{…}}` setting one of these props is the
+ *  same loophole as (a)/(c) through React's style prop instead of a
+ *  stylesheet rule. `font` shorthand isn't included here — no inline
+ *  `style={{ font: … }}` exists in the app today, and unlike the CSS
+ *  case there's no established `font: inherit` idiom to exempt. */
+const INLINE_FONT_PROP = /\b(fontSize|fontFamily|fontWeight|lineHeight)\s*:/;
 
 /** Pass 1: family prefixes for every list-ish selector in a stylesheet. */
 function familyPrefixes(selectors: string[]): Set<string> {
@@ -126,15 +149,19 @@ function isListSelector(selector: string, prefixes: Set<string>): boolean {
   return false;
 }
 
-interface Allow { file: string; selector?: string; reason: string; check?: 'markup'; }
+interface Allow { file: string; selector?: string; reason: string; check?: 'markup' | 'inline'; }
 const allow: Allow[] = JSON.parse(
   readFileSync(join(__dirname, 'listTypography.allow.json'), 'utf8'));
 const allowed = (file: string, selector?: string) =>
-  allow.some((a) => a.check !== 'markup' && a.file === file
+  allow.some((a) => a.check !== 'markup' && a.check !== 'inline' && a.file === file
     && (a.selector === undefined || a.selector === selector));
 /** (d)-only: check:"markup" entries are file-level — no selector to key on. */
 const allowedMarkup = (file: string) =>
   allow.some((a) => a.check === 'markup' && a.file === file);
+/** (e)-only: check:"inline" entries key on file + the offending line's own
+ *  text (the `selector` field doubles as a line-text hint here). */
+const allowedInline = (file: string, hint: string) =>
+  allow.some((a) => a.check === 'inline' && a.file === file && a.selector === hint);
 
 function walk(dir: string, ext: RegExp, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
@@ -169,10 +196,12 @@ const snippet = (items: Allow[]) => JSON.stringify(items, null, 2);
 interface Violation { file: string; selector?: string; decl?: string; }
 
 /** (a) raw: list-ish selectors with typography props outside
- *  directory.css, computed WITHOUT consulting the allowlist. */
+ *  directory.css, computed WITHOUT consulting the allowlist. Walks every
+ *  `.css` under src/, not just styles/ — the rule is "typography lives in
+ *  directory.css", not "typography lives in the styles/ folder". */
 function rawViolationsA(): Violation[] {
   const out: Violation[] = [];
-  for (const file of walk(join(SRC, 'styles'), /\.css$/)) {
+  for (const file of walk(SRC, /\.css$/)) {
     const f = rel(file);
     if (f === 'styles/directory.css') continue;
     const parsed = rules(readFileSync(file, 'utf8'));
@@ -186,12 +215,21 @@ function rawViolationsA(): Violation[] {
   return out;
 }
 
+/** Directories that can carry app .tsx: page/component markup, plus
+ *  lib/ and layout/ (shared helpers and the app shell/nav) — both can
+ *  render a <table> or an inline style just as easily as a page can.
+ *  Guarded with existsSync since not every checkout necessarily has all
+ *  four (today's does). */
+const TSX_DIRS = ['pages', 'components', 'lib', 'layout'];
+
 /** (b) raw: raw <table> usage outside components/DataTable.tsx,
  *  computed WITHOUT consulting the allowlist. */
 function rawViolationsB(): Violation[] {
   const out: Violation[] = [];
-  for (const dir of ['pages', 'components']) {
-    for (const file of walk(join(SRC, dir), /\.tsx$/)) {
+  for (const dir of TSX_DIRS) {
+    const base = join(SRC, dir);
+    if (!existsSync(base)) continue;
+    for (const file of walk(base, /\.tsx$/)) {
       const f = rel(file);
       if (f === 'components/DataTable.tsx') continue;
       if (/<table\b/.test(readFileSync(file, 'utf8'))) out.push({ file: f });
@@ -220,7 +258,13 @@ function rawViolationsC(): Violation[] {
  *  WITHOUT consulting the allowlist. Regex heuristic — see the file
  *  header comment for how the subtree is bounded and what d1/d2 check. */
 interface MarkupViolation { file: string; line: number; }
-const ROW_CLASS = /\b(mini-row|row-main)\b/;
+/** `session-item` (profile.css) is a fourth row family — the sessions/
+ *  certs/org-contact/external-link rows — that isn't `mini-row`/
+ *  `row-main` under the hood (it's a plain flex row, not the mini-row
+ *  grid, so renaming it would be more than a class swap) but follows the
+ *  exact same "primary text needs a golden cell class" contract, so (d)
+ *  scans it too. */
+const ROW_CLASS = /\b(mini-row|row-main|session-item)\b/;
 /** The golden classes for a `<b>`'s/ancestor's own className (d1), and
  *  (generalized — see `scanRowSubtree`) for whether an ancestor already
  *  delivers golden typography to a `<b>`/`<span>` by inheritance (d1/d2).
@@ -341,6 +385,43 @@ function rawViolationsD(): MarkupViolation[] {
   return out;
 }
 
+/** (e) raw: inline `style={{…}}` carrying fontSize/fontFamily/fontWeight/
+ *  lineHeight in a pages/components/lib/layout .tsx file, computed
+ *  WITHOUT consulting the allowlist. Same idea as (a) but for React's
+ *  style prop instead of a stylesheet rule — a hardcoded inline size is
+ *  just as much a leak of list typography (or a duplicate of it) as a
+ *  hand-rolled CSS rule would be. One violation per `style={{…}}` block
+ *  (not per offending prop inside it — two font props on one line would
+ *  otherwise report as identical duplicate entries), keyed on the line
+ *  where the FIRST matching prop appears (which, for a multi-line style
+ *  object, is often a few lines below the `style={{` itself). */
+interface InlineViolation { file: string; line: number; hint: string; }
+const STYLE_BLOCK = /style=\{\{([\s\S]*?)\}\}/g;
+function rawViolationsE(): InlineViolation[] {
+  const out: InlineViolation[] = [];
+  for (const dir of TSX_DIRS) {
+    const base = join(SRC, dir);
+    if (!existsSync(base)) continue;
+    for (const file of walk(base, /\.tsx$/)) {
+      const f = rel(file);
+      const src = readFileSync(file, 'utf8');
+      const lines = src.split('\n');
+      STYLE_BLOCK.lastIndex = 0;
+      let sm: RegExpExecArray | null;
+      while ((sm = STYLE_BLOCK.exec(src)) !== null) {
+        const body = sm[1];
+        const pm = INLINE_FONT_PROP.exec(body);
+        if (!pm) continue;
+        const bodyStart = sm.index + sm[0].indexOf(body);
+        const absoluteIndex = bodyStart + pm.index;
+        const line = (src.slice(0, absoluteIndex).match(/\n/g) ?? []).length + 1;
+        out.push({ file: f, line, hint: lines[line - 1].trim().slice(0, 40) });
+      }
+    }
+  }
+  return out;
+}
+
 describe('list typography guardrail', () => {
   it('(a) only directory.css sets typography on list-ish selectors', () => {
     const bad: Allow[] = rawViolationsA()
@@ -371,6 +452,13 @@ describe('list typography guardrail', () => {
       .toEqual([]);
   });
 
+  it('(e) no inline fontSize/fontFamily/fontWeight/lineHeight in pages/components/lib/layout', () => {
+    const bad: Allow[] = rawViolationsE()
+      .filter((v) => !allowedInline(v.file, v.hint))
+      .map((v) => ({ file: v.file, selector: v.hint, reason: '' }));
+    expect(bad, `inline list typography (use CSS classes/tokens):\n${snippet(bad)}`).toEqual([]);
+  });
+
   it('every allowlist entry carries a reason', () => {
     expect(allow.filter((a) => !a.reason.trim())).toEqual([]);
   });
@@ -378,11 +466,14 @@ describe('list typography guardrail', () => {
   it('every allowlist entry still matches a live violation (no stale entries)', () => {
     const violations = [...rawViolationsA(), ...rawViolationsB(), ...rawViolationsC()];
     const violationsD = rawViolationsD();
+    const violationsE = rawViolationsE();
     const matches = (a: Allow, v: Violation) =>
       a.file === v.file && (a.selector === undefined || a.selector === v.selector);
-    const stale = allow.filter((a) => a.check === 'markup'
-      ? !violationsD.some((v) => v.file === a.file)
-      : !violations.some((v) => matches(a, v)));
+    const stale = allow.filter((a) => {
+      if (a.check === 'markup') return !violationsD.some((v) => v.file === a.file);
+      if (a.check === 'inline') return !violationsE.some((v) => v.file === a.file && v.hint === a.selector);
+      return !violations.some((v) => matches(a, v));
+    });
     expect(stale, `stale allowlist entries — delete them:\n${snippet(stale)}`).toEqual([]);
   });
 });

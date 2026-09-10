@@ -183,8 +183,8 @@
 .session-item:last-child { border-bottom: 0; padding-bottom: 0; }
 .session-item:first-child { padding-top: 0; }
 .session-icon {
-  width: 36px;
-  height: 36px;
+  width: var(--list-avatar);
+  height: var(--list-avatar);
   flex: none;
   border-radius: 10px;
   display: grid;

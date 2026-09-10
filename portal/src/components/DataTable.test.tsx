@@ -29,4 +29,11 @@ describe('DataTable', () => {
     const empty = screen.getByText('No leases.');
     expect(empty.getAttribute('colspan')).toBe('2');
   });
+  it('renders an extra cell beyond the column count without throwing', () => {
+    render(<DataTable columns={[{ key: 'a', label: 'A' }]}
+      rows={[{ key: 'r1', cells: ['x', 'y'] }]} />);
+    const extra = screen.getByText('y');
+    expect(extra.tagName).toBe('TD');
+    expect(extra.className).toBe('');
+  });
 });
