@@ -158,12 +158,12 @@ async def test_duplicate_key_within_a_record_type_is_409(client, db, seeded_user
 
 
 async def test_same_key_across_record_types_is_allowed(client, db, seeded_user):
-    """'active' already exists for both site and worker — the composite PK is
-    what makes that fine."""
+    """'active' already exists for site, worker, asset and truck — the
+    composite PK is what makes that fine."""
     hdrs = await _make(db, client, "developer", "dev4@test.example.com")
     rows = (await client.get("/status-values", headers=hdrs)).json()
     actives = [r for r in rows if r["key"] == "active"]
-    assert {r["record_type"] for r in actives} == {"site", "worker", "asset"}
+    assert {r["record_type"] for r in actives} == {"site", "worker", "asset", "truck"}
 
 
 async def test_deactivating_an_in_use_status_keeps_the_record_rendering(
