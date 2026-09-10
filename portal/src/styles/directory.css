@@ -511,6 +511,29 @@
 .kv dd { font-size: var(--list-fs-kv-value); color: var(--text-dark); margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .kv dd.mono { font-family: var(--font-mono); font-size: var(--list-fs-mono); }
 
+/* ── ONE semantic rule for what goes in which golden class ─────────
+ * Every migrated row (mini-row, row-main, DataTable) classes its cells
+ * by WHAT KIND OF DATUM they hold, never by which page happens to render
+ * them — the same kind of value gets the same class everywhere:
+ *   • names / titles / the thing the row is about →
+ *     `cell-primary > .pn > b` (`.pn span` underneath it for an
+ *     identifier sub-line — a model number, an email, NOT prose like a
+ *     job title); in single-line rows, `<b className="cell-top">`.
+ *   • descriptive prose / secondary text (a role, a kind spelled out in
+ *     words, a free-text note) → `cell-sub`.
+ *   • identifiers, serials, EPCs, dates, times, durations, counts,
+ *     sizes, IPs/MACs → `mono`.
+ *   • statuses / kinds / categories → `chip` — colored (`chip c-*` or
+ *     `chip custom` with a `--chip` value) when the vocabulary carries a
+ *     color, `chip tag` when it's a neutral kind with no color of its
+ *     own.
+ *   • NEVER combine `cell-sub` with `mono` on the same element — prose
+ *     is the display font, identifiers are mono; a value that's really
+ *     both (e.g. "issued 3/1 · expires 9/1") picks whichever reading
+ *     dominates, it doesn't wear both classes at once. Guardrail (f)
+ *     below enforces this mechanically.
+ * ───────────────────────────────────────────────────────────── */
+
 /* ── mini list: header-less compact rows (dashboard feeds, embedded
    panels, pickers). Reuses the cell classes so typography IS the golden
    tokens; pages set grid-template-columns and nothing else. ───────── */
@@ -529,6 +552,18 @@
    typography without the row's own height/padding/border chrome (e.g.
    a wrapping 2-column legend, not a stacked full-width list). */
 .mini-row.compact { min-height: auto; padding: 2px 0; border-bottom: 0; }
+/* Flex variant (finding #6): for the rare row whose children are a
+   genuinely variable count (optional chips, a trailing element pinned
+   right via `margin-left: auto`) that no fixed `grid-template-columns`
+   can describe — added ONCE here so a page reaches for `mini-row flex`
+   instead of its own `display: flex` override, which previously only
+   won by import order over this primitive's own `display: grid`.
+   Carries `align-items: center` too (not just `display: flex`) so it
+   still matches `.mini-row`'s own default vertical alignment. A row that
+   also needs wrapping (e.g. a card row with variable-width action
+   buttons) adds its own `flex-wrap: wrap` locally — that property isn't
+   part of the primitive's box model and isn't guarded by check (g). */
+.mini-row.flex { display: flex; align-items: center; }
 .mini-list-head {
   display: grid;
   gap: 12px;

@@ -160,7 +160,7 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
                   <label key={i.id} className={`mini-row ini-picker-row ${picked?.id === i.id ? 'on' : ''}`}>
                     <input type="radio" name="initiative" aria-label={i.name}
                            checked={picked?.id === i.id} onChange={() => setPicked(i)} />
-                    <span className="cell-primary">{i.name}</span>
+                    <span className="cell-primary"><span className="pn"><b>{i.name}</b></span></span>
                     <span className="cell-sub">{i.client_name ?? '—'}</span>
                     <span className="chip custom" style={{ '--chip': i.status_color } as CSSProperties}>
                       <span className="dot" />{i.status_label}

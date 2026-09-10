@@ -498,5 +498,29 @@
     "selector": "<p style={{ fontSize: 12.5, color: 'var(",
     "reason": "not list content: site-edit modal warning paragraph, not a list row",
     "check": "inline"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".imp-missing-row",
+    "reason": "genuine exception (finding #6): a bordered warning-card tile, not a divided list row — padding/border are the card's own chrome, not a duplicate of the primitive's shared-divider look",
+    "check": "coclass"
+  },
+  {
+    "file": "styles/containers.css",
+    "selector": ".contents-row",
+    "reason": "genuine exception (finding #6): a bordered content-card tile, not a divided list row — padding/border are the card's own chrome, same reasoning as .imp-missing-row",
+    "check": "coclass"
+  },
+  {
+    "file": "styles/reports.css",
+    "selector": ".ini-picker-row",
+    "reason": "genuine exception (finding #6): .ini-picker-list is itself the bordered list card with no separate header/inset of its own, and the row's own .on selection background must reach the row's full box — moving the inset onto the list container would shrink each row's own box (and its highlight) by the same 10px on both sides",
+    "check": "coclass"
+  },
+  {
+    "file": "styles/system.css",
+    "selector": ".envtab-list .list-row",
+    "reason": "genuine exception (finding #6): must match the sibling .list-head/.envtab-section-row's own 16px gap (not derivable from a --list- token) so the four columns stay aligned",
+    "check": "coclass"
   }
 ]

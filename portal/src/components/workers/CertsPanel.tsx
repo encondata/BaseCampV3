@@ -79,7 +79,7 @@ export default function CertsPanel({ personId, onChanged }: {
           <div className="session-item" key={c.id}>
             <div className="session-main cell">
               <div className="cell-top"><b>{c.name}</b></div>
-              <div className="cell-sub mono">
+              <div className="mono">
                 {[c.issuer,
                   c.issued_on ? `issued ${longDate(c.issued_on)}` : null,
                   c.expires_on ? `expires ${longDate(c.expires_on)}` : 'no expiry',

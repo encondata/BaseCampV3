@@ -474,9 +474,9 @@ export default function ImportMoveAssets() {
                           {missing.map((g) => {
                             const fixed = fixedTexts.has(g.text.toLowerCase());
                             return (
-                              <div key={g.text} className="mini-row imp-missing-row">
+                              <div key={g.text} className="mini-row flex imp-missing-row">
                                 <span className="mono">{g.text}</span>
-                                <span className="page-hint">{g.rows.length} rows</span>
+                                <span className="mono">{g.rows.length} rows</span>
                                 {fixed ? (
                                   <span className="chip c-green">
                                     <span className="dot" />Ready — reprocess to apply

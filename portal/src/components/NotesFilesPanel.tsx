@@ -201,7 +201,7 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                           aria-label={`Open ${file.filename}`}>
                     <img src={file.url ?? ''} alt={file.filename} loading="lazy" />
                   </button>
-                  <div className="mini-row compact nf-meta nf-thumb-cap">
+                  <div className="mini-row compact nf-thumb-cap">
                     <span className="cell-top">{file.filename}</span>
                     {canWrite && (
                       <span className="nf-actions">
@@ -260,7 +260,7 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                   <>
                     <p className="nf-body">{entry.note.body}</p>
                     <div className="nf-meta">
-                      <span className="cell-sub">{entry.note.author_name ?? 'Unknown'}</span>
+                      <span className="cell-top">{entry.note.author_name ?? 'Unknown'}</span>
                       <span className="mono">{new Date(entry.note.created_at).toLocaleString()}</span>
                       {canWrite && (
                         <span className="nf-actions">
@@ -288,7 +288,7 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                     {entry.file.kind}</span>
                 </p>
                 <div className="nf-meta">
-                  <span className="cell-sub">{(entry.file.size_bytes / 1024).toFixed(0)} KB</span>
+                  <span className="mono">{(entry.file.size_bytes / 1024).toFixed(0)} KB</span>
                   <span className="mono">{new Date(entry.file.created_at).toLocaleString()}</span>
                   {canWrite && (
                     <span className="nf-actions">

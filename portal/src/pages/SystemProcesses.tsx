@@ -12,6 +12,19 @@ import '../styles/system.css';
 
 const POLL_MS = 10_000;
 
+/** statusMeta()'s `className` is a `sys-dot-*` visual-key color — reuse it
+ *  to pick the matching golden status chip (c-green running / c-amber
+ *  paused / c-slate stopped / c-red failed) rather than adding a second,
+ *  divergent status→color map. Kept local (not exported from lib/system)
+ *  so lib/system.test.ts's exact statusMeta() shape assertions stay
+ *  untouched. */
+const STATUS_CHIP_CLASS: Record<string, string> = {
+  'sys-dot-running': 'c-green',
+  'sys-dot-paused': 'c-amber',
+  'sys-dot-stopped': 'c-slate',
+  'sys-dot-failed': 'c-red',
+};
+
 export default function SystemProcesses() {
   const { can, godMode } = useAuth();
   const canViewLogs = can('devtools', 'view') && godMode;
@@ -58,7 +71,9 @@ export default function SystemProcesses() {
             <>
               <div className="cell sys-status">
                 <span className={`sys-dot ${meta.className}`} />
-                {meta.label}
+                <span className={`chip ${STATUS_CHIP_CLASS[meta.className] ?? 'c-slate'}`}>
+                  {meta.label}
+                </span>
                 {degraded && (
                   <span className="chip c-amber">forwarding degraded</span>
                 )}

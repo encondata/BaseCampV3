@@ -883,7 +883,7 @@ export default function InitiativeDetail() {
             : (
               <div className="mini-list init-rows">
                 {initiative.links_children.map((l) => (
-                  <div key={l.id} className="mini-row init-row">
+                  <div key={l.id} className="mini-row flex init-row">
                     <span className="init-tag mono">Contains</span>
                     <button type="button" className="init-name-btn cell-top"
                             onClick={() => navigate(`/initiatives/${l.other_id}`)}>
@@ -910,7 +910,7 @@ export default function InitiativeDetail() {
                   </div>
                 ))}
                 {initiative.links_parents.map((l) => (
-                  <div key={l.id} className="mini-row init-row">
+                  <div key={l.id} className="mini-row flex init-row">
                     <span className="init-tag mono">Part of</span>
                     <button type="button" className="init-name-btn cell-top"
                             onClick={() => navigate(`/initiatives/${l.other_id}`)}>

@@ -341,7 +341,7 @@ export default function ClientDashboard() {
               {initiatives !== null && initiatives.map((i) => {
                 const progress = progressById[i.id];
                 return (
-                  <div key={i.id} className="mini-row cdash-init-row">
+                  <div key={i.id} className="mini-row flex cdash-init-row">
                     <Link className="cdash-init-name" to={`/initiatives/${i.id}`}><b className="cell-top">{i.name}</b></Link>
                     {chip(i.type_label, i.type_color)}
                     {chip(i.status_label, i.status_color)}
@@ -349,7 +349,7 @@ export default function ClientDashboard() {
                       {longDate(i.scheduled_start)} – {longDate(i.scheduled_end)}
                     </span>
                     {i.origin_site_name && i.destination_site_name && (
-                      <span className="cdash-init-dates mono">
+                      <span className="cdash-init-dates cell-sub">
                         {i.origin_site_name} → {i.destination_site_name}
                       </span>
                     )}

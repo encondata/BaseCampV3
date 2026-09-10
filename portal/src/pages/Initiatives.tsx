@@ -665,7 +665,7 @@ function InitiativeRowDetail({
           || detail.links_parents.length > 0) && (
           <div className="mini-list init-rows">
             {detail.links_children.map((l) => (
-              <div key={l.id} className="mini-row init-row">
+              <div key={l.id} className="mini-row flex init-row">
                 <span className="init-tag mono">Contains</span>
                 <button type="button" className="init-name-btn cell-top"
                         onClick={() => onNavigate(l.other_id)}>
@@ -692,7 +692,7 @@ function InitiativeRowDetail({
               </div>
             ))}
             {detail.links_parents.map((l) => (
-              <div key={l.id} className="mini-row init-row">
+              <div key={l.id} className="mini-row flex init-row">
                 <span className="init-tag mono">Part of</span>
                 <button type="button" className="init-name-btn cell-top"
                         onClick={() => onNavigate(l.other_id)}>
@@ -751,7 +751,7 @@ function InitiativeRowDetail({
         {detail && detail.people.length > 0 && (
           <div className="mini-list init-rows">
             {detail.people.map((p) => (
-              <div key={p.id} className="mini-row init-row">
+              <div key={p.id} className="mini-row flex init-row">
                 <span className="cell-top">{p.person_name}</span>
                 {p.work_type_label && p.work_type_color
                   && typeChip(p.work_type_label, p.work_type_color)}

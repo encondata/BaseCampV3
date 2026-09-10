@@ -566,8 +566,8 @@ function ExternalDetail({
                style={{ flexWrap: 'wrap', alignItems: 'flex-start' }}>
             <div className="session-main cell">
               <div className="cell-top"><b>{l.org_name}</b></div>
-              <div className="cell-sub mono">{l.kind === 'client' ? 'Client' : 'Partner'}</div>
             </div>
+            <span className="chip tag">{l.kind === 'client' ? 'Client' : 'Partner'}</span>
             <span className="chip tag">{l.tier}</span>
             <div style={{
               flexBasis: '100%', display: 'flex', gap: 8, marginTop: 8,
@@ -717,8 +717,8 @@ function EditPersonModal({
                    style={{ flexWrap: 'wrap', alignItems: 'flex-start' }}>
                 <div className="session-main cell">
                   <div className="cell-top"><b>{l.org_name}</b></div>
-                  <div className="cell-sub mono">{l.kind === 'client' ? 'Client' : 'Partner'}</div>
                 </div>
+                <span className="chip tag">{l.kind === 'client' ? 'Client' : 'Partner'}</span>
                 {canManageLink(l.kind) ? (
                   <TierSelect value={l.tier} disabled={busy}
                               onChange={(tier) => void updateLink(l, { tier })} />

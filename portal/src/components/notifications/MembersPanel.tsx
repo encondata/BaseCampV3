@@ -160,7 +160,7 @@ export default function MembersPanel({ group, canChange, reload }: {
                 </span>
                 <div className="pn">
                   <b>{m.display_name}</b>
-                  <span>{m.job_title ?? '—'}</span>
+                  <div className="cell-sub">{m.job_title ?? '—'}</div>
                 </div>
               </div>,
               <div className="ngd-contact mono">
@@ -184,7 +184,7 @@ export default function MembersPanel({ group, canChange, reload }: {
                 {m.overrides.channels != null && <span className="chip c-amber">Override</span>}
               </div>,
               <div className="ngd-cell-marker">
-                <span className="cell-top">{formatQuietHours(m.effective.quiet_start, m.effective.quiet_end, m.effective.timezone)}</span>
+                <span className="mono">{formatQuietHours(m.effective.quiet_start, m.effective.quiet_end, m.effective.timezone)}</span>
                 {m.overrides.quiet_mode != null && <span className="chip c-amber">Override</span>}
               </div>,
               <div className="ngd-cell-marker">

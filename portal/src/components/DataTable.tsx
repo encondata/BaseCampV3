@@ -4,6 +4,20 @@
  * leases, import previews) renders here so header/cell typography comes
  * from directory.css's list tokens; callers pass layout (widths,
  * alignment, mono) as props and never style td/th themselves.
+ *
+ * The ONE semantic rule (also stated above `.mini-row` in directory.css)
+ * for what a cell's content should be classed by what KIND of datum it
+ * holds, not by which page renders it:
+ *   - names / titles / the thing the row is about →
+ *     `cell-primary > .pn > b` (`.pn span` underneath for an identifier
+ *     sub-line only — not prose); single-line cells use
+ *     `<b className="cell-top">`.
+ *   - descriptive prose / secondary text → `cell-sub`.
+ *   - identifiers, serials, EPCs, dates, times, durations, counts,
+ *     sizes, IPs/MACs → `mono` (or a column's own `mono: true`).
+ *   - statuses / kinds / categories → `chip` (`chip c-*`/`chip custom`
+ *     when the vocabulary has a color, `chip tag` for a neutral kind).
+ *   - never combine `cell-sub` with `mono` on the same element.
  */
 import type { ReactNode } from 'react';
 

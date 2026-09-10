@@ -250,7 +250,7 @@ export default function PeopleDashboard() {
                     const avatarUrl = avatarByPerson.get(e.person_id) ?? null;
                     const context = e.initiative_name ?? e.site_name ?? null;
                     return (
-                      <div key={e.id} className="mini-row pdash-clock-row">
+                      <div key={e.id} className="mini-row flex pdash-clock-row">
                         <div className="dir-avatar"
                              style={{ background: avatarUrl ? 'var(--surface-2)' : avatarGradient(e.person_name) }}>
                           {avatarUrl ? <img src={avatarUrl} alt="" /> : initials(e.person_name)}
@@ -306,7 +306,7 @@ export default function PeopleDashboard() {
               {entries !== null && events.length > 0 && (
                 <div className="mini-list pdash-event-list">
                   {events.map((ev) => (
-                    <Link key={ev.key} className="mini-row pdash-event-row" to="/people/time">
+                    <Link key={ev.key} className="mini-row flex pdash-event-row" to="/people/time">
                       <span className="pdash-event-dot"
                             style={{ background: ev.kind === 'in' ? '#178a4c' : '#51606f' }}
                             aria-hidden="true" />

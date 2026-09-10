@@ -24,12 +24,13 @@
 .init-panel .pf-error { display: block; margin-top: 10px; }
 
 /* one person / link per row; controls share one height, actions right —
- * markup is `mini-list init-rows` / `mini-row init-row`, so height/
+ * markup is `mini-list init-rows` / `mini-row flex init-row`, so height/
  * spacing/separator and the row/cell typography (.pn, .cell-top,
- * .cell-sub, .mono) all come from directory.css's mini-list tokens; only
- * layout not covered by the primitive (flex direction, tag width, the
- * trailing spacer) is restated here. */
-.init-rows .init-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
+ * .cell-sub, .mono) all come from directory.css's mini-list tokens, and
+ * flex/alignment comes from the `mini-row.flex` variant there too
+ * (variable child count — tag, name, chip, an optional role field, an
+ * optional trailing Unlink button — can't be a fixed grid template);
+ * only the tag width and the trailing spacer are restated here. */
 .init-row .spacer { margin-left: auto; }
 .init-tag { flex: 0 0 76px; }
 .init-name-btn { background: none; border: 0; padding: 0; cursor: pointer; color: var(--c-blue); }
@@ -289,11 +290,11 @@
 /* `mini-row compact` (directory.css) gives `.cell-top`/`.mono` on the
  * label/count their directory.css typography without pulling in a full
  * mini-row's height/padding/border-bottom — this is a compact 2-column
- * grid tile, not a stacked full-width list row. */
+ * grid tile, not a stacked full-width list row. 3 children, always
+ * (swatch, label, count), so it's a fixed grid template, not the flex
+ * variant. */
 .idet-donut-legend-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  grid-template-columns: 10px 1fr auto;
   min-width: 0;
   transition: opacity 0.15s ease;
 }
@@ -789,16 +790,19 @@
 .imp-missing-card { margin-bottom: 16px; }
 .imp-missing-card .eyebrow-sm { margin: 0 0 8px; }
 .imp-missing-list { display: flex; flex-direction: column; gap: 8px; }
+/* A bordered warning-card tile, not a divided list row — variable child
+ * count (a "ready" chip OR a variable-width action-button cluster) that
+ * must be free to wrap, so this uses `mini-row flex` (directory.css)
+ * rather than a fixed grid template. `gap` isn't restated (the
+ * primitive's own 12px already matches); `padding`/`border` ARE
+ * restated — allowlisted below (listTypography.allow.json) as the card's
+ * own chrome, not a duplicate of the primitive's shared-divider look. */
 .imp-missing-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
   flex-wrap: wrap;
   padding: 8px 12px;
   border: 1px solid var(--paper-line);
   border-radius: 10px;
 }
-.imp-missing-row .page-hint { margin: 0; }
 .imp-missing-actions { display: flex; gap: 8px; margin-left: auto; }
 
 .imp-reprocess-banner { margin: -6px 0 16px; }

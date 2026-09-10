@@ -11,6 +11,16 @@
  *     fontSize/fontFamily/fontWeight/lineHeight inline via `style={{…}}`
  *     — the same loophole as (a)/(c) but through React's style prop
  *     instead of a stylesheet rule.
+ * (f) no element's className carries BOTH `cell-sub` and `mono` — the one
+ *     semantic rule above `.mini-row` in directory.css says prose
+ *     (cell-sub) and identifiers (mono) are never the same element.
+ * (g) no page stylesheet rule whose selector is a known mini-row
+ *     co-class (any class that co-occurs with `mini-row` in a .tsx
+ *     className string) declares display/padding/gap/border/
+ *     border-bottom/min-height — per spec a page sets
+ *     `grid-template-columns` (and colors/widths) on a mini-row and
+ *     nothing else; the box model itself is `.mini-row`'s alone, so a
+ *     page rule that restates it only wins by import order, not intent.
  * Deliberate exceptions live in listTypography.allow.json with a reason.
  * Violations print a ready-to-paste allowlist snippet — but the fix is
  * almost always to use the tokens/primitives, not to allowlist.
@@ -99,11 +109,15 @@
  * (e) violations, unlike (a)/(b)/(c), don't have a CSS selector, but
  * unlike (d) they DO have a stable single-line text to key on, so they
  * get their own line-level granularity instead of (d)'s file-level one.
+ * `check: "dualclass"` ((f)) is keyed the same way as "inline" — a
+ * className violation has a stable single-line text, not a CSS selector.
+ * `check: "coclass"` ((g)) is keyed like (a)/(c)'s plain entries (file +
+ * the CSS rule's own selector), since a (g) violation IS a CSS rule.
  *
- * A 7th test keeps listTypography.allow.json honest as migration tasks
- * land: every allowlist entry must still match at least one *raw*
- * violation (computed without consulting the allowlist) in one of (a)/
- * (b)/(c)/(d)/(e) — otherwise it's a stale entry for a violation that no
+ * A test keeps listTypography.allow.json honest as migration tasks land:
+ * every allowlist entry must still match at least one *raw* violation
+ * (computed without consulting the allowlist) in one of (a)/(b)/(c)/(d)/
+ * (e)/(f)/(g) — otherwise it's a stale entry for a violation that no
  * longer exists and should be deleted.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -149,11 +163,14 @@ function isListSelector(selector: string, prefixes: Set<string>): boolean {
   return false;
 }
 
-interface Allow { file: string; selector?: string; reason: string; check?: 'markup' | 'inline'; }
+interface Allow {
+  file: string; selector?: string; reason: string;
+  check?: 'markup' | 'inline' | 'dualclass' | 'coclass';
+}
 const allow: Allow[] = JSON.parse(
   readFileSync(join(__dirname, 'listTypography.allow.json'), 'utf8'));
 const allowed = (file: string, selector?: string) =>
-  allow.some((a) => a.check !== 'markup' && a.check !== 'inline' && a.file === file
+  allow.some((a) => a.check === undefined && a.file === file
     && (a.selector === undefined || a.selector === selector));
 /** (d)-only: check:"markup" entries are file-level — no selector to key on. */
 const allowedMarkup = (file: string) =>
@@ -162,6 +179,14 @@ const allowedMarkup = (file: string) =>
  *  text (the `selector` field doubles as a line-text hint here). */
 const allowedInline = (file: string, hint: string) =>
   allow.some((a) => a.check === 'inline' && a.file === file && a.selector === hint);
+/** (f)-only: check:"dualclass" entries key on file + the offending line's
+ *  own text, same shape as (e)'s "inline". */
+const allowedDualClass = (file: string, hint: string) =>
+  allow.some((a) => a.check === 'dualclass' && a.file === file && a.selector === hint);
+/** (g)-only: check:"coclass" entries key on file + the CSS rule's own
+ *  selector text, same shape as (a)/(c)'s plain entries. */
+const allowedCoClass = (file: string, selector: string) =>
+  allow.some((a) => a.check === 'coclass' && a.file === file && a.selector === selector);
 
 function walk(dir: string, ext: RegExp, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
@@ -422,6 +447,100 @@ function rawViolationsE(): InlineViolation[] {
   return out;
 }
 
+/** (f) raw: an element whose `className` carries BOTH `cell-sub` and
+ *  `mono` — the one semantic rule above `.mini-row` in directory.css
+ *  says prose (`cell-sub`) and identifiers (`mono`) are never the same
+ *  element. Cheap regex over a literal `className="..."` string, same
+ *  spirit (and the same acknowledged gap — a dynamic `className={...}`
+ *  combining both isn't caught) as (a)/(c)/(d)'s `ownClass` check. */
+interface DualClassViolation { file: string; line: number; hint: string; }
+function rawViolationsF(): DualClassViolation[] {
+  const out: DualClassViolation[] = [];
+  for (const dir of TSX_DIRS) {
+    const base = join(SRC, dir);
+    if (!existsSync(base)) continue;
+    for (const file of walk(base, /\.tsx$/)) {
+      const f = rel(file);
+      const lines = readFileSync(file, 'utf8').split('\n');
+      lines.forEach((line, i) => {
+        CLASS_ATTR.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = CLASS_ATTR.exec(line)) !== null) {
+          if (/\bcell-sub\b/.test(m[1]) && /\bmono\b/.test(m[1])) {
+            out.push({ file: f, line: i + 1, hint: line.trim().slice(0, 40) });
+          }
+        }
+      });
+    }
+  }
+  return out;
+}
+
+/** (g): every class token that co-occurs with `mini-row` in some .tsx
+ *  `className` string (a literal string, or a backtick template's
+ *  static parts with `${…}` expressions blanked out) — these page
+ *  "co-classes" ride along on a `.mini-row` element and, per finding #6,
+ *  can silently fight the primitive's own box model if their own CSS
+ *  rule restates display/padding/gap/border/min-height (only winning by
+ *  import order). Cheap regex, not a real JSX parser — same spirit as
+ *  the rest of this file; a co-class applied only via a fully dynamic
+ *  `className={expr}` (no literal "mini-row" text anywhere) isn't
+ *  found, the same acknowledged gap as (d)'s `ownClass`. */
+const CLASSNAME_ATTR_RE = /className=(?:"([^"]*)"|\{`([^`]*)`\})/g;
+function deriveMiniRowCoClasses(): Set<string> {
+  const co = new Set<string>();
+  for (const dir of TSX_DIRS) {
+    const base = join(SRC, dir);
+    if (!existsSync(base)) continue;
+    for (const file of walk(base, /\.tsx$/)) {
+      const src = readFileSync(file, 'utf8');
+      CLASSNAME_ATTR_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = CLASSNAME_ATTR_RE.exec(src)) !== null) {
+        const raw = (m[1] ?? m[2] ?? '').replace(/\$\{[^}]*\}/g, ' ');
+        const tokens = raw.split(/\s+/).filter(Boolean);
+        if (!tokens.includes('mini-row')) continue;
+        for (const t of tokens) if (t !== 'mini-row') co.add(t);
+      }
+    }
+  }
+  return co;
+}
+
+/** Same disallowed set finding #6 names for a co-class rule: the
+ *  box-model properties `.mini-row` (directory.css) already owns.
+ *  Exact property-name match (not a `padding-*`/`border-*` prefix) —
+ *  same granularity as (a)'s TYPO_PROPS. */
+const COCLASS_BAD_PROPS = /^(?:display|padding|gap|border-bottom|border|min-height)\s*:/;
+
+/** (g) raw: a page stylesheet rule whose selector contains a known
+ *  mini-row co-class declaring one of the properties above, computed
+ *  WITHOUT consulting the allowlist. `directory.css` (the primitive
+ *  itself) is exempt. The co-class is matched as a real CSS class token
+ *  (`.token` not immediately followed by another identifier character)
+ *  so `.dash-board-row` doesn't also match `.dash-board-route`. */
+interface CoClassViolation { file: string; selector: string; decl: string; }
+function rawViolationsG(): CoClassViolation[] {
+  const coClasses = deriveMiniRowCoClasses();
+  const out: CoClassViolation[] = [];
+  for (const file of walk(SRC, /\.css$/)) {
+    const f = rel(file);
+    if (f === 'styles/directory.css') continue;
+    const parsed = rules(readFileSync(file, 'utf8'));
+    for (const r of parsed) {
+      const isCoClassRule = [...coClasses].some((token) => {
+        const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return new RegExp(`\\.${escaped}(?![\\w-])`).test(r.selector);
+      });
+      if (!isCoClassRule) continue;
+      for (const d of r.decls) {
+        if (COCLASS_BAD_PROPS.test(d)) out.push({ file: f, selector: r.selector, decl: d });
+      }
+    }
+  }
+  return out;
+}
+
 describe('list typography guardrail', () => {
   it('(a) only directory.css sets typography on list-ish selectors', () => {
     const bad: Allow[] = rawViolationsA()
@@ -459,6 +578,20 @@ describe('list typography guardrail', () => {
     expect(bad, `inline list typography (use CSS classes/tokens):\n${snippet(bad)}`).toEqual([]);
   });
 
+  it('(f) an element never combines cell-sub with mono', () => {
+    const bad: Allow[] = rawViolationsF()
+      .filter((v) => !allowedDualClass(v.file, v.hint))
+      .map((v) => ({ file: v.file, selector: v.hint, reason: '' }));
+    expect(bad, `className carries both cell-sub and mono (pick one):\n${snippet(bad)}`).toEqual([]);
+  });
+
+  it('(g) a mini-row co-class in page CSS is layout-only (grid-template-columns + colors/widths)', () => {
+    const bad: Allow[] = rawViolationsG()
+      .filter((v) => !allowedCoClass(v.file, v.selector))
+      .map((v) => ({ file: v.file, selector: v.selector, reason: '' }));
+    expect(bad, `mini-row co-class restates the primitive's own box model:\n${snippet(bad)}`).toEqual([]);
+  });
+
   it('every allowlist entry carries a reason', () => {
     expect(allow.filter((a) => !a.reason.trim())).toEqual([]);
   });
@@ -467,11 +600,15 @@ describe('list typography guardrail', () => {
     const violations = [...rawViolationsA(), ...rawViolationsB(), ...rawViolationsC()];
     const violationsD = rawViolationsD();
     const violationsE = rawViolationsE();
+    const violationsF = rawViolationsF();
+    const violationsG = rawViolationsG();
     const matches = (a: Allow, v: Violation) =>
       a.file === v.file && (a.selector === undefined || a.selector === v.selector);
     const stale = allow.filter((a) => {
       if (a.check === 'markup') return !violationsD.some((v) => v.file === a.file);
       if (a.check === 'inline') return !violationsE.some((v) => v.file === a.file && v.hint === a.selector);
+      if (a.check === 'dualclass') return !violationsF.some((v) => v.file === a.file && v.hint === a.selector);
+      if (a.check === 'coclass') return !violationsG.some((v) => v.file === a.file && v.selector === a.selector);
       return !violations.some((v) => matches(a, v));
     });
     expect(stale, `stale allowlist entries — delete them:\n${snippet(stale)}`).toEqual([]);

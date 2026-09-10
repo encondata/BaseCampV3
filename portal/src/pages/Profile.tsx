@@ -233,7 +233,7 @@ export default function Profile() {
                   </div>
                   <div className="session-main cell">
                     <div className="cell-top"><b>{describeUserAgent(s.user_agent)}</b></div>
-                    <div className="cell-sub mono">
+                    <div className="mono">
                       {s.ip_address ?? 'unknown ip'} · started {relativeTime(s.started_at)} ·
                       expires {relativeTime(s.expires_at)}
                     </div>

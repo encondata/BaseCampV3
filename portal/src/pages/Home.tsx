@@ -7,7 +7,7 @@
  * degrades to whatever subset the viewer is allowed to see.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link, Navigate, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -291,7 +291,7 @@ export default function Home() {
                         </span>
                       </div>
                     </div>
-                    <span className="dash-board-route mono">
+                    <span className="dash-board-route cell-sub">
                       {isMove ? (
                         <>
                           <span className="code" title={init.origin_site_name ?? undefined}>
@@ -319,7 +319,10 @@ export default function Home() {
                         <span className="track"><span className="fill" style={{ width: `${progress.pct}%` }} /></span>
                       </span>
                     ) : (
-                      <span className="dash-board-chip chip c-slate">{init.status_label}</span>
+                      <span className="dash-board-chip chip custom"
+                            style={{ '--chip': init.status_color ?? '#51606f' } as CSSProperties}>
+                        <span className="dot" />{init.status_label}
+                      </span>
                     )}
                   </Link>
                 );
@@ -417,7 +420,7 @@ export default function Home() {
                   <span className="cell-top dash-scan-name" title={s.scanned_value}>
                     {s.matched_name ?? s.scanned_value}
                   </span>
-                  <span className="dash-scan-kind mono">{s.match_type_label}</span>
+                  <span className="dash-scan-kind chip tag">{s.match_type_label}</span>
                   <span className="cell-sub dash-scan-site" title={s.site_name ?? undefined}>
                     {s.site_name ?? '—'}
                   </span>

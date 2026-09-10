@@ -195,7 +195,7 @@
 }
 .session-icon svg { width: 17px; height: 17px; }
 .session-main { min-width: 0; flex: 1; }
-.session-main .cell-sub { overflow-wrap: anywhere; }
+.session-main .cell-sub, .session-main .mono { overflow-wrap: anywhere; }
 
 .link-plain {
   background: none;

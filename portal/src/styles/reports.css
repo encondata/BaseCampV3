@@ -13,7 +13,9 @@
 }
 /* the wider card must not stretch the sections rows into a sparse line */
 .report-sections { max-width: 720px; }
-.report-section-row { display: flex; align-items: center; gap: 14px; cursor: pointer; }
+/* 2 children, always (the Switch control and the title+description
+ * text block), so a fixed grid template describes it. */
+.report-section-row { grid-template-columns: auto 1fr; cursor: pointer; }
 .report-section-text { display: flex; flex-direction: column; gap: 2px; }
 .report-section-actions { display: flex; gap: 14px; margin-top: 8px; }
 .report-section-actions button {
@@ -50,8 +52,14 @@
   max-height: 46vh; overflow: auto; border: 1px solid var(--paper-line); border-radius: 8px;
 }
 /* max-content + nowrap: the card grows to fit, so no cell wraps. mini-row
-   supplies display/gap/padding/border/min-height; this keeps only the
-   subgrid column tracks the picker's rows borrow from the list. */
+ * supplies display/gap/border/min-height; this keeps the subgrid column
+ * tracks the picker's rows borrow from the list. `padding` IS restated
+ * here (allowlisted below) as a genuine exception:
+ * `.ini-picker-list` is itself the bordered list card with no separate
+ * header/inset of its own, and the row's own `.on` selection background
+ * must reach the row's full box — moving the inset onto the list
+ * container instead would shrink each row's own box (and its selection
+ * highlight) by that same 10px on both sides, changing what lights up. */
 .ini-picker-row {
   grid-column: 1 / -1; grid-template-columns: subgrid;
   padding: 0 10px;

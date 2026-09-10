@@ -438,7 +438,7 @@ export default function TimeManagement() {
           <div className="mini-list time-recent-list">
             {myTime.entries.slice(0, 8).map((e) => (
               <div key={e.id} className="mini-row time-recent-row">
-                <span className="cell-top">{fmtDate(e.clock_in_at)}</span>
+                <span className="mono">{fmtDate(e.clock_in_at)}</span>
                 <span className="mono">{fmtTime(e.clock_in_at)} → {fmtTime(e.clock_out_at)}</span>
                 <span className="mono">{formatMinutes(e.minutes)}</span>
                 <span className="cell-sub">{e.initiative_name ?? '—'}</span>
