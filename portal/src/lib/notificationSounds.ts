@@ -40,7 +40,9 @@ function context(): AudioContext | null {
   const Ctor = window.AudioContext
     ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!Ctor) return null;
-  if (!ctx) ctx = new Ctor();
+  if (!ctx) {
+    try { ctx = new Ctor(); } catch { return null; } // e.g. hardware/permissions refusal
+  }
   return ctx;
 }
 
