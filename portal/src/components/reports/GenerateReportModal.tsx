@@ -94,7 +94,10 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
         .catch(() => undefined);                  // transient poll failure: keep polling
     }, MODAL_POLL_MS);
     return () => clearInterval(timer);
-  }, [active, run]);
+    // keyed on the run *id*: depending on `run` itself would tear the
+    // interval down and rebuild it on every poll response.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, run?.id]);
   useEffect(() => {
     if (!active) return;
     const t = setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);

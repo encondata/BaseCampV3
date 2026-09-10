@@ -1,0 +1,45 @@
+// @vitest-environment jsdom
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+
+import type { Inbox } from './api';
+
+const api = vi.hoisted(() => ({ listInbox: vi.fn(), markInboxRead: vi.fn(), markAllInboxRead: vi.fn() }));
+vi.mock('./api', async (importActual) => ({ ...(await importActual<typeof import('./api')>()), ...api }));
+vi.mock('../auth/AuthContext', () => ({ useAuth: () => ({ person: { id: 'p1' } }) }));
+
+const { NotificationsProvider, useNotifications, INBOX_POLL_MS } = await import('./notificationsContext');
+
+const inbox = (items: Inbox['items']): Inbox =>
+  ({ unread_count: items.filter((i) => !i.read_at).length, items });
+const item = (id: string, read = false) => ({
+  id, kind: 'report_ready', title: `T${id}`, body: '', link: '/reports', payload: {},
+  created_at: '2026-09-09T12:00:00Z', read_at: read ? '2026-09-09T12:01:00Z' : null,
+});
+
+function Probe() {
+  const n = useNotifications();
+  return <div>unread:{n.unreadCount} new:{n.newItems.map((i) => i.id).join(',')}
+    <button onClick={() => void n.markRead('a')}>read-a</button></div>;
+}
+
+beforeEach(() => { api.listInbox.mockResolvedValue(inbox([item('a')])); api.markInboxRead.mockResolvedValue(undefined); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
+
+it('polls on mount, exposes the unread count, and flags only items that appear AFTER the first poll as new', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:1 new:');                       // first poll: nothing "new"
+  api.listInbox.mockResolvedValue(inbox([item('b'), item('a')]));
+  await act(async () => { await vi.advanceTimersByTimeAsync(INBOX_POLL_MS + 50); });
+  await screen.findByText('unread:2 new:b');
+});
+
+it('markRead calls the API and drops the count', async () => {
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:1 new:');
+  api.listInbox.mockResolvedValue(inbox([item('a', true)]));
+  await act(async () => { screen.getByText('read-a').click(); });
+  await waitFor(() => expect(api.markInboxRead).toHaveBeenCalledWith('a'));
+  await screen.findByText('unread:0 new:');
+});

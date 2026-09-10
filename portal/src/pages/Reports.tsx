@@ -3,7 +3,7 @@
  * Clone / Delete per row) and History (report runs; Task 9). Standard
  * directory list scaffolding, same as LabelTemplates.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -19,6 +19,7 @@ import {
   ColumnsButton, applyColumnOrder, moveKey, useReorderDrag, useSearchHaystacks,
   visibleColumnsFor, type ColumnDef,
 } from '../lib/listTools';
+import { useToast } from '../lib/notificationsContext';
 import { sectionCount } from '../lib/reports';
 import { VirtualRows } from '../lib/virtualRows';
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
@@ -42,7 +43,6 @@ const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
 const TYPE_LABELS: Record<string, string> = { move_report: 'Move Report' };
 const TOTAL_SECTIONS = 8;
-const TOAST_MS = 4000;
 
 const msgFor = (err: unknown): string =>
   err instanceof ApiError ? err.message || `Request failed (${err.code}).` : "Couldn't complete that action.";
@@ -69,15 +69,7 @@ export default function Reports() {
   const [editing, setEditing] = useState<ReportDefinition | null>(null);
   const [generating, setGenerating] = useState<ReportDefinition | null>(null);
   const [runCount, setRunCount] = useState<number | null>(null);
-  // Minimal local toast — Task 10 replaces it with the shared ToastHost.
-  const [toast, setToast] = useState('');
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showToast = (message: string) => {
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    setToast(message);
-    toastTimer.current = setTimeout(() => setToast(''), TOAST_MS);
-  };
-  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current); }, []);
+  const toast = useToast();               // shared ToastHost (AppShell)
 
   const {
     visibleCols, setVisibleCols, sortKey, sortDir, setSort, toggleSort,
@@ -249,9 +241,8 @@ export default function Reports() {
       )}
       {generating && (
         <GenerateReportModal definition={generating} onClose={() => setGenerating(null)}
-                             onToast={showToast} />
+                             onToast={toast} />
       )}
-      {toast && <div role="status" className="toast">{toast}</div>}
     </div>
   );
 }

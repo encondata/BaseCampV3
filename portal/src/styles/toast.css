@@ -1,0 +1,47 @@
+/* Shared toast host (new inbox items + local messages) and the topbar
+   bell inbox. Tokens are the portal's own: --paper-2 / --paper-line /
+   --text-dark / --text-mute / --c-red. The text color is set explicitly —
+   the host is position:fixed and must not inherit whatever the page
+   happens to paint. */
+
+.toast-host {
+  position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column;
+  /* above .modal-scrim (80) and the command palette (90), below the
+     auth scrim (1400) — an inbox toast can land while a modal is open */
+  gap: 10px; z-index: 1300; max-width: 380px; pointer-events: none;
+}
+.toast {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 10px;
+  background: var(--paper-2); color: var(--text-dark); border: 1px solid var(--paper-line);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18); font-size: 13px; pointer-events: auto;
+}
+.toast-text { flex: 1; min-width: 0; }
+.toast-title { font-weight: 600; }
+.toast-body { font-size: 12px; color: var(--text-mute); }
+/* self-contained so the action reads as a button on pages that never
+   load profile.css (where .btn-solid lives) */
+.toast .toast-action {
+  flex: none; border: 0; border-radius: 8px; padding: 7px 14px;
+  background: var(--accent); color: #0c1117;
+  font-family: var(--font-display); font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.toast .toast-action:hover { filter: brightness(1.06); }
+.toast-dismiss {
+  background: none; border: 0; font-size: 18px; line-height: 1; cursor: pointer; color: var(--text-mute);
+}
+
+/* ── topbar bell ─────────────────────────────────────────── */
+
+.bell-badge {
+  position: absolute; top: 2px; right: 2px; min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 8px; background: var(--c-red, #c03540); color: #fff; font-size: 10px;
+  font-weight: 700; display: grid; place-items: center;
+}
+.pop-menu .notif-item {
+  display: block; width: 100%; text-align: left; padding: 8px 10px;
+  background: none; border: 0; color: inherit; font: inherit; cursor: pointer;
+}
+.pop-menu .notif-item:hover { background: rgba(var(--accent-rgb), 0.08); }
+.pop-menu .notif-item.unread { font-weight: 600; }
+.pop-menu .notif-body { display: block; font-size: 12px; color: var(--text-mute); font-weight: 400; }
+.pop-menu .notif-foot { display: flex; justify-content: flex-end; padding: 6px 10px; }

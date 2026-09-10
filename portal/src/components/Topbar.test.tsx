@@ -8,6 +8,7 @@
  */
 
 import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
@@ -24,7 +25,16 @@ vi.mock('../auth/AuthContext', () => ({
 
 vi.mock('../lib/api', () => ({
   apiFetch: vi.fn(() => new Promise(() => {})),
+  listInbox: vi.fn(() => Promise.resolve({ unread_count: 0, items: [] })),
 }));
+
+// The bell reads the shared inbox provider; the provider itself is covered
+// by lib/notificationsContext.test.tsx.
+const bell = vi.hoisted(() => ({
+  unreadCount: 0, items: [] as unknown[], markRead: vi.fn(), markAllRead: vi.fn(),
+  refresh: vi.fn(), newItems: [], dismissNew: vi.fn(),
+}));
+vi.mock('../lib/notificationsContext', () => ({ useNotifications: () => bell }));
 
 vi.mock('./AiAssistant', () => ({
   default: () => <div>AI PANEL</div>,
@@ -32,7 +42,10 @@ vi.mock('./AiAssistant', () => ({
 
 afterEach(() => {
   cleanup();
+  vi.clearAllMocks();
   auth.can = () => true;
+  bell.unreadCount = 0;
+  bell.items = [];
 });
 
 function renderTopbar() {
@@ -64,4 +77,19 @@ it('shows the AI button for a caller with ai:view', () => {
   auth.can = (resource) => resource === 'ai';
   renderTopbar();
   expect(screen.getByTitle('AI assistant')).toBeDefined();
+});
+
+it('bell shows the unread badge and lists items; clicking one marks it read', async () => {
+  bell.unreadCount = 2;
+  bell.items = [{ id: 'n1', kind: 'report_ready', title: 'Move Report is ready', body: 'NAP11',
+    link: '/reports?tab=history&run=r1', payload: { run_id: 'r1' }, created_at: '2026-09-09T12:00:00Z', read_at: null }];
+  const user = userEvent.setup();
+  renderTopbar();
+  expect(screen.getByText('2')).toBeTruthy();                       // badge
+  await user.click(screen.getByTitle('Notifications'));
+  await user.click(screen.getByText('Move Report is ready'));
+  expect(bell.markRead).toHaveBeenCalledWith('n1');
+  await user.click(screen.getByTitle('Notifications'));
+  await user.click(screen.getByText('Mark all read'));
+  expect(bell.markAllRead).toHaveBeenCalled();
 });

@@ -10,8 +10,10 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { apiFetch } from '../lib/api';
 import { avatarGradient, initials } from '../lib/format';
+import { useNotifications } from '../lib/notificationsContext';
 import { useTopbar } from '../lib/topbar';
 import AiAssistant from './AiAssistant';
+import '../styles/toast.css';
 
 const CRUMBS: Record<string, string[]> = {
   '/': ['Dashboards', 'Main Dashboard'],
@@ -88,6 +90,14 @@ interface Hit {
   to?: string;
 }
 
+function relativeTime(iso: string): string {
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
 function isTyping(e: KeyboardEvent): boolean {
   const t = e.target as HTMLElement | null;
   return !!t?.closest('input, textarea, [contenteditable]');
@@ -95,6 +105,7 @@ function isTyping(e: KeyboardEvent): boolean {
 
 export default function Topbar() {
   const { can } = useAuth();
+  const { unreadCount, items, markRead, markAllRead } = useNotifications();
   const { setPaletteOpen, searchRef } = useTopbar();
   const location = useLocation();
   const navigate = useNavigate();
@@ -338,7 +349,7 @@ export default function Topbar() {
           </div>
         )}
 
-        <div className="pop-wrap">
+        <div className="pop-wrap" style={{ position: 'relative' }}>
           <button className="icon-btn" title="Notifications"
                   onClick={() => setPop(pop === 'notif' ? null : 'notif')}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
@@ -346,14 +357,24 @@ export default function Topbar() {
               <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
               <path d="M13.7 21a2 2 0 0 1-3.4 0" />
             </svg>
+            {unreadCount > 0 && <span className="bell-badge">{unreadCount > 99 ? '99+' : unreadCount}</span>}
           </button>
           {pop === 'notif' && (
             <div className="pop-menu">
               <div className="pop-title">Notifications</div>
-              <div className="pop-empty">
-                You're all caught up. Notification delivery lands with the
-                notification service.
-              </div>
+              {items.length === 0 && <div className="pop-empty">You&apos;re all caught up.</div>}
+              {items.slice(0, 10).map((n) => (
+                <button key={n.id} className={`notif-item ${n.read_at ? '' : 'unread'}`}
+                        onClick={() => { void markRead(n.id); setPop(null); if (n.link) navigate(n.link); }}>
+                  {n.title}
+                  <span className="notif-body">{n.body}{n.body ? ' · ' : ''}{relativeTime(n.created_at)}</span>
+                </button>
+              ))}
+              {items.length > 0 && (
+                <div className="notif-foot">
+                  <button className="btn-ghost" onClick={() => void markAllRead()}>Mark all read</button>
+                </div>
+              )}
             </div>
           )}
         </div>

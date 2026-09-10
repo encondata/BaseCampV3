@@ -52,7 +52,7 @@ beforeEach(() => {
   api.listReportRuns.mockResolvedValue(RUNS);
   api.listInitiatives.mockResolvedValue([]);
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
 
 it('lists definitions with section counts and a System badge', async () => {
   renderPage();
