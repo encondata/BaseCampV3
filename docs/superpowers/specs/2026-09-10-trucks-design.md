@@ -37,7 +37,7 @@ dev so the map and trails have something to show.
 - Dump: 15 V2 trucks (Historical, move 13), 0 updates — NOT imported now;
   `legacy_id` keeps the door open.
 
-## Data (migration 0048)
+## Data (migration 0049)
 
 ```
 trucks

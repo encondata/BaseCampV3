@@ -1,4 +1,4 @@
-"""Trucks tables (0048): vocab seeded, GENERATED status record type, cascades."""
+"""Trucks tables (0049): vocab seeded, GENERATED status record type, cascades."""
 
 from datetime import UTC, datetime
 

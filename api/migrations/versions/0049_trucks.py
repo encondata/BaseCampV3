@@ -1,8 +1,8 @@
 """Trucks / shipments (V2 parity): trucks, truck_containers, truck_updates,
 the `truck` status vocabulary, and role grants for the new `trucks` resource.
 
-Revision ID: 0048
-Revises: 0047
+Revision ID: 0049
+Revises: 0048
 Create Date: 2026-09-10
 """
 from collections.abc import Sequence
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import CITEXT, JSONB, UUID
 
-revision: str = "0048"
-down_revision: str | None = "0047"
+revision: str = "0049"
+down_revision: str | None = "0048"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

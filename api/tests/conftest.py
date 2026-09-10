@@ -339,7 +339,7 @@ async def clean_db():
               ('device_type','handheld_reader','Handheld Reader','Android / iOS / Zebra handheld scanner.','#6d4fc4',3),
               ('device_type','kiosk','Kiosk','Web or iPad kiosk station.','#a36207',4)
         """))
-        # truck vocabulary — restore canonical seeds (0048)
+        # truck vocabulary — restore canonical seeds (0049)
         await session.execute(text(
             "DELETE FROM status_values WHERE record_type = 'truck'"))
         await session.execute(text("""
