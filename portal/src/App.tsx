@@ -159,6 +159,9 @@ export default function App() {
                 <Route path="/hardware/routers" element={
                   <ProtectedRoute resource="scanning_hardware"><Routers /></ProtectedRoute>} />
                 <Route path="/settings" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
+                <Route path="/settings/security" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
+                <Route path="/settings/maintenance" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
+                <Route path="/settings/about" element={<ProtectedRoute resource="settings"><Settings /></ProtectedRoute>} />
                 <Route path="/system/notifications" element={
                   <ProtectedRoute resource="notifications"><Notifications /></ProtectedRoute>
                 } />
