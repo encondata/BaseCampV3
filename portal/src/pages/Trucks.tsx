@@ -142,9 +142,10 @@ export default function Trucks() {
     void getTrucksMap(withTrails).then(setMapPoints).catch(() => {});
   };
 
+  // The map is loaded by the [trails] effect below (which also runs on
+  // mount) — fetching it here too doubled every map request.
   useEffect(() => {
     loadTrucks(true);
-    loadMap(trails);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
