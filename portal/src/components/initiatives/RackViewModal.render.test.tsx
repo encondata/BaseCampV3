@@ -207,8 +207,8 @@ describe('RackViewModal (render smoke)', () => {
     // because it's rear-mounted) -> 2 elevations x 2 posts each.
     expect(container.querySelectorAll('.rack-post')).toHaveLength(4);
     // U numbers are the only thing left "inside" the rails, mirrored onto
-    // both rails (round 4) -> 54 x 2 rails x 2 elevations.
-    expect(container.querySelectorAll('.rack-u-label').length).toBe(54 * 2 * 2);
+    // both rails (round 4) -> 52 x 2 rails x 2 elevations (52U default).
+    expect(container.querySelectorAll('.rack-u-label').length).toBe(52 * 2 * 2);
     // ...and every one of them is the uniform, unemphasized style now.
     expect(container.querySelectorAll('.rack-u-label-major')).toHaveLength(0);
   });
@@ -298,13 +298,13 @@ describe('RackViewModal (render smoke)', () => {
     );
     // Only FRONT renders here (no rear-mounted asset) -> one elevation.
     const labels = Array.from(container.querySelectorAll('.rack-u-label'));
-    expect(labels).toHaveLength(54 * 2); // every RU, both rails
+    expect(labels).toHaveLength(52 * 2); // every RU, both rails
     const xs = new Set(labels.map((l) => l.getAttribute('x')));
     expect(xs.size).toBe(2); // exactly one left-rail x and one right-rail x
     // No number is styled differently from any other (dropped entirely,
     // not just unused elsewhere) — same class, same size/weight/color.
     expect(container.querySelectorAll('.rack-u-label-major')).toHaveLength(0);
-    const u54 = labels.find((l) => l.textContent === '54')!;
+    const u54 = labels.find((l) => l.textContent === '52')!;
     const u50 = labels.find((l) => l.textContent === '50')!; // used to be "major"
     expect(u54.getAttribute('class')).toBe(u50.getAttribute('class'));
   });
@@ -445,4 +445,38 @@ describe('RackViewModal (render smoke)', () => {
     expect(write.mock.calls[0][0]).toContain('<svg');
     openSpy.mockRestore();
   });
+});
+
+describe('rack height is dynamic', () => {
+  it('renders 52U by default and grows to the highest device plus headroom, rounded to even', () => {
+    const { container } = render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ id: 'top', source_ru: 57, source_position: null,
+                asset: makeAsset({ id: 'a-top', serial_number: 'SN-T', name: 'tall', ru_size: 2 }) }),
+    ]} />);
+    // top RU = 57 + 2 - 1 = 58 -> +1 = 59 -> rounded up to 60
+    const labels = [...container.querySelectorAll('.rack-u-label')];
+    expect(labels).toHaveLength(60 * 2);
+    expect(labels.some((l) => l.textContent === '60')).toBe(true);
+    expect(container.querySelector('svg.rack-svg')!.getAttribute('viewBox')).toBe(`0 0 190 ${60 * 16 + 20}`);
+  });
+
+  it('never renders a device at RU 0 — it is not a mounting position', () => {
+    const { container } = render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ id: 'zero', source_ru: 0, source_position: null }),
+      makeRow({ id: 'one', source_ru: 1, source_position: null,
+                asset: makeAsset({ id: 'a1', serial_number: 'SN-1', name: 'bottom-dev' }) }),
+    ]} />);
+    expect(container.querySelectorAll('rect.rack-faceplate')).toHaveLength(1);
+    // the name appears in the SVG label AND the device list — both fine
+    expect(screen.getAllByText('bottom-dev').length).toBeGreaterThan(0);
+  });
+});
+
+it('names the assets that are assigned to the rack but unplaced (RU 0)', () => {
+  render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+    makeRow({ id: 'z1', source_ru: 0, source_position: null }),
+    makeRow({ id: 'z2', source_ru: 0, source_position: null, asset: makeAsset({ id: 'a2', serial_number: 'SN-2', name: 'dev-2' }) }),
+    makeRow({ id: 'ok', source_ru: 5, source_position: null, asset: makeAsset({ id: 'a3', serial_number: 'SN-3', name: 'dev-3' }) }),
+  ]} />);
+  expect(screen.getByRole('status').textContent).toContain('2 assets are assigned to this rack without a RU position (RU 0) and are not drawn.');
 });

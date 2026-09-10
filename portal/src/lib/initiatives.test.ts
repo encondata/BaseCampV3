@@ -616,3 +616,25 @@ describe('moveAssetCellText rfid_tag', () => {
     expect(moveAssetCellText(r, 'rfid_tag')).toBe('100418');
   });
 });
+
+describe('rackLayout ignores unplaced rows', () => {
+  it('drops RU 0 and negative RUs, keeps RU 1', () => {
+    const base = {
+      id: 'r', asset_id: 'a', priority_wave: null, disposition: null, owner: null,
+      source_rack: 'R1', source_ru: 1, source_verified: false, source_position: null,
+      destination_rack: null, destination_ru: null, destination_verified: null,
+      destination_position: null, cable_info: null, vendor_involved: null,
+      status: 's', status_label: 'S', status_color: '#000', created_at: '', updated_at: '',
+      asset: { id: 'a', legacy_id: null, serial_number: 'SN', name: 'dev', rfid_tag: null,
+        model_make: null, model_name: null, ru_size: 1, model_category: null,
+        model_category_label: null, model_category_color: null, location_detail: null,
+        client_name: null, status: 'active', status_label: 'Active', status_color: '#000' },
+    } as unknown as InitiativeAssetRow;
+    const rows = [
+      { ...base, id: 'zero', source_ru: 0 },
+      { ...base, id: 'neg', source_ru: -1 },
+      { ...base, id: 'one', source_ru: 1 },
+    ] as InitiativeAssetRow[];
+    expect(rackLayout(rows, 'R1', 'source').map((b) => b.id)).toEqual(['one']);
+  });
+});

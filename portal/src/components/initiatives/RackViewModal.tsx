@@ -67,6 +67,11 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   const [hover, setHover] = useState<HoverState | null>(null);
 
   const blocks = rackLayout(rows, rackName, side);
+  // Rows assigned to this rack but with no usable RU (0 or blank) are never
+  // drawn — say so, or an all-unplaced rack reads as "no assets" while the
+  // table clearly shows assets on it.
+  const rackKey = side === 'source' ? 'source_rack' : 'destination_rack';
+  const unplaced = rows.filter((r) => r[rackKey] === rackName).length - blocks.length;
   const frontBlocks = blocks.filter((b) => !isRearPosition(b.position));
   const rearBlocks = blocks.filter((b) => isRearPosition(b.position));
   // REAR renders only when a REAL rear-mounted asset exists — unaffected
@@ -164,6 +169,12 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
           </div>
         </div>
         <div className="modal-foot rack-modal-foot">
+          {unplaced > 0 && (
+            <p className="rack-unplaced-note" role="status">
+              {unplaced} {unplaced === 1 ? 'asset is' : 'assets are'} assigned to this rack
+              without a RU position (RU 0) and {unplaced === 1 ? 'is' : 'are'} not drawn.
+            </p>
+          )}
           <div className="rack-legend" aria-hidden="true">
             {categories.map((c) => (
               <span key={c.label} className="rack-legend-item">

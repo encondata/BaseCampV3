@@ -1,3 +1,4 @@
+import { rackRuCount, DEFAULT_RU_COUNT } from './RackElevation';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -291,5 +292,17 @@ describe('tooltipRows', () => {
     expect(tooltipRows({ ...base, position: null }).some((r) => r.label === 'Category')).toBe(false);
     expect(tooltipRows({ ...base, position: null, categoryLabel: null })
       .some((r) => r.label === 'Category')).toBe(false);
+  });
+});
+
+describe('rackRuCount', () => {
+  it('is 52 by default and expands to the highest occupied RU + 1 rounded up to even', () => {
+    expect(DEFAULT_RU_COUNT).toBe(52);
+    expect(rackRuCount([])).toBe(52);
+    expect(rackRuCount([{ ru: 40, height: 2 }])).toBe(52);
+    expect(rackRuCount([{ ru: 51, height: 1 }])).toBe(52);   // top 51 -> 52 fits
+    expect(rackRuCount([{ ru: 52, height: 1 }])).toBe(54);   // top 52 -> 53 -> 54
+    expect(rackRuCount([{ ru: 57, height: 2 }])).toBe(60);   // top 58 -> 59 -> 60
+    expect(rackRuCount([{ ru: 59, height: 1 }])).toBe(60);   // top 59 -> 60 even
   });
 });

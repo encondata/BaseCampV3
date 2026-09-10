@@ -17,7 +17,8 @@ describe('renderRackSvg', () => {
     const out = renderRackSvg({ rackName: 'R1', side: 'source', rows: [row({})] });
     expect(out).toContain('<svg');
     expect(out).toContain('web-01');
-    expect(out).toContain('>54<');
+    expect(out).toContain('>52<');
+    expect(out).not.toContain('>53<');
     expect(out).toContain('FRONT');
     expect(out).not.toContain('REAR');
     expect(out).toContain('<style>');

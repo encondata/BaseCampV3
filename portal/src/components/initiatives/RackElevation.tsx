@@ -21,7 +21,11 @@ import { UNCATEGORIZED_FILL } from '../../lib/initiatives';
 import type { RackBlock } from '../../lib/initiatives';
 import { readableTextColor } from '../../lib/color';
 
-export const RU_COUNT = 54;
+/** Racks render at 52U by default (standard cabinets are 42–48U; some run
+ *  to 60U). When a device sits above that, the frame grows to the highest
+ *  occupied RU plus one, rounded up to an even count, so nothing is ever
+ *  clipped and the top always reads as a whole unit. */
+export const DEFAULT_RU_COUNT = 52;
 const U_PX = 16;
 const POST_WIDTH = 26; // left/right posts, per elevation
 const CAP_HEIGHT = 10; // top/bottom caps, per elevation
@@ -30,10 +34,7 @@ const ELEV_FRAME_WIDTH = 190; // one elevation's own viewBox width
 // layout concern (`.rack-elevations { gap: 24px }` in initiatives.css) —
 // it never enters the SVG geometry math, so there's no JS constant for it.
 
-const RU_AREA_HEIGHT = RU_COUNT * U_PX; // 864
-const TOTAL_HEIGHT = RU_AREA_HEIGHT + CAP_HEIGHT * 2; // 884
 const INTERIOR_TOP = CAP_HEIGHT;
-const INTERIOR_BOTTOM = INTERIOR_TOP + RU_AREA_HEIGHT;
 const INTERIOR_LEFT = POST_WIDTH;
 const INTERIOR_RIGHT = ELEV_FRAME_WIDTH - POST_WIDTH;
 const INTERIOR_WIDTH = INTERIOR_RIGHT - INTERIOR_LEFT;
@@ -51,7 +52,32 @@ const LANE_PX = 14; // horizontal offset step for overlapping blocks
 const U_LABEL_X = POST_WIDTH / 2;
 const U_LABEL_X_RIGHT = ELEV_FRAME_WIDTH - U_LABEL_X;
 
-const RU_LIST = Array.from({ length: RU_COUNT }, (_, i) => i + 1);
+/** RU count for one rack's frame — DEFAULT_RU_COUNT unless a block's top
+ *  RU exceeds it, then (highest top RU + 1) rounded up to even. Pure and
+ *  exported so both elevations of a rack (and tests) size identically:
+ *  callers pass every block of the rack, ghosts included. */
+export function rackRuCount(blocks: { ru: number; height: number }[]): number {
+  const maxTop = blocks.reduce((m, b) => Math.max(m, b.ru + b.height - 1), 0);
+  if (maxTop < DEFAULT_RU_COUNT) return DEFAULT_RU_COUNT;
+  const withHeadroom = maxTop + 1;
+  return withHeadroom % 2 === 0 ? withHeadroom : withHeadroom + 1;
+}
+
+/** Vertical geometry for a frame of `ruCount` units, derived per render
+ *  now that the count is dynamic. RU 1 sits at the bottom of the frame, so
+ *  higher RU numbers move up (smaller y): yForRu = bottom edge of RU `ru`,
+ *  ruTop = its top edge (post number rows). */
+function frameGeometry(ruCount: number) {
+  const ruAreaHeight = ruCount * U_PX;
+  const interiorBottom = INTERIOR_TOP + ruAreaHeight;
+  return {
+    ruAreaHeight,
+    totalHeight: ruAreaHeight + CAP_HEIGHT * 2,
+    ruList: Array.from({ length: ruCount }, (_, i) => i + 1),
+    yForRu: (ru: number) => interiorBottom - (ru - 1) * U_PX,
+    ruTop: (ru: number) => interiorBottom - ru * U_PX,
+  };
+}
 
 /** Greedy interval-graph "lane" assignment for blocks that overlap in RU
  *  range — same idea as calendar-view event columns: walk blocks lowest-RU
@@ -213,11 +239,6 @@ export function tooltipRows(info: {
   return rows;
 }
 
-/** y (SVG, top-down) for the bottom edge of RU `ru` — RU 1 sits at the
- *  bottom of the elevation, so higher RU numbers move up (smaller y). */
-const yForRu = (ru: number) => INTERIOR_BOTTOM - (ru - 1) * U_PX;
-/** y for the top edge of RU `ru` (used for the left-post number rows). */
-const ruTop = (ru: number) => INTERIOR_BOTTOM - ru * U_PX;
 
 /** One complete, self-contained rack frame — posts, top/bottom caps,
  *  interior, per-U hairlines, U numbering on the left post, and this
@@ -237,24 +258,26 @@ export function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeav
   const geometry = new Map(
     laneGeometry(blocks, FACEPLATE_USABLE_WIDTH).map((g) => [g.id, g]),
   );
+  const ruCount = rackRuCount(blocks);
+  const { ruAreaHeight, totalHeight, ruList, yForRu, ruTop } = frameGeometry(ruCount);
 
   return (
     <div className="rack-elevation">
       <div className="rack-elevation-heading">{heading}</div>
-      <svg viewBox={`0 0 ${ELEV_FRAME_WIDTH} ${TOTAL_HEIGHT}`} className="rack-svg"
+      <svg viewBox={`0 0 ${ELEV_FRAME_WIDTH} ${totalHeight}`} className="rack-svg"
            role="img" aria-label={ariaLabel}>
         {/* frame: full-height posts + top/bottom caps, outlined line-work */}
-        <rect x={0} y={0} width={POST_WIDTH} height={TOTAL_HEIGHT} className="rack-post" />
-        <rect x={ELEV_FRAME_WIDTH - POST_WIDTH} y={0} width={POST_WIDTH} height={TOTAL_HEIGHT}
+        <rect x={0} y={0} width={POST_WIDTH} height={totalHeight} className="rack-post" />
+        <rect x={ELEV_FRAME_WIDTH - POST_WIDTH} y={0} width={POST_WIDTH} height={totalHeight}
               className="rack-post" />
         <rect x={0} y={0} width={ELEV_FRAME_WIDTH} height={CAP_HEIGHT} className="rack-cap" />
-        <rect x={0} y={TOTAL_HEIGHT - CAP_HEIGHT} width={ELEV_FRAME_WIDTH} height={CAP_HEIGHT}
+        <rect x={0} y={totalHeight - CAP_HEIGHT} width={ELEV_FRAME_WIDTH} height={CAP_HEIGHT}
               className="rack-cap" />
 
         {/* interior + per-U hairlines */}
         <rect x={INTERIOR_LEFT} y={INTERIOR_TOP} width={INTERIOR_WIDTH}
-              height={RU_AREA_HEIGHT} className="rack-interior" />
-        {Array.from({ length: RU_COUNT + 1 }, (_, i) => i).map((i) => (
+              height={ruAreaHeight} className="rack-interior" />
+        {Array.from({ length: ruCount + 1 }, (_, i) => i).map((i) => (
           <line key={i} x1={INTERIOR_LEFT} x2={INTERIOR_RIGHT}
                 y1={INTERIOR_TOP + i * U_PX} y2={INTERIOR_TOP + i * U_PX}
                 className="rack-u-hairline" />
@@ -266,7 +289,7 @@ export function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeav
             Posts otherwise stay clean outlined rails (round 3 dropped the
             cage-nut hole pattern entirely). */}
         <g className="rack-u-labels">
-          {RU_LIST.map((ru) => (
+          {ruList.map((ru) => (
             <text key={ru} x={U_LABEL_X} y={ruTop(ru) + U_PX / 2} textAnchor="middle"
                   dominantBaseline="middle" className="rack-u-label">
               {ru}
@@ -274,7 +297,7 @@ export function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeav
           ))}
         </g>
         <g className="rack-u-labels">
-          {RU_LIST.map((ru) => (
+          {ruList.map((ru) => (
             <text key={ru} x={U_LABEL_X_RIGHT} y={ruTop(ru) + U_PX / 2} textAnchor="middle"
                   dominantBaseline="middle" className="rack-u-label">
               {ru}
@@ -283,7 +306,7 @@ export function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeav
         </g>
 
         {blocks.length === 0 ? (
-          <text x={INTERIOR_LEFT + INTERIOR_WIDTH / 2} y={INTERIOR_TOP + RU_AREA_HEIGHT / 2}
+          <text x={INTERIOR_LEFT + INTERIOR_WIDTH / 2} y={INTERIOR_TOP + ruAreaHeight / 2}
                 textAnchor="middle" dominantBaseline="middle" className="rack-empty-label">
             No assets recorded at this rack
           </text>

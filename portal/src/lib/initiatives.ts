@@ -503,7 +503,9 @@ export function rackLayout(
     (side === 'source' ? r.source_position : r.destination_position);
 
   return rows
-    .filter((r) => rackOf(r) === rackName && ruOf(r) != null)
+    // RU 0 (or anything below the first usable unit) is "unplaced" — the
+    // bottom cap is not a mounting position, so such rows never render.
+    .filter((r) => rackOf(r) === rackName && (ruOf(r) ?? 0) >= 1)
     .map((r) => ({
       id: r.id,
       label: r.asset.name ?? r.asset.serial_number ?? BLANK,
