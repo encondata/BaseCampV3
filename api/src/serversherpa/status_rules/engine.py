@@ -5,6 +5,11 @@ rule adds one StatusRuleExecution row to the SESSION (never commits);
 a real action failure raises RuleExecutionError so the worker can roll
 back the whole scan and log an error execution afterward.
 
+`apply_rules`/`_build_context` accept an optional `initiative_asset`
+anchor so a manual status edit on that row can run through the same
+rule engine as a scan, without the context resolving to whichever
+initiative happens to be "in progress".
+
 The rule cache is per-process with a 60s TTL — API writes land within
 one TTL without any cross-process signal (same posture as V2)."""
 
@@ -64,7 +69,14 @@ async def _load_rules(db: AsyncSession, trigger_status: str,
     return rules
 
 
-async def _build_context(db: AsyncSession, scan: ProcessedScan) -> Context:
+async def _build_context(db: AsyncSession, scan: ProcessedScan, *,
+                         initiative_asset: InitiativeAsset | None = None
+                         ) -> Context:
+    """Build the rule-evaluation context for one scan. If
+    `initiative_asset` is given (a manual status edit on that row), the
+    context is anchored to it directly and the in-progress-initiative
+    lookup is skipped — the caller's row wins even if it isn't the
+    "active" initiative."""
     ctx = Context(scan=scan)
     if scan.match_type == "asset":
         ctx.asset = await db.get(Asset, scan.asset_id)
@@ -76,19 +88,26 @@ async def _build_context(db: AsyncSession, scan: ProcessedScan) -> Context:
             .join(ContainerAsset,
                   ContainerAsset.container_id == Container.id)
             .where(ContainerAsset.asset_id == scan.asset_id))
-        pair = (await db.execute(
-            select(InitiativeAsset, Initiative)
-            .join(Initiative,
-                  InitiativeAsset.initiative_id == Initiative.id)
-            .where(InitiativeAsset.asset_id == scan.asset_id,
-                   Initiative.status == "in_progress",
-                   Initiative.archived_at.is_(None))
-            .order_by(func.abs(func.extract(
-                "epoch",
-                Initiative.scheduled_start - func.now())).nulls_last())
-            .limit(1))).first()
-        if pair is not None:
-            ctx.initiative_asset, ctx.initiative = pair
+        if initiative_asset is not None:
+            # A manual edit is anchored to the initiative being edited —
+            # never re-resolved to "the in-progress one".
+            ctx.initiative_asset = initiative_asset
+            ctx.initiative = await db.get(
+                Initiative, initiative_asset.initiative_id)
+        else:
+            pair = (await db.execute(
+                select(InitiativeAsset, Initiative)
+                .join(Initiative,
+                      InitiativeAsset.initiative_id == Initiative.id)
+                .where(InitiativeAsset.asset_id == scan.asset_id,
+                       Initiative.status == "in_progress",
+                       Initiative.archived_at.is_(None))
+                .order_by(func.abs(func.extract(
+                    "epoch",
+                    Initiative.scheduled_start - func.now())).nulls_last())
+                .limit(1))).first()
+            if pair is not None:
+                ctx.initiative_asset, ctx.initiative = pair
     elif scan.match_type == "container":
         ctx.container = await db.get(Container, scan.container_id)
     elif scan.match_type == "person":
@@ -96,13 +115,20 @@ async def _build_context(db: AsyncSession, scan: ProcessedScan) -> Context:
     return ctx
 
 
-async def apply_rules(db: AsyncSession, scan: ProcessedScan) -> int:
+async def apply_rules(db: AsyncSession, scan: ProcessedScan, *,
+                      initiative_asset: InitiativeAsset | None = None
+                      ) -> int:
+    """Evaluate and apply all enabled rules for this scan's
+    (status, match_type). Pass `initiative_asset` to anchor the rule
+    context to a specific initiative-asset row (a manual status edit)
+    instead of re-resolving the in-progress initiative — the worker's
+    normal scan path leaves this unset."""
     if scan.status is None:
         return 0
     rules = await _load_rules(db, scan.status, scan.match_type)
     if not rules:
         return 0
-    ctx = await _build_context(db, scan)
+    ctx = await _build_context(db, scan, initiative_asset=initiative_asset)
     for rule in rules:
         started = time.monotonic()
         met = all(evaluate_condition(ctx.get(f), op, v)

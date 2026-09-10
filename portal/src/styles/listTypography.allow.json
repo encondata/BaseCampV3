@@ -72,7 +72,7 @@
   {
     "file": "styles/notifications.css",
     "selector": ".ngd-switch-row",
-    "reason": "not list content: labeled settings-form switch row — per the design spec's migration map this stays permanently, it is a form row not a list"
+    "reason": "not list content: labeled settings-form switch row \u2014 per the design spec's migration map this stays permanently, it is a form row not a list"
   },
   {
     "file": "styles/portal-theme.css",
@@ -98,6 +98,41 @@
     "file": "styles/rack-svg.css",
     "selector": ".rack-elevation-heading",
     "reason": "not list content: rack SVG heading (out of scope per spec)"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".rack-device-list",
+    "reason": "not list content: rack modal device manifest \u2014 mono companion panel to the SVG elevation, bottom-anchored to the rack; sized with --list-fs-mono, not a directory row"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".rack-list-group",
+    "reason": "not list content: FRONT/REAR subhead inside the rack modal's device manifest (see .rack-device-list); sized with --list-fs-head"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".rack-legend",
+    "reason": "not list content: rack modal footer legend caption (category/verified/planned swatches); list-ish only by family prefix \u2014 the rack modal's .rack-list-* manifest rows make `rack` a family; this rule is modal chrome, not a row"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".rack-tooltip",
+    "reason": "not list content: rack faceplate hover tooltip (popover, mono); list-ish only by family prefix \u2014 the rack modal's .rack-list-* manifest rows make `rack` a family; this rule is modal chrome, not a row"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".rack-tooltip-name",
+    "reason": "not list content: rack hover tooltip heading; list-ish only by family prefix \u2014 the rack modal's .rack-list-* manifest rows make `rack` a family; this rule is modal chrome, not a row"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".rack-tooltip-kv dt",
+    "reason": "not list content: rack hover tooltip detail label; list-ish only by family prefix \u2014 the rack modal's .rack-list-* manifest rows make `rack` a family; this rule is modal chrome, not a row"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".rack-tooltip-kv dd",
+    "reason": "not list content: rack hover tooltip detail value; list-ish only by family prefix \u2014 the rack modal's .rack-list-* manifest rows make `rack` a family; this rule is modal chrome, not a row"
   },
   {
     "file": "styles/settings.css",
@@ -132,7 +167,7 @@
   {
     "file": "styles/sites.css",
     "selector": ".site-map-detail-head .pn b",
-    "reason": "not list content: site-map detail heading — documented permanent exception per spec (\"the site-map head keeps 15px only via a documented allowlist entry — it is a detail heading, not a list row\")"
+    "reason": "not list content: site-map detail heading \u2014 documented permanent exception per spec (\"the site-map head keeps 15px only via a documented allowlist entry \u2014 it is a detail heading, not a list row\")"
   },
   {
     "file": "styles/time.css",
@@ -187,42 +222,42 @@
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-search input",
-    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-group",
-    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-item",
-    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-item .ic",
-    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-item .sub",
-    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-empty",
-    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-foot",
-    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/column-menu.css",
     "selector": ".colmenu-sort .pop-item",
-    "reason": "not list content: column-menu popover sort option — a dropdown menu item, not a list row"
+    "reason": "not list content: column-menu popover sort option \u2014 a dropdown menu item, not a list row"
   },
   {
     "file": "styles/column-menu.css",
@@ -232,7 +267,7 @@
   {
     "file": "styles/dashboard.css",
     "selector": ".mdash-summary-name",
-    "reason": "not list content: Move Dashboard summary strip — single selected-move hero (aria-label=\"Move summary\"), not a repeating row"
+    "reason": "not list content: Move Dashboard summary strip \u2014 single selected-move hero (aria-label=\"Move summary\"), not a repeating row"
   },
   {
     "file": "styles/dashboard.css",
@@ -262,7 +297,7 @@
   {
     "file": "styles/initiatives.css",
     "selector": ".idet-time-stat-label",
-    "reason": "not list content: time-tracking stat tile label — summary card, not a per-person row"
+    "reason": "not list content: time-tracking stat tile label \u2014 summary card, not a per-person row"
   },
   {
     "file": "styles/initiatives.css",
@@ -367,7 +402,7 @@
   {
     "file": "styles/time.css",
     "selector": ".time-panel-title",
-    "reason": "not list content: shared compact-panel chrome title — used across both recent-entries and on-the-clock panels, not row-specific"
+    "reason": "not list content: shared compact-panel chrome title \u2014 used across both recent-entries and on-the-clock panels, not row-specific"
   },
   {
     "file": "styles/time.css",
@@ -382,13 +417,13 @@
   {
     "file": "pages/DevDatabase.tsx",
     "selector": "color: 'var(--text-mute)', fontSize: 12, fontWeight: 300,",
-    "reason": "not list content: Reconcile dry-run results tree (dev-only diagnostic list of orphaned references) — a nested note under one failed entity, not a list row",
+    "reason": "not list content: Reconcile dry-run results tree (dev-only diagnostic list of orphaned references) \u2014 a nested note under one failed entity, not a list row",
     "check": "inline"
   },
   {
     "file": "pages/DevDatabase.tsx",
     "selector": "<div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-mute)' }}>",
-    "reason": "not list content: Reconcile dry-run results tree — the cannot-force-delete note below one failed entity, not a list row",
+    "reason": "not list content: Reconcile dry-run results tree \u2014 the cannot-force-delete note below one failed entity, not a list row",
     "check": "inline"
   },
   {
@@ -424,13 +459,13 @@
   {
     "file": "components/AvatarUpload.tsx",
     "selector": "fontSize: size * 0.33,",
-    "reason": "not list content: shared avatar component — the initials scale with its own `size` prop and it's used in detail headers/dropdowns, never rendered as list-row markup itself",
+    "reason": "not list content: shared avatar component \u2014 the initials scale with its own `size` prop and it's used in detail headers/dropdowns, never rendered as list-row markup itself",
     "check": "inline"
   },
   {
     "file": "components/CommandPalette.tsx",
     "selector": "placeItems: 'center', color: '#fff', fontSize: 10.5, fontWeight: 600,",
-    "reason": "not list content: ⌘K command-palette result icon — a global overlay, not the directory-list pattern (see the existing .kbar-item family exceptions)",
+    "reason": "not list content: \u2318K command-palette result icon \u2014 a global overlay, not the directory-list pattern (see the existing .kbar-item family exceptions)",
     "check": "inline"
   },
   {
@@ -442,37 +477,37 @@
   {
     "file": "components/ForceChangePassword.tsx",
     "selector": "fontFamily: \"'Fragment Mono', monospace\", fontSize: 10.5,",
-    "reason": "not list content: forced-password-change screen (see the file-level entry above) — the \"ServerSherpa Portal\" eyebrow",
+    "reason": "not list content: forced-password-change screen (see the file-level entry above) \u2014 the \"ServerSherpa Portal\" eyebrow",
     "check": "inline"
   },
   {
     "file": "components/ForceChangePassword.tsx",
     "selector": "<h1 style={{ margin: '10px 0 6px', fontSize: 24, color: '#1b2129' }}>",
-    "reason": "not list content: forced-password-change screen (see the file-level entry above) — the \"Set your password\" heading",
+    "reason": "not list content: forced-password-change screen (see the file-level entry above) \u2014 the \"Set your password\" heading",
     "check": "inline"
   },
   {
     "file": "components/ForceChangePassword.tsx",
     "selector": "<p style={{ margin: '0 0 22px', fontSize: 14, color: '#667085', fontWeight: 300 }}>",
-    "reason": "not list content: forced-password-change screen (see the file-level entry above) — the explanatory paragraph",
+    "reason": "not list content: forced-password-change screen (see the file-level entry above) \u2014 the explanatory paragraph",
     "check": "inline"
   },
   {
     "file": "components/ForceChangePassword.tsx",
     "selector": "<p style={{ margin: '18px 0 0', fontSize: 13, color: '#667085' }}>",
-    "reason": "not list content: forced-password-change screen (see the file-level entry above) — the \"Not you?\" footer line",
+    "reason": "not list content: forced-password-change screen (see the file-level entry above) \u2014 the \"Not you?\" footer line",
     "check": "inline"
   },
   {
     "file": "components/ForceChangePassword.tsx",
     "selector": "font: 'inherit', fontWeight: 500, cursor: 'pointer',",
-    "reason": "not list content: forced-password-change screen (see the file-level entry above) — the inline Sign out link",
+    "reason": "not list content: forced-password-change screen (see the file-level entry above) \u2014 the inline Sign out link",
     "check": "inline"
   },
   {
     "file": "components/Topbar.tsx",
     "selector": "fontSize: 10.5, fontWeight: 600,",
-    "reason": "not list content: global search-as-you-type dropdown result icon — an overlay result, not the directory-list pattern",
+    "reason": "not list content: global search-as-you-type dropdown result icon \u2014 an overlay result, not the directory-list pattern",
     "check": "inline"
   },
   {
@@ -502,19 +537,19 @@
   {
     "file": "styles/initiatives.css",
     "selector": ".imp-missing-row",
-    "reason": "genuine exception (finding #6): a bordered warning-card tile, not a divided list row — padding/border are the card's own chrome, not a duplicate of the primitive's shared-divider look",
+    "reason": "genuine exception (finding #6): a bordered warning-card tile, not a divided list row \u2014 padding/border are the card's own chrome, not a duplicate of the primitive's shared-divider look",
     "check": "coclass"
   },
   {
     "file": "styles/containers.css",
     "selector": ".contents-row",
-    "reason": "genuine exception (finding #6): a bordered content-card tile, not a divided list row — padding/border are the card's own chrome, same reasoning as .imp-missing-row",
+    "reason": "genuine exception (finding #6): a bordered content-card tile, not a divided list row \u2014 padding/border are the card's own chrome, same reasoning as .imp-missing-row",
     "check": "coclass"
   },
   {
     "file": "styles/reports.css",
     "selector": ".ini-picker-row",
-    "reason": "genuine exception (finding #6): .ini-picker-list is itself the bordered list card with no separate header/inset of its own, and the row's own .on selection background must reach the row's full box — moving the inset onto the list container would shrink each row's own box (and its highlight) by the same 10px on both sides",
+    "reason": "genuine exception (finding #6): .ini-picker-list is itself the bordered list card with no separate header/inset of its own, and the row's own .on selection background must reach the row's full box \u2014 moving the inset onto the list container would shrink each row's own box (and its highlight) by the same 10px on both sides",
     "check": "coclass"
   },
   {
@@ -538,13 +573,13 @@
   {
     "file": "styles/access.css",
     "selector": ".gate-row",
-    "reason": "genuine exception (finding #6): matches the bordered .gate-panel card's .gate-head 18px inset (horizontal only) so row content aligns under the header instead of touching the card edge — same reasoning as .dash-board-row",
+    "reason": "genuine exception (finding #6): matches the bordered .gate-panel card's .gate-head 18px inset (horizontal only) so row content aligns under the header instead of touching the card edge \u2014 same reasoning as .dash-board-row",
     "check": "coclass"
   },
   {
     "file": "styles/assets.css",
     "selector": ".nf-item",
-    "reason": "genuine exception (finding #6): extra bottom-only breathing room below a note's multi-line body/meta text before the next row's divider — the primitive's own uniform vertical padding isn't enough for this row's variable-height content",
+    "reason": "genuine exception (finding #6): extra bottom-only breathing room below a note's multi-line body/meta text before the next row's divider \u2014 the primitive's own uniform vertical padding isn't enough for this row's variable-height content",
     "check": "coclass"
   }
 ]

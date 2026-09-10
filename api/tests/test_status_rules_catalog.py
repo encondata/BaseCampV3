@@ -54,13 +54,15 @@ def test_validate_action_rejects_bad_params():
 
 
 async def _scan(db, *, asset=None, container=None, person=None,
-                site_id=None, location_detail="", status="rfid_4_into_cage"):
+                site_id=None, location_detail="", status="rfid_4_into_cage",
+                raw_scan_id=None):
     match_type = ("asset" if asset else
                   "container" if container else "person")
     s = ProcessedScan(
         scanned_value="V", scan_type="rfid", status=status,
         scanned_at=datetime.now(UTC), processed_at=datetime.now(UTC),
         site_id=site_id, location_detail=location_detail,
+        raw_scan_id=raw_scan_id,
         match_type=match_type,
         asset_id=asset.id if asset else None,
         container_id=container.id if container else None,
@@ -119,13 +121,28 @@ async def test_touch_container_audit(db):
     p = Person(first_name="Op", last_name="Erator")
     db.add_all([c, p])
     await db.flush()
-    scan = await _scan(db, container=c)
+    scan = await _scan(db, container=c, raw_scan_id=1)
     scan.operator_id = p.id
     ctx = Context(scan=scan, container=c)
     out = await ACTIONS["touch_container_audit"].apply(db, ctx, {})
     assert out.applied is True
     assert c.last_audit_at == scan.scanned_at
     assert c.audit_by == p.id
+
+
+async def test_touch_container_audit_skips_non_presence_read(db):
+    """A manual keyboard edit (raw_scan_id None) is not a physical
+    presence event — it must not stamp a container audit."""
+    c = Container(name="Crate")
+    db.add(c)
+    await db.flush()
+    scan = await _scan(db, container=c, raw_scan_id=None)
+    ctx = Context(scan=scan, container=c)
+    out = await ACTIONS["touch_container_audit"].apply(db, ctx, {})
+    assert out.applied is False
+    assert out.reason == "not_a_presence_read"
+    assert c.last_audit_at is None
+    assert c.audit_by is None
 
 
 async def test_clear_actions(db):
@@ -178,13 +195,47 @@ async def test_location_from_scan_fields_param(db):
     assert a.site_id == site.id
     assert a.location_detail == "R4 RU10"       # untouched — the V2 fidelity point
 
-    out = await ACTIONS["set_asset_location_from_scan"].apply(
-        db, ctx, {"fields": "location"})
-    assert a.location_detail == ""
 
-    a.location_detail = "R4 RU10"
-    out = await ACTIONS["set_asset_location_from_scan"].apply(db, ctx, {})
-    assert a.location_detail == ""              # empty params default to both
+async def test_location_from_scan_manual_edit_touches_nothing(db):
+    """A manual keyboard edit's scan carries no site/location at all
+    (scans/manual.py: site_id=None, location_detail=""). The action must
+    leave a pre-set asset location/site completely intact and report
+    that it had nothing to copy."""
+    site = Site(name="NAP 11")
+    db.add(site)
+    await db.flush()
+    a = Asset(location_detail="R4 RU10", site_id=site.id)
+    db.add(a)
+    await db.flush()
+    scan = await _scan(db, asset=a, site_id=None, location_detail="",
+                       raw_scan_id=None)
+    ctx = Context(scan=scan, asset=a)
+
+    out = await ACTIONS["set_asset_location_from_scan"].apply(
+        db, ctx, {"fields": "both"})
+    assert out.applied is False
+    assert out.reason == "no_scan_location"
+    assert a.site_id == site.id
+    assert a.location_detail == "R4 RU10"
+
+
+async def test_location_from_scan_copies_only_carried_field(db):
+    """A scan carrying only location_detail (no site) with fields="both"
+    sets the location and leaves the existing site untouched."""
+    site = Site(name="NAP 11")
+    db.add(site)
+    await db.flush()
+    a = Asset(location_detail="Old", site_id=site.id)
+    db.add(a)
+    await db.flush()
+    scan = await _scan(db, asset=a, site_id=None, location_detail="R9 RU3")
+    ctx = Context(scan=scan, asset=a)
+
+    out = await ACTIONS["set_asset_location_from_scan"].apply(
+        db, ctx, {"fields": "both"})
+    assert out.applied is True
+    assert a.location_detail == "R9 RU3"
+    assert a.site_id == site.id                 # untouched — scan carried no site
 
 
 def test_validate_new_actions():

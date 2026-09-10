@@ -7,7 +7,8 @@ const row = (over: Record<string, unknown>) => ({
   id: 'r1', source_rack: 'R1', source_ru: 10, source_verified: true, source_position: null,
   destination_rack: null, destination_ru: null, destination_verified: null,
   destination_position: null,
-  asset: { name: 'web-01', serial_number: 'SN1', ru_size: 2, model_make: 'Dell', model_name: 'R740' },
+  asset: { name: 'web-01', serial_number: 'SN1', ru_size: 2, model_make: 'Dell', model_name: 'R740',
+           model_category_label: null, model_category_color: null },
   ...over,
 });
 
@@ -20,12 +21,28 @@ describe('renderRackSvg', () => {
     expect(out).toContain('FRONT');
     expect(out).not.toContain('REAR');
     expect(out).toContain('<style>');
-    expect(out).toContain('.rack-faceplate-verified');
+    expect(out).toContain('.rack-post');
+  });
+  it('fills faceplates inline with the model category color and a contrast label', () => {
+    const out = renderRackSvg({ rackName: 'R1', side: 'source', rows: [
+      row({ asset: { name: 'web-01', serial_number: 'SN1', ru_size: 2, model_make: 'Dell',
+                     model_name: 'R740', model_category_label: 'Server',
+                     model_category_color: '#1668a7' } }),
+      row({ id: 'r2', source_ru: 20, source_verified: false }),
+    ] });
+    // verified + categorized: category fill, white label, solid green border
+    expect(out).toMatch(/<rect[^>]*fill="#1668a7"[^>]*stroke="#15803d"[^>]*class="rack-faceplate"/);
+    expect(out).toMatch(/<text[^>]*fill="#ffffff"[^>]*class="rack-block-label"[^>]*>web-01</);
+    // planned + uncategorized: neutral fill, dashed dark border, no vents/LED
+    expect(out).toMatch(/<rect[^>]*fill="#eef0f3"[^>]*stroke-dasharray="4 3"/);
+    expect(out).not.toContain('rack-faceplate-vent');
+    expect(out).not.toContain('rack-led-');
   });
   it('adds a REAR elevation only when a rear-positioned asset exists', () => {
     const out = renderRackSvg({ rackName: 'R1', side: 'source', rows: [
       row({}), row({ id: 'r2', source_ru: 20, source_position: 'rear',
-                     asset: { name: 'pdu-1', serial_number: null, ru_size: 1, model_make: null, model_name: null } }),
+                     asset: { name: 'pdu-1', serial_number: null, ru_size: 1, model_make: null, model_name: null,
+                              model_category_label: null, model_category_color: null } }),
     ] });
     expect(out).toContain('REAR');
     expect(out).toContain('pdu-1');
@@ -34,7 +51,7 @@ describe('renderRackSvg', () => {
     // WeasyPrint does not cascade document CSS into inline SVG: without a
     // <style> *inside* the <svg> every shape prints as solid black.
     const out = renderRackSvg({ rackName: 'R1', side: 'source', rows: [row({})] });
-    expect(out).toMatch(/<svg[^>]*><style>[^<]*\.rack-faceplate-verified/);
+    expect(out).toMatch(/<svg[^>]*><style>[^<]*\.rack-post/);
     // rack-svg.css has a comment containing the literal text `<svg>`; left in,
     // the HTML parser would treat it as a tag inside foreign content.
     for (const block of out.match(/<style>[\s\S]*?<\/style>/g) ?? []) {

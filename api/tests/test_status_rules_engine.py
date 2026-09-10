@@ -16,7 +16,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.status_rules import engine
 from serversherpa.status_rules.engine import (
-    RuleExecutionError, apply_rules, invalidate_cache,
+    RuleExecutionError, _build_context, apply_rules, invalidate_cache,
 )
 
 
@@ -230,3 +230,51 @@ async def test_asset_context_without_container_skips(db):
     assert ex.actions_applied == [
         {"action_type": "set_asset_location_from_container",
          "applied": False, "reason": "not_in_container"}]
+
+
+async def test_explicit_initiative_asset_overrides_in_progress_lookup(db):
+    a = Asset(status="unknown")
+    live = Initiative(name="Live", initiative_type="move", status="in_progress")
+    planned = Initiative(name="Planned", initiative_type="move", status="planned")
+    db.add_all([a, live, planned])
+    await db.flush()
+    on_live = InitiativeAsset(initiative_id=live.id, asset_id=a.id,
+                              status="loaded_in_system")
+    on_planned = InitiativeAsset(initiative_id=planned.id, asset_id=a.id,
+                                 status="loaded_in_system")
+    db.add_all([on_live, on_planned])
+    await db.flush()
+    scan = await _asset_scan(db, a)
+
+    # default: the engine picks the in-progress initiative
+    ctx = await _build_context(db, scan)
+    assert ctx.initiative.id == live.id
+    assert ctx.initiative_asset.id == on_live.id
+
+    # explicit: the caller's row wins, even though it isn't in progress
+    ctx = await _build_context(db, scan, initiative_asset=on_planned)
+    assert ctx.initiative.id == planned.id
+    assert ctx.initiative_asset.id == on_planned.id
+
+
+async def test_apply_rules_acts_on_the_explicit_initiative_asset(db):
+    a = Asset(status="unknown")
+    live = Initiative(name="Live", initiative_type="move", status="in_progress")
+    planned = Initiative(name="Planned", initiative_type="move", status="planned")
+    db.add_all([a, live, planned])
+    await db.flush()
+    on_live = InitiativeAsset(initiative_id=live.id, asset_id=a.id,
+                              status="loaded_in_system")
+    on_planned = InitiativeAsset(initiative_id=planned.id, asset_id=a.id,
+                                 status="loaded_in_system")
+    db.add_all([on_live, on_planned])
+    db.add(_rule("Mark move row", actions=(
+        ("set_initiative_asset_status", {"status": "in_transit"}),)))
+    await db.flush()
+    scan = await _asset_scan(db, a)
+
+    n = await apply_rules(db, scan, initiative_asset=on_planned)
+    await db.commit()
+    assert n == 1
+    assert on_planned.status == "in_transit"
+    assert on_live.status == "loaded_in_system"      # untouched

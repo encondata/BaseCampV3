@@ -373,18 +373,24 @@
    rack/side has no rear-mounted assets. The palette is intentionally
    self-contained/light (hardcoded hex, not the app's --surface/--text
    tokens) — designed to print legibly in grayscale: white interior,
-   near-black line work, no gradients, no color-only distinctions
-   (verified vs. planned differ by fill AND solid-vs-dashed border AND
-   label color). Only the modal chrome itself (card, head, legend
+   near-black line work, no gradients. Faceplates fill with the model's
+   category color (contrast-picked label); verified vs. planned stays
+   grayscale-safe via solid vs. dashed borders (colors are inline on the
+   SVG, not here). Only the modal chrome itself (card, head, legend
    caption) follows the app's normal light/dark theme. ───────────────── */
-.modal-card.rack-modal-card { width: min(460px, 94vw); }
+/* Widened past the original single-elevation 460px so the FRONT/REAR
+   elevations (190px each + 24px gap) can sit beside the 240–340px device
+   list (Task 5) without wrapping under them — 190+24+190+24+340 = 768,
+   plus .modal-body's 20px side padding. */
+.modal-card.rack-modal-card { width: min(820px, 96vw); }
 .rack-modal-title { min-width: 0; }
 .rack-modal-title h3 { white-space: nowrap; }
 /* legend chips live in the modal FOOTER (below the elevations), not the
    header — .modal-foot is the app's normal footer bar (chrome.css); this
-   just re-centers its one row of content instead of the default
-   left-aligned button row other modals use it for. */
-.rack-modal-foot { justify-content: center; }
+   spreads the legend to the left and the Print layout button (Task 6) to
+   the right instead of the default left-aligned button row other modals
+   use it for. */
+.rack-modal-foot { justify-content: space-between; }
 .rack-legend {
   display: flex;
   align-items: center;
@@ -402,17 +408,66 @@
   border-radius: 2px;
   flex: none;
 }
-.rack-legend-swatch-verified { background: #eef0f3; border: 1.5px solid #111827; }
+.rack-legend-swatch-verified { background: #fff; border: 2px solid #15803d; }
 .rack-legend-swatch-planned {
   background: #fff;
   border: 1.5px dashed #111827;
 }
 .rack-modal-body {
   max-height: 70vh;
+  /* the elevations scale themselves to the 70vh budget (see .rack-svg),
+     so the body never needs a scrollbar for the rack itself; auto (not
+     hidden) stays as the fallback for a device list taller than the
+     scaled rack */
   overflow-y: auto;
   display: flex;
   justify-content: center;
+  /* without this, .rack-elevations (a flex child) stretches to the 70vh
+     scrollport instead of growing with the rack, so the bottom-anchored
+     device list anchors to the scrollport bottom, not the rack's */
+  align-items: flex-start;
 }
+/* The elevation SVG's structural rules (frame, rails, labels, ghost box)
+   live in rack-svg.css — shared verbatim with the report worker, which
+   inlines that file into the PDF. Only the modal's VIEWPORT-relative
+   sizing is here, scoped to the modal so a 70vh budget never reaches a
+   PDF stylesheet: the elevation sizes to its SVG, and the SVG scales to
+   the modal's 70vh budget (minus body padding + heading) so the whole
+   rack is visible without scrolling — width follows from the viewBox
+   aspect ratio, capped at the design's natural 190px column. */
+.rack-modal-body .rack-elevation { width: auto; }
+.rack-modal-body .rack-svg {
+  height: min(884px, calc(70vh - 62px)); /* 62px = body padding + heading */
+  width: auto;
+}
+
+/* device manifest beside the elevations — mono, tight, reads top-down
+   like the rack itself. Typography draws on directory.css's --list-*
+   tokens (so the user's list-size setting scales it with every other
+   list); the selectors are allowlisted in listTypography.allow.json as a
+   modal panel companion to the SVG rather than a directory row. */
+.rack-device-list {
+  min-width: 240px; max-width: 340px; flex: 1;
+  font-family: var(--font-mono); font-size: var(--list-fs-mono, 12px);
+  align-self: stretch; display: flex; flex-direction: column;
+  justify-content: flex-end;
+}
+.rack-list-group {
+  font-size: var(--list-fs-head, 10px); letter-spacing: 0.08em; color: #6b7280;
+  margin: 10px 0 4px; font-weight: 600;
+}
+.rack-list-row {
+  display: grid; grid-template-columns: 12px 1fr auto auto;
+  gap: 8px; align-items: center; padding: 3px 0;
+  border-bottom: 1px solid #eceff3;
+}
+.rack-list-swatch {
+  width: 10px; height: 10px; border-radius: 2px;
+  border: 1px solid rgba(17, 24, 39, 0.25);
+}
+.rack-list-model { color: #6b7280; }
+.rack-list-ru { text-align: right; min-width: 44px; }
+
 /* hover detail tooltip — real HTML element (not a native title tooltip),
    positioned off the hovered faceplate's bounding rect; styled like the
    app's other popovers (chrome.css .pop-menu) but tighter and mono. */

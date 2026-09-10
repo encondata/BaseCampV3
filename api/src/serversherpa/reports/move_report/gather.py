@@ -10,7 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import (
-    Asset, AssetModel, Client, Initiative, InitiativeAsset, Site, StatusValue,
+    Asset, AssetCategory, AssetModel, Client, Initiative, InitiativeAsset, Site,
+    StatusValue,
 )
 
 
@@ -46,6 +47,12 @@ class MoveAsset:
     destination_ru: float | None
     destination_verified: bool | None
     destination_position: str | None
+    # Model category (asset_categories via AssetModel.category) — the rack
+    # renderer fills faceplates with the category color, exactly as the
+    # portal's RackViewModal does. Defaulted so fixtures without a category
+    # keep constructing.
+    category_label: str | None = None
+    category_color: str | None = None
 
     @property
     def label(self) -> str:
@@ -67,7 +74,9 @@ class MoveAsset:
             "destination_position": self.destination_position,
             "asset": {"name": self.name, "serial_number": self.serial,
                       "ru_size": self.ru_size, "model_make": self.make,
-                      "model_name": self.model},
+                      "model_name": self.model,
+                      "model_category_label": self.category_label,
+                      "model_category_color": self.category_color},
         }
 
 
@@ -113,9 +122,10 @@ async def gather(db: AsyncSession, initiative_id: uuid.UUID) -> MoveData:
     dest = await db.get(Site, ini.destination_site_id) if ini.destination_site_id else None
 
     rows = (await db.execute(
-        select(InitiativeAsset, Asset, AssetModel)
+        select(InitiativeAsset, Asset, AssetModel, AssetCategory)
         .join(Asset, Asset.id == InitiativeAsset.asset_id)
         .outerjoin(AssetModel, AssetModel.id == Asset.model_id)
+        .outerjoin(AssetCategory, AssetCategory.key == AssetModel.category)
         .where(InitiativeAsset.initiative_id == initiative_id)
         .order_by(Asset.name.nullslast(), Asset.serial_number))).all()
     assets = [MoveAsset(
@@ -131,7 +141,9 @@ async def gather(db: AsyncSession, initiative_id: uuid.UUID) -> MoveData:
         destination_rack=ia.destination_rack, destination_ru=_f(ia.destination_ru),
         destination_verified=ia.destination_verified,
         destination_position=ia.destination_position,
-    ) for ia, a, m in rows]
+        category_label=cat.label if cat else None,
+        category_color=cat.color if cat else None,
+    ) for ia, a, m, cat in rows]
 
     return MoveData(
         id=str(ini.id), name=ini.name, initiative_type=ini.initiative_type,

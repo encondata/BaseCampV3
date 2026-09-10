@@ -12,8 +12,8 @@
  * (U numbers mirrored onto both rails with no every-5 emphasis, legend
  * chips moved from the modal header to its footer).
  */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import RackViewModal, { FACEPLATE_USABLE_WIDTH } from './RackViewModal';
 import type { InitiativeAssetRow, InitiativeAssetSummary } from '../../lib/api';
@@ -25,6 +25,7 @@ function makeAsset(overrides: Partial<InitiativeAssetSummary> = {}): InitiativeA
     id: 'asset-1', legacy_id: null, serial_number: 'SN-1', name: 'w1-hs4-m0407',
     rfid_tag: null, model_make: null, model_name: null, ru_size: 1,
     location_detail: null, client_name: null,
+    model_category: null, model_category_label: null, model_category_color: null,
     status: 'active', status_label: 'Active', status_color: '#000',
     ...overrides,
   };
@@ -89,12 +90,18 @@ describe('RackViewModal (render smoke)', () => {
         asset: makeAsset({ id: 'asset-b', name: null, serial_number: 'SN-B', ru_size: 2 }),
       }),
     ];
-    render(<RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />);
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+    );
     // Squeezed to a 2-lane width here, so the label truncates (exact
     // truncation math is covered by the dedicated `rackLabel` unit tests
     // above) — a prefix match is enough to confirm both blocks rendered.
-    expect(screen.getByText(/^server-a/)).toBeTruthy();
-    expect(screen.getByText(/^SN-B/)).toBeTruthy();
+    // Scoped to the SVG faceplate labels since the device list (Task 5)
+    // now also renders each device's full (untruncated) name.
+    const labels = [...container.querySelectorAll('.rack-block-label')]
+      .map((n) => n.textContent);
+    expect(labels.some((t) => /^server-a/.test(t ?? ''))).toBe(true);
+    expect(labels.some((t) => /^SN-B/.test(t ?? ''))).toBe(true);
   });
 
   it('splits front/rear devices at the same RU into two independent elevations, each showing a ghost of the other', () => {
@@ -112,8 +119,9 @@ describe('RackViewModal (render smoke)', () => {
       <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
     );
 
-    expect(screen.getByText('FRONT')).toBeTruthy();
-    expect(screen.getByText('REAR')).toBeTruthy();
+    const headings = [...container.querySelectorAll('.rack-elevation-heading')]
+      .map((n) => n.textContent);
+    expect(headings).toEqual(['FRONT', 'REAR']);
     expect(container.querySelectorAll('.rack-elevation')).toHaveLength(2);
     expect(container.querySelectorAll('svg.rack-svg')).toHaveLength(2);
 
@@ -312,5 +320,129 @@ describe('RackViewModal (render smoke)', () => {
     expect(foot.querySelector('.rack-legend')).toBeTruthy();
     expect(foot.textContent).toContain('Verified');
     expect(foot.textContent).toContain('Planned');
+  });
+
+  it('fills faceplates with the category color and contrast label', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ source_position: null, asset: makeAsset({
+        model_category: 'server', model_category_label: 'Server',
+        model_category_color: '#1668a7' }) }),
+    ]} />);
+    const plate = document.querySelector('rect.rack-faceplate')!;
+    expect(plate.getAttribute('fill')).toBe('#1668a7');
+    const label = document.querySelector('text.rack-block-label')!;
+    expect(label.getAttribute('fill')).toBe('#ffffff'); // dark blue → white text
+  });
+
+  it('uses neutral fill + dark text when uncategorized', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}}
+           rows={[makeRow({ source_position: null })]} />);
+    const plate = document.querySelector('rect.rack-faceplate')!;
+    expect(plate.getAttribute('fill')).toBe('#eef0f3');
+    expect(document.querySelector('text.rack-block-label')!.getAttribute('fill'))
+      .toBe('#111827');
+  });
+
+  it('borders: verified solid green, planned dashed dark; no vents or LED', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ id: 'v', source_ru: 10, source_verified: true, source_position: null }),
+      makeRow({ id: 'p', source_ru: 20, source_verified: false, source_position: null,
+                asset: makeAsset({ id: 'a2', serial_number: 'SN-2', name: 'dev-2' }) }),
+    ]} />);
+    const plates = [...document.querySelectorAll('rect.rack-faceplate')];
+    const verified = plates.find((p) => p.getAttribute('stroke') === '#15803d')!;
+    expect(verified.getAttribute('stroke-width')).toBe('2');
+    expect(verified.hasAttribute('stroke-dasharray')).toBe(false);
+    const planned = plates.find((p) => p.getAttribute('stroke') === '#111827')!;
+    expect(planned.getAttribute('stroke-dasharray')).toBe('4 3');
+    expect(document.querySelector('.rack-faceplate-vent')).toBeNull();
+    expect(document.querySelector('.rack-led-verified')).toBeNull();
+    expect(document.querySelector('.rack-led-unverified')).toBeNull();
+  });
+
+  it('tooltip shows a Category row when the model has one', () => {
+    const rows: InitiativeAssetRow[] = [
+      makeRow({
+        id: 'row-1', source_ru: 12, source_position: 'front',
+        asset: makeAsset({
+          id: 'asset-1', name: 'db-primary-01', serial_number: 'SN-XYZ-99',
+          model_category: 'server', model_category_label: 'Server',
+          model_category_color: '#1668a7',
+        }),
+      }),
+    ];
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+    );
+    const faceplateGroup = container.querySelector('.rack-faceplate')!.parentElement!;
+    fireEvent.mouseEnter(faceplateGroup);
+    const tooltip = within(container.querySelector('.rack-tooltip')!);
+    expect(tooltip.getByText('Category')).toBeTruthy();
+    expect(tooltip.getByText('Server')).toBeTruthy();
+  });
+
+  it('omits the tooltip Category row for an uncategorized asset', () => {
+    const rows: InitiativeAssetRow[] = [
+      makeRow({
+        id: 'row-1', source_ru: 12, source_position: 'front',
+        asset: makeAsset({ id: 'asset-1', name: 'db-primary-01', serial_number: 'SN-XYZ-99' }),
+      }),
+    ];
+    const { container } = render(
+      <RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />,
+    );
+    const faceplateGroup = container.querySelector('.rack-faceplate')!.parentElement!;
+    fireEvent.mouseEnter(faceplateGroup);
+    expect(screen.queryByText('Category')).toBeNull();
+  });
+
+  it('lists devices top-down beside the elevations', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ id: 'low', source_ru: 5, source_position: null }),
+      makeRow({ id: 'high', source_ru: 40, source_position: null,
+                asset: makeAsset({ id: 'a2', serial_number: 'SN-9', name: 'top-dev',
+                  model_make: 'Dell', model_name: 'R740', ru_size: 2 }) }),
+    ]} />);
+    const cells = [...document.querySelectorAll('.rack-list-name')].map((n) => n.textContent);
+    expect(cells).toEqual(['top-dev', 'w1-hs4-m0407']);
+    expect(document.querySelector('.rack-list-ru')!.textContent).toBe('40..41');
+    expect(screen.getByText('Dell R740')).toBeTruthy();
+    // no rear devices → no group subheads
+    expect(document.querySelector('.rack-list-group')).toBeNull();
+  });
+
+  it('groups the list under FRONT/REAR when a rear elevation renders', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ id: 'f', source_ru: 5, source_position: null }),
+      makeRow({ id: 'r', source_ru: 40, source_position: 'rear',
+                asset: makeAsset({ id: 'a2', serial_number: 'SN-9', name: 'rear-dev' }) }),
+    ]} />);
+    const heads = [...document.querySelectorAll('.rack-list-group')].map((n) => n.textContent);
+    expect(heads).toEqual(['FRONT', 'REAR']);
+  });
+
+  it('legend shows categories present plus the border key', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ source_position: null, asset: makeAsset({
+        model_category: 'server', model_category_label: 'Server',
+        model_category_color: '#1668a7' }) }),
+    ]} />);
+    expect(screen.getByText('Server')).toBeTruthy();
+    expect(screen.getByText('Verified')).toBeTruthy();
+    expect(screen.getByText('Planned')).toBeTruthy();
+    expect(screen.queryByText('Uncategorized')).toBeNull();
+  });
+
+  it('Print layout opens a window and writes the sheet', () => {
+    const write = vi.fn();
+    const win = { document: { write, close: vi.fn() } };
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(win as unknown as Window);
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}}
+           rows={[makeRow({ source_position: null })]} />);
+    fireEvent.click(screen.getByText('Print layout'));
+    expect(openSpy).toHaveBeenCalledWith('', '_blank');
+    expect(write.mock.calls[0][0]).toContain('Rack R1 — Source');
+    expect(write.mock.calls[0][0]).toContain('<svg');
+    openSpy.mockRestore();
   });
 });

@@ -6,30 +6,36 @@
  * lib/initiatives.ts's `rackLayout` so it's unit-testable without jsdom,
  * and the SVG geometry lives in `RackElevation` (RackElevation.tsx),
  * shared verbatim with the report worker's server-side renderer. What is
- * left here is the hover state, the tooltip and the modal chrome; the
- * helpers are re-exported below so existing importers (and their tests)
- * keep resolving them through this module.
+ * left here is the hover state, the tooltip, the device manifest beside
+ * the elevations, the category legend, the Print layout sheet and the
+ * modal chrome; the helpers are re-exported below so existing importers
+ * (and their tests) keep resolving them through this module.
  *
  * Print-friendly redesign: two independent, self-contained rack frames
  * (FRONT and REAR) side by side, each with its own posts/caps and U
- * numbering (clean outlined rails — no cage-nut hole pattern), rendered in
- * a light, high-contrast, grayscale-safe palette (no gradients, no
- * color-only distinctions) so it holds up printed on paper. The REAR
- * frame is omitted entirely — not just emptied — when no asset in this
- * rack/side carries a "rear" position note. Each elevation also shows a
- * blank "ghost" box for every asset actually mounted on the OPPOSITE
- * physical side at the same RU/height, so occupied space reads correctly
- * from both faces of the rack (see `ghostBlocksFor`). Hover detail
- * (name/serial/make-model/RU/position, the last omitted when it wouldn't
- * add information — see `tooltipRows`) is a real HTML tooltip positioned
- * off each faceplate's (or ghost's) bounding rect, not a native `<title>`
- * tooltip.
+ * numbering (clean outlined rails — no cage-nut hole pattern). Faceplates
+ * are filled with the asset's category color (contrast-picked label text
+ * via `readableTextColor`, uncategorized assets fall back to
+ * `UNCATEGORIZED_FILL`), with verified vs. planned kept distinguishable
+ * even in grayscale by border alone — solid green for verified, dashed
+ * dark for planned — rather than by fill or an LED (see RackElevation).
+ * The REAR frame is omitted entirely — not just emptied — when no asset in
+ * this rack/side carries a "rear" position note. Each elevation also
+ * shows a blank "ghost" box for every asset actually mounted on the
+ * OPPOSITE physical side at the same RU/height, so occupied space reads
+ * correctly from both faces of the rack (see `ghostBlocksFor`). Hover
+ * detail (name/serial/make-model/RU/category/position, the last two
+ * omitted when they wouldn't add information — see `tooltipRows`) is a
+ * real HTML tooltip positioned off each faceplate's (or ghost's) bounding
+ * rect, not a native `<title>` tooltip.
  */
 import { useRef, useState, useEffect } from 'react';
 
-import { rackLayout } from '../../lib/initiatives';
+import { rackLayout, deviceListRows, legendCategories } from '../../lib/initiatives';
 import type { InitiativeAssetRow } from '../../lib/api';
+import { buildRackPrintHtml } from '../../lib/rackPrint';
 
+import RackDeviceList from './RackDeviceList';
 import {
   RackElevation, ghostBlocksFor, isRearPosition, tooltipRows,
 } from './RackElevation';
@@ -70,6 +76,8 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   const frontDisplay: DisplayBlock[] = [...frontBlocks, ...ghostBlocksFor(rearBlocks)];
   const rearDisplay: DisplayBlock[] = [...rearBlocks, ...ghostBlocksFor(frontBlocks)];
   const rowsById = new Map(rows.map((r) => [r.id, r]));
+  const listRows = deviceListRows(frontBlocks, rearBlocks);
+  const categories = legendCategories(blocks);
 
   const handleHover = (block: DisplayBlock, e: React.MouseEvent<SVGGElement>) => {
     const container = containerRef.current;
@@ -85,6 +93,19 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   const handleLeave = () => setHover(null);
 
   const sideLabel = side === 'source' ? 'Source' : 'Destination';
+
+  const handlePrint = () => {
+    const svgs = [...(containerRef.current?.querySelectorAll('.rack-svg') ?? [])]
+      .map((el) => el.outerHTML);
+    const win = window.open('', '_blank');
+    if (!win) return; // popup blocked — quiet no-op
+    win.document.write(buildRackPrintHtml({
+      rackName, sideLabel, svgs, listRows, grouped: showRear,
+      legend: categories,
+    }));
+    win.document.close();
+  };
+
   const hoveredRow = hover ? rowsById.get(hover.block.id) : undefined;
   const hoveredAsset = hoveredRow?.asset;
   const hoveredMakeModel = hoveredAsset
@@ -95,6 +116,7 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
     makeModel: hoveredMakeModel,
     ru: hover.block.ru,
     position: hover.block.position,
+    categoryLabel: hover.block.categoryLabel,
   }) : [];
 
   return (
@@ -125,6 +147,7 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
                 onHoverBlock={handleHover} onLeaveBlock={handleLeave}
               />
             )}
+            <RackDeviceList rows={listRows} grouped={showRear} />
             {hover && (
               <div className="rack-tooltip" style={{ left: hover.x, top: hover.y }}>
                 <div className="rack-tooltip-name">
@@ -142,6 +165,12 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
         </div>
         <div className="modal-foot rack-modal-foot">
           <div className="rack-legend" aria-hidden="true">
+            {categories.map((c) => (
+              <span key={c.label} className="rack-legend-item">
+                <span className="rack-legend-swatch" style={{ background: c.color }} />
+                {c.label}
+              </span>
+            ))}
             <span className="rack-legend-item">
               <span className="rack-legend-swatch rack-legend-swatch-verified" />
               Verified
@@ -151,6 +180,9 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
               Planned
             </span>
           </div>
+          <button className="mini-btn" type="button" onClick={handlePrint}>
+            Print layout
+          </button>
         </div>
       </div>
     </div>

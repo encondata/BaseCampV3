@@ -5,6 +5,7 @@ rows, 404 on anything else); writes stay globally anchored. People
 assignments and initiative↔initiative links live here too (the
 initiative is the aggregate root)."""
 
+import logging
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -25,16 +26,20 @@ from serversherpa.api.schemas import (
     InitiativeUpdateIn,
 )
 from serversherpa.db.models import (
-    Asset, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
-    InitiativeLink, InitiativePerson, Partner, Person, Site, StatusValue,
+    Asset, AssetCategory, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
+    InitiativeLink, InitiativePerson, Partner, Person, Site, StatusRuleExecution,
+    StatusValue,
 )
 from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx,
 )
+from serversherpa.scans.manual import record_status_edit
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import put_object
+from serversherpa.status_rules.engine import RuleExecutionError
 
 router = APIRouter(prefix="/initiatives", tags=["initiatives"])
+logger = logging.getLogger(__name__)
 
 PARTNER_FIELDS = (
     "shipping_partner_id",
@@ -646,6 +651,10 @@ async def _initiative_asset_rows(
     models = {m.id: m for m in await db.scalars(
         select(AssetModel).where(AssetModel.id.in_(model_ids)))} \
         if model_ids else {}
+    cat_keys = {m.category for m in models.values() if m.category}
+    categories = {c.key: c for c in await db.scalars(
+        select(AssetCategory).where(AssetCategory.key.in_(cat_keys)))} \
+        if cat_keys else {}
     client_ids = {a.client_id for _, a in rows if a.client_id}
     clients = dict((await db.execute(
         select(Client.id, Client.name).where(Client.id.in_(client_ids))
@@ -657,6 +666,7 @@ async def _initiative_asset_rows(
         a_label, a_color = statuses.get(asset.status,
                                         (asset.status, "#51606f"))
         model = models.get(asset.model_id)
+        cat = categories.get(model.category) if model and model.category else None
         out.append(InitiativeAssetOut(
             id=ia.id, asset_id=ia.asset_id,
             priority_wave=ia.priority_wave, disposition=ia.disposition,
@@ -677,6 +687,9 @@ async def _initiative_asset_rows(
                 model_make=model.make if model else None,
                 model_name=model.model if model else None,
                 ru_size=model.ru_size if model else None,
+                model_category=cat.key if cat else None,
+                model_category_label=cat.label if cat else None,
+                model_category_color=cat.color if cat else None,
                 location_detail=asset.location_detail,
                 client_name=clients.get(asset.client_id),
                 status=asset.status, status_label=a_label,
@@ -764,6 +777,27 @@ def _parse_ru(value: object) -> Decimal | None:
     return parsed
 
 
+async def _stamp_rule_failure(err: RuleExecutionError) -> None:
+    """A failing rule on the status-edit path rolls back the whole
+    request (no scan, no status change) — but that leaves no trace for
+    the rules admin UI. Stamp an error execution row in a FRESH,
+    short-lived transaction (the caller's session was just rolled back
+    and record_status_edit's scan never committed), mirroring
+    scans/worker.py::_stamp_error. Best-effort: never let a failure here
+    mask the 409 the caller is about to raise."""
+    from serversherpa.db.engine import get_sessionmaker
+
+    try:
+        async with get_sessionmaker()() as fresh:
+            fresh.add(StatusRuleExecution(
+                rule_id=err.rule_id, rule_name=err.rule_name,
+                processed_scan_id=None, conditions_met=True,
+                actions_applied=[], error=str(err)[:2000]))
+            await fresh.commit()
+    except Exception:
+        logger.exception("failed to record rule-failure execution")
+
+
 async def _check_asset_status(db: DbSession, data: dict) -> None:
     if "status" in data and (data["status"] is None or await db.scalar(
         select(StatusValue).where(
@@ -799,6 +833,24 @@ async def update_initiative_asset(
         audit(db, actor_id=actor.person.id, entity_type="initiative",
               entity_id=str(assoc.initiative_id), action="asset_update",
               changes=changes)
+    if "status" in changes:
+        # A status edit is a scan event: record it and run the rules
+        # engine here, anchored to THIS initiative. A failing rule rolls
+        # the whole edit back — history and dependent fields never drift.
+        asset = await db.get(Asset, assoc.asset_id)
+        if asset is not None:
+            try:
+                await record_status_edit(db, assoc=assoc, asset=asset,
+                                         status=assoc.status,
+                                         actor_person_id=actor.person.id)
+            except RuleExecutionError as err:
+                await db.rollback()
+                logger.warning(
+                    "initiative asset %s: rule %r failed on status edit: %s",
+                    assoc_id, err.rule_name, err)
+                await _stamp_rule_failure(err)
+                raise _err(409, "rule_failed", rule_name=err.rule_name,
+                           reason=str(err.__cause__ or err)) from err
     await db.commit()
     rows = await _initiative_asset_rows(db, assoc.initiative_id)
     return next(r for r in rows if r.id == assoc_id)
