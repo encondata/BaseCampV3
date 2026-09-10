@@ -37,11 +37,53 @@
   border-radius: 8px; background: var(--c-red, #c03540); color: #fff; font-size: 10px;
   font-weight: 700; display: grid; place-items: center;
 }
-.pop-menu .notif-item {
-  display: block; width: 100%; text-align: left; padding: 8px 10px;
-  background: none; border: 0; color: inherit; font: inherit; cursor: pointer;
+
+/* ── notifications panel (bell) — follows Settings via the list tokens ── */
+.pop-menu.notif-panel {
+  width: min(420px, calc(100vw - 32px));
+  max-height: min(70vh, 560px);
+  display: flex; flex-direction: column;
+  padding: 0;
 }
-.pop-menu .notif-item:hover { background: rgba(var(--accent-rgb), 0.08); }
-.pop-menu .notif-item.unread { font-weight: 600; }
-.pop-menu .notif-body { display: block; font-size: 12px; color: var(--text-mute); font-weight: 400; }
-.pop-menu .notif-foot { display: flex; justify-content: flex-end; padding: 6px 10px; }
+.notif-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 12px 10px; border-bottom: 1px solid var(--paper-line);
+}
+.notif-head .pop-title { margin: 0; }
+.notif-chip {
+  font-size: var(--list-fs-head); letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px; white-space: nowrap;
+  color: var(--accent); background: rgba(var(--accent-rgb), 0.14);
+}
+/* wrap rather than overflow the popover: at Extra large the two actions no
+   longer fit beside the title + chip on one 420px line. */
+.notif-head-actions { margin-left: auto; display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.notif-head-actions .btn-ghost { font-size: var(--list-fs-sub); padding: 5px 9px; }
+/* .btn-ghost has no disabled skin of its own — without this "Clear read"
+   with nothing read reads as an available action. */
+.notif-head-actions .btn-ghost:disabled { opacity: 0.4; cursor: default; }
+.notif-head-actions .btn-ghost:disabled:hover { border-color: var(--paper-line); }
+.notif-list { overflow-y: auto; }
+.notif-row {
+  display: flex; align-items: flex-start; gap: 12px;
+  min-height: var(--list-row-min-h); padding: var(--list-row-pad-y) 12px;
+  border-bottom: 1px solid var(--paper-line); cursor: pointer; outline: none;
+}
+.notif-row:last-child { border-bottom: 0; }
+.notif-row:hover, .notif-row:focus-visible { background: rgba(var(--accent-rgb), 0.06); }
+.notif-row.unread { background: rgba(var(--accent-rgb), 0.04); }
+.notif-row.unread .notif-title { font-weight: 600; }
+.notif-icon { flex: none; width: 20px; height: 20px; margin-top: 2px; color: var(--text-mute); }
+.notif-icon-report_failed { color: var(--c-red, #c03540); }
+.notif-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.notif-title { font-size: var(--list-fs-primary); color: var(--text-dark); display: flex; align-items: center; gap: 8px; }
+.notif-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; }
+.notif-body, .notif-time { font-size: var(--list-fs-sub); color: var(--text-mute); }
+.notif-actions { flex: none; display: flex; gap: 4px; opacity: 0; transition: opacity 120ms; }
+.notif-row:hover .notif-actions, .notif-row:focus-within .notif-actions { opacity: 1; }
+@media (hover: none) { .notif-actions { opacity: 1; } }
+.notif-actions .icon-btn { width: 30px; height: 30px; }
+.notif-actions .icon-btn svg { width: 14px; height: 14px; }
+.notif-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; font-size: var(--list-fs-cell); }
+.notif-empty .notif-icon { width: 26px; height: 26px; }
+.notif-foot { padding: 8px 12px; font-size: var(--list-fs-sub); color: var(--text-mute); text-align: center; border-top: 1px solid var(--paper-line); }

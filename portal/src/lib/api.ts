@@ -3203,3 +3203,19 @@ export async function markAllInboxRead(): Promise<void> {
   const resp = await apiFetch('/notifications/inbox/read-all', { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
 }
+
+export async function markInboxUnread(id: string): Promise<void> {
+  const resp = await apiFetch(`/notifications/inbox/${id}/unread`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+/** Soft hide — the row keeps its dismissed_at server-side, it is not deleted. */
+export async function hideInboxItem(id: string): Promise<void> {
+  const resp = await apiFetch(`/notifications/inbox/${id}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function clearReadInbox(): Promise<void> {
+  const resp = await apiFetch('/notifications/inbox/clear-read', { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}

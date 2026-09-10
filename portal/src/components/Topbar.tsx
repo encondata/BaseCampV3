@@ -13,6 +13,7 @@ import { avatarGradient, initials } from '../lib/format';
 import { useNotifications } from '../lib/notificationsContext';
 import { useTopbar } from '../lib/topbar';
 import AiAssistant from './AiAssistant';
+import NotificationsPanel from './NotificationsPanel';
 import '../styles/toast.css';
 
 const CRUMBS: Record<string, string[]> = {
@@ -90,14 +91,6 @@ interface Hit {
   to?: string;
 }
 
-function relativeTime(iso: string): string {
-  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
-  if (s < 60) return 'just now';
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
-
 function isTyping(e: KeyboardEvent): boolean {
   const t = e.target as HTMLElement | null;
   return !!t?.closest('input, textarea, [contenteditable]');
@@ -105,7 +98,7 @@ function isTyping(e: KeyboardEvent): boolean {
 
 export default function Topbar() {
   const { can } = useAuth();
-  const { unreadCount, items, markRead, markAllRead } = useNotifications();
+  const { unreadCount } = useNotifications();
   const { setPaletteOpen, searchRef } = useTopbar();
   const location = useLocation();
   const navigate = useNavigate();
@@ -359,24 +352,7 @@ export default function Topbar() {
             </svg>
             {unreadCount > 0 && <span className="bell-badge">{unreadCount > 99 ? '99+' : unreadCount}</span>}
           </button>
-          {pop === 'notif' && (
-            <div className="pop-menu">
-              <div className="pop-title">Notifications</div>
-              {items.length === 0 && <div className="pop-empty">You&apos;re all caught up.</div>}
-              {items.slice(0, 10).map((n) => (
-                <button key={n.id} className={`notif-item ${n.read_at ? '' : 'unread'}`}
-                        onClick={() => { void markRead(n.id); setPop(null); if (n.link) navigate(n.link); }}>
-                  {n.title}
-                  <span className="notif-body">{n.body}{n.body ? ' · ' : ''}{relativeTime(n.created_at)}</span>
-                </button>
-              ))}
-              {items.length > 0 && (
-                <div className="notif-foot">
-                  <button className="btn-ghost" onClick={() => void markAllRead()}>Mark all read</button>
-                </div>
-              )}
-            </div>
-          )}
+          {pop === 'notif' && <NotificationsPanel onClose={() => setPop(null)} />}
         </div>
 
         <button className="icon-btn" title="Command palette (⌘K)"

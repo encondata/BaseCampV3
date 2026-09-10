@@ -32,6 +32,7 @@ vi.mock('../lib/api', () => ({
 // by lib/notificationsContext.test.tsx.
 const bell = vi.hoisted(() => ({
   unreadCount: 0, items: [] as unknown[], markRead: vi.fn(), markAllRead: vi.fn(),
+  markUnread: vi.fn(), hide: vi.fn(), clearRead: vi.fn(),
   refresh: vi.fn(), newItems: [], dismissNew: vi.fn(),
 }));
 vi.mock('../lib/notificationsContext', () => ({ useNotifications: () => bell }));
@@ -87,6 +88,7 @@ it('bell shows the unread badge and lists items; clicking one marks it read', as
   renderTopbar();
   expect(screen.getByText('2')).toBeTruthy();                       // badge
   await user.click(screen.getByTitle('Notifications'));
+  expect(screen.getByRole('listitem')).toBeTruthy();                 // the panel's row
   await user.click(screen.getByText('Move Report is ready'));
   expect(bell.markRead).toHaveBeenCalledWith('n1');
   await user.click(screen.getByTitle('Notifications'));

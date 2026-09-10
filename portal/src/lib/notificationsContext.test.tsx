@@ -4,7 +4,10 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { Inbox } from './api';
 
-const api = vi.hoisted(() => ({ listInbox: vi.fn(), markInboxRead: vi.fn(), markAllInboxRead: vi.fn() }));
+const api = vi.hoisted(() => ({
+  listInbox: vi.fn(), markInboxRead: vi.fn(), markAllInboxRead: vi.fn(),
+  markInboxUnread: vi.fn(), hideInboxItem: vi.fn(), clearReadInbox: vi.fn(),
+}));
 vi.mock('./api', async (importActual) => ({ ...(await importActual<typeof import('./api')>()), ...api }));
 const auth = vi.hoisted(() => ({ person: { id: 'p1' } as { id: string } | null }));
 vi.mock('../auth/AuthContext', () => ({ useAuth: () => auth }));
@@ -21,12 +24,18 @@ const item = (id: string, read = false) => ({
 function Probe() {
   const n = useNotifications();
   return <div>unread:{n.unreadCount} new:{n.newItems.map((i) => i.id).join(',')}
-    <button onClick={() => void n.markRead('a')}>read-a</button></div>;
+    <button onClick={() => void n.markRead('a')}>read-a</button>
+    <button onClick={() => void n.markUnread('a')}>unread-a</button>
+    <button onClick={() => void n.hide('a')}>hide-a</button>
+    <button onClick={() => void n.clearRead()}>clear</button></div>;
 }
 
 beforeEach(() => {
   api.listInbox.mockResolvedValue(inbox([item('a')]));
   api.markInboxRead.mockResolvedValue(undefined);
+  api.markInboxUnread.mockResolvedValue(undefined);
+  api.hideInboxItem.mockResolvedValue(undefined);
+  api.clearReadInbox.mockResolvedValue(undefined);
   auth.person = { id: 'p1' };
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
@@ -64,4 +73,17 @@ it('resets provider state on identity change so the next person\'s first poll st
   auth.person = { id: 'p2' };
   rerender(<NotificationsProvider><Probe /></NotificationsProvider>);
   await screen.findByText('unread:2 new:');
+});
+
+it('markUnread, hide and clearRead call the API optimistically and refresh', async () => {
+  api.listInbox.mockResolvedValue(inbox([item('a', true), item('b')]));
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:1 new:');
+  await act(async () => { screen.getByText('unread-a').click(); });
+  await waitFor(() => expect(api.markInboxUnread).toHaveBeenCalledWith('a'));
+  await act(async () => { screen.getByText('hide-a').click(); });
+  await waitFor(() => expect(api.hideInboxItem).toHaveBeenCalledWith('a'));
+  await act(async () => { screen.getByText('clear').click(); });
+  await waitFor(() => expect(api.clearReadInbox).toHaveBeenCalled());
+  expect(api.listInbox.mock.calls.length).toBeGreaterThanOrEqual(4);   // refresh after each
 });

@@ -415,6 +415,46 @@
     "reason": "not list content: Timesheet section heading, not a list row"
   },
   {
+    "file": "styles/toast.css",
+    "selector": ".notif-chip",
+    "reason": "not a directory list: the topbar bell popover (NotificationsPanel). It is shell chrome that lives with the rest of the bell in toast.css, and it deliberately CONSUMES the golden --list-* tokens (imported via directory.css) so the panel follows Settings > List text size / Density \u2014 the tokens are never redefined here; sized with --list-fs-head"
+  },
+  {
+    "file": "styles/toast.css",
+    "selector": ".notif-head-actions .btn-ghost",
+    "reason": "not a directory list: the topbar bell popover (NotificationsPanel). It is shell chrome that lives with the rest of the bell in toast.css, and it deliberately CONSUMES the golden --list-* tokens (imported via directory.css) so the panel follows Settings > List text size / Density \u2014 the tokens are never redefined here; sized with --list-fs-sub"
+  },
+  {
+    "file": "styles/toast.css",
+    "selector": ".notif-row",
+    "reason": "not a directory list: the topbar bell popover (NotificationsPanel). It is shell chrome that lives with the rest of the bell in toast.css, and it deliberately CONSUMES the golden --list-* tokens (imported via directory.css) so the panel follows Settings > List text size / Density \u2014 the tokens are never redefined here; min-height is var(--list-row-min-h)"
+  },
+  {
+    "file": "styles/toast.css",
+    "selector": ".notif-row.unread .notif-title",
+    "reason": "not a directory list: the topbar bell popover (NotificationsPanel). It is shell chrome that lives with the rest of the bell in toast.css, and it deliberately CONSUMES the golden --list-* tokens (imported via directory.css) so the panel follows Settings > List text size / Density \u2014 the tokens are never redefined here; unread rows bold their title, same as the list pattern"
+  },
+  {
+    "file": "styles/toast.css",
+    "selector": ".notif-title",
+    "reason": "not a directory list: the topbar bell popover (NotificationsPanel). It is shell chrome that lives with the rest of the bell in toast.css, and it deliberately CONSUMES the golden --list-* tokens (imported via directory.css) so the panel follows Settings > List text size / Density \u2014 the tokens are never redefined here; sized with --list-fs-primary"
+  },
+  {
+    "file": "styles/toast.css",
+    "selector": ".notif-body, .notif-time",
+    "reason": "not a directory list: the topbar bell popover (NotificationsPanel). It is shell chrome that lives with the rest of the bell in toast.css, and it deliberately CONSUMES the golden --list-* tokens (imported via directory.css) so the panel follows Settings > List text size / Density \u2014 the tokens are never redefined here; sized with --list-fs-sub"
+  },
+  {
+    "file": "styles/toast.css",
+    "selector": ".notif-empty",
+    "reason": "not a directory list: the topbar bell popover (NotificationsPanel). It is shell chrome that lives with the rest of the bell in toast.css, and it deliberately CONSUMES the golden --list-* tokens (imported via directory.css) so the panel follows Settings > List text size / Density \u2014 the tokens are never redefined here; sized with --list-fs-cell"
+  },
+  {
+    "file": "styles/toast.css",
+    "selector": ".notif-foot",
+    "reason": "not a directory list: the topbar bell popover (NotificationsPanel). It is shell chrome that lives with the rest of the bell in toast.css, and it deliberately CONSUMES the golden --list-* tokens (imported via directory.css) so the panel follows Settings > List text size / Density \u2014 the tokens are never redefined here; sized with --list-fs-sub"
+  },
+  {
     "file": "pages/DevDatabase.tsx",
     "selector": "color: 'var(--text-mute)', fontSize: 12, fontWeight: 300,",
     "reason": "not list content: Reconcile dry-run results tree (dev-only diagnostic list of orphaned references) \u2014 a nested note under one failed entity, not a list row",

@@ -9,7 +9,9 @@ import {
 } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
-import { listInbox, markAllInboxRead, markInboxRead } from './api';
+import {
+  clearReadInbox, hideInboxItem, listInbox, markAllInboxRead, markInboxRead, markInboxUnread,
+} from './api';
 import type { InboxItem } from './api';
 
 export const INBOX_POLL_MS = 30_000;
@@ -23,7 +25,10 @@ interface Value {
   newItems: InboxItem[];
   refresh: () => Promise<void>;
   markRead: (id: string) => Promise<void>;
+  markUnread: (id: string) => Promise<void>;
   markAllRead: () => Promise<void>;
+  hide: (id: string) => Promise<void>;
+  clearRead: () => Promise<void>;
   dismissNew: (id: string) => void;
   toast: (message: string) => void;
   localToasts: LocalToast[];
@@ -79,12 +84,43 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVis); };
   }, [person, refresh]);
 
+  // Every mutation paints locally first (the popover must feel instant on a
+  // 30 s poll) and then re-reads the inbox so the server stays the truth.
+  // `wasUnread` is read from the rendered `items`, not from inside a
+  // setState updater: StrictMode double-invokes updaters, so a count
+  // change nested in one would decrement twice.
   const markRead = useCallback(async (id: string) => {
-    await markInboxRead(id).catch(() => undefined);
+    const wasUnread = items.some((i) => i.id === id && !i.read_at);
+    const now = new Date().toISOString();
+    setItems((cur) => cur.map((i) => (i.id === id && !i.read_at ? { ...i, read_at: now } : i)));
+    if (wasUnread) setUnreadCount((n) => Math.max(0, n - 1));
     setNewItems((cur) => cur.filter((i) => i.id !== id));
+    await markInboxRead(id).catch(() => undefined);
+    await refresh();
+  }, [items, refresh]);
+  const markUnread = useCallback(async (id: string) => {
+    setItems((cur) => cur.map((i) => (i.id === id ? { ...i, read_at: null } : i)));
+    setUnreadCount((n) => n + 1);
+    await markInboxUnread(id).catch(() => undefined);
+    await refresh();
+  }, [refresh]);
+  const hide = useCallback(async (id: string) => {
+    const wasUnread = items.some((i) => i.id === id && !i.read_at);
+    setItems((cur) => cur.filter((i) => i.id !== id));
+    if (wasUnread) setUnreadCount((n) => Math.max(0, n - 1));
+    setNewItems((cur) => cur.filter((i) => i.id !== id));
+    await hideInboxItem(id).catch(() => undefined);
+    await refresh();
+  }, [items, refresh]);
+  const clearRead = useCallback(async () => {
+    setItems((cur) => cur.filter((i) => !i.read_at));
+    await clearReadInbox().catch(() => undefined);
     await refresh();
   }, [refresh]);
   const markAllRead = useCallback(async () => {
+    const now = new Date().toISOString();
+    setItems((cur) => cur.map((i) => (i.read_at ? i : { ...i, read_at: now })));
+    setUnreadCount(0);
     await markAllInboxRead().catch(() => undefined);
     setNewItems([]);
     await refresh();
@@ -98,14 +134,17 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   }, [dismissLocal]);
 
   const value = useMemo<Value>(() => ({
-    unreadCount, items, newItems, refresh, markRead, markAllRead, dismissNew, toast, localToasts, dismissLocal,
-  }), [unreadCount, items, newItems, refresh, markRead, markAllRead, dismissNew, toast, localToasts, dismissLocal]);
+    unreadCount, items, newItems, refresh, markRead, markUnread, markAllRead, hide, clearRead,
+    dismissNew, toast, localToasts, dismissLocal,
+  }), [unreadCount, items, newItems, refresh, markRead, markUnread, markAllRead, hide, clearRead,
+    dismissNew, toast, localToasts, dismissLocal]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
 const EMPTY: Value = {
   unreadCount: 0, items: [], newItems: [], refresh: async () => {}, markRead: async () => {},
-  markAllRead: async () => {}, dismissNew: () => {}, toast: () => {}, localToasts: [], dismissLocal: () => {},
+  markUnread: async () => {}, markAllRead: async () => {}, hide: async () => {}, clearRead: async () => {},
+  dismissNew: () => {}, toast: () => {}, localToasts: [], dismissLocal: () => {},
 };
 
 export function useNotifications(): Value {
