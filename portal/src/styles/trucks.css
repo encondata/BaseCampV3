@@ -1,0 +1,76 @@
+/**
+ * Trucks / Shipments — LAYOUT ONLY. The row list below the map panel
+ * gets all of its typography for free from directory.css's list tokens
+ * and golden cell classes (.pn/.cell-top/.cell-sub/.mono/.chip) — this
+ * file only sizes the map panel, its overlaid toolbar pills, and the
+ * fullscreen map modal. No font-size/font-family/font-weight/
+ * line-height/min-height here, ever (see styles/listTypography.test.ts).
+ */
+
+.trucks-map-panel {
+  position: relative;
+  margin-bottom: 16px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.trucks-map {
+  height: 280px;
+  width: 100%;
+}
+
+.trucks-map-empty {
+  height: 280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-mute);
+  background: var(--surface-2);
+}
+
+/* Trails toggle + Fullscreen button, overlaid on the map's top-right
+ * corner. z-index clears Leaflet's own panes (tile/overlay/marker/
+ * tooltip top out around 700). */
+.trucks-map-ctrls {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Generic toolbar checkbox pill — "Show historical", "Trails". */
+.pill-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--paper-line);
+  border-radius: 999px;
+  background: var(--surface);
+  cursor: pointer;
+  user-select: none;
+}
+.pill-check input { margin: 0; }
+
+/* Refresh-cadence control in the toolbar — layout only, inherits the
+ * page's own font like every other toolbar control. */
+.trucks-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Fullscreen map modal — wide card, ~80vh map body. */
+.modal-card.trucks-fullscreen-card { width: min(1100px, 96vw); }
+.trucks-fullscreen-body {
+  padding: 0;
+  height: 80vh;
+}
+.trucks-fullscreen-body .trucks-map,
+.trucks-fullscreen-body .trucks-map-empty {
+  height: 100%;
+}
