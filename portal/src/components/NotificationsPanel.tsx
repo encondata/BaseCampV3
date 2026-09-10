@@ -64,7 +64,7 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
   }, [onClose]);
 
   const open = (n: InboxItem) => {
-    void markRead(n.id);
+    if (!n.read_at) void markRead(n.id);
     onClose();
     if (n.link) navigate(n.link);
   };
@@ -110,7 +110,7 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
                 <span className="notif-time">{relativeTime(n.created_at)}</span>
               </span>
               <span className="notif-actions" onClick={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => e.stopPropagation()}>
+                    onKeyDown={(e) => { if (e.key.startsWith('Arrow') || e.key === 'Enter') e.stopPropagation(); }}>
                 {n.read_at ? (
                   <button type="button" className="icon-btn" aria-label="Mark unread" title="Mark unread"
                           onClick={() => void markUnread(n.id)}>

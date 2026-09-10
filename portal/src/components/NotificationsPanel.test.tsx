@@ -61,14 +61,19 @@ it('row click marks read, closes, and navigates; action buttons do not navigate'
   const onClose = renderPanel();
   await user.click(screen.getByText('Report a'));
   expect(ctx.markRead).toHaveBeenCalledWith('a');
-  expect(onClose).toHaveBeenCalled();
+  expect(onClose).toHaveBeenCalledTimes(1);
+
+  await user.click(screen.getByText('Report b'));      // row b is already read
+  expect(ctx.markRead).toHaveBeenCalledTimes(1);        // no redundant markRead on a read row
+  expect(onClose).toHaveBeenCalledTimes(2);             // still opens/closes
+
   await user.click(screen.getAllByRole('button', { name: 'Mark read' })[0]);
   expect(ctx.markRead).toHaveBeenCalledTimes(2);
   await user.click(screen.getByRole('button', { name: 'Mark unread' }));
   expect(ctx.markUnread).toHaveBeenCalledWith('b');
   await user.click(screen.getAllByRole('button', { name: 'Hide' })[1]);
   expect(ctx.hide).toHaveBeenCalledWith('b');
-  expect(onClose).toHaveBeenCalledTimes(1);           // actions never close/navigate
+  expect(onClose).toHaveBeenCalledTimes(2);           // actions never close/navigate
 });
 
 it('header actions: Mark all read disabled at 0 unread; Clear read disabled with no read rows', async () => {
@@ -108,4 +113,14 @@ it('empty state, cap footer, and keyboard: Escape closes, arrows move focus, Ent
   await user.keyboard('{Escape}');
   expect(onClose2).toHaveBeenCalled();
   expect(onClose).not.toHaveBeenCalled();
+});
+
+it('Escape reaches the panel even when focus is on a row action button', async () => {
+  const user = userEvent.setup();
+  ctx.items = [item('a')];
+  ctx.unreadCount = 1;
+  const onClose = renderPanel();
+  screen.getByRole('button', { name: 'Hide' }).focus();
+  await user.keyboard('{Escape}');
+  expect(onClose).toHaveBeenCalled();
 });

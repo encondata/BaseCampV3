@@ -99,11 +99,12 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     await refresh();
   }, [items, refresh]);
   const markUnread = useCallback(async (id: string) => {
+    const wasRead = !!items.find((i) => i.id === id)?.read_at;
     setItems((cur) => cur.map((i) => (i.id === id ? { ...i, read_at: null } : i)));
-    setUnreadCount((n) => n + 1);
+    if (wasRead) setUnreadCount((n) => n + 1);
     await markInboxUnread(id).catch(() => undefined);
     await refresh();
-  }, [refresh]);
+  }, [items, refresh]);
   const hide = useCallback(async (id: string) => {
     const wasUnread = items.some((i) => i.id === id && !i.read_at);
     setItems((cur) => cur.filter((i) => i.id !== id));

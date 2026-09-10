@@ -75,6 +75,22 @@ it('resets provider state on identity change so the next person\'s first poll st
   await screen.findByText('unread:2 new:');
 });
 
+it('markUnread does not bump the count for an item that is already unread (symmetric guard)', async () => {
+  let resolveMark!: () => void;
+  const pending = new Promise<void>((res) => { resolveMark = res; });
+  api.markInboxUnread.mockReturnValue(pending);
+  api.listInbox.mockResolvedValue(inbox([item('a')]));          // 'a' unread throughout
+  render(<NotificationsProvider><Probe /></NotificationsProvider>);
+  await screen.findByText('unread:1 new:');
+  await act(async () => { screen.getByText('unread-a').click(); });
+  // markInboxUnread is still pending, so refresh() has not run yet — this
+  // is purely the optimistic step, which must not touch an already-unread item.
+  expect(screen.getByText(/unread:1/)).toBeTruthy();
+  await act(async () => { resolveMark(); await pending; });
+  await waitFor(() => expect(api.listInbox).toHaveBeenCalledTimes(2));   // refresh after resolve
+  expect(screen.getByText(/unread:1/)).toBeTruthy();
+});
+
 it('markUnread, hide and clearRead call the API optimistically and refresh', async () => {
   api.listInbox.mockResolvedValue(inbox([item('a', true), item('b')]));
   render(<NotificationsProvider><Probe /></NotificationsProvider>);
