@@ -97,12 +97,13 @@ function renderAt(path: string) {
         <Route path="/me" element={<Profile />} />
         <Route path="/me/preferences" element={<Profile />} />
         <Route path="/me/notifications" element={<Profile />} />
+        <Route path="/me/history" element={<Profile />} />
       </Routes>
     </MemoryRouter>,
   );
 }
 
-it('shows three tabs, Profile active by default at /me', async () => {
+it('shows four tabs, Profile active by default at /me', async () => {
   renderAt('/me');
 
   await waitFor(() => expect(screen.getByRole('tablist')).toBeTruthy());
@@ -112,6 +113,7 @@ it('shows three tabs, Profile active by default at /me', async () => {
   expect(profileTab.getAttribute('aria-selected')).toBe('true');
   expect(prefsTab.getAttribute('aria-selected')).toBe('false');
   expect(screen.getByRole('tab', { name: 'Notifications' }).getAttribute('aria-selected')).toBe('false');
+  expect(screen.getByRole('tab', { name: 'History' }).getAttribute('aria-selected')).toBe('false');
 });
 
 it('/me shows the Profile panel and not the preferences sections', async () => {
@@ -164,4 +166,17 @@ it('hides the hero Edit details button on the Preferences tab', async () => {
   await waitFor(() => expect(screen.getByText('Appearance')).toBeTruthy());
 
   expect(screen.queryByText('Edit details')).toBeNull();
+});
+
+it('/me shows Profile, Security and Active sessions but not User history; /me/history shows only the history', async () => {
+  renderAt('/me');
+  await waitFor(() => expect(screen.getByRole('heading', { name: 'Profile', level: 3 })).toBeTruthy());
+  expect(screen.getByRole('heading', { name: 'Security', level: 3 })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Active sessions', level: 3 })).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'User history', level: 3 })).toBeNull();
+  cleanup();
+  renderAt('/me/history');
+  await waitFor(() => expect(screen.getByRole('heading', { name: 'User history', level: 3 })).toBeTruthy());
+  expect(screen.queryByRole('heading', { name: 'Profile', level: 3 })).toBeNull();
+  expect(screen.getByRole('tab', { name: 'History' }).getAttribute('aria-selected')).toBe('true');
 });

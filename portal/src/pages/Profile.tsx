@@ -54,8 +54,9 @@ export default function Profile() {
   const { roles, applyProfile } = useAuth();
   const navigate = useNavigate();
   const pathname = useLocation().pathname;
-  const tab: 'profile' | 'preferences' | 'notifications' = pathname.startsWith('/me/preferences')
-    ? 'preferences' : pathname.startsWith('/me/notifications') ? 'notifications' : 'profile';
+  const tab: 'profile' | 'preferences' | 'notifications' | 'history' = pathname.startsWith('/me/preferences')
+    ? 'preferences' : pathname.startsWith('/me/notifications') ? 'notifications'
+      : pathname.startsWith('/me/history') ? 'history' : 'profile';
   const onPrefs = tab !== 'profile'; // any non-profile tab hides profile-only chrome
   const [profile, setProfile] = useState<PersonDetail | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -168,7 +169,8 @@ export default function Profile() {
 
       <div className="segmented me-tabs" role="tablist">
         {([['profile', 'Profile', '/me'], ['preferences', 'Preferences', '/me/preferences'],
-           ['notifications', 'Notifications', '/me/notifications']] as const).map(([key, label, to]) => (
+           ['notifications', 'Notifications', '/me/notifications'],
+           ['history', 'History', '/me/history']] as const).map(([key, label, to]) => (
           <button key={key} role="tab" aria-selected={tab === key} className={tab === key ? 'on' : ''}
                   onClick={() => navigate(to)}>
             {label}
@@ -179,6 +181,7 @@ export default function Profile() {
       {tab === 'preferences' && <MePreferences />}
       {tab === 'notifications' && <MeNotifications />}
       {tab === 'profile' && (
+      <>
       <div className="profile-grid">
         <div>
           <div className="panel">
@@ -239,43 +242,6 @@ export default function Profile() {
         <div>
           <div className="panel">
             <div className="panel-head">
-              <h3>Active sessions</h3>
-              <span className="result-count">{sessions.length} live</span>
-            </div>
-            <div className="panel-body">
-              {sessions.map((s) => (
-                <div className="session-item" key={s.family_id}>
-                  <div className="session-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-                         strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="2" y="4" width="20" height="13" rx="2" />
-                      <path d="M8 21h8M12 17v4" />
-                    </svg>
-                  </div>
-                  <div className="session-main cell">
-                    <div className="cell-top"><b>{describeUserAgent(s.user_agent)}</b></div>
-                    <div className="mono">
-                      {s.ip_address ?? 'unknown ip'} · started {relativeTime(s.started_at)} ·
-                      expires {relativeTime(s.expires_at)}
-                    </div>
-                  </div>
-                  {s.current
-                    ? <span className="chip c-green"><span className="dot" />Current</span>
-                    : (
-                      <button className="mini-btn" onClick={() => revoke(s.family_id)}>
-                        Sign out
-                      </button>
-                    )}
-                </div>
-              ))}
-              {sessions.length === 0 && (
-                <p className="set-note" style={{ padding: 0 }}>No live sessions found.</p>
-              )}
-            </div>
-          </div>
-
-          <div className="panel">
-            <div className="panel-head">
               <h3>Security</h3>
               {!changingPw && (
                 <button className="mini-btn" onClick={() => setChangingPw(true)}>
@@ -313,9 +279,48 @@ export default function Profile() {
           </div>
         </div>
       </div>
+      <div className="profile-full">
+        <div className="panel">
+          <div className="panel-head">
+            <h3>Active sessions</h3>
+            <span className="result-count">{sessions.length} live</span>
+          </div>
+          <div className="panel-body">
+            {sessions.map((s) => (
+              <div className="session-item" key={s.family_id}>
+                <div className="session-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+                       strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="4" width="20" height="13" rx="2" />
+                    <path d="M8 21h8M12 17v4" />
+                  </svg>
+                </div>
+                <div className="session-main cell">
+                  <div className="cell-top"><b>{describeUserAgent(s.user_agent)}</b></div>
+                  <div className="mono">
+                    {s.ip_address ?? 'unknown ip'} · started {relativeTime(s.started_at)} ·
+                    expires {relativeTime(s.expires_at)}
+                  </div>
+                </div>
+                {s.current
+                  ? <span className="chip c-green"><span className="dot" />Current</span>
+                  : (
+                    <button className="mini-btn" onClick={() => revoke(s.family_id)}>
+                      Sign out
+                    </button>
+                  )}
+              </div>
+            ))}
+            {sessions.length === 0 && (
+              <p className="set-note" style={{ padding: 0 }}>No live sessions found.</p>
+            )}
+          </div>
+        </div>
+      </div>
+      </>
       )}
 
-      {!onPrefs && <ActivityHistory rows={activity} />}
+      {tab === 'history' && <ActivityHistory rows={activity} />}
     </div>
   );
 }

@@ -4,6 +4,7 @@
    ============================================================ */
 
 .me-tabs { margin: 14px 0 18px; }
+.profile-full { margin-top: 18px; }
 
 .profile-hero {
   background: var(--surface, #fff);
