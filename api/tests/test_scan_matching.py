@@ -4,6 +4,9 @@ Archived entities never match."""
 
 from datetime import UTC, datetime
 
+import pytest
+from sqlalchemy.exc import IntegrityError
+
 from serversherpa.db.models import Asset, Container, Person
 from serversherpa.scans.matching import Match, match_scan
 
@@ -82,7 +85,10 @@ async def test_duplicate_name_is_ambiguous(db):
     assert await match_scan(db, "Widget") is None
 
 
-async def test_duplicate_legacy_id_is_ambiguous(db):
+async def test_duplicate_legacy_id_is_rejected(db):
+    # Asset IDs are unique since 0047 (ux_assets_legacy_id), so the
+    # legacy-id rung can never be ambiguous — the database refuses the
+    # second row instead.
     await _asset(db, legacy_id=4471)
-    await _asset(db, legacy_id=4471)
-    assert await match_scan(db, "4471") is None
+    with pytest.raises(IntegrityError):
+        await _asset(db, legacy_id=4471)
