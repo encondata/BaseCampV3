@@ -28,16 +28,63 @@
  * `access`, `modal`, …) into a file-wide family, catching unrelated
  * selectors that merely share the prefix.
  *
- * (d) every `mini-row`/`row-main` element's JSX subtree carries at least
- *     one golden cell class (`cell-primary`/`cell-top`/`cell-sub`/`mono`/
- *     `chip`/`dir-avatar`/`data-table`) — catching rows that get the row
- *     primitive but leave their primary text as a bare `<b>`/`<span>`,
- *     which renders at the browser default instead of golden typography
- *     and never scales with `--list-scale`. This is a regex heuristic,
- *     not a real JSX parser: it finds the line whose `className` contains
- *     `mini-row`/`row-main`, then walks forward counting `<tag`/`</tag>`/
- *     `/>` occurrences line-by-line to approximate the element's subtree,
- *     capped at 60 lines. `check: "markup"` allowlist entries are
+ * (d) within each `mini-row`/`row-main` element's JSX subtree, every
+ *     element that renders the row's primary text carries its OWN golden
+ *     class (or inherits one from an ancestor that does) — not just "some
+ *     golden class exists somewhere in the subtree" (that looser check
+ *     let a bare-`<b>` name pass as long as a sibling `mono`/`chip`
+ *     existed elsewhere in the row; see git history for the finding this
+ *     replaced). Two sub-checks, both computed over the same bounded
+ *     subtree:
+ *       (d1) every `<b` whose own `className` carries none of
+ *            `cell-top`/`cell-sub`/`mono`/`chip`/`pn`/`cell-primary`/
+ *            `dir-avatar`, and which is not nested inside an element that
+ *            does;
+ *       (d2) every `<span` with NO `className` attribute at all (string
+ *            or expression) that opens directly into text/an expression
+ *            — i.e. bare inline text, not a layout wrapper around other
+ *            (already-classed) elements — again exempt when nested
+ *            inside a golden-classed element.
+ *     The ancestor exemption exists because `directory.css` styles a
+ *     `<div className="pn"><b>Name</b><span>Sub</span></div>` pair via
+ *     the descendant selectors `.pn b`/`.pn span`, and separately styles
+ *     e.g. `<div className="cell-top"><b>X</b></div>` by putting
+ *     `font-size` directly on `.cell-top` (which a plain `<b>` child then
+ *     inherits) — in both shapes the `<b>`/`<span>` legitimately carries
+ *     no class of its own because an ancestor already delivers the
+ *     golden typography. Dozens of already-correct rows depend on one
+ *     shape or the other (row-main lists via `*CellFor(`, mini-row
+ *     dashboard rows like `dash-board-row`/`pdash-clock-row` that have no
+ *     `*CellFor(` call at all, and static rows like `Printers.tsx`'s
+ *     `ZebraTab`). The finding that prompted d1 only named the `.pn`
+ *     case; this generalizes to "any golden-classed ancestor" and
+ *     applies the same rule to d2, since both shapes are real and both
+ *     would otherwise false-positive on already-correct markup with no
+ *     `*CellFor(` call to fall back on.
+ *
+ *     This is still a regex heuristic, not a real JSX parser: it finds
+ *     the line whose `className` contains `mini-row`/`row-main`, then
+ *     walks forward counting `<tag`/`</tag>`/`/>` occurrences line-by-line
+ *     to approximate the element's subtree, capped at 60 lines (same as
+ *     before). Within that subtree text it then re-scans with a
+ *     tag-shaped regex (`<tag ...>`, `</tag>`, `<tag .../>`, attributes
+ *     allowed to span lines) to track a same-depth "am I nested inside a
+ *     golden-classed element" stack, and (d2 only) peeks at the text
+ *     immediately following a candidate `<span>`'s opening tag up to its
+ *     first child tag to tell "wraps bare text" from "wraps elements".
+ *     What it catches: the flat "row's name rendered as a bare
+ *     `<b>`/`<span>`" bug this task exists to prevent, in both `mini-row`
+ *     and `row-main` families. What it does NOT catch: a `<b>` classed
+ *     via `className={expr}` or spread props (only a literal
+ *     `className="..."` string is recognized for judging golden-ness,
+ *     though `className=` in ANY form still counts as "has a class" for
+ *     d2's total-absence check and for a `<span>`'s own ancestor-marking);
+ *     a golden class that's present but semantically wrong for that
+ *     position; a bare-text child of a `<span>` that isn't its *first*
+ *     child (d2 only inspects up to the first nested tag); a `>`/`<`
+ *     appearing inside a JS expression within a tag's attributes (e.g.
+ *     `{a < b}`), or a `<>...</>` fragment, either of which can desync
+ *     the ancestor-nesting stack. `check: "markup"` allowlist entries are
  *     file-level (any offending line in that file is allowed) since (d)
  *     violations don't have a stable CSS selector to key on.
  *
@@ -168,12 +215,18 @@ function rawViolationsC(): Violation[] {
   return out;
 }
 
-/** (d) raw: `mini-row`/`row-main` elements whose JSX subtree carries no
- *  golden cell class, computed WITHOUT consulting the allowlist. Regex
- *  heuristic — see the file header comment for how the subtree is bounded. */
+/** (d) raw: `mini-row`/`row-main` elements whose JSX subtree carries a
+ *  bare-`<b>`/bare-`<span>` primary-text violation (d1/d2), computed
+ *  WITHOUT consulting the allowlist. Regex heuristic — see the file
+ *  header comment for how the subtree is bounded and what d1/d2 check. */
 interface MarkupViolation { file: string; line: number; }
 const ROW_CLASS = /\b(mini-row|row-main)\b/;
-const GOLDEN_CELL_CLASS = /\b(cell-primary|cell-top|cell-sub|mono|chip|dir-avatar|data-table)\b/;
+/** The golden classes for a `<b>`'s/ancestor's own className (d1), and
+ *  (generalized — see `scanRowSubtree`) for whether an ancestor already
+ *  delivers golden typography to a `<b>`/`<span>` by inheritance (d1/d2).
+ *  `pn` counts here too: a `<b className="pn">` would be unusual but is
+ *  unambiguously intentional. */
+const GOLDEN_B_CLASS = /\b(cell-top|cell-sub|mono|chip|pn|cell-primary|dir-avatar)\b/;
 /** The established `row-main` directory-list convention renders each
  *  column through a page-local `<name>CellFor(row, key)` helper (see
  *  components/statusRules/RulesTab.tsx, called out in several pages'
@@ -185,6 +238,72 @@ const GOLDEN_CELL_CLASS = /\b(cell-primary|cell-top|cell-sub|mono|chip|dir-avata
 const CELL_HELPER_CALL = /\w*[Cc]ellFor\(/;
 const CLASS_ATTR = /className="([^"]*)"/g;
 const SUBTREE_CAP_LINES = 60;
+/** Matches one JSX tag — opening (`<b className="x">`), closing
+ *  (`</span>`), or self-closing (`<img />`) — inside the already-bounded
+ *  subtree text. `[^<>]*?` allows an attribute list to wrap lines (it
+ *  matches newlines) but stops at the first stray `<`/`>`, which is how a
+ *  `{a < b}` expression inside a tag's attributes can desync this. */
+const TAG_RE = /<(\/?)([A-Za-z][\w.]*)([^<>]*?)(\/?)>/g;
+
+/** (d1)/(d2): scan one row's already-bounded subtree text for a bare
+ *  `<b>` (d1) or a totally classless `<span>` that opens directly into
+ *  bare text (d2), tracking a same-depth "am I nested inside an element
+ *  that already carries a golden class" stack. `directory.css` styles
+ *  `.pn b`/`.pn span` (and, separately, `.cell .cell-top`/`.cell
+ *  .cell-sub`/etc.) as descendant selectors, so a `<b>`/`<span>` with no
+ *  class of its own still gets golden `font-size` by CSS inheritance the
+ *  moment ANY ancestor carries a golden class — not just `.pn` (the
+ *  finding that prompted d1 named only `.pn`, since that's the common
+ *  case, but the same reasoning covers e.g. `<div className="cell-top">
+ *  <b>Name</b></div>`, an established pattern too — see
+ *  `pages/Printers.tsx`'s `ZebraTab`). Generalizing this exemption keeps
+ *  both d1 and d2 from false-positiving on that pattern. Closing tags pop
+ *  the stack unconditionally (best-effort; this doesn't verify the tag
+ *  name matches, another documented heuristic gap). */
+function scanRowSubtree(subtreeText: string, file: string, startLine: number): MarkupViolation[] {
+  const out: MarkupViolation[] = [];
+  const goldenAncestorStack: boolean[] = [];
+  TAG_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = TAG_RE.exec(subtreeText)) !== null) {
+    const [, closing, tagName, attrs, selfClosing] = m;
+    if (closing) { goldenAncestorStack.pop(); continue; }
+
+    // `hasClassAttr` only asks whether a `className=` attribute exists at
+    // all (string OR expression, e.g. `className={\`chip ${x}\`}`) — d2
+    // cares about total absence, not about resolving a dynamic value.
+    // `ownClass`/golden-ness (d1) can only be judged from a literal
+    // `className="..."` string; a dynamic `<b>` className would read as
+    // non-golden here (none exist in the app today).
+    const hasClassAttr = /\bclassName=/.test(attrs);
+    const classMatch = /className="([^"]*)"/.exec(attrs);
+    const ownClass = classMatch ? classMatch[1] : null;
+    const insideGoldenAncestor = goldenAncestorStack.some(Boolean);
+    const line = startLine + (subtreeText.slice(0, m.index).match(/\n/g) ?? []).length;
+
+    if (tagName === 'b' && !insideGoldenAncestor
+        && !(ownClass !== null && GOLDEN_B_CLASS.test(ownClass))) {
+      out.push({ file, line });
+    } else if (tagName === 'span' && !selfClosing && !insideGoldenAncestor && !hasClassAttr) {
+      // A classless `<span>` is only the (d2) bug — bare inline text —
+      // if it opens directly into text/an expression. A classless
+      // `<span>` that's purely a layout wrapper around already-tagged
+      // children (e.g. `<span><b className="cell-top">Name</b>{sub}</span>`)
+      // isn't: check only the content up to the first nested tag, so a
+      // wrapper reads as empty here even though it has non-text children
+      // later in its body (a documented false-negative gap).
+      const afterTag = subtreeText.slice(m.index + m[0].length);
+      const nextTagAt = afterTag.indexOf('<');
+      const immediateContent = nextTagAt === -1 ? afterTag : afterTag.slice(0, nextTagAt);
+      if (immediateContent.trim() !== '') out.push({ file, line });
+    }
+
+    if (!selfClosing) {
+      goldenAncestorStack.push(ownClass !== null && GOLDEN_B_CLASS.test(ownClass));
+    }
+  }
+  return out;
+}
 
 function rawViolationsD(): MarkupViolation[] {
   const out: MarkupViolation[] = [];
@@ -214,9 +333,8 @@ function rawViolationsD(): MarkupViolation[] {
           if (depth <= 0) break;
         }
         const subtreeText = subtree.join('\n');
-        if (!GOLDEN_CELL_CLASS.test(subtreeText) && !CELL_HELPER_CALL.test(subtreeText)) {
-          out.push({ file: f, line: i + 1 });
-        }
+        if (CELL_HELPER_CALL.test(subtreeText)) continue;
+        out.push(...scanRowSubtree(subtreeText, f, i + 1));
       }
     }
   }
