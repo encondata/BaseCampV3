@@ -37,6 +37,7 @@ interface Props {
   canChange: boolean;
   onClose: () => void;
   onSaved: () => Promise<void> | void;   // parent refetches
+  initialSiteId?: string;   // create mode only: seeds form.site_id
 }
 
 function mapError(err: unknown, fallback: string): string {
@@ -56,11 +57,13 @@ function mapError(err: unknown, fallback: string): string {
 }
 
 export default function ContainerEditModal({
-  container, statuses, types, sites, canChange, onClose, onSaved,
+  container, statuses, types, sites, canChange, onClose, onSaved, initialSiteId,
 }: Props) {
   const isCreateMode = container === null;
-  const [form, setForm] = useState<ContainerFormState>(
-    () => formFromContainer(container));
+  const [form, setForm] = useState<ContainerFormState>(() => {
+    const f = formFromContainer(container);
+    return isCreateMode && initialSiteId ? { ...f, site_id: initialSiteId } : f;
+  });
   const [archived, setArchived] = useState<boolean>(!!container?.archived_at);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');

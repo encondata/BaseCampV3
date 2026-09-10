@@ -15,7 +15,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type {
-  AssetItem, AssetRef, StockLine, UiPreferences, WarehouseContainer, WarehouseInventory,
+  AssetItem, AssetRef, SiteItem, StockLine, UiPreferences, WarehouseContainer, WarehouseInventory,
   WarehouseSite,
 } from '../lib/api';
 
@@ -97,6 +97,20 @@ const INVENTORY_A: WarehouseInventory = {
 const INVENTORY_B: WarehouseInventory = {
   site: SITE_B, containers: [], loose_assets: [], loose_stock: [],
 };
+const SITE_ITEM_A: SiteItem = {
+  id: 's1', name: 'ACC4 Storage', code: null,
+  site_type: null, type_label: null, type_color: null,
+  status: 'active', status_label: 'Active', status_color: '#178a4c',
+  address_line1: null, address_line2: null, city: null, region: null, postal_code: null,
+  country: 'US', latitude: null, longitude: null, timezone: null, dc_provider: null,
+  partner_id: null, partner_name: null, notes: null, archived_at: null,
+  created_at: '2026-08-01T00:00:00Z', clients: [],
+};
+
+// jsdom doesn't implement Element.scrollIntoView — ComboBox calls it when
+// the active option changes (e.g. hovering a non-first item while
+// switching sites below), which would otherwise throw.
+if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
 
 const { default: Warehouse } = await import('./Warehouse');
 
@@ -106,6 +120,9 @@ function renderPage() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Site selection persists to localStorage — clear it so one test's
+  // choice of site doesn't leak into the next test's initial render.
+  try { localStorage.clear(); } catch { /* ignore */ }
   auth.can = () => true;
   api.listWarehouseSites.mockResolvedValue([SITE_A, SITE_B]);
   api.getWarehouseInventory.mockImplementation(async (id: string) =>
@@ -206,4 +223,46 @@ it('shows the empty state copy when no site is typed Warehouse', async () => {
   renderPage();
 
   expect(await screen.findByText(/No sites are typed Warehouse yet\./)).not.toBeNull();
+});
+
+it('ignores a stale getWarehouseInventory response for a previously-selected site after switching', async () => {
+  const user = userEvent.setup();
+  let resolveA!: (v: WarehouseInventory) => void;
+  let resolveB!: (v: WarehouseInventory) => void;
+  api.getWarehouseInventory.mockImplementation((id: string) => new Promise((res) => {
+    if (id === 's1') resolveA = res; else resolveB = res;
+  }));
+
+  renderPage();
+  await waitFor(() => expect(api.getWarehouseInventory).toHaveBeenCalledWith('s1'));
+
+  // Switch from the default site (A) to site B before A's request resolves.
+  await user.click(screen.getByRole('combobox'));
+  await user.click(screen.getByText('DA11 Storage'));
+  await waitFor(() => expect(api.getWarehouseInventory).toHaveBeenCalledWith('s2'));
+
+  // B's response (the currently-selected site) lands first...
+  resolveB(INVENTORY_B);
+  await waitFor(() => expect(screen.getByDisplayValue('DA11 Storage')).not.toBeNull());
+
+  // ...then A's stale, late response for the site the user navigated away
+  // from arrives — it must never overwrite what's on screen.
+  resolveA(INVENTORY_A);
+  await new Promise((r) => setTimeout(r, 0));
+
+  expect(screen.queryByText('Pallet A-01')).toBeNull();
+  expect(screen.queryByText('SN-LOOSE')).toBeNull();
+  expect(screen.getByDisplayValue('DA11 Storage')).not.toBeNull();
+});
+
+it('+ New container preselects the currently selected warehouse site', async () => {
+  const user = userEvent.setup();
+  api.listSites.mockResolvedValue([SITE_ITEM_A]);
+  renderPage();
+  await screen.findByText('Pallet A-01');
+
+  await user.click(screen.getByRole('button', { name: '+ New container' }));
+
+  const modal = (await screen.findByText('New container')).closest('.modal-card') as HTMLElement;
+  expect(within(modal).getByDisplayValue('ACC4 Storage')).not.toBeNull();
 });

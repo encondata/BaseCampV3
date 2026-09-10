@@ -8,7 +8,7 @@
  * StockMoveModal).
  */
 
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -157,6 +157,23 @@ export default function Warehouse() {
     'warehouse', { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 }, ALL_COLUMN_KEYS,
   );
 
+  // Stale-response/unmount guard for site-keyed inventory loads, mirroring
+  // TruckDetail.tsx's idRef/mountedRef/stale(forId) pattern: idRef always
+  // holds the site the page is *currently* showing, so a late response for
+  // a site the user has already switched away from (or after unmount)
+  // never calls setState.
+  const idRef = useRef(siteId);
+  idRef.current = siteId;
+  const mountedRef = useRef(true);
+  // Set true in the effect body, not only at ref creation: StrictMode's
+  // dev-only mount→unmount→remount keeps the ref, and a one-way flip to
+  // false would leave every response "stale".
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const stale = (forId: string) => !mountedRef.current || idRef.current !== forId;
+
   const loadSites = () => {
     void listWarehouseSites().then((rows) => { setWhSites(rows); setSitesError(''); })
       .catch((err) => {
@@ -168,12 +185,15 @@ export default function Warehouse() {
 
   const loadInventory = (id: string, initial: boolean) => {
     if (initial) setInventory(null);
-    getWarehouseInventory(id).then((inv) => { setInventory(inv); setError(''); })
-      .catch((err) => {
-        setError(err instanceof ApiError && err.status === 403
-          ? 'You do not have permission to view warehouse inventory.'
-          : 'Failed to load inventory.');
-      });
+    getWarehouseInventory(id).then((inv) => {
+      if (stale(id)) return;
+      setInventory(inv); setError('');
+    }).catch((err) => {
+      if (stale(id)) return;
+      setError(err instanceof ApiError && err.status === 403
+        ? 'You do not have permission to view warehouse inventory.'
+        : 'Failed to load inventory.');
+    });
   };
 
   const refetchAll = () => {
@@ -550,6 +570,7 @@ export default function Warehouse() {
           canChange={canChangeContainer}
           onClose={() => { setEditingContainer(null); setCreatingContainer(false); }}
           onSaved={() => refetchAll()}
+          initialSiteId={siteId}
         />
       )}
       {editingAsset && (
