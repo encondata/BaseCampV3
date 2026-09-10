@@ -1,22 +1,37 @@
-"""Self-service endpoints: my profile (view/edit) and my active sessions."""
+"""Self-service endpoints: my profile (view/edit), my active sessions, and
+(Task 2) my notification-group memberships/overrides/join-leave requests."""
 
 import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.api.deps import CurrentUser, DbSession, require_password_length
+from serversherpa.api.routes.notifications import (
+    _get_group, _member_count, _request_out, apply_member_overrides,
+    effective_settings,
+)
 from serversherpa.api.schemas import (
     ChangePasswordIn,
+    MembershipRequestCreateIn,
+    MembershipRequestOut,
     MyActivityItem,
+    MyNotificationGroupOut,
+    MyPendingRequestOut,
+    NotificationEffectiveSettings,
+    NotificationMemberOverrides,
     PersonDetail,
     ProfileUpdateIn,
     SessionItem,
 )
-from serversherpa.db.models import AuditLog, AuthSession, Person
+from serversherpa.db.models import (
+    AuditLog, AuthSession, NotificationGroup, NotificationGroupMember,
+    NotificationMembershipRequest, Person,
+)
 from serversherpa.config import get_settings
+from serversherpa.notifications.requests import RequestError, cancel_request, create_request
 from serversherpa.security.passwords import hash_password, verify_password
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.auth import revoke_family
@@ -202,4 +217,132 @@ async def change_password(
     )
     audit(db, actor_id=user.person.id, entity_type="user_account",
           entity_id=str(user.person.id), action="password.change")
+    await db.commit()
+
+
+# ── notification groups: self-service (any signed-in person) ─────────
+# Approval lives under /notifications/requests (routes/notifications.py,
+# gated notifications:change); this reuses that module's group/member
+# helpers and its `_request_out` so both routers share one payload shape.
+
+def _my_group_out(group: NotificationGroup, member_count: int,
+                  member: NotificationGroupMember | None,
+                  pending: NotificationMembershipRequest | None,
+                  ) -> MyNotificationGroupOut:
+    return MyNotificationGroupOut(
+        id=group.id, name=group.name, description=group.description,
+        channels=group.channels, quiet_start=group.quiet_start,
+        quiet_end=group.quiet_end, timezone=group.timezone,
+        active_days=group.active_days, dnd_behavior=group.dnd_behavior,
+        urgent_bypass=group.urgent_bypass, member_count=member_count,
+        is_member=member is not None,
+        overrides=(NotificationMemberOverrides(
+            channels=member.channels, quiet_mode=member.quiet_mode,
+            quiet_start=member.quiet_start, quiet_end=member.quiet_end,
+            timezone=member.timezone, active_days=member.active_days,
+            dnd_behavior=member.dnd_behavior, urgent_bypass=member.urgent_bypass)
+            if member is not None else None),
+        effective=(NotificationEffectiveSettings(**effective_settings(group, member))
+                   if member is not None else None),
+        pending_request=(MyPendingRequestOut(
+            id=pending.id, action=pending.action, note=pending.note,
+            created_at=pending.created_at) if pending is not None else None))
+
+
+async def _my_pending(db: DbSession, group_id: uuid.UUID,
+                      person_id: uuid.UUID) -> NotificationMembershipRequest | None:
+    return await db.scalar(select(NotificationMembershipRequest).where(
+        NotificationMembershipRequest.group_id == group_id,
+        NotificationMembershipRequest.person_id == person_id,
+        NotificationMembershipRequest.status == "pending"))
+
+
+@router.get("/notification-groups", response_model=list[MyNotificationGroupOut])
+async def list_my_groups(
+    user: CurrentUser, db: DbSession, q: str = "",
+) -> list[MyNotificationGroupOut]:
+    conditions = [NotificationGroup.enabled.is_(True)]
+    if q:
+        needle = f"%{q}%"
+        conditions.append(or_(NotificationGroup.name.ilike(needle),
+                              NotificationGroup.description.ilike(needle)))
+    rows = (await db.execute(
+        select(NotificationGroup, func.count(NotificationGroupMember.person_id))
+        .outerjoin(NotificationGroupMember,
+                   NotificationGroupMember.group_id == NotificationGroup.id)
+        .where(*conditions)
+        .group_by(NotificationGroup.id)
+        .order_by(NotificationGroup.name))).all()
+
+    # one query for the caller's memberships, one for their pending
+    # requests — no per-group lookup.
+    memberships = {m.group_id: m for m in (await db.scalars(
+        select(NotificationGroupMember).where(
+            NotificationGroupMember.person_id == user.person.id)))}
+    pending = {r.group_id: r for r in (await db.scalars(
+        select(NotificationMembershipRequest).where(
+            NotificationMembershipRequest.person_id == user.person.id,
+            NotificationMembershipRequest.status == "pending")))}
+
+    return [_my_group_out(group, count, memberships.get(group.id),
+                          pending.get(group.id))
+            for group, count in rows]
+
+
+@router.patch("/notification-groups/{group_id}/overrides",
+              response_model=MyNotificationGroupOut)
+async def update_my_overrides(
+    group_id: uuid.UUID, body: NotificationMemberOverrides,
+    user: CurrentUser, db: DbSession,
+) -> MyNotificationGroupOut:
+    member = await db.get(NotificationGroupMember, (group_id, user.person.id))
+    if member is None:
+        raise HTTPException(status_code=404, detail={"code": "not_a_member"})
+    group = await _get_group(db, group_id)
+
+    # CurrentUser always has a UserAccount (that's how they signed in), so
+    # push/web channels are always reachable for the caller.
+    changes = apply_member_overrides(member, body, user.person, True)
+    if changes:
+        audit(db, actor_id=user.person.id, entity_type="notification_group",
+              entity_id=str(group_id), action="member.self_override",
+              changes=changes)
+    await db.commit()
+    count = await _member_count(db, group_id)
+    pending = await _my_pending(db, group_id, user.person.id)
+    return _my_group_out(group, count, member, pending)
+
+
+@router.post("/notification-groups/{group_id}/requests",
+             response_model=MembershipRequestOut, status_code=201)
+async def create_my_request(
+    group_id: uuid.UUID, body: MembershipRequestCreateIn,
+    user: CurrentUser, db: DbSession,
+) -> MembershipRequestOut:
+    group = await db.get(NotificationGroup, group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail={"code": "group_not_found"})
+    try:
+        req = await create_request(db, person=user.person, group=group,
+                                   action=body.action, note=body.note)
+        await db.commit()
+    except RequestError as e:
+        raise HTTPException(status_code=e.status, detail={"code": e.code}) from None
+    except IntegrityError:
+        # the partial unique index (one pending request per group+person)
+        # loses a create/create race — same outward result as the ordinary
+        # pending-duplicate rule check inside create_request.
+        await db.rollback()
+        raise HTTPException(status_code=409, detail={"code": "request_pending"}) from None
+    return _request_out(req, group.name, user.person.display_name)
+
+
+@router.delete("/notification-groups/requests/{request_id}", status_code=204)
+async def cancel_my_request(
+    request_id: uuid.UUID, user: CurrentUser, db: DbSession,
+) -> None:
+    try:
+        await cancel_request(db, request_id=request_id, person_id=user.person.id)
+    except RequestError as e:
+        raise HTTPException(status_code=e.status, detail={"code": e.code}) from None
     await db.commit()

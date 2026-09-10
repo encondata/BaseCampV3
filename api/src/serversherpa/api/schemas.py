@@ -1853,6 +1853,59 @@ class NotificationInboxOut(BaseModel):
     items: list[NotificationInboxItemOut]
 
 
+# ── notification-group membership requests (self-service + approval) ──
+
+class MembershipRequestOut(BaseModel):
+    id: uuid.UUID
+    group_id: uuid.UUID
+    group_name: str
+    person_id: uuid.UUID
+    person_name: str
+    action: str
+    status: str
+    note: str
+    decided_by_name: str | None = None
+    decided_at: datetime | None = None
+    decision_note: str
+    created_at: datetime
+
+
+class MembershipRequestCreateIn(BaseModel):
+    action: Literal["join", "leave"]
+    note: str = ""
+    model_config = ConfigDict(extra="forbid")
+
+
+class MembershipDecisionIn(BaseModel):
+    note: str = ""
+    model_config = ConfigDict(extra="forbid")
+
+
+class MyPendingRequestOut(BaseModel):
+    id: uuid.UUID
+    action: str
+    note: str
+    created_at: datetime
+
+
+class MyNotificationGroupOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str
+    channels: list[str]
+    quiet_start: time | None = None
+    quiet_end: time | None = None
+    timezone: str
+    active_days: list[str]
+    dnd_behavior: str
+    urgent_bypass: bool
+    member_count: int
+    is_member: bool
+    overrides: NotificationMemberOverrides | None = None
+    effective: NotificationEffectiveSettings | None = None
+    pending_request: MyPendingRequestOut | None = None
+
+
 # ── status rules ─────────────────────────────────────────────────────
 
 class StatusRuleConditionIn(BaseModel):

@@ -13,17 +13,21 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import func, select
+from sqlalchemy.orm import aliased
 
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
 from serversherpa.api.schemas import (
-    NotificationEffectiveSettings, NotificationGroupCreateIn,
-    NotificationGroupDetailOut, NotificationGroupOut, NotificationGroupPatchIn,
-    NotificationInboxItemOut, NotificationInboxOut, NotificationMemberAddIn,
-    NotificationMemberOut, NotificationMemberOverrides, NotificationRecipientOut,
+    MembershipDecisionIn, MembershipRequestOut, NotificationEffectiveSettings,
+    NotificationGroupCreateIn, NotificationGroupDetailOut, NotificationGroupOut,
+    NotificationGroupPatchIn, NotificationInboxItemOut, NotificationInboxOut,
+    NotificationMemberAddIn, NotificationMemberOut, NotificationMemberOverrides,
+    NotificationRecipientOut,
 )
 from serversherpa.db.models import (
-    Notification, NotificationGroup, NotificationGroupMember, Person, UserAccount,
+    Notification, NotificationGroup, NotificationGroupMember,
+    NotificationMembershipRequest, Person, UserAccount,
 )
+from serversherpa.notifications.requests import RequestError, decide_request
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import presign_get
 
@@ -330,19 +334,15 @@ async def add_member(
     return _member_out(group, member, person, has_account)
 
 
-@router.patch("/groups/{group_id}/members/{person_id}",
-              response_model=NotificationMemberOut)
-async def patch_member(
-    group_id: uuid.UUID,
-    person_id: uuid.UUID,
-    body: NotificationMemberOverrides,
-    db: DbSession,
-    actor: AuthContext = require_permission("notifications", "change"),
-) -> NotificationMemberOut:
-    member = await _get_member(db, group_id, person_id)
-    group = await _get_group(db, group_id)
-    person = await db.get(Person, person_id)
-    has_account = await _has_account(db, person_id)
+def apply_member_overrides(member: NotificationGroupMember,
+                            body: NotificationMemberOverrides,
+                            person: Person, has_account: bool) -> dict:
+    """Validate `body` (same rules as `validate_settings` plus the
+    quiet-mode/quiet-hours and channel-capability checks) and apply it onto
+    `member` in place. Returns the snapshot diff (empty if nothing
+    changed) so the caller decides whether to audit. Shared by the admin
+    member-override PATCH and the self-service one under /auth/me — same
+    rules for both, only the caller (and thus the audit action) differs."""
     validate_settings(body, check_quiet_hours=False)
 
     fields_set = body.model_fields_set
@@ -371,7 +371,24 @@ async def patch_member(
     before = snapshot(member, fields)
     for field, value in data.items():
         setattr(member, field, value)
-    changes = diff(before, snapshot(member, fields))
+    return diff(before, snapshot(member, fields))
+
+
+@router.patch("/groups/{group_id}/members/{person_id}",
+              response_model=NotificationMemberOut)
+async def patch_member(
+    group_id: uuid.UUID,
+    person_id: uuid.UUID,
+    body: NotificationMemberOverrides,
+    db: DbSession,
+    actor: AuthContext = require_permission("notifications", "change"),
+) -> NotificationMemberOut:
+    member = await _get_member(db, group_id, person_id)
+    group = await _get_group(db, group_id)
+    person = await db.get(Person, person_id)
+    has_account = await _has_account(db, person_id)
+
+    changes = apply_member_overrides(member, body, person, has_account)
     if changes:
         audit(db, actor_id=actor.person.id, entity_type="notification_group",
               entity_id=str(group_id), action="member.update", changes=changes)
@@ -392,6 +409,80 @@ async def remove_member(
           changes={"person_id": str(person_id)})
     await db.delete(member)
     await db.commit()
+
+
+# ── membership requests: approval (gated notifications:change) ───────
+# Self-service creation/cancellation lives under /auth/me (routes/me.py),
+# which imports `_request_out` from here so both routers share one shape.
+
+def _request_out(req: NotificationMembershipRequest, group_name: str,
+                  person_name: str,
+                  decided_by_name: str | None = None) -> MembershipRequestOut:
+    return MembershipRequestOut(
+        id=req.id, group_id=req.group_id, group_name=group_name,
+        person_id=req.person_id, person_name=person_name, action=req.action,
+        status=req.status, note=req.note, decided_by_name=decided_by_name,
+        decided_at=req.decided_at, decision_note=req.decision_note,
+        created_at=req.created_at)
+
+
+@router.get("/requests", response_model=list[MembershipRequestOut])
+async def list_requests(
+    db: DbSession,
+    status: str = "pending",
+    _actor: AuthContext = require_permission("notifications", "change"),
+) -> list[MembershipRequestOut]:
+    # one query: join group + requester + decider rather than resolving
+    # names per row.
+    Requester = aliased(Person)
+    Decider = aliased(Person)
+    rows = (await db.execute(
+        select(NotificationMembershipRequest, NotificationGroup.name,
+               Requester, Decider)
+        .join(NotificationGroup,
+              NotificationGroup.id == NotificationMembershipRequest.group_id)
+        .join(Requester, Requester.id == NotificationMembershipRequest.person_id)
+        .outerjoin(Decider, Decider.id == NotificationMembershipRequest.decided_by)
+        .where(NotificationMembershipRequest.status == status)
+        .order_by(NotificationMembershipRequest.created_at.desc()))).all()
+    return [_request_out(req, group_name, requester.display_name,
+                         decider.display_name if decider is not None else None)
+            for req, group_name, requester, decider in rows]
+
+
+async def _decide(db: DbSession, request_id: uuid.UUID, actor: Person, *,
+                  approve: bool, note: str) -> MembershipRequestOut:
+    try:
+        req = await decide_request(db, request_id=request_id, actor=actor,
+                                   approve=approve, note=note)
+    except RequestError as e:
+        raise _err(e.status, e.code) from None
+    await db.commit()
+    group = await db.get(NotificationGroup, req.group_id)
+    person = await db.get(Person, req.person_id)
+    return _request_out(req, group.name if group is not None else "",
+                        person.display_name if person is not None else "",
+                        actor.display_name)
+
+
+@router.post("/requests/{request_id}/approve", response_model=MembershipRequestOut)
+async def approve_request(
+    request_id: uuid.UUID,
+    body: MembershipDecisionIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("notifications", "change"),
+) -> MembershipRequestOut:
+    return await _decide(db, request_id, actor.person, approve=True, note=body.note)
+
+
+@router.post("/requests/{request_id}/reject", response_model=MembershipRequestOut)
+async def reject_request(
+    request_id: uuid.UUID,
+    body: MembershipDecisionIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("notifications", "change"),
+) -> MembershipRequestOut:
+    return await _decide(db, request_id, actor.person, approve=False, note=body.note)
 
 
 @router.get("/recipients", response_model=list[NotificationRecipientOut])
