@@ -38,7 +38,8 @@ const text: CellText<Row> = (row, colKey) => (colKey === 'site' ? row.site : row
 const auth = vi.hoisted(() => ({
   preferences: {
     accent: 'amber', theme: 'light' as const, density: 'comfortable' as const, list_size: 'default' as const,
-    motion: true, notif: { critical: true, email: true, maint: true, digest: false },
+    motion: true, nav_mode: 'expanded' as const, nav_bg: 'default', nav_size: 'default' as const,
+    notif: { critical: true, email: true, maint: true, digest: false },
     list_prefs: {} as Record<string, unknown>,
   } as UiPreferences,
   updatePreferences: vi.fn(async (_prefs: UiPreferences) => true),
@@ -246,6 +247,7 @@ describe('usePersistentListState', () => {
     vi.useFakeTimers();
     auth.preferences = {
       accent: 'amber', theme: 'light', density: 'comfortable', list_size: 'default', motion: true,
+      nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default',
       notif: { critical: true, email: true, maint: true, digest: false },
       list_prefs: {},
     };

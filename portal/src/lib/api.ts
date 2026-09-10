@@ -55,6 +55,9 @@ export interface UiPreferences {
   density: 'comfortable' | 'compact';
   list_size: 'small' | 'default' | 'large' | 'xlarge';
   motion: boolean;
+  nav_mode: 'expanded' | 'rail' | 'hidden';
+  nav_bg: string; // 'default' or a custom '#rrggbb'
+  nav_size: 'small' | 'default' | 'large' | 'xlarge';
   notif: NotifPrefs;
   // Per-page list UI state (visible columns, sort, column filters), keyed by
   // page key — free-form on the wire; lib/columnMenu.tsx owns the shape it

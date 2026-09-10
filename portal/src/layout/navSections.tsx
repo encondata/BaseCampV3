@@ -12,11 +12,17 @@
 import { type ReactNode } from 'react';
 
 export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean }
-export interface NavSection { label: string; items: NavItem[] }
+export interface NavSection { label: string; icon: ReactNode; items: NavItem[] }
 
 export const NAV_SECTIONS: NavSection[] = [
   {
     label: 'Dashboards',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 19V10M12 19V5M20 19v-6" />
+      </svg>
+    ),
     items: [
       {
         to: '/',
@@ -76,6 +82,14 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: 'Assets',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21 8 12 3 3 8l9 5 9-5z" />
+        <path d="M3 8v8l9 5 9-5V8" />
+        <path d="M12 13v8" />
+      </svg>
+    ),
     items: [
       {
         to: '/assets',
@@ -94,6 +108,13 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: 'Initiatives',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 22V4" />
+        <path d="M4 4h14l-2.5 4L18 12H4" />
+      </svg>
+    ),
     items: [
       {
         to: '/initiatives',
@@ -111,6 +132,16 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: 'Logistics',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <path d="M14 18V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v12h2" />
+        <path d="M14 18H9" />
+        <path d="M14 10h4.5a1 1 0 0 1 .8.4l2.5 3.3a1 1 0 0 1 .2.6V18h-2" />
+        <circle cx="7" cy="18" r="2" />
+        <circle cx="17.5" cy="18" r="2" />
+      </svg>
+    ),
     items: [
       {
         to: '/logistics/containers',
@@ -157,6 +188,15 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: 'Sites',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 21h18" />
+        <path d="M5 21V7l7-4 7 4v14" />
+        <path d="M10 21v-6h4v6" />
+        <path d="M9 10h.01M15 10h.01M9 14h.01M15 14h.01" />
+      </svg>
+    ),
     items: [
       {
         to: '/sites',
@@ -174,6 +214,15 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: 'People',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="9" cy="8" r="3.2" />
+        <path d="M3.5 20a5.5 5.5 0 0 1 11 0" />
+        <circle cx="17.5" cy="9.5" r="2.4" />
+        <path d="M14.7 12.6a4.4 4.4 0 0 1 6.1 4.1" />
+      </svg>
+    ),
     items: [
       {
         to: '/people/users',
@@ -229,6 +278,13 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: 'Stakeholders',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <path d="M11 17 7.5 20.5a2.1 2.1 0 0 1-3-3L8 14" />
+        <path d="m14 7 4.9-4.9a2.1 2.1 0 0 1 3 3L17 10l3 3a2.1 2.1 0 0 1-3 3l-6-6-3.5 3.5a2.1 2.1 0 0 1-3-3L9 6 6 3" />
+      </svg>
+    ),
     items: [
       {
         to: '/stakeholders/clients',
@@ -258,6 +314,13 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: 'Labels',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <path d="M20.59 13.41 12 22l-9-9 8.59-8.59A2 2 0 0 1 13 4h5a2 2 0 0 1 2 2v5a2 2 0 0 1-.59 1.41z" />
+        <circle cx="16.5" cy="7.5" r="1.3" />
+      </svg>
+    ),
     items: [
       {
         to: '/labels/print',
@@ -314,6 +377,13 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: 'Reports',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2" />
+        <path d="M8 17V10M12 17V7M16 17v-5" />
+      </svg>
+    ),
     items: [
       {
         to: '/reports',
@@ -332,6 +402,12 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: 'Scanning Hardware',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 6v12M8 6v12M11 6v12M15 6v12M17.5 6v12M20 6v12" />
+      </svg>
+    ),
     items: [
       {
         to: '/hardware/handheld-readers',
@@ -381,6 +457,13 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: 'Admin',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 2 4 5v6c0 5 3.4 8.7 8 11 4.6-2.3 8-6 8-11V5l-8-3Z" />
+        <path d="m9.5 12 1.8 1.8L15 10" />
+      </svg>
+    ),
     items: [
       {
         to: '/admin/asset-models',
@@ -432,6 +515,13 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: 'System',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="8" />
+        <path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8" />
+      </svg>
+    ),
     items: [
       {
         to: '/access',
@@ -486,6 +576,12 @@ export const NAV_SECTIONS: NavSection[] = [
   },
   {
     label: 'Developer',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <path d="m8 16-4-4 4-4M16 8l4 4-4 4M13 5l-2 14" />
+      </svg>
+    ),
     items: [
       {
         to: '/dev',
