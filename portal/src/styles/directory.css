@@ -517,6 +517,10 @@
   min-width: 0;
 }
 .mini-row:last-child { border-bottom: 0; }
+/* Compact variant: legends/tiles that need golden `.cell-top`/`.mono`
+   typography without the row's own height/padding/border chrome (e.g.
+   a wrapping 2-column legend, not a stacked full-width list). */
+.mini-row.compact { min-height: auto; padding: 2px 0; border-bottom: 0; }
 .mini-list-head {
   display: grid;
   gap: 12px;

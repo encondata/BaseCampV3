@@ -1,11 +1,12 @@
 /**
  * ScanHistoryTable — the one scan-history layout, shared by the roster
  * expansion tab and the asset/move detail pages so it cannot fork.
- * Real table (house .activity-changes styling): one field per column,
- * '—' per blank cell. Lazy: fetches once per assetId on mount.
+ * Renders through <DataTable> (house list-typography tokens): one field
+ * per column, '—' per blank cell. Lazy: fetches once per assetId on mount.
  */
 import { useEffect, useState, type CSSProperties } from 'react';
 
+import DataTable from '../DataTable';
 import { listAssetScans, type AssetScanRow } from '../../lib/api';
 
 export default function ScanHistoryTable({ assetId, limit, capHint }: {
@@ -29,41 +30,39 @@ export default function ScanHistoryTable({ assetId, limit, capHint }: {
   }
   return (
     <>
-      <table className="activity-changes scan-history">
-        <thead>
-          <tr>
-            <th>Status</th><th>Scanned</th><th>Method</th><th>Device</th>
-            <th>Operator</th><th>Site</th><th>Location</th>
-          </tr>
-        </thead>
-        <tbody>
-          {scans.map((s) => (
-            <tr key={s.id}>
-              <td>
-                {s.status_label && s.status_color ? (
-                  <span className="chip custom"
-                        style={{ '--chip': s.status_color } as CSSProperties}>
-                    <span className="dot" />{s.status_label}
-                  </span>
-                ) : '—'}
-              </td>
-              <td className="mono scan-when">
-                {new Date(s.scanned_at).toLocaleString()}
-              </td>
-              <td>
-                <span className="chip custom"
-                      style={{ '--chip': s.scan_type_color } as CSSProperties}>
-                  <span className="dot" />{s.scan_type_label}
-                </span>
-              </td>
-              <td className="mono">{s.device_id || '—'}</td>
-              <td>{s.operator_name ?? '—'}</td>
-              <td>{s.site_name ?? '—'}</td>
-              <td>{s.location_detail || '—'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <DataTable
+        ariaLabel="Scan history"
+        className="scan-history"
+        columns={[
+          { key: 'status', label: 'Status' },
+          { key: 'scanned', label: 'Scanned', mono: true, width: '160px' },
+          { key: 'method', label: 'Method' },
+          { key: 'device', label: 'Device', mono: true },
+          { key: 'operator', label: 'Operator' },
+          { key: 'site', label: 'Site' },
+          { key: 'location', label: 'Location' },
+        ]}
+        rows={scans.map((s) => ({
+          key: s.id,
+          cells: [
+            s.status_label && s.status_color ? (
+              <span className="chip custom"
+                    style={{ '--chip': s.status_color } as CSSProperties}>
+                <span className="dot" />{s.status_label}
+              </span>
+            ) : '—',
+            <span className="scan-when">{new Date(s.scanned_at).toLocaleString()}</span>,
+            <span className="chip custom"
+                  style={{ '--chip': s.scan_type_color } as CSSProperties}>
+              <span className="dot" />{s.scan_type_label}
+            </span>,
+            s.device_id || '—',
+            s.operator_name ?? '—',
+            s.site_name ?? '—',
+            s.location_detail || '—',
+          ],
+        }))}
+      />
       {capHint !== undefined && scans.length >= capHint && (
         <p className="page-hint">Latest {capHint} scans shown.</p>
       )}

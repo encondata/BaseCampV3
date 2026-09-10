@@ -47,17 +47,17 @@
   {
     "file": "styles/god-edit.css",
     "selector": ".god-cell input, .god-cell select",
-    "reason": "baseline \u2014 inline god-mode cell editor rendered inside list rows across many pages; not itemized in the audit's Task 4-7 file map, needs its own follow-up migration"
+    "reason": "baseline — inline god-mode cell editor rendered inside list rows across many pages; not itemized in the audit's Task 4-7 file map, needs its own follow-up migration"
   },
   {
     "file": "styles/god-edit.css",
     "selector": ".god-cell-msg",
-    "reason": "baseline \u2014 inline god-mode cell editor error message rendered inside list rows; not itemized in the audit's Task 4-7 file map, needs its own follow-up migration"
+    "reason": "baseline — inline god-mode cell editor error message rendered inside list rows; not itemized in the audit's Task 4-7 file map, needs its own follow-up migration"
   },
   {
     "file": "styles/hardware.css",
     "selector": ".lease-table th",
-    "reason": "baseline \u2014 migrate in Task 7"
+    "reason": "baseline — migrate in Task 7"
   },
   {
     "file": "styles/initiatives.css",
@@ -87,12 +87,7 @@
   {
     "file": "styles/notifications.css",
     "selector": ".ngd-switch-row",
-    "reason": "not list content: labeled settings-form switch row \u2014 per the design spec's migration map this stays permanently, it is a form row not a list"
-  },
-  {
-    "file": "styles/notifications.css",
-    "selector": ".ngd-cell-marker",
-    "reason": "baseline \u2014 migrate in Task 7"
+    "reason": "not list content: labeled settings-form switch row — per the design spec's migration map this stays permanently, it is a form row not a list"
   },
   {
     "file": "styles/portal-theme.css",
@@ -152,22 +147,22 @@
   {
     "file": "styles/sites.css",
     "selector": ".bulk-row-error td:nth-child(3)",
-    "reason": "baseline \u2014 migrate in Task 6"
+    "reason": "baseline — migrate in Task 6"
   },
   {
     "file": "styles/sites.css",
     "selector": ".bulk-row-create td:nth-child(3)",
-    "reason": "baseline \u2014 migrate in Task 6"
+    "reason": "baseline — migrate in Task 6"
   },
   {
     "file": "styles/sites.css",
     "selector": ".bulk-row-update td:nth-child(3)",
-    "reason": "baseline \u2014 migrate in Task 6"
+    "reason": "baseline — migrate in Task 6"
   },
   {
     "file": "styles/sites.css",
     "selector": ".site-map-detail-head .pn b",
-    "reason": "not list content: site-map detail heading \u2014 documented permanent exception per spec (\"the site-map head keeps 15px only via a documented allowlist entry \u2014 it is a detail heading, not a list row\")"
+    "reason": "not list content: site-map detail heading — documented permanent exception per spec (\"the site-map head keeps 15px only via a documented allowlist entry — it is a detail heading, not a list row\")"
   },
   {
     "file": "styles/time.css",
@@ -175,38 +170,26 @@
     "reason": "not list content: eyebrow label (out of scope per spec)"
   },
   {
-    "file": "pages/WorkerDetail.tsx",
-    "reason": "baseline \u2014 migrate in Task 7"
-  },
-  {
     "file": "components/containers/ContainerBulkImport.tsx",
-    "reason": "baseline \u2014 migrate in Task 6"
+    "reason": "baseline — migrate in Task 6"
   },
   {
     "file": "components/hardware/RouterLeases.tsx",
-    "reason": "baseline \u2014 migrate in Task 7"
-  },
-  {
-    "file": "components/notifications/MembersPanel.tsx",
-    "reason": "baseline \u2014 migrate in Task 7"
-  },
-  {
-    "file": "components/scans/ScanHistoryTable.tsx",
-    "reason": "baseline \u2014 migrate in Task 7"
+    "reason": "baseline — migrate in Task 7"
   },
   {
     "file": "components/sites/SiteBulkImport.tsx",
-    "reason": "baseline \u2014 migrate in Task 6"
+    "reason": "baseline — migrate in Task 6"
   },
   {
     "file": "styles/assets.css",
     "selector": ".nf-meta",
-    "reason": "baseline \u2014 migrate in Task 6"
+    "reason": "baseline — migrate in Task 6"
   },
   {
     "file": "styles/assets.css",
     "selector": ".nf-thumb-cap",
-    "reason": "baseline \u2014 migrate in Task 6"
+    "reason": "baseline — migrate in Task 6"
   },
   {
     "file": "styles/assets.css",
@@ -261,42 +244,42 @@
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-search input",
-    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-group",
-    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-item",
-    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-item .ic",
-    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-item .sub",
-    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-empty",
-    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/chrome.css",
     "selector": ".kbar-foot",
-    "reason": "not list content: command palette (Cmd+K quick-open) \u2014 a global overlay list, not the directory-list pattern"
+    "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
   },
   {
     "file": "styles/column-menu.css",
     "selector": ".colmenu-sort .pop-item",
-    "reason": "not list content: column-menu popover sort option \u2014 a dropdown menu item, not a list row"
+    "reason": "not list content: column-menu popover sort option — a dropdown menu item, not a list row"
   },
   {
     "file": "styles/column-menu.css",
@@ -306,7 +289,7 @@
   {
     "file": "styles/dashboard.css",
     "selector": ".mdash-summary-name",
-    "reason": "not list content: Move Dashboard summary strip \u2014 single selected-move hero (aria-label=\"Move summary\"), not a repeating row"
+    "reason": "not list content: Move Dashboard summary strip — single selected-move hero (aria-label=\"Move summary\"), not a repeating row"
   },
   {
     "file": "styles/dashboard.css",
@@ -341,7 +324,7 @@
   {
     "file": "styles/initiatives.css",
     "selector": ".idet-time-stat-label",
-    "reason": "not list content: time-tracking stat tile label \u2014 summary card, not a per-person row"
+    "reason": "not list content: time-tracking stat tile label — summary card, not a per-person row"
   },
   {
     "file": "styles/initiatives.css",
@@ -352,26 +335,6 @@
     "file": "styles/notifications.css",
     "selector": ".ngd-section",
     "reason": "not list content: EditSettingsModal section heading"
-  },
-  {
-    "file": "styles/notifications.css",
-    "selector": ".ngd-avatar",
-    "reason": "baseline \u2014 migrate in Task 7"
-  },
-  {
-    "file": "styles/notifications.css",
-    "selector": ".ngd-person-info b",
-    "reason": "baseline \u2014 migrate in Task 7"
-  },
-  {
-    "file": "styles/notifications.css",
-    "selector": ".ngd-person-info span",
-    "reason": "baseline \u2014 migrate in Task 7"
-  },
-  {
-    "file": "styles/notifications.css",
-    "selector": ".ngd-contact",
-    "reason": "baseline \u2014 migrate in Task 7"
   },
   {
     "file": "styles/portal-theme.css",
@@ -391,12 +354,12 @@
   {
     "file": "styles/reports.css",
     "selector": ".report-section-title",
-    "reason": "baseline \u2014 migrate in Task 6"
+    "reason": "baseline — migrate in Task 6"
   },
   {
     "file": "styles/reports.css",
     "selector": ".report-section-desc",
-    "reason": "baseline \u2014 migrate in Task 6"
+    "reason": "baseline — migrate in Task 6"
   },
   {
     "file": "styles/settings.css",
@@ -416,7 +379,7 @@
   {
     "file": "styles/sites.css",
     "selector": ".bulk-preview",
-    "reason": "baseline \u2014 migrate in Task 6"
+    "reason": "baseline — migrate in Task 6"
   },
   {
     "file": "styles/system.css",
@@ -481,7 +444,7 @@
   {
     "file": "styles/time.css",
     "selector": ".time-panel-title",
-    "reason": "not list content: shared compact-panel chrome title \u2014 used across both recent-entries and on-the-clock panels, not row-specific"
+    "reason": "not list content: shared compact-panel chrome title — used across both recent-entries and on-the-clock panels, not row-specific"
   },
   {
     "file": "styles/time.css",

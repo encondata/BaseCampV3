@@ -22,6 +22,7 @@ import {
   CHANNELS, CHANNEL_LABELS, canForChannel, formatDays, formatQuietHours, type Channel,
 } from '../../lib/notifications';
 import ComboBox, { type ComboOption } from '../ComboBox';
+import DataTable from '../DataTable';
 import OverrideEditorModal from './OverrideEditorModal';
 
 const msgFor = (err: unknown): string =>
@@ -137,104 +138,95 @@ export default function MembersPanel({ group, canChange, reload }: {
           <b>No members yet</b>Add people above — they'll receive this group's notifications.
         </div>
       ) : (
-        <table className="activity-changes ngd-members-table" style={{ marginTop: 12 }}>
-          <thead>
-            <tr>
-              <th>Person</th>
-              <th>Contact</th>
-              <th>Channels</th>
-              <th>Quiet hours</th>
-              <th>Days</th>
-              {canChange && <th>Actions</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {group.members.map((m) => (
-              <tr key={m.person_id}>
-                <td>
-                  <div className="ngd-person">
-                    <span className="ngd-avatar"
-                          style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
-                      {m.avatar_url ? <img src={m.avatar_url} alt="" /> : initials(m.display_name)}
+        <div style={{ marginTop: 12 }}>
+        <DataTable
+          ariaLabel="Members"
+          className="ngd-members-table"
+          columns={[
+            { key: 'person', label: 'Person' },
+            { key: 'contact', label: 'Contact' },
+            { key: 'channels', label: 'Channels' },
+            { key: 'quiet', label: 'Quiet hours' },
+            { key: 'days', label: 'Days' },
+            ...(canChange ? [{ key: 'actions', label: 'Actions', width: '250px' }] : []),
+          ]}
+          rows={group.members.map((m) => ({
+            key: m.person_id,
+            cells: [
+              <div className="ngd-person cell-primary">
+                <span className="dir-avatar ngd-avatar"
+                      style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
+                  {m.avatar_url ? <img src={m.avatar_url} alt="" /> : initials(m.display_name)}
+                </span>
+                <div className="pn">
+                  <b>{m.display_name}</b>
+                  <span>{m.job_title ?? '—'}</span>
+                </div>
+              </div>,
+              <div className="ngd-contact mono">
+                <span>{m.email ?? '—'}</span>
+                <span>{m.phone ?? '—'}</span>
+              </div>,
+              <div className="chips">
+                {m.effective.channels.length === 0 && <span className="chip tag">Muted</span>}
+                {m.effective.channels.map((c) => {
+                  const channel = c as Channel;
+                  const reachable = canForChannel(m, channel);
+                  return (
+                    <span key={c}
+                          className={`chip ${reachable ? 'tag' : 'c-red'}`}
+                          title={reachable ? undefined : (CHANNEL_WARNING_TITLE[channel]
+                            ?? "That channel isn't available for this person.")}>
+                      {CHANNEL_LABELS[channel] ?? c}
                     </span>
-                    <div className="ngd-person-info">
-                      <b>{m.display_name}</b>
-                      <span>{m.job_title ?? '—'}</span>
-                    </div>
-                  </div>
-                </td>
-                <td>
-                  <div className="ngd-contact">
-                    <span>{m.email ?? '—'}</span>
-                    <span>{m.phone ?? '—'}</span>
-                  </div>
-                </td>
-                <td>
-                  <div className="chips">
-                    {m.effective.channels.length === 0 && <span className="chip tag">Muted</span>}
-                    {m.effective.channels.map((c) => {
-                      const channel = c as Channel;
-                      const reachable = canForChannel(m, channel);
-                      return (
-                        <span key={c}
-                              className={`chip ${reachable ? 'tag' : 'c-red'}`}
-                              title={reachable ? undefined : (CHANNEL_WARNING_TITLE[channel]
-                                ?? "That channel isn't available for this person.")}>
-                          {CHANNEL_LABELS[channel] ?? c}
-                        </span>
-                      );
-                    })}
-                    {m.overrides.channels != null && <span className="chip c-amber">Override</span>}
-                  </div>
-                </td>
-                <td>
-                  <div className="ngd-cell-marker">
-                    <span>{formatQuietHours(m.effective.quiet_start, m.effective.quiet_end, m.effective.timezone)}</span>
-                    {m.overrides.quiet_mode != null && <span className="chip c-amber">Override</span>}
-                  </div>
-                </td>
-                <td>
-                  <div className="ngd-cell-marker">
-                    <span className="ngd-nowrap">{formatDays(m.effective.active_days)}</span>
-                    {m.overrides.active_days != null && <span className="chip c-amber">Override</span>}
-                  </div>
-                </td>
-                {canChange && (
-                  <td>
-                    <div className="ngd-row-actions">
-                      <button className="mini-btn sm" disabled={rowBusy[m.person_id]}
-                              onClick={() => setEditingMember(m)}>
-                        Edit
-                      </button>
-                      {confirmRemove === m.person_id ? (
-                        <>
-                          <button className="mini-btn sm danger" disabled={rowBusy[m.person_id]}
-                                  onClick={() => void handleRemove(m.person_id)}>
-                            {rowBusy[m.person_id] ? 'Removing…' : 'Really remove?'}
-                          </button>
-                          <button className="mini-btn sm" disabled={rowBusy[m.person_id]}
-                                  onClick={() => setConfirmRemove(null)}>
-                            Cancel
-                          </button>
-                        </>
-                      ) : (
+                  );
+                })}
+                {m.overrides.channels != null && <span className="chip c-amber">Override</span>}
+              </div>,
+              <div className="ngd-cell-marker">
+                <span className="cell-top">{formatQuietHours(m.effective.quiet_start, m.effective.quiet_end, m.effective.timezone)}</span>
+                {m.overrides.quiet_mode != null && <span className="chip c-amber">Override</span>}
+              </div>,
+              <div className="ngd-cell-marker">
+                <span className="cell-top ngd-nowrap">{formatDays(m.effective.active_days)}</span>
+                {m.overrides.active_days != null && <span className="chip c-amber">Override</span>}
+              </div>,
+              ...(canChange ? [(
+                <>
+                  <div className="ngd-row-actions">
+                    <button className="mini-btn sm" disabled={rowBusy[m.person_id]}
+                            onClick={() => setEditingMember(m)}>
+                      Edit
+                    </button>
+                    {confirmRemove === m.person_id ? (
+                      <>
                         <button className="mini-btn sm danger" disabled={rowBusy[m.person_id]}
-                                onClick={() => setConfirmRemove(m.person_id)}>
-                          Remove
+                                onClick={() => void handleRemove(m.person_id)}>
+                          {rowBusy[m.person_id] ? 'Removing…' : 'Really remove?'}
                         </button>
-                      )}
-                    </div>
-                    {rowError[m.person_id] && (
-                      <span className="pf-error" style={{ display: 'block', marginTop: 4 }}>
-                        {rowError[m.person_id]}
-                      </span>
+                        <button className="mini-btn sm" disabled={rowBusy[m.person_id]}
+                                onClick={() => setConfirmRemove(null)}>
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button className="mini-btn sm danger" disabled={rowBusy[m.person_id]}
+                              onClick={() => setConfirmRemove(m.person_id)}>
+                        Remove
+                      </button>
                     )}
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  </div>
+                  {rowError[m.person_id] && (
+                    <span className="pf-error" style={{ display: 'block', marginTop: 4 }}>
+                      {rowError[m.person_id]}
+                    </span>
+                  )}
+                </>
+              )] : []),
+            ],
+          }))}
+        />
+        </div>
       )}
 
       {editingMember && (

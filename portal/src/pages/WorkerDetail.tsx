@@ -9,6 +9,7 @@ import { Link, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AvatarUpload from '../components/AvatarUpload';
+import DataTable from '../components/DataTable';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import StatusHover from '../components/StatusHover';
 import CertsPanel from '../components/workers/CertsPanel';
@@ -354,29 +355,32 @@ export default function WorkerDetailPage() {
                 </p>
               ) : (
                 <div style={{ overflowX: 'auto' }}>
-                  <table className="activity-changes">
-                    <thead>
-                      <tr>
-                        <th>Initiative</th><th>Type</th><th>Status</th>
-                        <th>Work type</th><th>Site</th><th>Rating</th><th>Added</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {worker.initiatives.map((i) => (
-                        <tr key={`${i.initiative_id}-${i.added_at}`}>
-                          <td><Link to={`/initiatives/${i.initiative_id}`}>{i.initiative_name}</Link></td>
-                          <td>{chip(i.type_label, i.type_color) ?? '—'}</td>
-                          <td>{chip(i.status_label, i.status_color)}</td>
-                          <td>{chip(i.work_type_label, i.work_type_color) ?? '—'}</td>
-                          <td>{i.site_worked_name ?? '—'}</td>
-                          <td>{i.rating != null ? `★ ${i.rating}` : '—'}</td>
-                          <td className="mono" style={{ whiteSpace: 'nowrap' }}>
-                            {new Date(i.added_at).toLocaleDateString()}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  <DataTable
+                    ariaLabel="Initiative history"
+                    columns={[
+                      { key: 'initiative', label: 'Initiative' },
+                      { key: 'type', label: 'Type' },
+                      { key: 'status', label: 'Status' },
+                      { key: 'work_type', label: 'Work type' },
+                      { key: 'site', label: 'Site' },
+                      { key: 'rating', label: 'Rating' },
+                      { key: 'added', label: 'Added', mono: true, width: '112px' },
+                    ]}
+                    rows={worker.initiatives.map((i) => ({
+                      key: `${i.initiative_id}-${i.added_at}`,
+                      cells: [
+                        <Link to={`/initiatives/${i.initiative_id}`}>{i.initiative_name}</Link>,
+                        chip(i.type_label, i.type_color) ?? '—',
+                        chip(i.status_label, i.status_color),
+                        chip(i.work_type_label, i.work_type_color) ?? '—',
+                        i.site_worked_name ?? '—',
+                        i.rating != null ? `★ ${i.rating}` : '—',
+                        <span style={{ whiteSpace: 'nowrap' }}>
+                          {new Date(i.added_at).toLocaleDateString()}
+                        </span>,
+                      ],
+                    }))}
+                  />
                 </div>
               )}
             </div>

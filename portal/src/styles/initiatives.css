@@ -286,10 +286,10 @@
 @media (max-width: 768px) {
   .idet-donut-legend { grid-template-columns: 1fr; }
 }
-/* a `cell` class (not `mini-row` — this is a compact 2-column grid tile,
- * not a stacked full-width list row) gives `.cell-top`/`.mono` on the
- * label/count below their directory.css typography without pulling in
- * mini-row's row height/padding/border-bottom. */
+/* `mini-row compact` (directory.css) gives `.cell-top`/`.mono` on the
+ * label/count their directory.css typography without pulling in a full
+ * mini-row's height/padding/border-bottom — this is a compact 2-column
+ * grid tile, not a stacked full-width list row. */
 .idet-donut-legend-row {
   display: flex;
   align-items: center;

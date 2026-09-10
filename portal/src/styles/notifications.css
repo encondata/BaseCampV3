@@ -113,75 +113,50 @@
   margin: 10px 0 4px;
 }
 
-.ngd-members-table th:last-child,
-.ngd-members-table td:last-child {
-  white-space: nowrap;
-  /* Reserve room for the widest Actions state — Edit + "Really remove?" +
-     Cancel (all .mini-btn.sm: height 26px, padding 0 10px, font-size
-     11.5px, 1px border, gapped 8px inside .ngd-row-actions), plus the
-     cell's own 10px right padding — so confirming Remove never reflows
-     the rest of the row. */
-  min-width: 250px;
-}
+/* Actions column width — Edit + "Really remove?" + Cancel (all
+   .mini-btn.sm: height 26px, padding 0 10px, font-size 11.5px, 1px
+   border, gapped 8px inside .ngd-row-actions) needs room so confirming
+   Remove never reflows the rest of the row. Set via the Actions column's
+   `width` prop on <DataTable> in MembersPanel.tsx, not here. */
 
 .ngd-nowrap {
   white-space: nowrap;
 }
 
+/* Person cell: `.dir-avatar` (directory.css) supplies the avatar's
+ * sizing + golden typography for the initials glyph; `.ngd-avatar` only
+ * adds the absolute-positioned <img> mask this panel needs. Name/job
+ * title reuse the house `.pn` name+sub pattern (directory.css) inside a
+ * `.cell-primary` wrapper — no bespoke typography left here. */
 .ngd-person {
   display: flex;
   align-items: center;
   gap: 10px;
 }
 .ngd-avatar {
-  width: 34px;
-  height: 34px;
-  flex: none;
-  border-radius: 10px;
   position: relative;
   overflow: hidden;
-  display: grid;
-  place-items: center;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 600;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 .ngd-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.ngd-person-info { min-width: 0; }
-.ngd-person-info b {
-  display: block;
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--text-dark);
-}
-.ngd-person-info span {
-  display: block;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--text-mute);
-  margin-top: 2px;
-}
 
+/* Contact cell reuses the golden `.mono` class (directory.css) for
+   typography; this only keeps the two-line layout. */
 .ngd-contact {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-mute);
 }
 
 /* Pairs an effective-value string with an "Override" marker chip — used
    in the Quiet hours / Days cells (Channels uses .chips directly, since
-   the marker sits alongside real channel chips there). */
+   the marker sits alongside real channel chips there). The value span
+   carries the golden `.cell-top` class for typography; this is layout
+   only. */
 .ngd-cell-marker {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  font-size: 13px;
-  color: var(--text-dark);
 }
 
 .ngd-row-actions {

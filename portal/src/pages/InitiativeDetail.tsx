@@ -1505,7 +1505,7 @@ function AssetStatusDonut({ rows, statuses }: {
       </svg>
       <ul className="idet-donut-legend">
         {entries.map((entry) => (
-          <li key={entry.key} className="idet-donut-legend-row cell"
+          <li key={entry.key} className="idet-donut-legend-row mini-row compact"
               style={{ opacity: hoverKey && hoverKey !== entry.key ? 0.45 : 1 }}
               onMouseEnter={(e) => handleHover(entry.key, e)}>
             <span className="idet-donut-swatch" style={{ background: entry.color }}
