@@ -311,7 +311,7 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
     switch (key) {
       case 'name': return <span className="cell-top">{i.name}</span>;
       case 'type': return chip(i.type_label, i.type_color);
-      case 'sub_type': return <span className="cell-top">{i.sub_type_label ?? '—'}</span>;
+      case 'sub_type': return <span className="chip tag">{i.sub_type_label ?? '—'}</span>;
       case 'status':
         return (
           <StatusHover entityType="initiative" entityId={i.id} status={i.status}>

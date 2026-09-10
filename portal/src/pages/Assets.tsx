@@ -312,7 +312,7 @@ export default function Assets() {
       case 'rfid':
         return <span className="mono" title={a.rfid_tag ?? undefined}>{displayRfid(a.rfid_tag)}</span>;
       case 'last_seen':
-        return <span className="cell-top">
+        return <span className="mono">
           {a.last_seen_at ? new Date(a.last_seen_at).toLocaleDateString() : '—'}
         </span>;
       case 'has_rails':

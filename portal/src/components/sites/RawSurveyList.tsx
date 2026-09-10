@@ -123,7 +123,8 @@ export default function RawSurveyList({ siteId, refreshKey, onCount }: {
 
   const cellFor = (row: RawSurveyRow, key: string) => {
     const text = rawSurveyCellText(row, key);
-    return <span className={key === 'device' ? 'mono' : 'cell-top'}>{text}</span>;
+    const isMono = key === 'device' || key === 'captured' || key === 'ingested';
+    return <span className={isMono ? 'mono' : 'cell-top'}>{text}</span>;
   };
 
   return (

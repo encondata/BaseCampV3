@@ -542,12 +542,6 @@
     "check": "coclass"
   },
   {
-    "file": "styles/access.css",
-    "selector": ".mem-row .av-sm",
-    "reason": "not a box-model override: border-color only (no width/style), recoloring the nested avatar's ring to match the row divider — the (g) widen to catch border-* longhands also nets this purely cosmetic descendant rule",
-    "check": "coclass"
-  },
-  {
     "file": "styles/assets.css",
     "selector": ".nf-item",
     "reason": "genuine exception (finding #6): extra bottom-only breathing room below a note's multi-line body/meta text before the next row's divider — the primitive's own uniform vertical padding isn't enough for this row's variable-height content",

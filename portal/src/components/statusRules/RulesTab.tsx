@@ -252,7 +252,7 @@ export default function RulesTab({ onCount }: {
       case 'runs':
         return <span className="cell-sub">{cellText(rule, 'runs')}</span>;
       case 'updated':
-        return <span className="cell-sub">{cellText(rule, 'updated')}</span>;
+        return <span className="mono">{cellText(rule, 'updated')}</span>;
       case 'enabled':
         return (
           <label className="switch">

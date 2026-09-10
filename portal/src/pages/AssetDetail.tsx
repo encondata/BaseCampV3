@@ -126,7 +126,8 @@ export default function AssetDetail() {
           <dt>Status</dt>
           <dd>
             <StatusHover entityType="asset" entityId={asset.id} status={asset.status}>
-              {chip(asset.status_label, asset.status_color) ?? asset.status_label}
+              {chip(asset.status_label, asset.status_color)
+                ?? <span className="chip tag">{asset.status_label}</span>}
             </StatusHover>
           </dd>
           <dt>Client</dt><dd>{asset.client_name ?? 'House'}</dd>

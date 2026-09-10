@@ -134,7 +134,7 @@ export default function MoveAssetDetail() {
           <dt>Category</dt><dd>{asset?.model?.category_label ?? '—'}</dd>
           <dt>Status</dt>
           <dd>{asset ? (chip(asset.status_label, asset.status_color)
-            ?? asset.status_label) : '—'}</dd>
+            ?? <span className="chip tag">{asset.status_label}</span>) : '—'}</dd>
           <dt>Client</dt><dd>{asset?.client_name ?? 'House'}</dd>
           <dt>Site</dt><dd>{asset?.site_name ?? '—'}</dd>
           <dt>Location</dt><dd>{asset?.location_detail || '—'}</dd>
@@ -176,14 +176,15 @@ export default function MoveAssetDetail() {
               <dt>Move status</dt>
               <dd>
                 <StatusHover entityType="initiative_asset" entityId={row.id} status={row.status}>
-                  {chip(row.status_label, row.status_color) ?? row.status_label}
+                  {chip(row.status_label, row.status_color)
+                    ?? <span className="chip tag">{row.status_label}</span>}
                 </StatusHover>
               </dd>
               <dt>Asset status</dt>
               <dd>
                 <StatusHover entityType="asset" entityId={row.asset_id} status={row.asset.status}>
                   {chip(row.asset.status_label, row.asset.status_color)
-                    ?? row.asset.status_label}
+                    ?? <span className="chip tag">{row.asset.status_label}</span>}
                 </StatusHover>
               </dd>
               <dt>Added</dt><dd>{new Date(row.created_at).toLocaleDateString()}</dd>

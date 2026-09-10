@@ -128,7 +128,7 @@ export default function HistoryTab({ highlightRunId, onCount }: {
             <div className="cell">{new Date(r.created_at).toLocaleString()}</div>
             <div className="cell">
               <span className={`chip ${STATUS_CHIP[r.status]}`}>{STATUS_LABEL[r.status]}</span>
-              {duration(r) && <span className="cell-sub" style={{ marginLeft: 6 }}>{duration(r)}</span>}
+              {duration(r) && <span className="mono" style={{ marginLeft: 6 }}>{duration(r)}</span>}
             </div>
             <div className="cell">{formatBytes(r.size_bytes)}</div>
             <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>

@@ -229,7 +229,7 @@ export default function SiteSurveyList({ siteId, onCount, onSaved, refreshKey }:
       case 'updated_by': return <span className="cell-top">{row.updated_by_name ?? '—'}</span>;
       case 'updated':
         return (
-          <span className="cell-top">
+          <span className="mono">
             {row.updated_at ? new Date(row.updated_at).toLocaleString() : '—'}
           </span>
         );

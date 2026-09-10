@@ -527,12 +527,16 @@ function deriveMiniRowCoClasses(): Set<string> {
  *  box-model properties `.mini-row`/`.mini-list-head` (directory.css)
  *  already own. Widened from an exact-name match to also catch the
  *  longhand/logical siblings of each shorthand — `padding-left` etc.,
- *  `row-gap`/`column-gap` alongside `gap`, `border-top`/`border-left`/
- *  etc. alongside `border`/`border-bottom` — since a page rule that
- *  restates just one side of the box model fights the primitive exactly
- *  as much as restating the shorthand does. */
+ *  `row-gap`/`column-gap` alongside `gap`, `border-top`/`border-right`/
+ *  `border-bottom`/`border-left`/`border-width` alongside `border` — since
+ *  a page rule that restates just one side of the box model fights the
+ *  primitive exactly as much as restating the shorthand does. The border
+ *  match is deliberately narrow: `border-color`/`border-radius`/
+ *  `border-style` are excluded, since those paint the border rather than
+ *  size or place it — a page co-class is free to recolor or round the
+ *  primitive's border without fighting its box model. */
 const COCLASS_BAD_PROPS =
-  /^(?:display|padding(?:-[a-z]+)?|gap|row-gap|column-gap|border(?:-[a-z]+)?|min-height)\s*:/;
+  /^(?:display|padding(?:-[a-z]+)?|gap|row-gap|column-gap|border(?:-(?:top|right|bottom|left|width))?|min-height)\s*:/;
 
 /** (g) raw: a page stylesheet rule whose selector contains a known
  *  mini-row/mini-list-head co-class declaring one of the properties

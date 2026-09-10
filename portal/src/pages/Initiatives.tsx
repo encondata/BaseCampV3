@@ -340,9 +340,9 @@ export default function Initiatives() {
       case 'site': return <span className="cell-top">{i.site_name ?? '—'}</span>;
       case 'location': return <span className="cell-top">{i.location || '—'}</span>;
       case 'start':
-        return <span className="cell-top">{cellText(i, 'start')}</span>;
+        return <span className="mono">{cellText(i, 'start')}</span>;
       case 'end':
-        return <span className="cell-top">{cellText(i, 'end')}</span>;
+        return <span className="mono">{cellText(i, 'end')}</span>;
       case 'origin':
         return <span className="cell-top">{i.origin_site_name ?? '—'}</span>;
       case 'destination':
@@ -352,7 +352,7 @@ export default function Initiatives() {
       case 'people': return <span className="mono">{i.people_count}</span>;
       case 'links': return <span className="mono">{i.links_count}</span>;
       case 'created':
-        return <span className="cell-top">{cellText(i, 'created')}</span>;
+        return <span className="mono">{cellText(i, 'created')}</span>;
       default: return null;
     }
   };
