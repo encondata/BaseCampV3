@@ -116,7 +116,13 @@ export default function TruckDetail() {
   const idRef = useRef(id);
   idRef.current = id;
   const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  // Set true in the effect body, not only at ref creation: StrictMode's
+  // dev-only mount→unmount→remount keeps the ref, and a one-way flip to
+  // false would leave every response "stale" (page stuck on Loading…).
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const stale = (forId: string | undefined) => !mountedRef.current || idRef.current !== forId;
 
   const loadTruck = useCallback(async () => {
