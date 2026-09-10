@@ -48,6 +48,7 @@ import SystemConfig from './pages/SystemConfig';
 import SystemProcesses from './pages/SystemProcesses';
 import TimeManagement from './pages/TimeManagement';
 import Trucks from './pages/Trucks';
+import TruckDetail from './pages/TruckDetail';
 import Users from './pages/Users';
 import Variables from './pages/Variables';
 import Workers from './pages/Workers';
@@ -86,6 +87,9 @@ export default function App() {
                 } />
                 <Route path="/logistics/containers" element={<ProtectedRoute resource="containers"><Containers /></ProtectedRoute>} />
                 <Route path="/logistics/trucks" element={<ProtectedRoute resource="trucks"><Trucks /></ProtectedRoute>} />
+                <Route path="/logistics/trucks/:id" element={
+                  <ProtectedRoute resource="trucks"><TruckDetail /></ProtectedRoute>
+                } />
                 <Route path="/logistics/warehouse" element={
                   <ProtectedRoute resource="containers">
                     <Placeholder eyebrow="Logistics" title="Warehouse"

@@ -74,3 +74,46 @@
 .trucks-fullscreen-body .trucks-map-empty {
   height: 100%;
 }
+
+/* ── TruckDetail (/logistics/trucks/:id) — layout only ─────────────── */
+
+/* Stand-in for AvatarUpload's photo (trucks have no image) in the
+ * .profile-hero .profile-id row — sized/positioned to match
+ * .profile-photo so the existing -34px overlap-the-cover rule still
+ * reads correctly. */
+.truck-hero-mark {
+  width: 104px;
+  height: 104px;
+  flex: none;
+  border-radius: 26px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: linear-gradient(135deg, var(--c-blue-bd, #2f6fed), var(--ink));
+  border: 3px solid var(--surface, #fff);
+  box-shadow: 0 18px 40px -18px rgba(0, 0, 0, 0.5);
+}
+.truck-hero-mark svg { width: 46px; height: 46px; }
+
+/* Edit button, pinned to the end of the .profile-id flex row. */
+.truck-hero-actions {
+  margin-left: auto;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Space between the hero and the stacked panel cards below it — the
+ * same gap .profile-grid gives WorkerDetail/StakeholderDetail, without
+ * pulling in its two-column layout (trucks' map/table panels want the
+ * full width). */
+.truck-detail-panels { margin-top: 18px; }
+
+/* Add update / Clear updates, right-aligned in the Location updates
+ * panel-head next to its <h3>. */
+.truck-updates-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
