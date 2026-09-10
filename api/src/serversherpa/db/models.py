@@ -353,6 +353,28 @@ class NotificationGroupMember(Base):
     urgent_bypass: Mapped[bool | None]
 
 
+class NotificationMembershipRequest(Base):
+    """A person's self-service request to join or leave a notification
+    group; decided by anyone with notifications:change. One pending
+    request per (group, person) — enforced by a partial unique index in
+    the migration, not by this table's declared PK."""
+
+    __tablename__ = "notification_membership_requests"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    group_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("notification_groups.id", ondelete="CASCADE"))
+    person_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.id"))
+    action: Mapped[str]
+    status: Mapped[str] = mapped_column(server_default="pending")
+    note: Mapped[str] = mapped_column(server_default="")
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    decided_at: Mapped[datetime | None]
+    decision_note: Mapped[str] = mapped_column(server_default="")
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
 class ResourceGroupGate(Base):
     __tablename__ = "resource_group_gates"
 
