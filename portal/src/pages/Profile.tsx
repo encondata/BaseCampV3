@@ -310,7 +310,7 @@ export default function Profile() {
       </div>
       )}
 
-      <ActivityHistory rows={activity} />
+      {!onPrefs && <ActivityHistory rows={activity} />}
     </div>
   );
 }
