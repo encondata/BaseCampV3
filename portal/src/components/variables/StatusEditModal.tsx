@@ -215,7 +215,7 @@ export default function StatusEditModal({ value, canChange, onClose, onSaved }: 
               </div>
 
               <div className="full">
-                <label>Colour</label>
+                <label>Color</label>
                 <ColorField value={form.color} disabled={locked}
                             onChange={(hex) => setField('color', hex)} />
               </div>

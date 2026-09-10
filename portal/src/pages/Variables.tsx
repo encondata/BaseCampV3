@@ -117,7 +117,7 @@ const STATUS_COLUMNS: ColumnDef[] = [
   { key: 'key', label: 'Key', width: '1fr', default: true },
   { key: 'label', label: 'Label', width: '1.2fr', default: true },
   { key: 'description', label: 'Description', width: '2fr', default: true },
-  { key: 'color', label: 'Colour', width: '0.8fr', default: true },
+  { key: 'color', label: 'Color', width: '0.8fr', default: true },
   { key: 'sort_order', label: 'Order', width: '0.6fr', default: true },
   { key: 'is_active', label: 'Active', width: '0.6fr', default: true },
   { key: 'usage_count', label: 'In use', width: '0.7fr', default: true },
@@ -128,7 +128,7 @@ const STATUS_CSV_COLUMNS: [string, (v: StatusValue) => string][] = [
   ['Key', (v) => v.key],
   ['Label', (v) => v.label],
   ['Description', (v) => v.description],
-  ['Colour', (v) => v.color],
+  ['Color', (v) => v.color],
   ['Sort order', (v) => String(v.sort_order)],
   ['Active', (v) => String(v.is_active)],
   ['In use', (v) => String(v.usage_count ?? 0)],
@@ -312,7 +312,7 @@ function StatusRowDetail({ value, canEdit, onEdit }: {
         <p className="eyebrow-sm">Description</p>
         <p className="set-note" style={{ padding: 0 }}>{value.description || 'No description.'}</p>
 
-        <p className="eyebrow-sm">Colour</p>
+        <p className="eyebrow-sm">Color</p>
         <dl className="kv">
           <dt>Hex</dt>
           <dd className="mono">
@@ -346,7 +346,7 @@ const SITE_TYPE_COLUMNS: ColumnDef[] = [
   { key: 'key', label: 'Key', width: '1fr', default: true },
   { key: 'label', label: 'Label', width: '1.2fr', default: true },
   { key: 'description', label: 'Description', width: '2.4fr', default: true },
-  { key: 'color', label: 'Colour', width: '0.8fr', default: true },
+  { key: 'color', label: 'Color', width: '0.8fr', default: true },
   { key: 'sort_order', label: 'Order', width: '0.6fr', default: true },
   { key: 'icon', label: 'Icon', width: '0.8fr', default: true },
 ];
@@ -355,7 +355,7 @@ const SITE_TYPE_CSV_COLUMNS: [string, (t: SiteLookup) => string][] = [
   ['Key', (t) => t.key],
   ['Label', (t) => t.label],
   ['Description', (t) => t.description],
-  ['Colour', (t) => t.color ?? ''],
+  ['Color', (t) => t.color ?? ''],
   ['Sort order', (t) => String(t.sort_order)],
   ['Icon', (t) => t.icon ?? ''],
 ];
@@ -505,7 +505,7 @@ function SiteTypeRowDetail({ value, canEdit, onEdit }: {
         <p className="eyebrow-sm">Description</p>
         <p className="set-note" style={{ padding: 0 }}>{value.description || 'No description.'}</p>
 
-        <p className="eyebrow-sm">Colour</p>
+        <p className="eyebrow-sm">Color</p>
         <dl className="kv">
           <dt>Hex</dt>
           <dd className="mono">
@@ -542,7 +542,7 @@ const WORKER_LEVEL_COLUMNS: ColumnDef[] = [
   { key: 'rank', label: 'Rank', width: '0.6fr', default: true },
   { key: 'title', label: 'Title', width: '1.2fr', default: true },
   { key: 'description', label: 'Description', width: '2fr', default: true },
-  { key: 'color', label: 'Colour', width: '0.8fr', default: true },
+  { key: 'color', label: 'Color', width: '0.8fr', default: true },
   { key: 'expected_skills', label: 'Expected skills', width: '2fr', default: true },
 ];
 
@@ -551,7 +551,7 @@ const WORKER_LEVEL_CSV_COLUMNS: [string, (w: WorkerLevel) => string][] = [
   ['Rank', (w) => String(w.rank)],
   ['Title', (w) => w.title],
   ['Description', (w) => w.description],
-  ['Colour', (w) => w.color],
+  ['Color', (w) => w.color],
   ['Expected skills', (w) => w.expected_skills.join('; ')],
 ];
 
@@ -718,7 +718,7 @@ function WorkerLevelRowDetail({ value, canEdit, onEdit }: {
         <p className="eyebrow-sm">Description</p>
         <p className="set-note" style={{ padding: 0 }}>{value.description || 'No description.'}</p>
 
-        <p className="eyebrow-sm">Colour</p>
+        <p className="eyebrow-sm">Color</p>
         <dl className="kv">
           <dt>Hex</dt>
           <dd className="mono">
@@ -758,7 +758,7 @@ const CATEGORY_COLUMNS: ColumnDef[] = [
   { key: 'key', label: 'Key', width: '1fr', default: true },
   { key: 'label', label: 'Label', width: '1.2fr', default: true },
   { key: 'description', label: 'Description', width: '2.4fr', default: true },
-  { key: 'color', label: 'Colour', width: '0.8fr', default: true },
+  { key: 'color', label: 'Color', width: '0.8fr', default: true },
   { key: 'sort_order', label: 'Order', width: '0.6fr', default: true },
 ];
 
@@ -766,7 +766,7 @@ const CATEGORY_CSV_COLUMNS: [string, (c: AssetCategoryOut) => string][] = [
   ['Key', (c) => c.key],
   ['Label', (c) => c.label],
   ['Description', (c) => c.description],
-  ['Colour', (c) => c.color],
+  ['Color', (c) => c.color],
   ['Sort order', (c) => String(c.sort_order)],
 ];
 
@@ -914,7 +914,7 @@ function AssetCategoryRowDetail({ value, canEdit, onEdit }: {
         <p className="eyebrow-sm">Description</p>
         <p className="set-note" style={{ padding: 0 }}>{value.description || 'No description.'}</p>
 
-        <p className="eyebrow-sm">Colour</p>
+        <p className="eyebrow-sm">Color</p>
         <dl className="kv">
           <dt>Hex</dt>
           <dd className="mono">

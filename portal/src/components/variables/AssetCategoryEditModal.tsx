@@ -149,7 +149,7 @@ export default function AssetCategoryEditModal({ value, canChange, onClose, onSa
                           onChange={(e) => setField('description', e.target.value)} />
               </div>
               <div className="full">
-                <label>Colour</label>
+                <label>Color</label>
                 <ColorField value={form.color} disabled={locked}
                             onChange={(hex) => setField('color', hex)} />
               </div>

@@ -206,7 +206,7 @@ export default function WorkerLevelEditModal({
                             setForm((f) => ({ ...f, description: e.target.value }))} />
               </div>
               <div className="full">
-                <label>Colour</label>
+                <label>Color</label>
                 <ColorField value={form.color} disabled={locked} shape="badge"
                             sample={form.level.trim() || undefined}
                             onChange={(hex) => setForm((f) => ({ ...f, color: hex }))} />

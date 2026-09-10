@@ -96,7 +96,7 @@ export default function ColorField({ value, onChange, disabled, shape = 'chip', 
         <input
           type="color"
           className="cf-native"
-          aria-label="Pick a colour"
+          aria-label="Pick a color"
           value={value}
           disabled={disabled}
           onChange={(e) => onChange(e.target.value)}
