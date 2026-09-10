@@ -178,6 +178,24 @@ def seed_demo_trucks() -> None:
 
 
 @app.command()
+def seed_demo_warehouse() -> None:
+    """Seed the demo warehouse containers and stock lines (idempotent by
+    name/description) used for live verification of the warehouse
+    feature."""
+
+    async def _run() -> None:
+        from serversherpa.warehouse.seed import seed_demo_warehouse as _seed
+
+        async with get_sessionmaker()() as db:
+            added = await _seed(db)
+            await db.commit()
+            typer.secho(f"Seeded {added} row(s).", fg="green")
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def import_v2_workers(
     dump: str = typer.Option(..., help="Path to the V2 pg_dump .sql file"),
     limit: int = typer.Option(200, help="Max workers to import this run"),
