@@ -16,13 +16,19 @@ import type { TruckMapPoint } from '../../lib/api';
 import { MAP_TILE_ATTRIBUTION, MAP_TILE_URL } from '../../lib/mapTiles';
 import { updateAge } from '../../lib/trucks';
 
-function FitBounds({ points }: { points: TruckMapPoint[] }) {
+function FitBounds({ points, trails }: { points: TruckMapPoint[]; trails: boolean }) {
   const map = useMap();
-  const centers = points.map((p) => [p.last_update.lat as number, p.last_update.lng as number] as [number, number]);
-  // Re-fit whenever the *set of ids* changes — a plain re-fetch that
-  // returns the same trucks (even at slightly nudged coordinates) or a
-  // trails toggle shouldn't reset the user's pan/zoom.
-  const key = points.map((p) => p.id).sort().join(',');
+  // Frame the latest positions — and, when trails are drawn, every trail
+  // point too, so a single truck's route (the detail page) isn't reduced
+  // to its last marker.
+  const centers = points.flatMap((p) => [
+    [p.last_update.lat as number, p.last_update.lng as number] as [number, number],
+    ...(trails ? p.trail.map((t) => [t.lat, t.lng] as [number, number]) : []),
+  ]);
+  // Re-fit whenever the *set of ids* (or the trails toggle) changes — a
+  // plain re-fetch that returns the same trucks at slightly nudged
+  // coordinates shouldn't reset the user's pan/zoom.
+  const key = `${trails ? 'T' : 'M'}:${points.map((p) => p.id).sort().join(',')}`;
   useEffect(() => {
     if (!centers.length) return undefined;
     // Defer one frame: the panel (and the fullscreen modal) mount the map
@@ -62,7 +68,7 @@ export default function TrucksMap({ points, trails, onOpen, className }: {
   return (
     <MapContainer center={centers[0]} zoom={4} className={className}>
       <TileLayer url={MAP_TILE_URL} attribution={MAP_TILE_ATTRIBUTION} />
-      <FitBounds points={located} />
+      <FitBounds points={located} trails={trails} />
       {trails && located.filter((p) => p.trail.length > 1).map((p) => (
         <Polyline
           key={`trail-${p.id}`}
