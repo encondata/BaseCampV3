@@ -23,6 +23,8 @@ const api = vi.hoisted(() => ({
   getMyActivityRequest: vi.fn(async () => []),
   revokeSessionRequest: vi.fn(async () => {}),
   updateProfileRequest: vi.fn(),
+  // MeNotifications (the Notifications tab) loads the person's groups on mount
+  listMyNotificationGroups: vi.fn(async () => []),
 }));
 
 const PROFILE: PersonDetail = {
