@@ -59,6 +59,17 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     }
   }, [person]);
 
+  // The provider sits above the router and never unmounts, so a sign-out
+  // (or sign-in as someone else) must reset all of this by hand — otherwise
+  // the next person's first poll compares against the previous person's
+  // `seen` set and treats their unread items as "new" (spurious toasts).
+  useEffect(() => {
+    seen.current = null;
+    setItems([]);
+    setUnreadCount(0);
+    setNewItems([]);
+  }, [person?.id]);
+
   useEffect(() => {
     if (!person) return;
     void refresh();

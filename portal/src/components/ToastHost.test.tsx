@@ -33,6 +33,21 @@ it('shows a Download toast for report_ready and marks it read on click', async (
   expect(ctx.dismissNew).toHaveBeenCalledWith('n1');
 });
 
+it('leaves the toast in place when the download URL fetch fails', async () => {
+  const user = userEvent.setup();
+  api.getReportRunDownloadUrl.mockRejectedValue(new Error('boom'));
+  const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+  ctx.newItems = [{ id: 'n1', kind: 'report_ready', title: 'Move Report is ready', body: 'NAP11',
+    link: '/reports?tab=history&run=r1', payload: { run_id: 'r1' } }];
+  render(<MemoryRouter><ToastHost /></MemoryRouter>);
+  await user.click(screen.getByRole('button', { name: 'Download' }));
+  await waitFor(() => expect(api.getReportRunDownloadUrl).toHaveBeenCalledWith('r1'));
+  expect(openSpy).not.toHaveBeenCalled();
+  expect(ctx.markRead).not.toHaveBeenCalled();
+  expect(ctx.dismissNew).not.toHaveBeenCalled();
+  expect(screen.getByRole('status').textContent).toContain('Move Report is ready');
+});
+
 it('other kinds get an Open action; dismiss removes without marking read', async () => {
   const user = userEvent.setup();
   ctx.newItems = [{ id: 'n2', kind: 'report_failed', title: 'Move Report failed', body: 'x', link: '/reports', payload: {} }];

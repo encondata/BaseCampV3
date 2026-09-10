@@ -13,7 +13,7 @@ export default function ToastHost() {
 
   const act = async (item: (typeof newItems)[number]) => {
     if (item.kind === 'report_ready' && typeof item.payload.run_id === 'string') {
-      try { window.open(await getReportRunDownloadUrl(item.payload.run_id), '_blank'); } catch { /* keep toast */ }
+      try { window.open(await getReportRunDownloadUrl(item.payload.run_id), '_blank'); } catch { return; /* leave the toast in place */ }
     } else if (item.link) {
       navigate(item.link);
     }
@@ -22,14 +22,14 @@ export default function ToastHost() {
   };
 
   return (
-    <div className="toast-host" aria-live="polite">
+    <div className="toast-host">
       {newItems.slice(0, 3).map((item) => (
         <div key={item.id} className="toast" role="status">
           <div className="toast-text">
             <div className="toast-title">{item.title}</div>
             {item.body && <div className="toast-body">{item.body}</div>}
           </div>
-          <button className="btn-solid toast-action" onClick={() => void act(item)}>
+          <button className="toast-action" onClick={() => void act(item)}>
             {item.kind === 'report_ready' ? 'Download' : 'Open'}
           </button>
           <button className="toast-dismiss" aria-label="Dismiss" onClick={() => dismissNew(item.id)}>×</button>

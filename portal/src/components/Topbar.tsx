@@ -349,7 +349,7 @@ export default function Topbar() {
           </div>
         )}
 
-        <div className="pop-wrap" style={{ position: 'relative' }}>
+        <div className="pop-wrap">
           <button className="icon-btn" title="Notifications"
                   onClick={() => setPop(pop === 'notif' ? null : 'notif')}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
