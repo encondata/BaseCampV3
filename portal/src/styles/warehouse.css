@@ -1,0 +1,41 @@
+/**
+ * Warehouse (/logistics/warehouse) — layout only. Typography lives in
+ * directory.css's tokens/primitives; this file positions the selector
+ * row, the KPI tiles strip, the nested mini-list, and modal widths.
+ */
+
+.wh-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.wh-selector {
+  flex: 0 0 320px;
+  max-width: 100%;
+}
+
+.wh-tiles {
+  flex: 1 1 480px;
+}
+
+/* Nested mini-list (a container row's contents) gets a little indent so
+ * it reads as "inside" the row it expanded from. */
+.wh-mini-indent {
+  padding-left: 16px;
+}
+
+.mini-row-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.wh-modal {
+  width: fit-content;
+  min-width: 420px;
+  max-width: min(720px, 92vw);
+}
