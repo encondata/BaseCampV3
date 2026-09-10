@@ -11,11 +11,6 @@
   },
   {
     "file": "styles/access.css",
-    "selector": ".pm-table thead th",
-    "reason": "baseline — migrate in Task 5"
-  },
-  {
-    "file": "styles/access.css",
     "selector": ".ov-head h3",
     "reason": "not list content: override-editor modal heading"
   },
@@ -205,26 +200,6 @@
     "reason": "not list content: site-map detail heading — documented permanent exception per spec (\"the site-map head keeps 15px only via a documented allowlist entry — it is a detail heading, not a list row\")"
   },
   {
-    "file": "styles/system.css",
-    "selector": ".sys-proc-list .list-row",
-    "reason": "baseline — migrate in Task 5"
-  },
-  {
-    "file": "styles/system.css",
-    "selector": ".envtab-list .list-row",
-    "reason": "baseline — migrate in Task 5"
-  },
-  {
-    "file": "styles/system.css",
-    "selector": ".envtab-list input",
-    "reason": "baseline — migrate in Task 5"
-  },
-  {
-    "file": "styles/system.css",
-    "selector": ".envtab-chip",
-    "reason": "baseline — migrate in Task 5"
-  },
-  {
     "file": "styles/time.css",
     "selector": ".time-clock-eyebrow",
     "reason": "not list content: eyebrow label (out of scope per spec)"
@@ -252,10 +227,6 @@
     "reason": "baseline — migrate in Task 6: renders the profile.css .activity-changes field-diff table, part of the profile activity-list family"
   },
   {
-    "file": "components/access/MatrixTable.tsx",
-    "reason": "baseline — migrate in Task 5"
-  },
-  {
     "file": "components/containers/ContainerBulkImport.tsx",
     "reason": "baseline — migrate in Task 6"
   },
@@ -274,26 +245,6 @@
   {
     "file": "components/sites/SiteBulkImport.tsx",
     "reason": "baseline — migrate in Task 6"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".gate-label",
-    "reason": "baseline — migrate in Task 5"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".gate-opt-sub",
-    "reason": "baseline — migrate in Task 5"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".mem-name",
-    "reason": "baseline — migrate in Task 5"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".pm-res-label",
-    "reason": "baseline — migrate in Task 5"
   },
   {
     "file": "styles/assets.css",
@@ -577,11 +528,6 @@
   },
   {
     "file": "styles/system.css",
-    "selector": ".envtab-readonly",
-    "reason": "baseline — migrate in Task 5"
-  },
-  {
-    "file": "styles/system.css",
     "selector": ".sysconf-actionbar-status",
     "reason": "not list content: action-bar save-status text"
   },
@@ -589,16 +535,6 @@
     "file": "styles/system.css",
     "selector": ".sysconf-saved",
     "reason": "not list content: \"saved\" indicator text"
-  },
-  {
-    "file": "styles/system.css",
-    "selector": ".envtab-section-label",
-    "reason": "baseline — migrate in Task 5"
-  },
-  {
-    "file": "styles/system.css",
-    "selector": ".envtab-key",
-    "reason": "baseline — migrate in Task 5"
   },
   {
     "file": "styles/system.css",

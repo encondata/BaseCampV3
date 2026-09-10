@@ -138,7 +138,7 @@ export default function EnvTab() {
   const cellFor = (entry: EnvEntry, key: string) => {
     switch (key) {
       case 'key':
-        return <span className="envtab-key">{entry.key}</span>;
+        return <span className="mono envtab-key">{entry.key}</span>;
       case 'value': {
         if (!editing) {
           const shown = entry.secret
@@ -146,7 +146,7 @@ export default function EnvTab() {
             : (entry.value || '—');
           const muted = entry.secret || !entry.value;
           return (
-            <span className={`envtab-readonly${muted ? ' envtab-muted' : ''}`}
+            <span className={`cell-top cell-nowrap${muted ? ' envtab-muted' : ''}`}
                   title={entry.secret ? undefined : (entry.value || '')}>
               {shown}
             </span>
@@ -169,7 +169,7 @@ export default function EnvTab() {
       case 'status': {
         const { chip } = describeEntry(entry);
         return chip ? (
-          <span className={`envtab-chip envtab-chip-${chip === 'set' ? 'set' : 'unset'}`}>
+          <span className={`chip ${chip === 'set' ? 'c-green' : 'c-slate'}`}>
             {chip}
           </span>
         ) : null;
@@ -177,7 +177,7 @@ export default function EnvTab() {
       case 'description': {
         if (!editing) {
           return (
-            <span className={`envtab-readonly${entry.description ? '' : ' envtab-muted'}`}
+            <span className={`cell-top cell-nowrap${entry.description ? '' : ' envtab-muted'}`}
                   title={entry.description}>
               {entry.description || '—'}
             </span>
@@ -214,7 +214,7 @@ export default function EnvTab() {
       rows.push({
         node: (
           <div key={`section-${entry.key}`} className="envtab-section-row" style={grid}>
-            <span className="envtab-section-label">{entry.section}</span>
+            <b className="mono envtab-section-label">{entry.section}</b>
           </div>
         ),
       });
@@ -223,7 +223,7 @@ export default function EnvTab() {
       && (entry.key in pendingValues || entry.key in pendingDescriptions);
     rows.push({
       node: (
-        <div key={entry.key} className={`list-row envtab-grid${changed ? ' changed' : ''}`} style={grid}>
+        <div key={entry.key} className={`list-row mini-row envtab-grid${changed ? ' changed' : ''}`} style={grid}>
           {shownCols.map((c) => (
             <span key={c.key} className={`cell${c.key === 'status' ? ' envtab-col-center' : ''}`}>
               {cellFor(entry, c.key)}

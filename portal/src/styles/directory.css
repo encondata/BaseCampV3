@@ -291,6 +291,15 @@
   color: var(--text-mute);
 }
 
+/* form inputs rendered inline inside a list cell (e.g. EnvTab's inline
+ * value/description editing) share the row's own type scale so an
+ * editable cell doesn't jump size against its read-only siblings —
+ * inputs don't inherit font from an ancestor the way plain text does. */
+.cell input, .mini-row input, .data-table input {
+  font-family: var(--font-display);
+  font-size: var(--list-fs-cell);
+}
+
 /* Single-line value that shouldn't break mid-string at narrow column
  * widths (e.g. Notifications.tsx's Quiet hours cell, "9:00 PM – 7:00 AM
  * CT") — a plain modifier, not folded into .cell-top/.cell-sub since

@@ -56,28 +56,32 @@ export default function SystemProcesses() {
           const degraded = p.meta.forwarding_degraded === true;
           const body = (
             <>
-              <span className="sys-status">
+              <div className="cell sys-status">
                 <span className={`sys-dot ${meta.className}`} />
                 {meta.label}
                 {degraded && (
                   <span className="chip c-amber">forwarding degraded</span>
                 )}
-              </span>
-              <span className="sys-name">{p.name}</span>
-              <span><span className="chip c-slate">{p.kind}</span></span>
-              <span>{p.hostname || '—'}</span>
-              <span>{p.pid ?? '—'}</span>
-              <span>{formatUptime(p.uptime_seconds)}</span>
-              <span>{formatAge(p.heartbeat_at, now)}</span>
+              </div>
+              <div className="cell"><span className="cell-top"><b>{p.name}</b></span></div>
+              <div className="cell"><span className="chip c-slate">{p.kind}</span></div>
+              <div className="cell"><span className="mono">{p.hostname || '—'}</span></div>
+              <div className="cell"><span className="mono">{p.pid ?? '—'}</span></div>
+              <div className="cell"><span className="mono">{formatUptime(p.uptime_seconds)}</span></div>
+              <div className="cell"><span className="mono">{formatAge(p.heartbeat_at, now)}</span></div>
             </>
           );
-          return canViewLogs && p.kind !== 'probe' ? (
-            <Link key={p.name} className="list-row sys-proc-grid"
-                  to={`/system/processes/${p.name}/logs`}>
-              {body}
-            </Link>
-          ) : (
-            <div key={p.name} className="list-row sys-proc-grid">{body}</div>
+          return (
+            <div key={p.name} className="dir-row">
+              {canViewLogs && p.kind !== 'probe' ? (
+                <Link className="row-main sys-proc-grid"
+                      to={`/system/processes/${p.name}/logs`}>
+                  {body}
+                </Link>
+              ) : (
+                <div className="row-main sys-proc-grid" style={{ cursor: 'default' }}>{body}</div>
+              )}
+            </div>
           );
         })}
         {rows.length === 0 && !error && (

@@ -243,28 +243,17 @@
   border-bottom: 1px solid var(--paper-line);
 }
 .gate-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 11px 18px;
-  border-bottom: 1px solid var(--paper-line);
+  grid-template-columns: 130px 1fr auto;
+  padding-left: 18px;
+  padding-right: 18px;
 }
-.gate-row:last-child { border-bottom: 0; }
-.gate-label {
-  width: 130px;
-  flex: none;
-  font-size: 13.5px;
-  font-weight: 500;
-  color: var(--text-dark);
-}
-.gate-chips { flex: 1; display: flex; flex-wrap: wrap; gap: 6px; }
-.gate-opt-sub { margin-left: auto; font-size: 11px; color: var(--text-mute); }
+.gate-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.gate-opt-sub { margin-left: auto; color: var(--text-mute); }
 
 /* member rows inside the group detail panel */
-.mem-list { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
-.mem-row { display: flex; align-items: center; gap: 10px; }
+.mem-list { margin-top: 6px; }
+.mem-row { grid-template-columns: auto 1fr auto; }
 .mem-row .av-sm { border-color: var(--paper-line); }
-.mem-name { flex: 1; min-width: 0; font-size: 13px; color: var(--text-dark); }
 .mem-add { max-width: 340px; margin-top: 10px; }
 
 /* ── matrix panel head + save bar ─────────────────────────── */
@@ -307,24 +296,8 @@
 }
 
 .pm-table {
-  width: 100%;
   min-width: 620px;
-  border-collapse: collapse;
 }
-
-.pm-table thead th {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-mute);
-  background: var(--surface-2);
-  border-bottom: 1px solid var(--paper-line);
-  padding: 10px 14px;
-  text-align: center;
-  white-space: nowrap;
-}
-.pm-table th.pm-res-head { text-align: left; }
 
 .pm-col-head {
   display: flex;
@@ -347,14 +320,9 @@
 .pm-col-toggle:hover { background: var(--surface); color: var(--amber); }
 .pm-col-toggle svg { width: 10px; height: 10px; }
 
-.pm-table tbody tr { border-bottom: 1px solid var(--paper-line); }
-.pm-table tbody tr:last-child { border-bottom: 0; }
 .pm-table tbody tr:hover { background: rgba(var(--accent-rgb), 0.035); }
 
 .pm-res-label {
-  padding: 11px 16px;
-  font-size: 13.5px;
-  font-weight: 500;
   color: var(--text-dark);
   white-space: nowrap;
   display: flex;
@@ -364,7 +332,7 @@
 .pm-lock-glyph { display: inline-flex; color: var(--text-mute); }
 .pm-lock-glyph svg { width: 13px; height: 13px; }
 
-.pm-cell { text-align: center; padding: 6px 14px; }
+.pm-cell { text-align: center; }
 
 .pm-chk, .pm-tri {
   width: 27px;

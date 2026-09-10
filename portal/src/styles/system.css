@@ -1,20 +1,11 @@
 /* System pages: processes list + log viewer */
 .sys-proc-grid { grid-template-columns: 170px 1.2fr 110px 1fr 80px 110px 140px; }
-/* .list-row has no global definition (other pages style rows ad hoc), so the
-   grid + row chrome live here — including for the <a> rows god users get. */
-.sys-proc-list .list-row {
-  display: grid;
-  align-items: center;
-  gap: 16px;
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--paper-line);
-  color: inherit;
-  text-decoration: none;
-  font-size: 13px;
-}
-.sys-proc-list .list-row:last-child { border-bottom: none; }
-.sys-proc-list a.list-row:hover { background: var(--surface-2, #f5f7fa); }
-.sys-name { font-weight: 600; }
+/* rows are the shared .row-main/.dir-row directory-list primitive (see
+   directory.css); the god-mode rows are an <a> (react-router Link), so this
+   file only resets its link chrome and restores the hover directory.css's
+   generic .row-main:hover doesn't quite match. */
+.sys-proc-list a.row-main { color: inherit; text-decoration: none; }
+.sys-proc-list a.row-main:hover { background: var(--surface-2, #f5f7fa); }
 .sys-status { display: flex; align-items: center; gap: 8px; }
 .sys-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
 .sys-dot-running { background: var(--c-green, #178a4c); animation: sys-pulse 2s infinite; }
@@ -135,10 +126,10 @@
 .sysconf-card input:focus-visible, .sysconf-card select:focus-visible {
   outline: 2px solid var(--amber); outline-offset: 1px; border-color: var(--amber);
 }
-/* ENV tab read-only cells (shown until "Edit table" is toggled on) */
-.envtab-readonly { font-size: 13px; color: var(--text-dark);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.envtab-readonly.envtab-muted { color: var(--text-mute); }
+/* ENV tab read-only cells (shown until "Edit table" is toggled on) use the
+ * shared .cell-top/.cell-nowrap golden classes; this is just the muted
+ * (empty/secret) color variant. */
+.envtab-muted { color: var(--text-mute); }
 /* number inputs read as small numeric fields, not full-bleed text inputs */
 .sysconf-row input[type="number"] { max-width: 140px; }
 
@@ -176,15 +167,13 @@
     minmax(200px, 240px) minmax(240px, 1.4fr) 90px minmax(220px, 1.6fr);
 }
 .envtab-list .list-row {
-  display: grid;
-  align-items: center;
+  /* .list-head/.envtab-section-row both use a 16px gap — match it here too
+     (.mini-row's own default is 12px) so the four columns stay aligned. */
   gap: 16px;
-  padding: 12px 20px 12px 17px;
-  border-bottom: 1px solid var(--paper-line);
+  padding-left: 17px;
+  padding-right: 20px;
   border-left: 3px solid transparent;
-  font-size: 13px;
 }
-.envtab-list .list-row:last-child { border-bottom: none; }
 .envtab-list .list-row.changed {
   border-left-color: var(--amber);
   background: var(--c-amber-bg, rgba(163, 98, 7, 0.06));
@@ -204,20 +193,10 @@
 }
 .envtab-section-label {
   grid-column: 1 / -1;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--text-mute);
 }
-.envtab-key {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--text-dark);
-  overflow-wrap: anywhere;
-}
+.envtab-key { overflow-wrap: anywhere; }
 
 /* Every input in the list — the Value cell's text/password field and the
    Description cell's text field alike — shares one look: same border,
@@ -228,8 +207,6 @@
   display: block;
   width: 100%;
   box-sizing: border-box;
-  font-family: var(--font-display);
-  font-size: 13px;
   color: var(--text-dark);
   background: var(--surface);
   border: 1px solid var(--paper-line);
@@ -256,29 +233,6 @@
 }
 
 .envtab-col-center { display: flex; align-items: center; justify-content: center; }
-.envtab-chip {
-  display: inline-flex;
-  align-items: center;
-  height: 20px;
-  padding: 0 8px;
-  border-radius: 999px;
-  border: 1px solid var(--paper-line);
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-.envtab-chip-set {
-  color: var(--c-green, #178a4c);
-  background: var(--c-green-bg, rgba(61, 220, 132, 0.12));
-  border-color: var(--c-green-bd, rgba(61, 220, 132, 0.25));
-}
-.envtab-chip-unset {
-  color: var(--c-slate, #51606f);
-  background: var(--c-slate-bg, rgba(138, 151, 170, 0.12));
-  border-color: var(--c-slate-bd, rgba(138, 151, 170, 0.25));
-}
 .envtab-restart-banner {
   margin: 0;
   padding: 10px 14px;

@@ -110,25 +110,27 @@ export default function GroupsTab({ summary, canEdit, onChanged }: Props) {
             {restricted} restricted · {gateable.length - restricted} open
           </span>
         </div>
-        {gateable.map((r) => (
-          <div key={r.id} className="gate-row">
-            <span className="gate-label">{r.label}</span>
-            <div className="gate-chips">
-              {r.gated_by.length === 0 ? (
-                <span className="chip c-green"><span className="dot" />Open to all</span>
-              ) : (
-                r.gated_by.map((gid) => (
-                  <span key={gid} className="chip c-violet">{groupName(gid)}</span>
-                ))
+        <div className="mini-list">
+          {gateable.map((r) => (
+            <div key={r.id} className="mini-row gate-row">
+              <b className="cell-top">{r.label}</b>
+              <div className="gate-chips">
+                {r.gated_by.length === 0 ? (
+                  <span className="chip c-green"><span className="dot" />Open to all</span>
+                ) : (
+                  r.gated_by.map((gid) => (
+                    <span key={gid} className="chip c-violet">{groupName(gid)}</span>
+                  ))
+                )}
+              </div>
+              {canEdit && (
+                <button className="mini-btn" onClick={() => setGateResource(r)}>
+                  Manage
+                </button>
               )}
             </div>
-            {canEdit && (
-              <button className="mini-btn" onClick={() => setGateResource(r)}>
-                Manage
-              </button>
-            )}
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
 
       {createOpen && (
@@ -253,17 +255,17 @@ function GroupDetail({ group, canEdit, gates, onChanged, onDeleted }: {
       </div>
 
       <p className="eyebrow-sm" style={{ marginTop: 14 }}>Members</p>
-      <div className="mem-list">
+      <div className="mini-list mem-list">
         {group.members.length === 0 && (
           <span className="rd-note">No members yet.</span>
         )}
         {group.members.map((m) => (
-          <div key={m.person_id} className="mem-row">
+          <div key={m.person_id} className="mini-row mem-row">
             <span className="av-sm"
                   style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
               {m.avatar_url ? <img src={m.avatar_url} alt="" /> : initials(m.display_name)}
             </span>
-            <span className="mem-name">{m.display_name}</span>
+            <b className="cell-top">{m.display_name}</b>
             {canEdit && (
               <button className="mini-btn danger" disabled={busy}
                       onClick={() => void apply(memberIds.filter((id) => id !== m.person_id))}>

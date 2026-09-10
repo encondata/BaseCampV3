@@ -8,6 +8,7 @@
 import type { Action } from '../../lib/access';
 import { ACTIONS } from '../../lib/access';
 import type { AccessResourceOut, EffectiveCell } from '../../lib/api';
+import DataTable, { type DataTableColumn, type DataTableRow } from '../DataTable';
 
 export type CellMode = 'role' | 'override' | 'effective';
 
@@ -57,61 +58,60 @@ export default function MatrixTable({
   const isLockedCell = (resId: string, action: Action) =>
     Boolean(lockedResources?.has(resId)) || Boolean(lockedCells?.has(`${resId}:${action}`));
 
+  const columns: DataTableColumn[] = [
+    { key: 'resource', label: '' },
+    ...ACTIONS.map((a): DataTableColumn => ({
+      key: a,
+      label: (
+        <div className="pm-col-head">
+          <span>{a}</span>
+          {editable && onToggleColumn && (
+            <button type="button" className="pm-col-toggle"
+                    title={`Toggle ${a} for every row`}
+                    onClick={() => onToggleColumn(a)}>
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"
+                   strokeWidth="2" strokeLinecap="round">
+                <path d="M2 6h8M6 2v8" />
+              </svg>
+            </button>
+          )}
+        </div>
+      ),
+    })),
+  ];
+
+  const rows: DataTableRow[] = resources.map((res) => ({
+    key: res.id,
+    cells: [
+      <div className="pm-res-label">
+        {res.label}
+        {res.developer_only && (
+          <span className="pm-lock-glyph" title="Developer-only resource">{LOCK}</span>
+        )}
+      </div>,
+      ...ACTIONS.map((a) => (
+        <div className="pm-cell" key={a}>
+          {mode === 'role' && (
+            <RoleCell resource={res} action={a} matrix={matrix}
+                      editable={editable} locked={isLockedCell(res.id, a)}
+                      onToggle={onToggle} />
+          )}
+          {mode === 'override' && (
+            <OverrideCell resource={res} action={a} overrides={overrides}
+                          inherited={inherited} editable={editable}
+                          locked={isLockedCell(res.id, a)} onCycle={onCycle} />
+          )}
+          {mode === 'effective' && (
+            <EffectiveCellView resource={res} action={a} cells={cells} />
+          )}
+        </div>
+      )),
+    ],
+  }));
+
   return (
     <div className="pm-scroll">
-      <table className="pm-table">
-        <thead>
-          <tr>
-            <th className="pm-res-head" />
-            {ACTIONS.map((a) => (
-              <th key={a}>
-                <div className="pm-col-head">
-                  <span>{a}</span>
-                  {editable && onToggleColumn && (
-                    <button type="button" className="pm-col-toggle"
-                            title={`Toggle ${a} for every row`}
-                            onClick={() => onToggleColumn(a)}>
-                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor"
-                           strokeWidth="2" strokeLinecap="round">
-                        <path d="M2 6h8M6 2v8" />
-                      </svg>
-                    </button>
-                  )}
-                </div>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {resources.map((res) => (
-            <tr key={res.id}>
-              <td className="pm-res-label">
-                {res.label}
-                {res.developer_only && (
-                  <span className="pm-lock-glyph" title="Developer-only resource">{LOCK}</span>
-                )}
-              </td>
-              {ACTIONS.map((a) => (
-                <td key={a} className="pm-cell">
-                  {mode === 'role' && (
-                    <RoleCell resource={res} action={a} matrix={matrix}
-                              editable={editable} locked={isLockedCell(res.id, a)}
-                              onToggle={onToggle} />
-                  )}
-                  {mode === 'override' && (
-                    <OverrideCell resource={res} action={a} overrides={overrides}
-                                  inherited={inherited} editable={editable}
-                                  locked={isLockedCell(res.id, a)} onCycle={onCycle} />
-                  )}
-                  {mode === 'effective' && (
-                    <EffectiveCellView resource={res} action={a} cells={cells} />
-                  )}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <DataTable ariaLabel="Permission matrix" className="pm-table" columns={columns} rows={rows} />
     </div>
   );
 }
