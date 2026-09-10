@@ -41,6 +41,9 @@
   --list-avatar: calc(30px * var(--list-scale));
   --list-fs-avatar: calc(11px * var(--list-scale));
 }
+/* border-radius is layout, not a typography token — kept as a literal
+   rule outside the --list-* block (no guardrail impact). */
+.portal-shell[data-density='compact'] .dir-avatar { border-radius: 9px; }
 
 .portal-shell {
   /* categorical/status palette tuned for the light paper surface */
