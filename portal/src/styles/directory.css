@@ -491,6 +491,61 @@
 .kv dd { font-size: var(--list-fs-kv-value); color: var(--text-dark); margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .kv dd.mono { font-family: var(--font-mono); font-size: var(--list-fs-mono); }
 
+/* ── mini list: header-less compact rows (dashboard feeds, embedded
+   panels, pickers). Reuses the cell classes so typography IS the golden
+   tokens; pages set grid-template-columns and nothing else. ───────── */
+.mini-list { display: flex; flex-direction: column; min-width: 0; }
+.mini-row {
+  display: grid;
+  align-items: center;
+  gap: 12px;
+  min-height: var(--list-mini-row-min-h);
+  padding: calc(var(--list-row-pad-y) * 0.5) 0;
+  border-bottom: 1px solid var(--paper-line);
+  min-width: 0;
+}
+.mini-row:last-child { border-bottom: 0; }
+.mini-list-head {
+  display: grid;
+  gap: 12px;
+  padding: 0 0 6px;
+  font-family: var(--font-mono);
+  font-size: var(--list-fs-head);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+
+/* ── data table: the only <table> (components/DataTable.tsx) ───────── */
+.data-table { width: 100%; border-collapse: collapse; }
+.data-table th {
+  text-align: left;
+  padding: 0 12px;
+  height: var(--list-head-h);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--paper-line);
+  font-family: var(--font-mono);
+  font-size: var(--list-fs-head);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.data-table td {
+  padding: calc(var(--list-row-pad-y) * 0.5) 12px;
+  height: var(--list-mini-row-min-h);
+  border-bottom: 1px solid var(--paper-line);
+  font-size: var(--list-fs-cell);
+  color: var(--text-dark);
+  vertical-align: middle;
+}
+.data-table tr:last-child td { border-bottom: 0; }
+.data-table td.mono, .data-table th.mono { font-family: var(--font-mono); font-size: var(--list-fs-mono); color: var(--text-mute); }
+.data-table .right { text-align: right; }
+.data-table .center { text-align: center; }
+.data-table .data-table-empty { color: var(--text-mute); font-size: var(--list-fs-sub); text-align: center; }
+
 .detail-actions {
   display: flex;
   flex-wrap: wrap;
