@@ -24,7 +24,17 @@ function FitBounds({ points }: { points: TruckMapPoint[] }) {
   // trails toggle shouldn't reset the user's pan/zoom.
   const key = points.map((p) => p.id).sort().join(',');
   useEffect(() => {
-    if (centers.length) map.fitBounds(L.latLngBounds(centers), { padding: [24, 24] });
+    if (!centers.length) return undefined;
+    // Defer one frame: the panel (and the fullscreen modal) mount the map
+    // before layout has given it a size, and fitBounds on a 0×0 container
+    // collapses to max zoom. invalidateSize re-measures first; maxZoom
+    // keeps a single truck (or two close ones) from zooming to street level.
+    const bounds = L.latLngBounds(centers);
+    const raf = window.requestAnimationFrame(() => {
+      map.invalidateSize?.();
+      map.fitBounds(bounds, { padding: [24, 24], maxZoom: 12 });
+    });
+    return () => window.cancelAnimationFrame(raf);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, key]);
   return null;
