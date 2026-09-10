@@ -35,6 +35,7 @@ ENTITY_RESOURCE: dict[str, str] = {
     "asset": "assets",
     "initiative_asset": "initiatives",
     "container": "containers",
+    "truck": "trucks",
     "site": "sites",
     "worker": "workers",
     "initiative": "initiatives",

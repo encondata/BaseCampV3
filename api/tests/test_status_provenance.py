@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from serversherpa.db.models import (
     Asset, AuditLog, Initiative, InitiativeAsset, Person, PersonRole,
-    ProcessedScan, Site, TimeEntry,
+    ProcessedScan, Site, TimeEntry, Truck,
 )
 
 from .test_assets_api import login, make_login
@@ -167,3 +167,25 @@ async def test_time_entry_provenance_unknown_id_404s(client, db, seeded_user):
                       entity_id="00000000-0000-0000-0000-000000000000",
                       status="pending")
     assert resp.status_code == 404
+
+
+async def test_truck_edit_provenance_from_audit(client, db, seeded_user):
+    """Trucks' status chips hover like every other list: entity_type 'truck'
+    is gated on trucks:view and resolves the audited status edit."""
+    hdrs = await login(client)
+    truck = Truck(name="prov-truck-1", status="in_transit")
+    editor = Person(first_name="Tina", last_name="Trucker")
+    db.add_all([truck, editor])
+    await db.flush()
+    db.add(AuditLog(actor_person_id=editor.id, entity_type="truck",
+                    entity_id=str(truck.id), action="update",
+                    changes={"status": {"from": "active", "to": "in_transit"}},
+                    at=T0))
+    await db.commit()
+
+    resp = await _get(client, hdrs, entity_type="truck",
+                      entity_id=str(truck.id), status="in_transit")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["source"] == "edit"
+    assert body["actor_name"] == "Tina Trucker"

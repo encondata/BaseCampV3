@@ -230,3 +230,21 @@ async def test_client_anchored_override_denied_without_scope_map(client, seeded_
         params={"entity_type": "person", "entity_id": alice_id},
     )
     assert resp.status_code == 200
+
+
+async def test_truck_attachments_list_empty(client, seeded_user, db):
+    """truck is a registered attachment host (ENTITY_MODEL) — the truck
+    detail page's Notes & Files panel lists attachments on it."""
+    from serversherpa.db.models import Truck
+    headers, _ = await _login(client)
+    truck = Truck(name="host-truck-att-1")
+    db.add(truck)
+    await db.commit()
+
+    resp = await client.get(
+        "/attachments",
+        headers=headers,
+        params={"entity_type": "truck", "entity_id": str(truck.id)},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == []
