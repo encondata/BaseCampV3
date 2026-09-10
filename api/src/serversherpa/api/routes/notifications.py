@@ -421,14 +421,20 @@ async def list_recipients(
 INBOX_LIMIT = 50
 
 
+def _own_live(user: CurrentUser, notification_id: uuid.UUID):
+    return select(Notification).where(
+        Notification.id == notification_id,
+        Notification.person_id == user.person.id,
+        Notification.dismissed_at.is_(None))
+
+
 @router.get("/inbox", response_model=NotificationInboxOut)
 async def inbox(user: CurrentUser, db: DbSession,
                 unread_only: bool = False) -> NotificationInboxOut:
-    base = select(Notification).where(Notification.person_id == user.person.id)
-    unread = await db.scalar(
-        select(func.count()).select_from(Notification).where(
-            Notification.person_id == user.person.id, Notification.read_at.is_(None)))
-    q = base.order_by(Notification.created_at.desc()).limit(INBOX_LIMIT)
+    live = (Notification.person_id == user.person.id, Notification.dismissed_at.is_(None))
+    unread = await db.scalar(select(func.count()).select_from(Notification)
+                             .where(*live, Notification.read_at.is_(None)))
+    q = select(Notification).where(*live).order_by(Notification.created_at.desc()).limit(INBOX_LIMIT)
     if unread_only:
         q = q.where(Notification.read_at.is_(None))
     items = (await db.scalars(q)).all()
@@ -436,11 +442,8 @@ async def inbox(user: CurrentUser, db: DbSession,
 
 
 @router.post("/inbox/{notification_id}/read", status_code=204)
-async def inbox_mark_read(notification_id: uuid.UUID, user: CurrentUser,
-                          db: DbSession) -> Response:
-    row = await db.scalar(select(Notification).where(
-        Notification.id == notification_id,
-        Notification.person_id == user.person.id))
+async def inbox_mark_read(notification_id: uuid.UUID, user: CurrentUser, db: DbSession) -> Response:
+    row = await db.scalar(_own_live(user, notification_id))
     if row is None:
         raise HTTPException(status_code=404, detail={"code": "notification_not_found"})
     if row.read_at is None:
@@ -449,13 +452,49 @@ async def inbox_mark_read(notification_id: uuid.UUID, user: CurrentUser,
     return Response(status_code=204)
 
 
+@router.post("/inbox/{notification_id}/unread", status_code=204)
+async def inbox_mark_unread(notification_id: uuid.UUID, user: CurrentUser, db: DbSession) -> Response:
+    row = await db.scalar(_own_live(user, notification_id))
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "notification_not_found"})
+    if row.read_at is not None:
+        row.read_at = None
+        await db.commit()
+    return Response(status_code=204)
+
+
+@router.delete("/inbox/{notification_id}", status_code=204)
+async def inbox_hide(notification_id: uuid.UUID, user: CurrentUser, db: DbSession) -> Response:
+    """Soft dismiss: the row is kept (retention policy TBD), just hidden."""
+    row = await db.scalar(select(Notification).where(
+        Notification.id == notification_id, Notification.person_id == user.person.id))
+    if row is None:
+        raise HTTPException(status_code=404, detail={"code": "notification_not_found"})
+    if row.dismissed_at is None:
+        row.dismissed_at = datetime.now(UTC)
+        await db.commit()
+    return Response(status_code=204)
+
+
 @router.post("/inbox/read-all", status_code=204)
 async def inbox_mark_all_read(user: CurrentUser, db: DbSession) -> Response:
     rows = (await db.scalars(select(Notification).where(
-        Notification.person_id == user.person.id,
+        Notification.person_id == user.person.id, Notification.dismissed_at.is_(None),
         Notification.read_at.is_(None)))).all()
     now = datetime.now(UTC)
     for row in rows:
         row.read_at = now
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/inbox/clear-read", status_code=204)
+async def inbox_clear_read(user: CurrentUser, db: DbSession) -> Response:
+    rows = (await db.scalars(select(Notification).where(
+        Notification.person_id == user.person.id, Notification.dismissed_at.is_(None),
+        Notification.read_at.is_not(None)))).all()
+    now = datetime.now(UTC)
+    for row in rows:
+        row.dismissed_at = now
     await db.commit()
     return Response(status_code=204)

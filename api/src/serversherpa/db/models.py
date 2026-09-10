@@ -1262,3 +1262,4 @@ class Notification(Base):
     payload: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     read_at: Mapped[datetime | None]
+    dismissed_at: Mapped[datetime | None]

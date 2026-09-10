@@ -67,3 +67,53 @@ async def test_mark_read_rejects_other_persons_row(client, db, seeded_user):
     await db.commit()
     assert (await client.post(f"/notifications/inbox/{a.id}/read", headers=other)).status_code == 404
     assert (await client.post(f"/notifications/inbox/{uuid4()}/read", headers=other)).status_code == 404
+
+
+async def test_mark_unread_restores_the_row(client, db, seeded_user):
+    hdrs = await login(client)
+    a = await notify(db, seeded_user.id, "report_ready", "A")
+    await db.commit()
+    await client.post(f"/notifications/inbox/{a.id}/read", headers=hdrs)
+    assert (await client.get("/notifications/inbox", headers=hdrs)).json()["unread_count"] == 0
+    resp = await client.post(f"/notifications/inbox/{a.id}/unread", headers=hdrs)
+    assert resp.status_code == 204
+    body = (await client.get("/notifications/inbox", headers=hdrs)).json()
+    assert body["unread_count"] == 1 and body["items"][0]["read_at"] is None
+
+
+async def test_hide_is_soft_and_excluded_from_list_and_count(client, db, seeded_user):
+    hdrs = await login(client)
+    a = await notify(db, seeded_user.id, "report_ready", "A")
+    b = await notify(db, seeded_user.id, "report_ready", "B")
+    await db.commit()
+    resp = await client.delete(f"/notifications/inbox/{a.id}", headers=hdrs)
+    assert resp.status_code == 204
+    assert (await client.delete(f"/notifications/inbox/{a.id}", headers=hdrs)).status_code == 204  # idempotent
+    body = (await client.get("/notifications/inbox", headers=hdrs)).json()
+    assert [i["id"] for i in body["items"]] == [str(b.id)]
+    assert body["unread_count"] == 1
+    await db.refresh(a)
+    assert a.dismissed_at is not None                      # row kept
+    assert (await client.post(f"/notifications/inbox/{a.id}/unread", headers=hdrs)).status_code == 404
+    assert (await client.post(f"/notifications/inbox/{a.id}/read", headers=hdrs)).status_code == 404
+
+
+async def test_hide_and_unread_are_own_rows_only(client, db, seeded_user):
+    other = await _make(db, client, "staff", "bob@test.example.com")
+    a = await notify(db, seeded_user.id, "report_ready", "A")
+    await db.commit()
+    assert (await client.delete(f"/notifications/inbox/{a.id}", headers=other)).status_code == 404
+    assert (await client.post(f"/notifications/inbox/{a.id}/unread", headers=other)).status_code == 404
+    assert (await client.delete(f"/notifications/inbox/{uuid4()}", headers=other)).status_code == 404
+
+
+async def test_clear_read_hides_only_read_rows(client, db, seeded_user):
+    hdrs = await login(client)
+    a = await notify(db, seeded_user.id, "report_ready", "A")
+    await notify(db, seeded_user.id, "report_ready", "B")
+    await db.commit()
+    await client.post(f"/notifications/inbox/{a.id}/read", headers=hdrs)
+    assert (await client.post("/notifications/inbox/clear-read", headers=hdrs)).status_code == 204
+    body = (await client.get("/notifications/inbox", headers=hdrs)).json()
+    assert [i["title"] for i in body["items"]] == ["B"] and body["unread_count"] == 1
+    assert (await client.post("/notifications/inbox/clear-read", headers=hdrs)).status_code == 204  # nothing left: fine
