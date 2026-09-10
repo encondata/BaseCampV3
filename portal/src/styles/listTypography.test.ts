@@ -15,13 +15,24 @@
  * LIST_SELECTOR alone misses them. Per stylesheet we do a two-pass scan:
  * pass 1 collects a "family prefix" from every list-ish selector (one
  * that already matches LIST_SELECTOR) whose class matches
- * `.<prefix>-(row|rows|cell|cells|list|table|head|grid|feed)` — e.g.
+ * `.<prefix>-(row|rows|cell|cells|list|table|grid|feed)` — e.g.
  * `.dash-board-row` → `dash-board`, `.mdash-wave-row` → `mdash-wave`,
  * `.activity-list` → `activity`. Pass 2 then also treats any rule whose
  * selector contains `.<prefix>-` for one of those collected prefixes as
  * list-ish, catching siblings like `.dash-board-name`/`.dash-board-route`
  * and `.activity-changes` (from the `.activity-list` family) even though
- * their own class name has no trigger word.
+ * their own class name has no trigger word. NOTE: `head` is deliberately
+ * excluded from this suffix alternation — `.dash-head`/`.access-head`/
+ * `.modal-head`-style selectors are common non-list "section heading"
+ * names, and including `head` here turned every such prefix (`dash`,
+ * `access`, `modal`, …) into a file-wide family, catching unrelated
+ * selectors that merely share the prefix.
+ *
+ * A 5th test keeps listTypography.allow.json honest as migration tasks
+ * land: every allowlist entry must still match at least one *raw*
+ * violation (computed without consulting the allowlist) in one of (a)/
+ * (b)/(c) — otherwise it's a stale entry for a violation that no longer
+ * exists and should be deleted.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -31,7 +42,7 @@ const SRC = join(__dirname, '..');
 const LIST_SELECTOR = /(row|cell|list|table|chip|mono|\bpn\b|\bps\b|head|\b(?:tr|td|th|thead|tbody)\b)/i;
 const TYPO_PROPS = /^(font-size|font-family|font-weight|line-height|min-height)\s*:/;
 const DIRECTORY_LIST_RULE = /\.(dir-list|list-head|dir-row|row-main|cell|chip|kv|mini-|data-table)/;
-const FAMILY_PREFIX = /\.([a-zA-Z0-9-]+)-(?:row|rows|cell|cells|list|table|head|grid|feed)\b/g;
+const FAMILY_PREFIX = /\.([a-zA-Z0-9-]+)-(?:row|rows|cell|cells|list|table|grid|feed)\b/g;
 
 /** Pass 1: family prefixes for every list-ish selector in a stylesheet. */
 function familyPrefixes(selectors: string[]): Set<string> {
@@ -89,52 +100,88 @@ function rules(css: string): { selector: string; decls: string[] }[] {
 const rel = (p: string) => relative(SRC, p).replace(/\\/g, '/');
 const snippet = (items: Allow[]) => JSON.stringify(items, null, 2);
 
-describe('list typography guardrail', () => {
-  it('(a) only directory.css sets typography on list-ish selectors', () => {
-    const bad: Allow[] = [];
-    for (const file of walk(join(SRC, 'styles'), /\.css$/)) {
+/** A violation found by (a)/(b)/(c), independent of the allowlist.
+ *  `decl` (c only) carries the offending declaration for messaging. */
+interface Violation { file: string; selector?: string; decl?: string; }
+
+/** (a) raw: list-ish selectors with typography props outside
+ *  directory.css, computed WITHOUT consulting the allowlist. */
+function rawViolationsA(): Violation[] {
+  const out: Violation[] = [];
+  for (const file of walk(join(SRC, 'styles'), /\.css$/)) {
+    const f = rel(file);
+    if (f === 'styles/directory.css') continue;
+    const parsed = rules(readFileSync(file, 'utf8'));
+    const prefixes = familyPrefixes(parsed.map((r) => r.selector));
+    for (const r of parsed) {
+      if (!isListSelector(r.selector, prefixes)) continue;
+      if (!r.decls.some((d) => TYPO_PROPS.test(d))) continue;
+      out.push({ file: f, selector: r.selector });
+    }
+  }
+  return out;
+}
+
+/** (b) raw: raw <table> usage outside components/DataTable.tsx,
+ *  computed WITHOUT consulting the allowlist. */
+function rawViolationsB(): Violation[] {
+  const out: Violation[] = [];
+  for (const dir of ['pages', 'components']) {
+    for (const file of walk(join(SRC, dir), /\.tsx$/)) {
       const f = rel(file);
-      if (f === 'styles/directory.css') continue;
-      const parsed = rules(readFileSync(file, 'utf8'));
-      const prefixes = familyPrefixes(parsed.map((r) => r.selector));
-      for (const r of parsed) {
-        if (!isListSelector(r.selector, prefixes)) continue;
-        if (!r.decls.some((d) => TYPO_PROPS.test(d))) continue;
-        if (!allowed(f, r.selector)) bad.push({ file: f, selector: r.selector, reason: '' });
+      if (f === 'components/DataTable.tsx') continue;
+      if (/<table\b/.test(readFileSync(file, 'utf8'))) out.push({ file: f });
+    }
+  }
+  return out;
+}
+
+/** (c) raw: literal px/pt typography in directory.css list rules,
+ *  computed WITHOUT consulting the allowlist. */
+function rawViolationsC(): Violation[] {
+  const out: Violation[] = [];
+  for (const r of rules(readFileSync(join(SRC, 'styles/directory.css'), 'utf8'))) {
+    if (!DIRECTORY_LIST_RULE.test(r.selector)) continue;
+    for (const d of r.decls) {
+      if (TYPO_PROPS.test(d) && /\d(px|pt)\b/.test(d) && !/var\(--list-/.test(d)) {
+        out.push({ file: 'styles/directory.css', selector: r.selector, decl: d });
       }
     }
+  }
+  return out;
+}
+
+describe('list typography guardrail', () => {
+  it('(a) only directory.css sets typography on list-ish selectors', () => {
+    const bad: Allow[] = rawViolationsA()
+      .filter((v) => !allowed(v.file, v.selector))
+      .map((v) => ({ file: v.file, selector: v.selector, reason: '' }));
     expect(bad, `list typography outside directory.css:\n${snippet(bad)}`).toEqual([]);
   });
 
   it('(b) no raw <table> outside components/DataTable.tsx', () => {
-    const bad: Allow[] = [];
-    for (const dir of ['pages', 'components']) {
-      for (const file of walk(join(SRC, dir), /\.tsx$/)) {
-        const f = rel(file);
-        if (f === 'components/DataTable.tsx') continue;
-        if (/<table\b/.test(readFileSync(file, 'utf8')) && !allowed(f)) {
-          bad.push({ file: f, reason: '' });
-        }
-      }
-    }
+    const bad: Allow[] = rawViolationsB()
+      .filter((v) => !allowed(v.file, v.selector))
+      .map((v) => ({ file: v.file, reason: '' }));
     expect(bad, `raw <table> (use <DataTable>):\n${snippet(bad)}`).toEqual([]);
   });
 
   it('(c) directory.css list rules use tokens, not literal px, for typography', () => {
-    const bad: string[] = [];
-    for (const r of rules(readFileSync(join(SRC, 'styles/directory.css'), 'utf8'))) {
-      if (!DIRECTORY_LIST_RULE.test(r.selector)) continue;
-      for (const d of r.decls) {
-        if (TYPO_PROPS.test(d) && /\d(px|pt)\b/.test(d) && !/var\(--list-/.test(d)
-            && !allowed('styles/directory.css', r.selector)) {
-          bad.push(`${r.selector} { ${d} }`);
-        }
-      }
-    }
+    const bad: string[] = rawViolationsC()
+      .filter((v) => !allowed(v.file, v.selector))
+      .map((v) => `${v.selector} { ${v.decl} }`);
     expect(bad, `literal sizes in directory.css list rules:\n${bad.join('\n')}`).toEqual([]);
   });
 
   it('every allowlist entry carries a reason', () => {
     expect(allow.filter((a) => !a.reason.trim())).toEqual([]);
+  });
+
+  it('every allowlist entry still matches a live violation (no stale entries)', () => {
+    const violations = [...rawViolationsA(), ...rawViolationsB(), ...rawViolationsC()];
+    const matches = (a: Allow, v: Violation) =>
+      a.file === v.file && (a.selector === undefined || a.selector === v.selector);
+    const stale = allow.filter((a) => !violations.some((v) => matches(a, v)));
+    expect(stale, `stale allowlist entries — delete them:\n${snippet(stale)}`).toEqual([]);
   });
 });

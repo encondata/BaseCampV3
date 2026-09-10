@@ -322,36 +322,6 @@
   },
   {
     "file": "styles/access.css",
-    "selector": ".access-tab-panel",
-    "reason": "not list content: generic tab-panel wrapper shared across pages (Access/Printers/Variables), not list-specific"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".access-empty",
-    "reason": "not list content: shared error/empty message box reused across list and non-list tabs alike, not list-row typography"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".access-empty b",
-    "reason": "not list content: shared error/empty message box heading (see .access-empty)"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".rd-note",
-    "reason": "not list content: role-detail panel note — singular selected-role detail view, not a list row"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".gc-name",
-    "reason": "not list content: group-detail panel header name — singular selected-group card (grp-detail), not a repeating list"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".gc-sub",
-    "reason": "not list content: group-detail panel header subtitle (see .gc-name)"
-  },
-  {
-    "file": "styles/access.css",
     "selector": ".gate-label",
     "reason": "baseline — migrate in Task 5"
   },
@@ -367,48 +337,8 @@
   },
   {
     "file": "styles/access.css",
-    "selector": ".mtx-title b",
-    "reason": "not list content: permission-matrix panel head title — singular head above the table, not a row"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".mtx-title span",
-    "reason": "not list content: permission-matrix panel head subtitle (see .mtx-title b)"
-  },
-  {
-    "file": "styles/access.css",
     "selector": ".pm-res-label",
     "reason": "baseline — migrate in Task 5"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".ov-sub",
-    "reason": "not list content: override-editor modal subtext (sibling of the existing .ov-head h3 modal-heading entry)"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".exp-av",
-    "reason": "not list content: explorer-tab person header avatar — singular detail header, not a list row"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".exp-name",
-    "reason": "not list content: explorer-tab person header name (see .exp-av)"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".exp-scope",
-    "reason": "not list content: explorer-tab person header scope subtitle (see .exp-av)"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".exp-perm-count",
-    "reason": "not list content: explorer-tab person header permission-count stat (see .exp-av)"
-  },
-  {
-    "file": "styles/access.css",
-    "selector": ".exp-perm-count b",
-    "reason": "not list content: explorer-tab person header permission-count stat value (see .exp-av)"
   },
   {
     "file": "styles/assets.css",
@@ -506,11 +436,6 @@
     "reason": "not list content: command palette (Cmd+K quick-open) — a global overlay list, not the directory-list pattern"
   },
   {
-    "file": "styles/chrome.css",
-    "selector": ".modal-section",
-    "reason": "not list content: generic modal body section wrapper (sibling of the existing .modal-head h3 entry)"
-  },
-  {
     "file": "styles/column-menu.css",
     "selector": ".colmenu-sort .pop-item",
     "reason": "not list content: column-menu popover sort option — a dropdown menu item, not a list row"
@@ -519,51 +444,6 @@
     "file": "styles/column-menu.css",
     "selector": ".colmenu-search",
     "reason": "not list content: column-menu popover search input"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-asof",
-    "reason": "not list content: page-head \"as of\" timestamp"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-kpi-label",
-    "reason": "not list content: KPI stat tile label — summary card, not a list row"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-kpi-value",
-    "reason": "not list content: KPI stat tile value (see .dash-kpi-label)"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-kpi-sub",
-    "reason": "not list content: KPI stat tile subtext (see .dash-kpi-label)"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-kpi-sub strong",
-    "reason": "not list content: KPI stat tile subtext emphasis (see .dash-kpi-label)"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-panel-title",
-    "reason": "not list content: shared panel chrome title — used across every dashboard panel type incl. non-list charts, not row-specific"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-panel-count",
-    "reason": "not list content: shared panel chrome count (see .dash-panel-title)"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-panel-link",
-    "reason": "not list content: shared panel chrome link (see .dash-panel-title)"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-panel-empty",
-    "reason": "not list content: shared panel chrome empty-state (see .dash-panel-title)"
   },
   {
     "file": "styles/dashboard.css",
@@ -592,31 +472,6 @@
   },
   {
     "file": "styles/dashboard.css",
-    "selector": ".dash-chart-wrap",
-    "reason": "not list content: SVG bar-chart container, not a list"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-axis-label",
-    "reason": "not list content: SVG chart axis label"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-chart-tooltip",
-    "reason": "not list content: chart hover tooltip"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-chart-note",
-    "reason": "not list content: chart caption/note text"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-chart-note strong",
-    "reason": "not list content: chart caption/note emphasis"
-  },
-  {
-    "file": "styles/dashboard.css",
     "selector": ".dash-dist-count",
     "reason": "baseline — migrate in Task 4"
   },
@@ -624,16 +479,6 @@
     "file": "styles/dashboard.css",
     "selector": ".dash-dist-pct",
     "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-transit-empty",
-    "reason": "not list content: in-transit map placeholder empty-state"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-transit-badge",
-    "reason": "not list content: map overlay badge"
   },
   {
     "file": "styles/dashboard.css",
@@ -662,11 +507,6 @@
   },
   {
     "file": "styles/dashboard.css",
-    "selector": ".dash-sites-map .leaflet-popup-content div",
-    "reason": "not list content: Leaflet map popup content (third-party map tooltip, not list)"
-  },
-  {
-    "file": "styles/dashboard.css",
     "selector": ".dash-feed-text .who",
     "reason": "baseline — migrate in Task 4"
   },
@@ -674,16 +514,6 @@
     "file": "styles/dashboard.css",
     "selector": ".dash-feed-text .what",
     "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-ctrl > span",
-    "reason": "not list content: Move Dashboard filter-control label"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-ctrl select",
-    "reason": "not list content: Move Dashboard filter-control select input"
   },
   {
     "file": "styles/dashboard.css",
@@ -734,11 +564,6 @@
     "file": "styles/dashboard.css",
     "selector": ".pdash-event-time",
     "reason": "baseline — migrate in Task 4"
-  },
-  {
-    "file": "styles/dashboard.css",
-    "selector": ".dash-ctrl-static",
-    "reason": "not list content: Client Dashboard filter-control label (static variant of .dash-ctrl > span)"
   },
   {
     "file": "styles/dashboard.css",
@@ -853,11 +678,6 @@
   {
     "file": "styles/portal-theme.css",
     "selector": ".portal-nav .nav-item a.active",
-    "reason": "not list content: primary app navigation sidebar item, not a data list (see existing .nav-list/.user-chip entries)"
-  },
-  {
-    "file": "styles/portal-theme.css",
-    "selector": ".portal-nav .um-item",
     "reason": "not list content: primary app navigation sidebar item, not a data list (see existing .nav-list/.user-chip entries)"
   },
   {
