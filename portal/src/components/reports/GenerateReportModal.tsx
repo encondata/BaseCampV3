@@ -151,13 +151,13 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
                   {types.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
                 </select>
               </div>
-              <div className="ini-picker-list" role="radiogroup">
+              <div className="mini-list ini-picker-list" role="radiogroup">
                 {initiatives === null && <div className="ini-picker-empty">Loading…</div>}
                 {initiatives !== null && shown.length === 0 && (
                   <div className="ini-picker-empty">No initiatives match.</div>
                 )}
                 {shown.map((i) => (
-                  <label key={i.id} className={`ini-picker-row ${picked?.id === i.id ? 'on' : ''}`}>
+                  <label key={i.id} className={`mini-row ini-picker-row ${picked?.id === i.id ? 'on' : ''}`}>
                     <input type="radio" name="initiative" aria-label={i.name}
                            checked={picked?.id === i.id} onChange={() => setPicked(i)} />
                     <span className="cell-primary">{i.name}</span>
@@ -183,14 +183,14 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
           <>
             <div className="modal-body">
               <p className="cell-sub">Select which sections to include in the PDF report for <b>{picked?.name}</b>:</p>
-              <div className="report-sections">
+              <div className="mini-list report-sections">
                 {MOVE_REPORT_SECTIONS.map((s) => (
-                  <label key={s.key} className="report-section-row">
+                  <label key={s.key} className="mini-row report-section-row">
                     <Switch checked={!!options[s.key]}
                             onChange={(v) => setOptions((o) => ({ ...o, [s.key]: v }))} />
                     <span className="report-section-text">
-                      <span className="report-section-title">{s.title}</span>
-                      <span className="report-section-desc">{s.description}</span>
+                      <span className="cell-top">{s.title}</span>
+                      <span className="cell-sub">{s.description}</span>
                     </span>
                   </label>
                 ))}

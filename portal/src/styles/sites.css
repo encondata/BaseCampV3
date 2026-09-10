@@ -95,21 +95,14 @@
 
 .bulk-file-row { display: flex; flex-direction: column; gap: 4px; }
 
-.bulk-preview { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.bulk-preview th {
-  text-align: left;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--line, #d8dee6);
-}
-.bulk-preview td {
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--line, #eceff3);
-  vertical-align: top;
-}
+/* the preview is a <DataTable> now — directory.css's .data-table supplies
+   the borders/padding/typography; this just keeps multi-line diff cells
+   top-aligned and tints the Action column per row outcome. */
+.bulk-preview td { vertical-align: top; }
 .bulk-preview .pf-error { display: block; }
-.bulk-row-error td:nth-child(3) { color: var(--c-red, #c03540); font-weight: 600; }
-.bulk-row-create td:nth-child(3) { color: var(--c-green, #178a4c); font-weight: 600; }
-.bulk-row-update td:nth-child(3) { color: var(--c-amber, #a36207); font-weight: 600; }
+.bulk-row-error td:nth-child(3) { color: var(--c-red, #c03540); }
+.bulk-row-create td:nth-child(3) { color: var(--c-green, #178a4c); }
+.bulk-row-update td:nth-child(3) { color: var(--c-amber, #a36207); }
 .bulk-row-unchanged td:nth-child(3) { color: var(--muted, #51606f); }
 
 .bulk-diff { display: flex; flex-direction: column; gap: 2px; }

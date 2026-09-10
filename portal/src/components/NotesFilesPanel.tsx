@@ -201,8 +201,8 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                           aria-label={`Open ${file.filename}`}>
                     <img src={file.url ?? ''} alt={file.filename} loading="lazy" />
                   </button>
-                  <div className="nf-meta nf-thumb-cap">
-                    <span>{file.filename}</span>
+                  <div className="mini-row compact nf-meta nf-thumb-cap">
+                    <span className="cell-top">{file.filename}</span>
                     {canWrite && (
                       <span className="nf-actions">
                         <button className="mini-btn danger" disabled={busy} onClick={() => {
@@ -241,9 +241,9 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
             <p className="page-hint">Nothing here yet.</p>
           )}
 
-          <ul className="nf-list">
+          <ul className="mini-list nf-list">
             {entries.map((entry) => entry.kind === 'note' ? (
-              <li key={`n-${entry.note.id}`} className="nf-item">
+              <li key={`n-${entry.note.id}`} className="mini-row nf-item">
                 {editingId === entry.note.id ? (
                   <>
                     <textarea rows={2} value={editBody} ref={autoGrow}
@@ -260,8 +260,8 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                   <>
                     <p className="nf-body">{entry.note.body}</p>
                     <div className="nf-meta">
-                      <span>{entry.note.author_name ?? 'Unknown'}</span>
-                      <span>{new Date(entry.note.created_at).toLocaleString()}</span>
+                      <span className="cell-sub">{entry.note.author_name ?? 'Unknown'}</span>
+                      <span className="mono">{new Date(entry.note.created_at).toLocaleString()}</span>
                       {canWrite && (
                         <span className="nf-actions">
                           <button className="mini-btn" disabled={busy} onClick={() => {
@@ -278,7 +278,7 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                 )}
               </li>
             ) : (
-              <li key={`f-${entry.file.id}`} className="nf-item">
+              <li key={`f-${entry.file.id}`} className="mini-row nf-item">
                 <p className="nf-body">
                   {entry.file.url
                     ? <a href={entry.file.url} target="_blank" rel="noreferrer">
@@ -288,8 +288,8 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                     {entry.file.kind}</span>
                 </p>
                 <div className="nf-meta">
-                  <span>{(entry.file.size_bytes / 1024).toFixed(0)} KB</span>
-                  <span>{new Date(entry.file.created_at).toLocaleString()}</span>
+                  <span className="cell-sub">{(entry.file.size_bytes / 1024).toFixed(0)} KB</span>
+                  <span className="mono">{new Date(entry.file.created_at).toLocaleString()}</span>
                   {canWrite && (
                     <span className="nf-actions">
                       <button className="mini-btn danger" disabled={busy} onClick={() => {

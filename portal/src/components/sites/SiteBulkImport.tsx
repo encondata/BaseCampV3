@@ -18,6 +18,7 @@ import {
   type BulkPreview,
   type BulkRowResult,
 } from '../../lib/api';
+import DataTable from '../DataTable';
 
 interface Props {
   onDone: () => Promise<void> | void;
@@ -237,44 +238,49 @@ export default function SiteBulkImport({ onDone }: Props) {
       {notice && <p className="set-note">{notice}</p>}
 
       {preview && (
-        <table className="bulk-preview">
-          <thead>
-            <tr><th>Row</th><th>Name</th><th>Action</th><th>Details</th></tr>
-          </thead>
-          <tbody>
-            {preview.rows.map((r) => (
-              <tr key={r.row} className={`bulk-row-${r.action}`}>
-                <td>{r.row}</td>
-                <td>{r.name ?? '—'}</td>
-                <td>{ACTION_LABEL[r.action]}</td>
-                <td>
-                  {r.action === 'error' && r.errors.map((e) => (
-                    <span key={e} className="pf-error">{e}</span>
-                  ))}
-                  {r.action === 'update' && r.diff && (
-                    <div className="bulk-diff">
-                      {describeDiff(r.diff).map((d) => (
-                        <span key={d.field}>
-                          {d.field}: {d.from ? `${d.from} → ` : ''}{d.to}
-                        </span>
-                      ))}
-                      <label>
-                        <input
-                          type="checkbox"
-                          aria-label={`Approve update to ${r.name}`}
-                          checked={r.site_id !== null && approved.has(r.site_id)}
-                          disabled={busy}
-                          onChange={() => r.site_id && toggleApproval(r.site_id)}
-                        />
-                        {' '}Approve
-                      </label>
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <DataTable
+          ariaLabel="Import preview"
+          className="bulk-preview"
+          columns={[
+            { key: 'row', label: 'Row', width: '64px', mono: true },
+            { key: 'name', label: 'Name' },
+            { key: 'action', label: 'Action' },
+            { key: 'details', label: 'Details' },
+          ]}
+          rows={preview.rows.map((r) => ({
+            key: String(r.row),
+            className: `bulk-row-${r.action}`,
+            cells: [
+              r.row,
+              r.name ?? '—',
+              ACTION_LABEL[r.action],
+              <>
+                {r.action === 'error' && r.errors.map((e) => (
+                  <span key={e} className="pf-error">{e}</span>
+                ))}
+                {r.action === 'update' && r.diff && (
+                  <div className="bulk-diff">
+                    {describeDiff(r.diff).map((d) => (
+                      <span key={d.field}>
+                        {d.field}: {d.from ? `${d.from} → ` : ''}{d.to}
+                      </span>
+                    ))}
+                    <label>
+                      <input
+                        type="checkbox"
+                        aria-label={`Approve update to ${r.name}`}
+                        checked={r.site_id !== null && approved.has(r.site_id)}
+                        disabled={busy}
+                        onChange={() => r.site_id && toggleApproval(r.site_id)}
+                      />
+                      {' '}Approve
+                    </label>
+                  </div>
+                )}
+              </>,
+            ],
+          }))}
+        />
       )}
     </div>
   );

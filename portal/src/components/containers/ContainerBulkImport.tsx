@@ -17,6 +17,7 @@ import {
   previewContainerBulk,
   type ContainerBulkRow,
 } from '../../lib/api';
+import DataTable from '../DataTable';
 import '../../styles/sites.css';
 
 interface Props {
@@ -154,24 +155,28 @@ export default function ContainerBulkImport({ onClose, onDone }: Props) {
           </div>
 
           {preview && (
-            <table className="bulk-preview">
-              <thead>
-                <tr><th>Row</th><th>Name</th><th>Result</th></tr>
-              </thead>
-              <tbody>
-                {preview.map((r) => (
-                  <tr key={r.row} className={`bulk-row-${r.action}`}>
-                    <td>{r.row}</td>
-                    <td>{String(r.data.name ?? '')}</td>
-                    <td>{r.action === 'create'
-                      ? 'Create'
-                      : r.errors.map((e) => (
-                        <span key={e} className="pf-error">{ROW_ERRORS[e] ?? e}</span>
-                      ))}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DataTable
+              ariaLabel="Import preview"
+              className="bulk-preview"
+              columns={[
+                { key: 'row', label: 'Row', width: '64px', mono: true },
+                { key: 'name', label: 'Name' },
+                { key: 'result', label: 'Result' },
+              ]}
+              rows={preview.map((r) => ({
+                key: String(r.row),
+                className: `bulk-row-${r.action}`,
+                cells: [
+                  r.row,
+                  String(r.data.name ?? ''),
+                  r.action === 'create'
+                    ? 'Create'
+                    : r.errors.map((e) => (
+                      <span key={e} className="pf-error">{ROW_ERRORS[e] ?? e}</span>
+                    )),
+                ],
+              }))}
+            />
           )}
           {done !== null && (
             <p className="page-hint"><b>Imported {done} containers.</b></p>

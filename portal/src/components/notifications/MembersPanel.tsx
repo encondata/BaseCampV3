@@ -3,9 +3,9 @@
  * Members come straight off the loaded group (NotificationGroupDetail's
  * `load()`/`reload()` contract) — no separate fetch; only the recipients
  * list backing the add-member ComboBox is lazy-loaded on first open, and
- * filtered to exclude people already in the group. Real aligned
- * `.activity-changes` table (house pattern, '—' per empty cell) with
- * warning chips for channels a member can't actually receive and
+ * filtered to exclude people already in the group. Renders a
+ * `<DataTable>` ('—' per empty cell) with warning chips for channels a
+ * member can't actually receive and
  * "Override" markers wherever a per-member override shadows the group
  * default. Per-row Edit opens OverrideEditorModal; Remove is a two-click
  * inline confirm, mirroring the page's own Delete button.
