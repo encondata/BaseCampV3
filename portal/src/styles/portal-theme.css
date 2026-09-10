@@ -400,10 +400,10 @@
    via --nav-width; visibility: hidden keeps its (still-rendered) content
    out of the tab order while it has no visible box ─────────────── */
 
-.portal-shell[data-nav-mode='hidden'] .portal-nav.docked { visibility: hidden; }
+.portal-shell[data-nav-mode='hidden'] .portal-nav.docked { visibility: hidden; padding: 0; border-right-width: 0; overflow: hidden; }
 
 @media (max-width: 900px) {
-  .portal-nav.docked { visibility: hidden; }
+  .portal-nav.docked { visibility: hidden; padding: 0; border-right-width: 0; overflow: hidden; }
 }
 
 /* ── hidden-mode overlay — the same NavPanel, floated over the content ── */
