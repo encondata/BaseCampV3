@@ -602,6 +602,67 @@ class Container(Base):
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
+class Truck(Base):
+    """A truckload on a move (V2 parity). Status keys live in status_values
+    record_type='truck'; containers ride via truck_containers."""
+
+    __tablename__ = "trucks"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    legacy_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
+    name: Mapped[str] = mapped_column(CITEXT)
+    driver_name: Mapped[str | None]
+    co_driver_name: Mapped[str | None]
+    team_drive: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    contact_info: Mapped[str] = mapped_column(server_default="")
+    status: Mapped[str] = mapped_column(server_default="created")
+    status_record_type: Mapped[str] = mapped_column(
+        server_default=text("'truck'"))  # GENERATED column; never written
+    load_number: Mapped[str | None]
+    seal_id: Mapped[str | None] = mapped_column(String(24))
+    tracking_type: Mapped[dict] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"))
+    initiative_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="SET NULL"))
+    start_site_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sites.id", ondelete="SET NULL"))
+    end_site_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("sites.id", ondelete="SET NULL"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    archived_at: Mapped[datetime | None]
+
+
+class TruckContainer(Base):
+    __tablename__ = "truck_containers"
+
+    truck_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("trucks.id", ondelete="CASCADE"), primary_key=True)
+    container_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("containers.id", ondelete="CASCADE"), primary_key=True)
+    added_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class TruckUpdate(Base):
+    """One location report. `location` is V2's raw "lat, lng" text; lat/lng
+    are the parsed numbers the map uses (NULL when unparsable)."""
+
+    __tablename__ = "truck_updates"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    truck_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("trucks.id", ondelete="CASCADE"))
+    recorded_at: Mapped[datetime]
+    location: Mapped[str]
+    lat: Mapped[float | None]
+    lng: Mapped[float | None]
+    approximate_address: Mapped[str] = mapped_column(server_default="")
+    source: Mapped[str] = mapped_column(server_default="manual")
+
+
 class ContainerAsset(Base):
     __tablename__ = "container_assets"
 

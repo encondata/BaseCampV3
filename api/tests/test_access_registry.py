@@ -7,7 +7,7 @@ def test_registry_shape():
                              "devtools", "sites", "assets", "asset_models",
                              "containers", "initiatives", "scans", "status_rules",
                              "scanning_hardware", "labels", "time", "notifications",
-                             "ai", "reports"}
+                             "ai", "reports", "trucks"}
     assert ACTIONS == ("view", "add", "change", "delete")
     assert REGISTRY["devtools"].developer_only is True
     assert REGISTRY["access"].always_viewable is True

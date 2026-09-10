@@ -10,7 +10,7 @@ TOP_RANK = 100
 FULL = ("view", "add", "change", "delete")
 _ALL = ["dashboard", "users", "workers", "clients", "partners",
         "attachments", "settings", "access", "audit", "devtools", "sites",
-        "assets", "asset_models", "containers", "initiatives", "scans",
+        "assets", "asset_models", "containers", "trucks", "initiatives", "scans",
         "status_rules", "scanning_hardware", "labels", "reports", "time",
         "notifications", "ai"]
 
@@ -24,7 +24,8 @@ DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
               "clients": FULL, "partners": FULL, "attachments": FULL,
               "settings": ("view", "change"), "access": ("view", "change"),
               "audit": ("view",), "sites": FULL, "assets": FULL,
-              "asset_models": FULL, "containers": FULL, "initiatives": FULL,
+              "asset_models": FULL, "containers": FULL, "trucks": FULL,
+              "initiatives": FULL,
               "scans": ("view", "change", "delete"), "status_rules": FULL,
               "scanning_hardware": FULL, "labels": FULL, "reports": FULL,
               "time": FULL, "notifications": FULL, "ai": ("view",)},
@@ -32,7 +33,8 @@ DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
               "workers": FULL, "clients": FULL, "partners": FULL,
               "attachments": FULL, "settings": ("view",), "access": ("view",),
               "sites": FULL, "assets": FULL, "asset_models": FULL,
-              "containers": FULL, "initiatives": FULL, "scans": ("view",),
+              "containers": FULL, "trucks": FULL, "initiatives": FULL,
+              "scans": ("view",),
               "status_rules": ("view",), "scanning_hardware": ("view",),
               "labels": ("view",), "reports": ("view", "add"), "time": ("view",)},
     "client_owner":  {"dashboard": ("view",), "clients": ("view", "change"),

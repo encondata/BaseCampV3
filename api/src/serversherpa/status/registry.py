@@ -70,6 +70,8 @@ STATUS_RECORD_TYPES: list[StatusRecordType] = [
     StatusRecordType("device_type", "Device type",
                      sources=(("devices", "device_type"),),
                      resource="scanning_hardware"),
+    StatusRecordType("truck", "Truck",
+                     sources=(("trucks", "status"),), resource="trucks"),
 ]
 
 STATUS_REGISTRY: dict[str, StatusRecordType] = {

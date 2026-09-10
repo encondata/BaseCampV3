@@ -59,6 +59,8 @@ _RESOURCES = [
     Resource("containers", "Containers", routes=("/logistics/containers",),
              # internal-only, like sites — no client/partner visibility.
              visible_to=frozenset({"global"})),
+    Resource("trucks", "Trucks / Shipments", routes=("/logistics/trucks",),
+             visible_to=frozenset({"global"})),
     Resource("initiatives", "Initiatives", routes=("/initiatives",),
              # client-visible: client org roles see their own org's
              # initiatives read-only via SCOPE_COLUMNS (the client

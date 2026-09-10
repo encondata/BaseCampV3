@@ -20,7 +20,7 @@ from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
 from serversherpa.api.schemas import NoteCreateIn, NoteOut, NoteUpdateIn
 from serversherpa.db.models import (
     Asset, Client, Container, Initiative, Note, Partner, Person, Site,
-    WorkerProfile,
+    Truck, WorkerProfile,
 )
 from serversherpa.services.audit import audit
 
@@ -30,6 +30,7 @@ router = APIRouter(prefix="/notes", tags=["notes"])
 NOTE_HOSTS: dict[str, tuple[str, type]] = {
     "asset": ("assets", Asset),
     "container": ("containers", Container),
+    "truck": ("trucks", Truck),
     "initiative": ("initiatives", Initiative),
     "person": ("workers", Person),
     "site": ("sites", Site),

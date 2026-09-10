@@ -339,6 +339,20 @@ async def clean_db():
               ('device_type','handheld_reader','Handheld Reader','Android / iOS / Zebra handheld scanner.','#6d4fc4',3),
               ('device_type','kiosk','Kiosk','Web or iPad kiosk station.','#a36207',4)
         """))
+        # truck vocabulary — restore canonical seeds (0048)
+        await session.execute(text(
+            "DELETE FROM status_values WHERE record_type = 'truck'"))
+        await session.execute(text("""
+            INSERT INTO status_values
+              (record_type, key, label, description, color, sort_order)
+            VALUES
+              ('truck','created','Created','Set up, not yet rolling.','#51606f',1),
+              ('truck','active','Active','Loading or ready to depart.','#178a4c',2),
+              ('truck','in_transit','In Transit','On the road.','#0f7c86',3),
+              ('truck','at_destination','At Destination','Arrived; unloading.','#1668a7',4),
+              ('truck','inactive','In-Active','Parked; not in use.','#a36207',5),
+              ('truck','historical','Historical','Completed; kept for history.','#6d4fc4',6)
+        """))
         await session.execute(text("DELETE FROM asset_categories"))
         await session.execute(text("""
             INSERT INTO asset_categories (key, label, description, sort_order, color)
