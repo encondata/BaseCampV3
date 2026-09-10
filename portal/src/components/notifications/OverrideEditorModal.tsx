@@ -72,11 +72,16 @@ function Switch({ checked, onChange, disabled = false, label }: {
   );
 }
 
-export default function OverrideEditorModal({ group, member, onClose, onSaved }: {
+export default function OverrideEditorModal({ group, member, onClose, onSaved, onSave }: {
   group: NotificationGroupDetail;
   member: NotificationMember;
   onClose: () => void;
   onSaved: () => void;
+  /** When given, called with the diffed patch instead of the admin PATCH
+   *  (updateNotificationMember) — the self-service /me/notification-
+   *  groups/{id}/overrides endpoint reuses this same editor + diffing via
+   *  this hook. Default (admin) behaviour is unchanged when omitted. */
+  onSave?: (body: Partial<NotificationMemberOverrides>) => Promise<unknown>;
 }) {
   const ov = member.overrides;
 
@@ -177,7 +182,8 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved }:
 
     setSaving(true);
     try {
-      await updateNotificationMember(group.id, member.person_id, patch);
+      if (onSave) await onSave(patch);
+      else await updateNotificationMember(group.id, member.person_id, patch);
       onSaved();
     } catch (err) {
       setError(msgFor(err));

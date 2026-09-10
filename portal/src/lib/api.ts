@@ -2955,6 +2955,115 @@ export async function listNotificationRecipients(): Promise<NotificationRecipien
   return resp.json();
 }
 
+/* ── notification groups: self-service (My groups / Join a group) ────
+ * Mirrors api/src/serversherpa/api/schemas.py's MyNotificationGroupOut /
+ * MembershipRequestOut — the /auth/me self-service endpoints (any
+ * signed-in person) and the /notifications/requests approval endpoints
+ * (gated notifications:change). */
+
+export interface MyPendingRequest {
+  id: string;
+  action: string; // 'join' | 'leave'
+  note: string;
+  created_at: string;
+}
+
+export interface MyNotificationGroup {
+  id: string;
+  name: string;
+  description: string;
+  channels: string[];
+  quiet_start: string | null;
+  quiet_end: string | null;
+  timezone: string;
+  active_days: string[];
+  dnd_behavior: string;
+  urgent_bypass: boolean;
+  member_count: number;
+  is_member: boolean;
+  overrides: NotificationMemberOverrides | null;
+  effective: NotificationEffectiveSettings | null;
+  pending_request: MyPendingRequest | null;
+}
+
+export interface MembershipRequest {
+  id: string;
+  group_id: string;
+  group_name: string;
+  person_id: string;
+  person_name: string;
+  action: string; // 'join' | 'leave'
+  status: string;
+  note: string;
+  decided_by_name: string | null;
+  decided_at: string | null;
+  decision_note: string;
+  created_at: string;
+}
+
+export async function listMyNotificationGroups(q = ''): Promise<MyNotificationGroup[]> {
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  const resp = await apiFetch(`/auth/me/notification-groups?${params.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateMyGroupOverrides(
+  groupId: string, body: Partial<NotificationMemberOverrides>,
+): Promise<MyNotificationGroup> {
+  const resp = await apiFetch(`/auth/me/notification-groups/${groupId}/overrides`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function requestGroupMembership(
+  groupId: string, action: 'join' | 'leave', note = '',
+): Promise<MembershipRequest> {
+  const resp = await apiFetch(`/auth/me/notification-groups/${groupId}/requests`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, note }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function cancelMembershipRequest(id: string): Promise<void> {
+  const resp = await apiFetch(`/auth/me/notification-groups/requests/${id}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function listMembershipRequests(status = 'pending'): Promise<MembershipRequest[]> {
+  const resp = await apiFetch(`/notifications/requests?status=${encodeURIComponent(status)}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function approveMembershipRequest(id: string, note = ''): Promise<MembershipRequest> {
+  const resp = await apiFetch(`/notifications/requests/${id}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function rejectMembershipRequest(id: string, note = ''): Promise<MembershipRequest> {
+  const resp = await apiFetch(`/notifications/requests/${id}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /* ── status rules ─────────────────────────────────────────────────── */
 
 export interface StatusRuleCondition { field: string; operator: string; value: string | null }

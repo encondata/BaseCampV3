@@ -201,6 +201,22 @@
   border: 0;
 }
 
+/* Notification groups' self-service mini-lists (My groups / Join a
+ * group on /me/notifications) — grid-template-columns only, per the
+ * mini-row/mini-list-head primitive contract (directory.css): a page
+ * sets column widths and nothing else, typography/box-model stays with
+ * the primitive. */
+.mynotif-my-head,
+.mynotif-my-row {
+  grid-template-columns: minmax(180px, 2fr) minmax(150px, 1.3fr) minmax(150px, 1.1fr)
+    minmax(90px, 0.8fr) minmax(230px, 1.6fr);
+}
+.mynotif-join-row {
+  grid-template-columns: minmax(220px, 2.2fr) minmax(150px, 1.3fr) minmax(110px, 0.8fr)
+    minmax(190px, 1.4fr);
+}
+.mynotif-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
 .set-subrow { padding-left: 22px; }
 .set-inline { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
 .set-inline input {
