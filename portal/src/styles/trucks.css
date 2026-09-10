@@ -9,6 +9,8 @@
 
 .trucks-map-panel {
   position: relative;
+  isolation: isolate; /* keep leaflet's z-indexed panes inside the panel — they'd otherwise paint over the fullscreen modal */
+  z-index: 0;
   margin-bottom: 16px;
   border: 1px solid var(--paper-line);
   border-radius: 10px;
@@ -36,7 +38,7 @@
   position: absolute;
   top: 10px;
   right: 10px;
-  z-index: 1000;
+  z-index: 500; /* above leaflet tile panes */
   display: flex;
   align-items: center;
   gap: 8px;
