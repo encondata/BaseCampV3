@@ -6,7 +6,7 @@
  * Notes & Files. Editing goes through the same TruckEditModal Trucks.tsx
  * uses.
  */
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -108,12 +108,26 @@ export default function TruckDetail() {
   const [addingUpdate, setAddingUpdate] = useState(false);
   const [error, setError] = useState('');
 
+  // Stale-response/unmount guard for the id-keyed loads below, mirroring
+  // TruckEditModal's `let cancelled = false` pattern: idRef always holds
+  // the id the page is *currently* showing, so a late response for a
+  // truck the user has already navigated away from (or after unmount)
+  // never calls setState.
+  const idRef = useRef(id);
+  idRef.current = id;
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+  const stale = (forId: string | undefined) => !mountedRef.current || idRef.current !== forId;
+
   const loadTruck = useCallback(async () => {
     if (!id) return;
     try {
-      setTruck(await getTruck(id));
+      const data = await getTruck(id);
+      if (stale(id)) return;
+      setTruck(data);
       setMissing(false);
     } catch {
+      if (stale(id)) return;
       setMissing(true);
     }
   }, [id]);
@@ -121,8 +135,11 @@ export default function TruckDetail() {
   const loadUpdates = useCallback(async () => {
     if (!id) return;
     try {
-      setUpdates(await listTruckUpdates(id));
+      const data = await listTruckUpdates(id);
+      if (stale(id)) return;
+      setUpdates(data);
     } catch {
+      if (stale(id)) return;
       setUpdates([]);
     }
   }, [id]);
@@ -137,7 +154,28 @@ export default function TruckDetail() {
   // listTruckUpdates returns newest-first — the first located row is the
   // latest fix, and the trail runs oldest→newest for the polyline.
   const trailPoint: TruckMapPoint | null = useMemo(() => {
-    if (!truck || locatedUpdates.length === 0) return null;
+    if (!truck) return null;
+    if (locatedUpdates.length === 0) {
+      // The updates log has no located rows (its own fetch may have
+      // failed, or it's genuinely empty) — the truck detail payload is a
+      // separate source that already loaded successfully, so fall back
+      // to its last-known fix as a single point rather than showing the
+      // empty state when we already have a position in memory.
+      const lu = truck.last_update;
+      if (!lu || lu.lat === null || lu.lng === null) return null;
+      return {
+        id: truck.id,
+        name: truck.name,
+        status: truck.status,
+        status_label: truck.status_label,
+        status_color: truck.status_color,
+        driver_name: truck.driver_name,
+        load_number: truck.load_number,
+        seal_id: truck.seal_id,
+        last_update: lu,
+        trail: [],
+      };
+    }
     const newest = locatedUpdates[0];
     return {
       id: truck.id,

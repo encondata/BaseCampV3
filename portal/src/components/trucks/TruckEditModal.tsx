@@ -36,9 +36,15 @@ function mapError(err: unknown): string {
 export default function TruckEditModal({ truck, onClose, onSaved }: Props) {
   const isCreateMode = truck === null;
   const [loadingDetail, setLoadingDetail] = useState(!isCreateMode);
-  const [form, setForm] = useState<TruckFormState>(() => formFromTruck(null));
+  // Seed immediately from the row we already have — in edit mode the form
+  // is never blank, even before (or if) the full TruckDetail fetch below
+  // resolves. Only `containers`/`container_ids` are unknown at this point.
+  const [form, setForm] = useState<TruckFormState>(
+    () => formFromTruck(truck ? { ...truck, containers: [] } : null),
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [detailNotice, setDetailNotice] = useState('');
 
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
   const [initiatives, setInitiatives] = useState<InitiativeItem[]>([]);
@@ -63,9 +69,10 @@ export default function TruckEditModal({ truck, onClose, onSaved }: Props) {
       setLoadingDetail(false);
     }).catch(() => {
       if (cancelled) return;
-      // Fall back to what the row already gave us — no containers, but
-      // every other field still lets the user edit and save.
-      setForm(formFromTruck(null));
+      // Leave the form exactly as seeded from the row above — every field
+      // but `containers` already has its real value. Just surface a
+      // non-blocking notice; the rest stays editable and saveable.
+      setDetailNotice("Couldn't load the containers on this truck.");
       setLoadingDetail(false);
     });
     return () => { cancelled = true; };
@@ -149,6 +156,11 @@ export default function TruckEditModal({ truck, onClose, onSaved }: Props) {
         ) : (
           <form onSubmit={(e) => void submit(e)} noValidate>
             <div className="modal-body">
+              {detailNotice && (
+                <p style={{ fontSize: 12.5, color: 'var(--c-amber)', margin: '0 0 14px' }}>
+                  {detailNotice}
+                </p>
+              )}
               <div className="modal-section">Identity</div>
               <div className="pf-form">
                 <div><label>Name</label>

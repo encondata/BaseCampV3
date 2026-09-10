@@ -132,6 +132,28 @@ it('save sends contact_info as an empty string (never null) and the picked conta
   expect(onClose).toHaveBeenCalled();
 });
 
+it('keeps the row\'s known fields when getTruck fails, and saves them (not blanks/created)', async () => {
+  const user = userEvent.setup();
+  api.getTruck.mockRejectedValue(new ApiError(500, 'server_error'));
+  api.updateTruck.mockResolvedValue(TRUCK_DETAIL);
+  renderEdit();
+
+  // The failed detail fetch settles into a form seeded from the row —
+  // never the all-blank/'created' defaults formFromTruck(null) would give.
+  expect(await screen.findByDisplayValue('Truck One')).not.toBeNull();
+  expect(screen.getByDisplayValue('Ada Lovelace')).not.toBeNull();
+  expect(screen.getByDisplayValue('Created')).not.toBeNull();
+  expect(screen.getByText("Couldn't load the containers on this truck.")).not.toBeNull();
+
+  await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+  await waitFor(() => expect(api.updateTruck).toHaveBeenCalledWith('t1', expect.objectContaining({
+    name: 'Truck One',
+    driver_name: 'Ada Lovelace',
+    status: 'created',
+  })));
+});
+
 it('maps an unknown_status API error onto the status field guidance', async () => {
   const user = userEvent.setup();
   api.updateTruck.mockRejectedValue(new ApiError(422, 'unknown_status'));

@@ -170,3 +170,42 @@ it('shows a not-found empty state for a missing truck', async () => {
 
   expect(await screen.findByText('That truck no longer exists.')).not.toBeNull();
 });
+
+it('ignores a stale getTruck response for a previous id after navigating to a new one', async () => {
+  let resolveA!: (v: TruckDetailData) => void;
+  let resolveB!: (v: TruckDetailData) => void;
+  const truckA: TruckDetailData = { ...TRUCK, id: 't1', name: 'Truck One' };
+  const truckB: TruckDetailData = { ...TRUCK, id: 't2', name: 'Truck Two' };
+
+  api.getTruck.mockImplementation((id: string) => new Promise((res) => {
+    if (id === 't1') resolveA = res; else resolveB = res;
+  }));
+  api.listTruckUpdates.mockResolvedValue([]);
+
+  state.id = 't1';
+  const { rerender } = renderPage();
+  await waitFor(() => expect(api.getTruck).toHaveBeenCalledWith('t1'));
+
+  state.id = 't2';
+  rerender(<MemoryRouter><TruckDetail /></MemoryRouter>);
+  await waitFor(() => expect(api.getTruck).toHaveBeenCalledWith('t2'));
+
+  // Resolve the new id's request first, then the stale (previous-id)
+  // one — the stale response must never overwrite what's on screen.
+  resolveB(truckB);
+  await screen.findByText('Truck Two');
+  resolveA(truckA);
+  await new Promise((r) => setTimeout(r, 0));
+
+  expect(screen.getByText('Truck Two')).not.toBeNull();
+  expect(screen.queryByText('Truck One')).toBeNull();
+});
+
+it('falls back to the truck\'s last_update for the Trail panel when listTruckUpdates has no located rows', async () => {
+  api.listTruckUpdates.mockRejectedValue(new Error('network error'));
+  renderPage();
+
+  await screen.findByText('Truck One');
+  expect(screen.getByTestId('map')).not.toBeNull();
+  expect(screen.queryByText('No location reported yet.')).toBeNull();
+});
