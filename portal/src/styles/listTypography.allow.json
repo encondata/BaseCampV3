@@ -1,0 +1,323 @@
+[
+  {
+    "file": "styles/directory.css",
+    "selector": ".mini-btn",
+    "reason": "not list content: detail-panel action button (regex matches the 'mini-' substring meant for the future .mini-row/.mini-list primitives)"
+  },
+  {
+    "file": "styles/access.css",
+    "selector": ".ro-chip",
+    "reason": "not list content: page-header read-only-mode status badge, not a list row chip"
+  },
+  {
+    "file": "styles/access.css",
+    "selector": ".pm-table thead th",
+    "reason": "baseline — migrate in Task 5"
+  },
+  {
+    "file": "styles/access.css",
+    "selector": ".ov-head h3",
+    "reason": "not list content: override-editor modal heading"
+  },
+  {
+    "file": "styles/auth-theme.css",
+    "selector": ".login-shell .headline",
+    "reason": "not list content: login page headline (out of scope per spec)"
+  },
+  {
+    "file": "styles/auth-theme.css",
+    "selector": ".login-shell .headline .accent",
+    "reason": "not list content: login page headline accent span (out of scope per spec)"
+  },
+  {
+    "file": "styles/auth-theme.css",
+    "selector": ".login-shell .eyebrow,.auth-scrim .eyebrow",
+    "reason": "not list content: login page eyebrow (out of scope per spec)"
+  },
+  {
+    "file": "styles/chrome.css",
+    "selector": ".modal-head h3",
+    "reason": "not list content: modal heading (out of scope per spec)"
+  },
+  {
+    "file": "styles/chrome.css",
+    "selector": ".portal-nav .nav-sec-head",
+    "reason": "not list content: left-nav accordion section heading"
+  },
+  {
+    "file": "styles/column-menu.css",
+    "selector": ".colfilter-chip .colfilter-clear",
+    "reason": "not list content: toolbar column-filter summary badge, not a row chip"
+  },
+  {
+    "file": "styles/dashboard.css",
+    "selector": ".dash-board-chip",
+    "reason": "baseline — migrate in Task 4"
+  },
+  {
+    "file": "styles/dashboard.css",
+    "selector": ".dash-dist-row",
+    "reason": "baseline — migrate in Task 4"
+  },
+  {
+    "file": "styles/dashboard.css",
+    "selector": ".dash-scan-row",
+    "reason": "baseline — migrate in Task 4"
+  },
+  {
+    "file": "styles/dashboard.css",
+    "selector": ".dash-feed-row",
+    "reason": "baseline — migrate in Task 4"
+  },
+  {
+    "file": "styles/dashboard.css",
+    "selector": ".mdash-verify-head",
+    "reason": "baseline — migrate in Task 4"
+  },
+  {
+    "file": "styles/dashboard.css",
+    "selector": ".pdash-clock-row .dir-avatar",
+    "reason": "baseline — migrate in Task 4 (one of the two known golden-class overrides; deleted once avatar size is fully token-driven)"
+  },
+  {
+    "file": "styles/dashboard.css",
+    "selector": ".pdash-event-row",
+    "reason": "baseline — migrate in Task 4"
+  },
+  {
+    "file": "styles/dashboard.css",
+    "selector": ".cdash-init-row",
+    "reason": "baseline — migrate in Task 4"
+  },
+  {
+    "file": "styles/dashboard.css",
+    "selector": ".cdash-act-row",
+    "reason": "baseline — migrate in Task 4"
+  },
+  {
+    "file": "styles/god-edit.css",
+    "selector": ".god-cell input, .god-cell select",
+    "reason": "baseline — inline god-mode cell editor rendered inside list rows across many pages; not itemized in the audit's Task 4-7 file map, needs its own follow-up migration"
+  },
+  {
+    "file": "styles/god-edit.css",
+    "selector": ".god-cell-msg",
+    "reason": "baseline — inline god-mode cell editor error message rendered inside list rows; not itemized in the audit's Task 4-7 file map, needs its own follow-up migration"
+  },
+  {
+    "file": "styles/hardware.css",
+    "selector": ".lease-table th",
+    "reason": "baseline — migrate in Task 7"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".init-panel .eyebrow-sm",
+    "reason": "not list content: eyebrow label (out of scope per spec)"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".init-rows .init-row",
+    "reason": "baseline — migrate in Task 6"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".init-row .init-name",
+    "reason": "baseline — migrate in Task 6"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".init-row .init-sub",
+    "reason": "baseline — migrate in Task 6"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".idet-header-actions .mini-btn",
+    "reason": "not list content: header action button override (comment notes it is scoped to this header row only, not a list row)"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".imp-report-headline",
+    "reason": "not list content: report section headline"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".imp-report-list .row-main",
+    "reason": "baseline — migrate in Task 6"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".idet-time-list-head",
+    "reason": "baseline — migrate in Task 6"
+  },
+  {
+    "file": "styles/initiatives.css",
+    "selector": ".idet-time-row",
+    "reason": "baseline — migrate in Task 6"
+  },
+  {
+    "file": "styles/labels.css",
+    "selector": ".label-editor-sites .eyebrow-sm",
+    "reason": "not list content: eyebrow label (out of scope per spec)"
+  },
+  {
+    "file": "styles/labels.css",
+    "selector": ".lbl-palette .eyebrow-sm",
+    "reason": "not list content: eyebrow label (out of scope per spec)"
+  },
+  {
+    "file": "styles/notifications.css",
+    "selector": ".ngd-switch-row",
+    "reason": "not list content: labeled settings-form switch row — per the design spec's migration map this stays permanently, it is a form row not a list"
+  },
+  {
+    "file": "styles/notifications.css",
+    "selector": ".ngd-cell-marker",
+    "reason": "baseline — migrate in Task 7"
+  },
+  {
+    "file": "styles/portal-theme.css",
+    "selector": ".portal-nav .nav-list",
+    "reason": "not list content: primary app navigation sidebar, not a data list"
+  },
+  {
+    "file": "styles/portal-theme.css",
+    "selector": ".portal-nav .user-chip",
+    "reason": "not list content: nav user-menu chip, not a list row chip"
+  },
+  {
+    "file": "styles/portal-theme.css",
+    "selector": ".portal-page .eyebrow",
+    "reason": "not list content: eyebrow label (out of scope per spec)"
+  },
+  {
+    "file": "styles/profile.css",
+    "selector": ".panel-head h3",
+    "reason": "not list content: panel heading (out of scope per spec)"
+  },
+  {
+    "file": "styles/rack-svg.css",
+    "selector": ".rack-elevation-heading",
+    "reason": "not list content: rack SVG heading (out of scope per spec)"
+  },
+  {
+    "file": "styles/settings.css",
+    "selector": ".set-head h3",
+    "reason": "not list content: settings section heading (out of scope per spec)"
+  },
+  {
+    "file": "styles/settings.css",
+    "selector": ".set-head p",
+    "reason": "not list content: settings section sub-copy (out of scope per spec)"
+  },
+  {
+    "file": "styles/settings.css",
+    "selector": ".set-row .set-label b",
+    "reason": "not list content: settings form-row label (out of scope per spec)"
+  },
+  {
+    "file": "styles/settings.css",
+    "selector": ".set-row .set-label span",
+    "reason": "not list content: settings form-row label sub-copy (out of scope per spec)"
+  },
+  {
+    "file": "styles/settings.css",
+    "selector": ".set-form-row label",
+    "reason": "not list content: settings form label (out of scope per spec)"
+  },
+  {
+    "file": "styles/settings.css",
+    "selector": ".set-form-row input",
+    "reason": "not list content: settings form input (out of scope per spec)"
+  },
+  {
+    "file": "styles/sites.css",
+    "selector": ".bulk-row-error td:nth-child(3)",
+    "reason": "baseline — migrate in Task 6"
+  },
+  {
+    "file": "styles/sites.css",
+    "selector": ".bulk-row-create td:nth-child(3)",
+    "reason": "baseline — migrate in Task 6"
+  },
+  {
+    "file": "styles/sites.css",
+    "selector": ".bulk-row-update td:nth-child(3)",
+    "reason": "baseline — migrate in Task 6"
+  },
+  {
+    "file": "styles/sites.css",
+    "selector": ".site-map-detail-head .pn b",
+    "reason": "not list content: site-map detail heading — documented permanent exception per spec (\"the site-map head keeps 15px only via a documented allowlist entry — it is a detail heading, not a list row\")"
+  },
+  {
+    "file": "styles/system.css",
+    "selector": ".sys-proc-list .list-row",
+    "reason": "baseline — migrate in Task 5"
+  },
+  {
+    "file": "styles/system.css",
+    "selector": ".envtab-list .list-row",
+    "reason": "baseline — migrate in Task 5"
+  },
+  {
+    "file": "styles/system.css",
+    "selector": ".envtab-list input",
+    "reason": "baseline — migrate in Task 5"
+  },
+  {
+    "file": "styles/system.css",
+    "selector": ".envtab-chip",
+    "reason": "baseline — migrate in Task 5"
+  },
+  {
+    "file": "styles/time.css",
+    "selector": ".time-clock-eyebrow",
+    "reason": "not list content: eyebrow label (out of scope per spec)"
+  },
+  {
+    "file": "styles/time.css",
+    "selector": ".time-recent-row",
+    "reason": "baseline — migrate in Task 6"
+  },
+  {
+    "file": "styles/time.css",
+    "selector": ".time-active-row",
+    "reason": "baseline — migrate in Task 6"
+  },
+  {
+    "file": "pages/Audit.tsx",
+    "reason": "baseline — migrate in Task 6: renders the profile.css-styled .activity-changes field-diff table (shared with components/ActivityHistory.tsx), part of the profile family Task 6 migrates"
+  },
+  {
+    "file": "pages/WorkerDetail.tsx",
+    "reason": "baseline — migrate in Task 7"
+  },
+  {
+    "file": "components/ActivityHistory.tsx",
+    "reason": "baseline — migrate in Task 6: renders the profile.css .activity-changes field-diff table, part of the profile activity-list family"
+  },
+  {
+    "file": "components/access/MatrixTable.tsx",
+    "reason": "baseline — migrate in Task 5"
+  },
+  {
+    "file": "components/containers/ContainerBulkImport.tsx",
+    "reason": "baseline — migrate in Task 6"
+  },
+  {
+    "file": "components/hardware/RouterLeases.tsx",
+    "reason": "baseline — migrate in Task 7"
+  },
+  {
+    "file": "components/notifications/MembersPanel.tsx",
+    "reason": "baseline — migrate in Task 7"
+  },
+  {
+    "file": "components/scans/ScanHistoryTable.tsx",
+    "reason": "baseline — migrate in Task 7"
+  },
+  {
+    "file": "components/sites/SiteBulkImport.tsx",
+    "reason": "baseline — migrate in Task 6"
+  }
+]

@@ -5,6 +5,43 @@
    Ref: fibertrace/design-docs/people-workers-directory.md
    ============================================================ */
 
+/* ── list typography tokens ────────────────────────────────────────
+   The Assets list is the golden template; every list-like surface
+   (directory list, mini list, data table) draws its sizes from these
+   tokens and page stylesheets set LAYOUT ONLY — enforced by
+   listTypography.test.ts. --list-scale comes from the user's Settings →
+   List text size; density overrides the row-height tokens on top. */
+.portal-shell { --list-scale: 1; }
+.portal-shell[data-list-size='small']  { --list-scale: 0.9; }
+.portal-shell[data-list-size='large']  { --list-scale: 1.15; }
+.portal-shell[data-list-size='xlarge'] { --list-scale: 1.3; }
+.portal-shell {
+  --list-fs-head: calc(10px * var(--list-scale));
+  --list-fs-primary: calc(14px * var(--list-scale));
+  --list-fs-primary-sub: calc(11.5px * var(--list-scale));
+  --list-fs-cell: calc(13.5px * var(--list-scale));
+  --list-fs-sub: calc(12px * var(--list-scale));
+  --list-fs-mono: calc(12px * var(--list-scale));
+  --list-fs-chip: calc(12px * var(--list-scale));
+  --list-fs-chip-tag: calc(11px * var(--list-scale));
+  --list-fs-kv-label: calc(12.5px * var(--list-scale));
+  --list-fs-kv-value: calc(13px * var(--list-scale));
+  --list-fs-avatar: calc(13px * var(--list-scale));
+  --list-row-min-h: calc(66px * var(--list-scale));
+  --list-row-pad-y: calc(12px * var(--list-scale));
+  --list-head-h: calc(42px * var(--list-scale));
+  --list-mini-row-min-h: calc(44px * var(--list-scale));
+  --list-chip-h: calc(24px * var(--list-scale));
+  --list-avatar: calc(38px * var(--list-scale));
+}
+.portal-shell[data-density='compact'] {
+  --list-row-min-h: calc(52px * var(--list-scale));
+  --list-row-pad-y: calc(8px * var(--list-scale));
+  --list-mini-row-min-h: calc(38px * var(--list-scale));
+  --list-avatar: calc(30px * var(--list-scale));
+  --list-fs-avatar: calc(11px * var(--list-scale));
+}
+
 .portal-shell {
   /* categorical/status palette tuned for the light paper surface */
   --c-green: #178a4c;
@@ -169,11 +206,11 @@
   align-items: center;
   gap: 16px;
   padding: 0 20px;
-  height: 42px;
+  height: var(--list-head-h);
   background: var(--surface-2);
   border-bottom: 1px solid var(--paper-line);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: var(--list-fs-head);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-mute);
@@ -193,7 +230,7 @@
   padding: 0;
 }
 .list-head .sortable:hover { color: var(--text-dark); }
-.list-head .sortable .caret { font-size: 9px; color: var(--amber); }
+.list-head .sortable .caret { font-size: calc(var(--list-fs-head) * 0.9); color: var(--amber); }
 
 /* ── rows ─────────────────────────────────────────────────── */
 
@@ -204,8 +241,8 @@
   display: grid;
   align-items: center;
   gap: 16px;
-  padding: 12px 20px;
-  min-height: 66px;
+  padding: var(--list-row-pad-y) 20px;
+  min-height: var(--list-row-min-h);
   cursor: pointer;
   transition: background 0.15s;
 }
@@ -217,7 +254,7 @@
 .cell-primary .pn { min-width: 0; }
 .cell-primary .pn b {
   display: block;
-  font-size: 14px;
+  font-size: var(--list-fs-primary);
   font-weight: 600;
   color: var(--text-dark);
   white-space: nowrap;
@@ -227,7 +264,7 @@
 .cell-primary .pn span {
   display: block;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--list-fs-primary-sub);
   color: var(--text-mute);
   margin-top: 2px;
   white-space: nowrap;
@@ -235,16 +272,16 @@
   text-overflow: ellipsis;
 }
 
-.cell .cell-top { font-size: 13.5px; color: var(--text-dark); }
-.cell .cell-sub {
-  font-size: 12px;
+.cell .cell-top, .mini-row .cell-top, .data-table .cell-top { font-size: var(--list-fs-cell); color: var(--text-dark); }
+.cell .cell-sub, .mini-row .cell-sub, .data-table .cell-sub {
+  font-size: var(--list-fs-sub);
   color: var(--text-mute);
   margin-top: 2px;
   font-weight: 300;
 }
-.cell .mono {
+.cell .mono, .mini-row .mono, .data-table .mono {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--list-fs-mono);
   color: var(--text-mute);
 }
 
@@ -287,14 +324,14 @@
 /* ── avatar ───────────────────────────────────────────────── */
 
 .dir-avatar {
-  width: 38px;
-  height: 38px;
+  width: var(--list-avatar);
+  height: var(--list-avatar);
   flex: none;
   border-radius: 11px;
   display: grid;
   place-items: center;
   color: #fff;
-  font-size: 13px;
+  font-size: var(--list-fs-avatar);
   font-weight: 600;
   letter-spacing: 0.02em;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
@@ -306,11 +343,11 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 24px;
+  height: var(--list-chip-h);
   padding: 0 9px;
   border-radius: 7px;
   border: 1px solid transparent;
-  font-size: 12px;
+  font-size: var(--list-fs-chip);
   font-weight: 500;
   white-space: nowrap;
 }
@@ -323,7 +360,7 @@
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  line-height: 22px;
+  line-height: calc(var(--list-chip-h) - 2px);
 }
 .cell .chip .dot {
   display: inline-block;
@@ -401,7 +438,7 @@
 
 .chip.tag {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--list-fs-chip-tag);
   font-weight: 400;
   color: var(--text-mute);
   background: var(--surface-2);
@@ -447,9 +484,9 @@
   gap: 9px 16px;
   margin: 0;
 }
-.kv dt { font-size: 12.5px; color: var(--text-mute); font-weight: 300; }
-.kv dd { font-size: 13px; color: var(--text-dark); margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.kv dd.mono { font-family: var(--font-mono); font-size: 12px; }
+.kv dt { font-size: var(--list-fs-kv-label); color: var(--text-mute); font-weight: 300; }
+.kv dd { font-size: var(--list-fs-kv-value); color: var(--text-dark); margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.kv dd.mono { font-family: var(--font-mono); font-size: var(--list-fs-mono); }
 
 .detail-actions {
   display: flex;
@@ -492,9 +529,8 @@
 .dir-empty b { display: block; font-size: 15px; font-weight: 600; color: var(--text-dark); margin-bottom: 4px; }
 
 /* ── density: compact ─────────────────────────────────────── */
-
-.portal-shell[data-density='compact'] .row-main { min-height: 52px; padding: 8px 20px; }
-.portal-shell[data-density='compact'] .dir-avatar { width: 30px; height: 30px; border-radius: 9px; font-size: 11px; }
+/* Row-height/avatar-size overrides now live in the token block at the
+   top of this file (.portal-shell[data-density='compact'] { ... }). */
 
 /* ── motion off ───────────────────────────────────────────── */
 
