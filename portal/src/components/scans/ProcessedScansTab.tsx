@@ -25,6 +25,7 @@ import {
   PROCESSED_SCAN_GOD_FIELDS, SCANS_ERRORS,
 } from '../../lib/scans';
 import { initialOpenId } from '../../lib/auditFormat';
+import { statusChip } from '../../lib/chips';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState,
@@ -234,11 +235,7 @@ export default function ProcessedScansTab({ onCount }: {
           </div>
         );
       case 'status':
-        return s.status_label && s.status_color ? (
-          <span className="chip custom" style={{ '--chip': s.status_color } as CSSProperties}>
-            <span className="dot" />{s.status_label}
-          </span>
-        ) : <span className="cell-top">—</span>;
+        return statusChip(s.status_label, s.status_color) ?? <span className="cell-top">—</span>;
       case 'matched':
         return matchedHref(s)
           ? (

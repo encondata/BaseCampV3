@@ -5,7 +5,7 @@
  * loaded, and rows expand to the shared Before/After changes table.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Link } from 'react-router-dom';
 
 import ComboBox from '../components/ComboBox';
@@ -131,14 +131,14 @@ export default function Audit() {
   const grid = { gridTemplateColumns:
     `150px ${shownCols.map((c) => c.width).join(' ')} 30px` };
 
-  const cellFor = (r: AuditLogItem, key: string): string => {
+  const cellFor = (r: AuditLogItem, key: string): ReactElement => {
     switch (key) {
-      case 'actor': return r.actor_name ?? 'System';
-      case 'action': return actionLabel(r);
-      case 'target': return targetLabel(r);
-      case 'entity_id': return r.entity_id ?? '—';
-      case 'ip': return r.ip ?? '—';
-      default: return '—';
+      case 'actor': return <span className="cell-top">{r.actor_name ?? 'System'}</span>;
+      case 'action': return <span className="cell-top">{actionLabel(r)}</span>;
+      case 'target': return <span className="cell-top">{targetLabel(r)}</span>;
+      case 'entity_id': return <span className="mono">{r.entity_id ?? '—'}</span>;
+      case 'ip': return <span className="mono">{r.ip ?? '—'}</span>;
+      default: return <span className="cell-top">—</span>;
     }
   };
 

@@ -12,6 +12,7 @@ import {
   ApiError, listRawScans, type RawScanRow,
 } from '../../lib/api';
 import { rawScanCellText, rawScanSearchText } from '../../lib/scans';
+import { statusChip } from '../../lib/chips';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState,
@@ -140,11 +141,7 @@ export default function RawScansTab({ onCount }: {
   const cellFor = (r: RawScanRow, key: string) => {
     switch (key) {
       case 'status':
-        return r.status_label && r.status_color ? (
-          <span className="chip custom" style={{ '--chip': r.status_color } as CSSProperties}>
-            <span className="dot" />{r.status_label}
-          </span>
-        ) : <span className="cell-top">—</span>;
+        return statusChip(r.status_label, r.status_color) ?? <span className="cell-top">—</span>;
       case 'scan_type':
         return (
           <span className="chip custom" style={{ '--chip': r.scan_type_color } as CSSProperties}>

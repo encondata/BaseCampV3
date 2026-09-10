@@ -4,7 +4,7 @@
  * expansion showing the audit row's field-level before/after changes.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactElement } from 'react';
 import { Link } from 'react-router-dom';
 
 import DataTable from './DataTable';
@@ -110,13 +110,13 @@ export default function ActivityHistory({ rows }: { rows: MyActivityItem[] }) {
   const grid = { gridTemplateColumns:
     `150px ${shownCols.map((c) => c.width).join(' ')} 30px` };
 
-  const cellFor = (r: MyActivityItem, key: string): string => {
+  const cellFor = (r: MyActivityItem, key: string): ReactElement => {
     switch (key) {
-      case 'who': return whoLabel(r);
-      case 'action': return actionLabel(r);
-      case 'target': return targetLabel(r);
-      case 'ip': return r.ip ?? '—';
-      default: return '—';
+      case 'who': return <span className="cell-top">{whoLabel(r)}</span>;
+      case 'action': return <span className="cell-top">{actionLabel(r)}</span>;
+      case 'target': return <span className="cell-top">{targetLabel(r)}</span>;
+      case 'ip': return <span className="mono">{r.ip ?? '—'}</span>;
+      default: return <span className="cell-top">—</span>;
     }
   };
 
