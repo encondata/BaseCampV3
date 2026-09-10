@@ -20,10 +20,10 @@ import {
   type MyNotificationGroup, type NotificationSound, type UiPreferences,
 } from '../../lib/api';
 import {
-  GROUP_ERRORS, daysText, hasOverrides, quietHoursText, toGroupDetail, toMember,
+  GROUP_ERRORS, toGroupDetail, toMember,
 } from '../../lib/notificationGroups';
-import { CHANNEL_LABELS, type Channel } from '../../lib/notifications';
 import { NOTIFICATION_SOUNDS, playNotificationSound } from '../../lib/notificationSounds';
+import GroupsList from './GroupsList';
 import SaveHint from './SaveHint';
 import { usePreferenceSave } from './usePreferenceSave';
 import '../../styles/directory.css';
@@ -33,34 +33,6 @@ const msgFor = (err: unknown): string =>
   err instanceof ApiError
     ? (GROUP_ERRORS[err.code] ?? `Request failed (${err.code}).`)
     : 'Network error.';
-
-const CHANNEL_CHIP: Record<string, string> = {
-  email: 'c-blue', web: 'c-green', sms: 'c-amber', text: 'c-amber', push: 'c-violet',
-};
-
-function ChannelChips({ channels }: { channels: string[] }) {
-  return (
-    <div className="chips">
-      {channels.length === 0 && <span className="chip c-slate">None</span>}
-      {channels.map((c) => (
-        <span key={c} className={`chip ${CHANNEL_CHIP[c] ?? 'c-slate'}`}>
-          {CHANNEL_LABELS[c as Channel] ?? c}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function GroupNameCell({ group }: { group: MyNotificationGroup }) {
-  return (
-    <div>
-      <div className="cell-primary">
-        <div className="pn"><b>{group.name}</b></div>
-      </div>
-      {group.description && <div className="cell-sub">{group.description}</div>}
-    </div>
-  );
-}
 
 export default function MeNotifications() {
   const { preferences, update, saveState } = usePreferenceSave();
@@ -76,7 +48,6 @@ export default function MeNotifications() {
 
   const [groups, setGroups] = useState<MyNotificationGroup[] | null>(null);
   const [loadError, setLoadError] = useState('');
-  const [query, setQuery] = useState('');
 
   const [editingGroup, setEditingGroup] = useState<MyNotificationGroup | null>(null);
   const [requestFor, setRequestFor] =
@@ -94,13 +65,6 @@ export default function MeNotifications() {
 
   const myGroups = useMemo(() => (groups ?? []).filter((g) => g.is_member), [groups]);
   const joinable = useMemo(() => (groups ?? []).filter((g) => !g.is_member), [groups]);
-  const filteredJoinable = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return joinable;
-    return joinable.filter((g) =>
-      g.name.toLowerCase().includes(needle) || g.description.toLowerCase().includes(needle));
-  }, [joinable, query]);
-
   const handleCancel = async (requestId: string) => {
     setCancelBusy((b) => ({ ...b, [requestId]: true }));
     setCancelError((e) => ({ ...e, [requestId]: '' }));
@@ -155,116 +119,32 @@ export default function MeNotifications() {
         </section>
       </div>
 
-      <section className="set-section" style={{ marginTop: 18 }}>
-        <div className="set-head">
-          <h3>My groups</h3>
-          <p>Notification groups you belong to — tune your own overrides or ask to leave.</p>
-        </div>
-        {loadError && <p className="pf-error mynotif-note">{loadError}</p>}
-        {groups !== null && myGroups.length === 0 && !loadError && (
-          <div className="dir-empty">You&apos;re not in any notification groups yet.</div>
-        )}
-        {myGroups.length > 0 && (
-          <div className="mini-list mynotif-body">
-            <div className="mini-list-head mynotif-my-head">
-              <span>Group</span>
-              <span>Channels</span>
-              <span>Quiet hours</span>
-              <span>Days</span>
-              <span>Actions</span>
-            </div>
-            {myGroups.map((g) => {
-              const pending = g.pending_request;
-              return (
-                <div key={g.id} className="mini-row mynotif-my-row">
-                  <GroupNameCell group={g} />
-                  <ChannelChips channels={g.channels} />
-                  <span className="mono">{quietHoursText(g)}</span>
-                  <span className="cell-top">{daysText(g.active_days)}</span>
-                  <div className="mynotif-actions">
-                    {hasOverrides(g.overrides) && <span className="chip c-aqua">Customised</span>}
-                    <button className="mini-btn sm" onClick={() => setEditingGroup(g)}>
-                      Edit overrides
-                    </button>
-                    {pending && pending.action === 'leave' ? (
-                      <>
-                        <span className="chip c-amber"><span className="dot" />Leave requested</span>
-                        <button className="mini-btn sm" disabled={cancelBusy[pending.id]}
-                                onClick={() => void handleCancel(pending.id)}>
-                          {cancelBusy[pending.id] ? 'Cancelling…' : 'Cancel'}
-                        </button>
-                      </>
-                    ) : (
-                      <button className="mini-btn sm" disabled={!!pending}
-                              onClick={() => setRequestFor({ group: g, action: 'leave' })}>
-                        Leave
-                      </button>
-                    )}
-                    {pending && cancelError[pending.id] && (
-                      <span className="pf-error">{cancelError[pending.id]}</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+      <GroupsList
+        kind="member"
+        title="My groups"
+        hint="Notification groups you belong to — tune your own overrides or ask to leave."
+        groups={myGroups}
+        loaded={groups !== null}
+        busyRequestIds={cancelBusy}
+        onEditOverrides={(g) => setEditingGroup(g)}
+        onRequest={(group, action) => setRequestFor({ group, action })}
+        onCancel={(id) => void handleCancel(id)}
+      />
+      {loadError && <p className="pf-error">{loadError}</p>}
+      {Object.values(cancelError).filter(Boolean).map((msg, i) => (
+        <p key={i} className="pf-error">{msg}</p>
+      ))}
 
-      <section className="set-section" style={{ marginTop: 18 }}>
-        <div className="set-head">
-          <h3>Join a group</h3>
-          <p>Search other notification groups and ask to join.</p>
-        </div>
-        <div className="dir-search mynotif-search">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-               strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
-          <input placeholder="Search groups…" value={query}
-                 onChange={(e) => setQuery(e.target.value)} />
-        </div>
-        {groups !== null && filteredJoinable.length === 0 && (
-          <div className="dir-empty">No other groups to join.</div>
-        )}
-        {filteredJoinable.length > 0 && (
-          <div className="mini-list mynotif-body">
-            <div className="mini-list-head mynotif-join-head">
-              <span>Group</span>
-              <span>Channels</span>
-              <span>Members</span>
-              <span>Actions</span>
-            </div>
-            {filteredJoinable.map((g) => {
-              const pending = g.pending_request;
-              return (
-                <div key={g.id} className="mini-row mynotif-join-row">
-                  <GroupNameCell group={g} />
-                  <ChannelChips channels={g.channels} />
-                  <span className="mono">{g.member_count} member{g.member_count === 1 ? '' : 's'}</span>
-                  <div className="mynotif-actions">
-                    {pending && pending.action === 'join' ? (
-                      <>
-                        <span className="chip c-amber"><span className="dot" />Join requested</span>
-                        <button className="mini-btn sm" disabled={cancelBusy[pending.id]}
-                                onClick={() => void handleCancel(pending.id)}>
-                          {cancelBusy[pending.id] ? 'Cancelling…' : 'Cancel'}
-                        </button>
-                      </>
-                    ) : (
-                      <button className="mini-btn sm" disabled={!!pending}
-                              onClick={() => setRequestFor({ group: g, action: 'join' })}>
-                        Join
-                      </button>
-                    )}
-                    {pending && cancelError[pending.id] && (
-                      <span className="pf-error">{cancelError[pending.id]}</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+      <GroupsList
+        kind="joinable"
+        title="Join a group"
+        hint="Search other notification groups and ask to join."
+        groups={joinable}
+        loaded={groups !== null}
+        busyRequestIds={cancelBusy}
+        onRequest={(group, action) => setRequestFor({ group, action })}
+        onCancel={(id) => void handleCancel(id)}
+      />
 
       {editingGroup && person && (
         <OverrideEditorModal

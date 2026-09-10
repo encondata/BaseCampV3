@@ -152,6 +152,14 @@ it('renders a member group with channel chips, quiet-hours text, days, and a Cus
   expect(screen.getByText('Customised')).toBeTruthy();
 });
 
+/** Standard-list rows keep their actions behind the "Actions ▾" menu:
+ * open the menu inside the named section, then pick an item. */
+const region = (name: string) => screen.getByRole('region', { name });
+const pickAction = (sectionName: string, item: string) => {
+  fireEvent.click(within(region(sectionName)).getByRole('button', { name: /Actions/ }));
+  fireEvent.click(screen.getByRole('menuitem', { name: item }));
+};
+
 it('Leave opens the request modal, Send posts the leave request, and a pending leave shows Cancel', async () => {
   api.listMyNotificationGroups.mockResolvedValueOnce([G1]);
   api.requestGroupMembership.mockResolvedValueOnce({
@@ -168,7 +176,7 @@ it('Leave opens the request modal, Send posts the leave request, and a pending l
   render(<MeNotifications />);
   await waitFor(() => expect(screen.getByText('Ops')).toBeTruthy());
 
-  fireEvent.click(screen.getByRole('button', { name: 'Leave' }));
+  pickAction('My groups', 'Leave group');
   expect(screen.getByText('Ask to leave Ops')).toBeTruthy();
 
   fireEvent.change(screen.getByLabelText('Note (optional)'), { target: { value: 'note text' } });
@@ -180,9 +188,11 @@ it('Leave opens the request modal, Send posts the leave request, and a pending l
 
   api.cancelMembershipRequest.mockResolvedValueOnce(undefined);
   api.listMyNotificationGroups.mockResolvedValueOnce([G1]);
-  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  pickAction('My groups', 'Cancel request');
   await waitFor(() => expect(api.cancelMembershipRequest).toHaveBeenCalledWith('req1'));
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Leave' })).toBeTruthy());
+  await waitFor(() => expect(screen.queryByText('Leave requested')).toBeNull());
+  fireEvent.click(within(region('My groups')).getByRole('button', { name: /Actions/ }));
+  expect(screen.getByRole('menuitem', { name: 'Leave group' })).toBeTruthy();
 });
 
 it('Join a group search filters non-member groups and Join posts an empty-note request', async () => {
@@ -202,11 +212,11 @@ it('Join a group search filters non-member groups and Join posts an empty-note r
   await waitFor(() => expect(screen.getByText('Warehouse Alerts')).toBeTruthy());
   expect(screen.getByText('Fleet Updates')).toBeTruthy();
 
-  fireEvent.change(screen.getByPlaceholderText('Search groups…'), { target: { value: 'warehouse' } });
+  fireEvent.change(within(region('Join a group')).getByPlaceholderText('Filter this list…'), { target: { value: 'warehouse' } });
   expect(screen.getByText('Warehouse Alerts')).toBeTruthy();
   expect(screen.queryByText('Fleet Updates')).toBeNull();
 
-  fireEvent.click(screen.getByRole('button', { name: 'Join' }));
+  pickAction('Join a group', 'Ask to join');
   expect(screen.getByText('Ask to join Warehouse Alerts')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Send request' }));
 
@@ -222,7 +232,7 @@ it('Edit overrides opens the override modal and wires onSave to updateMyGroupOve
   render(<MeNotifications />);
   await waitFor(() => expect(screen.getByText('Ops')).toBeTruthy());
 
-  fireEvent.click(screen.getByRole('button', { name: 'Edit overrides' }));
+  pickAction('My groups', 'Edit overrides');
   expect(screen.getByText('Overrides — Ada Lovelace')).toBeTruthy();
 
   fireEvent.click(screen.getByRole('button', { name: 'mock-save' }));

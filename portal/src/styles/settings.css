@@ -201,25 +201,12 @@
   border: 0;
 }
 
-/* Notification groups' self-service mini-lists (My groups / Join a
- * group on /me/notifications) — grid-template-columns only, per the
- * mini-row/mini-list-head primitive contract (directory.css): a page
- * sets column widths and nothing else, typography/box-model stays with
- * the primitive. */
-.mynotif-my-head,
-.mynotif-my-row {
-  grid-template-columns: minmax(240px, 1fr) minmax(190px, max-content) 230px 110px max-content;
-}
-.mynotif-join-head,
-.mynotif-join-row {
-  grid-template-columns: minmax(240px, 1fr) minmax(190px, max-content) 110px max-content;
-}
-/* layout-only wrappers/children (not mini-row co-classes) */
-.mynotif-body { padding: 4px 20px 14px; }
-.mynotif-search { margin: 14px 20px 0; max-width: 360px; }
-.mynotif-note { margin: 14px 20px 0; }
-.mynotif-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
-.mynotif-body .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+/* /me/notifications group sections — standard directory list, stacked. */
+.me-groups { margin-top: 28px; }
+.me-groups .dir-head { margin-bottom: 0; }
+.me-groups .dir-head h3 { margin: 0; display: flex; align-items: center; gap: 10px; }
+.me-groups .dir-head .page-hint { margin: 4px 0 0; }
+.me-groups .dir-toolbar { margin: 12px 0 10px; }
 
 .set-subrow { padding-left: 22px; }
 .set-inline { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
