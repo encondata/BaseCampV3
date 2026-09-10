@@ -35,6 +35,9 @@ def test_reload_invokes_watchfiles_run_process(monkeypatch):
         calls["args"] = args
 
     monkeypatch.setattr(watchfiles, "run_process", fake_run_process)
+    # belt and braces next to the CLI's own PYTEST_CURRENT_TEST guard: the
+    # dylib shim must not touch this process's environment either way
+    monkeypatch.setenv("SS_DYLD_SHIM", "1")
     result = runner.invoke(
         app, ["report-worker", "--reload", "--poll-seconds", "1.5"])
     assert result.exit_code == 0, result.output

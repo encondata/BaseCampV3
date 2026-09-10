@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -16,19 +16,22 @@ vi.mock('../lib/notificationsContext', () => ({
 const api = vi.hoisted(() => ({ getReportRunDownloadUrl: vi.fn() }));
 vi.mock('../lib/api', async (importActual) => ({ ...(await importActual<typeof import('../lib/api')>()), ...api }));
 
-const { default: ToastHost } = await import('./ToastHost');
+const { default: ToastHost, INBOX_TOAST_MS } = await import('./ToastHost');
 afterEach(() => { cleanup(); vi.clearAllMocks(); ctx.newItems = []; ctx.local = []; });
 
 it('shows a Download toast for report_ready and marks it read on click', async () => {
   const user = userEvent.setup();
   api.getReportRunDownloadUrl.mockResolvedValue('https://spaces/r1.pdf');
-  const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+  const tab = { location: { href: '' }, close: vi.fn() };
+  const openSpy = vi.spyOn(window, 'open').mockImplementation(() => tab as unknown as Window);
   ctx.newItems = [{ id: 'n1', kind: 'report_ready', title: 'Move Report is ready', body: 'NAP11',
     link: '/reports?tab=history&run=r1', payload: { run_id: 'r1' } }];
   render(<MemoryRouter><ToastHost /></MemoryRouter>);
   expect(screen.getByRole('status').textContent).toContain('Move Report is ready');
   await user.click(screen.getByRole('button', { name: 'Download' }));
-  await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://spaces/r1.pdf', '_blank'));
+  // the tab is claimed synchronously, then pointed at the presigned URL
+  expect(openSpy).toHaveBeenCalledWith('', '_blank');
+  await waitFor(() => expect(tab.location.href).toBe('https://spaces/r1.pdf'));
   expect(ctx.markRead).toHaveBeenCalledWith('n1');
   expect(ctx.dismissNew).toHaveBeenCalledWith('n1');
 });
@@ -36,13 +39,15 @@ it('shows a Download toast for report_ready and marks it read on click', async (
 it('leaves the toast in place when the download URL fetch fails', async () => {
   const user = userEvent.setup();
   api.getReportRunDownloadUrl.mockRejectedValue(new Error('boom'));
-  const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+  const tab = { location: { href: '' }, close: vi.fn() };
+  vi.spyOn(window, 'open').mockImplementation(() => tab as unknown as Window);
   ctx.newItems = [{ id: 'n1', kind: 'report_ready', title: 'Move Report is ready', body: 'NAP11',
     link: '/reports?tab=history&run=r1', payload: { run_id: 'r1' } }];
   render(<MemoryRouter><ToastHost /></MemoryRouter>);
   await user.click(screen.getByRole('button', { name: 'Download' }));
   await waitFor(() => expect(api.getReportRunDownloadUrl).toHaveBeenCalledWith('r1'));
-  expect(openSpy).not.toHaveBeenCalled();
+  await waitFor(() => expect(tab.close).toHaveBeenCalled());   // blank tab cleaned up
+  expect(tab.location.href).toBe('');
   expect(ctx.markRead).not.toHaveBeenCalled();
   expect(ctx.dismissNew).not.toHaveBeenCalled();
   expect(screen.getByRole('status').textContent).toContain('Move Report is ready');
@@ -62,4 +67,17 @@ it('renders local message toasts', () => {
   ctx.local = [{ id: 1, message: "We'll let you know when it's ready" }];
   render(<MemoryRouter><ToastHost /></MemoryRouter>);
   expect(screen.getByText("We'll let you know when it's ready")).toBeTruthy();
+});
+
+it('inbox toasts dismiss themselves after INBOX_TOAST_MS', async () => {
+  vi.useFakeTimers();
+  ctx.newItems = [{ id: 'n3', kind: 'report_failed', title: 'Move Report failed', body: 'x',
+    link: '/reports', payload: {} }];
+  render(<MemoryRouter><ToastHost /></MemoryRouter>);
+  expect(ctx.dismissNew).not.toHaveBeenCalled();
+  act(() => { vi.advanceTimersByTime(INBOX_TOAST_MS - 1); });
+  expect(ctx.dismissNew).not.toHaveBeenCalled();
+  act(() => { vi.advanceTimersByTime(1); });
+  expect(ctx.dismissNew).toHaveBeenCalledWith('n3');
+  vi.useRealTimers();
 });

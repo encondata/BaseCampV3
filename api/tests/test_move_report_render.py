@@ -119,6 +119,18 @@ def test_page_margin_strings_are_css_escaped_not_html_escaped():
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "rack_fragment.html"
+RACK_CSS = Path(__file__).resolve().parents[2] / "portal/src/styles/rack-svg.css"
+
+
+def test_fixture_carries_the_portals_current_rack_css():
+    """The fixture is a captured Node render, so it silently goes stale when
+    rack-svg.css moves on — and the layout test below would then be proving
+    something about last month's stylesheet."""
+    inlined = re.search(r"<style>([\s\S]*?)</style>", FIXTURE.read_text()).group(1)
+    stripped = re.sub(r"/\*[\s\S]*?\*/", "", RACK_CSS.read_text())
+    assert inlined.strip() == stripped.strip(), (
+        "re-capture api/tests/fixtures/rack_fragment.html — "
+        "portal/src/styles/rack-svg.css has changed")
 
 
 def _boxes_by_class(page, name):

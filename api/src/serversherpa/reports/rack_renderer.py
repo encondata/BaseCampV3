@@ -53,4 +53,4 @@ async def render(rows: list[dict], rack_name: str, side: str) -> str:
         raise RackRendererUnavailable(
             f"renderer exited {proc.returncode} for rack {rack_name}: "
             f"{err.decode(errors='replace').strip()[:500]}")
-    return out.decode()
+    return out.decode("utf-8", "replace")

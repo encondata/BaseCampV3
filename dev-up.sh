@@ -39,5 +39,8 @@ fi
 echo "==> applying database migrations…"
 (cd api && "../$VENV/alembic" upgrade head)
 
+echo "==> building the rack renderer (reports)…"
+npm --prefix portal run build:rack-renderer
+
 echo "==> starting app processes from Procfile.dev (Ctrl+C stops them all)…"
 exec "$VENV/honcho" start -f Procfile.dev

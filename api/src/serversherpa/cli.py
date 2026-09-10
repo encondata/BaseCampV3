@@ -378,6 +378,11 @@ def _ensure_pango_on_macos(*, exec_self: bool) -> None:
     this same python inherit it. SS_DYLD_SHIM stops any of it happening
     twice.
     """
+    # Under pytest this must do nothing: setting DYLD_* (let alone
+    # re-exec'ing) from inside a test process would leak into the whole
+    # session and, in exec_self mode, restart the test runner itself.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
     if (sys.platform != "darwin"
             or os.environ.get("SS_DYLD_SHIM")
             or os.environ.get("DYLD_FALLBACK_LIBRARY_PATH")

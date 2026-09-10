@@ -3,12 +3,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { ApiError, getReportRunDownloadUrl, listReportRuns } from '../../lib/api';
+import { ApiError, getReportRun, getReportRunDownloadUrl, listReportRuns } from '../../lib/api';
 import type { ReportRun } from '../../lib/api';
-import { formatBytes } from '../../lib/reports';
+import { formatBytes, openPresigned } from '../../lib/reports';
 import { RowActionsMenu } from '../hardware/RowActionsMenu';
 
 export const HISTORY_POLL_MS = 3000;
+export const HISTORY_PAGE_SIZE = 100;
 
 const STATUS_LABEL: Record<ReportRun['status'], string> = {
   queued: 'Queued', running: 'Generating', completed: 'Completed', failed: 'Failed',
@@ -28,23 +29,67 @@ export default function HistoryTab({ highlightRunId, onCount }: {
   onCount: (n: number) => void;
 }) {
   const [runs, setRuns] = useState<ReportRun[] | null>(null);
+  const [pinned, setPinned] = useState<ReportRun | null>(null);
+  const [more, setMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
   const [viewing, setViewing] = useState<ReportRun | null>(null);
 
-  const load = async () => {
+  // A poll refreshes the newest page only; anything `Load older` already
+  // appended stays put (and never doubles up — the head wins on id).
+  const load = async (first = false) => {
     try {
-      const rows = await listReportRuns();
-      setRuns(rows);
-      onCount(rows.length);
+      const rows = await listReportRuns({ limit: HISTORY_PAGE_SIZE });
+      setRuns((cur) => {
+        if (cur === null) return rows;
+        const ids = new Set(rows.map((r) => r.id));
+        return [...rows, ...cur.filter((r) => !ids.has(r.id))];
+      });
+      if (first) setMore(rows.length === HISTORY_PAGE_SIZE);
       setError('');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't load report history.");
     }
   };
-  useEffect(() => { void load(); }, []);           // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(true); }, []);       // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadOlder = async () => {
+    const last = (runs ?? [])[(runs ?? []).length - 1];
+    if (!last) return;
+    setLoadingMore(true);
+    try {
+      const older = await listReportRuns({ before: last.created_at, limit: HISTORY_PAGE_SIZE });
+      setRuns((cur) => [...(cur ?? []), ...older]);
+      setMore(older.length === HISTORY_PAGE_SIZE);
+      setError('');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Couldn't load older reports.");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  // A notification link can point at a run that has already scrolled off
+  // the newest page (or that a filter never loaded): fetch it once and pin
+  // it to the top so the deep link always lands on something.
+  useEffect(() => {
+    if (!highlightRunId || runs === null) return;
+    if (runs.some((r) => r.id === highlightRunId)) { setPinned(null); return; }
+    if (pinned?.id === highlightRunId) return;
+    let done = false;
+    void getReportRun(highlightRunId)
+      .then((r) => { if (!done) setPinned(r); })
+      .catch(() => undefined);                     // gone or not visible: nothing to pin
+    return () => { done = true; };
+  }, [highlightRunId, runs, pinned?.id]);
+
+  const rows = useMemo(
+    () => (pinned ? [pinned, ...(runs ?? [])] : (runs ?? [])), [pinned, runs],
+  );
+  useEffect(() => { onCount(rows.length); }, [rows.length, onCount]);
 
   const active = useMemo(
-    () => (runs ?? []).some((r) => r.status === 'queued' || r.status === 'running'), [runs],
+    () => rows.some((r) => r.status === 'queued' || r.status === 'running'), [rows],
   );
   useEffect(() => {
     if (!active) return;
@@ -53,7 +98,7 @@ export default function HistoryTab({ highlightRunId, onCount }: {
   }, [active]);                                    // eslint-disable-line react-hooks/exhaustive-deps
 
   const download = async (run: ReportRun) => {
-    try { window.open(await getReportRunDownloadUrl(run.id), '_blank'); } catch (err) {
+    try { await openPresigned(() => getReportRunDownloadUrl(run.id)); } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't fetch the download link.");
     }
   };
@@ -67,11 +112,14 @@ export default function HistoryTab({ highlightRunId, onCount }: {
         <span className="col-head">Requested by</span><span className="col-head">Requested at</span>
         <span className="col-head">Status</span><span className="col-head">Size</span><span />
       </div>
-      {runs && runs.length === 0 && <div className="dir-empty">No reports generated yet.</div>}
-      {(runs ?? []).map((r) => (
+      {runs && rows.length === 0 && <div className="dir-empty">No reports generated yet.</div>}
+      {rows.map((r) => (
         <div key={r.id} className={`dir-row ${r.id === highlightRunId ? 'row-highlight' : ''}`}>
           <div className="row-main" style={grid}>
-            <div className="cell"><span className="cell-primary">{r.definition_name}</span></div>
+            <div className="cell">
+              <span className="cell-primary">{r.definition_name}</span>
+              {r.id === pinned?.id && <span className="chip c-slate pinned-run">Linked run</span>}
+            </div>
             <div className="cell"><Link to={`/initiatives/${r.initiative_id}`}>{r.initiative_name}</Link></div>
             <div className="cell">{r.requested_by_name}</div>
             <div className="cell">{new Date(r.created_at).toLocaleString()}</div>
@@ -91,13 +139,21 @@ export default function HistoryTab({ highlightRunId, onCount }: {
           </div>
         </div>
       ))}
+      {more && (
+        <div className="history-more">
+          <button type="button" className="btn-ghost" disabled={loadingMore}
+                  onClick={() => void loadOlder()}>
+            {loadingMore ? 'Loading…' : 'Load older'}
+          </button>
+        </div>
+      )}
       {viewing && (
         <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) setViewing(null); }}>
           <div className="modal-card reports-modal-card">
             <div className="modal-head"><h3>Report failed</h3>
               <button type="button" className="modal-close" aria-label="Close"
                       onClick={() => setViewing(null)}>×</button></div>
-            <div className="modal-body"><pre className="err" style={{ whiteSpace: 'pre-wrap' }}>{viewing.error}</pre></div>
+            <div className="modal-body"><pre className="err">{viewing.error}</pre></div>
           </div>
         </div>
       )}

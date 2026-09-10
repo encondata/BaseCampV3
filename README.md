@@ -61,6 +61,7 @@ python3 -m venv .venv
 # 4. Portal (second terminal)
 cd portal
 npm install
+npm run build:rack-renderer   # PDF reports need this once (rebuild after rack changes)
 npm run dev                  # http://localhost:5173
 ```
 

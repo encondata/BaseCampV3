@@ -28,6 +28,7 @@ from serversherpa.reports.jobs import claim_next, requeue_stale
 from serversherpa.reports.move_report.gather import InitiativeUnavailable
 from serversherpa.reports.rack_renderer import RackRendererUnavailable
 from serversherpa.reports.registry import get_module
+from serversherpa.services.audit import audit
 from serversherpa.services.storage import put_object
 
 logger = logging.getLogger("serversherpa.reports.worker")
@@ -81,6 +82,11 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
             size_bytes=len(result.pdf), uploaded_by=run.requested_by)
         db.add(attachment)
         await db.flush()
+        # same audit row a manual upload writes (routes/attachments.py), so
+        # the initiative's Files history reads the same either way
+        audit(db, actor_id=run.requested_by, entity_type="initiative",
+              entity_id=str(run.initiative_id), action="attachment.add",
+              changes={"filename": {"from": None, "to": result.filename}})
         run.storage_key = key
         run.attachment_id = attachment.id
         run.filename = result.filename

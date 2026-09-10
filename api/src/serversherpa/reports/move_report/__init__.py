@@ -50,6 +50,6 @@ async def build(db: AsyncSession, run: ReportRun, *,
     ctx = build_context(data, options, source_racks=src, destination_racks=dst,
                         generated_by=generated_by, generated_at=now)
     pdf = await render_pdf_async(render_html(ctx))
-    safe_name = re.sub(r'[\\/:*?"<>|]+', "-", data.name).strip() or "initiative"
+    safe_name = re.sub(r'[\\/:*?"<>|\r\n\t]+', "-", data.name).strip() or "initiative"
     filename = f"Move Report - {safe_name} - {now:%Y-%m-%d %H%M}.pdf"
     return ReportResult(pdf=pdf, filename=filename)

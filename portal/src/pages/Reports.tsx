@@ -57,6 +57,7 @@ export default function Reports() {
     const next = new URLSearchParams(params);
     next.set('tab', t);
     next.delete('run');
+    setError('');                 // the other tab's failure isn't this tab's
     setParams(next, { replace: true });
   };
   const canAdd = can('reports', 'add');

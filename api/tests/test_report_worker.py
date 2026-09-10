@@ -10,7 +10,8 @@ from sqlalchemy import select, text
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
-    Attachment, Initiative, Notification, Person, ReportDefinition, ReportRun, SystemProcess,
+    Attachment, AuditLog, Initiative, Notification, Person, ReportDefinition, ReportRun,
+    SystemProcess,
 )
 from serversherpa.reports import worker
 from serversherpa.reports.jobs import STALE_MINUTES, claim_next, requeue_stale
@@ -101,6 +102,11 @@ async def test_run_once_completes_uploads_attaches_and_notifies(db, monkeypatch)
     assert (att.entity_type, str(att.entity_id), att.kind, att.content_type,
             att.uploaded_by, att.filename) == (
         "initiative", str(ini_id), "document", "application/pdf", person_id, run.filename)
+    log = await db.scalar(select(AuditLog).where(AuditLog.entity_type == "initiative",
+                                                 AuditLog.action == "attachment.add"))
+    assert log is not None, "the worker's attachment is audited like a manual upload"
+    assert (log.actor_person_id, log.entity_id) == (person_id, str(ini_id))
+    assert log.changes == {"filename": {"from": None, "to": run.filename}}
     n = await db.scalar(select(Notification).where(Notification.person_id == person_id))
     assert n.kind == "report_ready" and n.title == "Move Report is ready" and n.body == "NAP11"
     assert n.link == f"/reports?tab=history&run={run_id}" and n.payload == {"run_id": str(run_id)}

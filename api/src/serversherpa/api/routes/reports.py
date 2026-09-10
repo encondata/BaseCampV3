@@ -1,6 +1,7 @@
 """Reports: definitions (the Available tab) and runs (History + the
-Generate modal). Reads gate on reports:view; clone/generate on
-reports:add; edit on reports:change; delete on reports:delete."""
+Generate modal). Reads gate on reports:view; clone/generate and the
+notify toggle on reports:add; edit on reports:change; delete on
+reports:delete."""
 
 import uuid
 from datetime import UTC, datetime
@@ -96,6 +97,8 @@ async def update_definition(
     patch = body.model_dump(exclude_unset=True)
     if "name" in patch:
         patch["name"] = patch["name"].strip()
+        if not patch["name"]:            # min_length=1 passes "   "; strip must not
+            raise _err(422, "invalid_options", problems=["name is required"])
         if await _name_taken(db, patch["name"], exclude=d.id):
             raise _err(409, "name_in_use")
     if "options" in patch:
@@ -158,6 +161,10 @@ def _visible_runs(actor: AuthContext):
          .join(Person, Person.id == ReportRun.requested_by)
          .where(or_(ReportRun.requested_by == actor.person.id,
                     ReportRun.requested_rank <= actor.access.max_rank)))
+    # Defence in depth: `reports` is a global-only resource today, so
+    # scope_conditions() always returns None here and this leg is
+    # unreachable. It stays so that the day initiatives grow a scoped
+    # grant, history narrows with them instead of leaking.
     cond = scope_conditions("initiatives", actor.access, actor.person.id)
     if cond is not None:
         q = q.where(cond)
@@ -242,7 +249,7 @@ async def download_run(
 @router.patch("/runs/{run_id}", response_model=ReportRunOut)
 async def set_run_notify(
     run_id: uuid.UUID, body: ReportRunNotifyIn, db: DbSession,
-    actor: AuthContext = require_permission("reports", "view"),
+    actor: AuthContext = require_permission("reports", "add"),
 ) -> ReportRunOut:
     await _visible_run(db, run_id, actor)
     run = await db.get(ReportRun, run_id)

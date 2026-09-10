@@ -35,6 +35,27 @@ export function sortInitiativesForPicker(items: InitiativeItem[]): InitiativeIte
     .sort((a, b) => rank(a.status) - rank(b.status) || a.name.localeCompare(b.name));
 }
 
+/**
+ * Open a presigned download in a new tab. The tab has to be claimed
+ * SYNCHRONOUSLY inside the click's own task — by the time the presign
+ * round-trip resolves the browser no longer counts the open as
+ * user-initiated and blocks it — so claim a blank tab first and point it
+ * at the URL once it arrives. Rejects with the fetch's own error (the
+ * blank tab is closed first) so callers keep showing their own message.
+ */
+export async function openPresigned(fetchUrl: () => Promise<string>): Promise<void> {
+  const win = window.open('', '_blank');
+  let url: string;
+  try {
+    url = await fetchUrl();
+  } catch (err) {
+    win?.close();
+    throw err;
+  }
+  if (win) win.location.href = url;
+  else window.open(url, '_blank');       // popup blocked: one more try, no worse
+}
+
 export function formatBytes(n: number | null): string {
   if (n == null) return '—';
   if (n < 1024) return `${n} B`;

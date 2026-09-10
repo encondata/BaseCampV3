@@ -153,7 +153,8 @@ it('History lists runs with status, duration, size and a Download action', async
     initiative_name: 'DAL02', status: 'failed', error: 'boom', filename: null, size_bytes: null,
     finished_at: '2026-09-09T12:00:04Z' }]);
   api.getReportRunDownloadUrl.mockResolvedValue('https://spaces/r1.pdf');
-  const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+  const tab = { location: { href: '' }, close: vi.fn() };
+  const openSpy = vi.spyOn(window, 'open').mockImplementation(() => tab as unknown as Window);
   renderPage('/reports?tab=history');
   await screen.findByText('NAP11', { selector: 'a' });
   expect(screen.getByText('Completed')).toBeTruthy();
@@ -163,7 +164,9 @@ it('History lists runs with status, duration, size and a Download action', async
   const triggers = screen.getAllByRole('button', { name: /actions/i });
   await user.click(triggers[0]);
   await user.click(screen.getByText('Download'));
-  await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://spaces/r1.pdf', '_blank'));
+  // the tab is claimed synchronously, then pointed at the presigned URL
+  expect(openSpy).toHaveBeenCalledWith('', '_blank');
+  await waitFor(() => expect(tab.location.href).toBe('https://spaces/r1.pdf'));
   await user.click(triggers[1]);
   await user.click(screen.getByText('View error'));
   expect(await screen.findByText('boom')).toBeTruthy();
@@ -181,4 +184,42 @@ it('History polls while a run is active and stops when idle', async () => {
   await act(async () => { await vi.advanceTimersByTimeAsync(6500); });
   expect(api.listReportRuns).toHaveBeenCalledTimes(2);      // idle: no more polls
   vi.useRealTimers();
+});
+
+it('History pins a deep-linked run that is not on the loaded page', async () => {
+  api.listReportRuns.mockResolvedValue([RUN]);
+  api.getReportRun.mockResolvedValue({ ...RUN, id: 'r9', initiative_id: 'i9',
+    initiative_name: 'OLD01', created_at: '2026-01-01T00:00:00Z' });
+  renderPage('/reports?tab=history&run=r9');
+  expect(await screen.findByText('Linked run')).toBeTruthy();
+  expect(api.getReportRun).toHaveBeenCalledWith('r9');
+  // pinned above the loaded page, not merged into it
+  expect(screen.getAllByRole('link').map((a) => a.textContent)).toEqual(['OLD01', 'NAP11']);
+});
+
+it('History ignores a deep-linked run the API will not hand over', async () => {
+  api.listReportRuns.mockResolvedValue([RUN]);
+  api.getReportRun.mockRejectedValue(new Error('404'));
+  renderPage('/reports?tab=history&run=r9');
+  await waitFor(() => expect(api.getReportRun).toHaveBeenCalledWith('r9'));
+  expect(screen.queryByText('Linked run')).toBeNull();
+  expect(screen.getAllByRole('link')).toHaveLength(1);
+});
+
+const mkRuns = (n: number, prefix: string): ReportRun[] =>
+  Array.from({ length: n }, (_, i) => ({
+    ...RUN, id: `${prefix}${i}`, created_at: `2026-09-09T12:${String(i % 60).padStart(2, '0')}:00Z`,
+  }));
+
+it('History "Load older" appends a page and disappears on a short one', async () => {
+  const user = userEvent.setup();
+  const first = mkRuns(100, 'a');
+  api.listReportRuns.mockResolvedValueOnce(first).mockResolvedValueOnce(mkRuns(2, 'b'));
+  renderPage('/reports?tab=history');
+  const older = await screen.findByRole('button', { name: 'Load older' });
+  expect(screen.getAllByRole('link')).toHaveLength(100);
+  await user.click(older);
+  await waitFor(() => expect(screen.getAllByRole('link')).toHaveLength(102));
+  expect(api.listReportRuns).toHaveBeenLastCalledWith({ before: first[99].created_at, limit: 100 });
+  expect(screen.queryByRole('button', { name: 'Load older' })).toBeNull();
 });

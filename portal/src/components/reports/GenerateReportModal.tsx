@@ -12,7 +12,7 @@ import {
   setReportRunNotify,
 } from '../../lib/api';
 import type { InitiativeItem, ReportDefinition, ReportRun } from '../../lib/api';
-import { MOVE_REPORT_SECTIONS, sortInitiativesForPicker } from '../../lib/reports';
+import { MOVE_REPORT_SECTIONS, openPresigned, sortInitiativesForPicker } from '../../lib/reports';
 import { useSystemStatus } from '../../lib/systemStatusContext';
 
 export const MODAL_POLL_MS = 2000;
@@ -117,7 +117,7 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
   const download = async () => {
     if (!run) return;
     try {
-      window.open(await getReportRunDownloadUrl(run.id), '_blank');
+      await openPresigned(() => getReportRunDownloadUrl(run.id));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't fetch the download link.");
     }

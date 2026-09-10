@@ -1,7 +1,7 @@
 """Reports API: definitions (list/clone/patch/delete + system guard) and,
 from Task 3, runs (create/list/get/download/notify + the history gate)."""
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 
@@ -75,6 +75,10 @@ async def test_patch_validates_options_and_rejects_duplicate_name(client, db, se
     resp = await client.patch(f"/reports/definitions/{other.id}", headers=admin,
                               json={"name": "move report"})           # citext clash
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "name_in_use"
+    resp = await client.patch(f"/reports/definitions/{other.id}", headers=admin,
+                              json={"name": "   "})                    # blank after strip
+    assert resp.status_code == 422 and resp.json()["detail"] == {
+        "code": "invalid_options", "problems": ["name is required"]}
     staff = await login(client)                                        # no reports:change
     assert (await client.patch(f"/reports/definitions/{d.id}", headers=staff,
                                json={"name": "x"})).status_code == 403
@@ -196,3 +200,11 @@ async def test_notify_patch_is_requester_only(client, db, seeded_user):
     assert resp.status_code == 200 and resp.json()["notify"] is True
     resp = await client.patch(f"/reports/runs/{run['id']}", headers=admin, json={"notify": False})
     assert resp.status_code == 403 and resp.json()["detail"]["code"] == "forbidden"
+    # the write gate is reports:add, so a role without it never reaches the
+    # requester check at all
+    worker = await _make(db, client, "worker", "w@test.example.com")
+    resp = await client.patch(f"/reports/runs/{run['id']}", headers=worker, json={"notify": True})
+    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "forbidden"
+    row = await db.get(ReportRun, UUID(run["id"]))
+    await db.refresh(row)
+    assert row.notify is True                          # untouched by the refused writes

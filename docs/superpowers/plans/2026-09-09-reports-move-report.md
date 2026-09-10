@@ -2493,7 +2493,7 @@ git commit -m "feat(reports): move report template, WeasyPrint render, build()"
 
 **Interfaces:**
 - Consumes: Task 1 models + `notify()`; Task 2 `get_module`; Task 5 `RackRendererUnavailable`; `serversherpa.system.admin_config.poll_workers_paused`; `serversherpa.system.registry.start_heartbeat`; `serversherpa.services.storage.put_object`.
-- Produces: `jobs.claim_next(db) -> ReportRun | None`, `jobs.requeue_stale(db) -> int`, `jobs.STALE_MINUTES = 15`; `worker.process_run(db, run, *, renderer=None)`, `worker.run_once(sessionmaker, *, renderer=None) -> bool`, `worker.run_forever(poll_seconds=2.0)`, `worker.RUN_TIMEOUT_SECONDS = 300`; CLI `serversherpa report-worker [--poll-seconds] [--once] [--reload]`; process name `report-worker`, kind `worker`.
+- Produces: `jobs.claim_next(db) -> ReportRun | None`, `jobs.requeue_stale(db) -> int`, `jobs.STALE_MINUTES = 15`; `worker.process_run(db, run, *, sessionmaker, renderer=None) -> str`, `worker.run_once(sessionmaker, *, renderer=None) -> bool`, `worker.run_forever(poll_seconds=2.0)`, `worker.RUN_TIMEOUT_SECONDS = 300`; CLI `serversherpa report-worker [--poll-seconds] [--once] [--reload]`; process name `report-worker`, kind `worker`.
 
 - [ ] **Step 1: Failing tests** — `api/tests/test_report_worker.py`:
 
@@ -2752,7 +2752,8 @@ async def _notify(db: AsyncSession, run: ReportRun, definition_name: str,
                      body=run.error or "unknown error", link=link, payload=payload)
 
 
-async def process_run(db: AsyncSession, run: ReportRun, *, renderer=None) -> None:
+async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
+                      renderer=None) -> str:
     """Run one claimed (status='running') run to a terminal status."""
     definition = await db.get(ReportDefinition, run.definition_id)
     initiative = await db.get(Initiative, run.initiative_id)

@@ -100,11 +100,13 @@ it('step 3 polls, then offers Download and the Files note', async () => {
   // "Generating…" on the first 2 s poll, so this wait must outlast
   // MODAL_POLL_MS rather than the 1 s testing-library default.
   await screen.findByText(/Generating/, {}, { timeout: 6000 });
-  const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+  const tab = { location: { href: '' }, close: vi.fn() };
+  const openSpy = vi.spyOn(window, 'open').mockImplementation(() => tab as unknown as Window);
   await screen.findByRole('button', { name: 'Download' }, { timeout: 6000 });
   expect(screen.getByText("Also saved to the initiative's Files")).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Download' }));
-  await waitFor(() => expect(openSpy).toHaveBeenCalledWith('https://spaces/x.pdf', '_blank'));
+  expect(openSpy).toHaveBeenCalledWith('', '_blank');      // claimed inside the click
+  await waitFor(() => expect(tab.location.href).toBe('https://spaces/x.pdf'));
 });
 
 it('notify-me sets the flag, toasts and closes', async () => {
