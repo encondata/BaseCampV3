@@ -36,7 +36,7 @@ export function formatDims(
 }
 
 export function assetSearchText(a: AssetItem): string {
-  return [a.serial_number, a.name, a.rfid_tag, a.location_detail,
+  return [a.legacy_id != null ? String(a.legacy_id) : null, a.serial_number, a.name, a.rfid_tag, a.location_detail,
           a.client_name, a.site_name, a.model?.make, a.model?.model]
     .filter(Boolean).join(' ').toLowerCase();
 }
@@ -51,6 +51,7 @@ export function assetSearchText(a: AssetItem): string {
 export function assetCellText(a: AssetItem, colKey: string): string {
   switch (colKey) {
     case 'primary': return `${a.serial_number ?? ''} ${a.name ?? ''}`.trim();
+    case 'asset_id': return a.legacy_id != null ? String(a.legacy_id) : '—';
     case 'status': return a.status_label;
     case 'category': return a.model?.category_label ?? '';
     case 'client': return a.client_name ?? '';

@@ -3,12 +3,12 @@ import { describe, expect, it } from 'vitest';
 import type { AssetItem, AssetModelItem } from './api';
 import {
   ASSET_ERRORS, ASSET_GOD_FIELDS, MODEL_ERRORS, MODEL_GOD_FIELDS,
-  assetCellText, assetPayload, duplicateSerials, formFromAsset, formFromModel,
+  assetCellText, assetSearchText, assetPayload, duplicateSerials, formFromAsset, formFromModel,
   formatDims, modelCellText, modelPayload, needsModelCreate, parseDims, partnerFor,
 } from './assets';
 
 const asset = (over: Partial<AssetItem> = {}): AssetItem => ({
-  id: 'a1', serial_number: 'SN1', name: 'web-01', rfid_tag: null,
+  id: 'a1', legacy_id: 100042, serial_number: 'SN1', name: 'web-01', rfid_tag: null,
   model_id: null, model: null, client_id: null, client_name: null,
   site_id: null, site_name: null, location_detail: '', status: 'active',
   status_label: 'Active', status_color: '#178a4c', has_rails: null,
@@ -399,5 +399,13 @@ describe('assetCellText rfid', () => {
     expect(assetCellText(a, 'rfid')).toBe('100418');
     expect(a.rfid_tag).toBe('000000000000000000100418');
     expect(assetCellText(asset({ rfid_tag: null }), 'rfid')).toBe('—');
+  });
+});
+
+describe('Asset ID column', () => {
+  it('renders the number and searches by it', () => {
+    expect(assetCellText(asset(), 'asset_id')).toBe('100042');
+    expect(assetCellText(asset({ legacy_id: null }), 'asset_id')).toBe('—');
+    expect(assetSearchText(asset())).toContain('100042');
   });
 });

@@ -76,7 +76,8 @@ def _item(a: Asset, statuses: dict, models: dict, clients: dict,
           sites: dict) -> dict:
     label, color = statuses.get(a.status, (a.status, "#51606f"))
     return {
-        "id": a.id, "serial_number": a.serial_number, "name": a.name,
+        "id": a.id, "legacy_id": a.legacy_id,
+        "serial_number": a.serial_number, "name": a.name,
         "rfid_tag": a.rfid_tag, "model_id": a.model_id,
         "model": models.get(a.model_id),
         "client_id": a.client_id, "client_name": clients.get(a.client_id),

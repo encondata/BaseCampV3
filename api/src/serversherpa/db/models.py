@@ -548,6 +548,7 @@ class AssetModelAlias(Base):
 
 class Asset(Base):
     __tablename__ = "assets"
+    __mapper_args__ = {"eager_defaults": True}
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
@@ -563,7 +564,9 @@ class Asset(Base):
         server_default=text("'asset'"))  # GENERATED column; never written
     has_rails: Mapped[bool | None] = mapped_column(Boolean)
     last_seen_at: Mapped[datetime | None]
-    legacy_id: Mapped[int | None] = mapped_column(BigInteger)
+    legacy_id: Mapped[int] = mapped_column(  # the human Asset ID (0047)
+        BigInteger, unique=True,
+        server_default=text("nextval('asset_number_seq')"))
     source: Mapped[str] = mapped_column(server_default="manual")
     source_ref: Mapped[str | None]
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))

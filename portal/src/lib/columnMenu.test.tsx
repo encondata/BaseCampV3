@@ -10,7 +10,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-li
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
+import { sanitize,
   activeFilterCount,
   ColumnMenu,
   EmptyClearFilters,
@@ -270,6 +270,7 @@ describe('usePersistentListState', () => {
     auth.preferences.list_prefs = {
       sites: {
         visible: ['name', 'city'],
+        seen: ['name', 'status', 'city'],
         sortKey: 'city',
         sortDir: -1,
         filters: { status: { values: ['active'] } },
@@ -288,6 +289,7 @@ describe('usePersistentListState', () => {
     auth.preferences.list_prefs = {
       sites: {
         visible: ['name', 'ghost', 'status'],
+        seen: ['name', 'status', 'city'],
         sortKey: 'ghost',
         sortDir: -1,
         filters: { ghost: { text: 'x' }, status: { values: ['active'] } },
@@ -305,6 +307,7 @@ describe('usePersistentListState', () => {
     auth.preferences.list_prefs = {
       sites: {
         visible: ['name', 'region'], // 'region' isn't in defaults.visible
+        seen: ['name', 'status', 'region'],
         sortKey: 'name',
         sortDir: 1,
         filters: {},
@@ -322,6 +325,7 @@ describe('usePersistentListState', () => {
     auth.preferences.list_prefs = {
       sites: {
         visible: ['name', 'ghost'],
+        seen: ['name', 'status'],
         sortKey: 'name',
         sortDir: 1,
         filters: {},
@@ -387,7 +391,7 @@ describe('usePersistentListState', () => {
     });
     expect(saved.list_prefs.sites).toEqual({
       visible: ['name', 'status'], sortKey: 'name', sortDir: 1,
-      filters: { status: { values: ['active'] } }, order: [],
+      filters: { status: { values: ['active'] } }, order: [], seen: ['name', 'status'],
     });
   });
 
@@ -404,7 +408,7 @@ describe('usePersistentListState', () => {
     expect(auth.updatePreferences).toHaveBeenCalledTimes(1);
     const saved = auth.updatePreferences.mock.calls[0][0] as UiPreferences;
     expect(saved.list_prefs.sites).toEqual({
-      visible: ['status'], sortKey: 'status', sortDir: -1, filters: {}, order: [],
+      visible: ['status'], sortKey: 'status', sortDir: -1, filters: {}, order: [], seen: ['name', 'status'],
     });
   });
 
@@ -421,7 +425,7 @@ describe('usePersistentListState', () => {
     const saved = auth.updatePreferences.mock.calls[0][0] as UiPreferences;
     expect(saved.list_prefs.sites).toEqual({
       visible: ['name', 'status'], sortKey: 'name', sortDir: 1,
-      filters: { status: { values: ['active'] } }, order: [],
+      filters: { status: { values: ['active'] } }, order: [], seen: ['name', 'status'],
     });
 
     // The cancelled timer must not also fire later.
@@ -492,5 +496,34 @@ describe('usePersistentListState', () => {
     expect(auth.updatePreferences).toHaveBeenCalledTimes(1);
     const saved = auth.updatePreferences.mock.calls[0][0] as UiPreferences;
     expect((saved.list_prefs.sites as { order?: string[] }).order).toEqual(['site', 'name']);
+  });
+});
+
+describe('sanitize surfaces default columns the user never saw', () => {
+  const known = new Set(['primary', 'asset_id', 'model', 'status']);
+  const defaults = { visible: new Set(['asset_id', 'model', 'status']), sortKey: 'primary', sortDir: 1 as const };
+
+  it('adds a new default column to an old entry that predates `seen`', () => {
+    const out = sanitize({ visible: ['model', 'status'], order: ['model', 'status'] }, known, defaults);
+    expect(out.visible.has('asset_id')).toBe(true);
+    expect(out.visible.has('model')).toBe(true);
+  });
+
+  it('keeps a default column hidden when the entry records having seen it', () => {
+    const out = sanitize({ visible: ['model'], seen: ['primary', 'asset_id', 'model', 'status'] }, known, defaults);
+    expect(out.visible.has('asset_id')).toBe(false);
+    expect(out.visible.has('status')).toBe(false);
+  });
+
+  it('treats an old entry\'s ordered-but-hidden column as deliberately hidden', () => {
+    const out = sanitize({ visible: ['model'], order: ['status', 'model'] }, known, defaults);
+    expect(out.visible.has('status')).toBe(false);
+    expect(out.visible.has('asset_id')).toBe(true);
+  });
+
+  it('never mutates the page defaults set', () => {
+    sanitize({ visible: ['model'] }, known, defaults);
+    expect(defaults.visible.has('primary')).toBe(false);
+    expect([...defaults.visible]).toEqual(['asset_id', 'model', 'status']);
   });
 });

@@ -295,6 +295,11 @@ interface StoredListPrefs {
   sortDir?: unknown;
   filters?: unknown;
   order?: unknown;
+  /** Every column key the page offered when this entry was saved. A default
+   *  column that is NOT in `seen` is one the user never had the chance to
+   *  hide — it is surfaced on hydrate, so a column added to the codebase
+   *  after someone saved their layout still appears for them. */
+  seen?: unknown;
 }
 
 const SAVE_DEBOUNCE_MS = 600;
@@ -304,7 +309,7 @@ const SAVE_DEBOUNCE_MS = 600;
  *  just the default-visible ones; callers without a fuller set fall back to
  *  `defaults.visible`). A column dropped from the codebase, or a stale/
  *  malformed value written by an older shape, never survives hydration. */
-function sanitize(
+export function sanitize(
   stored: StoredListPrefs, known: Set<string>, defaults: PersistentListDefaults,
 ): { visible: Set<string>; sortKey: string; sortDir: 1 | -1; filters: ColumnFilters; order: string[] } {
   let visible = defaults.visible;
@@ -313,6 +318,17 @@ function sanitize(
       (k): k is string => typeof k === 'string' && known.has(k),
     );
     if (kept.length) visible = new Set(kept);
+    // Surface default columns the user was never offered. Entries saved
+    // before `seen` existed count their visible + ordered keys as seen —
+    // a column the user arranged or kept is one they knew about; anything
+    // else that is default-visible today is new to them.
+    const strings = (v: unknown) =>
+      Array.isArray(v) ? v.filter((k): k is string => typeof k === 'string') : [];
+    const seen = new Set(Array.isArray(stored.seen)
+      ? strings(stored.seen)
+      : [...kept, ...strings(stored.order)]);
+    const surfaced = [...defaults.visible].filter((k) => known.has(k) && !seen.has(k));
+    if (surfaced.length) visible = new Set([...visible, ...surfaced]);
   }
 
   let sortKey = defaults.sortKey;
@@ -425,6 +441,7 @@ export function usePersistentListState(
             sortDir: sort.dir,
             filters,
             order: colOrder,
+            seen: Array.from(known),
           },
         },
       });

@@ -89,7 +89,7 @@ const initiative = (over: Partial<InitiativeItem> = {}): InitiativeItem => ({
 });
 
 const asset = (over: Partial<AssetItem> = {}): AssetItem => ({
-  id: 'a1', serial_number: 'SN1', name: 'core-sw-01', rfid_tag: null,
+  id: 'a1', legacy_id: 1, serial_number: 'SN1', name: 'core-sw-01', rfid_tag: null,
   model_id: null, model: null, client_id: 'c1', client_name: 'Acme',
   site_id: null, site_name: null, location_detail: '', status: 'in_transit',
   status_label: 'In Transit', status_color: '#1668a7', has_rails: null,

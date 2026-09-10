@@ -132,3 +132,20 @@ async def test_client_contact_gets_model_summary_but_not_catalog(client, db, see
     rows = (await client.get("/assets", headers=hdrs)).json()
     assert rows[0]["model"]["make"] == "Dell"     # embedded summary works
     assert (await client.get("/asset-models", headers=hdrs)).status_code == 403
+
+
+async def test_new_assets_get_sequential_asset_ids_from_100000(client, db, seeded_user):
+    """Asset ID (legacy_id) is auto-numbered by asset_number_seq (0047):
+    never blank, unique, and it rides along on the list and detail items."""
+    hdrs = await login(client)
+    first = await client.post("/assets", headers=hdrs,
+                              json={"serial_number": "SEQ-1", "name": "seq-one"})
+    assert first.status_code == 201, first.text
+    second = await client.post("/assets", headers=hdrs,
+                               json={"serial_number": "SEQ-2", "name": "seq-two"})
+    assert second.status_code == 201, second.text
+    a, b = first.json()["legacy_id"], second.json()["legacy_id"]
+    assert a >= 100000 and b == a + 1
+    listed = {r["id"]: r["legacy_id"] for r in (await client.get("/assets", headers=hdrs)).json()}
+    assert listed[first.json()["id"]] == a
+    assert len(set(listed.values())) == len(listed)          # unique across the list

@@ -1196,7 +1196,7 @@ export interface AssetModelRef {
 }
 
 export interface AssetItem {
-  id: string; serial_number: string | null; name: string | null;
+  id: string; legacy_id: number | null; serial_number: string | null; name: string | null;
   rfid_tag: string | null; model_id: string | null; model: AssetModelRef | null;
   client_id: string | null; client_name: string | null;
   site_id: string | null; site_name: string | null;

@@ -946,6 +946,7 @@ class AssetModelAliasesIn(BaseModel):
 
 class AssetItem(BaseModel):
     id: uuid.UUID
+    legacy_id: int | None = None   # the human Asset ID (V2 ids kept; V3 from 100000)
     serial_number: str | None = None
     name: str | None = None
     rfid_tag: str | None = None

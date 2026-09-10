@@ -58,6 +58,7 @@ import '../styles/assets.css';
 import { displayRfid } from '../lib/format';
 
 const COLUMNS: ColumnDef[] = [
+  { key: 'asset_id', label: 'Asset ID', width: '0.7fr', default: true },
   { key: 'model', label: 'Make / Model', width: '1.5fr', default: true },
   { key: 'category', label: 'Category', width: '1fr', default: true },
   { key: 'client', label: 'Client', width: '1.2fr', default: true },
@@ -86,6 +87,7 @@ const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c)
 function sortValueFor(a: AssetItem, key: string): string {
   switch (key) {
     case 'primary': return (a.serial_number ?? '').toLowerCase();
+    case 'asset_id': return a.legacy_id != null ? String(a.legacy_id).padStart(12, '0') : '';
     case 'model': return a.model ? `${a.model.make} ${a.model.model}`.toLowerCase() : '';
     case 'category': return (a.model?.category_label ?? '').toLowerCase();
     case 'client': return (a.client_name ?? '').toLowerCase();
@@ -102,6 +104,7 @@ function sortValueFor(a: AssetItem, key: string): string {
 }
 
 const CSV_COLUMNS: [string, (a: AssetItem) => string][] = [
+  ['Asset ID', (a) => (a.legacy_id != null ? String(a.legacy_id) : '')],
   ['ID', (a) => a.id],
   ['Serial', (a) => a.serial_number ?? ''],
   ['Name', (a) => a.name ?? ''],
@@ -279,6 +282,8 @@ export default function Assets() {
       }
     }
     switch (key) {
+      case 'asset_id':
+        return <span className="mono">{a.legacy_id ?? '—'}</span>;
       case 'model':
         return <span className="cell-top">{a.model ? `${a.model.make} ${a.model.model}` : '—'}</span>;
       case 'category':
