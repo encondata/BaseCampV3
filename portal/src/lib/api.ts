@@ -1693,6 +1693,122 @@ export async function getTrucksMap(trails: boolean): Promise<TruckMapPoint[]> {
   return resp.json();
 }
 
+/* ── warehouse ────────────────────────────────────────────────────── */
+
+export interface AssetRef {
+  id: string;
+  legacy_id: number | null;
+  serial_number: string | null;
+  name: string | null;
+  model_name: string | null;
+  status: string;
+  status_label: string;
+  status_color: string;
+  location_detail: string;
+}
+
+export interface StockLine {
+  id: string;
+  site_id: string;
+  site_name: string;
+  container_id: string | null;
+  container_name: string | null;
+  model_id: string | null;
+  model_make: string | null;
+  model_model: string | null;
+  description: string;
+  quantity: number;
+  unit: string;
+  location_detail: string;
+  notes: string;
+  archived_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WarehouseSite {
+  id: string;
+  name: string;
+  code: string | null;
+  city: string | null;
+  region: string | null;
+  status: string;
+  status_label: string;
+  status_color: string;
+  container_count: number;
+  asset_count: number;
+  stock_line_count: number;
+  stock_units: number;
+}
+
+export interface WarehouseContainer {
+  id: string;
+  name: string;
+  rfid_tag: string | null;
+  container_type: string | null;
+  type_label: string | null;
+  type_color: string | null;
+  status: string;
+  status_label: string;
+  status_color: string;
+  location_detail: string;
+  updated_at: string;
+  assets: AssetRef[];
+  stock: StockLine[];
+}
+
+export interface WarehouseInventory {
+  site: WarehouseSite;
+  containers: WarehouseContainer[];
+  loose_assets: AssetRef[];
+  loose_stock: StockLine[];
+}
+
+export async function listWarehouseSites(): Promise<WarehouseSite[]> {
+  const resp = await apiFetch('/warehouse/sites');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getWarehouseInventory(siteId: string): Promise<WarehouseInventory> {
+  const resp = await apiFetch(`/warehouse/${siteId}/inventory`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function createStockLine(
+  body: Record<string, unknown>,
+): Promise<StockLine> {
+  const resp = await apiFetch('/warehouse/stock', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateStockLine(
+  id: string, body: Record<string, unknown>,
+): Promise<StockLine> {
+  const resp = await apiFetch(`/warehouse/stock/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function archiveStockLine(
+  id: string, archived: boolean,
+): Promise<void> {
+  const resp = await apiFetch(
+    `/warehouse/stock/${id}/${archived ? 'archive' : 'unarchive'}`,
+    { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
 /* ── scans ────────────────────────────────────────────────────────── */
 
 export interface RawScanRow {
