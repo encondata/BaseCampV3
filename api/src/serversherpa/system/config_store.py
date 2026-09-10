@@ -23,6 +23,12 @@ DEFAULTS: dict[str, dict] = {
         "banner_enabled": False,
         "banner_message": "",
     },
+    # 2FA POLICY flags only — enrolment/verification arrives with the 2FA
+    # feature; until then these are stored, audited and reported, not enforced.
+    "security": {
+        "two_factor_enabled": False,
+        "two_factor_required": False,
+    },
 }
 
 

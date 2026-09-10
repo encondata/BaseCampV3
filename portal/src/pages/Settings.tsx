@@ -11,6 +11,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AdminControls from '../components/settings/AdminControls';
+import SecurityControls from '../components/settings/SecurityControls';
 import '../styles/settings.css';
 
 type Tab = 'administration' | 'security' | 'maintenance' | 'about';
@@ -22,8 +23,7 @@ const TABS: { key: Tab; label: string; to: string }[] = [
   { key: 'about', label: 'About', to: '/settings/about' },
 ];
 
-const PLACEHOLDERS: Record<Exclude<Tab, 'administration'>, { title: string; hint: string }> = {
-  security: { title: 'Security', hint: 'Password policy, session limits, and sign-in protection.' },
+const PLACEHOLDERS: Record<Exclude<Tab, 'administration' | 'security'>, { title: string; hint: string }> = {
   maintenance: { title: 'Maintenance', hint: 'Backups, housekeeping, and scheduled maintenance windows.' },
   about: { title: 'About', hint: 'Version, build, environment, and licence details.' },
 };
@@ -60,7 +60,7 @@ export default function Settings() {
       </div>
 
       <div className="set-stack">
-        {tab === 'administration' ? (
+        {tab === 'administration' && (
           <section className="set-section">
             <div className="set-head">
               <h3>Administration</h3>
@@ -68,7 +68,17 @@ export default function Settings() {
             </div>
             <AdminControls canChange={canChange} />
           </section>
-        ) : (
+        )}
+        {tab === 'security' && (
+          <section className="set-section">
+            <div className="set-head">
+              <h3>Security</h3>
+              <p>Two-factor policy and sign-in protection for every account.</p>
+            </div>
+            <SecurityControls canChange={canChange} />
+          </section>
+        )}
+        {(tab === 'maintenance' || tab === 'about') && (
           <section className="set-section">
             <div className="set-head">
               <h3>{PLACEHOLDERS[tab].title}</h3>

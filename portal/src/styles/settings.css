@@ -216,3 +216,4 @@
   font: inherit; font-size: 12.5px; background: var(--surface);
 }
 .set-error { color: var(--c-red, #c03540); }
+.set-ok { display: block; margin-top: 4px; color: var(--c-green, #178a4c); }

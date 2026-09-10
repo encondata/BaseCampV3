@@ -1582,6 +1582,26 @@ class AdminConfigOut(BaseModel):
     banner_message: str
 
 
+class SecurityConfigOut(BaseModel):
+    two_factor_enabled: bool
+    two_factor_required: bool
+
+
+class SecurityConfigIn(BaseModel):
+    """Partial update — only sent fields change. `two_factor_required`
+    implies `two_factor_enabled`; turning enabled off clears required."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    two_factor_enabled: bool | None = None
+    two_factor_required: bool | None = None
+
+
+class RevokeAllSessionsOut(BaseModel):
+    revoked_sessions: int
+    revoked_people: int
+
+
 class AdminConfigIn(BaseModel):
     """Partial update — only sent fields change."""
 

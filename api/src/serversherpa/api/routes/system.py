@@ -13,12 +13,13 @@ from datetime import UTC, datetime
 from fastapi import (
     APIRouter, Body, HTTPException, WebSocket, WebSocketDisconnect,
 )
-from sqlalchemy import delete, func, select
+from sqlalchemy import update, delete, func, select
 
 from serversherpa.api.deps import (
     AuthContext, DbSession, authenticate_token, require_permission,
 )
 from serversherpa.api.schemas import (
+    RevokeAllSessionsOut, SecurityConfigIn, SecurityConfigOut,
     AdminConfigIn, AdminConfigOut, LogEntryOut, LogPageOut, SystemProcessOut,
     SystemStatusOut,
 )
@@ -138,6 +139,77 @@ async def put_admin_config(
               changes=changes)
     await db.commit()
     return AdminConfigOut(**data)
+
+
+SECURITY_SECTION = "security"
+
+
+@router.get("/security", response_model=SecurityConfigOut)
+async def get_security_config(
+    db: DbSession,
+    actor: AuthContext = require_permission("settings", "view"),
+) -> SecurityConfigOut:
+    return SecurityConfigOut(**await read_section(db, SECURITY_SECTION))
+
+
+@router.put("/security", response_model=SecurityConfigOut)
+async def put_security_config(
+    body: SecurityConfigIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("settings", "change"),
+) -> SecurityConfigOut:
+    stored = await read_section(db, SECURITY_SECTION)
+    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items()
+             if v is not None}
+    data = {**stored, **patch}
+    # required ⇒ enabled; disabling enrolment also drops the requirement
+    if patch.get("two_factor_required"):
+        data["two_factor_enabled"] = True
+    if patch.get("two_factor_enabled") is False:
+        data["two_factor_required"] = False
+
+    row = await db.get(SystemConfig, SECURITY_SECTION)
+    if row is None:
+        row = SystemConfig(section=SECURITY_SECTION)
+        db.add(row)
+    row.data = data
+    row.updated_at = datetime.now(UTC)
+    row.updated_by = actor.person.id
+    changes = {key: {"from": stored.get(key), "to": data[key]}
+               for key in data if stored.get(key) != data[key]}
+    if changes:
+        audit(db, actor_id=actor.person.id, entity_type="system",
+              entity_id=SECURITY_SECTION, action="security_config_update",
+              changes=changes)
+    await db.commit()
+    return SecurityConfigOut(**data)
+
+
+@router.post("/sessions/revoke-all", response_model=RevokeAllSessionsOut)
+async def revoke_all_sessions(
+    db: DbSession,
+    actor: AuthContext = require_permission("settings", "change"),
+) -> RevokeAllSessionsOut:
+    """Sign everyone out everywhere — every live session family except the
+    caller's own current one (so the admin pressing the button isn't
+    dumped mid-action; they can sign themselves out from /me)."""
+    live = (await db.execute(
+        select(AuthSession.family_id, AuthSession.person_id)
+        .where(AuthSession.revoked_at.is_(None),
+               AuthSession.family_id != actor.session.family_id))).all()
+    families = {f for f, _ in live}
+    people = {p for _, p in live}
+    if families:
+        await db.execute(
+            update(AuthSession)
+            .where(AuthSession.family_id.in_(families),
+                   AuthSession.revoked_at.is_(None))
+            .values(revoked_at=datetime.now(UTC), revoke_reason="admin"))
+    audit(db, actor_id=actor.person.id, entity_type="auth",
+          entity_id="all", action="sessions.revoke_all",
+          changes={"revoked_sessions": len(live), "revoked_people": len(people)})
+    await db.commit()
+    return RevokeAllSessionsOut(revoked_sessions=len(live), revoked_people=len(people))
 
 
 async def _no_probe(db: DbSession, name: str) -> None:

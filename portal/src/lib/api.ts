@@ -2761,6 +2761,28 @@ export interface AdminConfig {
   banner_enabled: boolean; banner_message: string;
 }
 
+export interface SecurityConfig { two_factor_enabled: boolean; two_factor_required: boolean; }
+
+export async function getSecurityConfig(): Promise<SecurityConfig> {
+  const resp = await apiFetch('/system/security');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateSecurityConfig(patch: Partial<SecurityConfig>): Promise<SecurityConfig> {
+  const resp = await apiFetch('/system/security', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function revokeAllSessions(): Promise<{ revoked_sessions: number; revoked_people: number }> {
+  const resp = await apiFetch('/system/sessions/revoke-all', { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export async function getAdminConfig(): Promise<AdminConfig> {
   const resp = await apiFetch('/system/admin');
   if (!resp.ok) throw await errorFrom(resp);
