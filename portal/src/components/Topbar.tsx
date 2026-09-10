@@ -99,7 +99,7 @@ function isTyping(e: KeyboardEvent): boolean {
 export default function Topbar() {
   const { can } = useAuth();
   const { unreadCount } = useNotifications();
-  const { setPaletteOpen, searchRef } = useTopbar();
+  const { setPaletteOpen, searchRef, leading } = useTopbar();
   const location = useLocation();
   const navigate = useNavigate();
   const [pop, setPop] = useState<'ai' | 'notif' | null>(null);
@@ -249,6 +249,7 @@ export default function Topbar() {
 
   return (
     <header className="topbar">
+      {leading}
       <div className="crumbs">
         {trail.map((part, i) => (
           // key by position: a section and page can share a name ("Assets / Assets")

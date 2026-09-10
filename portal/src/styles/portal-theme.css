@@ -35,6 +35,7 @@
   -webkit-font-smoothing: antialiased;
   display: grid;
   grid-template-columns: var(--nav-width) minmax(0, 1fr);
+  transition: grid-template-columns 0.22s ease;
   /* Pin the row to the shell's own height. Without this the implicit row is
      `auto` = max-content, so a page taller than the viewport stretched the row
      — and the nav with it — and `overflow: hidden` silently clipped the nav's
@@ -58,6 +59,17 @@
 .portal-shell[data-accent='violet'] { --accent: #a78bfa; --accent-soft: #c4b5fd; --accent-rgb: 167, 139, 250; }
 .portal-shell[data-accent='pink']   { --accent: #ff6fae; --accent-soft: #ff9ec9; --accent-rgb: 255, 111, 174; }
 .portal-shell[data-accent='green']  { --accent: #3ddc84; --accent-soft: #74e8a8; --accent-rgb: 61, 220, 132; }
+
+/* ── nav width per mode (user preference, stored on the account) ──
+   attribute-presence selectors below (equal specificity, later in source)
+   force the collapsed width under the mobile breakpoint regardless of
+   which mode is stored. ── */
+.portal-shell[data-nav-mode='rail']   { --nav-width: 64px; }
+.portal-shell[data-nav-mode='hidden'] { --nav-width: 0; }
+
+@media (max-width: 900px) {
+  .portal-shell[data-nav-mode] { --nav-width: 0; }
+}
 
 /* ── dark theme (user preference) — flips the content surfaces; the
       ink nav is dark in both themes ─────────────────────────── */
@@ -85,8 +97,8 @@
 .portal-nav {
   display: flex;
   flex-direction: column;
-  background: radial-gradient(140% 60% at 0% 0%, #16202e 0%, var(--ink) 60%), var(--ink);
-  border-right: 1px solid var(--ink-line);
+  background: var(--nav-bg, radial-gradient(140% 60% at 0% 0%, #16202e 0%, var(--ink) 60%), var(--ink));
+  border-right: 1px solid var(--nav-line, var(--ink-line));
   padding: 22px 16px 16px;
   min-height: 0;
 }
@@ -114,7 +126,7 @@
 .portal-nav .logo-tag {
   font-family: var(--font-mono);
   font-size: 8px;
-  color: #76839a;
+  color: var(--nav-fg-mute, #76839a);
   letter-spacing: 0.18em;
   margin-top: 5px;
   text-transform: uppercase;
@@ -122,10 +134,10 @@
 
 .portal-nav .nav-section {
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: calc(9.5px * var(--nav-scale, 1));
   letter-spacing: 0.24em;
   text-transform: uppercase;
-  color: #76839a;
+  color: var(--nav-fg-mute, #76839a);
   padding: 18px 10px 8px;
 }
 
@@ -143,21 +155,21 @@
   display: flex;
   align-items: center;
   gap: 11px;
-  padding: 10px 10px;
+  padding: calc(10px * var(--nav-scale, 1)) 10px;
   border-radius: 9px;
-  color: #aeb9c9;
-  font-size: 14px;
+  color: var(--nav-fg-mute, #aeb9c9);
+  font-size: calc(14px * var(--nav-scale, 1));
   font-weight: 300;
   text-decoration: none;
   transition: background 0.15s, color 0.15s;
 }
 .portal-nav .nav-item a:hover {
-  background: rgba(232, 237, 244, 0.05);
-  color: var(--snow);
+  background: var(--nav-hover, rgba(232, 237, 244, 0.05));
+  color: var(--nav-fg, var(--snow));
 }
 .portal-nav .nav-item a.active {
   background: rgba(var(--accent-rgb), 0.09);
-  color: var(--snow);
+  color: var(--nav-fg, var(--snow));
   font-weight: 400;
 }
 .portal-nav .nav-item a.active::before {
@@ -171,8 +183,8 @@
   background: var(--amber);
 }
 .portal-nav .nav-item svg {
-  width: 17px;
-  height: 17px;
+  width: calc(17px * var(--nav-scale, 1));
+  height: calc(17px * var(--nav-scale, 1));
   flex: none;
   opacity: 0.75;
 }
@@ -183,7 +195,7 @@
 .portal-nav .user-wrap {
   position: relative;
   margin-top: 10px;
-  border-top: 1px solid var(--ink-line);
+  border-top: 1px solid var(--nav-line, var(--ink-line));
   padding-top: 6px;
 }
 
@@ -203,12 +215,12 @@
   transition: background 0.15s;
 }
 .portal-nav .user-chip:hover,
-.portal-nav .user-chip.open { background: rgba(232, 237, 244, 0.06); }
+.portal-nav .user-chip.open { background: var(--nav-hover, rgba(232, 237, 244, 0.06)); }
 .portal-nav .user-chip .chip-caret {
   width: 15px;
   height: 15px;
   flex: none;
-  color: #76839a;
+  color: var(--nav-fg-mute, #76839a);
   transition: transform 0.2s;
 }
 .portal-nav .user-chip.open .chip-caret { transform: rotate(180deg); color: var(--amber); }
@@ -297,6 +309,121 @@
 }
 .portal-nav .signout:hover { color: var(--amber); background: rgba(232, 237, 244, 0.05); }
 .portal-nav .signout svg { width: 16px; height: 16px; }
+
+/* ── collapse toggle (footer slot, above the user chip) ───────── */
+
+.portal-nav .nav-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  border: 1px solid var(--nav-line, var(--ink-line));
+  border-radius: 9px;
+  background: transparent;
+  color: var(--nav-fg-mute, #76839a);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.portal-nav .nav-toggle:hover { color: var(--nav-fg, var(--snow)); background: var(--nav-hover, rgba(232, 237, 244, 0.05)); }
+.portal-nav .nav-toggle svg { width: 15px; height: 15px; flex: none; }
+
+/* ── rail mode (data-nav-mode='rail') — icon-only nav, section headers
+   become 40px centred buttons, items live in the flyout instead ──── */
+
+.portal-shell[data-nav-mode='rail'] .portal-nav {
+  padding: 16px 8px;
+  align-items: center;
+}
+.portal-shell[data-nav-mode='rail'] .portal-nav .logo {
+  justify-content: center;
+  padding: 2px 0 20px;
+}
+.portal-shell[data-nav-mode='rail'] .portal-nav .logo-name,
+.portal-shell[data-nav-mode='rail'] .portal-nav .logo-tag { display: none; }
+.portal-shell[data-nav-mode='rail'] .portal-nav .nav-list {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.portal-shell[data-nav-mode='rail'] .portal-nav .user-chip {
+  justify-content: center;
+  padding: 8px;
+}
+.portal-shell[data-nav-mode='rail'] .portal-nav .user-chip .user-meta,
+.portal-shell[data-nav-mode='rail'] .portal-nav .user-chip .chip-caret { display: none; }
+.portal-shell[data-nav-mode='rail'] .portal-nav .nav-toggle {
+  justify-content: center;
+  padding: 8px;
+}
+.portal-shell[data-nav-mode='rail'] .portal-nav .nav-toggle-label { display: none; }
+
+/* visually-hidden section label (rail icon buttons keep it for a11y) */
+.nav-sec-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* rail flyout — same nav palette, a `.nav-list` of `.nav-item a` links
+   inside so the already-allowlisted item typography applies unchanged */
+.nav-flyout {
+  position: fixed;
+  z-index: 70;
+  min-width: 220px;
+  max-width: 280px;
+  background: var(--nav-bg, var(--ink-2));
+  color: var(--nav-fg, var(--snow));
+  border: 1px solid var(--nav-line, var(--ink-line));
+  border-radius: 12px;
+  padding: 8px;
+  box-shadow: 0 18px 50px -18px rgba(0, 0, 0, 0.75);
+}
+.nav-flyout .nav-list { overflow: visible; flex: none; max-height: 60vh; overflow-y: auto; }
+.nav-flyout .nav-item a.active::before { left: -8px; }
+
+/* ── hidden mode (data-nav-mode='hidden') — the docked column is 0-wide
+   via --nav-width; visibility: hidden keeps its (still-rendered) content
+   out of the tab order while it has no visible box ─────────────── */
+
+.portal-shell[data-nav-mode='hidden'] .portal-nav.docked { visibility: hidden; }
+
+@media (max-width: 900px) {
+  .portal-nav.docked { visibility: hidden; }
+}
+
+/* ── hidden-mode overlay — the same NavPanel, floated over the content ── */
+
+.nav-overlay-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(5, 8, 12, 0.55);
+}
+.portal-nav.overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 248px;
+  z-index: 81;
+  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.6);
+  animation: nav-overlay-in 0.22s ease;
+}
+@keyframes nav-overlay-in {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+.portal-shell[data-motion='off'] .portal-nav.overlay { animation: none; }
 
 /* ── main content area (inside .portal-main-col — see chrome.css) ── */
 

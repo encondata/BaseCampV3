@@ -433,21 +433,21 @@ kbd {
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  padding: 12px 10px 8px;
+  padding: calc(12px * var(--nav-scale, 1)) 10px calc(8px * var(--nav-scale, 1));
   border: 0;
   background: transparent;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: calc(9.5px * var(--nav-scale, 1));
   letter-spacing: 0.24em;
   text-transform: uppercase;
-  color: #76839a;
+  color: var(--nav-fg-mute, #76839a);
   cursor: pointer;
   transition: color 0.15s;
 }
-.portal-nav .nav-sec-head:hover { color: var(--snow); }
+.portal-nav .nav-sec-head:hover { color: var(--nav-fg, var(--snow)); }
 .portal-nav .nav-sec-head svg {
-  width: 12px;
-  height: 12px;
+  width: calc(12px * var(--nav-scale, 1));
+  height: calc(12px * var(--nav-scale, 1));
   transition: transform 0.22s;
 }
 .portal-nav .nav-sec.open .nav-sec-head { color: var(--amber-soft); }
@@ -459,6 +459,25 @@ kbd {
 }
 .portal-nav .nav-sec.open .nav-sec-body { grid-template-rows: 1fr; }
 .portal-nav .nav-sec-clip { overflow: hidden; }
+
+/* ── rail mode — section headers become 40px centred icon buttons; the
+   accordion body doesn't exist docked in rail (the flyout replaces it) ── */
+.portal-shell[data-nav-mode='rail'] .portal-nav .nav-sec-head {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 10px;
+}
+.portal-shell[data-nav-mode='rail'] .portal-nav .nav-sec-head svg {
+  width: 19px;
+  height: 19px;
+  opacity: 0.85;
+}
+.portal-shell[data-nav-mode='rail'] .portal-nav .nav-sec.open .nav-sec-head {
+  background: var(--nav-hover, rgba(232, 237, 244, 0.08));
+}
+.portal-shell[data-nav-mode='rail'] .portal-nav .nav-sec-body { display: none; }
 
 .portal-shell[data-motion='off'] .nav-sec-body,
 .portal-shell[data-motion='off'] .detail { transition: none; }
