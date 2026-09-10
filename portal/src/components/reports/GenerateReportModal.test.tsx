@@ -71,6 +71,14 @@ it('step 1 sorts active first, filters by type and search, Next needs a pick', a
   expect(screen.getAllByRole('radio')).toHaveLength(1);
 });
 
+it('step 1 uses the portal search/select idioms', async () => {
+  render(<GenerateReportModal definition={DEF} onClose={() => {}} />);
+  await screen.findByText('NAP11');
+  const search = screen.getByPlaceholderText('Search initiatives…');
+  expect(search.closest('.dir-search')).toBeTruthy();
+  expect(screen.getByLabelText('Type').classList.contains('org-select')).toBe(true);
+});
+
 it('step 2 shows the eight sections with definition defaults; select/deselect all; generate posts', async () => {
   const user = userEvent.setup();
   await toStep2(user);

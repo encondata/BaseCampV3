@@ -83,9 +83,12 @@ export default function HistoryTab({ highlightRunId, onCount }: {
     return () => { done = true; };
   }, [highlightRunId, runs, pinned?.id]);
 
-  const rows = useMemo(
-    () => (pinned ? [pinned, ...(runs ?? [])] : (runs ?? [])), [pinned, runs],
-  );
+  // the pinned run is usually in the page too — drop it from the tail so it
+  // isn't rendered twice under the same React key.
+  const rows = useMemo(() => {
+    const list = runs ?? [];
+    return pinned ? [pinned, ...list.filter((r) => r.id !== pinned.id)] : list;
+  }, [pinned, runs]);
   useEffect(() => { onCount(rows.length); }, [rows.length, onCount]);
 
   const active = useMemo(

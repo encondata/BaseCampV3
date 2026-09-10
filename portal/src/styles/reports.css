@@ -4,8 +4,15 @@
    theirs inside a .dir-toolbar, which supplies the gap under the title). */
 .segmented.reports-tabs { margin-top: 6px; }
 
-.reports-modal-card { width: min(640px, 94vw); }
-.report-sections { display: flex; flex-direction: column; }
+/* Sizes to its content so the picker's rows never wrap; the doubled class
+   out-specifies the plain `.modal-card { width: min(620px, 96vw) }` in
+   chrome.css. `min-width` keeps the narrower sections/progress steps at the
+   familiar dialog width. */
+.modal-card.reports-modal-card {
+  width: fit-content; min-width: min(640px, 94vw); max-width: 94vw;
+}
+/* the wider card must not stretch the sections rows into a sparse line */
+.report-sections { display: flex; flex-direction: column; max-width: 720px; }
 .report-section-row {
   display: flex; align-items: center; gap: 14px; padding: 10px 0;
   border-bottom: 1px solid var(--paper-line); cursor: pointer;
@@ -22,18 +29,49 @@
 
 /* initiative picker (Generate modal step 1) */
 .ini-picker { display: flex; flex-direction: column; gap: 8px; }
-.ini-picker-tools { display: flex; gap: 8px; }
-.ini-picker-tools input { flex: 1; }
+/* centred, not stretched: .dir-search is a wrapper whose input has its own
+   height, so stretching it leaves the magnifier a pixel off the input's axis */
+.ini-picker-tools { display: flex; align-items: center; gap: 8px; }
+/* .dir-search pushes itself right in a toolbar; in here it is the flexible
+   field, and the select keeps one comfortable fixed width beside it. */
+.ini-picker-tools .dir-search { margin-left: 0; flex: 1; }
+.ini-picker-tools .dir-search input { width: 100%; }
+.ini-picker-tools .org-select { flex: none; width: auto; min-width: 160px; }
+/* The columns live on the list and each row borrows them through `subgrid`,
+   so every row is measured against the same max-content widths and the
+   columns still line up now that they are content-sized rather than `fr`.
+   The radio's column is `max-content` rather than a fixed 22px on purpose:
+   a subgrid's own left/right padding is subtracted from its first and last
+   tracks, and a fixed first track cannot grow to absorb the row's 10px —
+   it squashes the radio to a 4px sliver instead. The three text columns are
+   `minmax(0, max-content)` so they still take their full width whenever the
+   card can afford it but can give ground once it hits `max-width: 94vw`;
+   the radio and the status chip never shrink. */
 .ini-picker-list {
+  display: grid;
+  grid-template-columns:
+    max-content minmax(0, max-content) minmax(0, max-content)
+    max-content minmax(0, max-content);
+  column-gap: 10px;
   max-height: 46vh; overflow: auto; border: 1px solid var(--paper-line); border-radius: 8px;
 }
+/* max-content + nowrap: the card grows to fit, so no cell wraps. */
 .ini-picker-row {
-  display: grid; grid-template-columns: 22px 1.6fr 1fr 0.8fr 1fr; gap: 10px; align-items: center;
+  display: grid; grid-column: 1 / -1; grid-template-columns: subgrid;
+  gap: 10px; align-items: center; white-space: nowrap;
   padding: 8px 10px; border-bottom: 1px solid var(--paper-line); cursor: pointer;
+}
+/* last resort only: once the card hits max-width: 94vw the columns shrink
+   below max-content, and these let the text ellipsize instead of spilling. */
+.ini-picker-row > .cell-primary, .ini-picker-row > .cell-sub {
+  overflow: hidden; text-overflow: ellipsis;
 }
 .ini-picker-row:last-child { border-bottom: 0; }
 .ini-picker-row.on { background: rgba(var(--accent-rgb), 0.08); }
-.ini-picker-empty { padding: 18px; color: var(--text-mute); text-align: center; }
+/* not a row — it spans the picker's whole track set */
+.ini-picker-empty {
+  grid-column: 1 / -1; padding: 18px; color: var(--text-mute); text-align: center;
+}
 
 /* progress (step 3) */
 .report-progress {

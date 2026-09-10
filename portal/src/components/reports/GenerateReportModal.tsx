@@ -14,6 +14,7 @@ import {
 import type { InitiativeItem, ReportDefinition, ReportRun } from '../../lib/api';
 import { MOVE_REPORT_SECTIONS, openPresigned, sortInitiativesForPicker } from '../../lib/reports';
 import { useSystemStatus } from '../../lib/systemStatusContext';
+import '../../styles/directory.css';  /* .dir-search, .org-select (picker tools) */
 
 export const MODAL_POLL_MS = 2000;
 
@@ -138,9 +139,14 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
           <>
             <div className="modal-body ini-picker">
               <div className="ini-picker-tools">
-                <input placeholder="Search initiatives…" value={search}
-                       onChange={(e) => setSearch(e.target.value)} />
-                <select aria-label="Type" value={type} onChange={(e) => setType(e.target.value)}>
+                <div className="dir-search">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                       strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                  <input placeholder="Search initiatives…" value={search}
+                         onChange={(e) => setSearch(e.target.value)} />
+                </div>
+                <select className="org-select" aria-label="Type" value={type}
+                        onChange={(e) => setType(e.target.value)}>
                   <option value="">All types</option>
                   {types.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
                 </select>
