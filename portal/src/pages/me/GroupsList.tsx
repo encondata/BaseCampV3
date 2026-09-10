@@ -49,11 +49,12 @@ function StatusChip({ group }: { group: MyNotificationGroup }) {
 
 export type GroupsListKind = 'member' | 'joinable';
 
-// last column holds the "Actions ▾" menu trigger, so it sizes to content
-// (the 30px slot other lists use is for a chevron only)
-const GRID: Record<GroupsListKind, CSSProperties> = {
-  member: { gridTemplateColumns: 'minmax(220px, 2fr) minmax(160px, 1.2fr) minmax(200px, 1.2fr) minmax(90px, 0.7fr) minmax(130px, 0.9fr) max-content' },
-  joinable: { gridTemplateColumns: 'minmax(220px, 2fr) minmax(220px, 1.4fr) minmax(100px, 0.7fr) minmax(130px, 0.9fr) max-content' },
+// ONE grid for both lists so the stacked sections align column-for-column;
+// the last column sizes to the "Actions ▾" trigger.
+const GRID: CSSProperties = {
+  gridTemplateColumns:
+    'minmax(220px, 2fr) minmax(200px, 1.3fr) minmax(200px, 1.2fr) minmax(90px, 0.7fr) '
+    + 'minmax(90px, 0.6fr) minmax(130px, 0.9fr) max-content',
 };
 
 export default function GroupsList({
@@ -101,7 +102,7 @@ export default function GroupsList({
   const emptyCopy = kind === 'member'
     ? "You're not in any notification groups yet."
     : 'No other groups to join.';
-  const grid = GRID[kind];
+  const grid = GRID;
 
   return (
     <section className="me-groups" aria-label={title}>
@@ -130,9 +131,9 @@ export default function GroupsList({
         <div className="list-head" style={grid}>
           <span className="col-head">Group</span>
           <span className="col-head">Channels</span>
-          {kind === 'member' && <span className="col-head">Quiet hours</span>}
-          {kind === 'member' && <span className="col-head">Days</span>}
-          {kind === 'joinable' && <span className="col-head">Members</span>}
+          <span className="col-head">Quiet hours</span>
+          <span className="col-head">Days</span>
+          <span className="col-head">Members</span>
           <span className="col-head">Status</span>
           <span className="col-head" style={{ justifySelf: 'end' }}>Actions</span>
         </div>
@@ -148,11 +149,9 @@ export default function GroupsList({
                 <div className="pn"><b>{g.name}</b><span>{g.description || '—'}</span></div>
               </div>
               <div className="cell"><ChannelChips channels={g.channels} /></div>
-              {kind === 'member' && <div className="cell mono">{quietHoursText(g)}</div>}
-              {kind === 'member' && <div className="cell cell-top">{daysText(g.active_days)}</div>}
-              {kind === 'joinable' && (
-                <div className="cell mono">{g.member_count} member{g.member_count === 1 ? '' : 's'}</div>
-              )}
+              <div className="cell mono">{quietHoursText(g)}</div>
+              <div className="cell cell-top">{daysText(g.active_days)}</div>
+              <div className="cell mono">{g.member_count}</div>
               <div className="cell"><StatusChip group={g} /></div>
               <div className="cell row-actions-cell" style={{ justifySelf: 'end' }} onClick={(e) => e.stopPropagation()}>
                 <RowActionsMenu actions={actionsFor(g)} />
