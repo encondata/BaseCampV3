@@ -161,6 +161,23 @@ def import_v2_sites(
 
 
 @app.command()
+def seed_demo_trucks() -> None:
+    """Seed the two demo trucks (idempotent by name) used for live
+    verification of the trucks feature."""
+
+    async def _run() -> None:
+        from serversherpa.trucks.seed import seed_demo_trucks as _seed
+
+        async with get_sessionmaker()() as db:
+            added = await _seed(db)
+            await db.commit()
+            typer.secho(f"Seeded {added} truck(s).", fg="green")
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
+@app.command()
 def import_v2_workers(
     dump: str = typer.Option(..., help="Path to the V2 pg_dump .sql file"),
     limit: int = typer.Option(200, help="Max workers to import this run"),
