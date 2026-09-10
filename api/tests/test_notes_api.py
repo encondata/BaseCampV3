@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from serversherpa.db.models import (
     Asset, AuditLog, Client, Initiative, Note, Partner, Person, PersonRole,
+    Truck,
 )
 from tests.test_assets_api import _client_contact, login, make_login
 
@@ -21,6 +22,13 @@ async def _initiative(db, **kw):
     db.add(i)
     await db.commit()
     return i
+
+
+async def _truck(db, **kw):
+    t = Truck(name="host-truck-1", **kw)
+    db.add(t)
+    await db.commit()
+    return t
 
 
 async def test_note_crud_with_audit(client, db, seeded_user):
@@ -71,6 +79,26 @@ async def test_note_crud_on_initiative(client, db, seeded_user):
     listing = (await client.get(
         f"/notes?entity_type=initiative&entity_id={initiative.id}",
         headers=hdrs)).json()
+    assert len(listing) == 1
+    assert listing[0]["id"] == note["id"]
+
+
+async def test_note_crud_on_truck(client, db, seeded_user):
+    """'truck' hosts notes exactly like asset/container/initiative — entity_type
+    'truck' is registered in NOTE_HOSTS."""
+    hdrs = await login(client)
+    truck = await _truck(db)
+
+    resp = await client.post("/notes", headers=hdrs, json={
+        "entity_type": "truck", "entity_id": str(truck.id),
+        "body": "Departed yard at 6am."})
+    assert resp.status_code == 201, resp.text
+    note = resp.json()
+    assert note["entity_type"] == "truck"
+    assert note["body"] == "Departed yard at 6am."
+
+    listing = (await client.get(
+        f"/notes?entity_type=truck&entity_id={truck.id}", headers=hdrs)).json()
     assert len(listing) == 1
     assert listing[0]["id"] == note["id"]
 

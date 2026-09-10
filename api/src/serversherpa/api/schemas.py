@@ -2177,3 +2177,127 @@ class ReportRunOut(BaseModel):
 
 class ReportDownloadOut(BaseModel):
     url: str
+
+
+# ── trucks ─────────────────────────────────────────────────────────
+
+class TruckLastUpdate(BaseModel):
+    recorded_at: datetime
+    lat: float | None = None
+    lng: float | None = None
+    approximate_address: str = ""
+
+
+class TruckItem(BaseModel):
+    id: uuid.UUID
+    legacy_id: int | None = None
+    name: str
+    driver_name: str | None = None
+    co_driver_name: str | None = None
+    team_drive: bool = False
+    contact_info: str = ""
+    status: str
+    status_label: str
+    status_color: str
+    load_number: str | None = None
+    seal_id: str | None = None
+    tracking_type: dict = {}
+    initiative_id: uuid.UUID | None = None
+    initiative_name: str | None = None
+    start_site_id: uuid.UUID | None = None
+    start_site_name: str | None = None
+    end_site_id: uuid.UUID | None = None
+    end_site_name: str | None = None
+    container_count: int = 0
+    last_update: TruckLastUpdate | None = None
+    archived_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TruckContainerOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    status: str
+    status_label: str
+    status_color: str
+    asset_count: int = 0
+
+
+class TruckDetail(TruckItem):
+    containers: list[TruckContainerOut] = []
+
+
+class TruckCreateIn(BaseModel):
+    name: str
+    driver_name: str | None = None
+    co_driver_name: str | None = None
+    load_number: str | None = None
+    seal_id: str | None = None
+    team_drive: bool = False
+    contact_info: str = ""
+    status: str = "created"
+    tracking_type: dict = {}
+    initiative_id: uuid.UUID | None = None
+    start_site_id: uuid.UUID | None = None
+    end_site_id: uuid.UUID | None = None
+    container_ids: list[uuid.UUID] = []
+    model_config = ConfigDict(extra="forbid")
+
+
+class TruckUpdateIn(BaseModel):
+    """PATCH /trucks/{id} — every field optional; None (unset) means
+    unchanged. container_ids, when present, REPLACES the link set."""
+
+    name: str | None = None
+    driver_name: str | None = None
+    co_driver_name: str | None = None
+    load_number: str | None = None
+    seal_id: str | None = None
+    team_drive: bool | None = None
+    contact_info: str | None = None
+    status: str | None = None
+    tracking_type: dict | None = None
+    initiative_id: uuid.UUID | None = None
+    start_site_id: uuid.UUID | None = None
+    end_site_id: uuid.UUID | None = None
+    container_ids: list[uuid.UUID] | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class TruckUpdateOut(BaseModel):
+    id: uuid.UUID
+    truck_id: uuid.UUID
+    recorded_at: datetime
+    location: str
+    lat: float | None = None
+    lng: float | None = None
+    approximate_address: str = ""
+    source: str = "manual"
+
+
+class TruckUpdateCreateIn(BaseModel):
+    location: str | dict
+    approximate_address: str = ""
+    recorded_at: datetime | None = None
+    source: str = "manual"
+    model_config = ConfigDict(extra="forbid")
+
+
+class TruckTrailPoint(BaseModel):
+    recorded_at: datetime
+    lat: float
+    lng: float
+
+
+class TruckMapPoint(BaseModel):
+    id: uuid.UUID
+    name: str
+    status: str
+    status_label: str
+    status_color: str
+    driver_name: str | None = None
+    load_number: str | None = None
+    seal_id: str | None = None
+    last_update: TruckLastUpdate
+    trail: list[TruckTrailPoint] = []
