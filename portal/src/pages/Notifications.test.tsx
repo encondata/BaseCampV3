@@ -10,7 +10,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { NotificationGroup, UiPreferences } from '../lib/api';
+import type { MembershipRequest, NotificationGroup, UiPreferences } from '../lib/api';
 
 const navigate = vi.hoisted(() => vi.fn());
 vi.mock('react-router-dom', () => ({ useNavigate: () => navigate }));
@@ -38,6 +38,9 @@ vi.mock('../auth/AuthContext', () => ({
 const api = vi.hoisted(() => ({
   listNotificationGroups: vi.fn(),
   createNotificationGroup: vi.fn(),
+  listMembershipRequests: vi.fn(),
+  approveMembershipRequest: vi.fn(),
+  rejectMembershipRequest: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -62,10 +65,21 @@ const GROUPS: NotificationGroup[] = [
   },
 ];
 
+const REQUESTS: MembershipRequest[] = [
+  {
+    id: 'r1', group_id: 'g1', group_name: 'Ops Alerts', person_id: 'p1', person_name: 'Alice Ng',
+    action: 'join', status: 'pending', note: 'please add me', decided_by_name: null, decided_at: null,
+    decision_note: '', created_at: '2026-09-10T00:00:00Z',
+  },
+];
+
 beforeEach(() => {
   vi.clearAllMocks();
   auth.can = () => true;
   api.listNotificationGroups.mockResolvedValue(GROUPS);
+  api.listMembershipRequests.mockResolvedValue([]);
+  api.approveMembershipRequest.mockResolvedValue(REQUESTS[0]);
+  api.rejectMembershipRequest.mockResolvedValue(REQUESTS[0]);
 });
 
 afterEach(cleanup);
@@ -127,4 +141,55 @@ it('shows the empty state when there are no groups', async () => {
   api.listNotificationGroups.mockResolvedValue([]);
   render(<Notifications />);
   expect(await screen.findByText('No notification groups yet')).not.toBeNull();
+});
+
+it('renders the Pending requests panel from the mocked list, hidden when empty', async () => {
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+  expect(screen.queryByText('Pending requests')).toBeNull();
+
+  cleanup();
+  api.listMembershipRequests.mockResolvedValue(REQUESTS);
+  render(<Notifications />);
+  expect(await screen.findByText('Pending requests')).not.toBeNull();
+  expect(screen.getByText('Alice Ng')).not.toBeNull();
+  expect(screen.getByText('Join')).not.toBeNull();
+  expect(screen.getByText('please add me')).not.toBeNull();
+});
+
+it('Approve calls the API and the row disappears after refetch', async () => {
+  const user = userEvent.setup();
+  api.listMembershipRequests.mockResolvedValue(REQUESTS);
+  render(<Notifications />);
+  await screen.findByText('Pending requests');
+
+  api.listMembershipRequests.mockResolvedValue([]);
+  await user.click(screen.getByRole('button', { name: 'Approve' }));
+
+  expect(api.approveMembershipRequest).toHaveBeenCalledWith('r1');
+  await waitFor(() => expect(screen.queryByText('Pending requests')).toBeNull());
+});
+
+it('Reject reveals an inline note field; confirming sends the note and refetches', async () => {
+  const user = userEvent.setup();
+  api.listMembershipRequests.mockResolvedValue(REQUESTS);
+  render(<Notifications />);
+  await screen.findByText('Pending requests');
+
+  await user.click(screen.getByRole('button', { name: 'Reject' }));
+  await user.type(screen.getByPlaceholderText('Reason (optional)'), 'no room');
+  api.listMembershipRequests.mockResolvedValue([]);
+  await user.click(screen.getByRole('button', { name: 'Confirm reject' }));
+
+  expect(api.rejectMembershipRequest).toHaveBeenCalledWith('r1', 'no room');
+  await waitFor(() => expect(screen.queryByText('Pending requests')).toBeNull());
+});
+
+it('hides the panel without the notifications:change permission even with pending requests', async () => {
+  auth.can = () => false;
+  api.listMembershipRequests.mockResolvedValue(REQUESTS);
+  render(<Notifications />);
+  await screen.findByText('Ops Alerts');
+  expect(screen.queryByText('Pending requests')).toBeNull();
+  expect(api.listMembershipRequests).not.toHaveBeenCalled();
 });

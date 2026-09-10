@@ -8,12 +8,21 @@ import type { InboxItem } from '../lib/api';
 
 const ctx = vi.hoisted(() => ({
   unreadCount: 0, items: [] as InboxItem[], newItems: [] as InboxItem[],
-  refresh: vi.fn(), markRead: vi.fn(() => Promise.resolve()), markUnread: vi.fn(() => Promise.resolve()),
+  refresh: vi.fn(() => Promise.resolve()), markRead: vi.fn(() => Promise.resolve()), markUnread: vi.fn(() => Promise.resolve()),
   markAllRead: vi.fn(() => Promise.resolve()), hide: vi.fn(() => Promise.resolve()),
   clearRead: vi.fn(() => Promise.resolve()), dismissNew: vi.fn(), toast: vi.fn(),
   localToasts: [], dismissLocal: vi.fn(),
 }));
 vi.mock('../lib/notificationsContext', () => ({ useNotifications: () => ctx }));
+
+const api = vi.hoisted(() => ({
+  approveMembershipRequest: vi.fn(() => Promise.resolve()),
+  rejectMembershipRequest: vi.fn(() => Promise.resolve()),
+}));
+vi.mock('../lib/api', async (importActual) => ({
+  ...(await importActual<typeof import('../lib/api')>()),
+  ...api,
+}));
 
 const { default: NotificationsPanel } = await import('./NotificationsPanel');
 
@@ -140,4 +149,66 @@ it('Escape reaches the panel even when focus is on a row action button', async (
   screen.getByRole('button', { name: 'Hide' }).focus();
   await user.keyboard('{Escape}');
   expect(onClose).toHaveBeenCalled();
+});
+
+const requestItem = (id: string, payload: Record<string, unknown>, over: Partial<InboxItem> = {}): InboxItem => item(id, {
+  kind: 'membership_request',
+  title: 'Alice asks to join Ops Alerts',
+  body: 'Please add me',
+  link: '/system/notifications',
+  payload,
+  ...over,
+});
+
+it('a pending membership_request row shows Approve/Reject; Approve calls the API and refreshes', async () => {
+  const user = userEvent.setup();
+  ctx.items = [requestItem('n1', { request_id: 'r1', group_id: 'g1', state: 'pending' })];
+  const onClose = renderPanel();
+
+  await user.click(screen.getByRole('button', { name: 'Approve' }));
+  expect(api.approveMembershipRequest).toHaveBeenCalledWith('r1');
+  expect(ctx.refresh).toHaveBeenCalled();
+  // clicking the button inside the strip must never navigate the row
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+it('Reject reveals a one-line note field; Confirm reject sends the trimmed note', async () => {
+  const user = userEvent.setup();
+  ctx.items = [requestItem('n1', { request_id: 'r1', group_id: 'g1', state: 'pending' })];
+  renderPanel();
+
+  await user.click(screen.getByRole('button', { name: 'Reject' }));
+  expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+  await user.type(screen.getByPlaceholderText('Reason (optional)'), '  not needed  ');
+  await user.click(screen.getByRole('button', { name: 'Confirm reject' }));
+
+  expect(api.rejectMembershipRequest).toHaveBeenCalledWith('r1', 'not needed');
+  expect(ctx.refresh).toHaveBeenCalled();
+});
+
+it('Cancel on the reject note restores Approve/Reject without calling the API', async () => {
+  const user = userEvent.setup();
+  ctx.items = [requestItem('n1', { request_id: 'r1', group_id: 'g1', state: 'pending' })];
+  renderPanel();
+
+  await user.click(screen.getByRole('button', { name: 'Reject' }));
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy();
+  expect(api.rejectMembershipRequest).not.toHaveBeenCalled();
+});
+
+it('a decided membership_request row shows the outcome line and no buttons', () => {
+  ctx.items = [requestItem('n1', { request_id: 'r1', group_id: 'g1', state: 'approved', decided_by: 'Ada' })];
+  renderPanel();
+  expect(screen.getByText('Approved by Ada')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull();
+});
+
+it('a report_ready row renders no membership strip', () => {
+  ctx.items = [item('a')];
+  renderPanel();
+  expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+  expect(document.querySelector('.notif-strip')).toBeNull();
+  expect(document.querySelector('.notif-outcome')).toBeNull();
 });

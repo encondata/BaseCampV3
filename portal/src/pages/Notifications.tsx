@@ -16,19 +16,23 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import DataTable, { type DataTableColumn, type DataTableRow } from '../components/DataTable';
 import {
-  ApiError, createNotificationGroup, listNotificationGroups,
-  type NotificationGroup,
+  ApiError, approveMembershipRequest, createNotificationGroup, listMembershipRequests,
+  listNotificationGroups, rejectMembershipRequest,
+  type MembershipRequest, type NotificationGroup,
 } from '../lib/api';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState, type CellText,
 } from '../lib/columnMenu';
+import { relativeTime } from '../lib/format';
 import {
   ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
   moveKey, passesFacets, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
   type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
+import { GROUP_ERRORS } from '../lib/notificationGroups';
 import {
   CHANNEL_LABELS, CHANNELS, formatDays, formatQuietHours, type Channel,
 } from '../lib/notifications';
@@ -37,6 +41,17 @@ import { VirtualRows } from '../lib/virtualRows';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
+
+/** Copy for request-decision error codes — same mapping as the popover's
+ *  strip (NotificationsPanel.tsx), plus the one code unique to a second
+ *  click on an already-decided request. */
+const REQUEST_ERRORS: Record<string, string> = {
+  ...GROUP_ERRORS,
+  already_decided: 'That request was already decided.',
+};
+
+const requestErrorMsg = (err: unknown): string =>
+  err instanceof ApiError ? (REQUEST_ERRORS[err.code] ?? `Request failed (${err.code}).`) : 'Network error — try again.';
 
 /* Most widths are minmax(<px>, <fr>) — the px floor keeps the header
  * label and the column's real content (chips, the nowrap quiet-hours
@@ -117,6 +132,15 @@ const ERRORS: Record<string, string> = {
   group_exists: 'A group with that name already exists.',
 };
 
+const REQUEST_COLUMNS: DataTableColumn[] = [
+  { key: 'person', label: 'Person' },
+  { key: 'wants', label: 'Wants to' },
+  { key: 'group', label: 'Group' },
+  { key: 'note', label: 'Note' },
+  { key: 'requested', label: 'Requested', mono: true },
+  { key: 'actions', label: 'Actions' },
+];
+
 const msgFor = (err: unknown): string =>
   err instanceof ApiError
     ? (ERRORS[err.code] ?? `Request failed (${err.code}).`)
@@ -125,6 +149,7 @@ const msgFor = (err: unknown): string =>
 export default function Notifications() {
   const { can } = useAuth();
   const canAdd = can('notifications', 'add');
+  const canChange = can('notifications', 'change');
   const navigate = useNavigate();
 
   const [groups, setGroups] = useState<NotificationGroup[] | null>(null);
@@ -132,6 +157,12 @@ export default function Notifications() {
   const [query, setQuery] = useState('');
   const [facets, setFacets] = useState<FacetState>({});
   const [creating, setCreating] = useState(false);
+
+  const [pendingRequests, setPendingRequests] = useState<MembershipRequest[]>([]);
+  const [busyRequestId, setBusyRequestId] = useState<string | null>(null);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectNote, setRejectNote] = useState('');
+  const [requestError, setRequestError] = useState('');
 
   const {
     visibleCols, setVisibleCols,
@@ -154,6 +185,45 @@ export default function Notifications() {
   };
 
   useEffect(() => { void load(); }, []);
+
+  const loadRequests = async () => {
+    try {
+      setPendingRequests(await listMembershipRequests('pending'));
+    } catch {
+      /* the panel just stays empty on a transient failure — the groups
+         list above already surfaces the page-level error banner. */
+    }
+  };
+
+  useEffect(() => { if (canChange) void loadRequests(); }, [canChange]);
+
+  const approveRequestRow = async (id: string) => {
+    setBusyRequestId(id);
+    setRequestError('');
+    try {
+      await approveMembershipRequest(id);
+      await loadRequests();
+    } catch (err) {
+      setRequestError(requestErrorMsg(err));
+    } finally {
+      setBusyRequestId(null);
+    }
+  };
+
+  const confirmRejectRequestRow = async (id: string) => {
+    setBusyRequestId(id);
+    setRequestError('');
+    try {
+      await rejectMembershipRequest(id, rejectNote.trim());
+      setRejectingId(null);
+      setRejectNote('');
+      await loadRequests();
+    } catch (err) {
+      setRequestError(requestErrorMsg(err));
+    } finally {
+      setBusyRequestId(null);
+    }
+  };
 
   const facetGroups = useMemo<FacetGroup[]>(() => [
     { key: 'status', title: 'Status', options: [
@@ -229,8 +299,56 @@ export default function Notifications() {
     }
   };
 
+  const requestRows: DataTableRow[] = pendingRequests.map((r) => ({
+    key: r.id,
+    cells: [
+      <span className="cell-top" key="person"><b>{r.person_name}</b></span>,
+      <span className="chip tag" key="wants">{r.action === 'join' ? 'Join' : 'Leave'}</span>,
+      <span className="cell-sub" key="group">{r.group_name}</span>,
+      <span className="cell-sub" key="note">{r.note || '—'}</span>,
+      relativeTime(r.created_at),
+      rejectingId === r.id ? (
+        <span key="actions" className="pf-form" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <input placeholder="Reason (optional)" value={rejectNote} disabled={busyRequestId === r.id}
+                 onChange={(e) => setRejectNote(e.target.value)} />
+          <button type="button" className="mini-btn sm" disabled={busyRequestId === r.id}
+                  onClick={() => void confirmRejectRequestRow(r.id)}>
+            Confirm reject
+          </button>
+          <button type="button" className="mini-btn sm" disabled={busyRequestId === r.id}
+                  onClick={() => { setRejectingId(null); setRejectNote(''); }}>
+            Cancel
+          </button>
+        </span>
+      ) : (
+        <span key="actions" style={{ display: 'flex', gap: 6 }}>
+          <button type="button" className="mini-btn sm" disabled={busyRequestId === r.id}
+                  onClick={() => void approveRequestRow(r.id)}>
+            Approve
+          </button>
+          <button type="button" className="mini-btn sm danger" disabled={busyRequestId === r.id}
+                  onClick={() => { setRejectingId(r.id); setRejectNote(''); setRequestError(''); }}>
+            Reject
+          </button>
+        </span>
+      ),
+    ],
+  }));
+
   return (
     <div className="portal-page">
+      {canChange && pendingRequests.length > 0 && (
+        <div className="panel">
+          <div className="panel-head">
+            <h3>Pending requests</h3>
+          </div>
+          <div className="panel-body">
+            {requestError && <div className="pf-error" style={{ marginBottom: 10 }}>{requestError}</div>}
+            <DataTable ariaLabel="Pending membership requests" columns={REQUEST_COLUMNS} rows={requestRows} />
+          </div>
+        </div>
+      )}
+
       <div className="dir-head">
         <div>
           <div className="eyebrow">System</div>
