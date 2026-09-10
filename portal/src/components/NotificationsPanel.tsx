@@ -112,17 +112,17 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
               <span className="notif-actions" onClick={(e) => e.stopPropagation()}
                     onKeyDown={(e) => { if (e.key.startsWith('Arrow') || e.key === 'Enter') e.stopPropagation(); }}>
                 {n.read_at ? (
-                  <button type="button" className="icon-btn" aria-label="Mark unread" title="Mark unread"
+                  <button type="button" className="icon-btn" aria-label="Mark unread" data-tip="Mark unread"
                           onClick={() => void markUnread(n.id)}>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><circle cx="12" cy="12" r="4" /></svg>
                   </button>
                 ) : (
-                  <button type="button" className="icon-btn" aria-label="Mark read" title="Mark read"
+                  <button type="button" className="icon-btn" aria-label="Mark read" data-tip="Mark read"
                           onClick={() => void markRead(n.id)}>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m5 12 4 4L19 6" /></svg>
                   </button>
                 )}
-                <button type="button" className="icon-btn" aria-label="Hide" title="Hide"
+                <button type="button" className="icon-btn" aria-label="Hide" data-tip="Hide"
                         onClick={() => void hide(n.id)}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
                 </button>

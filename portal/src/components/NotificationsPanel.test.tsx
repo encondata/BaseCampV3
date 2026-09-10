@@ -76,6 +76,23 @@ it('row click marks read, closes, and navigates; action buttons do not navigate'
   expect(onClose).toHaveBeenCalledTimes(2);           // actions never close/navigate
 });
 
+it('row action buttons carry a data-tip matching their label and no native title', () => {
+  ctx.items = [item('a'), item('b', { read_at: new Date().toISOString() })];
+  ctx.unreadCount = 1;
+  renderPanel();
+  const markRead = screen.getAllByRole('button', { name: 'Mark read' })[0];
+  const markUnread = screen.getByRole('button', { name: 'Mark unread' });
+  const hideButtons = screen.getAllByRole('button', { name: 'Hide' });
+  for (const btn of [markRead, markUnread, ...hideButtons]) {
+    expect(btn.hasAttribute('title')).toBe(false);
+  }
+  expect(markRead.getAttribute('data-tip')).toBe('Mark read');
+  expect(markUnread.getAttribute('data-tip')).toBe('Mark unread');
+  for (const btn of hideButtons) {
+    expect(btn.getAttribute('data-tip')).toBe('Hide');
+  }
+});
+
 it('header actions: Mark all read disabled at 0 unread; Clear read disabled with no read rows', async () => {
   const user = userEvent.setup();
   ctx.items = [item('a')];
