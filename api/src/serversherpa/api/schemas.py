@@ -662,6 +662,17 @@ class SiteDetail(SiteItem):
     pass
 
 
+class StatusRecordTypeOut(BaseModel):
+    """One entry of the frozen status-record-type registry (status/registry.py)
+    — served so the portal's vocabulary editor offers every record type
+    without a code change when a deploy adds one."""
+
+    id: str
+    label: str
+    resource: str
+    array: bool
+
+
 class StatusValueOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -10,10 +10,14 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import column, func, select, table, text as sqla_text
 
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
-from serversherpa.api.schemas import StatusValueCreateIn, StatusValueOut, StatusValueUpdateIn
+from serversherpa.api.schemas import (
+    StatusRecordTypeOut, StatusValueCreateIn, StatusValueOut, StatusValueUpdateIn,
+)
 from serversherpa.db.models import StatusValue
 from serversherpa.services.audit import audit, diff, snapshot
-from serversherpa.status.registry import STATUS_REGISTRY, StatusRecordType
+from serversherpa.status.registry import (
+    STATUS_RECORD_TYPES, STATUS_REGISTRY, StatusRecordType,
+)
 
 router = APIRouter(prefix="/status-values", tags=["status-values"])
 
@@ -75,6 +79,18 @@ async def _usage_counts(db: DbSession, rt: StatusRecordType) -> dict[str, int]:
             if key is not None:
                 totals[key] = totals.get(key, 0) + n
     return totals
+
+
+@router.get("/record-types", response_model=list[StatusRecordTypeOut])
+async def list_status_record_types(
+    actor: CurrentUser,
+) -> list[StatusRecordTypeOut]:
+    """Every record type that carries a status vocabulary, in registry
+    order. A code registry, not data — any signed-in user may read it (the
+    per-type value reads stay gated by each type's own resource)."""
+    return [StatusRecordTypeOut(id=rt.id, label=rt.label, resource=rt.resource,
+                                array=rt.array)
+            for rt in STATUS_RECORD_TYPES]
 
 
 @router.get("", response_model=list[StatusValueOut])

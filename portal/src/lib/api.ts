@@ -1081,6 +1081,19 @@ export async function updateWorkerProfile(
 }
 
 // The Variables page's view: every record type, including inactive, with counts.
+/** One entry of the API's frozen status-record-type registry — every entity
+ *  that carries a status vocabulary. Served by the API so the Variables
+ *  editor offers new record types the moment a deploy adds them. */
+export interface StatusRecordType {
+  id: string; label: string; resource: string; array: boolean;
+}
+
+export async function listStatusRecordTypes(): Promise<StatusRecordType[]> {
+  const resp = await apiFetch('/status-values/record-types');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export async function listStatusValues(): Promise<StatusValue[]> {
   const resp = await apiFetch('/status-values');
   if (!resp.ok) throw await errorFrom(resp);

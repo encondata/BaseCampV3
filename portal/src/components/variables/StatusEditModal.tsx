@@ -9,13 +9,15 @@
  * conventions from components/sites/SiteEditModal.tsx.
  */
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 
 import {
   ApiError,
   createStatusValue,
   updateStatusValue,
   type StatusValue,
+  listStatusRecordTypes,
+  type StatusRecordType,
 } from '../../lib/api';
 import {
   PRESET_COLORS,
@@ -36,13 +38,9 @@ interface Props {
   onSaved: () => Promise<void> | void;   // parent refetches
 }
 
-// Record types are a code registry, not data — the portal has no endpoint
-// to read them.
-// keep in sync with api/src/serversherpa/status/registry.py
-const STATUS_RECORD_TYPES: { value: string; label: string }[] = [
-  { value: 'site', label: 'Site' },
-  { value: 'worker', label: 'Worker' },
-];
+// Record types are a code registry on the API side (status/registry.py);
+// the modal reads it via GET /status-values/record-types so every record
+// type is offered and a deploy that adds one needs no portal change.
 
 const STATUS_ERRORS: Record<string, string> = {
   status_value_exists: 'That key already exists for this record type.',
@@ -73,6 +71,17 @@ const emptyForm: StatusForm = {
 
 export default function StatusEditModal({ value, canChange, onClose, onSaved }: Props) {
   const [createdKey, setCreatedKey] = useState<string | null>(null);
+  const [recordTypes, setRecordTypes] = useState<StatusRecordType[] | null>(null);
+  const [recordTypesError, setRecordTypesError] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    listStatusRecordTypes()
+      .then((types) => { if (alive) setRecordTypes(types); })
+      .catch(() => { if (alive) setRecordTypesError(true); });
+    return () => { alive = false; };
+  }, []);
+  const recordTypeLabel = (id: string) =>
+    recordTypes?.find((t) => t.id === id)?.label ?? id;
   const [createdValue, setCreatedValue] = useState<StatusValue | null>(null);
   // non-null once a record exists to edit — either passed in, or created
   // earlier in this modal session.
@@ -148,26 +157,33 @@ export default function StatusEditModal({ value, canChange, onClose, onSaved }: 
             <div className="modal-section">Details</div>
             <div className="pf-form">
               <div>
-                <label>Record type *</label>
+                <label htmlFor="status-record-type">Record type *</label>
                 {original ? (
                   <>
                     <p className="pf-static">
-                      {STATUS_RECORD_TYPES.find((t) => t.value === original.record_type)?.label
-                        ?? original.record_type}
+                      {recordTypeLabel(original.record_type)}
                     </p>
                     <p className="set-note" style={{ padding: 0, margin: '6px 0 0' }}>
                       Permanent — can&rsquo;t be changed once created.
                     </p>
                   </>
                 ) : (
-                  <select className="org-select" required value={form.record_type}
-                          disabled={locked}
-                          onChange={(e) => setField('record_type', e.target.value)}>
-                    <option value="" disabled>Select a record type…</option>
-                    {STATUS_RECORD_TYPES.map((t) => (
-                      <option key={t.value} value={t.value}>{t.label}</option>
-                    ))}
-                  </select>
+                  <>
+                    <select id="status-record-type" className="org-select" required
+                            value={form.record_type}
+                            disabled={locked || recordTypes === null}
+                            onChange={(e) => setField('record_type', e.target.value)}>
+                      <option value="" disabled>
+                        {recordTypes === null && !recordTypesError ? 'Loading record types…' : 'Select a record type…'}
+                      </option>
+                      {(recordTypes ?? []).map((t) => (
+                        <option key={t.id} value={t.id}>{t.label}</option>
+                      ))}
+                    </select>
+                    {recordTypesError && (
+                      <p className="pf-error">Could not load record types — reload and try again.</p>
+                    )}
+                  </>
                 )}
               </div>
 
