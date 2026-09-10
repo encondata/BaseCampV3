@@ -248,9 +248,9 @@ export default function ProcessedScansTab({ onCount }: {
           )
           : <span className="cell-top">{s.matched_name ?? '—'}</span>;
       case 'scanned':
-        return <span className="cell-top">{new Date(s.scanned_at).toLocaleString()}</span>;
+        return <span className="mono">{new Date(s.scanned_at).toLocaleString()}</span>;
       case 'processed':
-        return <span className="cell-top">{new Date(s.processed_at).toLocaleString()}</span>;
+        return <span className="mono">{new Date(s.processed_at).toLocaleString()}</span>;
       case 'scan_type':
         return (
           <span className="chip custom" style={{ '--chip': s.scan_type_color } as CSSProperties}>

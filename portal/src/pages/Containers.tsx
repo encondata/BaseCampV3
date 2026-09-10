@@ -251,7 +251,7 @@ export default function Containers() {
       case 'location':
         return <span className="cell-top">{c.location_detail || '—'}</span>;
       case 'updated':
-        return <span className="cell-top">{new Date(c.created_at).toLocaleDateString()}</span>;
+        return <span className="mono">{new Date(c.created_at).toLocaleDateString()}</span>;
       default:
         return null;
     }

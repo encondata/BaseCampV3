@@ -182,15 +182,24 @@ a.dash-kpi:hover {
   border-bottom: 1px solid var(--paper-line);
 }
 /* .dash-board.dash-panel zeroes the panel's own padding (see above) so
-   the header can hang its own border-bottom flush to the card edge —
-   the 20px horizontal inset the rows need moves here instead of onto
-   each row, since a mini-row itself only ever carries vertical padding
-   (finding #6: a page co-class doesn't restate the primitive's box). */
-.dash-board-rows { display: flex; flex-direction: column; padding: 0 20px; }
+   the header can hang its own border-bottom flush to the card edge.
+   The 20px horizontal inset lives on the ROW (below), not here on the
+   rows container — a container inset would leave a gap between
+   `.dash-board-row:hover`'s background and the card edge, since the
+   hover paints only the row's own box. */
+.dash-board-rows { display: flex; flex-direction: column; }
 .dash-board-row {
   /* full-width band: name and route split the room, window and progress
      stay compact on the right like a real departures board */
   grid-template-columns: minmax(140px, 1.2fr) minmax(130px, 1fr) minmax(110px, 0.5fr) 120px;
+  /* Horizontal-only card inset (allowlisted, check "coclass"): the
+     primitive's own vertical padding (`.mini-row`'s
+     `calc(var(--list-row-pad-y) * 0.5) 0`) stays in force — only the
+     left/right sides are restated here, so the hover background still
+     reaches this card's edges instead of stopping short at a container
+     inset. */
+  padding-left: 20px;
+  padding-right: 20px;
   color: var(--text-dark);
   text-decoration: none;
   transition: background 0.15s;

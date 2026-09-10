@@ -17,6 +17,10 @@
  *     sizes, IPs/MACs → `mono` (or a column's own `mono: true`).
  *   - statuses / kinds / categories → `chip` (`chip c-*`/`chip custom`
  *     when the vocabulary has a color, `chip tag` for a neutral kind).
+ *   - type / sub-type / kind as the primary row's second line lives in
+ *     `.pn span` (the established directory shape: Home.tsx:289,
+ *     Initiatives.tsx:480, Containers.tsx:362, RawScansTab.tsx:240,
+ *     ProcessedScansTab.tsx:348).
  *   - never combine `cell-sub` with `mono` on the same element.
  */
 import type { ReactNode } from 'react';

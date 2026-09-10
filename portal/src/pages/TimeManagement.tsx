@@ -347,7 +347,7 @@ export default function TimeManagement() {
       case 'clock_out':
         return <span className="mono">{fmtTime(e.clock_out_at)}</span>;
       case 'date':
-        return <span className="cell-top">{fmtDate(e.clock_in_at)}</span>;
+        return <span className="mono">{fmtDate(e.clock_in_at)}</span>;
       case 'source':
         return <span className="cell-top">{e.source.charAt(0).toUpperCase() + e.source.slice(1)}</span>;
       default:

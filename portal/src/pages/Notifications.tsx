@@ -213,7 +213,7 @@ export default function Notifications() {
           </div>
         );
       case 'quiet_hours':
-        return <span className="cell-top cell-nowrap">{formatQuietHours(g.quiet_start, g.quiet_end, g.timezone)}</span>;
+        return <span className="mono cell-nowrap">{formatQuietHours(g.quiet_start, g.quiet_end, g.timezone)}</span>;
       case 'days':
         return <span className="cell-top">{formatDays(g.active_days)}</span>;
       case 'status':
@@ -223,7 +223,7 @@ export default function Notifications() {
           </span>
         );
       case 'created':
-        return <span className="cell-sub">{formatCreated(g.created_at)}</span>;
+        return <span className="mono">{formatCreated(g.created_at)}</span>;
       default:
         return null;
     }

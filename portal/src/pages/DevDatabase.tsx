@@ -283,7 +283,7 @@ function ReconcileTab() {
                 <div className="cell"><span className="cell-top">{item.entity_label || '—'}</span></div>
                 <div className="cell"><span className="chip tag">{typeLabel(item.entity_type)}</span></div>
                 <div className="cell">
-                  <span className="cell-top" title={longDate(item.marked_at)}>
+                  <span className="mono" title={longDate(item.marked_at)}>
                     {relativeTime(item.marked_at)}
                   </span>
                 </div>
@@ -514,11 +514,11 @@ function BackupsTab() {
                 </span>
               </div>
               <div className="cell">
-                <span className="cell-top" title={relativeTime(b.created_at)}>
+                <span className="mono" title={relativeTime(b.created_at)}>
                   {longDate(b.created_at)}
                 </span>
               </div>
-              <div className="cell"><span className="cell-top">{formatBytes(b.size_bytes)}</span></div>
+              <div className="cell"><span className="mono">{formatBytes(b.size_bytes)}</span></div>
               <div className="cell">
                 <span className="cell-top">{b.created_by_name ?? 'Unknown'}</span>
               </div>

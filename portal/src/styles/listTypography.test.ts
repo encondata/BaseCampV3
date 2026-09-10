@@ -14,13 +14,15 @@
  * (f) no element's className carries BOTH `cell-sub` and `mono` — the one
  *     semantic rule above `.mini-row` in directory.css says prose
  *     (cell-sub) and identifiers (mono) are never the same element.
- * (g) no page stylesheet rule whose selector is a known mini-row
- *     co-class (any class that co-occurs with `mini-row` in a .tsx
- *     className string) declares display/padding/gap/border/
- *     border-bottom/min-height — per spec a page sets
- *     `grid-template-columns` (and colors/widths) on a mini-row and
- *     nothing else; the box model itself is `.mini-row`'s alone, so a
- *     page rule that restates it only wins by import order, not intent.
+ * (g) no page stylesheet rule whose selector is a known mini-row/
+ *     mini-list-head co-class (any class that co-occurs with either
+ *     primitive in a .tsx className string) declares display/padding
+ *     (or a padding-* side)/gap/row-gap/column-gap/border (or a
+ *     border-* side)/min-height — per spec a page sets
+ *     `grid-template-columns` (and colors/widths) on a mini-row/
+ *     mini-list-head and nothing else; the box model itself is the
+ *     primitive's alone, so a page rule that restates it (in full or by
+ *     one side/axis) only wins by import order, not intent.
  * Deliberate exceptions live in listTypography.allow.json with a reason.
  * Violations print a ready-to-paste allowlist snippet — but the fix is
  * almost always to use the tokens/primitives, not to allowlist.
@@ -105,12 +107,20 @@
  *     violations don't have a stable CSS selector to key on.
  *
  * `check: "inline"` allowlist entries key on `file` + `selector`, where
- * `selector` is the offending line's own text (trimmed, first 40 chars) —
- * (e) violations, unlike (a)/(b)/(c), don't have a CSS selector, but
- * unlike (d) they DO have a stable single-line text to key on, so they
- * get their own line-level granularity instead of (d)'s file-level one.
- * `check: "dualclass"` ((f)) is keyed the same way as "inline" — a
- * className violation has a stable single-line text, not a CSS selector.
+ * `selector` is the offending line's own text, trimmed and capped at 200
+ * chars — (e) violations, unlike (a)/(b)/(c), don't have a CSS selector,
+ * but unlike (d) they DO have a stable single-line text to key on, so
+ * they get their own line-level granularity instead of (d)'s file-level
+ * one. The key is the WHOLE line (not a short prefix) so two violations
+ * on lines that merely start the same way — e.g. two `style={{ fontSize:
+ * 12, ...}}` blocks that diverge only after the first 40 characters —
+ * get distinct entries instead of silently sharing one.
+ * `check: "dualclass"` ((f)) is keyed the same way "inline" used to be —
+ * a className violation has a stable single-line text, not a CSS
+ * selector, but (f)'s hint is still the first 40 trimmed chars of the
+ * line (dualclass violations are short `className="..."` fragments where
+ * a 40-char prefix reliably disambiguates, unlike (e)'s often-long
+ * `style={{...}}` lines).
  * `check: "coclass"` ((g)) is keyed like (a)/(c)'s plain entries (file +
  * the CSS rule's own selector), since a (g) violation IS a CSS rule.
  *
@@ -440,7 +450,7 @@ function rawViolationsE(): InlineViolation[] {
         const bodyStart = sm.index + sm[0].indexOf(body);
         const absoluteIndex = bodyStart + pm.index;
         const line = (src.slice(0, absoluteIndex).match(/\n/g) ?? []).length + 1;
-        out.push({ file: f, line, hint: lines[line - 1].trim().slice(0, 40) });
+        out.push({ file: f, line, hint: lines[line - 1].trim().slice(0, 200) });
       }
     }
   }
@@ -476,17 +486,23 @@ function rawViolationsF(): DualClassViolation[] {
   return out;
 }
 
-/** (g): every class token that co-occurs with `mini-row` in some .tsx
- *  `className` string (a literal string, or a backtick template's
- *  static parts with `${…}` expressions blanked out) — these page
- *  "co-classes" ride along on a `.mini-row` element and, per finding #6,
- *  can silently fight the primitive's own box model if their own CSS
- *  rule restates display/padding/gap/border/min-height (only winning by
- *  import order). Cheap regex, not a real JSX parser — same spirit as
- *  the rest of this file; a co-class applied only via a fully dynamic
- *  `className={expr}` (no literal "mini-row" text anywhere) isn't
- *  found, the same acknowledged gap as (d)'s `ownClass`. */
+/** (g): every class token that co-occurs with `mini-row` OR `mini-list-head`
+ *  in some .tsx `className` string (a literal string, or a backtick
+ *  template's static parts with `${…}` expressions blanked out) — these
+ *  page "co-classes" ride along on one of the two mini-list primitives
+ *  and, per finding #6, can silently fight the primitive's own box model
+ *  if their own CSS rule restates display/padding/gap/border/min-height
+ *  (only winning by import order). Both primitives are scanned together
+ *  (rather than as two separate passes) because a page's section-header
+ *  row co-classes `mini-list-head` the exact same way a data row
+ *  co-classes `mini-row`, and the box-model properties being guarded are
+ *  the same set either primitive owns. Cheap regex, not a real JSX
+ *  parser — same spirit as the rest of this file; a co-class applied
+ *  only via a fully dynamic `className={expr}` (no literal
+ *  "mini-row"/"mini-list-head" text anywhere) isn't found, the same
+ *  acknowledged gap as (d)'s `ownClass`. */
 const CLASSNAME_ATTR_RE = /className=(?:"([^"]*)"|\{`([^`]*)`\})/g;
+const MINI_LIST_PRIMITIVES = ['mini-row', 'mini-list-head'];
 function deriveMiniRowCoClasses(): Set<string> {
   const co = new Set<string>();
   for (const dir of TSX_DIRS) {
@@ -499,8 +515,8 @@ function deriveMiniRowCoClasses(): Set<string> {
       while ((m = CLASSNAME_ATTR_RE.exec(src)) !== null) {
         const raw = (m[1] ?? m[2] ?? '').replace(/\$\{[^}]*\}/g, ' ');
         const tokens = raw.split(/\s+/).filter(Boolean);
-        if (!tokens.includes('mini-row')) continue;
-        for (const t of tokens) if (t !== 'mini-row') co.add(t);
+        if (!tokens.some((t) => MINI_LIST_PRIMITIVES.includes(t))) continue;
+        for (const t of tokens) if (!MINI_LIST_PRIMITIVES.includes(t)) co.add(t);
       }
     }
   }
@@ -508,17 +524,23 @@ function deriveMiniRowCoClasses(): Set<string> {
 }
 
 /** Same disallowed set finding #6 names for a co-class rule: the
- *  box-model properties `.mini-row` (directory.css) already owns.
- *  Exact property-name match (not a `padding-*`/`border-*` prefix) —
- *  same granularity as (a)'s TYPO_PROPS. */
-const COCLASS_BAD_PROPS = /^(?:display|padding|gap|border-bottom|border|min-height)\s*:/;
+ *  box-model properties `.mini-row`/`.mini-list-head` (directory.css)
+ *  already own. Widened from an exact-name match to also catch the
+ *  longhand/logical siblings of each shorthand — `padding-left` etc.,
+ *  `row-gap`/`column-gap` alongside `gap`, `border-top`/`border-left`/
+ *  etc. alongside `border`/`border-bottom` — since a page rule that
+ *  restates just one side of the box model fights the primitive exactly
+ *  as much as restating the shorthand does. */
+const COCLASS_BAD_PROPS =
+  /^(?:display|padding(?:-[a-z]+)?|gap|row-gap|column-gap|border(?:-[a-z]+)?|min-height)\s*:/;
 
 /** (g) raw: a page stylesheet rule whose selector contains a known
- *  mini-row co-class declaring one of the properties above, computed
- *  WITHOUT consulting the allowlist. `directory.css` (the primitive
- *  itself) is exempt. The co-class is matched as a real CSS class token
- *  (`.token` not immediately followed by another identifier character)
- *  so `.dash-board-row` doesn't also match `.dash-board-route`. */
+ *  mini-row/mini-list-head co-class declaring one of the properties
+ *  above, computed WITHOUT consulting the allowlist. `directory.css`
+ *  (the primitives themselves) is exempt. The co-class is matched as a
+ *  real CSS class token (`.token` not immediately followed by another
+ *  identifier character) so `.dash-board-row` doesn't also match
+ *  `.dash-board-route`. */
 interface CoClassViolation { file: string; selector: string; decl: string; }
 function rawViolationsG(): CoClassViolation[] {
   const coClasses = deriveMiniRowCoClasses();
@@ -585,7 +607,7 @@ describe('list typography guardrail', () => {
     expect(bad, `className carries both cell-sub and mono (pick one):\n${snippet(bad)}`).toEqual([]);
   });
 
-  it('(g) a mini-row co-class in page CSS is layout-only (grid-template-columns + colors/widths)', () => {
+  it('(g) a mini-row/mini-list-head co-class in page CSS is layout-only (grid-template-columns + colors/widths)', () => {
     const bad: Allow[] = rawViolationsG()
       .filter((v) => !allowedCoClass(v.file, v.selector))
       .map((v) => ({ file: v.file, selector: v.selector, reason: '' }));

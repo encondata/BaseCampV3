@@ -152,7 +152,7 @@ export default function RawScansTab({ onCount }: {
           </span>
         );
       case 'scanned':
-        return <span className="cell-top">{new Date(r.scanned_at).toLocaleString()}</span>;
+        return <span className="mono">{new Date(r.scanned_at).toLocaleString()}</span>;
       case 'device':
         return <span className="mono">{r.device_id || '—'}</span>;
       case 'operator':
@@ -164,7 +164,7 @@ export default function RawScansTab({ onCount }: {
       case 'source':
         return <span className="cell-top">{r.source || '—'}</span>;
       case 'ingested':
-        return <span className="cell-top">{new Date(r.created_at).toLocaleString()}</span>;
+        return <span className="mono">{new Date(r.created_at).toLocaleString()}</span>;
       default:
         return null;
     }

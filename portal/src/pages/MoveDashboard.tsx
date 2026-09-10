@@ -258,7 +258,7 @@ export default function MoveDashboard() {
       return (
         <StatusHover entityType="initiative_asset" entityId={a.id} status={a.status}>
           {statusChip(a.status_label, a.status_color)
-            ?? <span className="cell-top">{a.status_label}</span>}
+            ?? <span className="chip tag">{a.status_label}</span>}
         </StatusHover>
       );
     }
@@ -266,7 +266,7 @@ export default function MoveDashboard() {
       return (
         <StatusHover entityType="asset" entityId={a.asset_id} status={a.asset.status}>
           {statusChip(a.asset.status_label, a.asset.status_color)
-            ?? <span className="cell-top">{a.asset.status_label}</span>}
+            ?? <span className="chip tag">{a.asset.status_label}</span>}
         </StatusHover>
       );
     }
