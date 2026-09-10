@@ -225,6 +225,42 @@ it('Ctrl+B is ignored while typing in an input', () => {
   expect(auth.updatePreferences).not.toHaveBeenCalled();
 });
 
+it('toggling from expanded (with a section open) into rail clears openSection — the flyout does not auto-open, only a section-icon click opens it', () => {
+  auth.navMode = 'expanded';
+  // the real AuthContext re-renders AppShell with the updated preference
+  // once updatePreferences resolves; simulate that by having the mock
+  // mutate the hoisted, mutable `auth.navMode` itself.
+  auth.updatePreferences = vi.fn(async (prefs: UiPreferences) => {
+    auth.navMode = prefs.nav_mode;
+    return true;
+  });
+
+  const { rerender } = renderShell();
+
+  // starting expanded at '/', the Dashboards section (which contains "/")
+  // is open in the docked accordion
+  const nav = within(document.querySelector('.portal-nav.docked')!);
+  expect(nav.getByText('Move Dashboard')).toBeDefined();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Collapse' }));
+  expect(auth.navMode).toBe('rail');
+
+  rerender(
+    <MemoryRouter initialEntries={['/']}>
+      <AppShell>content</AppShell>
+    </MemoryRouter>,
+  );
+
+  // now in rail mode — no flyout should have auto-opened just because the
+  // mode changed while a section was open in the accordion
+  expect(document.querySelector('.nav-flyout')).toBeNull();
+
+  // clicking a section icon is still the only thing that opens the flyout
+  fireEvent.click(screen.getByRole('button', { name: 'Dashboards' }));
+  expect(document.querySelector('.nav-flyout')).not.toBeNull();
+  expect(screen.getByText('Move Dashboard')).toBeDefined();
+});
+
 it('a matchMedia match at <=900px forces hidden mode even when the preference is expanded', () => {
   auth.navMode = 'expanded';
   stubMatchMedia(true);

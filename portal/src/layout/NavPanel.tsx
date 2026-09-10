@@ -7,7 +7,7 @@
  * drift apart — see AppShell.tsx.
  */
 
-import { useRef, type CSSProperties, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 
 import type { NavMode } from '../lib/settings';
@@ -39,6 +39,11 @@ export default function NavPanel({
   const rail = mode === 'rail';
   const hidden = mode === 'hidden';
   const railButtons = useRef<Map<string, HTMLButtonElement>>(new Map());
+  const flyoutRef = useRef<HTMLDivElement>(null);
+  // Unmeasured (0) until the layout effect below reads the flyout's actual
+  // rendered height — first paint falls back to clamping the anchor point
+  // only (the old behaviour), same as before this got measured.
+  const [flyoutHeight, setFlyoutHeight] = useState(0);
 
   const navClassName = ['portal-nav', godMode ? 'god' : '', className ?? '']
     .filter(Boolean)
@@ -50,10 +55,25 @@ export default function NavPanel({
   const openFlyoutSection = rail ? sections.find((s) => s.label === openSection) : undefined;
   const flyoutButton = openFlyoutSection ? railButtons.current.get(openFlyoutSection.label) : undefined;
   const flyoutRect = flyoutButton?.getBoundingClientRect();
+  // Clamp the anchor point first (same as before), then re-clamp against
+  // the flyout's own measured height so its bottom edge never overflows
+  // the viewport — a section opened near the bottom of a short viewport
+  // no longer lets the flyout's content spill past window.innerHeight.
   const flyoutTop = flyoutRect
-    ? Math.min(Math.max(flyoutRect.top, 8), Math.max(8, window.innerHeight - 8))
+    ? Math.min(
+        Math.max(flyoutRect.top, 8),
+        Math.max(8, window.innerHeight - 8 - flyoutHeight),
+      )
     : 8;
   const flyoutLeft = flyoutRect ? flyoutRect.right + 8 : 72;
+
+  // Measure the flyout after it (re)renders so the clamp above can account
+  // for its real height, not just the anchor button's position. Runs
+  // synchronously before paint, so there's no visible jump.
+  useLayoutEffect(() => {
+    const height = openFlyoutSection ? (flyoutRef.current?.offsetHeight ?? 0) : 0;
+    setFlyoutHeight((prev) => (prev === height ? prev : height));
+  }, [openFlyoutSection]);
 
   return (
     <nav className={navClassName} aria-label="Primary" style={navStyle}>
@@ -134,7 +154,7 @@ export default function NavPanel({
       )}
 
       {rail && openFlyoutSection && (
-        <div className="nav-flyout" role="menu" style={{ top: flyoutTop, left: flyoutLeft }}>
+        <div ref={flyoutRef} className="nav-flyout" role="menu" style={{ top: flyoutTop, left: flyoutLeft }}>
           <ul className="nav-list">
             {openFlyoutSection.items.map((item) => (
               <li className="nav-item" key={item.to}>

@@ -52,6 +52,11 @@
 
 .portal-shell * { box-sizing: border-box; }
 
+/* The global `[data-motion='off'] *` kill switch (directory.css:660) is a
+   descendant combinator — it never reaches .portal-shell itself, so the
+   grid-template-columns transition declared above needs its own override. */
+.portal-shell[data-motion='off'] { transition: none; }
+
 /* ── accent variants (user preference, stored on the account) ── */
 
 .portal-shell[data-accent='aqua']   { --accent: #35e0c8; --accent-soft: #6af0dd; --accent-rgb: 53, 224, 200; }
@@ -282,7 +287,7 @@
 }
 .portal-nav .user-meta { min-width: 0; flex: 1; }
 .portal-nav .user-name {
-  font-size: 13px;
+  font-size: calc(13px * var(--nav-scale, 1));
   font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
@@ -290,7 +295,7 @@
 }
 .portal-nav .user-role {
   font-family: var(--font-mono);
-  font-size: 8.5px;
+  font-size: calc(8.5px * var(--nav-scale, 1));
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: #76839a;

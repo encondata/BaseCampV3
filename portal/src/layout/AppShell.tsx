@@ -106,9 +106,16 @@ function AppShellInner({ children }: { children: ReactNode }) {
   }, []);
 
   // navigating into a section opens it in the accordion (rail's flyout is a
-  // separate, click-driven concept — it does not track the route).
+  // separate, click-driven concept — it does not track the route). Entering
+  // rail (from expanded/hidden, via toggle or Ctrl/⌘+B) must clear whatever
+  // section was open, so the flyout never auto-opens on mode change — only
+  // a click on a section icon opens it. Leaving rail restores the section
+  // for the current route.
   useEffect(() => {
-    if (mode === 'rail') return;
+    if (mode === 'rail') {
+      setOpenSection('');
+      return;
+    }
     setOpenSection(sectionForPath(visibleSections, location.pathname));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, mode]);
