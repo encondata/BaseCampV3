@@ -23,36 +23,16 @@
 }
 .init-panel .pf-error { display: block; margin-top: 10px; }
 
-/* one person / link per row; controls share one height, actions right */
-.init-rows .init-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 40px;
-  padding: 4px 0;
-}
-.init-rows .init-row + .init-row { border-top: 1px solid var(--paper-line); }
-.init-row .init-name { font-size: 13px; font-weight: 500; color: var(--text-dark); }
-.init-row .init-sub { font-size: 12.5px; color: var(--text-mute); }
+/* one person / link per row; controls share one height, actions right —
+ * markup is `mini-list init-rows` / `mini-row init-row`, so height/
+ * spacing/separator and the row/cell typography (.pn, .cell-top,
+ * .cell-sub, .mono) all come from directory.css's mini-list tokens; only
+ * layout not covered by the primitive (flex direction, tag width, the
+ * trailing spacer) is restated here. */
+.init-rows .init-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
 .init-row .spacer { margin-left: auto; }
-.init-tag {
-  flex: 0 0 76px;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--text-mute);
-}
-.init-name-btn {
-  background: none;
-  border: 0;
-  padding: 0;
-  font-family: var(--font-display);
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--c-blue);
-  cursor: pointer;
-}
+.init-tag { flex: 0 0 76px; }
+.init-name-btn { background: none; border: 0; padding: 0; cursor: pointer; color: var(--c-blue); }
 .init-name-btn:hover { text-decoration: underline; }
 
 /* small button variant sized to sit beside 24px chips */
@@ -306,6 +286,10 @@
 @media (max-width: 768px) {
   .idet-donut-legend { grid-template-columns: 1fr; }
 }
+/* a `cell` class (not `mini-row` — this is a compact 2-column grid tile,
+ * not a stacked full-width list row) gives `.cell-top`/`.mono` on the
+ * label/count below their directory.css typography without pulling in
+ * mini-row's row height/padding/border-bottom. */
 .idet-donut-legend-row {
   display: flex;
   align-items: center;
@@ -320,21 +304,13 @@
   flex: none;
 }
 .idet-donut-legend-label {
-  font-size: 12.5px;
-  color: var(--text-dark);
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.idet-donut-legend-count {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-dark);
-  text-align: right;
-  min-width: 2.5ch;
-}
+.idet-donut-legend-count { text-align: right; min-width: 2.5ch; }
 /* same structure/positioning as .rack-tooltip below — small HTML tooltip
    anchored off the hovered element's bounding rect within the panel above. */
 .idet-donut-tooltip {
@@ -796,11 +772,7 @@
 .imp-report-list { overflow: visible; margin-bottom: 4px; }
 .imp-report-list .list-head { border-radius: 15px 15px 0 0; }
 .imp-report-list .dir-row:last-child .row-main { border-radius: 0 0 15px 15px; }
-.imp-report-list .row-main {
-  cursor: default;
-  min-height: auto;
-  padding: 10px 20px;
-}
+.imp-report-list .row-main { cursor: default; padding: 10px 20px; }
 .imp-report-list .row-main:hover { background: none; }
 .imp-report-grid { grid-template-columns: 70px 160px 130px 1fr; }
 
@@ -871,30 +843,12 @@
   letter-spacing: -0.01em;
 }
 
-.idet-time-list { display: flex; flex-direction: column; }
+/* markup is `mini-list idet-time-list` / `mini-list-head idet-time-list-head`
+ * / `mini-row idet-time-row` — only the shared grid-template-columns need
+ * restating here; header/row typography comes from the primitive. */
 .idet-time-list-head,
 .idet-time-row {
-  display: grid;
   grid-template-columns: minmax(140px, 1.6fr) minmax(80px, 0.9fr) minmax(80px, 0.9fr)
     minmax(60px, 0.7fr) minmax(90px, 1fr);
-  gap: 12px;
-  align-items: center;
-  padding: 7px 0;
 }
-.idet-time-list-head {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-mute);
-  border-bottom: 1px solid var(--paper-line);
-  padding-bottom: 8px;
-}
-.idet-time-row {
-  font-size: 12.5px;
-  color: var(--text-dark);
-  border-bottom: 1px solid var(--paper-line);
-}
-.idet-time-row:last-child { border-bottom: none; }
-.idet-time-person { font-weight: 500; }
 .scan-history .scan-when { white-space: nowrap; }

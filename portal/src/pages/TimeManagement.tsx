@@ -435,13 +435,13 @@ export default function TimeManagement() {
           <div className="time-panel-empty">No entries yet.</div>
         )}
         {myTime !== null && myTime.entries.length > 0 && (
-          <div className="time-recent-list">
+          <div className="mini-list time-recent-list">
             {myTime.entries.slice(0, 8).map((e) => (
-              <div key={e.id} className="time-recent-row">
-                <span className="time-recent-date">{fmtDate(e.clock_in_at)}</span>
-                <span className="time-recent-span">{fmtTime(e.clock_in_at)} → {fmtTime(e.clock_out_at)}</span>
-                <span className="time-recent-duration">{formatMinutes(e.minutes)}</span>
-                <span className="time-recent-initiative">{e.initiative_name ?? '—'}</span>
+              <div key={e.id} className="mini-row time-recent-row">
+                <span className="cell-top">{fmtDate(e.clock_in_at)}</span>
+                <span className="mono">{fmtTime(e.clock_in_at)} → {fmtTime(e.clock_out_at)}</span>
+                <span className="mono">{formatMinutes(e.minutes)}</span>
+                <span className="cell-sub">{e.initiative_name ?? '—'}</span>
                 <StatusHover entityType="time_entry" entityId={e.id} status={e.status}>
                   {statusChip(e.status_label, e.status_color)}
                 </StatusHover>
@@ -460,15 +460,15 @@ export default function TimeManagement() {
             <div className="time-panel-empty">No one is clocked in right now.</div>
           )}
           {activeEntries !== null && activeEntries.length > 0 && (
-            <div className="time-active-list">
+            <div className="mini-list time-active-list">
               {activeEntries.map((e) => {
                 const mins = elapsedSince(e.clock_in_at);
                 return (
-                  <div key={e.id} className="time-active-row">
-                    <span className="time-active-person">{e.person_name}</span>
-                    <span className="time-active-since">since {fmtTime(e.clock_in_at)}</span>
-                    <span className="time-active-elapsed">{formatMinutes(mins)}</span>
-                    <span className="time-active-initiative">{e.initiative_name ?? '—'}</span>
+                  <div key={e.id} className="mini-row time-active-row">
+                    <div className="cell-primary"><div className="pn"><b>{e.person_name}</b></div></div>
+                    <span className="mono">since {fmtTime(e.clock_in_at)}</span>
+                    <span className="mono">{formatMinutes(mins)}</span>
+                    <span className="cell-sub">{e.initiative_name ?? '—'}</span>
                     {mins > MISSED_PUNCH_MINUTES && (
                       <span className="chip tag time-flag">12h+ — missed punch?</span>
                     )}

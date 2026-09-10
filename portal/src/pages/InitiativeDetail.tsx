@@ -881,11 +881,11 @@ export default function InitiativeDetail() {
             && initiative.links_parents.length === 0
             ? <p className="page-hint">No linked initiatives.</p>
             : (
-              <div className="init-rows">
+              <div className="mini-list init-rows">
                 {initiative.links_children.map((l) => (
-                  <div key={l.id} className="init-row">
-                    <span className="init-tag">Contains</span>
-                    <button type="button" className="init-name-btn"
+                  <div key={l.id} className="mini-row init-row">
+                    <span className="init-tag mono">Contains</span>
+                    <button type="button" className="init-name-btn cell-top"
                             onClick={() => navigate(`/initiatives/${l.other_id}`)}>
                       {l.other_name}
                     </button>
@@ -897,7 +897,7 @@ export default function InitiativeDetail() {
                                          () => updateInitiativeLink(
                                            l.id, { role: v }))} />
                     ) : (
-                      l.role && <span className="init-sub">{l.role}</span>
+                      l.role && <span className="cell-sub">{l.role}</span>
                     )}
                     {canChange && (
                       <button type="button" className="mini-btn sm danger spacer"
@@ -910,9 +910,9 @@ export default function InitiativeDetail() {
                   </div>
                 ))}
                 {initiative.links_parents.map((l) => (
-                  <div key={l.id} className="init-row">
-                    <span className="init-tag">Part of</span>
-                    <button type="button" className="init-name-btn"
+                  <div key={l.id} className="mini-row init-row">
+                    <span className="init-tag mono">Part of</span>
+                    <button type="button" className="init-name-btn cell-top"
                             onClick={() => navigate(`/initiatives/${l.other_id}`)}>
                       {l.other_name}
                     </button>
@@ -1118,8 +1118,8 @@ export default function InitiativeDetail() {
               </div>
 
               {timeSummary && timeSummary.people.length > 0 ? (
-                <div className="idet-time-list">
-                  <div className="idet-time-list-head">
+                <div className="mini-list idet-time-list">
+                  <div className="mini-list-head idet-time-list-head">
                     <span>Person</span>
                     <span>Approved</span>
                     <span>Pending</span>
@@ -1127,12 +1127,12 @@ export default function InitiativeDetail() {
                     <span>Last activity</span>
                   </div>
                   {timeSummary.people.map((p) => (
-                    <div key={p.person_id} className="idet-time-row">
-                      <span className="idet-time-person">{p.person_name}</span>
-                      <span>{formatMinutes(p.approved_minutes)}</span>
-                      <span>{formatMinutes(p.pending_minutes)}</span>
-                      <span>{p.entry_count}</span>
-                      <span>{relativeTime(p.last_entry_at)}</span>
+                    <div key={p.person_id} className="mini-row idet-time-row">
+                      <span className="cell-top">{p.person_name}</span>
+                      <span className="mono">{formatMinutes(p.approved_minutes)}</span>
+                      <span className="mono">{formatMinutes(p.pending_minutes)}</span>
+                      <span className="mono">{p.entry_count}</span>
+                      <span className="mono">{relativeTime(p.last_entry_at)}</span>
                     </div>
                   ))}
                 </div>
@@ -1505,13 +1505,13 @@ function AssetStatusDonut({ rows, statuses }: {
       </svg>
       <ul className="idet-donut-legend">
         {entries.map((entry) => (
-          <li key={entry.key} className="idet-donut-legend-row"
+          <li key={entry.key} className="idet-donut-legend-row cell"
               style={{ opacity: hoverKey && hoverKey !== entry.key ? 0.45 : 1 }}
               onMouseEnter={(e) => handleHover(entry.key, e)}>
             <span className="idet-donut-swatch" style={{ background: entry.color }}
                   aria-hidden="true" />
-            <span className="idet-donut-legend-label" title={entry.label}>{entry.label}</span>
-            <span className="idet-donut-legend-count">{entry.count}</span>
+            <span className="idet-donut-legend-label cell-top" title={entry.label}>{entry.label}</span>
+            <span className="idet-donut-legend-count mono">{entry.count}</span>
           </li>
         ))}
       </ul>

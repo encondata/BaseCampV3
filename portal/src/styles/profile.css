@@ -243,28 +243,9 @@
   .activity-detail { grid-template-columns: 1fr; }
 }
 
-.activity-changes {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-}
-.activity-changes th {
-  text-align: left;
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--text-mute);
-  padding: 4px 10px 6px 0;
-  border-bottom: 1px solid var(--paper-line);
-}
-.activity-changes td {
-  padding: 6px 10px 6px 0;
-  border-bottom: 1px solid var(--paper-line);
-  vertical-align: top;
-  overflow-wrap: anywhere;
-}
-.activity-changes tr:last-child td { border-bottom: none; }
+/* the field-diff detail (Field/Before/After) now renders via the shared
+ * <DataTable> (styled from directory.css's .data-table rules) — no
+ * per-page table typography left to restate here. */
 
 /* ── audit log page toolbar ───────────────────────────────── */
 

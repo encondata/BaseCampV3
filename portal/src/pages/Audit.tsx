@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import ComboBox from '../components/ComboBox';
+import DataTable from '../components/DataTable';
 import {
   getAuditFacets,
   listAuditLog,
@@ -268,20 +269,15 @@ export default function Audit() {
                           <dt>IP</dt><dd className="mono">{r.ip ?? '—'}</dd>
                         </dl>
                         {details.length > 0 ? (
-                          <table className="activity-changes">
-                            <thead>
-                              <tr><th>Field</th><th>Before</th><th>After</th></tr>
-                            </thead>
-                            <tbody>
-                              {details.map((d) => (
-                                <tr key={d.field}>
-                                  <td className="mono">{d.field}</td>
-                                  <td>{d.from}</td>
-                                  <td>{d.to}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                          <DataTable
+                            ariaLabel="Field changes"
+                            columns={[
+                              { key: 'field', label: 'Field', mono: true },
+                              { key: 'from', label: 'Before' },
+                              { key: 'to', label: 'After' },
+                            ]}
+                            rows={details.map((d) => (
+                              { key: d.field, cells: [d.field, d.from, d.to] }))} />
                         ) : (
                           <p className="set-note" style={{ padding: 0 }}>
                             No field changes recorded for this event.

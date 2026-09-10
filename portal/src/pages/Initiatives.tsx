@@ -663,11 +663,11 @@ function InitiativeRowDetail({
           && <p className="page-hint">No linked initiatives.</p>}
         {detail && (detail.links_children.length > 0
           || detail.links_parents.length > 0) && (
-          <div className="init-rows">
+          <div className="mini-list init-rows">
             {detail.links_children.map((l) => (
-              <div key={l.id} className="init-row">
-                <span className="init-tag">Contains</span>
-                <button type="button" className="init-name-btn"
+              <div key={l.id} className="mini-row init-row">
+                <span className="init-tag mono">Contains</span>
+                <button type="button" className="init-name-btn cell-top"
                         onClick={() => onNavigate(l.other_id)}>
                   {l.other_name}
                 </button>
@@ -679,7 +679,7 @@ function InitiativeRowDetail({
                                      () => updateInitiativeLink(
                                        l.id, { role: v }))} />
                 ) : (
-                  l.role && <span className="init-sub">{l.role}</span>
+                  l.role && <span className="cell-sub">{l.role}</span>
                 )}
                 {canEdit && (
                   <button type="button" className="mini-btn sm danger spacer"
@@ -692,9 +692,9 @@ function InitiativeRowDetail({
               </div>
             ))}
             {detail.links_parents.map((l) => (
-              <div key={l.id} className="init-row">
-                <span className="init-tag">Part of</span>
-                <button type="button" className="init-name-btn"
+              <div key={l.id} className="mini-row init-row">
+                <span className="init-tag mono">Part of</span>
+                <button type="button" className="init-name-btn cell-top"
                         onClick={() => onNavigate(l.other_id)}>
                   {l.other_name}
                 </button>
@@ -749,14 +749,14 @@ function InitiativeRowDetail({
         {detail?.people.length === 0
           && <p className="page-hint">No one assigned yet.</p>}
         {detail && detail.people.length > 0 && (
-          <div className="init-rows">
+          <div className="mini-list init-rows">
             {detail.people.map((p) => (
-              <div key={p.id} className="init-row">
-                <span className="init-name">{p.person_name}</span>
+              <div key={p.id} className="mini-row init-row">
+                <span className="cell-top">{p.person_name}</span>
                 {p.work_type_label && p.work_type_color
                   && typeChip(p.work_type_label, p.work_type_color)}
                 {p.rating != null
-                  && <span className="init-sub">★ {p.rating}</span>}
+                  && <span className="cell-sub">★ {p.rating}</span>}
                 {canEdit && (
                   <button type="button" className="mini-btn sm danger spacer"
                           disabled={busy}

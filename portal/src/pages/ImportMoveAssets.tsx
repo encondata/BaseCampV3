@@ -470,11 +470,11 @@ export default function ImportMoveAssets() {
                         {!canAddModels && !canChangeModels && (
                           <p className="page-hint">Ask an admin to add these models.</p>
                         )}
-                        <div className="imp-missing-list">
+                        <div className="mini-list imp-missing-list">
                           {missing.map((g) => {
                             const fixed = fixedTexts.has(g.text.toLowerCase());
                             return (
-                              <div key={g.text} className="imp-missing-row">
+                              <div key={g.text} className="mini-row imp-missing-row">
                                 <span className="mono">{g.text}</span>
                                 <span className="page-hint">{g.rows.length} rows</span>
                                 {fixed ? (
