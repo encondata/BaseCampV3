@@ -94,12 +94,13 @@ function renderAt(path: string) {
       <Routes>
         <Route path="/me" element={<Profile />} />
         <Route path="/me/preferences" element={<Profile />} />
+        <Route path="/me/notifications" element={<Profile />} />
       </Routes>
     </MemoryRouter>,
   );
 }
 
-it('shows two tabs, Profile active by default at /me', async () => {
+it('shows three tabs, Profile active by default at /me', async () => {
   renderAt('/me');
 
   await waitFor(() => expect(screen.getByRole('tablist')).toBeTruthy());
@@ -108,6 +109,7 @@ it('shows two tabs, Profile active by default at /me', async () => {
   const prefsTab = screen.getByRole('tab', { name: 'Preferences' });
   expect(profileTab.getAttribute('aria-selected')).toBe('true');
   expect(prefsTab.getAttribute('aria-selected')).toBe('false');
+  expect(screen.getByRole('tab', { name: 'Notifications' }).getAttribute('aria-selected')).toBe('false');
 });
 
 it('/me shows the Profile panel and not the preferences sections', async () => {
@@ -118,16 +120,29 @@ it('/me shows the Profile panel and not the preferences sections', async () => {
   ).toBeTruthy());
 
   expect(screen.queryByText('Appearance')).toBeNull();
-  expect(screen.queryByText('Notifications')).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'Notifications', level: 3 })).toBeNull();
 });
 
-it('/me/preferences shows Appearance and Notifications, not the Profile panel', async () => {
+it('/me/preferences shows Appearance only, not Notifications or the Profile panel', async () => {
   renderAt('/me/preferences');
 
   await waitFor(() => expect(screen.getByText('Appearance')).toBeTruthy());
 
-  expect(screen.getByText('Notifications')).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Notifications', level: 3 })).toBeNull();
   expect(screen.queryByRole('heading', { name: 'Profile', level: 3 })).toBeNull();
+});
+
+it('/me/notifications shows the Notifications section only', async () => {
+  renderAt('/me/notifications');
+
+  await waitFor(() => expect(
+    screen.getByRole('heading', { name: 'Notifications', level: 3 }),
+  ).toBeTruthy());
+
+  expect(screen.getByText('Weekly digest')).toBeTruthy();
+  expect(screen.queryByText('Appearance')).toBeNull();
+  expect(screen.queryByRole('heading', { name: 'Profile', level: 3 })).toBeNull();
+  expect(screen.getByRole('tab', { name: 'Notifications' }).getAttribute('aria-selected')).toBe('true');
 });
 
 it('clicking the Preferences tab navigates to /me/preferences', async () => {

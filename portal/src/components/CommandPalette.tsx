@@ -102,6 +102,7 @@ export default function CommandPalette() {
       ...navGated('Variables', '/dev/database/variables', 'devtools', true),
       { group: 'Navigate', label: 'View my profile', icon: NAV_ICON, run: () => navigate('/me') },
       { group: 'Navigate', label: 'My preferences', icon: NAV_ICON, run: () => navigate('/me/preferences') },
+      { group: 'Navigate', label: 'My notifications', icon: NAV_ICON, run: () => navigate('/me/notifications') },
       ...(can('users', 'add') ? [{
         group: 'Actions', label: 'Add person', sub: 'Users', icon: ACTION_ICON,
         run: () => navigate('/people/users', { state: { openAdd: true } }),

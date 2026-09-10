@@ -22,6 +22,7 @@ import {
   type SessionInfo,
 } from '../lib/api';
 import { describeUserAgent, longDate, relativeTime } from '../lib/format';
+import MeNotifications from './me/MeNotifications';
 import MePreferences from './me/MePreferences';
 import '../styles/directory.css';
 import '../styles/profile.css';
@@ -52,7 +53,10 @@ function formStateFrom(p: PersonDetail): Record<EditKey, string> {
 export default function Profile() {
   const { roles, applyProfile } = useAuth();
   const navigate = useNavigate();
-  const onPrefs = useLocation().pathname.startsWith('/me/preferences');
+  const pathname = useLocation().pathname;
+  const tab: 'profile' | 'preferences' | 'notifications' = pathname.startsWith('/me/preferences')
+    ? 'preferences' : pathname.startsWith('/me/notifications') ? 'notifications' : 'profile';
+  const onPrefs = tab !== 'profile'; // any non-profile tab hides profile-only chrome
   const [profile, setProfile] = useState<PersonDetail | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [editing, setEditing] = useState(false);
@@ -163,17 +167,18 @@ export default function Profile() {
       </div>
 
       <div className="segmented me-tabs" role="tablist">
-        <button role="tab" aria-selected={!onPrefs} className={!onPrefs ? 'on' : ''}
-                onClick={() => navigate('/me')}>
-          Profile
-        </button>
-        <button role="tab" aria-selected={onPrefs} className={onPrefs ? 'on' : ''}
-                onClick={() => navigate('/me/preferences')}>
-          Preferences
-        </button>
+        {([['profile', 'Profile', '/me'], ['preferences', 'Preferences', '/me/preferences'],
+           ['notifications', 'Notifications', '/me/notifications']] as const).map(([key, label, to]) => (
+          <button key={key} role="tab" aria-selected={tab === key} className={tab === key ? 'on' : ''}
+                  onClick={() => navigate(to)}>
+            {label}
+          </button>
+        ))}
       </div>
 
-      {onPrefs ? <MePreferences /> : (
+      {tab === 'preferences' && <MePreferences />}
+      {tab === 'notifications' && <MeNotifications />}
+      {tab === 'profile' && (
       <div className="profile-grid">
         <div>
           <div className="panel">

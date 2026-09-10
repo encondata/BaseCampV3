@@ -1,54 +1,29 @@
 /**
- * MePreferences — Appearance and Notifications, the Preferences tab of
+ * MePreferences — Appearance, the Preferences tab of
  * /me (see docs/superpowers/specs/2026-09-10-me-preferences-design.md).
  * Persisted on the user's ACCOUNT (server-side): sign in anywhere and get
  * your normal display. Changes apply instantly (optimistic) and save in
  * the background.
  */
 
-import { useState } from 'react';
-
-import { useAuth } from '../../auth/AuthContext';
 import { Switch } from '../../components/Switch';
-import type { UiPreferences } from '../../lib/api';
 import { ACCENTS, NAV_BACKGROUNDS, NAV_MODES } from '../../lib/settings';
+import SaveHint from './SaveHint';
+import { usePreferenceSave } from './usePreferenceSave';
 import '../../styles/settings.css';
 
 export default function MePreferences() {
-  const { preferences, updatePreferences } = useAuth();
-  const [saveState, setSaveState] = useState<'idle' | 'saved' | 'error'>('idle');
-
-  const update = async (patch: Partial<UiPreferences>) => {
-    const next: UiPreferences = {
-      ...preferences,
-      ...patch,
-      notif: { ...preferences.notif, ...(patch.notif ?? {}) },
-    };
-    const ok = await updatePreferences(next);
-    setSaveState(ok ? 'saved' : 'error');
-  };
+  const { preferences, update, saveState } = usePreferenceSave();
 
   const isCustomNavBg = preferences.nav_bg.startsWith('#')
     && !NAV_BACKGROUNDS.some((b) => b.key === preferences.nav_bg);
 
-  const notifRow = (key: keyof UiPreferences['notif'], label: string, sub: string) => (
-    <div className="set-row">
-      <div className="set-label"><b>{label}</b><span>{sub}</span></div>
-      <Switch checked={preferences.notif[key]}
-              onChange={(v) => update({ notif: { ...preferences.notif, [key]: v } })} />
-    </div>
-  );
-
   return (
     <>
-      <p className="page-hint">
+      <SaveHint state={saveState}>
         Preferences are saved to your account — sign in on any device and the
-        portal looks the way you left it.{' '}
-        {saveState === 'saved' && <span className="save-state">saved</span>}
-        {saveState === 'error' && (
-          <span className="save-state error">could not save — changes are local only</span>
-        )}
-      </p>
+        portal looks the way you left it.
+      </SaveHint>
 
       <div className="set-stack">
         <section className="set-section">
@@ -199,16 +174,6 @@ export default function MePreferences() {
           </div>
         </section>
 
-        <section className="set-section">
-          <div className="set-head">
-            <h3>Notifications</h3>
-            <p>What you want to hear about. Delivery wiring lands with the notification service.</p>
-          </div>
-          {notifRow('critical', 'Critical incidents', 'Immediate alerts for anything move-blocking.')}
-          {notifRow('email', 'Email alerts', 'Send notifications to your contact email.')}
-          {notifRow('maint', 'Maintenance windows', 'Scheduled downtime and system maintenance notices.')}
-          {notifRow('digest', 'Weekly digest', 'A summary of activity across your projects.')}
-        </section>
       </div>
     </>
   );

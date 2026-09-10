@@ -192,6 +192,7 @@ export default function App() {
                 } />
                 <Route path="/me" element={<Profile />} />
                 <Route path="/me/preferences" element={<Profile />} />
+                <Route path="/me/notifications" element={<Profile />} />
               </Route>
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
