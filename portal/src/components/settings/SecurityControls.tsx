@@ -1,6 +1,6 @@
 /**
  * SecurityControls — System settings › Security. Two-factor POLICY flags
- * (stored + audited now; enforced once the enrolment flow ships) and the
+ * (stored + audited now; enforced once the enrollment flow ships) and the
  * "End all sessions" action, which signs everyone out on every device
  * except the admin pressing it.
  */
@@ -43,7 +43,7 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
       <div className="set-row">
         <div className="set-label">
           <b>Two-factor authentication</b>
-          <span>Let people enrol a second factor on their account. Enrolment itself arrives with the 2FA feature; this sets the policy now.</span>
+          <span>Let people enroll a second factor on their account. Enrollment itself arrives with the 2FA feature; this sets the policy now.</span>
         </div>
         <Switch checked={cfg?.two_factor_enabled ?? false} disabled={locked}
                 onChange={(v) => void patch({ two_factor_enabled: v })} />
@@ -51,7 +51,7 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
       <div className="set-row">
         <div className="set-label">
           <b>Require two-factor for everyone</b>
-          <span>Every account must enrol before using the portal. Turning this on also enables two-factor.</span>
+          <span>Every account must enroll before using the portal. Turning this on also enables two-factor.</span>
         </div>
         <Switch checked={cfg?.two_factor_required ?? false} disabled={locked}
                 onChange={(v) => void patch({ two_factor_required: v })} />

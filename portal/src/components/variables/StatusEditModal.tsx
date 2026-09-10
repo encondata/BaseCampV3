@@ -45,7 +45,7 @@ interface Props {
 const STATUS_ERRORS: Record<string, string> = {
   status_value_exists: 'That key already exists for this record type.',
   status_value_not_found: 'That status value no longer exists.',
-  unknown_record_type: 'That record type is not recognised.',
+  unknown_record_type: 'That record type is not recognized.',
   invalid_progress_weight: 'Progress weight must be between 0 and 100, or left blank.',
   forbidden: 'You do not have permission to change the vocabulary.',
 };

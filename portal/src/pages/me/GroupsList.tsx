@@ -31,7 +31,7 @@ function ChannelChips({ channels }: { channels: string[] }) {
   );
 }
 
-/** Status cell: the pending request (if any) wins over "Customised". */
+/** Status cell: the pending request (if any) wins over "Customized". */
 function StatusChip({ group }: { group: MyNotificationGroup }) {
   const pending = group.pending_request;
   if (pending) {
@@ -42,7 +42,7 @@ function StatusChip({ group }: { group: MyNotificationGroup }) {
     );
   }
   if (group.is_member && hasOverrides(group.overrides)) {
-    return <span className="chip c-aqua">Customised</span>;
+    return <span className="chip c-aqua">Customized</span>;
   }
   return <span className="cell-sub">—</span>;
 }

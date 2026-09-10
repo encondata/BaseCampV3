@@ -139,7 +139,7 @@ const G3: MyNotificationGroup = {
   member_count: 2, is_member: false, overrides: null, effective: null, pending_request: null,
 };
 
-it('renders a member group with channel chips, quiet-hours text, days, and a Customised tag', async () => {
+it('renders a member group with channel chips, quiet-hours text, days, and a Customized tag', async () => {
   api.listMyNotificationGroups.mockResolvedValueOnce([G1]);
   render(<MeNotifications />);
 
@@ -149,7 +149,7 @@ it('renders a member group with channel chips, quiet-hours text, days, and a Cus
   expect(screen.getByText('Push')).toBeTruthy();
   expect(screen.getByText('22:00–07:00 (America/New_York)')).toBeTruthy();
   expect(screen.getByText('Mon–Fri')).toBeTruthy();
-  expect(screen.getByText('Customised')).toBeTruthy();
+  expect(screen.getByText('Customized')).toBeTruthy();
 });
 
 /** Standard-list rows keep their actions behind the "Actions ▾" menu:

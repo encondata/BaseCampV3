@@ -47,7 +47,7 @@ export function daysText(days: string[]): string {
   return WEEK_ORDER.filter((d) => set.has(d)).map((d) => DAY_LABELS[d]).join(', ');
 }
 
-/** True when any override field is non-null — the member has customised
+/** True when any override field is non-null — the member has customized
  *  at least one setting away from the group default. */
 export function hasOverrides(ov: NotificationMemberOverrides | null): boolean {
   if (!ov) return false;
