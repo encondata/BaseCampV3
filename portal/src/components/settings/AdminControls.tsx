@@ -22,7 +22,7 @@ function describe(err: unknown): string {
   return ERRORS[code] ?? 'Could not save — try again.';
 }
 
-export default function AdminControls() {
+export default function AdminControls({ canChange = true }: { canChange?: boolean }) {
   const [cfg, setCfg] = useState<AdminConfig | null>(null);
   const [readOnlyDraft, setReadOnlyDraft] = useState('');
   const [bannerDraft, setBannerDraft] = useState('');
@@ -77,18 +77,18 @@ export default function AdminControls() {
           <b>Read-only maintenance mode</b>
           <span>Freeze all writes across the portal during cutovers. Developers stay exempt.</span>
           <div className="set-inline">
-            <input value={readOnlyDraft} maxLength={300}
+            <input value={readOnlyDraft} maxLength={300} disabled={!canChange}
                    placeholder="Shown to everyone in the banner, e.g. 'Cutover in progress until 14:00 ET'"
                    onChange={(e) => setReadOnlyDraft(e.target.value)} />
             {readOnlyDirty && (
-              <button className="mini-btn" type="button" disabled={busy}
+              <button className="mini-btn" type="button" disabled={busy || !canChange}
                       onClick={() => void apply({ read_only_message: readOnlyDraft.trim() })}>
                 Save
               </button>
             )}
           </div>
         </div>
-        <Switch checked={cfg.read_only} disabled={busy}
+        <Switch checked={cfg.read_only} disabled={busy || !canChange}
                 onChange={(v) => void apply({ read_only: v })} />
       </div>
       <div className="set-row set-subrow">
@@ -101,14 +101,14 @@ export default function AdminControls() {
           </span>
           {paused && (
             <div className="set-inline">
-              <button className="mini-btn" type="button" disabled={busy}
+              <button className="mini-btn" type="button" disabled={busy || !canChange}
                       onClick={() => void apply({ pause_workers: false })}>
                 Resume workers
               </button>
             </div>
           )}
         </div>
-        <Switch checked={cfg.pause_workers} disabled={busy || !cfg.read_only}
+        <Switch checked={cfg.pause_workers} disabled={busy || !cfg.read_only || !canChange}
                 onChange={(v) => void apply({ pause_workers: v })} />
       </div>
       <div className="set-row">
@@ -116,18 +116,18 @@ export default function AdminControls() {
           <b>Broadcast banner</b>
           <span>Show an announcement to everyone — on the login page and inside the portal.</span>
           <div className="set-inline">
-            <input value={bannerDraft} maxLength={300}
+            <input value={bannerDraft} maxLength={300} disabled={!canChange}
                    placeholder="e.g. 'Scheduled maintenance Saturday 02:00–04:00 ET'"
                    onChange={(e) => setBannerDraft(e.target.value)} />
             {bannerDirty && cfg.banner_enabled && (
-              <button className="mini-btn" type="button" disabled={busy}
+              <button className="mini-btn" type="button" disabled={busy || !canChange}
                       onClick={() => void apply({ banner_message: bannerDraft.trim() })}>
                 Save
               </button>
             )}
           </div>
         </div>
-        <Switch checked={cfg.banner_enabled} disabled={busy} onChange={toggleBanner} />
+        <Switch checked={cfg.banner_enabled} disabled={busy || !canChange} onChange={toggleBanner} />
       </div>
       {error && <p className="set-note set-error">{error}</p>}
     </>

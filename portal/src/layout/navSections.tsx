@@ -562,7 +562,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         to: '/settings',
-        label: 'Settings',
+        label: 'System settings',
         resource: 'settings',
         icon: (
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
