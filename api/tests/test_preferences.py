@@ -17,6 +17,9 @@ PREFS = {
             "filters": {"status": {"values": ["active"]}},
         },
     },
+    "nav_mode": "expanded",
+    "nav_bg": "default",
+    "nav_size": "default",
 }
 
 
@@ -34,6 +37,9 @@ async def test_login_returns_default_preferences(client, seeded_user):
         "motion": True,
         "notif": {"critical": True, "email": True, "maint": True, "digest": False},
         "list_prefs": {},
+        "nav_mode": "expanded",
+        "nav_bg": "default",
+        "nav_size": "default",
     }
 
 
@@ -110,3 +116,53 @@ async def test_list_size_round_trips_and_defaults(client, seeded_user):
         "/auth/me/preferences", headers=headers, json={**prefs, "list_size": "huge"},
     )
     assert resp.status_code == 422
+
+
+async def test_nav_preferences_persist(client, seeded_user):
+    body = await _login(client)
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+
+    nav_prefs = {
+        **PREFS,
+        "nav_mode": "rail",
+        "nav_bg": "#0f2a4a",
+        "nav_size": "large",
+    }
+    resp = await client.put("/auth/me/preferences", json=nav_prefs, headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["nav_mode"] == "rail"
+    assert resp.json()["nav_bg"] == "#0f2a4a"
+    assert resp.json()["nav_size"] == "large"
+
+    fresh = await _login(client)
+    assert fresh["preferences"]["nav_mode"] == "rail"
+    assert fresh["preferences"]["nav_bg"] == "#0f2a4a"
+    assert fresh["preferences"]["nav_size"] == "large"
+
+
+async def test_invalid_nav_values_rejected(client, seeded_user):
+    body = await _login(client)
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+
+    resp = await client.put(
+        "/auth/me/preferences",
+        json={**PREFS, "nav_mode": "tiny"},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+
+    resp = await client.put(
+        "/auth/me/preferences",
+        json={**PREFS, "nav_bg": "red"},
+        headers=headers,
+    )
+    assert resp.status_code == 422
+
+    # accepted, case preserved exactly like the accent validator
+    resp = await client.put(
+        "/auth/me/preferences",
+        json={**PREFS, "nav_bg": "#0F2A4A"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["nav_bg"] == "#0F2A4A"

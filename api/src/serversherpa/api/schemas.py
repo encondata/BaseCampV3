@@ -73,6 +73,9 @@ class UiPreferences(BaseModel):
     # change. Same PUT endpoint as every other preference; the portal is
     # responsible for merging so one page's save never clobbers another's.
     list_prefs: dict = {}
+    nav_mode: Literal["expanded", "rail", "hidden"] = "expanded"
+    nav_bg: str = "default"      # "default" or a custom #rrggbb color
+    nav_size: Literal["small", "default", "large", "xlarge"] = "default"
 
     @field_validator("accent")
     @classmethod
@@ -80,6 +83,13 @@ class UiPreferences(BaseModel):
         if v in NAMED_ACCENTS or re.fullmatch(r"#[0-9a-fA-F]{6}", v):
             return v
         raise ValueError("accent must be a named accent or #rrggbb")
+
+    @field_validator("nav_bg")
+    @classmethod
+    def _nav_bg_default_or_hex(cls, v: str) -> str:
+        if v == "default" or re.fullmatch(r"#[0-9a-fA-F]{6}", v):
+            return v
+        raise ValueError("nav_bg must be 'default' or #rrggbb")
 
 
 class LoginIn(BaseModel):
