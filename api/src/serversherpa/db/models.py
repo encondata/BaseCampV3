@@ -663,6 +663,35 @@ class TruckUpdate(Base):
     source: Mapped[str] = mapped_column(server_default="manual")
 
 
+class StockLine(Base):
+    """Counted stock at a warehouse site — "24 × PDU, 30A" — optionally
+    inside a container and/or linked to a catalog model. No status: its
+    state is quantity (0 allowed) and archived_at."""
+
+    __tablename__ = "stock_lines"
+    __table_args__ = (
+        CheckConstraint("quantity >= 0", name="ck_stock_lines_quantity_nonneg"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    site_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("sites.id"))
+    container_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("containers.id", ondelete="SET NULL"))
+    model_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("asset_models.id", ondelete="SET NULL"))
+    description: Mapped[str] = mapped_column(Text)
+    quantity: Mapped[int] = mapped_column(Integer)
+    unit: Mapped[str] = mapped_column(Text, server_default="each")
+    location_detail: Mapped[str] = mapped_column(Text, server_default="")
+    notes: Mapped[str] = mapped_column(Text, server_default="")
+    source: Mapped[str] = mapped_column(Text, server_default="manual")
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    archived_at: Mapped[datetime | None] = mapped_column()
+
+
 class ContainerAsset(Base):
     __tablename__ = "container_assets"
 

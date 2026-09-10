@@ -61,6 +61,8 @@ _RESOURCES = [
              visible_to=frozenset({"global"})),
     Resource("trucks", "Trucks / Shipments", routes=("/logistics/trucks",),
              visible_to=frozenset({"global"})),
+    Resource("warehouse", "Warehouse", routes=("/logistics/warehouse",),
+             visible_to=frozenset({"global"})),
     Resource("initiatives", "Initiatives", routes=("/initiatives",),
              # client-visible: client org roles see their own org's
              # initiatives read-only via SCOPE_COLUMNS (the client

@@ -249,7 +249,10 @@ async def clean_db():
               ('container','historical','Historical','Retired; retained for history.','#51606f',4),
               ('container_type','pelican_case','Pelican case','Hard transport case.','#1668a7',1),
               ('container_type','shipping_container','Shipping container','Full-size freight container.','#a36207',2),
-              ('container_type','cart','Cart','Rolling cart or trolley.','#0f7c86',3)
+              ('container_type','cart','Cart','Rolling cart or trolley.','#0f7c86',3),
+              ('container_type','pallet','Pallet','Wrapped pallet of boxed or loose stock.','#a36207',10),
+              ('container_type','crate','Crate','Wooden or plastic shipping crate.','#6d4fc4',11),
+              ('container_type','d_container','D-container','Wheeled D-container / roll cage.','#0f7c86',12)
         """))
         # initiative vocabularies — restore canonical seeds (0016)
         await session.execute(text(

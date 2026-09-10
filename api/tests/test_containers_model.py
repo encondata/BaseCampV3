@@ -27,7 +27,8 @@ async def test_vocabulary_seeds(db):
     assert statuses == {"available", "packed", "in_transit", "historical"}
     types = {s.key for s in await db.scalars(
         select(StatusValue).where(StatusValue.record_type == "container_type"))}
-    assert types == {"pelican_case", "shipping_container", "cart"}
+    assert types == {"pelican_case", "shipping_container", "cart",
+                     "pallet", "crate", "d_container"}
 
 
 async def test_unknown_status_rejected_by_fk(db):
