@@ -34,12 +34,18 @@ const msgFor = (err: unknown): string =>
     ? (GROUP_ERRORS[err.code] ?? `Request failed (${err.code}).`)
     : 'Network error.';
 
+const CHANNEL_CHIP: Record<string, string> = {
+  email: 'c-blue', web: 'c-green', sms: 'c-amber', text: 'c-amber', push: 'c-violet',
+};
+
 function ChannelChips({ channels }: { channels: string[] }) {
   return (
     <div className="chips">
-      {channels.length === 0 && <span className="chip tag">None</span>}
+      {channels.length === 0 && <span className="chip c-slate">None</span>}
       {channels.map((c) => (
-        <span key={c} className="chip tag">{CHANNEL_LABELS[c as Channel] ?? c}</span>
+        <span key={c} className={`chip ${CHANNEL_CHIP[c] ?? 'c-slate'}`}>
+          {CHANNEL_LABELS[c as Channel] ?? c}
+        </span>
       ))}
     </div>
   );
@@ -154,12 +160,12 @@ export default function MeNotifications() {
           <h3>My groups</h3>
           <p>Notification groups you belong to — tune your own overrides or ask to leave.</p>
         </div>
-        {loadError && <p className="pf-error" style={{ margin: '14px 20px 0' }}>{loadError}</p>}
+        {loadError && <p className="pf-error mynotif-note">{loadError}</p>}
         {groups !== null && myGroups.length === 0 && !loadError && (
           <div className="dir-empty">You&apos;re not in any notification groups yet.</div>
         )}
         {myGroups.length > 0 && (
-          <div className="mini-list" style={{ padding: '0 20px 12px' }}>
+          <div className="mini-list mynotif-body">
             <div className="mini-list-head mynotif-my-head">
               <span>Group</span>
               <span>Channels</span>
@@ -176,13 +182,13 @@ export default function MeNotifications() {
                   <span className="mono">{quietHoursText(g)}</span>
                   <span className="cell-top">{daysText(g.active_days)}</span>
                   <div className="mynotif-actions">
-                    {hasOverrides(g.overrides) && <span className="chip tag">Customised</span>}
+                    {hasOverrides(g.overrides) && <span className="chip c-aqua">Customised</span>}
                     <button className="mini-btn sm" onClick={() => setEditingGroup(g)}>
                       Edit overrides
                     </button>
                     {pending && pending.action === 'leave' ? (
                       <>
-                        <span className="chip tag">Leave requested</span>
+                        <span className="chip c-amber"><span className="dot" />Leave requested</span>
                         <button className="mini-btn sm" disabled={cancelBusy[pending.id]}
                                 onClick={() => void handleCancel(pending.id)}>
                           {cancelBusy[pending.id] ? 'Cancelling…' : 'Cancel'}
@@ -210,7 +216,7 @@ export default function MeNotifications() {
           <h3>Join a group</h3>
           <p>Search other notification groups and ask to join.</p>
         </div>
-        <div className="dir-search" style={{ margin: '14px 20px 0' }}>
+        <div className="dir-search mynotif-search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
           <input placeholder="Search groups…" value={query}
@@ -220,7 +226,13 @@ export default function MeNotifications() {
           <div className="dir-empty">No other groups to join.</div>
         )}
         {filteredJoinable.length > 0 && (
-          <div className="mini-list" style={{ padding: '12px 20px' }}>
+          <div className="mini-list mynotif-body">
+            <div className="mini-list-head mynotif-join-head">
+              <span>Group</span>
+              <span>Channels</span>
+              <span>Members</span>
+              <span>Actions</span>
+            </div>
             {filteredJoinable.map((g) => {
               const pending = g.pending_request;
               return (
@@ -231,7 +243,7 @@ export default function MeNotifications() {
                   <div className="mynotif-actions">
                     {pending && pending.action === 'join' ? (
                       <>
-                        <span className="chip tag">Join requested</span>
+                        <span className="chip c-amber"><span className="dot" />Join requested</span>
                         <button className="mini-btn sm" disabled={cancelBusy[pending.id]}
                                 onClick={() => void handleCancel(pending.id)}>
                           {cancelBusy[pending.id] ? 'Cancelling…' : 'Cancel'}

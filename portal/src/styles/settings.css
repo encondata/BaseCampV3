@@ -208,14 +208,18 @@
  * the primitive. */
 .mynotif-my-head,
 .mynotif-my-row {
-  grid-template-columns: minmax(180px, 2fr) minmax(150px, 1.3fr) minmax(150px, 1.1fr)
-    minmax(90px, 0.8fr) minmax(230px, 1.6fr);
+  grid-template-columns: minmax(240px, 1fr) minmax(190px, max-content) 230px 110px max-content;
 }
+.mynotif-join-head,
 .mynotif-join-row {
-  grid-template-columns: minmax(220px, 2.2fr) minmax(150px, 1.3fr) minmax(110px, 0.8fr)
-    minmax(190px, 1.4fr);
+  grid-template-columns: minmax(240px, 1fr) minmax(190px, max-content) 110px max-content;
 }
-.mynotif-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* layout-only wrappers/children (not mini-row co-classes) */
+.mynotif-body { padding: 4px 20px 14px; }
+.mynotif-search { margin: 14px 20px 0; max-width: 360px; }
+.mynotif-note { margin: 14px 20px 0; }
+.mynotif-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.mynotif-body .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 
 .set-subrow { padding-left: 22px; }
 .set-inline { display: flex; gap: 8px; align-items: center; margin-top: 8px; }

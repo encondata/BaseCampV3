@@ -243,6 +243,28 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved, o
 
             <div className="pf-form">
               <div className="full">
+                <label htmlFor="ov-days-mode">Active days</label>
+                <select id="ov-days-mode" value={daysMode} disabled={saving}
+                        onChange={(e) => setDaysMode(e.target.value as Mode)}>
+                  <option value="default">{`Group default (${groupDaysLabel})`}</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+            </div>
+            {daysMode === 'custom' && (
+              <div className="day-pills">
+                {DAYS.map((d) => (
+                  <button type="button" key={d} disabled={saving}
+                          className={`mini-btn${daysCustom.has(d) ? ' active' : ''}`}
+                          onClick={() => toggleDay(d)}>
+                    {DAY_LABELS[d]}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="pf-form">
+              <div className="full">
                 <label htmlFor="ov-quiet-mode">Quiet hours</label>
                 <select id="ov-quiet-mode" value={quietMode} disabled={saving}
                         onChange={(e) => setQuietMode(e.target.value as QuietMode)}>
@@ -285,28 +307,6 @@ export default function OverrideEditorModal({ group, member, onClose, onSaved, o
                 </div>
               )}
             </div>
-
-            <div className="pf-form">
-              <div className="full">
-                <label htmlFor="ov-days-mode">Active days</label>
-                <select id="ov-days-mode" value={daysMode} disabled={saving}
-                        onChange={(e) => setDaysMode(e.target.value as Mode)}>
-                  <option value="default">{`Group default (${groupDaysLabel})`}</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-            </div>
-            {daysMode === 'custom' && (
-              <div className="day-pills">
-                {DAYS.map((d) => (
-                  <button type="button" key={d} disabled={saving}
-                          className={`mini-btn${daysCustom.has(d) ? ' active' : ''}`}
-                          onClick={() => toggleDay(d)}>
-                    {DAY_LABELS[d]}
-                  </button>
-                ))}
-              </div>
-            )}
 
             <div className="pf-form">
               <div className="full">
