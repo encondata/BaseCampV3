@@ -11,7 +11,7 @@ import { useAuth } from '../auth/AuthContext';
 import AdminControls from '../components/settings/AdminControls';
 import { Switch } from '../components/Switch';
 import type { UiPreferences } from '../lib/api';
-import { ACCENTS } from '../lib/settings';
+import { ACCENTS, NAV_BACKGROUNDS, NAV_MODES } from '../lib/settings';
 import '../styles/settings.css';
 
 export default function Settings() {
@@ -27,6 +27,9 @@ export default function Settings() {
     const ok = await updatePreferences(next);
     setSaveState(ok ? 'saved' : 'error');
   };
+
+  const isCustomNavBg = preferences.nav_bg.startsWith('#')
+    && !NAV_BACKGROUNDS.some((b) => b.key === preferences.nav_bg);
 
   const notifRow = (key: keyof UiPreferences['notif'], label: string, sub: string) => (
     <div className="set-row">
@@ -121,6 +124,69 @@ export default function Settings() {
               {([['small', 'Small'], ['default', 'Default'], ['large', 'Large'], ['xlarge', 'Extra large']] as const).map(([key, label]) => (
                 <button key={key} className={preferences.list_size === key ? 'on' : ''}
                         onClick={() => update({ list_size: key })}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="eyebrow" style={{ padding: '18px 20px 0' }}>Navigation</div>
+          <div className="set-row">
+            <div className="set-label">
+              <b>Sidebar</b>
+              <span>Collapse to an icon rail or hide it; Ctrl/⌘+B toggles from anywhere.</span>
+            </div>
+            <div className="seg-mini">
+              {NAV_MODES.map((m) => (
+                <button key={m} className={preferences.nav_mode === m ? 'on' : ''}
+                        onClick={() => update({ nav_mode: m })}>
+                  {m === 'expanded' ? 'Expanded' : m === 'rail' ? 'Rail' : 'Hidden'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="set-row">
+            <div className="set-label">
+              <b>Sidebar background</b>
+              <span>Colors the navigation panel behind every section.</span>
+            </div>
+            <div className="accent-swatches">
+              <button
+                className={`accent-sw ${preferences.nav_bg === 'default' ? 'on' : ''}`}
+                style={{ background: 'radial-gradient(140% 60% at 0% 0%, #16202e 0%, #0c1117 60%)' }}
+                aria-label="Sidebar background: Default"
+                title="Default"
+                onClick={() => update({ nav_bg: 'default' })} />
+              {NAV_BACKGROUNDS.map((b) => (
+                <button key={b.key}
+                        className={`accent-sw ${preferences.nav_bg === b.key ? 'on' : ''}`}
+                        style={{ background: b.color }}
+                        aria-label={`Sidebar background: ${b.label}`}
+                        title={b.label}
+                        onClick={() => update({ nav_bg: b.key })} />
+              ))}
+              <label
+                className={`accent-sw custom ${isCustomNavBg ? 'on' : ''}`}
+                style={isCustomNavBg ? { background: preferences.nav_bg } : undefined}
+                title="Custom color"
+              >
+                <input
+                  type="color"
+                  value={preferences.nav_bg.startsWith('#') ? preferences.nav_bg : '#1f2937'}
+                  onChange={(e) => update({ nav_bg: e.target.value })}
+                  aria-label="Custom sidebar background"
+                />
+              </label>
+            </div>
+          </div>
+          <div className="set-row">
+            <div className="set-label">
+              <b>Sidebar text size</b>
+              <span>Scales section labels and links in the sidebar.</span>
+            </div>
+            <div className="seg-mini">
+              {([['small', 'Small'], ['default', 'Default'], ['large', 'Large'], ['xlarge', 'Extra large']] as const).map(([key, label]) => (
+                <button key={key} className={preferences.nav_size === key ? 'on' : ''}
+                        onClick={() => update({ nav_size: key })}>
                   {label}
                 </button>
               ))}
