@@ -11,7 +11,7 @@
 
 import { type ReactNode } from 'react';
 
-export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean }
+export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean; end?: boolean }
 export interface NavSection { label: string; icon: ReactNode; items: NavItem[] }
 
 export const NAV_SECTIONS: NavSection[] = [
@@ -101,6 +101,18 @@ export const NAV_SECTIONS: NavSection[] = [
             <rect x="3" y="4" width="18" height="6" rx="1.5" />
             <rect x="3" y="14" width="18" height="6" rx="1.5" />
             <path d="M7 7h.01M7 17h.01M11 7h6M11 17h6" />
+          </svg>
+        ),
+      },
+      {
+        to: '/admin/asset-models',
+        label: 'Makes / Models',
+        resource: 'asset_models',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 7h16M4 12h16M4 17h10" />
+            <circle cx="19" cy="17" r="2.5" />
           </svg>
         ),
       },
@@ -199,6 +211,7 @@ export const NAV_SECTIONS: NavSection[] = [
     ),
     items: [
       {
+        end: true,
         to: '/sites',
         label: 'Sites',
         resource: 'sites',
@@ -207,6 +220,17 @@ export const NAV_SECTIONS: NavSection[] = [
                strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 21s-7-5.5-7-11a7 7 0 1 1 14 0c0 5.5-7 11-7 11z" />
             <circle cx="12" cy="10" r="2.6" />
+          </svg>
+        ),
+      },
+      {
+        to: '/sites/map',
+        label: 'Map',
+        resource: 'sites',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="m3 6 6-2 6 2 6-2v14l-6 2-6-2-6 2V6Z" /><path d="M9 4v14M15 6v14" />
           </svg>
         ),
       },
@@ -465,18 +489,6 @@ export const NAV_SECTIONS: NavSection[] = [
       </svg>
     ),
     items: [
-      {
-        to: '/admin/asset-models',
-        label: 'Makes / Models',
-        resource: 'asset_models',
-        icon: (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
-               strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 7h16M4 12h16M4 17h10" />
-            <circle cx="19" cy="17" r="2.5" />
-          </svg>
-        ),
-      },
       {
         to: '/admin/audit',
         label: 'Audit log',

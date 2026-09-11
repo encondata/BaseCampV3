@@ -138,7 +138,7 @@ export default function NavPanel({
                     <ul className="nav-list">
                       {section.items.map((item) => (
                         <li className="nav-item" key={item.to}>
-                          <NavLink to={item.to} end={item.to === '/'} onClick={onNavigate}>
+                          <NavLink to={item.to} end={item.end || item.to === '/'} onClick={onNavigate}>
                             {item.icon}
                             {item.label}
                           </NavLink>
@@ -158,7 +158,7 @@ export default function NavPanel({
           <ul className="nav-list">
             {openFlyoutSection.items.map((item) => (
               <li className="nav-item" key={item.to}>
-                <NavLink to={item.to} end={item.to === '/'} onClick={onNavigate}>
+                <NavLink to={item.to} end={item.end || item.to === '/'} onClick={onNavigate}>
                   {item.icon}
                   {item.label}
                 </NavLink>

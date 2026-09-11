@@ -137,7 +137,7 @@ function surveySummary(rows: SiteSurveyRow[]): string {
   return `${filled}/${total} fields filled`;
 }
 
-export default function Sites() {
+export default function Sites({ initialView = 'list' }: { initialView?: 'list' | 'map' } = {}) {
   const { can, godMode, maxRank } = useAuth();
   const canAdd = can('sites', 'add');
   const canChange = can('sites', 'change');
@@ -152,8 +152,10 @@ export default function Sites() {
   const [partners, setPartners] = useState<OrgRef[]>([]);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [view, setView] = useState<'list' | 'map'>('list');
+  const [view, setView] = useState<'list' | 'map'>(initialView);
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
+  // /sites vs /sites/map: the nav's Map entry routes here with the map preselected
+  useEffect(() => { setView(initialView); }, [initialView]);
   // Map-only display filters: which site types show as pins (null = all),
   // and whether decommissioned/archived sites appear (hidden by default).
   const [mapTypes, setMapTypes] = useState<Set<string> | null>(null);

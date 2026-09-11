@@ -95,6 +95,7 @@ export default function App() {
                   <ProtectedRoute resource="warehouse"><Warehouse /></ProtectedRoute>
                 } />
                 <Route path="/sites" element={<ProtectedRoute resource="sites"><Sites /></ProtectedRoute>} />
+                <Route path="/sites/map" element={<ProtectedRoute resource="sites"><Sites initialView="map" /></ProtectedRoute>} />
                 <Route path="/sites/:siteId" element={
                   <ProtectedRoute resource="sites"><SiteDetail /></ProtectedRoute>
                 } />
