@@ -22,6 +22,7 @@ import {
   ApiError, listInitiatives, listInitiativeStatuses,
   type InitiativeItem, type StatusValue,
 } from '../lib/api';
+import { longDate } from '../lib/format';
 import {
   barFor, itemsOnDay, monthGrid, rangeFor, realBarFor, sortForTimeline,
   ticksFor, type TimelineBar, type TimelineRange, type TimelineScale,
@@ -329,7 +330,7 @@ function TimelineGrid({
             <div className="itl-row-bars" style={{ width: rightWidth }}>
               {todayPct !== null && <div className="itl-today-line" style={{ left: `${todayPct}%` }} />}
               <div className="itl-bar" title={`${item.name} · ${item.status_label} · ` +
-                  `${item.scheduled_start ?? '?'} → ${item.scheduled_end ?? item.scheduled_start ?? '?'}`}
+                  `${longDate(item.scheduled_start)} → ${longDate(item.scheduled_end ?? item.scheduled_start)}`}
                    style={{
                      left: `${bar.left}%`, width: `${bar.width}%`,
                      '--chip': item.status_color,
