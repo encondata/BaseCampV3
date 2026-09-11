@@ -54,8 +54,8 @@ export default function MoveReportOptions({ definition, initiative, onBack, onGe
         }>
           <OptionGroup title="Sections" actions={
             <>
-              <button type="button" className="mini-btn" onClick={() => setAll(true)}>Select All</button>
-              <button type="button" className="mini-btn" onClick={() => setAll(false)}>Deselect All</button>
+              <button type="button" onClick={() => setAll(true)}>Select All</button>
+              <button type="button" onClick={() => setAll(false)}>Deselect All</button>
             </>
           }>
             <div className="mini-list report-sections">

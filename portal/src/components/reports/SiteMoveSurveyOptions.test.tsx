@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -289,6 +289,102 @@ it('opens the missing-survey modal when the source site lacks required answers, 
 
   await waitFor(() => expect(api.putSiteSurveyValue).toHaveBeenCalledWith('s1', 'contact_name', 'Jane Doe'));
   await waitFor(() => expect(onGenerate).toHaveBeenCalled());
+});
+
+// The preview card (`.rgm-summary`, left column) — scoped with `within`
+// so its "Chosen partner"/"Source → Destination"/etc. lines never collide
+// with the options column's own modal-section titles or form labels.
+const previewCard = () => within(document.querySelector('.rgm-summary') as HTMLElement);
+
+it('preview card: "Template ready"/"No template" chip tracks the definition\'s template state, and shows neither while attachments are still loading', async () => {
+  api.listAttachments.mockReturnValue(new Promise(() => {}));   // never resolves during this test
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByPlaceholderText('Type to search partners…');
+  expect(previewCard().queryByText('Template ready')).toBeNull();
+  expect(previewCard().queryByText('No template')).toBeNull();
+});
+
+it('preview card: shows "Template ready" once the definition carries a survey template', async () => {
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByDisplayValue('Acme Logistics');
+  expect(previewCard().getByText('Template ready')).toBeTruthy();
+  expect(previewCard().queryByText('No template')).toBeNull();
+});
+
+it('preview card: shows "No template" once the definition has no survey template', async () => {
+  api.listAttachments.mockResolvedValue([]);
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByDisplayValue('Acme Logistics');
+  expect(previewCard().getByText('No template')).toBeTruthy();
+  expect(previewCard().queryByText('Template ready')).toBeNull();
+});
+
+it('preview card: "Chosen partner" reads "Not chosen yet" until one is picked, then the partner\'s name', async () => {
+  const user = userEvent.setup();
+  render(<SiteMoveSurveyOptions definition={DEF}
+                                 initiative={ini({ shipping_partner_id: null, shipping_partner_name: null })}
+                                 onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByPlaceholderText('Type to search partners…');
+  expect(previewCard().getByText('Not chosen yet')).toBeTruthy();
+
+  await user.click(screen.getByPlaceholderText('Type to search partners…'));
+  await user.click(await screen.findByText('Acme Logistics'));
+
+  expect(previewCard().getByText('Acme Logistics')).toBeTruthy();
+});
+
+it('preview card: no separate "Source → Destination" line while sites are auto-detected (InitiativeSummary already shows the route)', async () => {
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByDisplayValue('Acme Logistics');
+  expect(previewCard().getByText('NAP11 → NAP22')).toBeTruthy();   // InitiativeSummary's own line
+  expect(previewCard().queryByText('Source → Destination')).toBeNull();
+});
+
+it('preview card: a "Source → Destination" line appears once the chosen source site is overridden away from the initiative\'s own', async () => {
+  const user = userEvent.setup();
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByDisplayValue('Acme Logistics');
+
+  await user.click(screen.getByRole('button', { name: 'Change source site' }));
+  await user.click(screen.getByPlaceholderText('Type to search source sites…'));
+  // "NAP22" also already labels the (still auto-detected) destination row,
+  // so scope the pick to the open dropdown rather than the whole page.
+  const menu = within(document.querySelector('.combo-menu') as HTMLElement);
+  await user.click(await menu.findByText('NAP22'));
+
+  expect(previewCard().getByText('Source → Destination')).toBeTruthy();
+  expect(previewCard().getByText('NAP22 → NAP22')).toBeTruthy();
+});
+
+it('preview card: "Source → Destination" also shows when there is no initiative at all', async () => {
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={null} onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByPlaceholderText('Type to search partners…');
+  expect(previewCard().getByText('Source → Destination')).toBeTruthy();
+  expect(previewCard().getByText('— → —')).toBeTruthy();
+});
+
+it('preview card: asset summary is "Notes only" with zero assets, "N assets · Condensed by make/model" once there are some, and "· Per asset" after the toggle', async () => {
+  const user = userEvent.setup();
+  api.listInitiativeAssets.mockResolvedValue([]);
+  const { rerender } = render(
+    <SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByDisplayValue('Acme Logistics');
+  expect(previewCard().getByText('Notes only')).toBeTruthy();
+
+  api.listInitiativeAssets.mockResolvedValue([assetRow('a1'), assetRow('a2')]);
+  rerender(<SiteMoveSurveyOptions definition={DEF} initiative={ini({ id: 'i2' })}
+                                   onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByText('Dell R640');
+  expect(previewCard().getByText('2 assets · Condensed by make/model')).toBeTruthy();
+
+  await user.click(screen.getByRole('tab', { name: 'Per asset' }));
+  expect(previewCard().getByText('2 assets · Per asset')).toBeTruthy();
+});
+
+it('preview card: "Contact person" defaults to the signed-in user\'s display name', async () => {
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByDisplayValue('Acme Logistics');
+  expect(previewCard().getByText('Me')).toBeTruthy();
 });
 
 it('Back calls onBack', async () => {

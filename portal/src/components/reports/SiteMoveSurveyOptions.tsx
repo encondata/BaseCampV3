@@ -145,6 +145,12 @@ export default function SiteMoveSurveyOptions({ definition, initiative, onBack, 
   const effectiveIncludeStandards = includeStandards && hasStandardsDoc;
   const assetsSummary = assets.length === 0 ? 'Notes only'
     : `${assets.length} asset${assets.length === 1 ? '' : 's'} · ${condensed ? 'Condensed by make/model' : 'Per asset'}`;
+  // `InitiativeSummary` already shows the initiative's own route; only add
+  // a second "chosen" line when there's no initiative to show one, or the
+  // requester picked different sites than the initiative's own — otherwise
+  // the two lines would read as an identical duplicate.
+  const showChosenRoute = !initiative
+    || sourceSiteId !== autoSourceId || destinationSiteId !== autoDestId;
 
   const canGenerate = !!partnerId && (!!initiative || !!sourceSiteId) && hasTemplate === true;
 
@@ -214,8 +220,12 @@ export default function SiteMoveSurveyOptions({ definition, initiative, onBack, 
                   </span>
                 )}
               </dd>
-              <dt>Source → Destination</dt>
-              <dd>{sourceSiteName ?? '—'} → {destinationSiteName ?? '—'}</dd>
+              {showChosenRoute && (
+                <>
+                  <dt>Source → Destination</dt>
+                  <dd>{sourceSiteName ?? '—'} → {destinationSiteName ?? '—'}</dd>
+                </>
+              )}
               <dt>Asset summary</dt>
               <dd>{assetsSummary}</dd>
               <dt>Contact person</dt>
@@ -313,7 +323,7 @@ export default function SiteMoveSurveyOptions({ definition, initiative, onBack, 
           <OptionGroup title="Assets">
             {assets.length > 0 ? (
               <>
-                <div className="segmented" role="tablist" style={{ marginBottom: 8 }}>
+                <div className="segmented" role="tablist" aria-label="Asset grouping" style={{ marginBottom: 8 }}>
                   <button type="button" role="tab" aria-selected={condensed}
                           className={condensed ? 'on' : ''} onClick={() => setCondensed(true)}>
                     Condensed by make/model

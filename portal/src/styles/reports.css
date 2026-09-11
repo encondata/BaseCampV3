@@ -73,10 +73,6 @@
  * text block), so a fixed grid template describes it. */
 .report-section-row { grid-template-columns: auto 1fr; cursor: pointer; }
 .report-section-text { display: flex; flex-direction: column; gap: 2px; }
-.report-section-actions { display: flex; gap: 14px; margin-top: 8px; }
-.report-section-actions button {
-  background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0;
-}
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
 /* initiative picker (Generate modal step 1) */

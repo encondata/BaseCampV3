@@ -120,7 +120,7 @@ export function InitiativeSummary({ initiative, emptyText }: {
         </div>
       )}
       <div className="cell-sub">
-        {fmtDate(scheduledStart)}{scheduledEnd ? ` → ${fmtDate(scheduledEnd)}` : ''}
+        Scheduled: {fmtDate(scheduledStart)}{scheduledEnd ? ` → ${fmtDate(scheduledEnd)}` : ''}
       </div>
       <div className="cell-sub">{originName ?? '—'} → {destinationName ?? '—'}</div>
     </>
@@ -128,7 +128,7 @@ export function InitiativeSummary({ initiative, emptyText }: {
 }
 
 /** A big selectable card with radio semantics (generalizes Move Scan
- *  History's own `msh-format-card`) — renders as one `role="radio"`
+ *  History's former format cards) — renders as one `role="radio"`
  *  member of its parent's `role="radiogroup"`. Arrow keys rove focus (and
  *  selection, native-radio style) between sibling `[role="radio"]`
  *  elements found via the closest `[role="radiogroup"]` ancestor, so a
