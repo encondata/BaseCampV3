@@ -23,6 +23,7 @@ import Home from './pages/Home';
 import ImportMoveAssets from './pages/ImportMoveAssets';
 import Initiatives from './pages/Initiatives';
 import InitiativeDetailPage from './pages/InitiativeDetail';
+import InitiativeTimeline from './pages/InitiativeTimeline';
 import KioskDevices from './pages/KioskDevices';
 import LabelTemplateEditor from './pages/LabelTemplateEditor';
 import LabelTemplates from './pages/LabelTemplates';
@@ -101,6 +102,9 @@ export default function App() {
                 } />
                 <Route path="/initiatives" element={
                   <ProtectedRoute resource="initiatives"><Initiatives /></ProtectedRoute>
+                } />
+                <Route path="/initiatives/timeline" element={
+                  <ProtectedRoute resource="initiatives"><InitiativeTimeline /></ProtectedRoute>
                 } />
                 <Route path="/initiatives/:id" element={
                   <ProtectedRoute resource="initiatives"><InitiativeDetailPage /></ProtectedRoute>

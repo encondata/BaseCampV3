@@ -129,6 +129,7 @@ export const NAV_SECTIONS: NavSection[] = [
     ),
     items: [
       {
+        end: true,
         to: '/initiatives',
         label: 'Initiatives',
         resource: 'initiatives',
@@ -137,6 +138,20 @@ export const NAV_SECTIONS: NavSection[] = [
                strokeLinecap="round" strokeLinejoin="round">
             <path d="M5 21V4" />
             <path d="M5 4h13l-3 4 3 4H5" />
+          </svg>
+        ),
+      },
+      {
+        to: '/initiatives/timeline',
+        label: 'Timeline',
+        resource: 'initiatives',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="4" width="18" height="17" rx="2" />
+            <path d="M3 9h18" />
+            <path d="M8 3v4M16 3v4" />
+            <path d="M7 13h4M7 17h7" />
           </svg>
         ),
       },
