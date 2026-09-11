@@ -2,6 +2,7 @@
 from Task 3, runs (create/list/get/download/notify + the history gate)."""
 
 import io
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -10,7 +11,8 @@ from sqlalchemy import select
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
-    Attachment, AuditLog, Initiative, Partner, ReportDefinition, ReportRun,
+    Asset, Attachment, AuditLog, Initiative, InitiativeAsset, Partner, ProcessedScan,
+    ReportDefinition, ReportRun,
 )
 from serversherpa.reports import worker as report_worker
 from serversherpa.services.storage import get_object, put_object
@@ -364,3 +366,95 @@ async def test_history_shows_standalone_run_with_dash_initiative(client, db, see
     [row] = [r for r in rows if r["id"] == run_id]
     assert row["initiative_id"] is None
     assert row["initiative_name"] == "—"
+
+
+# ── Move Scan History: preview + PDF run creation ───────────────────
+
+async def _scan_history_definition(db, *, options=None):
+    d = ReportDefinition(name="Move Scan History", report_type="move_scan_history",
+                         is_system=True,
+                         options=options or {"default_format": "xlsx",
+                                            "status_columns": "pipeline"})
+    db.add(d)
+    await db.commit()
+    return d
+
+
+async def _scan_history_initiative_with_asset(db, *, client_id=None):
+    ini = await _initiative(db, client_id=client_id)
+    asset = Asset(legacy_id=8001 + (uuid4().int % 1000), serial_number="SN-8001", name="Widget")
+    db.add(asset)
+    await db.flush()
+    db.add(InitiativeAsset(initiative_id=ini.id, asset_id=asset.id))
+    db.add(ProcessedScan(
+        scanned_value="EPC-8001", scan_type="rfid", scanned_at=datetime.now(UTC),
+        processed_at=datetime.now(UTC), match_type="asset", asset_id=asset.id, status="complete"))
+    await db.commit()
+    return ini, asset
+
+
+async def test_scan_history_preview_returns_shape_with_pipeline_flags_and_scanned_extra(
+        client, db, seeded_user):
+    ini, _asset = await _scan_history_initiative_with_asset(db)
+    hdrs = await login(client)
+    resp = await client.get(
+        f"/reports/move-scan-history/preview?initiative_id={ini.id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["initiative"]["id"] == str(ini.id)
+    assert body["initiative"]["name"] == ini.name
+    assert body["total_assets"] == 1
+    assert body["scanned_assets"] == 1
+    assert body["completed"] == 1
+    assert body["completion_pct"] == 100
+    assert body["last_scan_at"] is not None
+    statuses = body["statuses"]
+    assert all({"key", "label", "color", "in_pipeline", "scan_count"} <= s.keys()
+              for s in statuses)
+    complete_col = next(s for s in statuses if s["key"] == "complete")
+    assert complete_col["in_pipeline"] is True
+    assert complete_col["scan_count"] == 1                 # the scanned extra shows up here
+
+
+async def test_scan_history_preview_404s_for_unknown_and_archived_initiatives(
+        client, db, seeded_user):
+    hdrs = await login(client)
+    resp = await client.get(
+        f"/reports/move-scan-history/preview?initiative_id={uuid4()}", headers=hdrs)
+    assert resp.status_code == 404 and resp.json()["detail"]["code"] == "initiative_not_found"
+
+    archived = await _initiative(db, archived=True)
+    resp = await client.get(
+        f"/reports/move-scan-history/preview?initiative_id={archived.id}", headers=hdrs)
+    assert resp.status_code == 404 and resp.json()["detail"]["code"] == "initiative_not_found"
+
+
+async def test_scan_history_preview_requires_reports_view(client, db, seeded_user):
+    ini = await _initiative(db)
+    worker = await _make(db, client, "worker", "w@test.example.com")
+    resp = await client.get(
+        f"/reports/move-scan-history/preview?initiative_id={ini.id}", headers=worker)
+    assert resp.status_code == 403
+
+
+async def test_scan_history_run_creation_accepts_pdf_and_all_columns(client, db, seeded_user):
+    d = await _scan_history_definition(db)
+    ini = await _initiative(db)
+    hdrs = await login(client)
+    resp = await client.post("/reports/runs", headers=hdrs, json={
+        "definition_id": str(d.id), "initiative_id": str(ini.id),
+        "options": {"format": "pdf", "status_columns": "all"}, "notify": False})
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["options"] == {"format": "pdf", "status_columns": "all"}
+    assert body["report_type"] == "move_scan_history"
+
+
+async def test_scan_history_run_creation_rejects_unknown_format(client, db, seeded_user):
+    d = await _scan_history_definition(db)
+    ini = await _initiative(db)
+    hdrs = await login(client)
+    resp = await client.post("/reports/runs", headers=hdrs, json={
+        "definition_id": str(d.id), "initiative_id": str(ini.id),
+        "options": {"format": "csv"}, "notify": False})
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "invalid_options"

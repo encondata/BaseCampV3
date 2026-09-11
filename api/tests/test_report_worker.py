@@ -10,8 +10,8 @@ from sqlalchemy import select, text
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
-    Attachment, AuditLog, Initiative, Notification, Person, ReportDefinition, ReportRun,
-    SystemProcess,
+    Asset, Attachment, AuditLog, Initiative, InitiativeAsset, Notification, Person,
+    ProcessedScan, ReportDefinition, ReportRun, SystemProcess,
 )
 from serversherpa.reports import worker
 from serversherpa.reports.jobs import STALE_MINUTES, claim_next, requeue_stale
@@ -359,3 +359,54 @@ async def test_run_forever_heartbeats_idles_when_paused_and_survives_claim_blip(
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+# ── Move Scan History: real module, xlsx and pdf content types ──────
+
+async def _seed_scan_history_roster(db, ini_id, legacy_id):
+    asset = Asset(legacy_id=legacy_id, serial_number=f"SN-{legacy_id}", name="Widget")
+    db.add(asset)
+    await db.flush()
+    db.add(InitiativeAsset(initiative_id=ini_id, asset_id=asset.id))
+    db.add(ProcessedScan(
+        scanned_value=f"EPC-{legacy_id}", scan_type="rfid", scanned_at=datetime.now(UTC),
+        processed_at=datetime.now(UTC), match_type="asset", asset_id=asset.id, status="complete"))
+    await db.commit()
+
+
+async def test_worker_stores_move_scan_history_xlsx_with_its_content_type(db):
+    """No monkeypatch of get_module here — this goes through the real
+    move_scan_history module via the registry, proving the worker's
+    generic build/upload path works for it end to end."""
+    run_id, person_id, ini_id = await _run(
+        db, notify=False, report_type="move_scan_history", definition_name="Move Scan History",
+        options={"format": "xlsx", "status_columns": "pipeline"})
+    await _seed_scan_history_roster(db, ini_id, 7001)
+
+    assert await worker.run_once(get_sessionmaker()) is True
+    run = await db.get(ReportRun, run_id)
+    assert run.status == "completed", run.error
+    assert run.storage_key == f"reports/{ini_id}/{run_id}.xlsx"
+    assert run.filename.endswith(".xlsx")
+    stored = await get_object(run.storage_key)
+    assert stored[:2] == b"PK"                           # xlsx zip magic
+    att = await db.get(Attachment, run.attachment_id)
+    assert att.content_type == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+async def test_worker_stores_move_scan_history_pdf_with_its_content_type(db):
+    run_id, person_id, ini_id = await _run(
+        db, notify=False, report_type="move_scan_history", definition_name="Move Scan History",
+        options={"format": "pdf", "status_columns": "pipeline"})
+    await _seed_scan_history_roster(db, ini_id, 7002)
+
+    assert await worker.run_once(get_sessionmaker()) is True
+    run = await db.get(ReportRun, run_id)
+    assert run.status == "completed", run.error
+    assert run.storage_key == f"reports/{ini_id}/{run_id}.pdf"
+    assert run.filename.endswith(".pdf")
+    stored = await get_object(run.storage_key)
+    assert stored[:4] == b"%PDF"
+    att = await db.get(Attachment, run.attachment_id)
+    assert att.content_type == "application/pdf"

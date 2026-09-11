@@ -13,11 +13,13 @@ from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     ReportDefinitionOut, ReportDefinitionUpdateIn, ReportDownloadOut,
-    ReportRunCreateIn, ReportRunNotifyIn, ReportRunOut, SurveyPartnerOut,
+    ReportRunCreateIn, ReportRunNotifyIn, ReportRunOut, ScanHistoryPreviewInitiativeOut,
+    ScanHistoryPreviewOut, ScanHistoryPreviewStatusOut, SurveyPartnerOut,
 )
 from serversherpa.db.models import (
     Initiative, Partner, Person, ReportDefinition, ReportRun,
 )
+from serversherpa.reports.move_scan_history.gather import gather as gather_scan_history
 from serversherpa.reports.registry import OptionsError, get_module
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import presign_get
@@ -256,6 +258,36 @@ async def list_survey_partners(
         .where(Partner.archived_at.is_(None), Partner.partner_types.any("logistics"))
         .order_by(Partner.name))).all()
     return [SurveyPartnerOut(id=pid, name=name) for pid, name in rows]
+
+
+@router.get("/move-scan-history/preview", response_model=ScanHistoryPreviewOut)
+async def move_scan_history_preview(
+    initiative_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("reports", "view"),
+) -> ScanHistoryPreviewOut:
+    """Feeds the Generate modal's options step: KPI tiles and the status
+    chip strip, computed by the same `gather()` the run itself uses, so
+    the preview and the eventual report never disagree. Scope check is
+    identical to `create_run`'s — an archived or out-of-scope initiative
+    404s the same way."""
+    ini = await db.get(Initiative, initiative_id)
+    cond = scope_conditions("initiatives", actor.access, actor.person.id)
+    if ini is None or ini.archived_at is not None or (
+            cond is not None and await db.scalar(
+                select(Initiative.id).where(Initiative.id == ini.id, cond)) is None):
+        raise _err(404, "initiative_not_found")
+    data = await gather_scan_history(db, initiative_id)
+    return ScanHistoryPreviewOut(
+        initiative=ScanHistoryPreviewInitiativeOut(
+            id=data.initiative_id, name=data.name, client_name=data.client_name,
+            scheduled_start=data.scheduled_start, source_name=data.source_name,
+            destination_name=data.destination_name),
+        total_assets=data.total_assets, scanned_assets=data.scanned_assets,
+        completed=data.completed, completion_pct=data.completion_pct,
+        last_scan_at=data.last_scan_at,
+        statuses=[ScanHistoryPreviewStatusOut(
+            key=s.key, label=s.label, color=s.color, in_pipeline=s.in_pipeline,
+            scan_count=s.scan_count) for s in data.statuses])
 
 
 @router.get("/runs", response_model=list[ReportRunOut])

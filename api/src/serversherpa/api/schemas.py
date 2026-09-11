@@ -2277,6 +2277,38 @@ class SurveyPartnerOut(BaseModel):
     name: str
 
 
+class ScanHistoryPreviewStatusOut(BaseModel):
+    """One status column of `GET /reports/move-scan-history/preview`, in
+    `ScanHistoryData.statuses`'s "all" order — `in_pipeline` and
+    `scan_count` let the modal derive both `status_columns` modes
+    (pipeline / all) from this one response."""
+
+    key: str
+    label: str
+    color: str
+    in_pipeline: bool
+    scan_count: int
+
+
+class ScanHistoryPreviewInitiativeOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    client_name: str | None
+    scheduled_start: datetime | None
+    source_name: str | None
+    destination_name: str | None
+
+
+class ScanHistoryPreviewOut(BaseModel):
+    initiative: ScanHistoryPreviewInitiativeOut
+    total_assets: int
+    scanned_assets: int
+    completed: int
+    completion_pct: int
+    last_scan_at: datetime | None
+    statuses: list[ScanHistoryPreviewStatusOut]
+
+
 # ── trucks ─────────────────────────────────────────────────────────
 
 class TruckLastUpdate(BaseModel):

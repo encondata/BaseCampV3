@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import ReportDefinition, ReportRun
 from serversherpa.reports.move_report.gather import InitiativeUnavailable
 from serversherpa.reports.move_scan_history.gather import columns_for, gather
+from serversherpa.reports.move_scan_history.pdf import render_html, render_pdf
 from serversherpa.reports.move_scan_history.xlsx import XLSX_MIME, build_workbook
 from serversherpa.reports.registry import OptionsError, ReportResult
 
@@ -107,5 +108,11 @@ async def build(db: AsyncSession, run: ReportRun) -> ReportResult:
         filename = f"Move Scan History - {safe_name} - {local:%Y-%m-%d %H%M}.xlsx"
         return ReportResult(content=content, filename=filename, content_type=XLSX_MIME)
     if fmt == "pdf":
-        raise NotImplementedError("pdf: Task 2")
+        tracking_id = str(run.id)
+        html = render_html(data, columns, generated_at=generated_at,
+                           tracking_id=tracking_id, tz=report_timezone())
+        content = await render_pdf(html)
+        local = generated_at.astimezone(report_timezone())
+        filename = f"Move Scan History - {safe_name} - {local:%Y-%m-%d %H%M}.pdf"
+        return ReportResult(content=content, filename=filename, content_type="application/pdf")
     raise OptionsError([f"option 'format' must be one of {_FORMAT_VALUES}"])

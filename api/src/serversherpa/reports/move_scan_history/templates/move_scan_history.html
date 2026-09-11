@@ -1,0 +1,109 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Move Scan History Report</title>
+<style>
+  @page {
+    size: Letter landscape;
+    margin: 14mm 14mm 30mm 14mm;
+    @bottom-left {
+      content: "Page " counter(page) " of " counter(pages);
+      font: 8pt sans-serif; color: #666;
+      border-top: 0.75pt solid #ccc; padding-top: 2mm;
+    }
+    @bottom-center {
+      content: "Generated: {{ stamp|cssstr }}  \00B7  Document Tracking ID: {{ tracking_id|cssstr }}";
+      font: 8pt sans-serif; color: #666;
+      border-top: 0.75pt solid #ccc; padding-top: 2mm;
+    }
+    @bottom-right {
+      content: url("{{ barcode_data_uri|cssstr }}");
+      width: 55mm; height: 15mm;
+      border-top: 0.75pt solid #ccc; padding-top: 2mm;
+    }
+  }
+  body { font: 10pt/1.35 Helvetica, Arial, sans-serif; color: #111; }
+  h1 { font-size: 20pt; font-weight: bold; text-align: center; margin: 0 0 2mm; }
+  .title-rule { border: none; border-top: 0.75pt solid #111; margin: 0 0 8mm; }
+  h2 { font-size: 11pt; font-weight: bold; margin: 6mm 0 3mm; }
+  .move-name { font-size: 13pt; font-weight: bold; margin: 0 0 2mm; }
+  .info { font-size: 9pt; margin: 0 0 1mm 5mm; }
+  table { border-collapse: collapse; table-layout: fixed; margin-bottom: 4mm; }
+  table.overview { font-size: 7pt; width: 251.4mm; }
+  table.detail { font-size: 8pt; }
+  th, td { padding: 1.2mm 1.6mm; text-align: left; vertical-align: middle;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  thead { display: table-header-group; }        /* repeat header on every page */
+  th { font-weight: bold; border-bottom: 0.75pt solid #111; }
+  tbody tr:nth-child(even) { background: #f7f7f7; }
+  tr { page-break-inside: avoid; }
+  .empty-row td { font-style: normal; color: #333; white-space: normal; }
+  .closing { font-style: italic; color: #666; margin-top: 6mm; }
+</style>
+</head>
+<body>
+
+<h1>Move Scan History Report</h1>
+<hr class="title-rule">
+
+<div class="move-name">{{ move_name }}</div>
+<div class="info">Client: {{ client_name }}</div>
+<div class="info">Scheduled Start: {{ scheduled_start }}</div>
+<div class="info">Source: {{ source_name }}</div>
+<div class="info">Destination: {{ destination_name }}</div>
+<div class="info">Total Assets: {{ total_assets }}</div>
+<div class="info">Completion: {{ completion_pct }}%</div>
+
+<h2>Status Overview</h2>
+{% if has_assets %}
+<table class="overview">
+  <colgroup>
+    {% for w in fixed_col_widths %}<col style="width: {{ w }}mm">{% endfor %}
+    {% for col in overview_columns %}<col style="width: {{ col.width_mm }}mm">{% endfor %}
+  </colgroup>
+  <thead>
+    <tr>
+      <th>Asset ID</th><th>Serial #</th><th>Asset Name</th>
+      {% for col in overview_columns %}<th>{{ col.label }}</th>{% endfor %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in overview_rows %}
+    <tr>
+      <td>{{ row.asset_id }}</td><td>{{ row.serial_number }}</td><td>{{ row.name }}</td>
+      {% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-row">No assets found in this move.</p>
+{% endif %}
+
+<h2>Scan History Detail</h2>
+{% if detail_rows %}
+<table class="detail">
+  <colgroup>
+    {% for w in detail_col_widths %}<col style="width: {{ w }}mm">{% endfor %}
+  </colgroup>
+  <thead>
+    <tr><th>Asset ID</th><th>Serial Number</th><th>Asset Name</th><th>Status</th><th>Timestamp</th></tr>
+  </thead>
+  <tbody>
+    {% for row in detail_rows %}
+    <tr>
+      <td>{{ row.asset_id }}</td><td>{{ row.serial_number }}</td><td>{{ row.name }}</td>
+      <td>{{ row.status_label }}</td><td>{{ row.timestamp }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-row">No scan history found.</p>
+{% endif %}
+
+<p class="closing">End of Report</p>
+
+</body>
+</html>
