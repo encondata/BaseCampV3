@@ -60,20 +60,10 @@ def _is_uuid_str(value: object) -> bool:
     return True
 
 
-def validate_options(options: dict) -> dict:
-    """Validates both shapes this module's `options` JSONB ever takes:
-    the definition's own (`company_name` plus the three toggles) and a
-    run's (those same keys, plus the partner/contact/sites/notes chosen
-    on the Generate modal). Unknown keys are always rejected.
-
-    `partner_id` is required only when the caller is clearly submitting
-    run options — i.e. any run-only key is present in `options` — so
-    patching just the definition's company name/toggles (which never
-    touch the run-only keys) still works without a partner in hand.
-    Raises `OptionsError`, the same type Move Report's `validate_options`
-    raises, so `routes/reports.py`'s shared `_validated_options` helper
-    needs no per-type branching.
-    """
+def _shape_problems(options: dict) -> list[str]:
+    """Pure shape/type checks shared by `validate_options` and
+    `validate_run_options` — no presence requirements here, since the
+    definition's own options never carry the run-only keys at all."""
     problems = [f"unknown option {k!r}" for k in options if k not in _KNOWN_OPTIONS]
 
     for key in _STR_OPTIONS:
@@ -82,19 +72,15 @@ def validate_options(options: dict) -> dict:
     for key in _BOOL_OPTIONS:
         if key in options and not isinstance(options[key], bool):
             problems.append(f"option {key!r} must be true/false")
-
-    is_run_submission = any(k in options for k in _RUN_OPTIONS)
-    if is_run_submission and "partner_id" not in options:
-        problems.append("option 'partner_id' is required")
     for key in _UUID_OPTIONS:
         if key in options and not _is_uuid_str(options[key]):
             problems.append(f"option {key!r} must be a uuid string")
     if "asset_notes" in options and not isinstance(options["asset_notes"], str):
         problems.append("option 'asset_notes' must be a string")
+    return problems
 
-    if problems:
-        raise OptionsError(problems)
 
+def _normalize(options: dict) -> dict:
     normalized = dict(default_options())
     for key in _STR_OPTIONS + _BOOL_OPTIONS:
         if key in options:
@@ -103,6 +89,39 @@ def validate_options(options: dict) -> dict:
         if key in options:
             normalized[key] = options[key]
     return normalized
+
+
+def validate_options(options: dict) -> dict:
+    """Pure shape/type validation for either shape this module's
+    `options` JSONB takes: the definition's own (`company_name` plus the
+    three toggles) or a run's (those same keys, plus whichever of the
+    partner/contact/sites/notes keys chosen on the Generate modal are
+    present). Unknown keys are always rejected; every known key is
+    type-checked when present, but none — including `partner_id` — is
+    required here. Use `validate_run_options` where a partner is
+    mandatory (queuing a run). Raises `OptionsError`, the same type Move
+    Report's `validate_options` raises, so `routes/reports.py`'s shared
+    `_validated_options` helper needs no per-type branching for the
+    definition-patch path.
+    """
+    problems = _shape_problems(options)
+    if problems:
+        raise OptionsError(problems)
+    return _normalize(options)
+
+
+def validate_run_options(options: dict) -> dict:
+    """`validate_options` plus the one requirement that only applies when
+    actually queuing a run: `partner_id` must be present (and a uuid
+    string, already checked by the shared shape check). Task 4's
+    `create_run` route and `build()` should call this instead of
+    `validate_options` so a run without a partner fails loudly."""
+    problems = _shape_problems(options)
+    if "partner_id" not in options:
+        problems.append("option 'partner_id' is required")
+    if problems:
+        raise OptionsError(problems)
+    return _normalize(options)
 
 
 async def build(db: AsyncSession, run: ReportRun) -> ReportResult:

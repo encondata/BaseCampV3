@@ -203,6 +203,24 @@ def test_expand_asset_rows_writes_one_row_per_asset_with_copied_style():
         assert cell.alignment.horizontal == "center"
 
 
+def test_expand_asset_rows_skips_merged_cells_below_the_template_row():
+    # A merge sitting BELOW the template row, spanning one of the
+    # template's own placeholder columns (B, {{asset.manufacturer}}) as
+    # the NON-anchor cell — so the second asset row's write lands on a
+    # MergedCell. Without the `isinstance(target, MergedCell): continue`
+    # guard in `write_row`, assigning `.value` there raises AttributeError
+    # ("'MergedCell' object attribute 'value' is read-only").
+    wb, ws = _new_wb()
+    _template_row(ws, row=8)   # column 1 = {{asset.index}}, column 2 = {{asset.manufacturer}}
+    ws.merge_cells("A9:B9")    # A9 = anchor, B9 = the merged-away placeholder cell
+
+    assets = [{"index": 1, "manufacturer": "Dell"}, {"index": 2, "manufacturer": "HP"}]
+    expand_asset_rows(ws, 8, {}, assets, None)   # must not raise
+
+    assert ws.cell(row=9, column=1).value == 2          # A9 (anchor) written normally
+    assert ws.cell(row=9, column=2).value is None       # B9 (merged, non-anchor) left alone
+
+
 def test_expand_asset_rows_clears_trailing_rows_until_first_empty_row():
     wb, ws = _new_wb()
     _template_row(ws, row=8)
@@ -349,6 +367,14 @@ def test_champagne_fixture_equipment_listing_rows_with_copied_style_and_trailing
     original_border = copy_module.copy(ws["A8"].border)
     original_alignment = copy_module.copy(ws["A8"].alignment)
 
+    # The real blank Champagne template ships rows 9-35 in column A
+    # pre-numbered (the guide's §10 map calls this out explicitly) —
+    # reproduce that here so the "trailing clear" assertion below is
+    # actually exercising the clear loop rather than checking cells that
+    # were already blank in the fixture.
+    for r in range(9, 36):
+        ws.cell(row=r, column=1).value = r - 7
+
     assets = asset_rows(_roster(), condensed=False)
     fill_workbook(wb, _champagne_context(), assets, None,
                   include_transportation_standards=True)
@@ -364,9 +390,12 @@ def test_champagne_fixture_equipment_listing_rows_with_copied_style_and_trailing
             assert copy_module.copy(cell.border) == original_border
             assert copy_module.copy(cell.alignment) == original_alignment
 
-    # The row right after the last written asset row is cleared.
-    for col in range(1, 8):
-        assert ws.cell(row=8 + n, column=col).value in (None, "")
+    # Every pre-numbered row below the written asset rows is cleared, all
+    # the way to row 35 (proof the clear loop actually ran, not just that
+    # an already-blank cell stayed blank).
+    for r in range(8 + n, 36):
+        for col in range(1, 8):
+            assert ws.cell(row=r, column=col).value in (None, "")
 
 
 def test_champagne_fixture_zero_assets_notes_land_in_last_placeholder_column_g8():

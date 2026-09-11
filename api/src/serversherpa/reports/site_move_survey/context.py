@@ -117,10 +117,12 @@ def site_context(site: Site | None, survey: dict[str, object] | None) -> dict:
 def _contact_context(contact: Person | None) -> dict:
     if contact is None:
         return {"contact_name": "", "phone": "", "email": ""}
-    contact_name = contact.preferred_name or \
-        f"{contact.first_name} {contact.last_name}".strip()
-    return {"contact_name": contact_name, "phone": contact.phone or "",
-            "email": contact.email or ""}
+    # V3's canonical rendering (Person.display_name, db/models.py ~line 60)
+    # is "{preferred_name or first_name} {last_name}" — preferred_name is a
+    # preferred FIRST name, not a full replacement, so the last name always
+    # stays on.
+    return {"contact_name": contact.display_name.strip(),
+            "phone": contact.phone or "", "email": contact.email or ""}
 
 
 def _move_context(initiative: Initiative | None, asset_count: int) -> dict:
@@ -131,7 +133,7 @@ def _move_context(initiative: Initiative | None, asset_count: int) -> dict:
         return {
             "id": "", "name": "", "scheduled_start": "",
             "scheduled_start_date": "", "scheduled_start_time": "",
-            "asset_count": 0, "survey": {},
+            "asset_count": "", "survey": {},   # "" for parity with V2's missing key
         }
     start = initiative.scheduled_start
     return {

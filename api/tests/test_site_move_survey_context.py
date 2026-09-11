@@ -9,7 +9,13 @@ module."""
 import uuid
 from datetime import datetime
 
+import pytest
+
 from serversherpa.db.models import Initiative, Partner, Person, Site
+from serversherpa.reports.registry import OptionsError
+from serversherpa.reports.site_move_survey import (
+    default_options, validate_options, validate_run_options,
+)
 from serversherpa.reports.site_move_survey.context import (
     SiteCtxInput, build_context, site_context,
 )
@@ -160,9 +166,11 @@ def test_build_context_partner_customer_and_client_alias():
 
 
 def test_build_context_contact_prefers_preferred_name():
+    # preferred_name replaces the FIRST name only (Person.display_name,
+    # db/models.py) — the last name always stays on.
     contact = _person(preferred_name="Jimbo", first_name="Jimmy", last_name="Henderson")
     ctx = build_context(**_base_kwargs(contact=contact))
-    assert ctx["customer"]["contact_name"] == "Jimbo"
+    assert ctx["customer"]["contact_name"] == "Jimbo Henderson"
 
 
 def test_build_context_no_contact_leaves_customer_fields_blank():
@@ -191,7 +199,7 @@ def test_build_context_empty_move_when_no_initiative():
 
     assert ctx["move"] == {
         "id": "", "name": "", "scheduled_start": "", "scheduled_start_date": "",
-        "scheduled_start_time": "", "asset_count": 0, "survey": {},
+        "scheduled_start_time": "", "asset_count": "", "survey": {},
     }
 
 
@@ -223,3 +231,64 @@ def test_build_context_assets_notes_only_when_zero_assets():
 def test_build_context_no_partner_leaves_partner_blank():
     ctx = build_context(**_base_kwargs(partner=None))
     assert ctx["partner"] == {"id": "", "name": ""}
+
+
+# ---------------------------------------------------------------------------
+# validate_options / validate_run_options
+# ---------------------------------------------------------------------------
+
+def test_validate_options_rejects_unknown_key():
+    with pytest.raises(OptionsError) as exc:
+        validate_options({"not_a_real_option": True})
+    assert any("not_a_real_option" in p for p in exc.value.problems)
+
+
+def test_validate_options_rejects_non_bool_toggle():
+    with pytest.raises(OptionsError) as exc:
+        validate_options({"include_site_photos": "yes"})
+    assert any("include_site_photos" in p for p in exc.value.problems)
+
+
+def test_validate_options_rejects_non_string_company_name():
+    with pytest.raises(OptionsError) as exc:
+        validate_options({"company_name": 12345})
+    assert any("company_name" in p for p in exc.value.problems)
+
+
+def test_validate_options_does_not_require_partner_id():
+    # A definition patch touching only the toggles/company name never
+    # carries a partner — validate_options (unlike validate_run_options)
+    # must not demand one.
+    normalized = validate_options({"company_name": "Acme"})
+    assert normalized["company_name"] == "Acme"
+    assert "partner_id" not in normalized
+
+
+def test_validate_options_accepts_run_only_keys_without_requiring_partner_id():
+    # Shape-only: a run-only key present without partner_id is still a
+    # SHAPE-valid dict for validate_options — required-ness is
+    # validate_run_options's job, not this one's.
+    normalized = validate_options({"asset_notes": "ships separately"})
+    assert normalized["asset_notes"] == "ships separately"
+
+
+def test_validate_run_options_without_partner_id_raises():
+    with pytest.raises(OptionsError) as exc:
+        validate_run_options({"asset_notes": "ships separately"})
+    assert "option 'partner_id' is required" in exc.value.problems
+
+
+def test_validate_run_options_with_partner_id_returns_normalized_dict_with_defaults():
+    partner_id = str(uuid.uuid4())
+    normalized = validate_run_options({"partner_id": partner_id})
+
+    assert normalized["partner_id"] == partner_id
+    # every definition-level default is still present
+    for key, value in default_options().items():
+        assert normalized[key] == value
+
+
+def test_validate_run_options_rejects_unknown_key_like_validate_options():
+    with pytest.raises(OptionsError) as exc:
+        validate_run_options({"partner_id": str(uuid.uuid4()), "bogus": 1})
+    assert any("bogus" in p for p in exc.value.problems)

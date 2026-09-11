@@ -4,11 +4,16 @@ Builds the `asset.*` context dicts the fill engine expands one-per-row —
 either one row per individual asset, or condensed to one row per (make,
 model) pair with a `qty` count — exactly as V2's `_fetch_assets` did. Pure
 Python: `asset_rows` never touches the DB, so Task 3/4's gather step reads
-the initiative's roster (the same join the Move Report uses) and hands
-this module plain rows.
+the initiative's roster (the same join the Move Report uses) and must map
+each row into an `AssetRowInput` explicitly before calling `asset_rows` —
+a `MoveAsset` (move_report/gather.py) is NOT drop-in compatible: it names
+fields `source_rack`/`source_ru`/`weight_lbs`/`asset_id` (a UUID) and has
+no `legacy_id`/`rfid`/`location`, so passing one straight through would
+silently blank rack/weight/asset_id/rfid/location rather than raise.
 """
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 
@@ -38,19 +43,28 @@ class AssetRowInput:
 
 
 def _field(row, name: str):
-    """Duck-typed accessor: works for `AssetRowInput`, any object with
-    matching attributes (e.g. a `MoveAsset`-shaped row), or a plain dict —
-    the plan's `list[MoveAsset-like]` allows all three."""
+    """Accessor covering the two shapes `asset_rows` actually receives:
+    an `AssetRowInput` (or any object with matching attributes) or a
+    plain dict."""
     if isinstance(row, dict):
         return row.get(name)
     return getattr(row, name, None)
+
+
+def _normalize_numeric(value):
+    """`InitiativeAsset.source_ru` is `Numeric` (`Decimal`) and Move
+    Report's own roster carries it as `float` — render a whole number
+    (20.0, Decimal('20.00')) as plain `20` rather than `20.0`/`20.00`."""
+    if isinstance(value, (float, Decimal)) and value == int(value):
+        return int(value)
+    return value
 
 
 def _rack_label(row) -> str:
     """Per-asset `asset.rack`: the source rack name plus its RU position
     (e.g. `RACK-12 U20`), falling back to whichever half is present."""
     rack = _field(row, "rack")
-    ru_position = _field(row, "ru_position")
+    ru_position = _normalize_numeric(_field(row, "ru_position"))
     parts = []
     if rack:
         parts.append(str(rack))
