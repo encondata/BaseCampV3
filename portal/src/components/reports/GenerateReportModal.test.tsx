@@ -110,8 +110,9 @@ it('step 2 shows the eight sections with definition defaults; select/deselect al
   const user = userEvent.setup();
   await toStep2(user);
   const boxes = screen.getAllByRole('checkbox') as HTMLInputElement[];
-  expect(boxes).toHaveLength(8);
-  expect(boxes.map((b) => b.checked)).toEqual([true, true, true, true, true, false, true, true]);
+  expect(boxes).toHaveLength(9);   // 8 sections + the Notify me switch
+  expect(boxes.map((b) => b.checked))
+    .toEqual([true, true, true, true, true, false, true, true, false]);
   await user.click(screen.getByRole('button', { name: 'Deselect All' }));
   expect((screen.getByRole('button', { name: 'Generate Report' }) as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByText('Turn on at least one section')).toBeTruthy();

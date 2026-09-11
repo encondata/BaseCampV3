@@ -97,7 +97,7 @@ it('the status chip strip changes with the segmented control: pipeline keeps sca
   // pipeline (default): Pre-Stage + Complete, then On Hold (scanned, not in
   // pipeline) flagged "also scanned"; Canceled (never scanned) is hidden.
   // ("Complete" also names a KPI tile, so scope the chip queries to the strip.)
-  const chipText = () => screen.getByText('Pre-Stage').closest('.msh-status-chips') as HTMLElement;
+  const chipText = () => screen.getByText('Pre-Stage').closest('.rgm-status-chips') as HTMLElement;
   expect(within(chipText()).getByText('Pre-Stage')).toBeTruthy();
   expect(within(chipText()).getByText('Complete')).toBeTruthy();
   expect(within(chipText()).getByText('On Hold')).toBeTruthy();

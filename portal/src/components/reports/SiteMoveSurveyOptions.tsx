@@ -31,6 +31,7 @@ import { useAuth } from '../../auth/AuthContext';
 import ComboBox from '../ComboBox';
 import { Switch } from '../Switch';
 import CompleteSiteSurveyModal, { saveSurveyValues } from './CompleteSiteSurveyModal';
+import { InitiativeSummary, OptionGroup, OptionsGrid, PreviewCard, summaryFromInitiative } from './ReportOptionsLayout';
 
 export default function SiteMoveSurveyOptions({ definition, initiative, onBack, onGenerate }: {
   definition: ReportDefinition;
@@ -129,14 +130,21 @@ export default function SiteMoveSurveyOptions({ definition, initiative, onBack, 
 
   const sourceSiteId = autoSourceId && !sourceOverride ? autoSourceId : manualSourceId;
   const destinationSiteId = autoDestId && !destOverride ? autoDestId : manualDestId;
+  const sourceSiteName = autoSourceId && !sourceOverride
+    ? autoSourceName : (sites?.find((s) => s.id === manualSourceId)?.name ?? null);
+  const destinationSiteName = autoDestId && !destOverride
+    ? autoDestName : (sites?.find((s) => s.id === manualDestId)?.name ?? null);
 
   const siteOptions = useMemo(
     () => (sites ?? []).map((s) => ({ value: s.id, label: s.name })), [sites]);
+  const selectedPartner = partners?.find((p) => p.id === partnerId) ?? null;
   const selectedContact = users?.find((u) => u.person_id === contactId) ?? null;
   const previewRows = useMemo(() => assetPreviewRows(assets, condensed), [assets, condensed]);
   // A disabled switch that still reads "on" would be misleading — force it
   // off (and off in the payload) whenever there's no docx to append.
   const effectiveIncludeStandards = includeStandards && hasStandardsDoc;
+  const assetsSummary = assets.length === 0 ? 'Notes only'
+    : `${assets.length} asset${assets.length === 1 ? '' : 's'} · ${condensed ? 'Condensed by make/model' : 'Per asset'}`;
 
   const canGenerate = !!partnerId && (!!initiative || !!sourceSiteId) && hasTemplate === true;
 
@@ -185,159 +193,196 @@ export default function SiteMoveSurveyOptions({ definition, initiative, onBack, 
   return (
     <>
       <div className="modal-body">
-        {hasTemplate === false && (
-          <p className="pf-notice">
-            This report has no survey template yet. Upload an .xlsx template under Edit report ›
-            Files.
-          </p>
-        )}
-        <div className="modal-section">Partner</div>
-        <div className="pf-form">
-          <div>
-            <label>Logistics partner</label>
-            <ComboBox
-              placeholder="Type to search partners…"
-              value={partnerId}
-              clearable
-              onChange={(v) => { setPartnerTouched(true); setPartnerId(v); }}
-              options={(partners ?? []).map((p) => ({ value: p.id, label: p.name }))}
+        <OptionsGrid preview={
+          <PreviewCard title="Selected initiative">
+            <InitiativeSummary
+              initiative={initiative ? summaryFromInitiative(initiative) : null}
+              emptyText="No initiative — sites chosen manually"
             />
-          </div>
-        </div>
+            {/* Own wording, not "Partner"/"Sites"/"Assets"/"Contact" — those
+                exact strings are the option groups' own modal-section
+                titles (and "Contact" a form label) in the column beside
+                this card, and getByText/findByText need every match on
+                the page to stay unique. */}
+            <dl className="kv">
+              <dt>Chosen partner</dt>
+              <dd>
+                {selectedPartner?.name ?? 'Not chosen yet'}{' '}
+                {hasTemplate !== null && (
+                  <span className={`chip ${hasTemplate ? 'c-green' : 'c-slate'}`}>
+                    {hasTemplate ? 'Template ready' : 'No template'}
+                  </span>
+                )}
+              </dd>
+              <dt>Source → Destination</dt>
+              <dd>{sourceSiteName ?? '—'} → {destinationSiteName ?? '—'}</dd>
+              <dt>Asset summary</dt>
+              <dd>{assetsSummary}</dd>
+              <dt>Contact person</dt>
+              <dd>{selectedContact?.display_name ?? 'Not chosen yet'}</dd>
+            </dl>
+          </PreviewCard>
+        }>
+          {hasTemplate === false && (
+            <p className="pf-notice">
+              This report has no survey template yet. Upload an .xlsx template under Edit report ›
+              Files.
+            </p>
+          )}
 
-        <div className="modal-section">Company contact</div>
-        <div className="pf-form">
-          <div>
-            <label>Contact</label>
-            <ComboBox
-              placeholder="Type to search people…"
-              value={contactId}
-              clearable
-              onChange={setContactId}
-              options={(users ?? []).map((u) => ({ value: u.person_id, label: u.display_name }))}
-            />
-            {selectedContact && (
-              <span className="page-hint">{selectedContact.login_email ?? '—'}</span>
-            )}
-          </div>
-        </div>
-
-        <div className="modal-section">Sites</div>
-        <div className="pf-form">
-          <div>
-            <label>Source site</label>
-            {autoSourceId && !sourceOverride ? (
-              <div className="mini-row flex">
-                <span className="cell-top">{autoSourceName}</span>
-                <span className="chip c-slate">Auto-detected</span>
-                <button type="button" className="mini-btn" aria-label="Change source site"
-                        onClick={() => setSourceOverride(true)}>
-                  Change
-                </button>
+          <OptionGroup title="Partner">
+            <div className="pf-form">
+              <div>
+                <label>Logistics partner</label>
+                <ComboBox
+                  placeholder="Type to search partners…"
+                  value={partnerId}
+                  clearable
+                  onChange={(v) => { setPartnerTouched(true); setPartnerId(v); }}
+                  options={(partners ?? []).map((p) => ({ value: p.id, label: p.name }))}
+                />
               </div>
-            ) : (
-              <ComboBox
-                placeholder="Type to search source sites…"
-                value={manualSourceId}
-                clearable
-                onChange={setManualSourceId}
-                options={siteOptions}
-              />
-            )}
-          </div>
-          <div>
-            <label>Destination site</label>
-            {autoDestId && !destOverride ? (
-              <div className="mini-row flex">
-                <span className="cell-top">{autoDestName}</span>
-                <span className="chip c-slate">Auto-detected</span>
-                <button type="button" className="mini-btn" aria-label="Change destination site"
-                        onClick={() => setDestOverride(true)}>
-                  Change
-                </button>
+            </div>
+          </OptionGroup>
+
+          <OptionGroup title="Company contact">
+            <div className="pf-form">
+              <div>
+                <label>Contact</label>
+                <ComboBox
+                  placeholder="Type to search people…"
+                  value={contactId}
+                  clearable
+                  onChange={setContactId}
+                  options={(users ?? []).map((u) => ({ value: u.person_id, label: u.display_name }))}
+                />
+                {selectedContact && (
+                  <span className="page-hint">{selectedContact.login_email ?? '—'}</span>
+                )}
               </div>
+            </div>
+          </OptionGroup>
+
+          <OptionGroup title="Sites">
+            <div className="pf-form">
+              <div>
+                <label>Source site</label>
+                {autoSourceId && !sourceOverride ? (
+                  <div className="mini-row flex">
+                    <span className="cell-top">{autoSourceName}</span>
+                    <span className="chip c-slate">Auto-detected</span>
+                    <button type="button" className="mini-btn" aria-label="Change source site"
+                            onClick={() => setSourceOverride(true)}>
+                      Change
+                    </button>
+                  </div>
+                ) : (
+                  <ComboBox
+                    placeholder="Type to search source sites…"
+                    value={manualSourceId}
+                    clearable
+                    onChange={setManualSourceId}
+                    options={siteOptions}
+                  />
+                )}
+              </div>
+              <div>
+                <label>Destination site</label>
+                {autoDestId && !destOverride ? (
+                  <div className="mini-row flex">
+                    <span className="cell-top">{autoDestName}</span>
+                    <span className="chip c-slate">Auto-detected</span>
+                    <button type="button" className="mini-btn" aria-label="Change destination site"
+                            onClick={() => setDestOverride(true)}>
+                      Change
+                    </button>
+                  </div>
+                ) : (
+                  <ComboBox
+                    placeholder="Type to search destination sites…"
+                    value={manualDestId}
+                    clearable
+                    onChange={setManualDestId}
+                    options={siteOptions}
+                  />
+                )}
+              </div>
+            </div>
+          </OptionGroup>
+
+          <OptionGroup title="Assets">
+            {assets.length > 0 ? (
+              <>
+                <div className="segmented" role="tablist" style={{ marginBottom: 8 }}>
+                  <button type="button" role="tab" aria-selected={condensed}
+                          className={condensed ? 'on' : ''} onClick={() => setCondensed(true)}>
+                    Condensed by make/model
+                  </button>
+                  <button type="button" role="tab" aria-selected={!condensed}
+                          className={!condensed ? 'on' : ''} onClick={() => setCondensed(false)}>
+                    Per asset
+                  </button>
+                </div>
+                <ul className="mini-list">
+                  {previewRows.map((r) => (
+                    <li key={r.key} className="mini-row flex">
+                      <span className="cell-top">{r.make} {r.model}</span>
+                      {r.ru != null && <span className="cell-sub">{r.ru}U</span>}
+                      <span className="mono">×{r.qty}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
             ) : (
-              <ComboBox
-                placeholder="Type to search destination sites…"
-                value={manualDestId}
-                clearable
-                onChange={setManualDestId}
-                options={siteOptions}
-              />
+              <div className="pf-form">
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <p className="page-hint">
+                    {initiative
+                      ? 'No assets associated with this initiative. Notes you enter below will be inserted into the generated survey in place of the equipment listing.'
+                      : "No initiative selected, so there's no equipment list. Notes you enter below will be inserted into the generated survey in place of the equipment listing."}
+                  </p>
+                  <label htmlFor="survey-asset-notes">Asset notes (optional)</label>
+                  <textarea id="survey-asset-notes" rows={3}
+                            placeholder="e.g. Equipment list will be provided separately. Approximately 40 1U servers and 6 storage arrays."
+                            value={assetNotes} onChange={(e) => setAssetNotes(e.target.value)} />
+                </div>
+              </div>
             )}
-          </div>
-        </div>
+          </OptionGroup>
 
-        <div className="modal-section">Assets</div>
-        {assets.length > 0 ? (
-          <>
-            <div className="segmented" role="tablist" style={{ marginBottom: 8 }}>
-              <button type="button" role="tab" aria-selected={condensed}
-                      className={condensed ? 'on' : ''} onClick={() => setCondensed(true)}>
-                Condensed by make/model
-              </button>
-              <button type="button" role="tab" aria-selected={!condensed}
-                      className={!condensed ? 'on' : ''} onClick={() => setCondensed(false)}>
-                Per asset
-              </button>
+          <OptionGroup title="Options">
+            <div className="mini-list report-sections">
+              <label className="mini-row report-section-row">
+                <Switch checked={effectiveIncludeStandards} disabled={!hasStandardsDoc}
+                        onChange={setIncludeStandards} />
+                <span className="report-section-text">
+                  <span className="cell-top">Include Transportation Standards</span>
+                  <span className="cell-sub">
+                    {hasStandardsDoc
+                      ? 'Append the company Transportation Standards document as a sheet.'
+                      : "Upload a Transportation Standards document on this report's Files first."}
+                  </span>
+                </span>
+              </label>
+              <label className="mini-row report-section-row">
+                <Switch checked={includePhotos} onChange={setIncludePhotos} />
+                <span className="report-section-text">
+                  <span className="cell-top">Include site photos</span>
+                  <span className="cell-sub">Append a Site Photos sheet from each site's photo attachments.</span>
+                </span>
+              </label>
+              <label className="mini-row report-section-row">
+                <Switch checked={notify} onChange={setNotify} />
+                <span className="report-section-text">
+                  <span className="cell-top">Notify me</span>
+                  <span className="cell-sub">Get an inbox notification when the report is ready.</span>
+                </span>
+              </label>
             </div>
-            <ul className="mini-list">
-              {previewRows.map((r) => (
-                <li key={r.key} className="mini-row flex">
-                  <span className="cell-top">{r.make} {r.model}</span>
-                  {r.ru != null && <span className="cell-sub">{r.ru}U</span>}
-                  <span className="mono">×{r.qty}</span>
-                </li>
-              ))}
-            </ul>
-          </>
-        ) : (
-          <div className="pf-form">
-            <div style={{ gridColumn: '1 / -1' }}>
-              <p className="page-hint">
-                {initiative
-                  ? 'No assets associated with this initiative. Notes you enter below will be inserted into the generated survey in place of the equipment listing.'
-                  : "No initiative selected, so there's no equipment list. Notes you enter below will be inserted into the generated survey in place of the equipment listing."}
-              </p>
-              <label htmlFor="survey-asset-notes">Asset notes (optional)</label>
-              <textarea id="survey-asset-notes" rows={3}
-                        placeholder="e.g. Equipment list will be provided separately. Approximately 40 1U servers and 6 storage arrays."
-                        value={assetNotes} onChange={(e) => setAssetNotes(e.target.value)} />
-            </div>
-          </div>
-        )}
+          </OptionGroup>
 
-        <div className="modal-section">Options</div>
-        <div className="mini-list report-sections">
-          <label className="mini-row report-section-row">
-            <Switch checked={effectiveIncludeStandards} disabled={!hasStandardsDoc}
-                    onChange={setIncludeStandards} />
-            <span className="report-section-text">
-              <span className="cell-top">Include Transportation Standards</span>
-              <span className="cell-sub">
-                {hasStandardsDoc
-                  ? 'Append the company Transportation Standards document as a sheet.'
-                  : "Upload a Transportation Standards document on this report's Files first."}
-              </span>
-            </span>
-          </label>
-          <label className="mini-row report-section-row">
-            <Switch checked={includePhotos} onChange={setIncludePhotos} />
-            <span className="report-section-text">
-              <span className="cell-top">Include site photos</span>
-              <span className="cell-sub">Append a Site Photos sheet from each site's photo attachments.</span>
-            </span>
-          </label>
-          <label className="mini-row report-section-row">
-            <Switch checked={notify} onChange={setNotify} />
-            <span className="report-section-text">
-              <span className="cell-top">Notify me</span>
-              <span className="cell-sub">Get an inbox notification when the report is ready.</span>
-            </span>
-          </label>
-        </div>
-
-        {(loadError || generateError) && <p className="pf-error">{loadError || generateError}</p>}
+          {(loadError || generateError) && <p className="pf-error">{loadError || generateError}</p>}
+        </OptionsGrid>
       </div>
       <div className="modal-foot">
         <button type="button" className="btn-ghost" onClick={onBack}>Back</button>

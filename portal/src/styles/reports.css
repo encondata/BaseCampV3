@@ -153,18 +153,25 @@
 .pinned-run { margin-left: 6px; }
 .history-more { display: flex; justify-content: center; padding: 12px 0; }
 
-/* ── Move Scan History options step ───────────────────────────────── */
-.msh-grid { display: grid; grid-template-columns: 340px 1fr; gap: 22px; align-items: start; }
-@media (max-width: 760px) { .msh-grid { grid-template-columns: 1fr; } }
-.msh-preview, .msh-options { display: flex; flex-direction: column; gap: 8px; }
-.msh-preview .dash-kpis { grid-template-columns: repeat(2, 1fr); margin: 4px 0; }
-.msh-progress-track {
-  height: 6px; border-radius: 999px; overflow: hidden; background: var(--paper-line);
-}
-.msh-progress-fill { height: 100%; background: var(--accent); border-radius: inherit; }
+/* ── report options steps (Move Report / Site & Move Survey / Move Scan
+   History) — shared two-column layout: `PreviewCard` on the left,
+   `OptionGroup`s on the right; see ReportOptionsLayout.tsx ─────────── */
+.rgm-grid { display: grid; grid-template-columns: 340px 1fr; gap: 22px; align-items: start; }
+@media (max-width: 760px) { .rgm-grid { grid-template-columns: 1fr; } }
+.rgm-options { display: flex; flex-direction: column; gap: 16px; }
+.rgm-summary .dash-kpis { grid-template-columns: repeat(2, 1fr); margin: 4px 0; }
+.rgm-summary .kv { margin-top: 4px; }
 
-.msh-format-cards { display: flex; flex-direction: column; gap: 10px; margin-bottom: 4px; }
-.msh-format-card {
+.rgm-group { display: flex; flex-direction: column; gap: 8px; }
+.rgm-group-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.rgm-group-actions { display: flex; gap: 14px; }
+.rgm-group-actions button {
+  background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0;
+}
+
+/* ── ChoiceCard: a big selectable card, radio semantics ──────────── */
+.rgm-choice-cards { display: flex; flex-direction: column; gap: 10px; margin-bottom: 4px; }
+.rgm-choice-card {
   display: flex; flex-direction: column; gap: 4px; text-align: left;
   padding: 14px 16px;
   border: 1px solid var(--paper-line); border-radius: 12px;
@@ -172,15 +179,21 @@
   cursor: pointer;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-.msh-format-card:hover { border-color: rgba(var(--accent-rgb), 0.5); }
-.msh-format-card.on {
+.rgm-choice-card:hover { border-color: rgba(var(--accent-rgb), 0.5); }
+.rgm-choice-card.on {
   border-color: var(--amber);
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.14);
 }
-.msh-format-title {
+.rgm-choice-title {
   font-family: var(--font-display); font-size: 14.5px; font-weight: 600; color: var(--text-dark);
 }
-.msh-format-desc { font-size: 12.5px; color: var(--text-mute); }
+.rgm-choice-desc { font-size: 12.5px; color: var(--text-mute); }
 
-.msh-status-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
-.msh-also-scanned { flex: 1 0 100%; margin-top: 4px; }
+/* ── Move Scan History's own preview extras (progress bar, status
+   chips) — not shared with the other two report types ──────────── */
+.rgm-progress-track {
+  height: 6px; border-radius: 999px; overflow: hidden; background: var(--paper-line);
+}
+.rgm-progress-fill { height: 100%; background: var(--accent); border-radius: inherit; }
+.rgm-status-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
+.rgm-also-scanned { flex: 1 0 100%; margin-top: 4px; }

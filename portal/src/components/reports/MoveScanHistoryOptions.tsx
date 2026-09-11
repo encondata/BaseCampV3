@@ -8,8 +8,8 @@
  * result back to GenerateReportModal's own progress step exactly like
  * `SiteMoveSurveyOptions` does.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties, KeyboardEvent } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type { CSSProperties } from 'react';
 
 import {
   ApiError, getScanHistoryPreview, type InitiativeItem, type ReportDefinition,
@@ -19,8 +19,8 @@ import {
   buildRunOptions, columnsForMode, formatDefaults,
   type ScanHistoryFormat, type StatusColumnsMode,
 } from '../../lib/moveScanHistory';
-import { fmtDate } from '../../lib/reports';
 import { Switch } from '../Switch';
+import { ChoiceCard, InitiativeSummary, OptionGroup, OptionsGrid, PreviewCard } from './ReportOptionsLayout';
 
 const fmtDateTime = (s: string | null) => (s ? new Date(s).toLocaleString() : 'No scans yet');
 
@@ -39,22 +39,6 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
   const [format, setFormat] = useState<ScanHistoryFormat>(defaults.format);
   const [mode, setMode] = useState<StatusColumnsMode>(defaults.statusColumns);
   const [notify, setNotify] = useState(false);
-  // Roving tabindex (native-radio behavior): arrow keys both move focus
-  // and change the selection between the two format cards.
-  const xlsxCardRef = useRef<HTMLButtonElement>(null);
-  const pdfCardRef = useRef<HTMLButtonElement>(null);
-  const formatCardRef = (key: ScanHistoryFormat) => (key === 'xlsx' ? xlsxCardRef : pdfCardRef);
-  const onFormatKeyDown = (e: KeyboardEvent<HTMLButtonElement>, key: ScanHistoryFormat) => {
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-      e.preventDefault();
-      const next: ScanHistoryFormat = key === 'xlsx' ? 'pdf' : 'xlsx';
-      setFormat(next);
-      formatCardRef(next).current?.focus();
-    } else if (e.key === ' ' || e.key === 'Enter') {
-      e.preventDefault();
-      setFormat(key);
-    }
-  };
 
   const [preview, setPreview] = useState<ScanHistoryPreview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -89,9 +73,8 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
   return (
     <>
       <div className="modal-body">
-        <div className="msh-grid">
-          <div className="msh-preview">
-            <div className="modal-section">Preview</div>
+        <OptionsGrid preview={
+          <PreviewCard title="Preview">
             {loading && <p className="page-hint">Loading preview…</p>}
             {!loading && loadError && (
               <div className="pf-error">
@@ -103,14 +86,15 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
             )}
             {!loading && !loadError && preview && (
               <>
-                <div className="cell-top">{preview.initiative.name}</div>
-                <div className="cell-sub">{preview.initiative.client_name ?? '—'}</div>
-                <div className="cell-sub">
-                  {preview.initiative.source_name ?? '—'} → {preview.initiative.destination_name ?? '—'}
-                </div>
-                <div className="cell-sub">
-                  Scheduled start: {fmtDate(preview.initiative.scheduled_start)}
-                </div>
+                <InitiativeSummary
+                  initiative={{
+                    name: preview.initiative.name, clientName: preview.initiative.client_name,
+                    scheduledStart: preview.initiative.scheduled_start,
+                    originName: preview.initiative.source_name,
+                    destinationName: preview.initiative.destination_name,
+                  }}
+                  emptyText="Pick an initiative to see its details here."
+                />
                 <div className="dash-kpis">
                   <div className="dash-kpi">
                     <span className="dash-kpi-label">Assets</span>
@@ -129,9 +113,9 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
                     <span className="dash-kpi-value">{preview.completion_pct}%</span>
                   </div>
                 </div>
-                <div className="msh-progress-track" role="progressbar" aria-label="Completion"
+                <div className="rgm-progress-track" role="progressbar" aria-label="Completion"
                      aria-valuenow={preview.completion_pct} aria-valuemin={0} aria-valuemax={100}>
-                  <div className="msh-progress-fill" style={{ width: `${preview.completion_pct}%` }} />
+                  <div className="rgm-progress-fill" style={{ width: `${preview.completion_pct}%` }} />
                 </div>
                 <p className="page-hint">Last scan: {fmtDateTime(preview.last_scan_at)}</p>
                 {preview.total_assets === 0 && (
@@ -139,32 +123,19 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
                 )}
               </>
             )}
-          </div>
-
-          <div className="msh-options">
-            <div className="modal-section">Format</div>
-            <div className="msh-format-cards" role="radiogroup" aria-label="Format">
-              <button type="button" ref={xlsxCardRef} role="radio" aria-checked={format === 'xlsx'}
-                      tabIndex={format === 'xlsx' ? 0 : -1}
-                      className={`msh-format-card ${format === 'xlsx' ? 'on' : ''}`}
-                      onClick={() => setFormat('xlsx')}
-                      onKeyDown={(e) => onFormatKeyDown(e, 'xlsx')}>
-                <span className="msh-format-title">Excel workbook</span>
-                <span className="msh-format-desc">Overview and Scan History sheets</span>
-              </button>
-              <button type="button" ref={pdfCardRef} role="radio" aria-checked={format === 'pdf'}
-                      tabIndex={format === 'pdf' ? 0 : -1}
-                      className={`msh-format-card ${format === 'pdf' ? 'on' : ''}`}
-                      onClick={() => setFormat('pdf')}
-                      onKeyDown={(e) => onFormatKeyDown(e, 'pdf')}>
-                <span className="msh-format-title">PDF document</span>
-                <span className="msh-format-desc">
-                  Landscape, printable, with a document tracking barcode
-                </span>
-              </button>
+          </PreviewCard>
+        }>
+          <OptionGroup title="Format">
+            <div className="rgm-choice-cards" role="radiogroup" aria-label="Format">
+              <ChoiceCard title="Excel workbook" description="Overview and Scan History sheets"
+                          selected={format === 'xlsx'} onSelect={() => setFormat('xlsx')} />
+              <ChoiceCard title="PDF document"
+                          description="Landscape, printable, with a document tracking barcode"
+                          selected={format === 'pdf'} onSelect={() => setFormat('pdf')} />
             </div>
+          </OptionGroup>
 
-            <div className="modal-section">Status columns</div>
+          <OptionGroup title="Status columns">
             <div className="segmented" role="tablist" aria-label="Status columns" style={{ marginBottom: 8 }}>
               <button type="button" role="tab" aria-selected={mode === 'pipeline'}
                       className={mode === 'pipeline' ? 'on' : ''} onClick={() => setMode('pipeline')}>
@@ -175,7 +146,7 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
                 All statuses
               </button>
             </div>
-            <div className="msh-status-chips">
+            <div className="rgm-status-chips">
               {mainColumns.map((c) => (
                 <span key={c.key} className={c.color ? 'chip custom' : 'chip c-slate'}
                       style={c.color ? ({ '--chip': c.color } as CSSProperties) : undefined}>
@@ -184,7 +155,7 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
               ))}
               {extraColumns.length > 0 && (
                 <>
-                  <span className="cell-sub msh-also-scanned">also scanned</span>
+                  <span className="cell-sub rgm-also-scanned">also scanned</span>
                   {extraColumns.map((c) => (
                     <span key={c.key} className={c.color ? 'chip custom' : 'chip c-slate'}
                           style={c.color ? ({ '--chip': c.color } as CSSProperties) : undefined}>
@@ -194,8 +165,9 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
                 </>
               )}
             </div>
+          </OptionGroup>
 
-            <div className="modal-section">Notify</div>
+          <OptionGroup title="Notify">
             <div className="mini-list report-sections">
               <label className="mini-row report-section-row">
                 <Switch checked={notify} onChange={setNotify} />
@@ -205,8 +177,8 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
                 </span>
               </label>
             </div>
-          </div>
-        </div>
+          </OptionGroup>
+        </OptionsGrid>
       </div>
       <div className="modal-foot">
         <button type="button" className="btn-ghost" onClick={onBack}>Back</button>

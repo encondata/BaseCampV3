@@ -2,22 +2,24 @@
  * Generate <definition> — one dialog, three states: pick an initiative
  * (Site & Move Survey's own "No initiative — choose sites manually" row
  * lives in this same picker), choose sections/options (delegated to
- * `SiteMoveSurveyOptions` for that report type; Move Report keeps its own
- * sections UI here), then progress (poll the run every 2 s) with "Notify
- * me when it's ready" / Close, ending in Download or Try again.
+ * `MoveReportOptions`/`SiteMoveSurveyOptions`/`MoveScanHistoryOptions` by
+ * report_type — all three share `ReportOptionsLayout`'s preview card and
+ * option groups), then progress (poll the run every 2 s) with "Notify me
+ * when it's ready" / Close, ending in Download or Try again.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 
-import { Switch } from '../Switch';
 import {
   ApiError, createReportRun, getReportRun, getReportRunDownloadUrl, listInitiatives,
   setReportRunNotify,
 } from '../../lib/api';
 import type { InitiativeItem, ReportDefinition, ReportRun } from '../../lib/api';
-import { MOVE_REPORT_SECTIONS, fmtDate, openPresigned, sortInitiativesForPicker } from '../../lib/reports';
+import { fmtDate, openPresigned, sortInitiativesForPicker } from '../../lib/reports';
 import { useSystemStatus } from '../../lib/systemStatusContext';
+import MoveReportOptions from './MoveReportOptions';
 import MoveScanHistoryOptions from './MoveScanHistoryOptions';
+import { InitiativeSummary, PreviewCard, summaryFromInitiative } from './ReportOptionsLayout';
 import SiteMoveSurveyOptions from './SiteMoveSurveyOptions';
 import '../../styles/directory.css';  /* .dir-search, .org-select (picker tools) */
 
@@ -49,8 +51,6 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
   // initiatives so exactly one of "an initiative" / "no initiative" is
   // ever selected at a time.
   const [noInitiative, setNoInitiative] = useState(false);
-  const [options, setOptions] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(MOVE_REPORT_SECTIONS.map((s) => [s.key, !!definition.options[s.key]])));
   const [run, setRun] = useState<ReportRun | null>(null);
   const [payload, setPayload] = useState<RunPayload | null>(null);
   const [error, setError] = useState('');
@@ -88,10 +88,6 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
     return sorted.filter((i) => (!type || i.initiative_type === type)
       && (!q || `${i.name} ${i.client_name ?? ''}`.toLowerCase().includes(q)));
   }, [sorted, search, type]);
-
-  const enabledCount = MOVE_REPORT_SECTIONS.filter((s) => options[s.key]).length;
-  const setAll = (v: boolean) =>
-    setOptions(Object.fromEntries(MOVE_REPORT_SECTIONS.map((s) => [s.key, v])));
 
   // `next` carries a fresh payload from either flow's own Generate action;
   // omitted (as "Try again" does), it re-queues whatever was last stored.
@@ -231,38 +227,14 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
                     ))}
                   </div>
                 </div>
-                <aside className="rgm-summary">
-                  <div className="modal-section">Selected initiative</div>
-                  {picked && (
-                    <>
-                      <div className="cell-top">{picked.name}</div>
-                      <div className="cell-sub">{picked.client_name ?? '—'}</div>
-                      <div className="rgm-summary-chips">
-                        <span className="chip custom" style={{ '--chip': picked.type_color } as CSSProperties}>
-                          {picked.type_label}
-                        </span>
-                        <span className="chip custom" style={{ '--chip': picked.status_color } as CSSProperties}>
-                          <span className="dot" />{picked.status_label}
-                        </span>
-                      </div>
-                      <div className="cell-sub">
-                        {fmtDate(picked.scheduled_start)}
-                        {picked.scheduled_end ? ` → ${fmtDate(picked.scheduled_end)}` : ''}
-                      </div>
-                      <div className="cell-sub">
-                        {picked.origin_site_name ?? '—'} → {picked.destination_site_name ?? '—'}
-                      </div>
-                    </>
-                  )}
-                  {noInitiative && (
-                    <p className="page-hint">
-                      Sites and a logistics partner will be chosen manually on the next step.
-                    </p>
-                  )}
-                  {!picked && !noInitiative && (
-                    <p className="page-hint">Pick an initiative to see its details here.</p>
-                  )}
-                </aside>
+                <PreviewCard title="Selected initiative">
+                  <InitiativeSummary
+                    initiative={picked ? summaryFromInitiative(picked) : null}
+                    emptyText={noInitiative
+                      ? 'Sites and a logistics partner will be chosen manually on the next step.'
+                      : 'Pick an initiative to see its details here.'}
+                  />
+                </PreviewCard>
               </div>
               {error && <div className="pf-error">{error}</div>}
             </div>
@@ -293,36 +265,12 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
         )}
 
         {step === 'sections' && !isSurvey && !isScanHistory && (
-          <>
-            <div className="modal-body">
-              <p className="cell-sub">Select which sections to include in the PDF report for <b>{picked?.name}</b>:</p>
-              <div className="mini-list report-sections">
-                {MOVE_REPORT_SECTIONS.map((s) => (
-                  <label key={s.key} className="mini-row report-section-row">
-                    <Switch checked={!!options[s.key]}
-                            onChange={(v) => setOptions((o) => ({ ...o, [s.key]: v }))} />
-                    <span className="report-section-text">
-                      <span className="cell-top">{s.title}</span>
-                      <span className="cell-sub">{s.description}</span>
-                    </span>
-                  </label>
-                ))}
-              </div>
-              <div className="report-section-actions">
-                <button type="button" onClick={() => setAll(true)}>Select All</button>
-                <button type="button" onClick={() => setAll(false)}>Deselect All</button>
-              </div>
-              {enabledCount === 0 && <div className="pf-error">Turn on at least one section</div>}
-            </div>
-            <div className="modal-foot">
-              <button type="button" className="btn-ghost" onClick={() => setStep('pick')}>Back</button>
-              <button type="button" className="btn-solid" disabled={enabledCount === 0}
-                      onClick={() => void start(
-                        { initiative_id: picked!.id, options, notify: false })}>
-                Generate Report
-              </button>
-            </div>
-          </>
+          <MoveReportOptions
+            definition={definition}
+            initiative={picked}
+            onBack={() => setStep('pick')}
+            onGenerate={(p) => void start(p)}
+          />
         )}
 
         {step === 'progress' && (
