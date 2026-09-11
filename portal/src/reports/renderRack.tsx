@@ -75,7 +75,20 @@ export function renderRackSvg(input: RenderRackInput): string {
   // parser would treat as a tag once inside foreign content.
   const css = rackCss.replace(/\/\*[\s\S]*?\*\//g, '');
   const styled = markup.replace(/<svg\b[^>]*>/g, (tag) => `${tag}<style>${css}</style>`);
-  return `<style>${css}</style>${styled}`;
+  return `<style>${htmlOnlyCss(css)}</style>${styled}`;
+}
+
+/** SVG presentation properties are meaningless to WeasyPrint's HTML CSS
+ *  parser (it logs "Ignored `fill: …`, unknown property" for each one), so
+ *  the OUTER copy of the stylesheet keeps only what the HTML containers
+ *  need. The copies injected inside each <svg> stay complete. */
+const SVG_ONLY_PROPS = /(?:^|;)\s*(?:fill|stroke|stroke-width|stroke-dasharray|stroke-linecap|stroke-linejoin|shape-rendering|dominant-baseline|text-anchor|paint-order|vector-effect|fill-opacity|stroke-opacity)\s*:[^;}]*/g;
+
+export function htmlOnlyCss(css: string): string {
+  return css.replace(/\{([^}]*)\}/g, (_m, body: string) => {
+    const kept = body.replace(SVG_ONLY_PROPS, (m) => (m.startsWith(';') ? ';' : ''));
+    return `{${kept.replace(/;\s*;/g, ';').replace(/^\s*;/, '')}}`;
+  });
 }
 
 async function main(): Promise<void> {

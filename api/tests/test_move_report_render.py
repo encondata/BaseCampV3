@@ -126,7 +126,9 @@ def test_fixture_carries_the_portals_current_rack_css():
     """The fixture is a captured Node render, so it silently goes stale when
     rack-svg.css moves on — and the layout test below would then be proving
     something about last month's stylesheet."""
-    inlined = re.search(r"<style>([\s\S]*?)</style>", FIXTURE.read_text()).group(1)
+    # the copy INSIDE the <svg> is the complete stylesheet; the outer copy is
+    # filtered to HTML-safe declarations (see renderRack.tsx htmlOnlyCss)
+    inlined = re.search(r"<svg[^>]*><style>([\s\S]*?)</style>", FIXTURE.read_text()).group(1)
     stripped = re.sub(r"/\*[\s\S]*?\*/", "", RACK_CSS.read_text())
     assert inlined.strip() == stripped.strip(), (
         "re-capture api/tests/fixtures/rack_fragment.html — "

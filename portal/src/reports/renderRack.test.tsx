@@ -64,3 +64,11 @@ describe('renderRackSvg', () => {
     expect(out).toContain('No assets recorded at this rack');
   });
 });
+
+it('keeps SVG-only properties out of the outer <style> but inside every <svg> copy', async () => {
+  const { htmlOnlyCss } = await import('./renderRack');
+  const out = htmlOnlyCss('.a { fill: #fff; stroke: #000; stroke-width: 1; width: 100%; } .b { display: block; shape-rendering: crispEdges; }');
+  expect(out).not.toMatch(/fill|stroke|shape-rendering/);
+  expect(out).toMatch(/width: 100%/);
+  expect(out).toMatch(/display: block/);
+});
