@@ -318,10 +318,11 @@ export async function savePreferencesRequest(prefs: UiPreferences): Promise<void
 }
 
 /** Global attachment upload — avatars, asset photos, documents, plus the
- *  Site & Move Survey report's `survey_template` (partner-only xlsx) and
- *  `report_asset` (report-definition-only docx/pdf, e.g. the
- *  Transportation Standards document). FormData: the browser sets the
- *  multipart boundary itself. */
+ *  Site & Move Survey report's `survey_template` (report-definition-only
+ *  xlsx — the template a run fills; NOT on partners) and `report_asset`
+ *  (also report-definition-only, docx/pdf, e.g. the Transportation
+ *  Standards document). FormData: the browser sets the multipart boundary
+ *  itself. */
 export async function uploadAttachmentRequest(opts: {
   entityType: 'person' | 'client' | 'partner' | 'asset' | 'report_definition';
   entityId: string;
@@ -3576,9 +3577,12 @@ export async function createReportRun(body: {
   return resp.json();
 }
 
-/** GET /reports/site-move-survey/partners — logistics partners only, each
- *  flagged with whether they already carry a `survey_template` attachment. */
-export interface SurveyPartnerOption { id: string; name: string; has_template: boolean }
+/** GET /reports/site-move-survey/partners — logistics partners only. Partners
+ *  no longer carry a survey template (it lives on the report definition
+ *  instead, alongside the `report_asset` docx — see uploadAttachmentRequest);
+ *  the run's Options screen decides template readiness from the definition's
+ *  attachments, not from this list. */
+export interface SurveyPartnerOption { id: string; name: string }
 
 export async function listSurveyPartners(): Promise<SurveyPartnerOption[]> {
   const resp = await apiFetch('/reports/site-move-survey/partners');

@@ -10,7 +10,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { ReportDefinition, ReportRun, SiteItem, SurveySchema } from '../../lib/api';
+import type { AttachmentOut, ReportDefinition, ReportRun, SiteItem, SurveySchema } from '../../lib/api';
 
 if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
 
@@ -60,6 +60,12 @@ const SCHEMA: SurveySchema = {
     },
   ],
 };
+const TEMPLATE_FILE: AttachmentOut = {
+  id: 'tf1', entity_type: 'report_definition', entity_id: 'd2', kind: 'survey_template',
+  storage_key: 'k', filename: 'Move Survey.xlsx',
+  content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  size_bytes: 4096, created_at: '2026-09-09T10:00:00Z', url: null,
+};
 const run = (over: Partial<ReportRun>): ReportRun => ({
   id: 'r1', definition_id: 'd2', definition_name: 'Site & Move Survey',
   report_type: 'site_move_survey', initiative_id: null, initiative_name: null,
@@ -71,10 +77,11 @@ const run = (over: Partial<ReportRun>): ReportRun => ({
 
 beforeEach(() => {
   api.listInitiatives.mockResolvedValue([]);
-  api.listSurveyPartners.mockResolvedValue([{ id: 'p1', name: 'Acme Logistics', has_template: true }]);
+  api.listSurveyPartners.mockResolvedValue([{ id: 'p1', name: 'Acme Logistics' }]);
   api.listUsers.mockResolvedValue([{ person_id: 'me1', display_name: 'Me', login_email: 'me@x.com', avatar_url: null }]);
   api.listSites.mockResolvedValue(SITES);
-  api.listAttachments.mockResolvedValue([]);
+  // The definition needs a survey template for Generate to be reachable.
+  api.listAttachments.mockResolvedValue([TEMPLATE_FILE]);
   api.getSurveySchema.mockResolvedValue(SCHEMA);
   api.listInitiativeAssets.mockResolvedValue([]);
   api.listSiteSurvey.mockResolvedValue([

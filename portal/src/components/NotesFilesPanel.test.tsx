@@ -4,9 +4,10 @@
  * image-attachment thumbnail/lightbox split (V2 parity) — image
  * attachments move out of the plain 📎 row list into a thumbnail grid,
  * and clicking a thumbnail opens a full-size lightbox that closes on
- * Escape or a scrim click. Also covers the Site & Move Survey additions:
- * a partner-only Document/Survey template upload-type choice and the
- * "Survey template" kind chip.
+ * Escape or a scrim click. Partners upload documents/photos like every
+ * other host now — the survey template moved to the report definition's
+ * Files section (see EditDefinitionModal) — but `kindLabel` still renders
+ * a legacy `survey_template` row's chip so old data doesn't crash.
  */
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -109,47 +110,7 @@ it('opens and closes the lightbox for a thumbnail', async () => {
   ).toBeNull());
 });
 
-it('shows the Document/Survey template segmented control only for partners', async () => {
-  const user = userEvent.setup();
-  api.listNotes.mockResolvedValue([]);
-  api.listAttachments.mockResolvedValue([]);
-
-  render(<NotesFilesPanel entityType="partner" entityId="p1" canWrite />);
-  await user.click(await screen.findByRole('button', { expanded: false }));
-  expect(screen.getByRole('tab', { name: 'Document' })).toBeTruthy();
-  expect(screen.getByRole('tab', { name: 'Survey template' })).toBeTruthy();
-  cleanup();
-
-  render(<NotesFilesPanel entityType="asset" entityId="a1" canWrite />);
-  await user.click(await screen.findByRole('button', { expanded: false }));
-  expect(screen.getByPlaceholderText('Add a note…')).toBeTruthy();
-  expect(screen.queryByRole('tab', { name: 'Survey template' })).toBeNull();
-});
-
-it('uploading with Survey template selected sends kind survey_template and restricts to xlsx', async () => {
-  const user = userEvent.setup();
-  api.listNotes.mockResolvedValue([]);
-  api.listAttachments.mockResolvedValue([]);
-  api.uploadAttachmentRequest.mockResolvedValue(
-    attachment({ id: 'f2', kind: 'survey_template', filename: 'survey.xlsx' }));
-
-  render(<NotesFilesPanel entityType="partner" entityId="p1" canWrite />);
-  await user.click(await screen.findByRole('button', { expanded: false }));
-  await user.click(screen.getByRole('tab', { name: 'Survey template' }));
-
-  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
-  expect(input.accept).toBe('.xlsx');
-  const xlsx = new File(['x'], 'survey.xlsx', {
-    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  });
-  await user.upload(input, xlsx);
-
-  await waitFor(() => expect(api.uploadAttachmentRequest).toHaveBeenCalledWith({
-    entityType: 'partner', entityId: 'p1', kind: 'survey_template', file: xlsx,
-  }));
-});
-
-it('defaults to Document, and a plain document upload still works', async () => {
+it('a partner upload sends kind document (or photo for images), with no upload-type tablist', async () => {
   const user = userEvent.setup();
   api.listNotes.mockResolvedValue([]);
   api.listAttachments.mockResolvedValue([]);
@@ -157,25 +118,18 @@ it('defaults to Document, and a plain document upload still works', async () => 
 
   render(<NotesFilesPanel entityType="partner" entityId="p1" canWrite />);
   await user.click(await screen.findByRole('button', { expanded: false }));
-  expect(screen.getByRole('tab', { name: 'Document' }).className).toContain('on');
+  expect(screen.queryByRole('tablist')).toBeNull();
 
   const input = document.querySelector('input[type="file"]') as HTMLInputElement;
   const pdf = new File(['x'], 'contract.pdf', { type: 'application/pdf' });
   await user.upload(input, pdf);
-
   await waitFor(() => expect(api.uploadAttachmentRequest).toHaveBeenCalledWith({
     entityType: 'partner', entityId: 'p1', kind: 'document', file: pdf,
   }));
-});
 
-it('shows a "Survey template" chip on survey_template rows', async () => {
-  const user = userEvent.setup();
-  api.listNotes.mockResolvedValue([]);
-  api.listAttachments.mockResolvedValue([
-    attachment({ id: 'f2', kind: 'survey_template', filename: 'survey.xlsx', url: null }),
-  ]);
-
-  render(<NotesFilesPanel entityType="partner" entityId="p1" canWrite />);
-  await user.click(await screen.findByRole('button', { expanded: false }));
-  expect(await screen.findByText('Survey template', { selector: 'span.chip' })).toBeTruthy();
+  const png = new File(['x'], 'site.png', { type: 'image/png' });
+  await user.upload(input, png);
+  await waitFor(() => expect(api.uploadAttachmentRequest).toHaveBeenCalledWith({
+    entityType: 'partner', entityId: 'p1', kind: 'photo', file: png,
+  }));
 });

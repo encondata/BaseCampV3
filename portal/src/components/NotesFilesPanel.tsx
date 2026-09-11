@@ -65,13 +65,8 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [lightbox, setLightbox] = useState<AttachmentOut | null>(null);
-  // Partners get a choice of upload type — a plain "Document" or a
-  // "Survey template" (the Site & Move Survey report's xlsx questionnaire,
-  // partner-only per the attachment kind rules).
-  const [uploadKind, setUploadKind] = useState<'document' | 'survey_template'>('document');
   const fileRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
-  const isPartner = entityType === 'partner';
 
   // grow with content while typing, capped so long notes scroll
   const autoGrow = (el: HTMLTextAreaElement | null) => {
@@ -153,8 +148,7 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
         // this component is contractually generic, so assert here.
         entityType: entityType as 'person' | 'client' | 'partner' | 'asset',
         entityId,
-        kind: isPartner && uploadKind === 'survey_template'
-          ? 'survey_template' : file.type.startsWith('image/') ? 'photo' : 'document',
+        kind: file.type.startsWith('image/') ? 'photo' : 'document',
         file,
       });
       await load();
@@ -238,23 +232,12 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                         onChange={(e) => setDraft(e.target.value)}
                         onInput={(e) => autoGrow(e.currentTarget)}
                         disabled={busy} />
-              {isPartner && (
-                <div className="segmented" role="tablist" style={{ marginBottom: 8 }}>
-                  <button type="button" role="tab" aria-selected={uploadKind === 'document'}
-                          className={uploadKind === 'document' ? 'on' : ''}
-                          onClick={() => setUploadKind('document')}>Document</button>
-                  <button type="button" role="tab" aria-selected={uploadKind === 'survey_template'}
-                          className={uploadKind === 'survey_template' ? 'on' : ''}
-                          onClick={() => setUploadKind('survey_template')}>Survey template</button>
-                </div>
-              )}
               <div className="nf-composer-actions">
                 <button className="mini-btn" onClick={() => void addNote()}
                         disabled={busy || !draft.trim()}>Add note</button>
                 <button className="mini-btn" onClick={() => fileRef.current?.click()}
                         disabled={busy}>Attach file</button>
                 <input ref={fileRef} type="file" hidden
-                       accept={isPartner && uploadKind === 'survey_template' ? '.xlsx' : undefined}
                        onChange={(e) => {
                          const f = e.target.files?.[0];
                          if (f) void upload(f);

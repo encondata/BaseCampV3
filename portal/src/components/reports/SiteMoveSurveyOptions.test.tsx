@@ -4,8 +4,8 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type {
-  InitiativeAssetRow, InitiativeItem, ReportDefinition, SiteItem, SurveyPartnerOption,
-  SurveySchema, UserSummary,
+  AttachmentOut, InitiativeAssetRow, InitiativeItem, ReportDefinition, SiteItem,
+  SurveyPartnerOption, SurveySchema, UserSummary,
 } from '../../lib/api';
 
 // jsdom doesn't implement Element.scrollIntoView — ComboBox calls it when
@@ -36,9 +36,15 @@ const DEF: ReportDefinition = {
 };
 
 const PARTNERS: SurveyPartnerOption[] = [
-  { id: 'p1', name: 'Acme Logistics', has_template: true },
-  { id: 'p2', name: 'Beta Movers', has_template: false },
+  { id: 'p1', name: 'Acme Logistics' },
+  { id: 'p2', name: 'Beta Movers' },
 ];
+const TEMPLATE_FILE: AttachmentOut = {
+  id: 'tf1', entity_type: 'report_definition', entity_id: 'd1', kind: 'survey_template',
+  storage_key: 'k', filename: 'Move Survey.xlsx',
+  content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  size_bytes: 4096, created_at: '2026-09-09T10:00:00Z', url: null,
+};
 const USERS: UserSummary[] = [
   { person_id: 'me1', display_name: 'Me', login_email: 'me@example.com', avatar_url: null },
   { person_id: 'u2', display_name: 'Other Person', login_email: 'other@example.com', avatar_url: null },
@@ -110,7 +116,10 @@ beforeEach(() => {
   api.listSurveyPartners.mockResolvedValue(PARTNERS);
   api.listUsers.mockResolvedValue(USERS);
   api.listSites.mockResolvedValue(SITES);
-  api.listAttachments.mockResolvedValue([]);
+  // Most tests need Generate reachable, so default to a definition that
+  // already carries a survey template; the "no template" tests below
+  // override this back to [].
+  api.listAttachments.mockResolvedValue([TEMPLATE_FILE]);
   api.getSurveySchema.mockResolvedValue(SCHEMA);
   api.listInitiativeAssets.mockResolvedValue([]);
   api.listSiteSurvey.mockResolvedValue([]);
@@ -118,17 +127,25 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-it('shows a Template chip for a partner with a template, and No template otherwise', async () => {
-  const user = userEvent.setup();
-  render(<SiteMoveSurveyOptions definition={DEF} initiative={null} onBack={() => {}} onGenerate={() => {}} />);
-  const combo = await screen.findByPlaceholderText('Type to search partners…');
-  await user.click(combo);
-  await user.click(await screen.findByText('Acme Logistics'));
-  expect(screen.getByText('Template')).toBeTruthy();
+it('shows a notice and disables Generate when the definition has no survey template', async () => {
+  api.listAttachments.mockResolvedValue([]);
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
+  expect(await screen.findByText(
+    'This report has no survey template yet. Upload an .xlsx template under Edit report › Files.',
+  )).toBeTruthy();
+  await waitFor(() => expect(
+    (screen.getByRole('button', { name: 'Generate Report' }) as HTMLButtonElement).disabled,
+  ).toBe(true));
+});
 
-  await user.click(combo);
-  await user.click(await screen.findByText('Beta Movers'));
-  expect(screen.getByText('No template')).toBeTruthy();
+it('shows no notice and enables Generate once the definition carries a survey template', async () => {
+  api.listAttachments.mockResolvedValue([TEMPLATE_FILE]);
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByDisplayValue('Acme Logistics');   // partner auto-selected
+  expect(screen.queryByText(/no survey template yet/)).toBeNull();
+  await waitFor(() => expect(
+    (screen.getByRole('button', { name: 'Generate Report' }) as HTMLButtonElement).disabled,
+  ).toBe(false));
 });
 
 it('defaults the company contact to the signed-in user, showing their email', async () => {
@@ -155,7 +172,7 @@ it('auto-detects source/destination sites from the picked initiative, overridabl
 
 it('also auto-selects the initiative\'s logistics shipping partner', async () => {
   render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
-  expect(await screen.findByText('Template')).toBeTruthy();   // p1 = Acme Logistics
+  expect(await screen.findByDisplayValue('Acme Logistics')).toBeTruthy();   // p1 = Acme Logistics
 });
 
 it('hides the asset-notes textarea once the move has assets', async () => {
@@ -249,7 +266,7 @@ it('opens the missing-survey modal when the source site lacks required answers, 
       updated_at: null },
   ]);
   render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={onGenerate} />);
-  await screen.findByText('Template');
+  await screen.findByDisplayValue('Acme Logistics');
 
   await user.click(await screen.findByRole('button', { name: 'Generate Report' }));
   expect(await screen.findByText('Complete source site survey')).toBeTruthy();

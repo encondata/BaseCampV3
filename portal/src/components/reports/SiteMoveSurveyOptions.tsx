@@ -9,9 +9,11 @@
  * from a move, overridable), an assets preview with a condensed/per-asset
  * toggle (or an asset-notes textarea when the move has none), and the
  * three per-run option switches. Generate is gated on a partner plus an
- * initiative or a source site; when the source site is missing required
- * survey answers it opens `CompleteSiteSurveyModal` before queuing the
- * run.
+ * initiative or a source site plus the report definition carrying a
+ * `survey_template` attachment (the xlsx a run fills — uploaded on the
+ * definition's Files, not on the partner); when the source site is
+ * missing required survey answers it opens `CompleteSiteSurveyModal`
+ * before queuing the run.
  */
 import { useEffect, useMemo, useState } from 'react';
 
@@ -63,6 +65,10 @@ export default function SiteMoveSurveyOptions({ definition, initiative, onBack, 
   const [assetNotes, setAssetNotes] = useState('');
 
   const [hasStandardsDoc, setHasStandardsDoc] = useState(false);
+  // The survey template now lives on the report definition (several may
+  // exist; the newest is the one a run fills), not on the partner — see
+  // EditDefinitionModal's Files section, which is where staff upload it.
+  const [hasTemplate, setHasTemplate] = useState(false);
   const [includeStandards, setIncludeStandards] = useState(
     () => !!definition.options.include_transportation_standards);
   const [includePhotos, setIncludePhotos] = useState(
@@ -88,6 +94,7 @@ export default function SiteMoveSurveyOptions({ definition, initiative, onBack, 
       setSites(s);
       setHasStandardsDoc(files.some(
         (f) => f.kind === 'report_asset' && f.filename.toLowerCase().endsWith('.docx')));
+      setHasTemplate(files.some((f) => f.kind === 'survey_template'));
       setSchema(sch);
     }).catch(() => { if (!cancelled) setLoadError("Couldn't load the generate options."); });
     return () => { cancelled = true; };
@@ -122,14 +129,13 @@ export default function SiteMoveSurveyOptions({ definition, initiative, onBack, 
 
   const siteOptions = useMemo(
     () => (sites ?? []).map((s) => ({ value: s.id, label: s.name })), [sites]);
-  const selectedPartner = partners?.find((p) => p.id === partnerId) ?? null;
   const selectedContact = users?.find((u) => u.person_id === contactId) ?? null;
   const previewRows = useMemo(() => assetPreviewRows(assets, condensed), [assets, condensed]);
   // A disabled switch that still reads "on" would be misleading — force it
   // off (and off in the payload) whenever there's no docx to append.
   const effectiveIncludeStandards = includeStandards && hasStandardsDoc;
 
-  const canGenerate = !!partnerId && (!!initiative || !!sourceSiteId);
+  const canGenerate = !!partnerId && (!!initiative || !!sourceSiteId) && hasTemplate;
 
   const proceed = () => {
     const options = buildRunOptions({
@@ -176,6 +182,12 @@ export default function SiteMoveSurveyOptions({ definition, initiative, onBack, 
   return (
     <>
       <div className="modal-body">
+        {!hasTemplate && (
+          <p className="pf-notice">
+            This report has no survey template yet. Upload an .xlsx template under Edit report ›
+            Files.
+          </p>
+        )}
         <div className="modal-section">Partner</div>
         <div className="pf-form">
           <div>
@@ -187,12 +199,6 @@ export default function SiteMoveSurveyOptions({ definition, initiative, onBack, 
               onChange={(v) => { setPartnerTouched(true); setPartnerId(v); }}
               options={(partners ?? []).map((p) => ({ value: p.id, label: p.name }))}
             />
-            {selectedPartner && (
-              <span className={`chip ${selectedPartner.has_template ? 'c-green' : 'c-slate'}`}
-                    style={{ marginTop: 6 }}>
-                {selectedPartner.has_template ? 'Template' : 'No template'}
-              </span>
-            )}
           </div>
         </div>
 

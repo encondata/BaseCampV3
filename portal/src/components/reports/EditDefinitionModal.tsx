@@ -2,8 +2,10 @@
  * Edit a report definition. Move Report keeps its name/description +
  * default sections. Site & Move Survey additionally gets a company-name
  * text field (the `customer.company` context value) and a **Files**
- * section for the `report_asset` attachments this report reads from —
- * in practice, the Transportation Standards docx.
+ * section listing every attachment on the definition — both the
+ * `survey_template` xlsx (the questionnaire a run fills; several may
+ * exist, the newest wins) and the `report_asset` docx (in practice, the
+ * Transportation Standards document).
  */
 import { useEffect, useRef, useState } from 'react';
 
@@ -14,6 +16,11 @@ import {
 import type { ReportDefinition } from '../../lib/api';
 import { MOVE_REPORT_SECTIONS } from '../../lib/reports';
 import { Switch } from '../Switch';
+
+/** Files section kind chip — the raw attachment `kind` isn't UI copy. */
+const FILE_KIND_LABEL: Record<string, string> = {
+  survey_template: 'Survey template', report_asset: 'Document',
+};
 
 const SURVEY_SWITCHES: { key: string; title: string; description: string }[] = [
   {
@@ -56,6 +63,7 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
   const [filesLoaded, setFilesLoaded] = useState(false);
   const [fileBusy, setFileBusy] = useState(false);
   const [fileError, setFileError] = useState('');
+  const [uploadKind, setUploadKind] = useState<'survey_template' | 'report_asset'>('survey_template');
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -92,7 +100,7 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
     setFileError('');
     try {
       const att = await uploadAttachmentRequest({
-        entityType: 'report_definition', entityId: definition.id, kind: 'report_asset', file,
+        entityType: 'report_definition', entityId: definition.id, kind: uploadKind, file,
       });
       setFiles((f) => [att, ...f]);
     } catch (err) {
@@ -164,13 +172,20 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
             <>
               <div className="modal-section">Files</div>
               <ul className="mini-list nf-list">
-                {filesLoaded && files.length === 0 && <li className="page-hint">No files yet.</li>}
+                {filesLoaded && files.length === 0 && (
+                  <li className="page-hint">
+                    No files yet. Upload the survey template (xlsx) this report fills, and the
+                    Transportation Standards document.
+                  </li>
+                )}
                 {files.map((f) => (
                   <li key={f.id} className="mini-row nf-item">
                     <p className="nf-body">
                       {f.url
                         ? <a href={f.url} target="_blank" rel="noreferrer">📎 {f.filename}</a>
                         : <>📎 {f.filename}</>}
+                      <span className="chip tag" style={{ marginLeft: 8 }}>
+                        {FILE_KIND_LABEL[f.kind] ?? f.kind}</span>
                     </p>
                     <div className="nf-meta">
                       <span className="mono">{(f.size_bytes / 1024).toFixed(0)} KB</span>
@@ -184,11 +199,21 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
                   </li>
                 ))}
               </ul>
+              <p className="page-hint">The newest survey template is the one a run fills.</p>
+              <div className="segmented" role="tablist" style={{ marginBottom: 8 }}>
+                <button type="button" role="tab" aria-selected={uploadKind === 'survey_template'}
+                        className={uploadKind === 'survey_template' ? 'on' : ''}
+                        onClick={() => setUploadKind('survey_template')}>Survey template</button>
+                <button type="button" role="tab" aria-selected={uploadKind === 'report_asset'}
+                        className={uploadKind === 'report_asset' ? 'on' : ''}
+                        onClick={() => setUploadKind('report_asset')}>Document</button>
+              </div>
               <button type="button" className="mini-btn" disabled={fileBusy}
                       onClick={() => fileRef.current?.click()}>
                 Upload file
               </button>
-              <input ref={fileRef} type="file" hidden accept=".docx,.pdf"
+              <input ref={fileRef} type="file" hidden
+                     accept={uploadKind === 'survey_template' ? '.xlsx' : '.docx,.pdf'}
                      onChange={(e) => {
                        const f = e.target.files?.[0];
                        if (f) void uploadFile(f);

@@ -33,6 +33,12 @@ const file = (over: Partial<AttachmentOut> = {}): AttachmentOut => ({
   storage_key: 'k', filename: 'Transportation Standards.docx', content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   size_bytes: 2048, created_at: '2026-09-09T10:00:00Z', url: null, ...over,
 });
+const templateFile = (over: Partial<AttachmentOut> = {}): AttachmentOut => ({
+  id: 'f2', entity_type: 'report_definition', entity_id: 'd2', kind: 'survey_template',
+  storage_key: 'k2', filename: 'Move Survey.xlsx',
+  content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  size_bytes: 4096, created_at: '2026-09-09T10:00:00Z', url: null, ...over,
+});
 
 beforeEach(() => {
   api.listAttachments.mockResolvedValue([]);
@@ -69,16 +75,48 @@ it('Site & Move Survey shows the company field pre-filled, and saving patches co
   }));
 });
 
-it('lists existing report_asset files and uploads a new one', async () => {
+it('lists both attachment kinds with the right chip', async () => {
+  api.listAttachments.mockResolvedValue([file(), templateFile()]);
+  render(<EditDefinitionModal definition={SURVEY_DEF} onClose={() => {}} onSaved={() => {}} />);
+  expect(await screen.findByText(/Transportation Standards\.docx/)).toBeTruthy();
+  expect(screen.getByText(/Move Survey\.xlsx/)).toBeTruthy();
+  expect(screen.getByText('Survey template', { selector: 'span.chip' })).toBeTruthy();
+  expect(screen.getByText('Document', { selector: 'span.chip' })).toBeTruthy();
+  expect(screen.getByText('The newest survey template is the one a run fills.')).toBeTruthy();
+});
+
+it('uploads with Survey template selected (the default) as kind survey_template', async () => {
+  const user = userEvent.setup();
+  api.listAttachments.mockResolvedValue([]);
+  api.uploadAttachmentRequest.mockResolvedValue(templateFile());
+  render(<EditDefinitionModal definition={SURVEY_DEF} onClose={() => {}} onSaved={() => {}} />);
+  await screen.findByText(/No files yet/);
+  expect(screen.getByRole('tab', { name: 'Survey template' }).className).toContain('on');
+
+  const xlsx = new File(['x'], 'survey.xlsx', {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  expect(input.accept).toBe('.xlsx');
+  await user.upload(input, xlsx);
+
+  await waitFor(() => expect(api.uploadAttachmentRequest).toHaveBeenCalledWith({
+    entityType: 'report_definition', entityId: 'd2', kind: 'survey_template', file: xlsx,
+  }));
+});
+
+it('uploads with Document selected as kind report_asset', async () => {
   const user = userEvent.setup();
   api.listAttachments.mockResolvedValue([file()]);
   render(<EditDefinitionModal definition={SURVEY_DEF} onClose={() => {}} onSaved={() => {}} />);
-  expect(await screen.findByText(/Transportation Standards\.docx/)).toBeTruthy();
+  await screen.findByText(/Transportation Standards\.docx/);
+  await user.click(screen.getByRole('tab', { name: 'Document' }));
 
   const docx = new File(['x'], 'standards2.docx', {
     type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   });
   const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  expect(input.accept).toBe('.docx,.pdf');
   await user.upload(input, docx);
 
   await waitFor(() => expect(api.uploadAttachmentRequest).toHaveBeenCalledWith({
