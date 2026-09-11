@@ -93,6 +93,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       {
         to: '/assets',
+        end: true,
         label: 'Assets',
         resource: 'assets',
         icon: (
@@ -612,6 +613,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       {
         to: '/dev',
+        end: true,
         label: 'Developer tools',
         resource: 'devtools',
         godOnly: true,
@@ -637,6 +639,7 @@ export const NAV_SECTIONS: NavSection[] = [
       },
       {
         to: '/dev/database',
+        end: true,
         label: 'Database',
         resource: 'devtools',
         godOnly: true,

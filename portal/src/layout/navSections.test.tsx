@@ -14,3 +14,12 @@ describe('NAV_SECTIONS', () => {
     expect(new Set(labels).size).toBe(labels.length);
   });
 });
+
+it('every nav item whose path is a prefix of another item matches exactly (no double highlight)', () => {
+  const items = NAV_SECTIONS.flatMap((s) => s.items);
+  for (const item of items) {
+    if (item.to === '/') continue;
+    const hasChild = items.some((o) => o !== item && o.to.startsWith(`${item.to}/`));
+    if (hasChild) expect(item.end, `${item.to} needs end: true`).toBe(true);
+  }
+});
