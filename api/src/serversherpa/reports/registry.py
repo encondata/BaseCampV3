@@ -47,10 +47,11 @@ def registry() -> dict[str, ReportModule]:
     circular import at package load."""
     global _REGISTRY
     if _REGISTRY is None:
-        from serversherpa.reports import move_report, site_move_survey
+        from serversherpa.reports import move_report, move_scan_history, site_move_survey
         _REGISTRY = {
             move_report.report_type: move_report,                # type: ignore[dict-item]
             site_move_survey.report_type: site_move_survey,      # type: ignore[dict-item]
+            move_scan_history.report_type: move_scan_history,    # type: ignore[dict-item]
         }
     return _REGISTRY
 
