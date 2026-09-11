@@ -247,14 +247,14 @@ export default function InitiativeTimeline() {
 
       {view === 'month' && (
         <div className="itl-month-nav">
+          <span className="cell-top itl-month-label">{rangeLabel}</span>
           <button type="button" className="mini-btn" aria-label="Previous month"
                   onClick={() => setAnchor((a) => stepAnchor(a, view, scale, -1))}>‹</button>
-          <span className="cell-top itl-month-label">{rangeLabel}</span>
-          <button type="button" className="mini-btn" aria-label="Next month"
-                  onClick={() => setAnchor((a) => stepAnchor(a, view, scale, 1))}>›</button>
           <button type="button" className="mini-btn" onClick={() => setAnchor(startOfToday())}>
             Today
           </button>
+          <button type="button" className="mini-btn" aria-label="Next month"
+                  onClick={() => setAnchor((a) => stepAnchor(a, view, scale, 1))}>›</button>
         </div>
       )}
 
@@ -387,8 +387,13 @@ function MonthCalendar({ items, anchor }: { items: InitiativeItem[]; anchor: Dat
     const onDown = (e: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpenKey(null);
     };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpenKey(null); };
     document.addEventListener('mousedown', onDown, true);
-    return () => document.removeEventListener('mousedown', onDown, true);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown, true);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [openKey]);
 
   return (
