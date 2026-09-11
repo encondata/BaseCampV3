@@ -54,12 +54,18 @@ async def _seed_move(db):
     ])
 
     # A status outside the canonical (conftest-restored) asset vocabulary,
-    # marked inactive — proves "all" mode (and this module's pipeline
-    # mode, which only appends *active* off-pipeline statuses) never
-    # surfaces it as a column, even though it was actually scanned.
-    db.add(StatusValue(record_type="asset", key="deprecated_test",
-                       label="Deprecated Test", color="#000000", sort_order=999,
-                       is_active=False))
+    # marked inactive — was scanned on this move (see below), so it must
+    # still surface as a column in both modes (nothing scanned is
+    # hidden). A second inactive status that is never scanned proves the
+    # contrast: no scans means no column, in either mode.
+    db.add_all([
+        StatusValue(record_type="asset", key="deprecated_test",
+                   label="Deprecated Test", color="#000000", sort_order=999,
+                   is_active=False),
+        StatusValue(record_type="asset", key="retired_test",
+                   label="Retired Test", color="#000000", sort_order=999,
+                   is_active=False),
+    ])
     await db.flush()
 
     db.add_all([
@@ -145,29 +151,45 @@ async def test_columns_for_pipeline_appends_off_pipeline_scanned_status(db):
     data = await gather(db, ini.id)
     cols = columns_for(data, "pipeline")
     assert [c.key for c in cols[:14]] == list(PIPELINE_STATUS_KEYS)
-    assert [c.key for c in cols[14:]] == ["cabling"]  # appended after 'complete'
+    # appended after 'complete': 'cabling' (progress_weight 85) sorts
+    # before 'deprecated_test' (no progress_weight — nulls last)
+    assert [c.key for c in cols[14:]] == ["cabling", "deprecated_test"]
     complete_col = next(c for c in cols if c.key == "complete")
     assert complete_col.scan_count == 1
     cabling_col = next(c for c in cols if c.key == "cabling")
     assert cabling_col.in_pipeline is False and cabling_col.scan_count == 1
 
 
-async def test_columns_for_pipeline_and_all_never_surface_inactive_status(db):
+async def test_columns_for_surfaces_scanned_inactive_status_but_not_unscanned_one(db):
+    """A status the vocabulary has deactivated must not vanish from the
+    Overview grid just because a move actually scanned through it before
+    deactivation — the spec is explicit that pipeline mode "appends any
+    status that was actually scanned … so nothing is hidden", and "all"
+    mode is a superset of pipeline. An inactive status with zero scans
+    on this move is the contrasting case: still not a column, in either
+    mode."""
     ini = await _seed_move(db)
     data = await gather(db, ini.id)
     pipeline_keys = {c.key for c in columns_for(data, "pipeline")}
     all_keys = {c.key for c in columns_for(data, "all")}
-    assert "deprecated_test" not in pipeline_keys
-    assert "deprecated_test" not in all_keys
+
+    assert "deprecated_test" in pipeline_keys   # inactive, but scanned
+    assert "deprecated_test" in all_keys
+    deprecated_col = next(c for c in columns_for(data, "all") if c.key == "deprecated_test")
+    assert deprecated_col.in_pipeline is False and deprecated_col.scan_count == 1
+
+    assert "retired_test" not in pipeline_keys  # inactive, never scanned
+    assert "retired_test" not in all_keys
 
 
-async def test_columns_for_all_includes_pipeline_then_other_active_statuses(db):
+async def test_columns_for_all_includes_pipeline_then_other_statuses(db):
     ini = await _seed_move(db)
     data = await gather(db, ini.id)
     cols = columns_for(data, "all")
     assert [c.key for c in cols[:14]] == list(PIPELINE_STATUS_KEYS)
-    assert "cabling" in {c.key for c in cols[14:]}
-    # every non-pipeline column in "all" mode is active
+    tail_keys = {c.key for c in cols[14:]}
+    assert "cabling" in tail_keys and "deprecated_test" in tail_keys
+    assert "retired_test" not in tail_keys       # inactive, never scanned — excluded
     assert all(not c.in_pipeline for c in cols[14:])
 
 

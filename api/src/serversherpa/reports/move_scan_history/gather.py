@@ -101,9 +101,10 @@ class ScanHistoryData:
 
 def columns_for(data: ScanHistoryData, mode: str) -> list[StatusCol]:
     """`data.statuses` is already built in "all" order (pipeline keys
-    first, then every other ACTIVE asset status) with `in_pipeline`
-    flags and `scan_count` — both modes are pure filters/re-slices of
-    that one list, no extra DB access needed.
+    first, then every other status that is either active or was
+    actually scanned on this move) with `in_pipeline` flags and
+    `scan_count` — both modes are pure filters/re-slices of that one
+    list, no extra DB access needed.
 
     - "all": the whole list, unchanged.
     - "pipeline": the pipeline columns, plus any non-pipeline column
@@ -147,14 +148,19 @@ async def gather(db: AsyncSession, initiative_id: uuid.UUID) -> ScanHistoryData:
     vocab = {s.key: s for s in await db.scalars(
         select(StatusValue).where(StatusValue.record_type == "asset"))}
 
+    # Joined through InitiativeAsset (filtered by initiative_id) rather
+    # than `ProcessedScan.asset_id.in_(asset_uuid_by_legacy.values())` —
+    # same grouped result, zero bind parameters, no ceiling on roster
+    # size (asyncpg caps IN(...) at 32767 params).
     scan_rows: list[tuple[int, str, datetime]] = []
     if asset_uuid_by_legacy:
         scan_rows = (await db.execute(
             select(Asset.legacy_id, ProcessedScan.status, func.min(ProcessedScan.scanned_at))
             .join(Asset, Asset.id == ProcessedScan.asset_id)
+            .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id)
             .where(
+                InitiativeAsset.initiative_id == initiative_id,
                 ProcessedScan.match_type == "asset",
-                ProcessedScan.asset_id.in_(asset_uuid_by_legacy.values()),
                 ProcessedScan.status.isnot(None),
                 ProcessedScan.archived_at.is_(None),
             )
@@ -179,8 +185,16 @@ async def gather(db: AsyncSession, initiative_id: uuid.UUID) -> ScanHistoryData:
         scan_count=counts.get(key, 0),
     ) for key in PIPELINE_STATUS_KEYS]
 
+    # Non-pipeline statuses that are either active (the unscanned tail
+    # "all" mode shows) or were actually scanned on this move — even if
+    # the vocabulary row has since been deactivated, a status a move
+    # really passed through must not vanish from the Overview grid (the
+    # design spec: pipeline mode "appends any status that was actually
+    # scanned … so nothing is hidden"; "all" mode is a superset of
+    # pipeline, so it must include it too).
     other_rows = sorted(
-        (row for key, row in vocab.items() if key not in PIPELINE_STATUS_KEYS and row.is_active),
+        (row for key, row in vocab.items()
+         if key not in PIPELINE_STATUS_KEYS and (row.is_active or key in counts)),
         key=_other_status_sort_key)
     other_cols = [StatusCol(key=row.key, label=row.label, color=row.color, in_pipeline=False,
                             scan_count=counts.get(row.key, 0)) for row in other_rows]

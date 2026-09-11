@@ -45,15 +45,19 @@ def _build_overview(wb: Workbook, data: ScanHistoryData, columns: list[StatusCol
 
     scheduled_start = (_fmt(data.scheduled_start, tz, _DATE_FMT)
                        if data.scheduled_start else "Not scheduled")
-    ws.append(["Move Name", data.name])
-    ws.append(["Client", data.client_name or "N/A"])
-    ws.append(["Scheduled Start", scheduled_start])
-    ws.append(["Source", data.source_name or "N/A"])
-    ws.append(["Destination", data.destination_name or "N/A"])
-    ws.append(["Date Generated", _fmt(generated_at, tz, _OVERVIEW_DT_FMT)])
-    ws.append(["Total Assets", data.total_assets])
-    ws.append(["Completion", f"{data.completion_pct}%"])
-    for row in ws.iter_rows(min_row=1, max_row=8, max_col=1):
+    block_rows = [
+        ["Move Name", data.name],
+        ["Client", data.client_name or "N/A"],
+        ["Scheduled Start", scheduled_start],
+        ["Source", data.source_name or "N/A"],
+        ["Destination", data.destination_name or "N/A"],
+        ["Date Generated", _fmt(generated_at, tz, _OVERVIEW_DT_FMT)],
+        ["Total Assets", data.total_assets],
+        ["Completion", f"{data.completion_pct}%"],
+    ]
+    for row in block_rows:
+        ws.append(row)
+    for row in ws.iter_rows(min_row=1, max_row=len(block_rows), max_col=1):
         for cell in row:
             cell.font = _BOLD
     ws.append([])  # blank separator row
