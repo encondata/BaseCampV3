@@ -317,12 +317,15 @@ export async function savePreferencesRequest(prefs: UiPreferences): Promise<void
   if (!resp.ok) throw await errorFrom(resp);
 }
 
-/** Global attachment upload — avatars now; asset photos, documents later.
- *  FormData: the browser sets the multipart boundary itself. */
+/** Global attachment upload — avatars, asset photos, documents, plus the
+ *  Site & Move Survey report's `survey_template` (partner-only xlsx) and
+ *  `report_asset` (report-definition-only docx/pdf, e.g. the
+ *  Transportation Standards document). FormData: the browser sets the
+ *  multipart boundary itself. */
 export async function uploadAttachmentRequest(opts: {
-  entityType: 'person' | 'client' | 'partner' | 'asset';
+  entityType: 'person' | 'client' | 'partner' | 'asset' | 'report_definition';
   entityId: string;
-  kind: 'avatar' | 'photo' | 'document';
+  kind: 'avatar' | 'photo' | 'document' | 'survey_template' | 'report_asset';
   file: File;
 }): Promise<AttachmentOut> {
   const form = new FormData();
@@ -3514,14 +3517,22 @@ export async function aiChatRequest(
 
 export type ReportRunStatus = 'queued' | 'running' | 'completed' | 'failed';
 
+/** Definition options vary by report_type: Move Report's are all
+ *  booleans (per-section toggles); Site & Move Survey's mixes a string
+ *  (`company_name`) with three booleans — so this stays a loose
+ *  `Record<string, unknown>` rather than `Record<string, boolean>`, and
+ *  callers that know their type's shape narrow it themselves. */
 export interface ReportDefinition {
   id: string; name: string; description: string; report_type: string;
-  options: Record<string, boolean>; is_system: boolean; updated_at: string;
+  options: Record<string, unknown>; is_system: boolean; updated_at: string;
 }
 
 export interface ReportRun {
   id: string; definition_id: string; definition_name: string; report_type: string;
-  initiative_id: string; initiative_name: string; options: Record<string, boolean>;
+  // null when the run was generated without an initiative (e.g. a Site &
+  // Move Survey run for a partner + manually chosen sites).
+  initiative_id: string | null; initiative_name: string | null;
+  options: Record<string, unknown>;
   status: ReportRunStatus; error: string | null;
   requested_by: string; requested_by_name: string; requested_rank: number; notify: boolean;
   filename: string | null; size_bytes: number | null;
@@ -3541,7 +3552,7 @@ export async function cloneReportDefinition(id: string): Promise<ReportDefinitio
 }
 
 export async function updateReportDefinition(
-  id: string, patch: { name?: string; description?: string; options?: Record<string, boolean> },
+  id: string, patch: { name?: string; description?: string; options?: Record<string, unknown> },
 ): Promise<ReportDefinition> {
   const resp = await apiFetch(`/reports/definitions/${id}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
@@ -3556,11 +3567,21 @@ export async function deleteReportDefinition(id: string): Promise<void> {
 }
 
 export async function createReportRun(body: {
-  definition_id: string; initiative_id: string; options: Record<string, boolean>; notify: boolean;
+  definition_id: string; initiative_id: string | null; options: Record<string, unknown>; notify: boolean;
 }): Promise<ReportRun> {
   const resp = await apiFetch('/reports/runs', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** GET /reports/site-move-survey/partners — logistics partners only, each
+ *  flagged with whether they already carry a `survey_template` attachment. */
+export interface SurveyPartnerOption { id: string; name: string; has_template: boolean }
+
+export async function listSurveyPartners(): Promise<SurveyPartnerOption[]> {
+  const resp = await apiFetch('/reports/site-move-survey/partners');
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

@@ -41,7 +41,9 @@ const COLUMNS: ColumnDef[] = [
 ];
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
-const TYPE_LABELS: Record<string, string> = { move_report: 'Move Report' };
+const TYPE_LABELS: Record<string, string> = {
+  move_report: 'Move Report', site_move_survey: 'Site & Move Survey',
+};
 const TOTAL_SECTIONS = 8;
 
 const msgFor = (err: unknown): string =>
@@ -94,7 +96,10 @@ export default function Reports() {
     switch (key) {
       case 'report_type': return TYPE_LABELS[d.report_type] ?? d.report_type;
       case 'description': return d.description;
-      case 'sections': return `${sectionCount(d.options)} of ${TOTAL_SECTIONS}`;
+      // Move Report is the only type with fixed toggle "sections"; other
+      // report types (Site & Move Survey) render a dash in this column.
+      case 'sections': return d.report_type === 'move_report'
+        ? `${sectionCount(d.options)} of ${TOTAL_SECTIONS}` : '—';
       case 'updated_at': return d.updated_at;
       case 'is_system': return d.is_system ? 'System' : 'Custom';
       default: return d.name;
