@@ -58,7 +58,7 @@ import WorkerDetailPage from './pages/WorkerDetail';
 
 /** Old URL kept alive for bookmarks and audit links — carries the query
  *  string (e.g. ?open=<id>) and router state to the new path. */
-function LegacyRedirect({ to }: { to: string }) {
+export function LegacyRedirect({ to }: { to: string }) {
   const loc = useLocation();
   return <Navigate to={`${to}${loc.search}${loc.hash}`} state={loc.state} replace />;
 }
