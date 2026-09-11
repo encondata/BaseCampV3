@@ -35,6 +35,11 @@ def _css_string(value: str) -> Markup:
     return Markup(out)
 
 
+# Public alias — other report modules (move_scan_history/pdf.py) reuse this
+# filter for their own `@page` margin-box content and shouldn't have to
+# reach across packages for an underscore-prefixed name.
+css_string = _css_string
+
 _ENV.filters["cssstr"] = _css_string
 
 COLLISION_LABELS = {"ru_overlap": "RU overlap", "slot_conflict": "Slot conflict",

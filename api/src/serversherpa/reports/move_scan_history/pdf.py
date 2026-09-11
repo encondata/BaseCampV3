@@ -11,13 +11,13 @@ from zoneinfo import ZoneInfo
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from serversherpa.reports.move_report.render import _css_string, render_pdf_async
+from serversherpa.reports.move_report.render import css_string, render_pdf_async
 from serversherpa.reports.move_scan_history.barcode import pdf417_data_uri
 from serversherpa.reports.move_scan_history.gather import ScanHistoryData, StatusCol
 
 _ENV = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"),
                    autoescape=select_autoescape(["html"]), trim_blocks=True, lstrip_blocks=True)
-_ENV.filters["cssstr"] = _css_string
+_ENV.filters["cssstr"] = css_string
 
 # `render_pdf_async` (Jinja2 HTML -> WeasyPrint PDF bytes in a thread) is
 # generic over the HTML it's given — reused verbatim, not reimplemented.
@@ -57,7 +57,11 @@ class _DetailRow:
     serial_number: str
     name: str
     status_label: str
-    timestamp: str
+    at: datetime            # sort key — kept alongside the formatted string so
+    timestamp: str          # sorting never operates on the rendered text (a
+                             # lexical sort of "%I:%M:%S %p"/"%m/%d/%Y" strings
+                             # puts "02:00:00 PM" before "08:00:00 AM" and
+                             # "01/01/2026" before "12/31/2025")
 
 
 def _status_col_width_mm(n: int) -> float:
@@ -95,10 +99,17 @@ def render_html(data: ScanHistoryData, columns: list[StatusCol], *, generated_at
         for hit in hits:
             detail_rows.append(_DetailRow(
                 asset_id=asset_id, serial_number=serial, name=name,
-                status_label=hit.status_label, timestamp=hit.at.astimezone(tz).strftime(_DETAIL_TS_FMT)))
-    detail_rows.sort(key=lambda r: (r.asset_id, r.timestamp))
+                status_label=hit.status_label, at=hit.at,
+                timestamp=hit.at.astimezone(tz).strftime(_DETAIL_TS_FMT)))
+    # sort on the real timestamp, THEN format — a lexical sort of the
+    # already-formatted string is wrong twice over (12 h clock, and a
+    # %m/%d/%Y date string sorts by month before year).
+    detail_rows.sort(key=lambda r: (r.asset_id, r.at))
 
     barcode_data_uri = pdf417_data_uri(tracking_id)
+
+    overview_table_width_mm = sum(_FIXED_COL_WIDTHS_MM) + status_width * len(columns)
+    detail_table_width_mm = sum(_DETAIL_COL_WIDTHS_MM)
 
     return _ENV.get_template("move_scan_history.html").render(
         move_name=data.name,
@@ -111,8 +122,10 @@ def render_html(data: ScanHistoryData, columns: list[StatusCol], *, generated_at
         fixed_col_widths=_FIXED_COL_WIDTHS_MM,
         overview_columns=overview_columns,
         overview_rows=overview_rows,
+        overview_table_width_mm=overview_table_width_mm,
         detail_col_widths=_DETAIL_COL_WIDTHS_MM,
         detail_rows=detail_rows,
+        detail_table_width_mm=detail_table_width_mm,
         has_assets=bool(data.assets),
         stamp=stamp,
         tracking_id=tracking_id,

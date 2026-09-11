@@ -85,7 +85,7 @@ async def build(db: AsyncSession, run: ReportRun) -> ReportResult:
     if run.initiative_id is None:
         # Every other report type but Site & Move Survey requires an
         # initiative — routes.create_run already enforces this
-        # (`initiative_required`), so this is belt-and-braces should
+        # (`initiative_required`), so this is belt and suspenders should
         # `build()` ever be called directly (e.g. a future retry path).
         raise InitiativeUnavailable("move_scan_history requires an initiative")
 

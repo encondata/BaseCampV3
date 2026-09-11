@@ -9,18 +9,15 @@
     margin: 14mm 14mm 30mm 14mm;
     @bottom-left {
       content: "Page " counter(page) " of " counter(pages);
-      font: 8pt sans-serif; color: #666;
-      border-top: 0.75pt solid #ccc; padding-top: 2mm;
+      font: 8pt Helvetica, Arial, sans-serif; color: #666;
     }
     @bottom-center {
       content: "Generated: {{ stamp|cssstr }}  \00B7  Document Tracking ID: {{ tracking_id|cssstr }}";
-      font: 8pt sans-serif; color: #666;
-      border-top: 0.75pt solid #ccc; padding-top: 2mm;
+      font: 8pt Helvetica, Arial, sans-serif; color: #666;
     }
     @bottom-right {
       content: url("{{ barcode_data_uri|cssstr }}");
       width: 55mm; height: 15mm;
-      border-top: 0.75pt solid #ccc; padding-top: 2mm;
     }
   }
   body { font: 10pt/1.35 Helvetica, Arial, sans-serif; color: #111; }
@@ -29,8 +26,18 @@
   h2 { font-size: 11pt; font-weight: bold; margin: 6mm 0 3mm; }
   .move-name { font-size: 13pt; font-weight: bold; margin: 0 0 2mm; }
   .info { font-size: 9pt; margin: 0 0 1mm 5mm; }
+  /* One continuous footer rule, repeated on every page (WeasyPrint tiles a
+     `position: fixed` element once per page — the @page margin-box content
+     next to it can't be joined by a single CSS rule across the three
+     separate bottom-left/-center/-right boxes). A fixed element's
+     containing block is the page's CONTENT box (inside the margins), so
+     `left/right: 0` already lines up with the 14mm margins and a NEGATIVE
+     `bottom` is needed to drop the rule past the content edge and into the
+     30mm bottom margin band, just above the footer text. */
+  .footer-rule { position: fixed; left: 0; right: 0; bottom: -4mm;
+                border-top: 0.75pt solid #ccc; }
   table { border-collapse: collapse; table-layout: fixed; margin-bottom: 4mm; }
-  table.overview { font-size: 7pt; width: 251.4mm; }
+  table.overview { font-size: 7pt; }
   table.detail { font-size: 8pt; }
   th, td { padding: 1.2mm 1.6mm; text-align: left; vertical-align: middle;
            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -38,11 +45,18 @@
   th { font-weight: bold; border-bottom: 0.75pt solid #111; }
   tbody tr:nth-child(even) { background: #f7f7f7; }
   tr { page-break-inside: avoid; }
+  /* Status columns must WRAP, not ellipsize — at 14 pipeline columns each
+     is ~12.6mm wide, too narrow for "03/16 04:00" or a status label on one
+     line. V2 rendered these as small wrapping Paragraphs (its `TS` style). */
+  th.status { white-space: normal; overflow-wrap: anywhere; }
+  td.status { white-space: normal; overflow-wrap: anywhere; font-size: 6pt; }
   .empty-row td { font-style: normal; color: #333; white-space: normal; }
   .closing { font-style: italic; color: #666; margin-top: 6mm; }
 </style>
 </head>
 <body>
+
+<div class="footer-rule"></div>
 
 <h1>Move Scan History Report</h1>
 <hr class="title-rule">
@@ -57,7 +71,7 @@
 
 <h2>Status Overview</h2>
 {% if has_assets %}
-<table class="overview">
+<table class="overview" style="width: {{ overview_table_width_mm }}mm">
   <colgroup>
     {% for w in fixed_col_widths %}<col style="width: {{ w }}mm">{% endfor %}
     {% for col in overview_columns %}<col style="width: {{ col.width_mm }}mm">{% endfor %}
@@ -65,14 +79,14 @@
   <thead>
     <tr>
       <th>Asset ID</th><th>Serial #</th><th>Asset Name</th>
-      {% for col in overview_columns %}<th>{{ col.label }}</th>{% endfor %}
+      {% for col in overview_columns %}<th class="status">{{ col.label }}</th>{% endfor %}
     </tr>
   </thead>
   <tbody>
     {% for row in overview_rows %}
     <tr>
       <td>{{ row.asset_id }}</td><td>{{ row.serial_number }}</td><td>{{ row.name }}</td>
-      {% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}
+      {% for cell in row.cells %}<td class="status">{{ cell }}</td>{% endfor %}
     </tr>
     {% endfor %}
   </tbody>
@@ -83,7 +97,7 @@
 
 <h2>Scan History Detail</h2>
 {% if detail_rows %}
-<table class="detail">
+<table class="detail" style="width: {{ detail_table_width_mm }}mm">
   <colgroup>
     {% for w in detail_col_widths %}<col style="width: {{ w }}mm">{% endfor %}
   </colgroup>

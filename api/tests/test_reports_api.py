@@ -7,14 +7,22 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import openpyxl
+import pytest
+from fastapi import HTTPException
 from sqlalchemy import select
 
+from serversherpa.access.resolver import AccessInfo
+from serversherpa.api.deps import AuthContext
+from serversherpa.api.routes.reports import move_scan_history_preview
+from serversherpa.config import get_settings
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
-    Asset, Attachment, AuditLog, Initiative, InitiativeAsset, Partner, ProcessedScan,
-    ReportDefinition, ReportRun,
+    Asset, Attachment, AuditLog, Client, Initiative, InitiativeAsset, Partner,
+    PermissionOverride, Person, PersonRole, ProcessedScan, ReportDefinition, ReportRun,
+    UserAccount,
 )
 from serversherpa.reports import worker as report_worker
+from serversherpa.security.passwords import hash_password
 from serversherpa.services.storage import get_object, put_object
 
 from tests.test_sites_api import login
@@ -435,6 +443,78 @@ async def test_scan_history_preview_requires_reports_view(client, db, seeded_use
     resp = await client.get(
         f"/reports/move-scan-history/preview?initiative_id={ini.id}", headers=worker)
     assert resp.status_code == 403
+
+
+async def test_client_anchored_role_cannot_reach_reports_view_at_all(client, db, seeded_user):
+    """Documents WHY the scope test below can't be an HTTP-level test with a
+    real client-anchored login: `reports` is `visible_to={"global"}`
+    (access/resources.py) and `resolver.py`'s hard gate
+    (`not (res.visible_to & info.anchors)`) is checked BEFORE
+    `PermissionOverride`s are read — a `client_viewer` PersonRole plus a
+    `PermissionOverride` granting `reports:view` still 403s, override or
+    not, because `client_viewer`'s only anchor is "client", never "global"."""
+    client_row = Client(name="Scope Demo Co")
+    db.add(client_row)
+    await db.flush()
+    ini = await _initiative(db, client_id=client_row.id)
+    email = "clv@test.example.com"
+    p = Person(first_name="Cli", last_name="Ent", email=email)
+    db.add(p)
+    await db.flush()
+    db.add(UserAccount(person_id=p.id, email=email,
+                       password_hash=hash_password(
+                           "CorrectHorse9!",
+                           pepper=get_settings().password_pepper.get_secret_value())))
+    db.add(PersonRole(person_id=p.id, role="client_viewer", client_id=ini.client_id))
+    db.add(PermissionOverride(person_id=p.id, resource="reports", action="view", allow=True))
+    await db.commit()
+    hdrs = await login(client, email=email)
+    resp = await client.get(
+        f"/reports/move-scan-history/preview?initiative_id={ini.id}", headers=hdrs)
+    assert resp.status_code == 403               # not reachable — see docstring
+
+
+async def test_scan_history_preview_scope_blocks_other_clients_initiative(db, seeded_user):
+    """The preview endpoint's scope check (`scope_conditions("initiatives",
+    actor.access, actor.person.id)`) is byte-identical to `create_run`'s. It
+    genuinely filters by client — but, per the test above, no real login can
+    ever reach it as a non-global actor: `AccessInfo.is_global` is defined
+    as `"global" in anchors` (resolver.py), and `scope_conditions()` returns
+    None — unrestricted — for every global actor (access/scope.py). So the
+    ONLY actors that can pass `require_permission("reports", "view")` are
+    always unrestricted by this clause in production today (the same
+    "defence in depth" the `_visible_runs()` comment already documents for
+    run history).
+
+    This calls the route function directly with a manufactured non-global
+    `AuthContext` — bypassing `require_permission` (a FastAPI `Depends`
+    default that a direct call simply doesn't invoke) — to exercise the
+    real scope-filtering code the route runs, the one part of this that
+    IS meaningfully testable."""
+    client_a = Client(name="Acme Scoped")
+    client_b = Client(name="Bravo Scoped")
+    db.add_all([client_a, client_b])
+    await db.flush()
+    ini_a, _asset = await _scan_history_initiative_with_asset(db, client_id=client_a.id)
+    ini_b = await _initiative(db, client_id=client_b.id)
+
+    viewer = Person(first_name="Cli", last_name="Ent")
+    db.add(viewer)
+    await db.commit()
+
+    access = AccessInfo(perms={"reports": {"view": True}}, max_rank=0,
+                        role_names=["client_viewer"], anchors={"client"},
+                        client_ids={client_a.id}, partner_ids=set(), is_global=False)
+    actor = AuthContext(person=viewer, account=None, roles=["client_viewer"],
+                        session=None, access=access)
+
+    with pytest.raises(HTTPException) as exc:
+        await move_scan_history_preview(initiative_id=ini_b.id, db=db, actor=actor)
+    assert exc.value.status_code == 404
+    assert exc.value.detail["code"] == "initiative_not_found"
+
+    result = await move_scan_history_preview(initiative_id=ini_a.id, db=db, actor=actor)
+    assert result.initiative.id == ini_a.id
 
 
 async def test_scan_history_run_creation_accepts_pdf_and_all_columns(client, db, seeded_user):

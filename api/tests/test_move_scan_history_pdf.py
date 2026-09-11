@@ -99,22 +99,90 @@ def test_render_html_empty_move_shows_both_empty_state_messages():
     assert "Not scheduled" in html
 
 
+def test_render_html_overview_cell_uses_a_24_hour_clock():
+    """Every hit in `_populated_data()` happens to land in the AM, so
+    `"03/16 04:00" in html` alone can't tell `%H:%M` (24 h) apart from a
+    12-hour-clock mutation (`%I:%M %p`) — both print "04:00" for 4 AM. A
+    PM hit makes the two formats diverge: `%H:%M` prints "15:00", a
+    12-hour mutation prints "03:00 PM"."""
+    columns = [StatusCol(key="in_transit", label="In Transit", color="#123456",
+                         in_pipeline=True, scan_count=1)]
+    data = ScanHistoryData(
+        initiative_id=uuid4(), name="PM Move", client_name="Acme", scheduled_start=None,
+        source_name=None, destination_name=None,
+        assets=[AssetRow(300, "SN-300", "Asset D")], statuses=columns,
+        scan_progress={300: [
+            ScanHit("in_transit", "In Transit", datetime(2026, 3, 16, 19, 0, tzinfo=UTC))]},
+        total_assets=1, scanned_assets=1, completed=0, completion_pct=0,
+        last_scan_at=datetime(2026, 3, 16, 19, 0, tzinfo=UTC))
+    html = render_html(data, columns, generated_at=datetime(2026, 3, 17, 8, 0, tzinfo=UTC),
+                       tracking_id=str(uuid4()), tz=TZ)
+    assert "03/16 15:00" in html
+
+
+def test_render_html_detail_rows_sort_chronologically_not_by_formatted_string():
+    """`_DetailRow` used to sort on the already-formatted
+    `%m/%d/%Y %I:%M:%S %p` string, which is a lexical sort: "02:00:00 PM"
+    sorts before "08:00:00 AM", and "01/01/2026" sorts before
+    "12/31/2025". One asset, three hits spanning a year boundary and an
+    AM/PM crossing, all with the SAME asset_id so only the timestamp
+    breaks the tie — chronological order must survive rendering."""
+    data = ScanHistoryData(
+        initiative_id=uuid4(), name="Order Move", client_name="Acme", scheduled_start=None,
+        source_name=None, destination_name=None,
+        assets=[AssetRow(500, "SN-500", "Asset Z")], statuses=[],
+        scan_progress={500: [
+            # 1/1/2026 19:00 UTC -> 1/1/2026 02:00 PM ET (latest)
+            ScanHit("complete", "Complete", datetime(2026, 1, 1, 19, 0, tzinfo=UTC)),
+            # 12/31/2025 08:00 UTC -> 12/31/2025 03:00 AM ET (earliest)
+            ScanHit("pre_stage", "Pre-Stage", datetime(2025, 12, 31, 8, 0, tzinfo=UTC)),
+            # 1/1/2026 08:00 UTC -> 1/1/2026 03:00 AM ET (middle)
+            ScanHit("labeled", "Labeled", datetime(2026, 1, 1, 8, 0, tzinfo=UTC)),
+        ]},
+        total_assets=1, scanned_assets=1, completed=0, completion_pct=0,
+        last_scan_at=datetime(2026, 1, 1, 19, 0, tzinfo=UTC))
+    html = render_html(data, [], generated_at=datetime(2026, 1, 2, 8, 0, tzinfo=UTC),
+                       tracking_id=str(uuid4()), tz=TZ)
+    pre_idx = html.index(">Pre-Stage<")
+    labeled_idx = html.index(">Labeled<")
+    complete_idx = html.index(">Complete<")
+    # a lexical sort of the formatted strings would put Complete (PM) FIRST
+    # and Pre-Stage (12/31) LAST — the opposite of chronological order
+    assert pre_idx < labeled_idx < complete_idx
+
+
 # ── WeasyPrint end-to-end ──────────────────────────────────────────────
 
-def test_weasyprint_renders_at_least_one_page():
+def test_weasyprint_renders_at_least_one_page_with_the_barcode_image():
     from weasyprint import HTML
 
     data = _populated_data()
     html = render_html(data, COLUMNS, generated_at=datetime(2026, 3, 17, 8, 0, tzinfo=UTC),
                        tracking_id=str(uuid4()), tz=TZ)
-    pages = HTML(string=html).render().pages
-    assert len(pages) >= 1
+    doc = HTML(string=html).render()
+    assert len(doc.pages) >= 1
+    pdf_bytes = HTML(string=html).write_pdf()
+    # the PDF417 barcode is the only image on the page — a malformed
+    # `content: url(...)` in the @bottom-right margin box is dropped
+    # silently by WeasyPrint (a log warning, not an exception), so this
+    # is the only way to prove it actually made it into the PDF.
+    assert pdf_bytes.count(b"/Subtype /Image") == 1
 
 
 # ── build() through the registry ────────────────────────────────────
 
-async def test_build_produces_pdf_through_the_registry(db):
+async def test_build_produces_pdf_through_the_registry(db, monkeypatch):
     module = get_module("move_scan_history")
+
+    captured: dict = {}
+    original_render_html = module.render_html
+
+    def spy_render_html(data, columns, *, generated_at, tracking_id, tz):
+        captured["tracking_id"] = tracking_id
+        return original_render_html(data, columns, generated_at=generated_at,
+                                    tracking_id=tracking_id, tz=tz)
+
+    monkeypatch.setattr(module, "render_html", spy_render_html)
 
     person = Person(first_name="Rae", last_name="Requester")
     client = Client(name="Acme")
@@ -149,3 +217,6 @@ async def test_build_produces_pdf_through_the_registry(db):
     assert result.content[:4] == b"%PDF"
     assert result.filename.startswith("Move Scan History - NAP11 - Move #1 - ")
     assert result.filename.endswith(".pdf")
+    # the spec's headline "deliberate difference" — V2 minted a random
+    # uuid; V3's Document Tracking ID is the run id, traceable back to it.
+    assert captured["tracking_id"] == str(run.id)
