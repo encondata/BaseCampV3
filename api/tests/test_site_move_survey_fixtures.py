@@ -284,11 +284,11 @@ async def test_migration_downgrade_guard_refuses_when_runs_have_no_initiative(db
                      initiative_id=None, requested_by=person.id, requested_rank=0))
     await db.commit()
 
-    remaining_nulls = await db.scalar(text(
-        "SELECT count(*) FROM report_runs WHERE initiative_id IS NULL"))
-    assert remaining_nulls >= 1
     with pytest.raises(RuntimeError, match="cannot restore"):
-        if remaining_nulls:
-            raise RuntimeError(
-                f"cannot restore report_runs.initiative_id NOT NULL: "
-                f"{remaining_nulls} run(s) have no initiative")
+        await db.run_sync(
+            lambda session: migration.assert_no_standalone_runs(session.connection()))
+
+    # The guard is quiet once no standalone runs remain.
+    await db.execute(text("DELETE FROM report_runs WHERE initiative_id IS NULL"))
+    await db.run_sync(
+        lambda session: migration.assert_no_standalone_runs(session.connection()))

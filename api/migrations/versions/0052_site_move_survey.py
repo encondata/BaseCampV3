@@ -54,16 +54,23 @@ def upgrade() -> None:
         "report_type": REPORT_TYPE, "options": DEFAULT_OPTIONS})
 
 
-def downgrade() -> None:
-    conn = op.get_bind()
-    conn.execute(sa.text(
-        "DELETE FROM report_definitions WHERE report_type = :report_type"),
-        {"report_type": REPORT_TYPE})
-
+def assert_no_standalone_runs(conn) -> None:
+    """Refuse to restore NOT NULL over runs that have no initiative — the
+    state a Site & Move Survey run leaves behind. Shared with the test so
+    the guard itself is what gets exercised."""
     remaining_nulls = conn.execute(sa.text(
         "SELECT count(*) FROM report_runs WHERE initiative_id IS NULL")).scalar()
     if remaining_nulls:
         raise RuntimeError(
             f"cannot restore report_runs.initiative_id NOT NULL: "
             f"{remaining_nulls} run(s) have no initiative")
+
+
+def downgrade() -> None:
+    conn = op.get_bind()
+    conn.execute(sa.text(
+        "DELETE FROM report_definitions WHERE report_type = :report_type"),
+        {"report_type": REPORT_TYPE})
+
+    assert_no_standalone_runs(conn)
     op.alter_column("report_runs", "initiative_id", nullable=False)
