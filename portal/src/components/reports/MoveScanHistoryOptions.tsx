@@ -8,8 +8,8 @@
  * result back to GenerateReportModal's own progress step exactly like
  * `SiteMoveSurveyOptions` does.
  */
-import { useEffect, useMemo, useState } from 'react';
-import type { CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties, KeyboardEvent } from 'react';
 
 import {
   ApiError, getScanHistoryPreview, type InitiativeItem, type ReportDefinition,
@@ -19,9 +19,9 @@ import {
   buildRunOptions, columnsForMode, formatDefaults,
   type ScanHistoryFormat, type StatusColumnsMode,
 } from '../../lib/moveScanHistory';
+import { fmtDate } from '../../lib/reports';
 import { Switch } from '../Switch';
 
-const fmtDate = (s: string | null) => (s ? new Date(s).toLocaleDateString() : '—');
 const fmtDateTime = (s: string | null) => (s ? new Date(s).toLocaleString() : 'No scans yet');
 
 export default function MoveScanHistoryOptions({ definition, initiative, onBack, onGenerate }: {
@@ -35,10 +35,26 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
     initiative_id: string | null; options: Record<string, unknown>; notify: boolean;
   }) => void;
 }) {
-  const defaults = useMemo(() => formatDefaults(definition), [definition]);
+  const defaults = formatDefaults(definition);
   const [format, setFormat] = useState<ScanHistoryFormat>(defaults.format);
   const [mode, setMode] = useState<StatusColumnsMode>(defaults.statusColumns);
   const [notify, setNotify] = useState(false);
+  // Roving tabindex (native-radio behavior): arrow keys both move focus
+  // and change the selection between the two format cards.
+  const xlsxCardRef = useRef<HTMLButtonElement>(null);
+  const pdfCardRef = useRef<HTMLButtonElement>(null);
+  const formatCardRef = (key: ScanHistoryFormat) => (key === 'xlsx' ? xlsxCardRef : pdfCardRef);
+  const onFormatKeyDown = (e: KeyboardEvent<HTMLButtonElement>, key: ScanHistoryFormat) => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next: ScanHistoryFormat = key === 'xlsx' ? 'pdf' : 'xlsx';
+      setFormat(next);
+      formatCardRef(next).current?.focus();
+    } else if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+      setFormat(key);
+    }
+  };
 
   const [preview, setPreview] = useState<ScanHistoryPreview | null>(null);
   const [loading, setLoading] = useState(true);
@@ -67,15 +83,7 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
 
   const generate = () => {
     if (!initiative) return;
-    onGenerate({
-      initiative_id: initiative.id,
-      // `buildRunOptions`'s own return type (ScanHistoryRunOptions) has no
-      // index signature, so it needs an explicit widen for the
-      // report-agnostic payload type GenerateReportModal's `createReportRun`
-      // call expects — same pattern as SiteMoveSurveyOptions.
-      options: buildRunOptions(format, mode) as unknown as Record<string, unknown>,
-      notify,
-    });
+    onGenerate({ initiative_id: initiative.id, options: buildRunOptions(format, mode), notify });
   };
 
   return (
@@ -121,7 +129,8 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
                     <span className="dash-kpi-value">{preview.completion_pct}%</span>
                   </div>
                 </div>
-                <div className="msh-progress-track">
+                <div className="msh-progress-track" role="progressbar" aria-label="Completion"
+                     aria-valuenow={preview.completion_pct} aria-valuemin={0} aria-valuemax={100}>
                   <div className="msh-progress-fill" style={{ width: `${preview.completion_pct}%` }} />
                 </div>
                 <p className="page-hint">Last scan: {fmtDateTime(preview.last_scan_at)}</p>
@@ -135,15 +144,19 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
           <div className="msh-options">
             <div className="modal-section">Format</div>
             <div className="msh-format-cards" role="radiogroup" aria-label="Format">
-              <button type="button" role="radio" aria-checked={format === 'xlsx'}
+              <button type="button" ref={xlsxCardRef} role="radio" aria-checked={format === 'xlsx'}
+                      tabIndex={format === 'xlsx' ? 0 : -1}
                       className={`msh-format-card ${format === 'xlsx' ? 'on' : ''}`}
-                      onClick={() => setFormat('xlsx')}>
+                      onClick={() => setFormat('xlsx')}
+                      onKeyDown={(e) => onFormatKeyDown(e, 'xlsx')}>
                 <span className="msh-format-title">Excel workbook</span>
                 <span className="msh-format-desc">Overview and Scan History sheets</span>
               </button>
-              <button type="button" role="radio" aria-checked={format === 'pdf'}
+              <button type="button" ref={pdfCardRef} role="radio" aria-checked={format === 'pdf'}
+                      tabIndex={format === 'pdf' ? 0 : -1}
                       className={`msh-format-card ${format === 'pdf' ? 'on' : ''}`}
-                      onClick={() => setFormat('pdf')}>
+                      onClick={() => setFormat('pdf')}
+                      onKeyDown={(e) => onFormatKeyDown(e, 'pdf')}>
                 <span className="msh-format-title">PDF document</span>
                 <span className="msh-format-desc">
                   Landscape, printable, with a document tracking barcode
@@ -152,7 +165,7 @@ export default function MoveScanHistoryOptions({ definition, initiative, onBack,
             </div>
 
             <div className="modal-section">Status columns</div>
-            <div className="segmented" role="tablist" style={{ marginBottom: 8 }}>
+            <div className="segmented" role="tablist" aria-label="Status columns" style={{ marginBottom: 8 }}>
               <button type="button" role="tab" aria-selected={mode === 'pipeline'}
                       className={mode === 'pipeline' ? 'on' : ''} onClick={() => setMode('pipeline')}>
                 Pipeline

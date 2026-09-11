@@ -16,7 +16,7 @@ describe('columnsForMode', () => {
     // not in the move-scan-history pipeline, but scanned anyway
     status({ key: 'on_hold', label: 'On Hold', color: null, in_pipeline: false, scan_count: 2 }),
     // not in the pipeline and never scanned — should never appear
-    status({ key: 'cancelled', label: 'Cancelled', in_pipeline: false, scan_count: 0 }),
+    status({ key: 'cancelled', label: 'Canceled', in_pipeline: false, scan_count: 0 }),
   ];
 
   it('all mode returns every status in order, none flagged', () => {

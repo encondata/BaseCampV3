@@ -30,6 +30,7 @@ import '../styles/directory.css';
 import '../styles/profile.css';   /* .pf-form, .pf-error, .btn-solid (Edit modal) */
 import '../styles/settings.css';  /* .switch (Edit modal) */
 import '../styles/assets.css';    /* .nf-list/.nf-item/.nf-body/.nf-meta (Edit modal's Files list) */
+import '../styles/dashboard.css'; /* .dash-kpis (Move Scan History Generate options' preview card) */
 import '../styles/reports.css';
 
 const COLUMNS: ColumnDef[] = [

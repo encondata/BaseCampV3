@@ -15,7 +15,7 @@ import {
   setReportRunNotify,
 } from '../../lib/api';
 import type { InitiativeItem, ReportDefinition, ReportRun } from '../../lib/api';
-import { MOVE_REPORT_SECTIONS, openPresigned, sortInitiativesForPicker } from '../../lib/reports';
+import { MOVE_REPORT_SECTIONS, fmtDate, openPresigned, sortInitiativesForPicker } from '../../lib/reports';
 import { useSystemStatus } from '../../lib/systemStatusContext';
 import MoveScanHistoryOptions from './MoveScanHistoryOptions';
 import SiteMoveSurveyOptions from './SiteMoveSurveyOptions';
@@ -30,8 +30,6 @@ interface RunPayload {
   options: Record<string, unknown>;
   notify: boolean;
 }
-
-const fmtDate = (s: string | null) => (s ? new Date(s).toLocaleDateString() : '—');
 
 export default function GenerateReportModal({ definition, onClose, onToast }: {
   definition: ReportDefinition;
@@ -154,7 +152,7 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
 
   return (
     <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal-card reports-modal-card">
+      <div className="modal-card reports-modal-card rgm-card">
         <div className="modal-head">
           <div className="rgm-head-text">
             <div className="eyebrow">Generate report</div>
@@ -167,7 +165,7 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
           </button>
         </div>
         <div className="rgm-steps">
-          <span className={`rgm-step ${step === 'pick' ? 'on' : ''}`}>
+          <span className={`rgm-step ${step === 'pick' ? 'on' : ''} ${step !== 'pick' ? 'done' : ''}`}>
             <span className="rgm-step-num">1</span>
             <span className="rgm-step-label">Initiative</span>
           </span>

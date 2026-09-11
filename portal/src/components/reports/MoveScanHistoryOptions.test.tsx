@@ -17,6 +17,12 @@ const DEF: ReportDefinition = {
   is_system: true, updated_at: '2026-09-09T10:00:00Z',
   options: { default_format: 'xlsx', status_columns: 'pipeline' },
 };
+// Deliberately the non-fallback values (formatDefaults' own fallback is
+// xlsx/pipeline) — this is what makes the "defaults from PDF_DEF" test
+// below load-bearing rather than incidentally passing.
+const PDF_DEF: ReportDefinition = {
+  ...DEF, options: { default_format: 'pdf', status_columns: 'all' },
+};
 
 const INITIATIVE = {
   id: 'i2', name: 'NAP11 Hall Migration', client_name: 'Acme',
@@ -33,7 +39,7 @@ const PREVIEW = (over: Partial<ScanHistoryPreview> = {}): ScanHistoryPreview => 
     { key: 'pre_stage', label: 'Pre-Stage', color: '#3366ff', in_pipeline: true, scan_count: 100 },
     { key: 'complete', label: 'Complete', color: '#22aa55', in_pipeline: true, scan_count: 58 },
     { key: 'on_hold', label: 'On Hold', color: null, in_pipeline: false, scan_count: 3 },
-    { key: 'cancelled', label: 'Cancelled', color: '#aa2222', in_pipeline: false, scan_count: 0 },
+    { key: 'cancelled', label: 'Canceled', color: '#aa2222', in_pipeline: false, scan_count: 0 },
   ],
   ...over,
 });
@@ -62,6 +68,16 @@ it('defaults the format cards and status columns from the definition, and loads 
   expect(screen.getByText('NAP11 → NAP22')).toBeTruthy();
 });
 
+it('defaults to PDF and All statuses when the definition says so', async () => {
+  render(<MoveScanHistoryOptions definition={PDF_DEF} initiative={INITIATIVE}
+                                  onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByText('NAP11 Hall Migration');
+  expect(screen.getByRole('radio', { name: /PDF document/ }).getAttribute('aria-checked')).toBe('true');
+  expect(screen.getByRole('radio', { name: /Excel workbook/ }).getAttribute('aria-checked')).toBe('false');
+  expect(screen.getByRole('tab', { name: 'All statuses' }).className).toContain('on');
+  expect(screen.getByRole('tab', { name: 'Pipeline' }).className).not.toContain('on');
+});
+
 it('switching format cards updates the checked state', async () => {
   const user = userEvent.setup();
   render(<MoveScanHistoryOptions definition={DEF} initiative={INITIATIVE}
@@ -79,17 +95,17 @@ it('the status chip strip changes with the segmented control: pipeline keeps sca
   await screen.findByText('NAP11 Hall Migration');
 
   // pipeline (default): Pre-Stage + Complete, then On Hold (scanned, not in
-  // pipeline) flagged "also scanned"; Cancelled (never scanned) is hidden.
+  // pipeline) flagged "also scanned"; Canceled (never scanned) is hidden.
   // ("Complete" also names a KPI tile, so scope the chip queries to the strip.)
   const chipText = () => screen.getByText('Pre-Stage').closest('.msh-status-chips') as HTMLElement;
   expect(within(chipText()).getByText('Pre-Stage')).toBeTruthy();
   expect(within(chipText()).getByText('Complete')).toBeTruthy();
   expect(within(chipText()).getByText('On Hold')).toBeTruthy();
   expect(within(chipText()).getByText('also scanned')).toBeTruthy();
-  expect(within(chipText()).queryByText('Cancelled')).toBeNull();
+  expect(within(chipText()).queryByText('Canceled')).toBeNull();
 
   await user.click(screen.getByRole('tab', { name: 'All statuses' }));
-  expect(within(chipText()).getByText('Cancelled')).toBeTruthy();
+  expect(within(chipText()).getByText('Canceled')).toBeTruthy();
   expect(within(chipText()).queryByText('also scanned')).toBeNull();
 });
 

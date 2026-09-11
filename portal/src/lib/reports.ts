@@ -62,3 +62,7 @@ export function formatBytes(n: number | null): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
+
+/** Shared by GenerateReportModal's pick step (scheduled dates) and
+ *  MoveScanHistoryOptions' preview card (scheduled start). */
+export const fmtDate = (s: string | null): string => (s ? new Date(s).toLocaleDateString() : '—');

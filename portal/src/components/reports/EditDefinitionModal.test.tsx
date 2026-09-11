@@ -33,6 +33,11 @@ const SCAN_HISTORY_DEF: ReportDefinition = {
   is_system: true, updated_at: '2026-09-09T10:00:00Z',
   options: { default_format: 'xlsx', status_columns: 'pipeline' },
 };
+// Deliberately the non-fallback values — see MoveScanHistoryOptions.test.tsx's
+// PDF_DEF for why this is what makes the defaults test below load-bearing.
+const SCAN_HISTORY_PDF_DEF: ReportDefinition = {
+  ...SCAN_HISTORY_DEF, options: { default_format: 'pdf', status_columns: 'all' },
+};
 const file = (over: Partial<AttachmentOut> = {}): AttachmentOut => ({
   id: 'f1', entity_type: 'report_definition', entity_id: 'd2', kind: 'report_asset',
   storage_key: 'k', filename: 'Transportation Standards.docx', content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -149,6 +154,21 @@ it('Move Scan History has no company field, no Files, and no Default sections; s
   expect(screen.getByText('Status columns')).toBeTruthy();
   expect(screen.getByRole('tab', { name: 'Excel' }).className).toContain('on');
   expect(screen.getByRole('tab', { name: 'Pipeline' }).className).toContain('on');
+});
+
+it('Move Scan History\'s segmented defaults reflect the definition, and Save without clicking anything patches them unchanged', async () => {
+  const user = userEvent.setup();
+  api.updateReportDefinition.mockResolvedValue(SCAN_HISTORY_PDF_DEF);
+  render(<EditDefinitionModal definition={SCAN_HISTORY_PDF_DEF} onClose={() => {}} onSaved={() => {}} />);
+  expect(screen.getByRole('tab', { name: 'PDF' }).className).toContain('on');
+  expect(screen.getByRole('tab', { name: 'Excel' }).className).not.toContain('on');
+  expect(screen.getByRole('tab', { name: 'All statuses' }).className).toContain('on');
+  expect(screen.getByRole('tab', { name: 'Pipeline' }).className).not.toContain('on');
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateReportDefinition).toHaveBeenCalledWith('d3', {
+    name: 'Move Scan History', description: '',
+    options: { default_format: 'pdf', status_columns: 'all' },
+  }));
 });
 
 it('Move Scan History patches default_format/status_columns from the segmented controls', async () => {

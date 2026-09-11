@@ -4,16 +4,31 @@
    theirs inside a .dir-toolbar, which supplies the gap under the title). */
 .segmented.reports-tabs { margin-top: 6px; }
 
-/* Roomy by design (Jimmy: "no reason to keep it small, let's make it look
-   and feel good") — every step of every report type's Generate dialog gets
-   the same wide card, rather than sizing to whichever step is showing; the
-   doubled class out-specifies the plain `.modal-card { width: min(620px,
-   96vw) }` in chrome.css. */
+/* Sizes to its content so the picker's rows never wrap; the doubled class
+   out-specifies the plain `.modal-card { width: min(620px, 96vw) }` in
+   chrome.css. `min-width` keeps the narrower sections/progress steps at the
+   familiar dialog width. Shared by EditDefinitionModal, CompleteSiteSurveyModal
+   and HistoryTab's error dialog — none of those asked to grow, so the roomy
+   width below is a `.rgm-card` modifier only GenerateReportModal carries,
+   not a change to this shared rule. */
 .modal-card.reports-modal-card {
-  width: min(980px, 96vw); max-width: 96vw;
+  width: fit-content; min-width: min(640px, 94vw); max-width: 94vw;
 }
 /* the wider card must not stretch the sections rows into a sparse line */
 .report-sections { max-width: 720px; }
+
+/* Roomy by design (Jimmy: "no reason to keep it small, let's make it look
+   and feel good") — every step of GenerateReportModal's dialog, for every
+   report type, gets the same wide card, rather than sizing to whichever
+   step is showing. Scoped to GenerateReportModal alone via this modifier
+   class — Edit/CompleteSiteSurveyModal/HistoryTab's error dialog keep the
+   `.reports-modal-card` footprint above. */
+.modal-card.reports-modal-card.rgm-card {
+  width: min(980px, 96vw); max-width: 96vw;
+}
+/* a 3-line header (eyebrow/name/description) reads better with the × on
+   the eyebrow's line than vertically centered against the whole block. */
+.reports-modal-card.rgm-card .modal-head { align-items: flex-start; }
 
 /* ── header (eyebrow + name + description) ───────────────────────── */
 .rgm-head-text { display: flex; flex-direction: column; gap: 2px; }

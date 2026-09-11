@@ -37,10 +37,15 @@ export function columnsForMode(
   return [...pipeline, ...extra];
 }
 
-export interface ScanHistoryRunOptions {
+// A `type` alias (not `interface`) so TS infers an implicit index
+// signature for this shape — it can then be passed straight into
+// GenerateReportModal's `Record<string, unknown>` run-payload options
+// without an `as unknown as` widen (see `MoveScanHistoryOptions.tsx`'s
+// `generate`).
+export type ScanHistoryRunOptions = {
   format: ScanHistoryFormat;
   status_columns: StatusColumnsMode;
-}
+};
 
 /** Assembles the run's `options` payload. */
 export function buildRunOptions(
