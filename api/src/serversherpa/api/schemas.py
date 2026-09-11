@@ -2228,7 +2228,10 @@ class ReportRunCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     definition_id: uuid.UUID
-    initiative_id: uuid.UUID
+    # Optional — a Site & Move Survey may target a partner + manually
+    # chosen sites with no initiative at all; every other report type
+    # still requires one (routes/reports.py's create_run 422s otherwise).
+    initiative_id: uuid.UUID | None = None
     options: dict = Field(default_factory=dict)
     notify: bool = False
 
@@ -2244,7 +2247,7 @@ class ReportRunOut(BaseModel):
     definition_id: uuid.UUID
     definition_name: str
     report_type: str
-    initiative_id: uuid.UUID
+    initiative_id: uuid.UUID | None
     initiative_name: str
     options: dict
     status: str
@@ -2262,6 +2265,16 @@ class ReportRunOut(BaseModel):
 
 class ReportDownloadOut(BaseModel):
     url: str
+
+
+class SurveyPartnerOut(BaseModel):
+    """One row of `GET /reports/site-move-survey/partners` — a logistics
+    partner the Generate modal's Partner step can pick, tagged with
+    whether it already has a `survey_template` attachment to fill."""
+
+    id: uuid.UUID
+    name: str
+    has_template: bool
 
 
 # ── trucks ─────────────────────────────────────────────────────────

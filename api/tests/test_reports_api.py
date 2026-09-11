@@ -1,16 +1,26 @@
 """Reports API: definitions (list/clone/patch/delete + system guard) and,
 from Task 3, runs (create/list/get/download/notify + the history gate)."""
 
+import io
+from pathlib import Path
 from uuid import UUID, uuid4
 
+import openpyxl
 from sqlalchemy import select
 
+from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
-    AuditLog, Initiative, ReportDefinition, ReportRun,
+    Attachment, AuditLog, Initiative, Partner, ReportDefinition, ReportRun,
 )
+from serversherpa.reports import worker as report_worker
+from serversherpa.services.storage import get_object, put_object
 
 from tests.test_sites_api import login
 from tests.test_status_values_write import _make
+
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+TEMPLATE_FIXTURE = (Path(__file__).resolve().parent / "fixtures"
+                   / "champagne_annotated_template.xlsx").read_bytes()
 
 ALL_ON = {"summary": True, "assets_by_source": True, "assets_by_destination": True,
           "size_weight": True, "rail_usage": True, "collisions": True,
@@ -208,3 +218,150 @@ async def test_notify_patch_is_requester_only(client, db, seeded_user):
     row = await db.get(ReportRun, UUID(run["id"]))
     await db.refresh(row)
     assert row.notify is True                          # untouched by the refused writes
+
+
+# ── Site & Move Survey: optional initiative + partners endpoint ──────
+
+async def _survey_definition(db, *, options=None):
+    d = ReportDefinition(name="Site & Move Survey", report_type="site_move_survey",
+                         is_system=True,
+                         options=options or {"company_name": "Cumulus Solutions Group",
+                                            "include_transportation_standards": True,
+                                            "include_site_photos": True,
+                                            "condensed_assets": True})
+    db.add(d)
+    await db.commit()
+    return d
+
+
+async def _partner(db, *, name="Champagne Logistics", partner_types=("logistics",),
+                   archived=False, with_template=False):
+    from datetime import UTC, datetime
+
+    p = Partner(name=name, partner_types=list(partner_types),
+               archived_at=datetime.now(UTC) if archived else None)
+    db.add(p)
+    await db.flush()
+    if with_template:
+        storage_key = f"test/sms-api/{p.id}/template.xlsx"
+        await put_object(storage_key, b"fake xlsx", XLSX_MIME)
+        db.add(Attachment(entity_type="partner", entity_id=p.id, kind="survey_template",
+                          storage_key=storage_key, filename="template.xlsx",
+                          content_type=XLSX_MIME, size_bytes=9))
+    await db.commit()
+    return p
+
+
+async def test_survey_partners_lists_logistics_only_with_template_flag(client, db, seeded_user):
+    templated = await _partner(db, name="Champagne Logistics", with_template=True)
+    untemplated = await _partner(db, name="Zeta Movers", with_template=False)
+    await _partner(db, name="Staffing Co", partner_types=["staffing"], with_template=True)
+    await _partner(db, name="Old Logistics", archived=True)
+
+    worker = await _make(db, client, "worker", "w@test.example.com")
+    assert (await client.get("/reports/site-move-survey/partners",
+                             headers=worker)).status_code == 403
+
+    staff = await login(client)
+    resp = await client.get("/reports/site-move-survey/partners", headers=staff)
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    assert [r["name"] for r in rows] == ["Champagne Logistics", "Zeta Movers"]  # sorted, no staffing/archived
+    by_id = {r["id"]: r for r in rows}
+    assert by_id[str(templated.id)]["has_template"] is True
+    assert by_id[str(untemplated.id)]["has_template"] is False
+
+
+async def test_create_run_without_initiative_requires_the_survey_report_type(client, db, seeded_user):
+    survey_def = await _survey_definition(db)
+    move_def = await _definition(db)
+    partner = await _partner(db)
+    hdrs = await login(client)
+
+    resp = await client.post("/reports/runs", headers=hdrs, json={
+        "definition_id": str(survey_def.id), "initiative_id": None,
+        "options": {"partner_id": str(partner.id)}, "notify": False})
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["initiative_id"] is None and body["initiative_name"] == "—"
+    assert body["report_type"] == "site_move_survey"
+
+    resp = await client.post("/reports/runs", headers=hdrs, json={
+        "definition_id": str(move_def.id), "initiative_id": None,
+        "options": ALL_ON, "notify": False})
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "initiative_required"
+
+
+async def test_create_run_inherits_the_definitions_company_name_and_toggles(client, db, seeded_user):
+    """Regression: a run that never mentions `company_name` (the Generate
+    modal never sends it) or every toggle must store — and build with —
+    the DEFINITION's own saved values, not this module's hardcoded
+    defaults. Before the fix, `validate_run_options(body.options)` alone
+    normalized every missing key to the hardcoded default BEFORE it ever
+    reached `_merged_run_options` in build(), permanently masking the
+    definition's real `company_name`/toggles for any run created through
+    this route."""
+    survey_def = await _survey_definition(db, options={
+        "company_name": "Acme Test Co", "include_transportation_standards": False,
+        "include_site_photos": True, "condensed_assets": True})
+    partner = await _partner(db, with_template=False)
+    storage_key = f"test/sms-api/{partner.id}/company-regression.xlsx"
+    await put_object(storage_key, TEMPLATE_FIXTURE, XLSX_MIME)
+    db.add(Attachment(entity_type="partner", entity_id=partner.id, kind="survey_template",
+                      storage_key=storage_key, filename="template.xlsx",
+                      content_type=XLSX_MIME, size_bytes=len(TEMPLATE_FIXTURE)))
+    await db.commit()
+
+    hdrs = await login(client)
+    resp = await client.post("/reports/runs", headers=hdrs, json={
+        "definition_id": str(survey_def.id), "initiative_id": None,
+        "options": {"partner_id": str(partner.id)}, "notify": False})
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["options"]["company_name"] == "Acme Test Co"
+    assert body["options"]["include_transportation_standards"] is False
+
+    run = await db.get(ReportRun, UUID(body["id"]))
+    assert await report_worker.run_once(get_sessionmaker()) is True
+    await db.refresh(run)                 # worker commits through its own sessions
+    assert run.status == "completed", run.error
+
+    stored = await get_object(run.storage_key)
+    wb = openpyxl.load_workbook(io.BytesIO(stored))
+    assert wb["Customer and Site Information"]["C11"].value == "Acme Test Co"
+    assert "Transportation Standards" not in wb.sheetnames
+
+
+async def test_create_run_for_survey_without_partner_id_is_invalid_options(client, db, seeded_user):
+    survey_def = await _survey_definition(db)
+    hdrs = await login(client)
+    resp = await client.post("/reports/runs", headers=hdrs, json={
+        "definition_id": str(survey_def.id), "initiative_id": None,
+        "options": {}, "notify": False})
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "invalid_options"
+    assert any("partner_id" in p for p in resp.json()["detail"]["problems"])
+
+
+async def test_definition_patch_accepts_company_name_string(client, db, seeded_user):
+    survey_def = await _survey_definition(db)
+    admin = await _make(db, client, "admin", "a@test.example.com")
+    resp = await client.patch(f"/reports/definitions/{survey_def.id}", headers=admin,
+                              json={"options": {"company_name": "New Customer Name"}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["options"]["company_name"] == "New Customer Name"
+
+
+async def test_history_shows_standalone_run_with_dash_initiative(client, db, seeded_user):
+    survey_def = await _survey_definition(db)
+    partner = await _partner(db)
+    hdrs = await login(client)
+    resp = await client.post("/reports/runs", headers=hdrs, json={
+        "definition_id": str(survey_def.id), "initiative_id": None,
+        "options": {"partner_id": str(partner.id)}, "notify": False})
+    assert resp.status_code == 201, resp.text
+    run_id = resp.json()["id"]
+
+    rows = (await client.get("/reports/runs", headers=hdrs)).json()
+    [row] = [r for r in rows if r["id"] == run_id]
+    assert row["initiative_id"] is None
+    assert row["initiative_name"] == "—"

@@ -12,8 +12,17 @@ from serversherpa.db.models import ReportRun
 
 @dataclass(frozen=True)
 class ReportResult:
-    pdf: bytes
+    """A finished report's bytes. `content_type` defaults to PDF (every
+    report but Site & Move Survey produces one); `pdf` is a read-only
+    alias kept for the move report's callers/tests that predate non-PDF
+    results."""
+    content: bytes
     filename: str
+    content_type: str = "application/pdf"
+
+    @property
+    def pdf(self) -> bytes:
+        return self.content
 
 
 class OptionsError(ValueError):
@@ -38,8 +47,11 @@ def registry() -> dict[str, ReportModule]:
     circular import at package load."""
     global _REGISTRY
     if _REGISTRY is None:
-        from serversherpa.reports import move_report
-        _REGISTRY = {move_report.report_type: move_report}      # type: ignore[dict-item]
+        from serversherpa.reports import move_report, site_move_survey
+        _REGISTRY = {
+            move_report.report_type: move_report,                # type: ignore[dict-item]
+            site_move_survey.report_type: site_move_survey,      # type: ignore[dict-item]
+        }
     return _REGISTRY
 
 

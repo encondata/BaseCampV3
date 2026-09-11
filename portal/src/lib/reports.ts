@@ -14,7 +14,7 @@ export const MOVE_REPORT_SECTIONS: ReportSection[] = [
   { key: 'destination_racks', title: 'Destination Rack Elevations', description: 'Visual rack diagrams for destination racks' },
 ];
 
-export function sectionCount(options: Record<string, boolean>): number {
+export function sectionCount(options: Record<string, unknown>): number {
   return MOVE_REPORT_SECTIONS.filter((s) => options[s.key]).length;
 }
 

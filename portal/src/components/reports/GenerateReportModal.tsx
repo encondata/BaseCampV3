@@ -1,7 +1,10 @@
 /**
- * Generate <definition> — one dialog, three states: pick an initiative,
- * choose sections, then progress (poll the run every 2 s) with
- * "Notify me when it's ready" / Close, ending in Download or Try again.
+ * Generate <definition> — one dialog, three states: pick an initiative
+ * (Site & Move Survey's own "No initiative — choose sites manually" row
+ * lives in this same picker), choose sections/options (delegated to
+ * `SiteMoveSurveyOptions` for that report type; Move Report keeps its own
+ * sections UI here), then progress (poll the run every 2 s) with "Notify
+ * me when it's ready" / Close, ending in Download or Try again.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -14,11 +17,18 @@ import {
 import type { InitiativeItem, ReportDefinition, ReportRun } from '../../lib/api';
 import { MOVE_REPORT_SECTIONS, openPresigned, sortInitiativesForPicker } from '../../lib/reports';
 import { useSystemStatus } from '../../lib/systemStatusContext';
+import SiteMoveSurveyOptions from './SiteMoveSurveyOptions';
 import '../../styles/directory.css';  /* .dir-search, .org-select (picker tools) */
 
 export const MODAL_POLL_MS = 2000;
 
 type Step = 'pick' | 'sections' | 'progress';
+
+interface RunPayload {
+  initiative_id: string | null;
+  options: Record<string, unknown>;
+  notify: boolean;
+}
 
 const fmtDate = (s: string | null) => (s ? new Date(s).toLocaleDateString() : '—');
 
@@ -28,14 +38,21 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
   onToast?: (message: string) => void;
 }) {
   const { status: sys } = useSystemStatus();
+  const isSurvey = definition.report_type === 'site_move_survey';
   const [step, setStep] = useState<Step>('pick');
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);
   const [search, setSearch] = useState('');
   const [type, setType] = useState('');
   const [picked, setPicked] = useState<InitiativeItem | null>(null);
+  // Site & Move Survey only: the shared pick step's own "No initiative —
+  // choose sites manually" choice, radio-grouped alongside the real
+  // initiatives so exactly one of "an initiative" / "no initiative" is
+  // ever selected at a time.
+  const [noInitiative, setNoInitiative] = useState(false);
   const [options, setOptions] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(MOVE_REPORT_SECTIONS.map((s) => [s.key, !!definition.options[s.key]])));
   const [run, setRun] = useState<ReportRun | null>(null);
+  const [payload, setPayload] = useState<RunPayload | null>(null);
   const [error, setError] = useState('');
   const [startedAt, setStartedAt] = useState<number>(0);
   const [elapsed, setElapsed] = useState(0);
@@ -48,7 +65,14 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
   }, []);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    // `CompleteSiteSurveyModal` — nested inside this modal when the source
+    // site's survey is incomplete — marks Escape as handled (capture-phase
+    // listener + preventDefault) so it can dismiss only itself; without
+    // this check that same Escape keypress would also close the whole
+    // Generate flow and drop everything the user picked.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented) onClose();
+    };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -69,17 +93,19 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
   const setAll = (v: boolean) =>
     setOptions(Object.fromEntries(MOVE_REPORT_SECTIONS.map((s) => [s.key, v])));
 
-  const start = async () => {
-    if (!picked) return;
+  // `next` carries a fresh payload from either flow's own Generate action;
+  // omitted (as "Try again" does), it re-queues whatever was last stored.
+  const start = async (next?: RunPayload) => {
+    const use = next ?? payload;
+    if (!use) return;
+    setPayload(use);
     setError('');
     setStep('progress');
     setRun(null);
     setElapsed(0);
     setStartedAt(Date.now());
     try {
-      setRun(await createReportRun({
-        definition_id: definition.id, initiative_id: picked.id, options, notify: false,
-      }));
+      setRun(await createReportRun({ definition_id: definition.id, ...use }));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't start the report.");
     }
@@ -152,14 +178,27 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
                 </select>
               </div>
               <div className="mini-list ini-picker-list" role="radiogroup">
+                {isSurvey && (
+                  <label className={`mini-row ini-picker-row ${noInitiative ? 'on' : ''}`}>
+                    <input type="radio" name="initiative"
+                           aria-label="No initiative — choose sites manually"
+                           checked={noInitiative}
+                           onChange={() => { setNoInitiative(true); setPicked(null); }} />
+                    <span className="cell-primary">
+                      <span className="pn"><b>No initiative — choose sites manually</b></span>
+                    </span>
+                    <span className="cell-sub">Pick a partner and enter the sites directly</span>
+                  </label>
+                )}
                 {initiatives === null && <div className="ini-picker-empty">Loading…</div>}
-                {initiatives !== null && shown.length === 0 && (
+                {initiatives !== null && shown.length === 0 && !isSurvey && (
                   <div className="ini-picker-empty">No initiatives match.</div>
                 )}
                 {shown.map((i) => (
                   <label key={i.id} className={`mini-row ini-picker-row ${picked?.id === i.id ? 'on' : ''}`}>
                     <input type="radio" name="initiative" aria-label={i.name}
-                           checked={picked?.id === i.id} onChange={() => setPicked(i)} />
+                           checked={picked?.id === i.id}
+                           onChange={() => { setPicked(i); setNoInitiative(false); }} />
                     <span className="cell-primary"><span className="pn"><b>{i.name}</b></span></span>
                     <span className="cell-sub">{i.client_name ?? '—'}</span>
                     <span className="chip custom" style={{ '--chip': i.status_color } as CSSProperties}>
@@ -173,13 +212,22 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
             </div>
             <div className="modal-foot">
               <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
-              <button type="button" className="btn-solid" disabled={!picked}
+              <button type="button" className="btn-solid" disabled={!picked && !noInitiative}
                       onClick={() => setStep('sections')}>Next</button>
             </div>
           </>
         )}
 
-        {step === 'sections' && (
+        {step === 'sections' && isSurvey && (
+          <SiteMoveSurveyOptions
+            definition={definition}
+            initiative={noInitiative ? null : picked}
+            onBack={() => setStep('pick')}
+            onGenerate={(p) => void start(p)}
+          />
+        )}
+
+        {step === 'sections' && !isSurvey && (
           <>
             <div className="modal-body">
               <p className="cell-sub">Select which sections to include in the PDF report for <b>{picked?.name}</b>:</p>
@@ -204,7 +252,8 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
             <div className="modal-foot">
               <button type="button" className="btn-ghost" onClick={() => setStep('pick')}>Back</button>
               <button type="button" className="btn-solid" disabled={enabledCount === 0}
-                      onClick={() => void start()}>
+                      onClick={() => void start(
+                        { initiative_id: picked!.id, options, notify: false })}>
                 Generate Report
               </button>
             </div>
@@ -227,7 +276,9 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
               {run?.status === 'completed' && (
                 <>
                   <div><b>{run.filename}</b></div>
-                  <div className="cell-sub">Also saved to the initiative&apos;s Files</div>
+                  {run.initiative_id && (
+                    <div className="cell-sub">Also saved to the initiative&apos;s Files</div>
+                  )}
                 </>
               )}
               {run?.status === 'failed' && (

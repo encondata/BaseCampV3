@@ -124,7 +124,9 @@ export default function HistoryTab({ highlightRunId, onCount }: {
               {r.id === pinned?.id && <span className="chip c-slate pinned-run">Linked run</span>}
             </div>
             <div className="cell">
-              <Link className="cell-top" to={`/initiatives/${r.initiative_id}`}>{r.initiative_name}</Link>
+              {r.initiative_id
+                ? <Link className="cell-top" to={`/initiatives/${r.initiative_id}`}>{r.initiative_name}</Link>
+                : <span className="cell-top">—</span>}
             </div>
             <div className="cell"><span className="cell-top">{r.requested_by_name}</span></div>
             <div className="cell"><span className="mono">{new Date(r.created_at).toLocaleString()}</span></div>

@@ -1,0 +1,122 @@
+/**
+ * Pure helpers for the Site & Move Survey generate flow
+ * (`SiteMoveSurveyOptions`, `CompleteSiteSurveyModal`) — kept side-effect
+ * free so the wizard's logic is unit-testable without mounting the
+ * component tree or mocking the API.
+ */
+import type { InitiativeAssetRow, SurveyFieldDef, SurveySchema } from './api';
+
+export interface AssetPreviewRow {
+  key: string;
+  make: string;
+  model: string;
+  ru: number | null;
+  rack: string | null;
+  qty: number;
+}
+
+const UNKNOWN = 'Unknown';
+
+/**
+ * One row per asset in per-asset mode; one row per (make, model) pair
+ * with a summed `qty` in condensed mode — the same grouping the fill
+ * engine uses, so this preview matches what lands in the workbook.
+ */
+export function assetPreviewRows(
+  rows: InitiativeAssetRow[], condensed: boolean,
+): AssetPreviewRow[] {
+  if (!condensed) {
+    return rows.map((r) => ({
+      key: r.id,
+      make: r.asset.model_make ?? UNKNOWN,
+      model: r.asset.model_name ?? UNKNOWN,
+      ru: r.asset.ru_size,
+      rack: r.source_rack,
+      qty: 1,
+    }));
+  }
+  const groups = new Map<string, AssetPreviewRow>();
+  for (const r of rows) {
+    const make = r.asset.model_make ?? UNKNOWN;
+    const model = r.asset.model_name ?? UNKNOWN;
+    // JSON-encode the pair rather than joining with a plain separator —
+    // safe even if a make/model string itself contains the separator.
+    const key = JSON.stringify([make, model]);
+    const existing = groups.get(key);
+    if (existing) { existing.qty += 1; continue; }
+    groups.set(key, { key, make, model, ru: r.asset.ru_size, rack: null, qty: 1 });
+  }
+  return [...groups.values()];
+}
+
+export interface MissingSurveyField {
+  key: string; label: string; kind: SurveyFieldDef['kind']; options: string[];
+}
+
+/** The registry group that's allowed to be blank — V2's rule that only
+ *  the trailing "Additional notes" field is optional; every other field
+ *  is required for the survey template fill to make sense. */
+const OPTIONAL_GROUP = 'notes';
+
+/**
+ * Every schema field outside the optional group whose current answer is
+ * empty (`null`/`undefined`/`''`). `answers` maps a site's `field_key` to
+ * its current value — e.g. built from `listSiteSurvey(siteId)` rows.
+ */
+export function findMissingRequiredFields(
+  schema: SurveySchema,
+  answers: Record<string, boolean | number | string | null | undefined>,
+): MissingSurveyField[] {
+  const missing: MissingSurveyField[] = [];
+  for (const group of schema.groups) {
+    if (group.key === OPTIONAL_GROUP) continue;
+    for (const field of group.fields) {
+      const value = answers[field.key];
+      if (value === null || value === undefined || value === '') {
+        missing.push({
+          key: field.key, label: field.label, kind: field.kind, options: field.options,
+        });
+      }
+    }
+  }
+  return missing;
+}
+
+export interface SiteMoveSurveyRunOptions {
+  partner_id: string;
+  contact_person_id?: string;
+  source_site_id?: string;
+  destination_site_id?: string;
+  asset_notes?: string;
+  include_transportation_standards: boolean;
+  include_site_photos: boolean;
+  condensed_assets: boolean;
+}
+
+/**
+ * Assembles the run's `options` payload. Optional keys are only sent
+ * when the wizard actually has a value — an empty string would otherwise
+ * make the API do the "no value" interpretation itself.
+ */
+export function buildRunOptions(input: {
+  partnerId: string;
+  contactPersonId: string;
+  sourceSiteId: string;
+  destinationSiteId: string;
+  assetNotes: string;
+  includeTransportationStandards: boolean;
+  includeSitePhotos: boolean;
+  condensedAssets: boolean;
+}): SiteMoveSurveyRunOptions {
+  const options: SiteMoveSurveyRunOptions = {
+    partner_id: input.partnerId,
+    include_transportation_standards: input.includeTransportationStandards,
+    include_site_photos: input.includeSitePhotos,
+    condensed_assets: input.condensedAssets,
+  };
+  if (input.contactPersonId) options.contact_person_id = input.contactPersonId;
+  if (input.sourceSiteId) options.source_site_id = input.sourceSiteId;
+  if (input.destinationSiteId) options.destination_site_id = input.destinationSiteId;
+  if (input.assetNotes.trim()) options.asset_notes = input.assetNotes.trim();
+  return options;
+}

@@ -1,9 +1,10 @@
 """The report worker loop (`serversherpa report-worker`) — a separate
-process from the API. Claims queued report_runs, renders the PDF through
-the module registry, uploads it, attaches it to the initiative, and
-writes an inbox row when asked. A bad run never kills the loop; a DB blip
-on the claim is swallowed and logged once (same rule as the pause check
-and the heartbeat: a DB blip must never kill the host process).
+process from the API. Claims queued report_runs, renders the result
+through the module registry (usually a PDF; Site & Move Survey produces
+an xlsx), uploads it, attaches it to the initiative when the run has one,
+and writes an inbox row when asked. A bad run never kills the loop; a DB
+blip on the claim is swallowed and logged once (same rule as the pause
+check and the heartbeat: a DB blip must never kill the host process).
 
 Session discipline — the build gets its own session and nothing else
 does. A build can poison its transaction (a bad query) or leave a
@@ -18,16 +19,21 @@ someone tried to reuse."""
 import asyncio
 import logging
 import time
+import uuid
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import Attachment, Initiative, ReportDefinition, ReportRun
+from serversherpa.db.models import (
+    Attachment, Initiative, Partner, ReportDefinition, ReportRun,
+)
 from serversherpa.notifications.inbox import notify
 from serversherpa.reports.jobs import claim_next, requeue_stale
 from serversherpa.reports.move_report.gather import InitiativeUnavailable
 from serversherpa.reports.rack_renderer import RackRendererUnavailable
 from serversherpa.reports.registry import get_module
+from serversherpa.reports.site_move_survey.gather import SurveyGatherError
 from serversherpa.services.audit import audit
 from serversherpa.services.storage import put_object
 
@@ -66,35 +72,55 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
     has failed (see the module docstring)."""
     run_id = run.id
     definition = await db.get(ReportDefinition, run.definition_id)
-    initiative = await db.get(Initiative, run.initiative_id)
+    initiative = await db.get(Initiative, run.initiative_id) if run.initiative_id else None
     definition_name = definition.name if definition else run.report_type
-    initiative_name = initiative.name if initiative else "?"
+    initiative_name = initiative.name if initiative else ("—" if run.initiative_id is None else "?")
+    if run.initiative_id is None and run.report_type == "site_move_survey":
+        # A standalone survey (partner + manually chosen sites, no
+        # initiative) has no initiative name to show in the "report_ready"
+        # inbox row — the partner is the closest equivalent, and beats a
+        # bare "—" for a requester juggling several partners' surveys.
+        raw_partner_id = (run.options or {}).get("partner_id")
+        partner = None
+        if raw_partner_id:
+            try:
+                partner = await db.get(Partner, uuid.UUID(str(raw_partner_id)))
+            except ValueError:
+                partner = None
+        if partner is not None:
+            initiative_name = partner.name
     error: str | None = None
     try:
         module = get_module(run.report_type)
         kwargs = {"renderer": renderer} if renderer is not None else {}
         result = await asyncio.wait_for(module.build(db, run, **kwargs), RUN_TIMEOUT_SECONDS)
-        key = f"reports/{run.initiative_id}/{run_id}.pdf"
-        await put_object(key, result.pdf, "application/pdf")
-        attachment = Attachment(
-            entity_type="initiative", entity_id=run.initiative_id, kind="document",
-            storage_key=key, filename=result.filename, content_type="application/pdf",
-            size_bytes=len(result.pdf), uploaded_by=run.requested_by)
-        db.add(attachment)
-        await db.flush()
-        # same audit row a manual upload writes (routes/attachments.py), so
-        # the initiative's Files history reads the same either way
-        audit(db, actor_id=run.requested_by, entity_type="initiative",
-              entity_id=str(run.initiative_id), action="attachment.add",
-              changes={"filename": {"from": None, "to": result.filename}})
+        ext = PurePosixPath(result.filename).suffix or ".bin"
+        key = f"reports/{run.initiative_id or 'standalone'}/{run_id}{ext}"
+        await put_object(key, result.content, result.content_type)
+        if run.initiative_id is not None:
+            # no initiative to attach to when the survey was generated for
+            # a partner + manually-chosen sites — see the module docstring
+            attachment = Attachment(
+                entity_type="initiative", entity_id=run.initiative_id, kind="document",
+                storage_key=key, filename=result.filename, content_type=result.content_type,
+                size_bytes=len(result.content), uploaded_by=run.requested_by)
+            db.add(attachment)
+            await db.flush()
+            # same audit row a manual upload writes (routes/attachments.py), so
+            # the initiative's Files history reads the same either way
+            audit(db, actor_id=run.requested_by, entity_type="initiative",
+                  entity_id=str(run.initiative_id), action="attachment.add",
+                  changes={"filename": {"from": None, "to": result.filename}})
+            run.attachment_id = attachment.id
         run.storage_key = key
-        run.attachment_id = attachment.id
         run.filename = result.filename
-        run.size_bytes = len(result.pdf)
+        run.size_bytes = len(result.content)
         _finish(run, "completed")
         await db.commit()                   # a failure here is a failed run too
     except InitiativeUnavailable:
         error = "initiative_unavailable"
+    except SurveyGatherError as exc:
+        error = exc.code
     except RackRendererUnavailable as exc:
         error = f"rack renderer unavailable: {exc}"
     except TimeoutError:

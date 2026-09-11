@@ -7,6 +7,7 @@ S3-compatible (MinIO dev / DO Spaces prod) via services.storage.
 
 import uuid
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -16,8 +17,8 @@ from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
 from serversherpa.api.schemas import AttachmentOut
 from serversherpa.db.models import (
-    Asset, Attachment, Client, Container, Initiative, Partner, Person, Site,
-    Truck,
+    Asset, Attachment, Client, Container, Initiative, Partner, Person,
+    ReportDefinition, Site, Truck,
 )
 from serversherpa.services.audit import audit
 from serversherpa.services.storage import presign_get, put_object
@@ -26,16 +27,35 @@ router = APIRouter(prefix="/attachments", tags=["attachments"])
 
 EntityType = Literal[
     "person", "client", "partner", "asset", "container", "initiative", "site",
-    "truck",
+    "truck", "report_definition",
 ]
 
 ENTITY_MODEL = {
     "person": Person, "client": Client, "partner": Partner, "asset": Asset,
     "container": Container, "initiative": Initiative, "site": Site,
-    "truck": Truck,
+    "truck": Truck, "report_definition": ReportDefinition,
 }
 AVATAR_KEY_FIELD = {"person": "avatar_key", "client": "logo_key", "partner": "logo_key"}
-Kind = Literal["avatar", "photo", "document"]
+Kind = Literal["avatar", "photo", "document", "survey_template", "report_asset"]
+
+# Some kinds only make sense on one entity type — the Site & Move Survey
+# report's partner-side questionnaire template and the standards docx
+# carried on the report definition itself.
+KIND_ENTITY_TYPES = {
+    "survey_template": {"partner"},
+    "report_asset": {"report_definition"},
+}
+
+# Extensions accepted for the document kinds that aren't sniffed as images.
+DOCUMENT_KIND_EXTENSIONS = {
+    "survey_template": {".xlsx"},
+    "report_asset": {".docx", ".pdf"},
+}
+EXTENSION_CONTENT_TYPE = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pdf": "application/pdf",
+}
 
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_DOCUMENT_BYTES = 25 * 1024 * 1024
@@ -71,6 +91,15 @@ async def _authorize(
     if entity_type == "person" and entity_id == actor.person.id:
         # self-service: managing your OWN avatar is always allowed,
         # regardless of role/permission grants.
+        return
+    if entity_type == "report_definition":
+        # the standards docx lives on the report definition itself, so its
+        # attachment permission is the reports resource, not `attachments`:
+        # view to see it, change to add/delete it (same gate as editing the
+        # definition's other fields in routes/reports.py).
+        required = "view" if action == "view" else "change"
+        if not actor.access.can("reports", required):
+            raise _err(403, "forbidden")
         return
     if entity_type == "asset" and action == "view":
         # asset attachments inherit the asset's visibility: permission
@@ -118,6 +147,9 @@ async def upload_attachment(
 
     if kind == "avatar" and entity_type not in AVATAR_KEY_FIELD:
         raise _err(422, "avatar_not_supported")
+    allowed_entity_types = KIND_ENTITY_TYPES.get(kind)
+    if allowed_entity_types is not None and entity_type not in allowed_entity_types:
+        raise _err(422, "kind_not_allowed")
 
     data = await file.read()
     if kind in ("avatar", "photo"):
@@ -130,8 +162,15 @@ async def upload_attachment(
     else:
         if len(data) > MAX_DOCUMENT_BYTES:
             raise _err(413, "file_too_large")
-        content_type = file.content_type or "application/octet-stream"
-        ext = ""
+        allowed_extensions = DOCUMENT_KIND_EXTENSIONS.get(kind)
+        ext = PurePosixPath(file.filename or "").suffix.lower()
+        if allowed_extensions is not None:
+            if ext not in allowed_extensions:
+                raise _err(422, "invalid_file_type")
+            content_type = EXTENSION_CONTENT_TYPE[ext]
+        else:
+            content_type = file.content_type or "application/octet-stream"
+            ext = ""
     if len(data) == 0:
         raise _err(422, "empty_file")
 
