@@ -211,7 +211,22 @@ async def create_run(
                 cond is not None and await db.scalar(
                     select(Initiative.id).where(Initiative.id == ini.id, cond)) is None):
             raise _err(404, "initiative_not_found")
-    options = _validated_options(d.report_type, body.options, run=True)
+    options_input = body.options
+    if d.report_type == "site_move_survey":
+        # The definition's own saved options (company_name + the three
+        # toggles) are the baseline for a run that never mentions them —
+        # the Generate modal never sends company_name at all, and may not
+        # send every toggle either. Merging here (rather than leaving it
+        # to build()'s own belt-and-braces merge) matters because
+        # validate_run_options's normalization fills in every missing
+        # toggle/company_name key with this module's HARDCODED defaults;
+        # once that's baked into the stored run.options, build() can no
+        # longer tell "the caller didn't mention this key" from "the
+        # caller explicitly chose the default", and the definition's real
+        # value is lost. Run keys still win over the definition's when
+        # actually present in the request.
+        options_input = {**(d.options or {}), **body.options}
+    options = _validated_options(d.report_type, options_input, run=True)
     run = ReportRun(definition_id=d.id, report_type=d.report_type,
                     initiative_id=ini.id if ini is not None else None,
                     options=options, requested_by=actor.person.id,

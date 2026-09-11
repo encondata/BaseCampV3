@@ -240,9 +240,52 @@ async def test_build_fills_workbook_per_asset(db, scenario):
     assert "Site Photos" in wb.sheetnames
 
 
-async def test_build_condenses_assets_by_make_model_with_qty(db, scenario):
-    run = _run(definition=scenario["definition"], partner=scenario["partner"],
-              initiative=scenario["initiative"], requester=scenario["requester"],
+async def test_build_condenses_assets_by_make_model_with_qty(db):
+    """A dedicated (not the shared `scenario` fixture) three-asset roster
+    where two assets DO share a (make, model) — the shared fixture's two
+    assets never do, which left the previous version of this test's qty
+    assertion trivially true (both groups qty 1) even with `condensed=False`
+    hardcoded in `build()`. Three assets: two Dell R740s (different racks)
+    condense into one qty-2 row; the HPE DL380 stays its own qty-1 row."""
+    t0, = _times(1)
+    partner = _partner()
+    requester = _person()
+    origin = _site(name="Condensed Origin")
+    destination = _site(name="Condensed Destination", id=uuid.uuid4())
+    db.add_all([partner, requester, origin, destination])
+    await db.flush()
+
+    model_a = _asset_model(make="Dell", model="R740", ru_size=2)
+    model_b = _asset_model(make="HPE", model="DL380", id=uuid.uuid4(), ru_size=4)
+    asset1 = _asset(name="db-01", serial_number="SN-001")
+    asset2 = _asset(name="db-02", serial_number="SN-002", id=uuid.uuid4())
+    asset3 = _asset(name="db-03", serial_number="SN-003", id=uuid.uuid4())
+    db.add_all([model_a, model_b, asset1, asset2, asset3])
+    await db.flush()
+    asset1.model_id = model_a.id            # Dell R740
+    asset2.model_id = model_a.id            # Dell R740 too — same group as asset1
+    asset3.model_id = model_b.id            # HPE DL380 — its own group
+
+    initiative = Initiative(name="Condensed Move", initiative_type="move", status="planned",
+                            origin_site_id=origin.id, destination_site_id=destination.id)
+    db.add(initiative)
+    await db.flush()
+
+    db.add_all([
+        InitiativeAsset(initiative_id=initiative.id, asset_id=asset1.id, source_rack="RACK-1"),
+        InitiativeAsset(initiative_id=initiative.id, asset_id=asset2.id, source_rack="RACK-2"),
+        InitiativeAsset(initiative_id=initiative.id, asset_id=asset3.id, source_rack="RACK-3"),
+    ])
+    await db.flush()
+
+    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+                      filename="template.xlsx", content_type=XLSX_MIME,
+                      storage_key=f"test/sms-build/{partner.id}/condensed.xlsx",
+                      content=TEMPLATE_BYTES, created_at=t0)
+    definition = await _definition(db)
+    await db.commit()
+
+    run = _run(definition=definition, partner=partner, initiative=initiative, requester=requester,
               options={"condensed_assets": True})
     db.add(run)
     await db.flush()
@@ -250,13 +293,9 @@ async def test_build_condenses_assets_by_make_model_with_qty(db, scenario):
     result = await build(db, run)
     wb = openpyxl.load_workbook(io.BytesIO(result.content))
     equip = wb["Equipment Listing"]
-    # Two different (make, model) pairs -> one condensed row each, each
-    # with its own qty (1) — the fixture's two assets never share a model,
-    # so this proves the condensed code path runs (grouping itself is
-    # covered by test_site_move_survey_fill.py's own unit tests).
-    makes_models_qty = {(equip["C8"].value, equip["D8"].value, equip["F8"].value),
-                        (equip["C9"].value, equip["D9"].value, equip["F9"].value)}
-    assert makes_models_qty == {("Dell", "R740", 1), ("HPE", "DL380", 1)}
+    rows = {(equip["C8"].value, equip["D8"].value, equip["F8"].value),
+           (equip["C9"].value, equip["D9"].value, equip["F9"].value)}
+    assert rows == {("Dell", "R740", 2), ("HPE", "DL380", 1)}
     # Condensed rows carry no per-asset rack/serial.
     assert equip["B8"].value in (None, "") and equip["B9"].value in (None, "")
 

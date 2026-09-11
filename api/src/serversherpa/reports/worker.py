@@ -75,7 +75,7 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
     initiative = await db.get(Initiative, run.initiative_id) if run.initiative_id else None
     definition_name = definition.name if definition else run.report_type
     initiative_name = initiative.name if initiative else ("—" if run.initiative_id is None else "?")
-    if initiative is None and run.initiative_id is None and run.report_type == "site_move_survey":
+    if run.initiative_id is None and run.report_type == "site_move_survey":
         # A standalone survey (partner + manually chosen sites, no
         # initiative) has no initiative name to show in the "report_ready"
         # inbox row — the partner is the closest equivalent, and beats a

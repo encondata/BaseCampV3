@@ -1,19 +1,26 @@
 """Reports API: definitions (list/clone/patch/delete + system guard) and,
 from Task 3, runs (create/list/get/download/notify + the history gate)."""
 
+import io
+from pathlib import Path
 from uuid import UUID, uuid4
 
+import openpyxl
 from sqlalchemy import select
 
+from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     Attachment, AuditLog, Initiative, Partner, ReportDefinition, ReportRun,
 )
-from serversherpa.services.storage import put_object
+from serversherpa.reports import worker as report_worker
+from serversherpa.services.storage import get_object, put_object
 
 from tests.test_sites_api import login
 from tests.test_status_values_write import _make
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+TEMPLATE_FIXTURE = (Path(__file__).resolve().parent / "fixtures"
+                   / "champagne_annotated_template.xlsx").read_bytes()
 
 ALL_ON = {"summary": True, "assets_by_source": True, "assets_by_destination": True,
           "size_weight": True, "rail_usage": True, "collisions": True,
@@ -283,6 +290,46 @@ async def test_create_run_without_initiative_requires_the_survey_report_type(cli
         "definition_id": str(move_def.id), "initiative_id": None,
         "options": ALL_ON, "notify": False})
     assert resp.status_code == 422 and resp.json()["detail"]["code"] == "initiative_required"
+
+
+async def test_create_run_inherits_the_definitions_company_name_and_toggles(client, db, seeded_user):
+    """Regression: a run that never mentions `company_name` (the Generate
+    modal never sends it) or every toggle must store — and build with —
+    the DEFINITION's own saved values, not this module's hardcoded
+    defaults. Before the fix, `validate_run_options(body.options)` alone
+    normalized every missing key to the hardcoded default BEFORE it ever
+    reached `_merged_run_options` in build(), permanently masking the
+    definition's real `company_name`/toggles for any run created through
+    this route."""
+    survey_def = await _survey_definition(db, options={
+        "company_name": "Acme Test Co", "include_transportation_standards": False,
+        "include_site_photos": True, "condensed_assets": True})
+    partner = await _partner(db, with_template=False)
+    storage_key = f"test/sms-api/{partner.id}/company-regression.xlsx"
+    await put_object(storage_key, TEMPLATE_FIXTURE, XLSX_MIME)
+    db.add(Attachment(entity_type="partner", entity_id=partner.id, kind="survey_template",
+                      storage_key=storage_key, filename="template.xlsx",
+                      content_type=XLSX_MIME, size_bytes=len(TEMPLATE_FIXTURE)))
+    await db.commit()
+
+    hdrs = await login(client)
+    resp = await client.post("/reports/runs", headers=hdrs, json={
+        "definition_id": str(survey_def.id), "initiative_id": None,
+        "options": {"partner_id": str(partner.id)}, "notify": False})
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["options"]["company_name"] == "Acme Test Co"
+    assert body["options"]["include_transportation_standards"] is False
+
+    run = await db.get(ReportRun, UUID(body["id"]))
+    assert await report_worker.run_once(get_sessionmaker()) is True
+    await db.refresh(run)                 # worker commits through its own sessions
+    assert run.status == "completed", run.error
+
+    stored = await get_object(run.storage_key)
+    wb = openpyxl.load_workbook(io.BytesIO(stored))
+    assert wb["Customer and Site Information"]["C11"].value == "Acme Test Co"
+    assert "Transportation Standards" not in wb.sheetnames
 
 
 async def test_create_run_for_survey_without_partner_id_is_invalid_options(client, db, seeded_user):

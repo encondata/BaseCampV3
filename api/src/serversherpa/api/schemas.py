@@ -2271,7 +2271,6 @@ class SurveyPartnerOut(BaseModel):
     """One row of `GET /reports/site-move-survey/partners` — a logistics
     partner the Generate modal's Partner step can pick, tagged with
     whether it already has a `survey_template` attachment to fill."""
-    model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     name: str
