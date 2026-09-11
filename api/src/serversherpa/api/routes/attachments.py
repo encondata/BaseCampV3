@@ -39,10 +39,11 @@ AVATAR_KEY_FIELD = {"person": "avatar_key", "client": "logo_key", "partner": "lo
 Kind = Literal["avatar", "photo", "document", "survey_template", "report_asset"]
 
 # Some kinds only make sense on one entity type — the Site & Move Survey
-# report's partner-side questionnaire template and the standards docx
-# carried on the report definition itself.
+# report's xlsx questionnaire template and the standards docx/pdf, both
+# carried on the report definition itself (not the partner — templates
+# are company-owned, per report definition, not per partner).
 KIND_ENTITY_TYPES = {
-    "survey_template": {"partner"},
+    "survey_template": {"report_definition"},
     "report_asset": {"report_definition"},
 }
 
@@ -93,10 +94,11 @@ async def _authorize(
         # regardless of role/permission grants.
         return
     if entity_type == "report_definition":
-        # the standards docx lives on the report definition itself, so its
-        # attachment permission is the reports resource, not `attachments`:
-        # view to see it, change to add/delete it (same gate as editing the
-        # definition's other fields in routes/reports.py).
+        # the survey_template xlsx and the standards docx/pdf both live on
+        # the report definition itself, so their attachment permission is
+        # the reports resource, not `attachments`: view to see them, change
+        # to add/delete them (same gate as editing the definition's other
+        # fields in routes/reports.py).
         required = "view" if action == "view" else "change"
         if not actor.access.can("reports", required):
             raise _err(403, "forbidden")

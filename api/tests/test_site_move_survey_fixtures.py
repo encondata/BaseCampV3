@@ -28,7 +28,9 @@ import openpyxl
 import pytest
 from sqlalchemy import text
 
-from serversherpa.db.models import Initiative, Person, ReportDefinition, ReportRun
+from serversherpa.db.models import (
+    Attachment, Initiative, Partner, Person, ReportDefinition, ReportRun,
+)
 
 API_DIR = Path(__file__).resolve().parents[1]
 FIXTURES = API_DIR / "tests" / "fixtures"
@@ -63,6 +65,12 @@ def _rebuild_standards_module():
 def _migration_module():
     return _load_module(API_DIR / "migrations" / "versions" / "0052_site_move_survey.py",
                         "_migration_0052_under_test")
+
+
+def _migration_0053_module():
+    return _load_module(
+        API_DIR / "migrations" / "versions" / "0053_survey_templates_on_definition.py",
+        "_migration_0053_under_test")
 
 
 # ── champagne_annotated_template.xlsx ───────────────────────────────
@@ -292,3 +300,61 @@ async def test_migration_downgrade_guard_refuses_when_runs_have_no_initiative(db
     await db.execute(text("DELETE FROM report_runs WHERE initiative_id IS NULL"))
     await db.run_sync(
         lambda session: migration.assert_no_standalone_runs(session.connection()))
+
+
+# ── migration 0053 ───────────────────────────────────────────────────
+
+async def test_migration_0053_repoints_legacy_partner_template_onto_definition(db):
+    """Executes the migration's own SELECT/UPDATE constants (the exact
+    statements upgrade() runs) directly against the test DB — a
+    survey_template attachment still sitting on a partner (a legacy row
+    from before templates moved to the report definition) must end up
+    re-pointed at the "Site & Move Survey" definition, entity_type and
+    entity_id both."""
+    migration = _migration_0053_module()
+
+    definition = ReportDefinition(name="Site & Move Survey", report_type="site_move_survey",
+                                  options={}, is_system=True)
+    partner = Partner(name="Champagne Logistics", partner_types=["logistics"])
+    db.add_all([definition, partner])
+    await db.flush()
+
+    legacy = Attachment(entity_type="partner", entity_id=partner.id, kind="survey_template",
+                        storage_key=f"test/0053/{partner.id}/template.xlsx",
+                        filename="template.xlsx",
+                        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        size_bytes=9)
+    # A non-survey_template attachment on the same partner, and a
+    # deleted survey_template row, must both be left alone.
+    untouched_kind = Attachment(entity_type="partner", entity_id=partner.id, kind="photo",
+                                storage_key=f"test/0053/{partner.id}/logo.png",
+                                filename="logo.png", content_type="image/png", size_bytes=4)
+    db.add_all([legacy, untouched_kind])
+    await db.commit()
+
+    definition_id = await db.scalar(text(migration.SELECT_DEFINITION_ID_SQL))
+    assert definition_id == definition.id
+    await db.execute(text(migration.UPDATE_SURVEY_TEMPLATES_SQL),
+                     {"definition_id": definition_id})
+    await db.commit()
+
+    await db.refresh(legacy)
+    await db.refresh(untouched_kind)
+    assert legacy.entity_type == "report_definition"
+    assert legacy.entity_id == definition.id
+    assert untouched_kind.entity_type == "partner"          # other kinds untouched
+    assert untouched_kind.entity_id == partner.id
+
+
+async def test_migration_0053_skips_update_when_no_definition_exists(db):
+    """upgrade() must not raise (and must leave rows alone) when no
+    "Site & Move Survey" definition exists to re-point onto — the guard
+    clause `if definition_id is None: return`."""
+    migration = _migration_0053_module()
+    definition_id = await db.scalar(text(migration.SELECT_DEFINITION_ID_SQL))
+    assert definition_id is None                # report_definitions truncated for this test
+
+
+def test_migration_0053_downgrade_is_a_documented_no_op():
+    migration = _migration_0053_module()
+    migration.downgrade()                        # must not raise

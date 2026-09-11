@@ -235,27 +235,24 @@ async def _survey_definition(db, *, options=None):
 
 
 async def _partner(db, *, name="Champagne Logistics", partner_types=("logistics",),
-                   archived=False, with_template=False):
+                   archived=False):
     from datetime import UTC, datetime
 
     p = Partner(name=name, partner_types=list(partner_types),
                archived_at=datetime.now(UTC) if archived else None)
     db.add(p)
-    await db.flush()
-    if with_template:
-        storage_key = f"test/sms-api/{p.id}/template.xlsx"
-        await put_object(storage_key, b"fake xlsx", XLSX_MIME)
-        db.add(Attachment(entity_type="partner", entity_id=p.id, kind="survey_template",
-                          storage_key=storage_key, filename="template.xlsx",
-                          content_type=XLSX_MIME, size_bytes=9))
     await db.commit()
     return p
 
 
-async def test_survey_partners_lists_logistics_only_with_template_flag(client, db, seeded_user):
-    templated = await _partner(db, name="Champagne Logistics", with_template=True)
-    untemplated = await _partner(db, name="Zeta Movers", with_template=False)
-    await _partner(db, name="Staffing Co", partner_types=["staffing"], with_template=True)
+async def test_survey_partners_lists_logistics_only_not_archived(client, db, seeded_user):
+    """The xlsx template itself lives on the report definition (not the
+    partner — templates are company-owned), so this endpoint returns
+    just id/name for logistics, non-archived partners — no template
+    flag."""
+    champagne = await _partner(db, name="Champagne Logistics")
+    zeta = await _partner(db, name="Zeta Movers")
+    await _partner(db, name="Staffing Co", partner_types=["staffing"])
     await _partner(db, name="Old Logistics", archived=True)
 
     worker = await _make(db, client, "worker", "w@test.example.com")
@@ -267,9 +264,10 @@ async def test_survey_partners_lists_logistics_only_with_template_flag(client, d
     assert resp.status_code == 200, resp.text
     rows = resp.json()
     assert [r["name"] for r in rows] == ["Champagne Logistics", "Zeta Movers"]  # sorted, no staffing/archived
+    assert all(set(r.keys()) == {"id", "name"} for r in rows)
     by_id = {r["id"]: r for r in rows}
-    assert by_id[str(templated.id)]["has_template"] is True
-    assert by_id[str(untemplated.id)]["has_template"] is False
+    assert by_id[str(champagne.id)]["name"] == "Champagne Logistics"
+    assert by_id[str(zeta.id)]["name"] == "Zeta Movers"
 
 
 async def test_create_run_without_initiative_requires_the_survey_report_type(client, db, seeded_user):
@@ -304,10 +302,11 @@ async def test_create_run_inherits_the_definitions_company_name_and_toggles(clie
     survey_def = await _survey_definition(db, options={
         "company_name": "Acme Test Co", "include_transportation_standards": False,
         "include_site_photos": True, "condensed_assets": True})
-    partner = await _partner(db, with_template=False)
-    storage_key = f"test/sms-api/{partner.id}/company-regression.xlsx"
+    partner = await _partner(db)
+    storage_key = f"test/sms-api/{survey_def.id}/company-regression.xlsx"
     await put_object(storage_key, TEMPLATE_FIXTURE, XLSX_MIME)
-    db.add(Attachment(entity_type="partner", entity_id=partner.id, kind="survey_template",
+    db.add(Attachment(entity_type="report_definition", entity_id=survey_def.id,
+                      kind="survey_template",
                       storage_key=storage_key, filename="template.xlsx",
                       content_type=XLSX_MIME, size_bytes=len(TEMPLATE_FIXTURE)))
     await db.commit()

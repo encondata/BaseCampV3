@@ -2269,12 +2269,12 @@ class ReportDownloadOut(BaseModel):
 
 class SurveyPartnerOut(BaseModel):
     """One row of `GET /reports/site-move-survey/partners` — a logistics
-    partner the Generate modal's Partner step can pick, tagged with
-    whether it already has a `survey_template` attachment to fill."""
+    partner the Generate modal's Partner step can pick. The xlsx
+    template itself lives on the report definition, not the partner, so
+    this carries no template flag."""
 
     id: uuid.UUID
     name: str
-    has_template: bool
 
 
 # ── trucks ─────────────────────────────────────────────────────────

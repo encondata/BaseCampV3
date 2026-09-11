@@ -16,7 +16,7 @@ from serversherpa.api.schemas import (
     ReportRunCreateIn, ReportRunNotifyIn, ReportRunOut, SurveyPartnerOut,
 )
 from serversherpa.db.models import (
-    Attachment, Initiative, Partner, Person, ReportDefinition, ReportRun,
+    Initiative, Partner, Person, ReportDefinition, ReportRun,
 )
 from serversherpa.reports.registry import OptionsError, get_module
 from serversherpa.services.audit import audit, diff, snapshot
@@ -246,22 +246,16 @@ async def create_run(
 async def list_survey_partners(
     db: DbSession, _actor: AuthContext = require_permission("reports", "view"),
 ) -> list[SurveyPartnerOut]:
-    """Logistics partners the Generate modal's Partner step can choose,
-    each tagged with whether it already has a `survey_template`
-    attachment to fill — the modal shows a "Template"/"No template" chip
-    off `has_template` rather than making the caller fetch every
-    partner's Files panel to find out."""
-    has_template = (
-        select(Attachment.id)
-        .where(Attachment.entity_type == "partner", Attachment.entity_id == Partner.id,
-               Attachment.kind == "survey_template", Attachment.deleted_at.is_(None))
-        .exists())
+    """Logistics partners the Generate modal's Partner step can choose.
+    The xlsx template itself is a `survey_template` attachment on the
+    report definition (not the partner — templates are company-owned),
+    so this returns just id/name; the modal shows a "no template on
+    this report" notice off the definition's own Files, not per-row."""
     rows = (await db.execute(
-        select(Partner.id, Partner.name, has_template)
+        select(Partner.id, Partner.name)
         .where(Partner.archived_at.is_(None), Partner.partner_types.any("logistics"))
         .order_by(Partner.name))).all()
-    return [SurveyPartnerOut(id=pid, name=name, has_template=bool(templated))
-            for pid, name, templated in rows]
+    return [SurveyPartnerOut(id=pid, name=name) for pid, name in rows]
 
 
 @router.get("/runs", response_model=list[ReportRunOut])

@@ -177,9 +177,14 @@ async def scenario(db):
     ])
     await db.flush()
 
-    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+    definition = await _definition(db)
+    definition.options = {**definition.options, "company_name": "Acme Test Co"}
+    await db.flush()
+
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template",
                       filename="champagne_annotated_template.xlsx", content_type=XLSX_MIME,
-                      storage_key=f"test/sms-build/{partner.id}/template.xlsx",
+                      storage_key=f"test/sms-build/{definition.id}/template.xlsx",
                       content=TEMPLATE_BYTES, created_at=t0)
 
     await _attachment(db, entity_type="site", entity_id=origin.id, kind="photo",
@@ -187,8 +192,6 @@ async def scenario(db):
                       storage_key=f"test/sms-build/{origin.id}/dock.png",
                       content=PHOTO_BYTES, created_at=t0)
 
-    definition = await _definition(db)
-    definition.options = {**definition.options, "company_name": "Acme Test Co"}
     await _attachment(db, entity_type="report_definition", entity_id=definition.id,
                       kind="report_asset", filename="Transportation Standards.docx",
                       content_type=DOCX_MIME,
@@ -278,11 +281,12 @@ async def test_build_condenses_assets_by_make_model_with_qty(db):
     ])
     await db.flush()
 
-    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
-                      filename="template.xlsx", content_type=XLSX_MIME,
-                      storage_key=f"test/sms-build/{partner.id}/condensed.xlsx",
-                      content=TEMPLATE_BYTES, created_at=t0)
     definition = await _definition(db)
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template",
+                      filename="template.xlsx", content_type=XLSX_MIME,
+                      storage_key=f"test/sms-build/{definition.id}/condensed.xlsx",
+                      content=TEMPLATE_BYTES, created_at=t0)
     await db.commit()
 
     run = _run(definition=definition, partner=partner, initiative=initiative, requester=requester,
@@ -327,12 +331,13 @@ async def test_build_without_initiative_has_no_asset_rows_and_writes_notes(db):
     db.add_all([partner, requester, origin, destination])
     await db.flush()
 
-    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+    definition = await _definition(db)
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template",
                       filename="template.xlsx", content_type=XLSX_MIME,
-                      storage_key=f"test/sms-build/{partner.id}/t.xlsx",
+                      storage_key=f"test/sms-build/{definition.id}/t.xlsx",
                       content=TEMPLATE_BYTES, created_at=t0)
 
-    definition = await _definition(db)
     await db.commit()
 
     run = _run(definition=definition, partner=partner, initiative=None, requester=requester,
@@ -381,12 +386,13 @@ async def test_corrupt_template_raises_template_unreadable(db):
     db.add_all([partner, requester])
     await db.flush()
 
-    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+    definition = await _definition(db)
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template",
                       filename="template.xlsx", content_type=XLSX_MIME,
-                      storage_key=f"test/sms-build/{partner.id}/corrupt.xlsx",
+                      storage_key=f"test/sms-build/{definition.id}/corrupt.xlsx",
                       content=b"not actually a zip file", created_at=t0)
 
-    definition = await _definition(db)
     await db.commit()
 
     run = _run(definition=definition, partner=partner, requester=requester, options={})
@@ -421,12 +427,13 @@ async def test_worker_end_to_end_no_initiative_names_partner_in_inbox(db):
     db.add_all([partner, requester, origin])
     await db.flush()
 
-    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+    definition = await _definition(db)
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template",
                       filename="template.xlsx", content_type=XLSX_MIME,
-                      storage_key=f"test/sms-build/{partner.id}/t.xlsx",
+                      storage_key=f"test/sms-build/{definition.id}/t.xlsx",
                       content=TEMPLATE_BYTES, created_at=t0)
 
-    definition = await _definition(db)
     await db.commit()
 
     run = _run(definition=definition, partner=partner, initiative=None, requester=requester,

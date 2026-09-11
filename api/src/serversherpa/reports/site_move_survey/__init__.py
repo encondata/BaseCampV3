@@ -1,5 +1,6 @@
-"""Site & Move Survey — fills a partner-annotated xlsx template with
-initiative site/asset data. Port of V2's api/reports/site_move_survey.py
+"""Site & Move Survey — fills an annotated xlsx template (a company-owned
+`survey_template` attachment on the report definition, not the partner)
+with initiative site/asset data. Port of V2's api/reports/site_move_survey.py
 into V3's reports framework; see
 docs/superpowers/specs/2026-09-11-site-move-survey-design.md § Report
 module.

@@ -51,8 +51,12 @@ class SurveyData:
     registry key); `assets` is the initiative's roster shaped for
     `assets.asset_rows`; `asset_notes` is the run option's free-form
     text (used only when `assets` is empty — see `context.build_context`
-    and `fill.expand_asset_rows`); `template_bytes` is the partner's
-    newest `survey_template` attachment; `standards_docx_bytes` is the
+    and `fill.expand_asset_rows`); `template_bytes` is the report
+    definition's (`run.definition_id`) newest `survey_template`
+    attachment — templates are company-owned, attached to the report
+    definition rather than the partner, so several may exist for
+    different purposes and the newest one is what a run fills (per-
+    purpose selection is deferred); `standards_docx_bytes` is the
     definition's newest `.docx`-named `report_asset` attachment, or
     `None` when there isn't one; `standards_attachment_id` accompanies
     it so `build()` can cache the parsed items by attachment id via
@@ -109,6 +113,21 @@ async def _site_photos(db: AsyncSession, site: Site | None) -> list[bytes]:
     return [await get_object(att.storage_key) for att in atts]
 
 
+async def _newest_survey_template(db: AsyncSession, definition_id: uuid.UUID) -> Attachment | None:
+    """The xlsx questionnaire template lives on the report definition,
+    not the partner — several may be attached (a later version may pick
+    one per purpose, e.g. move vs e-waste pickup); for now the newest
+    (`created_at` DESC, `id` DESC tie-break) is the one a run fills. A
+    `survey_template` row still sitting on a partner (a pre-migration-
+    0053 legacy row) is never consulted here."""
+    return await db.scalar(
+        select(Attachment)
+        .where(Attachment.entity_type == "report_definition",
+               Attachment.entity_id == definition_id,
+               Attachment.kind == "survey_template", Attachment.deleted_at.is_(None))
+        .order_by(Attachment.created_at.desc(), Attachment.id.desc()).limit(1))
+
+
 async def _newest_docx_report_asset(db: AsyncSession, definition_id: uuid.UUID) -> Attachment | None:
     """The definition's `report_asset` attachments can be a `.docx`
     (the standards doc) or a `.pdf` (per `attachments.py`'s
@@ -135,8 +154,10 @@ async def gather(db: AsyncSession, run: ReportRun) -> SurveyData:
     absence, an unparsable value, or no matching row all raise
     `partner_not_found`; a partner missing `logistics` from
     `partner_types` raises `partner_not_logistics`; no `survey_template`
-    attachment on the partner raises `no_survey_template`. The
-    initiative (via `run.initiative_id`) is optional — any type works,
+    attachment on the report definition (`run.definition_id`) raises
+    `no_survey_template` — the template is company-owned, not the
+    partner's, so this check no longer depends on which partner was
+    chosen. The initiative (via `run.initiative_id`) is optional — any type works,
     and for a `move` its `origin_site_id`/`destination_site_id` seed the
     sites, overridable (or, with no initiative, wholly supplied) by the
     run's `source_site_id`/`destination_site_id` options. Assets come
@@ -155,11 +176,7 @@ async def gather(db: AsyncSession, run: ReportRun) -> SurveyData:
     if "logistics" not in (partner.partner_types or []):
         raise SurveyGatherError("partner_not_logistics")
 
-    template_att = await db.scalar(
-        select(Attachment)
-        .where(Attachment.entity_type == "partner", Attachment.entity_id == partner.id,
-               Attachment.kind == "survey_template", Attachment.deleted_at.is_(None))
-        .order_by(Attachment.created_at.desc(), Attachment.id.desc()).limit(1))
+    template_att = await _newest_survey_template(db, run.definition_id)
     if template_att is None:
         raise SurveyGatherError("no_survey_template")
     template_bytes = await get_object(template_att.storage_key)

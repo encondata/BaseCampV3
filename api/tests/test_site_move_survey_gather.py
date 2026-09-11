@@ -91,15 +91,26 @@ async def requester(db):
     return person
 
 
+async def _definition(db):
+    """The report definition a run belongs to — also where the
+    survey_template attachment (and report_asset docx) now lives, since
+    templates are company-owned rather than partner-owned. Looked up by
+    name first (clean_db TRUNCATEs report_definitions between tests, so
+    this may create a fresh one), the same recipe `_run()` used before it
+    was factored out."""
+    definition = await db.scalar(select(ReportDefinition).where(
+        ReportDefinition.name == "Site & Move Survey Test"))
+    if definition is None:
+        definition = ReportDefinition(name="Site & Move Survey Test",
+                                      report_type="site_move_survey", options={})
+        db.add(definition)
+        await db.flush()
+    return definition
+
+
 async def _run(db, *, requester, definition=None, initiative=None, options):
     if definition is None:
-        definition = await db.scalar(select(ReportDefinition).where(
-            ReportDefinition.name == "Site & Move Survey Test"))
-        if definition is None:
-            definition = ReportDefinition(name="Site & Move Survey Test",
-                                          report_type="site_move_survey", options={})
-            db.add(definition)
-            await db.flush()
+        definition = await _definition(db)
     run = ReportRun(definition_id=definition.id, report_type="site_move_survey",
                     initiative_id=initiative.id if initiative is not None else None,
                     options=options, requested_by=requester.id, requested_rank=0)
@@ -152,16 +163,21 @@ async def test_gather_assembles_every_field(db, requester):
     ])
     await db.flush()
 
-    # Two survey_template attachments on the partner — the newer one wins.
-    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+    definition = await _definition(db)
+
+    # Two survey_template attachments on the report definition — the
+    # newer one wins.
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template",
                       filename="old_template.xlsx",
                       content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                      storage_key=f"test/sms/{partner.id}/old.xlsx", content=XLSX_BYTES_1,
+                      storage_key=f"test/sms/{definition.id}/old.xlsx", content=XLSX_BYTES_1,
                       created_at=t0)
-    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template",
                       filename="new_template.xlsx",
                       content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                      storage_key=f"test/sms/{partner.id}/new.xlsx", content=XLSX_BYTES_2,
+                      storage_key=f"test/sms/{definition.id}/new.xlsx", content=XLSX_BYTES_2,
                       created_at=t1)
 
     photo_att = await _attachment(
@@ -169,7 +185,7 @@ async def test_gather_assembles_every_field(db, requester):
         content_type="image/jpeg", storage_key=f"test/sms/{origin.id}/dock.jpg",
         content=PHOTO_BYTES, created_at=t0)
 
-    run, definition = await _run(db, requester=requester, initiative=initiative,
+    run, definition = await _run(db, requester=requester, definition=definition, initiative=initiative,
                                  options={"partner_id": str(partner.id), "asset_notes": "handle with care"})
 
     await _attachment(db, entity_type="report_definition", entity_id=definition.id,
@@ -246,6 +262,28 @@ async def test_logistics_partner_with_no_template_raises_no_survey_template(db, 
     assert exc_info.value.code == "no_survey_template"
 
 
+async def test_survey_template_still_on_the_partner_is_ignored(db, requester):
+    """A `survey_template` attachment still sitting on the partner (a
+    legacy row from before migration 0053 moved templates onto the
+    report definition) must not be picked up — only a report_definition-
+    scoped row counts, so this still raises `no_survey_template`."""
+    t0, = _times(1)
+    partner = _partner()
+    db.add(partner)
+    await db.flush()
+
+    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+                      filename="legacy_template.xlsx",
+                      content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                      storage_key=f"test/sms/{partner.id}/legacy.xlsx", content=XLSX_BYTES_1,
+                      created_at=t0)
+
+    run, _ = await _run(db, requester=requester, options={"partner_id": str(partner.id)})
+    with pytest.raises(SurveyGatherError) as exc_info:
+        await gather(db, run)
+    assert exc_info.value.code == "no_survey_template"
+
+
 # ---------------------------------------------------------------------------
 # Site override + no-initiative run
 # ---------------------------------------------------------------------------
@@ -265,13 +303,15 @@ async def test_run_options_override_the_initiatives_sites(db, requester):
     db.add(initiative)
     await db.flush()
 
-    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+    definition = await _definition(db)
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template",
                       filename="template.xlsx",
                       content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                      storage_key=f"test/sms/{partner.id}/t.xlsx", content=XLSX_BYTES_1,
+                      storage_key=f"test/sms/{definition.id}/t.xlsx", content=XLSX_BYTES_1,
                       created_at=t0)
 
-    run, _ = await _run(db, requester=requester, initiative=initiative, options={
+    run, _ = await _run(db, requester=requester, definition=definition, initiative=initiative, options={
         "partner_id": str(partner.id),
         "source_site_id": str(override_origin.id),
         "destination_site_id": str(override_destination.id),
@@ -301,21 +341,23 @@ async def test_non_move_initiative_never_seeds_sites_from_its_site_columns(db, r
     db.add(initiative)
     await db.flush()
 
-    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+    definition = await _definition(db)
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template",
                       filename="template.xlsx",
                       content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                      storage_key=f"test/sms/{partner.id}/t.xlsx", content=XLSX_BYTES_1,
+                      storage_key=f"test/sms/{definition.id}/t.xlsx", content=XLSX_BYTES_1,
                       created_at=t0)
 
     # No site options at all: the stale move-only columns must not leak.
-    run_no_options, _ = await _run(db, requester=requester, initiative=initiative,
+    run_no_options, _ = await _run(db, requester=requester, definition=definition, initiative=initiative,
                                    options={"partner_id": str(partner.id)})
     data_no_options = await gather(db, run_no_options)
     assert data_no_options.origin is None
     assert data_no_options.destination is None
 
     # Option sites still win when given.
-    run_with_option, _ = await _run(db, requester=requester, initiative=initiative, options={
+    run_with_option, _ = await _run(db, requester=requester, definition=definition, initiative=initiative, options={
         "partner_id": str(partner.id), "source_site_id": str(option_origin.id),
     })
     data_with_option = await gather(db, run_with_option)
@@ -331,13 +373,15 @@ async def test_no_initiative_run_uses_option_sites_and_has_zero_assets(db, reque
     db.add_all([partner, origin, destination])
     await db.flush()
 
-    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+    definition = await _definition(db)
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template",
                       filename="template.xlsx",
                       content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                      storage_key=f"test/sms/{partner.id}/t.xlsx", content=XLSX_BYTES_1,
+                      storage_key=f"test/sms/{definition.id}/t.xlsx", content=XLSX_BYTES_1,
                       created_at=t0)
 
-    run, _ = await _run(db, requester=requester, initiative=None, options={
+    run, _ = await _run(db, requester=requester, definition=definition, initiative=None, options={
         "partner_id": str(partner.id),
         "source_site_id": str(origin.id),
         "destination_site_id": str(destination.id),
@@ -363,13 +407,15 @@ async def test_contact_person_id_option_overrides_the_requester(db, requester):
     db.add_all([partner, contact])
     await db.flush()
 
-    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+    definition = await _definition(db)
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template",
                       filename="template.xlsx",
                       content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                      storage_key=f"test/sms/{partner.id}/t.xlsx", content=XLSX_BYTES_1,
+                      storage_key=f"test/sms/{definition.id}/t.xlsx", content=XLSX_BYTES_1,
                       created_at=t0)
 
-    run, _ = await _run(db, requester=requester, options={
+    run, _ = await _run(db, requester=requester, definition=definition, options={
         "partner_id": str(partner.id), "contact_person_id": str(contact.id),
     })
 
@@ -384,10 +430,12 @@ async def test_site_photos_are_capped_at_ten_newest_first(db, requester):
     db.add_all([partner, origin])
     await db.flush()
 
-    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+    definition = await _definition(db)
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template",
                       filename="template.xlsx",
                       content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                      storage_key=f"test/sms/{partner.id}/t.xlsx", content=XLSX_BYTES_1,
+                      storage_key=f"test/sms/{definition.id}/t.xlsx", content=XLSX_BYTES_1,
                       created_at=times[0])
 
     # 12 photos, each with distinguishable content and a strictly
@@ -400,7 +448,7 @@ async def test_site_photos_are_capped_at_ten_newest_first(db, requester):
             storage_key=f"test/sms/{origin.id}/photo{i}.jpg",
             content=f"photo-{i}".encode(), created_at=times[i])
 
-    run, _ = await _run(db, requester=requester, options={
+    run, _ = await _run(db, requester=requester, definition=definition, options={
         "partner_id": str(partner.id), "source_site_id": str(origin.id),
     })
 
@@ -423,17 +471,19 @@ async def test_photos_skip_destination_when_it_is_the_same_site_as_origin(db, re
     db.add_all([partner, shared_site])
     await db.flush()
 
-    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+    definition = await _definition(db)
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template",
                       filename="template.xlsx",
                       content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                      storage_key=f"test/sms/{partner.id}/t.xlsx", content=XLSX_BYTES_1,
+                      storage_key=f"test/sms/{definition.id}/t.xlsx", content=XLSX_BYTES_1,
                       created_at=t0)
     await _attachment(db, entity_type="site", entity_id=shared_site.id, kind="photo",
                       filename="dock.jpg", content_type="image/jpeg",
                       storage_key=f"test/sms/{shared_site.id}/dock.jpg", content=PHOTO_BYTES,
                       created_at=t0)
 
-    run, _ = await _run(db, requester=requester, options={
+    run, _ = await _run(db, requester=requester, definition=definition, options={
         "partner_id": str(partner.id),
         "source_site_id": str(shared_site.id),
         "destination_site_id": str(shared_site.id),

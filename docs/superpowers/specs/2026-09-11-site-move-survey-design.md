@@ -29,14 +29,21 @@ conversation is preserved unless listed under "Deliberate differences".
    initiative. When null: no initiative attachment is created, the run
    history shows "—" for the initiative, and the requester still gets the
    inbox notification + download.
-3. Attachments: `Kind` gains `survey_template` (partner-only) and
-   `report_asset` (report-definition-only). Entity type `report_definition`
-   is added to `ENTITY_MODEL`/`EntityType`, authorized through
-   `reports:change` for add/delete and `reports:view` for view. The Files
-   panel on a partner offers "Survey template" as an upload type; the
+3. Attachments: `Kind` gains `survey_template` and `report_asset`, both
+   report-definition-only. Entity type `report_definition` is added to
+   `ENTITY_MODEL`/`EntityType`, authorized through `reports:change` for
+   add/delete and `reports:view` for view. Templates are company-owned,
+   not partner-owned: the xlsx questionnaire template lives on the
+   report definition alongside the Transportation Standards docx.
+   Several `survey_template`s may exist on a definition (a later version
+   may pick one per purpose, e.g. move vs e-waste pickup); for now the
+   newest (`created_at` DESC, `id` DESC) is the one a run fills. The
    report definition's Edit modal gets a **Files** section (list/upload/
-   delete `report_asset`s) — that's where the Transportation Standards docx
-   goes.
+   delete `survey_template`s and `report_asset`s) — that's where both
+   the xlsx template and the Transportation Standards docx go. Migration
+   0053 re-points any `survey_template` attachment still sitting on a
+   partner (a pre-migration legacy row) onto the seeded "Site & Move
+   Survey" definition.
 4. Report definitions can carry per-report **option schemas** that aren't
    booleans: `site_move_survey` options are
    `{ company_name: str, include_transportation_standards: bool,
@@ -54,8 +61,10 @@ conversation is preserved unless listed under "Deliberate differences".
   `source_site_id?`, `destination_site_id?`, `asset_notes?`; unknown keys
   rejected).
 - `gather(db, run)`: partner (must have `logistics` in `partner_types`,
-  else `partner_not_logistics`), the newest partner attachment with
-  `kind='survey_template'` (else `no_survey_template`), the initiative (any
+  else `partner_not_logistics`), the newest `survey_template` attachment
+  on the report definition (`run.definition_id`; else
+  `no_survey_template` — a legacy `survey_template` row still on a
+  partner is never consulted), the initiative (any
   type; for moves: origin/destination = its `origin_site_id`/
   `destination_site_id`, overridable by run options; other types: sites only
   from options), the initiative's assets via the same rows the Move Report
@@ -112,10 +121,13 @@ conversation is preserved unless listed under "Deliberate differences".
 - `SiteMoveSurveyOptions` (all portal idioms):
   1. **Initiative** — the existing picker step (optional for this report:
      a "No initiative — choose sites manually" choice).
-  2. **Partner** — `ComboBox` of logistics partners, each labeled with a
-     `chip` "Template" (green) or "No template" (slate) from
-     `GET /reports/site-move-survey/partners` (id, name, has_template).
-     Auto-selects the initiative's shipping partner when it is logistics.
+  2. **Partner** — `ComboBox` of logistics partners from
+     `GET /reports/site-move-survey/partners` (id, name — no per-partner
+     template flag, since the template is company-owned). Auto-selects
+     the initiative's shipping partner when it is logistics. When the
+     report definition itself has no `survey_template` attachment, a
+     "no template on this report" notice replaces the old per-partner
+     "Template"/"No template" chip and **Generate** stays disabled.
   3. **Company contact** — `ComboBox` of user accounts (`listUsers`),
      default = the signed-in person; shows email/phone under it.
   4. **Sites** — two cards Source / Destination: auto-detected from a move
@@ -135,10 +147,12 @@ conversation is preserved unless listed under "Deliberate differences".
      `PUT /sites/{id}/survey/{key}`, then queues the run.
 - History tab: rows with a null initiative show "—"; download works for
   xlsx (presigned with the filename).
-- Partner Files panel: upload type "Survey template" (xlsx only); the
-  newest is what the report uses; delete allowed with `partners:change`.
-- Report definition Edit modal: `company_name` field + **Files** (report
-  assets) for the standards docx.
+- Report definition Edit modal: `company_name` field + **Files** section
+  offering both "Survey template" (xlsx only) and "Report asset" (the
+  standards docx/pdf) upload types; several templates may be attached,
+  the newest is what a run fills; delete allowed with `reports:change`.
+  The partner's own Files panel no longer offers a "Survey template"
+  upload type — templates are company-owned, not per partner.
 
 ## Fixtures and tooling
 
@@ -150,7 +164,7 @@ conversation is preserved unless listed under "Deliberate differences".
   Listing) and dropping the appended Transportation Standards sheet.
   Built by `api/scripts/rebuild_champagne_template.py <generated.xlsx>` so
   it can be re-derived, and usable as the real template to upload on the
-  Champagne partner.
+  "Site & Move Survey" report definition.
 - `api/tests/fixtures/transportation_standards.docx`: reconstructed from the
   generated survey's Transportation Standards sheet (text hierarchy +
   the 6 embedded images) by `api/scripts/rebuild_transportation_standards.py`,
@@ -165,15 +179,19 @@ conversation is preserved unless listed under "Deliberate differences".
   context tests (V2 aliases, yes/no rendering, address parts, empty move);
   standards parser test on the reconstructed docx; end-to-end build test
   with the Champagne fixture producing a workbook whose cells match
-  expected values; run-without-initiative test; partner endpoint test;
-  attachment kind/authorization tests; worker stores xlsx with the right
-  content type; migration test (nullable initiative, seeded definition).
-- Portal: options component tests (partner badge, contact default, site
-  auto-detect vs manual, condensed toggle, notes when empty, missing-survey
-  modal saves then queues), Edit modal company field + Files, partner
-  upload type, history "—". Guardrail green.
-- Live: upload the Champagne template on the Champagne partner (or a test
-  partner), upload the reconstructed standards docx on the definition,
+  expected values; run-without-initiative test; partner endpoint test
+  (no template flag); attachment kind/authorization tests (survey_template
+  and report_asset both definition-only); worker stores xlsx with the
+  right content type; migration tests (nullable initiative, seeded
+  definition; migration 0053 re-points a legacy partner-scoped
+  `survey_template` row onto the definition).
+- Portal: options component tests (contact default, site auto-detect vs
+  manual, condensed toggle, notes when empty, missing-survey modal saves
+  then queues, "no template on this report" notice), Edit modal company
+  field + Files (survey template + report asset upload types), history
+  "—". Guardrail green.
+- Live: upload the Champagne template and the reconstructed standards
+  docx on the "Site & Move Survey" report definition's Files section,
   generate for the demo initiative, open the xlsx.
 
 ## Deliberate differences from V2
@@ -185,6 +203,11 @@ conversation is preserved unless listed under "Deliberate differences".
 - Site photos come from V3 photo attachments; V2's `image_associations`
   ordering ("primary first") becomes newest first.
 - `customer.company` is configurable per definition.
+- The xlsx questionnaire template is company-owned, attached to the
+  report definition rather than the partner (V2 kept it per partner).
+  Multiple templates may be attached; the newest wins. Per-purpose
+  template selection (e.g. move vs e-waste pickup) is deferred — a
+  later version may let a run pick which template to fill.
 
 ## Out of scope
 

@@ -280,10 +280,10 @@ def _upload_entity(client, headers, entity_type, entity_id, kind, data, filename
     )
 
 
-async def test_survey_template_uploads_on_a_partner(client, db, seeded_user):
-    """survey_template is the Site & Move Survey partner-side questionnaire
-    template — partner attachments use the generic `attachments` gate, and
-    staff (via seeded_user) holds attachments FULL + is global."""
+async def test_survey_template_rejected_on_a_partner(client, db, seeded_user):
+    """survey_template is the Site & Move Survey xlsx questionnaire
+    template — templates are company-owned, attached to the report
+    definition, not the partner, so a partner-targeted upload 422s."""
     headers, _ = await _login(client)
     partner = Partner(name="Champagne Logistics")
     db.add(partner)
@@ -291,12 +291,8 @@ async def test_survey_template_uploads_on_a_partner(client, db, seeded_user):
 
     resp = await _upload_entity(client, headers, "partner", partner.id, "survey_template",
                                 b"fake xlsx bytes", "template.xlsx")
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
-    assert body["kind"] == "survey_template"
-    assert body["content_type"] == (
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    assert body["storage_key"].endswith(".xlsx")
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "kind_not_allowed"
 
 
 async def test_survey_template_rejected_on_a_site(client, db, seeded_user):
@@ -312,14 +308,34 @@ async def test_survey_template_rejected_on_a_site(client, db, seeded_user):
     assert resp.json()["detail"]["code"] == "kind_not_allowed"
 
 
-async def test_survey_template_requires_the_xlsx_extension(client, db, seeded_user):
-    headers, _ = await _login(client)
-    partner = Partner(name="Champagne Logistics")
-    db.add(partner)
+async def test_survey_template_uploads_on_a_definition_with_reports_change(client, db, seeded_user):
+    """survey_template lives on the report definition itself, gated on the
+    `reports` resource — admin holds reports:change."""
+    definition = ReportDefinition(name="Site & Move Survey", report_type="site_move_survey",
+                                  options={}, is_system=True)
+    db.add(definition)
     await db.commit()
 
-    resp = await _upload_entity(client, headers, "partner", partner.id, "survey_template",
-                                b"not really a workbook", "template.pdf")
+    admin = await _make(db, client, "admin", "admin-template@test.example.com")
+    resp = await _upload_entity(client, admin, "report_definition", definition.id,
+                                "survey_template", b"fake xlsx bytes", "template.xlsx")
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["kind"] == "survey_template"
+    assert body["content_type"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    assert body["storage_key"].endswith(".xlsx")
+
+
+async def test_survey_template_requires_the_xlsx_extension(client, db, seeded_user):
+    definition = ReportDefinition(name="Site & Move Survey", report_type="site_move_survey",
+                                  options={}, is_system=True)
+    db.add(definition)
+    await db.commit()
+    admin = await _make(db, client, "admin", "admin-template-ext@test.example.com")
+
+    resp = await _upload_entity(client, admin, "report_definition", definition.id,
+                                "survey_template", b"not really a workbook", "template.pdf")
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "invalid_file_type"
 
