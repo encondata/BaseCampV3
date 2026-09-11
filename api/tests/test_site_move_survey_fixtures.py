@@ -305,12 +305,14 @@ async def test_migration_downgrade_guard_refuses_when_runs_have_no_initiative(db
 # ── migration 0053 ───────────────────────────────────────────────────
 
 async def test_migration_0053_repoints_legacy_partner_template_onto_definition(db):
-    """Executes the migration's own SELECT/UPDATE constants (the exact
-    statements upgrade() runs) directly against the test DB — a
+    """Runs the migration's own `repoint_survey_templates(conn)` (the exact
+    function upgrade() calls) directly against the test DB — a
     survey_template attachment still sitting on a partner (a legacy row
     from before templates moved to the report definition) must end up
     re-pointed at the "Site & Move Survey" definition, entity_type and
     entity_id both."""
+    from datetime import UTC, datetime
+
     migration = _migration_0053_module()
 
     definition = ReportDefinition(name="Site & Move Survey", report_type="site_move_survey",
@@ -325,34 +327,56 @@ async def test_migration_0053_repoints_legacy_partner_template_onto_definition(d
                         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         size_bytes=9)
     # A non-survey_template attachment on the same partner, and a
-    # deleted survey_template row, must both be left alone.
+    # soft-deleted survey_template row, must both be left alone.
     untouched_kind = Attachment(entity_type="partner", entity_id=partner.id, kind="photo",
                                 storage_key=f"test/0053/{partner.id}/logo.png",
                                 filename="logo.png", content_type="image/png", size_bytes=4)
-    db.add_all([legacy, untouched_kind])
+    deleted_template = Attachment(entity_type="partner", entity_id=partner.id,
+                                  kind="survey_template",
+                                  storage_key=f"test/0053/{partner.id}/deleted.xlsx",
+                                  filename="deleted.xlsx",
+                                  content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                  size_bytes=9, deleted_at=datetime.now(UTC))
+    db.add_all([legacy, untouched_kind, deleted_template])
     await db.commit()
 
-    definition_id = await db.scalar(text(migration.SELECT_DEFINITION_ID_SQL))
-    assert definition_id == definition.id
-    await db.execute(text(migration.UPDATE_SURVEY_TEMPLATES_SQL),
-                     {"definition_id": definition_id})
+    await db.run_sync(lambda s: migration.repoint_survey_templates(s.connection()))
     await db.commit()
 
     await db.refresh(legacy)
     await db.refresh(untouched_kind)
+    await db.refresh(deleted_template)
     assert legacy.entity_type == "report_definition"
     assert legacy.entity_id == definition.id
     assert untouched_kind.entity_type == "partner"          # other kinds untouched
     assert untouched_kind.entity_id == partner.id
+    assert deleted_template.entity_type == "partner"        # soft-deleted rows untouched
+    assert deleted_template.entity_id == partner.id
 
 
 async def test_migration_0053_skips_update_when_no_definition_exists(db):
-    """upgrade() must not raise (and must leave rows alone) when no
-    "Site & Move Survey" definition exists to re-point onto — the guard
-    clause `if definition_id is None: return`."""
+    """`repoint_survey_templates()` must not raise (and must leave a legacy
+    row alone) when no "Site & Move Survey" definition exists to re-point
+    onto — the guard clause `if definition_id is None: return`."""
     migration = _migration_0053_module()
-    definition_id = await db.scalar(text(migration.SELECT_DEFINITION_ID_SQL))
-    assert definition_id is None                # report_definitions truncated for this test
+    partner = Partner(name="Champagne Logistics", partner_types=["logistics"])
+    db.add(partner)
+    await db.flush()
+
+    legacy = Attachment(entity_type="partner", entity_id=partner.id, kind="survey_template",
+                        storage_key=f"test/0053/{partner.id}/template.xlsx",
+                        filename="template.xlsx",
+                        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        size_bytes=9)
+    db.add(legacy)
+    await db.commit()                            # report_definitions truncated for this test
+
+    await db.run_sync(lambda s: migration.repoint_survey_templates(s.connection()))
+    await db.commit()
+
+    await db.refresh(legacy)
+    assert legacy.entity_type == "partner"        # no definition to repoint onto — left alone
+    assert legacy.entity_id == partner.id
 
 
 def test_migration_0053_downgrade_is_a_documented_no_op():

@@ -65,11 +65,14 @@ def _asset(**kw):
 
 
 async def _attachment(db, *, entity_type, entity_id, kind, filename, content_type,
-                      storage_key, content, created_at):
+                      storage_key, content, created_at, id=None):
     await put_object(storage_key, content, content_type)
-    att = Attachment(entity_type=entity_type, entity_id=entity_id, kind=kind,
-                     storage_key=storage_key, filename=filename, content_type=content_type,
-                     size_bytes=len(content), created_at=created_at)
+    kwargs = dict(entity_type=entity_type, entity_id=entity_id, kind=kind,
+                 storage_key=storage_key, filename=filename, content_type=content_type,
+                 size_bytes=len(content), created_at=created_at)
+    if id is not None:
+        kwargs["id"] = id
+    att = Attachment(**kwargs)
     db.add(att)
     await db.flush()
     return att
@@ -282,6 +285,37 @@ async def test_survey_template_still_on_the_partner_is_ignored(db, requester):
     with pytest.raises(SurveyGatherError) as exc_info:
         await gather(db, run)
     assert exc_info.value.code == "no_survey_template"
+
+
+async def test_newest_survey_template_ties_break_on_id_desc(db, requester):
+    """Two survey_template attachments with the identical `created_at`
+    must resolve deterministically via the `id` DESC tie-break — not
+    whichever row the database happens to return first. Explicit,
+    ordered ids (rather than the random ones `gen_random_uuid()` would
+    assign) make which one "wins" predictable for the assertion."""
+    t0, = _times(1)
+    partner = _partner()
+    db.add(partner)
+    await db.flush()
+    definition = await _definition(db)
+
+    lower_id = uuid.UUID(int=1)
+    higher_id = uuid.UUID(int=2)
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template", filename="lower_id.xlsx",
+                      content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                      storage_key=f"test/sms/{definition.id}/lower.xlsx", content=XLSX_BYTES_1,
+                      created_at=t0, id=lower_id)
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template", filename="higher_id.xlsx",
+                      content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                      storage_key=f"test/sms/{definition.id}/higher.xlsx", content=XLSX_BYTES_2,
+                      created_at=t0, id=higher_id)
+
+    run, _ = await _run(db, requester=requester, definition=definition,
+                        options={"partner_id": str(partner.id)})
+    data = await gather(db, run)
+    assert data.template_bytes == XLSX_BYTES_2  # higher id wins the created_at tie
 
 
 # ---------------------------------------------------------------------------

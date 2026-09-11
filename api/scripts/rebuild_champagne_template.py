@@ -8,7 +8,8 @@ the report definition's `report_asset` attachment, see
 `rebuild_transportation_standards.py`) and writes the `{{...}}` placeholders
 from the V2 template-annotation guide (section 10, the Champagne annotation
 map) back into their cells, so the result is usable both as a test fixture
-and as the real survey_template attachment on the Champagne partner.
+and as the real survey_template attachment uploaded on the "Site & Move
+Survey" report definition (templates are company-owned, not per partner).
 
 Usage:
     python scripts/rebuild_champagne_template.py <generated.xlsx> <out.xlsx>

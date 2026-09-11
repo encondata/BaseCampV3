@@ -42,16 +42,22 @@ UPDATE_SURVEY_TEMPLATES_SQL = (
 )
 
 
-def upgrade() -> None:
-    conn = op.get_bind()
+def repoint_survey_templates(conn) -> None:
+    """Re-points every non-deleted `entity_type='partner' AND
+    kind='survey_template'` attachment onto the "Site & Move Survey"
+    report definition. No-ops (leaves legacy rows on the partner) when
+    that definition doesn't exist yet — e.g. a fresh DB where 0052
+    hasn't run, or the seeded row was deleted. Shared with the test so
+    the guard clause and the UPDATE itself are what gets exercised —
+    same shape as 0052's `assert_no_standalone_runs(conn)`."""
     definition_id = conn.execute(sa.text(SELECT_DEFINITION_ID_SQL)).scalar()
     if definition_id is None:
-        # No "Site & Move Survey" definition exists yet (e.g. a fresh DB
-        # where 0052 hasn't run, or the seeded row was deleted) — nothing
-        # to re-point legacy partner-scoped rows onto, so leave them be
-        # rather than raising.
         return
     conn.execute(sa.text(UPDATE_SURVEY_TEMPLATES_SQL), {"definition_id": definition_id})
+
+
+def upgrade() -> None:
+    repoint_survey_templates(op.get_bind())
 
 
 def downgrade() -> None:
@@ -59,5 +65,9 @@ def downgrade() -> None:
     # belong to isn't recoverable — the UPDATE above doesn't keep a
     # record of the prior (entity_type, entity_id) per row. Downgrading
     # this migration leaves every survey_template attachment on the
-    # report definition rather than restoring partner ownership.
+    # report definition rather than restoring partner ownership. Note
+    # also that 0052's own downgrade() DELETEs the "Site & Move Survey"
+    # definition outright — running that after this migration's upgrade()
+    # has re-pointed attachments onto it would orphan those rows (they'd
+    # 404 `entity_not_found` on view), not just leave ownership unrestored.
     pass
