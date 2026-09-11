@@ -455,11 +455,6 @@
     "reason": "not a directory list: the topbar bell popover (NotificationsPanel). It is shell chrome that lives with the rest of the bell in toast.css, and it deliberately CONSUMES the golden --list-* tokens (imported via directory.css) so the panel follows Settings > List text size / Density \u2014 the tokens are never redefined here; sized with --list-fs-sub"
   },
   {
-    "file": "styles/toast.css",
-    "selector": ".notif-actions .icon-btn[data-tip]::after",
-    "reason": "not a directory list: the topbar bell popover (NotificationsPanel). It is shell chrome that lives with the rest of the bell in toast.css, and it deliberately CONSUMES the golden --list-* tokens (imported via directory.css) so the panel follows Settings > List text size / Density \u2014 the tokens are never redefined here; row-action hover-tip bubble (mirrors .rack-tooltip), sized with --list-fs-sub"
-  },
-  {
     "file": "pages/DevDatabase.tsx",
     "selector": "color: 'var(--text-mute)', fontSize: 12, fontWeight: 300,",
     "reason": "not list content: Reconcile dry-run results tree (dev-only diagnostic list of orphaned references) \u2014 a nested note under one failed entity, not a list row",

@@ -326,7 +326,7 @@ export default function Topbar() {
       <div className="tb-actions" ref={popRef}>
         {can('ai') && (
           <div className="pop-wrap">
-            <button className="icon-btn ai-glow" title="AI assistant"
+            <button className="icon-btn ai-glow" data-tip="AI assistant" aria-label="AI assistant"
                     onClick={() => setPop(pop === 'ai' ? null : 'ai')}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
                    strokeLinecap="round" strokeLinejoin="round">
@@ -346,7 +346,7 @@ export default function Topbar() {
         )}
 
         <div className="pop-wrap">
-          <button className="icon-btn" title="Notifications"
+          <button className="icon-btn" data-tip="Notifications" aria-label="Notifications"
                   onClick={() => setPop(pop === 'notif' ? null : 'notif')}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
                  strokeLinecap="round" strokeLinejoin="round">
@@ -358,7 +358,7 @@ export default function Topbar() {
           {pop === 'notif' && <NotificationsPanel onClose={() => setPop(null)} />}
         </div>
 
-        <button className="icon-btn" title="Command palette (⌘K)"
+        <button className="icon-btn" data-tip="Command palette (⌘K)" aria-label="Command palette (⌘K)"
                 onClick={() => setPaletteOpen((v) => !v)}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
                strokeLinecap="round" strokeLinejoin="round">

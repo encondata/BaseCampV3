@@ -77,7 +77,7 @@ it('hides the AI button for a caller without ai:view', () => {
 it('shows the AI button for a caller with ai:view', () => {
   auth.can = (resource) => resource === 'ai';
   renderTopbar();
-  expect(screen.getByTitle('AI assistant')).toBeDefined();
+  expect(screen.getByRole('button', { name: 'AI assistant' })).toBeDefined();
 });
 
 it('bell shows the unread badge and lists items; clicking one marks it read', async () => {
@@ -87,11 +87,11 @@ it('bell shows the unread badge and lists items; clicking one marks it read', as
   const user = userEvent.setup();
   renderTopbar();
   expect(screen.getByText('2')).toBeTruthy();                       // badge
-  await user.click(screen.getByTitle('Notifications'));
+  await user.click(screen.getByRole('button', { name: /^Notifications/ }));
   expect(screen.getByRole('listitem')).toBeTruthy();                 // the panel's row
   await user.click(screen.getByText('Move Report is ready'));
   expect(bell.markRead).toHaveBeenCalledWith('n1');
-  await user.click(screen.getByTitle('Notifications'));
+  await user.click(screen.getByRole('button', { name: /^Notifications/ }));
   await user.click(screen.getByText('Mark all read'));
   expect(bell.markAllRead).toHaveBeenCalled();
 });

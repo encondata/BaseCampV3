@@ -108,6 +108,31 @@ kbd {
 
 /* header icon buttons */
 .tb-actions { display: flex; align-items: center; gap: 8px; }
+/* Hover tip for icon buttons — CSS-only via data-tip (pair with an
+   aria-label for screen readers). Shown below the button by default (the
+   topbar sits at the top of the page); consumers may flip it above. */
+.icon-btn[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms;
+  z-index: 60;
+  background: var(--surface, #fff);
+  color: var(--text-dark);
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: var(--list-fs-sub, 12px);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.icon-btn[data-tip]:hover::after,
+.icon-btn[data-tip]:focus-visible::after { opacity: 1; }
 .icon-btn {
   position: relative;
   width: 34px;
@@ -134,7 +159,7 @@ kbd {
   box-shadow: 0 0 0 2px var(--surface, #fff);
 }
 .icon-btn.ai-glow { color: var(--accent); }
-.icon-btn.ai-glow::after {
+.icon-btn.ai-glow::before {   /* ::after is the hover tip */
   content: '';
   position: absolute;
   inset: -1px;
