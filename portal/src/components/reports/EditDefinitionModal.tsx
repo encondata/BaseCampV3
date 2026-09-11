@@ -167,9 +167,17 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
                 {filesLoaded && files.length === 0 && <li className="page-hint">No files yet.</li>}
                 {files.map((f) => (
                   <li key={f.id} className="mini-row nf-item">
-                    <p className="nf-body">📎 {f.filename}</p>
+                    <p className="nf-body">
+                      {f.url
+                        ? <a href={f.url} target="_blank" rel="noreferrer">📎 {f.filename}</a>
+                        : <>📎 {f.filename}</>}
+                    </p>
                     <div className="nf-meta">
                       <span className="mono">{(f.size_bytes / 1024).toFixed(0)} KB</span>
+                      {f.url && (
+                        <a className="mini-btn" href={f.url} target="_blank" rel="noreferrer"
+                           aria-label={`Download ${f.filename}`}>Download</a>
+                      )}
                       <button className="mini-btn danger" disabled={fileBusy}
                               onClick={() => void removeFile(f.id)}>Delete</button>
                     </div>

@@ -86,6 +86,16 @@ it('lists existing report_asset files and uploads a new one', async () => {
   }));
 });
 
+it('offers a Download link for files the API presigned', async () => {
+  api.listAttachments.mockResolvedValue([file({ url: 'https://minio.example/k?sig=1' })]);
+  render(<EditDefinitionModal definition={SURVEY_DEF} onClose={() => {}} onSaved={() => {}} />);
+  const link = await screen.findByRole('link', { name: 'Download Transportation Standards.docx' });
+  expect(link.getAttribute('href')).toBe('https://minio.example/k?sig=1');
+  expect(link.getAttribute('target')).toBe('_blank');
+  expect(screen.getByRole('link', { name: /📎 Transportation Standards\.docx/ }).getAttribute('href'))
+    .toBe('https://minio.example/k?sig=1');
+});
+
 it('deletes a file', async () => {
   const user = userEvent.setup();
   api.listAttachments.mockResolvedValue([file()]);
