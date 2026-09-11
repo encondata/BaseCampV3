@@ -1,7 +1,9 @@
 """Attachment flow: avatar upload/replace/delete against real MinIO."""
 
 from serversherpa.config import get_settings
-from serversherpa.db.models import Initiative, Person, PersonRole, UserAccount
+from serversherpa.db.models import (
+    Initiative, Partner, Person, PersonRole, ReportDefinition, UserAccount,
+)
 from serversherpa.security.passwords import hash_password
 
 LOGIN = {"email": "alice@test.example.com", "password": "CorrectHorse9!"}
@@ -245,6 +247,159 @@ async def test_truck_attachments_list_empty(client, seeded_user, db):
         "/attachments",
         headers=headers,
         params={"entity_type": "truck", "entity_id": str(truck.id)},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+# ── Site & Move Survey: survey_template / report_asset kinds ────────
+
+async def _make(db, client, role, email):
+    """A fresh user with the given role, logged in — same recipe as
+    test_status_values_write.py's helper, duplicated here to keep this
+    file's fixture-free login story self-contained."""
+    p = Person(first_name="R", last_name="X", email=email)
+    db.add(p)
+    await db.flush()
+    db.add(UserAccount(
+        person_id=p.id, email=email,
+        password_hash=hash_password(
+            LOGIN["password"], pepper=get_settings().password_pepper.get_secret_value())))
+    db.add(PersonRole(person_id=p.id, role=role))
+    await db.commit()
+    headers, _ = await _login(client, email=email)
+    return headers
+
+
+def _upload_entity(client, headers, entity_type, entity_id, kind, data, filename):
+    return client.post(
+        "/attachments",
+        headers=headers,
+        data={"entity_type": entity_type, "entity_id": str(entity_id), "kind": kind},
+        files={"file": (filename, data, "application/octet-stream")},
+    )
+
+
+async def test_survey_template_uploads_on_a_partner(client, db, seeded_user):
+    """survey_template is the Site & Move Survey partner-side questionnaire
+    template — partner attachments use the generic `attachments` gate, and
+    staff (via seeded_user) holds attachments FULL + is global."""
+    headers, _ = await _login(client)
+    partner = Partner(name="Champagne Logistics")
+    db.add(partner)
+    await db.commit()
+
+    resp = await _upload_entity(client, headers, "partner", partner.id, "survey_template",
+                                b"fake xlsx bytes", "template.xlsx")
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["kind"] == "survey_template"
+    assert body["content_type"] == (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    assert body["storage_key"].endswith(".xlsx")
+
+
+async def test_survey_template_rejected_on_a_site(client, db, seeded_user):
+    from serversherpa.db.models import Site
+    headers, _ = await _login(client)
+    site = Site(name="DC-A")
+    db.add(site)
+    await db.commit()
+
+    resp = await _upload_entity(client, headers, "site", site.id, "survey_template",
+                                b"fake xlsx bytes", "template.xlsx")
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "kind_not_allowed"
+
+
+async def test_survey_template_requires_the_xlsx_extension(client, db, seeded_user):
+    headers, _ = await _login(client)
+    partner = Partner(name="Champagne Logistics")
+    db.add(partner)
+    await db.commit()
+
+    resp = await _upload_entity(client, headers, "partner", partner.id, "survey_template",
+                                b"not really a workbook", "template.pdf")
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_file_type"
+
+
+async def test_report_asset_uploads_on_a_definition_with_reports_change(client, db, seeded_user):
+    """report_asset (the Transportation Standards docx) lives on the report
+    definition itself, gated on the `reports` resource — admin holds
+    reports:change; staff (view + add only) does not."""
+    definition = ReportDefinition(name="Site & Move Survey", report_type="site_move_survey",
+                                  options={}, is_system=True)
+    db.add(definition)
+    await db.commit()
+
+    admin = await _make(db, client, "admin", "admin@test.example.com")
+    resp = await _upload_entity(client, admin, "report_definition", definition.id,
+                                "report_asset", b"fake docx bytes", "standards.docx")
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["kind"] == "report_asset"
+    assert body["content_type"] == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+    staff = await _login(client)
+    resp = await _upload_entity(client, staff[0], "report_definition", definition.id,
+                                "report_asset", b"fake docx bytes", "standards2.docx")
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["code"] == "forbidden"
+
+
+async def test_report_asset_rejected_on_a_partner(client, db, seeded_user):
+    definition_owner = await _make(db, client, "admin", "admin2@test.example.com")
+    partner = Partner(name="Champagne Logistics")
+    db.add(partner)
+    await db.commit()
+
+    resp = await _upload_entity(client, definition_owner, "partner", partner.id,
+                                "report_asset", b"fake docx bytes", "standards.docx")
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "kind_not_allowed"
+
+
+async def test_report_asset_accepts_pdf_but_not_other_extensions(client, db, seeded_user):
+    definition = ReportDefinition(name="Site & Move Survey", report_type="site_move_survey",
+                                  options={}, is_system=True)
+    db.add(definition)
+    await db.commit()
+    admin = await _make(db, client, "admin", "admin3@test.example.com")
+
+    resp = await _upload_entity(client, admin, "report_definition", definition.id,
+                                "report_asset", b"%PDF-1.4 fake", "standards.pdf")
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["content_type"] == "application/pdf"
+
+    resp = await _upload_entity(client, admin, "report_definition", definition.id,
+                                "report_asset", b"not a docx or pdf", "standards.txt")
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_file_type"
+
+
+async def test_report_definition_attachments_view_requires_reports_view(client, db, seeded_user):
+    """A worker holds no `reports` grant at all — listing report_asset
+    attachments on a definition must 403, not fall through to the generic
+    `attachments` gate (which a plain worker also lacks)."""
+    definition = ReportDefinition(name="Site & Move Survey", report_type="site_move_survey",
+                                  options={}, is_system=True)
+    db.add(definition)
+    await db.commit()
+
+    worker = await _make(db, client, "worker", "worker@test.example.com")
+    resp = await client.get(
+        "/attachments", headers=worker,
+        params={"entity_type": "report_definition", "entity_id": str(definition.id)},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "forbidden"
+
+    staff = await _login(client)                          # reports:view — allowed
+    resp = await client.get(
+        "/attachments", headers=staff[0],
+        params={"entity_type": "report_definition", "entity_id": str(definition.id)},
     )
     assert resp.status_code == 200
     assert resp.json() == []

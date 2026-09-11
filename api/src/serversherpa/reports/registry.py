@@ -12,8 +12,17 @@ from serversherpa.db.models import ReportRun
 
 @dataclass(frozen=True)
 class ReportResult:
-    pdf: bytes
+    """A finished report's bytes. `content_type` defaults to PDF (every
+    report but Site & Move Survey produces one); `pdf` is a read-only
+    alias kept for the move report's callers/tests that predate non-PDF
+    results."""
+    content: bytes
     filename: str
+    content_type: str = "application/pdf"
+
+    @property
+    def pdf(self) -> bytes:
+        return self.content
 
 
 class OptionsError(ValueError):

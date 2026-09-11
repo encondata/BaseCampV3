@@ -1343,7 +1343,9 @@ class ReportRun(Base):
         primary_key=True, server_default=text("gen_random_uuid()"))
     definition_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("report_definitions.id"))
     report_type: Mapped[str]
-    initiative_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("initiatives.id"))
+    # nullable since migration 0052: Site & Move Survey may target a
+    # partner + manually chosen sites with no initiative at all
+    initiative_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("initiatives.id"))
     options: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     status: Mapped[str] = mapped_column(server_default="queued")
     error: Mapped[str | None]

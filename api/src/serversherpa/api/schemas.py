@@ -2244,7 +2244,7 @@ class ReportRunOut(BaseModel):
     definition_id: uuid.UUID
     definition_name: str
     report_type: str
-    initiative_id: uuid.UUID
+    initiative_id: uuid.UUID | None
     initiative_name: str
     options: dict
     status: str

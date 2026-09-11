@@ -137,12 +137,12 @@ RUNS_DEFAULT_LIMIT = 100
 RUNS_MAX_LIMIT = 500
 
 
-def _run_out(run: ReportRun, definition_name: str, initiative_name: str,
+def _run_out(run: ReportRun, definition_name: str, initiative_name: str | None,
              preferred: str | None, first: str, last: str) -> ReportRunOut:
     return ReportRunOut(
         id=run.id, definition_id=run.definition_id, definition_name=definition_name,
         report_type=run.report_type, initiative_id=run.initiative_id,
-        initiative_name=initiative_name, options=run.options, status=run.status,
+        initiative_name=initiative_name or "—", options=run.options, status=run.status,
         error=run.error, requested_by=run.requested_by,
         requested_by_name=f"{preferred or first} {last}".strip(),
         requested_rank=run.requested_rank,
@@ -157,7 +157,9 @@ def _visible_runs(actor: AuthContext):
     q = (select(ReportRun, ReportDefinition.name, Initiative.name,
                 Person.preferred_name, Person.first_name, Person.last_name)
          .join(ReportDefinition, ReportDefinition.id == ReportRun.definition_id)
-         .join(Initiative, Initiative.id == ReportRun.initiative_id)
+         # outer: a run's initiative_id may be null (Site & Move Survey with
+         # no initiative) — an inner join would drop those rows from history
+         .outerjoin(Initiative, Initiative.id == ReportRun.initiative_id)
          .join(Person, Person.id == ReportRun.requested_by)
          .where(or_(ReportRun.requested_by == actor.person.id,
                     ReportRun.requested_rank <= actor.access.max_rank)))

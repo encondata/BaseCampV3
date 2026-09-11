@@ -23,24 +23,28 @@ ALL_ON = {"summary": True, "assets_by_source": True, "assets_by_destination": Tr
           "source_racks": True, "destination_racks": True}
 
 
-async def _run(db, *, notify=False, status="queued", started_at=None):
+async def _run(db, *, notify=False, status="queued", started_at=None,
+               report_type="move_report", definition_name="Move Report",
+               options=None, with_initiative=True):
     # ReportDefinition.name has a live-unique index (report_definitions_name_live_idx)
     # — reuse the row across calls within a test instead of inserting a duplicate.
+    options = ALL_ON if options is None else options
     person = Person(first_name="Rae", last_name="Requester")
-    d = await db.scalar(select(ReportDefinition).where(ReportDefinition.name == "Move Report"))
+    d = await db.scalar(select(ReportDefinition).where(ReportDefinition.name == definition_name))
     if d is None:
-        d = ReportDefinition(name="Move Report", report_type="move_report", options=ALL_ON,
+        d = ReportDefinition(name=definition_name, report_type=report_type, options=options,
                              is_system=True)
         db.add(d)
-    ini = Initiative(name="NAP11", initiative_type="move", status="planned")
-    db.add_all([person, ini])
+    ini = Initiative(name="NAP11", initiative_type="move", status="planned") if with_initiative else None
+    db.add_all([person] + ([ini] if ini is not None else []))
     await db.flush()
-    run = ReportRun(definition_id=d.id, report_type="move_report", initiative_id=ini.id,
-                    options=ALL_ON, requested_by=person.id, requested_rank=40, notify=notify,
+    run = ReportRun(definition_id=d.id, report_type=report_type,
+                    initiative_id=ini.id if ini is not None else None,
+                    options=options, requested_by=person.id, requested_rank=40, notify=notify,
                     status=status, started_at=started_at)
     db.add(run)
     await db.commit()
-    return run.id, person.id, ini.id
+    return run.id, person.id, (ini.id if ini is not None else None)
 
 
 class FakeModule:
@@ -60,7 +64,8 @@ class FakeModule:
             await asyncio.sleep(self.slow)
         if self.fail:
             raise self.fail
-        return ReportResult(pdf=b"%PDF-1.4 fake", filename="Move Report - NAP11 - 2026-09-09 1200.pdf")
+        return ReportResult(content=b"%PDF-1.4 fake",
+                            filename="Move Report - NAP11 - 2026-09-09 1200.pdf")
 
 
 class DbErrorModule(FakeModule):
@@ -183,6 +188,78 @@ async def test_db_error_during_build_reports_the_real_error(db, monkeypatch):
     assert "rolled back" not in run.error
     n = await db.scalar(select(Notification).where(Notification.person_id == person_id))
     assert n is not None and n.kind == "report_failed" and n.body == run.error
+
+
+XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+class StubXlsxModule:
+    """A minimal non-PDF report module — stands in for
+    reports/site_move_survey (built in a later task) so the worker's
+    non-PDF path can be exercised without it."""
+    report_type = "stub_site_move_survey"
+
+    def default_options(self):
+        return {}
+
+    def validate_options(self, o):
+        return o
+
+    async def build(self, db, run, *, renderer=None):
+        return ReportResult(content=b"PK\x03\x04 fake xlsx bytes",
+                            filename="Site & Move Survey - Acme - 2026-09-11 1200.xlsx",
+                            content_type=XLSX_CONTENT_TYPE)
+
+
+async def test_worker_stores_a_non_pdf_result_with_its_content_type(db, monkeypatch):
+    """The registry, not the worker, decides content type and extension —
+    monkeypatching registry() (rather than worker.get_module directly)
+    proves the worker really goes through the module lookup the report
+    framework exposes, the same path a real site_move_survey module
+    would register through."""
+    from serversherpa.reports import registry as registry_module
+
+    stub = StubXlsxModule()
+    monkeypatch.setattr(registry_module, "registry", lambda: {stub.report_type: stub})
+
+    run_id, person_id, ini_id = await _run(
+        db, notify=False, report_type=stub.report_type, definition_name="Stub Survey",
+        options={})
+    assert await worker.run_once(get_sessionmaker()) is True
+    run = await db.get(ReportRun, run_id)
+    assert run.status == "completed" and run.finished_at is not None
+    assert run.storage_key == f"reports/{ini_id}/{run_id}.xlsx"
+    assert run.filename == "Site & Move Survey - Acme - 2026-09-11 1200.xlsx"
+    assert run.size_bytes == len(b"PK\x03\x04 fake xlsx bytes")
+    assert await get_object(run.storage_key) == b"PK\x03\x04 fake xlsx bytes"
+    att = await db.get(Attachment, run.attachment_id)
+    assert att.content_type == XLSX_CONTENT_TYPE
+    assert att.filename == run.filename
+
+
+async def test_worker_run_with_no_initiative_stores_but_attaches_nothing(db, monkeypatch):
+    """A Site & Move Survey run for a partner + manually chosen sites has no
+    initiative to attach to — the worker must still store the file and
+    complete the run, just skip the Attachment/audit row."""
+    from serversherpa.reports import registry as registry_module
+
+    stub = StubXlsxModule()
+    monkeypatch.setattr(registry_module, "registry", lambda: {stub.report_type: stub})
+
+    run_id, person_id, ini_id = await _run(
+        db, notify=True, report_type=stub.report_type, definition_name="Stub Survey",
+        options={}, with_initiative=False)
+    assert ini_id is None
+    assert await worker.run_once(get_sessionmaker()) is True
+    run = await db.get(ReportRun, run_id)
+    assert run.status == "completed" and run.attachment_id is None
+    assert run.storage_key == f"reports/standalone/{run_id}.xlsx"
+    assert await get_object(run.storage_key) == b"PK\x03\x04 fake xlsx bytes"
+    assert await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "initiative", AuditLog.action == "attachment.add")) is None
+    # the requester still gets their inbox notification even with no initiative
+    n = await db.scalar(select(Notification).where(Notification.person_id == person_id))
+    assert n is not None and n.kind == "report_ready" and n.body == "—"
 
 
 async def test_run_forever_sweeps_stale_runs_periodically(db, monkeypatch):
