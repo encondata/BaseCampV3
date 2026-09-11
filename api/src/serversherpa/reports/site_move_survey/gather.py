@@ -104,7 +104,7 @@ async def _site_photos(db: AsyncSession, site: Site | None) -> list[bytes]:
         select(Attachment)
         .where(Attachment.entity_type == "site", Attachment.entity_id == site.id,
                Attachment.kind == "photo", Attachment.deleted_at.is_(None))
-        .order_by(Attachment.created_at.desc())
+        .order_by(Attachment.created_at.desc(), Attachment.id.desc())
         .limit(MAX_SITE_PHOTOS))).all()
     return [await get_object(att.storage_key) for att in atts]
 
@@ -121,7 +121,7 @@ async def _newest_docx_report_asset(db: AsyncSession, definition_id: uuid.UUID) 
                Attachment.entity_id == definition_id,
                Attachment.kind == "report_asset",
                Attachment.deleted_at.is_(None))
-        .order_by(Attachment.created_at.desc()))).all()
+        .order_by(Attachment.created_at.desc(), Attachment.id.desc()))).all()
     for att in atts:
         if att.filename.lower().endswith(".docx"):
             return att
@@ -159,7 +159,7 @@ async def gather(db: AsyncSession, run: ReportRun) -> SurveyData:
         select(Attachment)
         .where(Attachment.entity_type == "partner", Attachment.entity_id == partner.id,
                Attachment.kind == "survey_template", Attachment.deleted_at.is_(None))
-        .order_by(Attachment.created_at.desc()).limit(1))
+        .order_by(Attachment.created_at.desc(), Attachment.id.desc()).limit(1))
     if template_att is None:
         raise SurveyGatherError("no_survey_template")
     template_bytes = await get_object(template_att.storage_key)
@@ -169,16 +169,22 @@ async def gather(db: AsyncSession, run: ReportRun) -> SurveyData:
     origin_override = _as_uuid(options.get("source_site_id"))
     destination_override = _as_uuid(options.get("destination_site_id"))
 
+    # The move-only site columns (db/models.py: Initiative's docstring)
+    # stay populated (not wiped) after an admin changes a move to another
+    # type, so a non-move initiative must never seed sites from them —
+    # only run options do for those types.
+    is_move = initiative is not None and initiative.initiative_type == "move"
+
     if origin_override is not None:
         origin = await db.get(Site, origin_override)
-    elif initiative is not None and initiative.origin_site_id is not None:
+    elif is_move and initiative.origin_site_id is not None:
         origin = await db.get(Site, initiative.origin_site_id)
     else:
         origin = None
 
     if destination_override is not None:
         destination = await db.get(Site, destination_override)
-    elif initiative is not None and initiative.destination_site_id is not None:
+    elif is_move and initiative.destination_site_id is not None:
         destination = await db.get(Site, initiative.destination_site_id)
     else:
         destination = None
@@ -224,12 +230,18 @@ async def gather(db: AsyncSession, run: ReportRun) -> SurveyData:
     asset_notes = options.get("asset_notes") or ""
 
     photos: list[tuple[str, list[bytes]]] = []
-    for site in (origin, destination):
+    for label_prefix, site in (("Origin", origin), ("Destination", destination)):
         if site is None:
+            continue
+        if label_prefix == "Destination" and origin is not None and site.id == origin.id:
+            # Same site chosen for both ends (e.g. an unset destination
+            # override that happens to equal the origin) — V2 skipped
+            # this rather than showing one site's photos twice under two
+            # headings.
             continue
         images = await _site_photos(db, site)
         if images:
-            photos.append((site.name, images))
+            photos.append((f"{label_prefix}: {site.name}", images))
 
     standards_att = await _newest_docx_report_asset(db, run.definition_id)
     standards_docx_bytes = (

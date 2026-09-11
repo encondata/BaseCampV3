@@ -205,7 +205,7 @@ async def test_gather_assembles_every_field(db, requester):
     assert data.standards_docx_bytes == DOCX_BYTES
     assert data.standards_attachment_id is not None
 
-    assert data.photos == [("Datacenter West", [PHOTO_BYTES])]
+    assert data.photos == [("Origin: Datacenter West", [PHOTO_BYTES])]
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +280,47 @@ async def test_run_options_override_the_initiatives_sites(db, requester):
     data = await gather(db, run)
     assert data.origin.id == override_origin.id
     assert data.destination.id == override_destination.id
+
+
+async def test_non_move_initiative_never_seeds_sites_from_its_site_columns(db, requester):
+    """`Initiative`'s move-only site columns are retained (not wiped) if
+    an admin changes its type away from `move` (db/models.py's
+    docstring), so a `project`-type initiative with populated
+    `origin_site_id`/`destination_site_id` must not leak stale sites into
+    the survey — only run options may supply sites for non-move types."""
+    t0, = _times(1)
+    partner = _partner()
+    stale_origin = _site(name="Stale Origin")
+    stale_destination = _site(name="Stale Destination", id=uuid.uuid4())
+    option_origin = _site(name="Option Origin", id=uuid.uuid4())
+    db.add_all([partner, stale_origin, stale_destination, option_origin])
+    await db.flush()
+
+    initiative = Initiative(name="Some Project", initiative_type="project", status="planned",
+                            origin_site_id=stale_origin.id, destination_site_id=stale_destination.id)
+    db.add(initiative)
+    await db.flush()
+
+    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+                      filename="template.xlsx",
+                      content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                      storage_key=f"test/sms/{partner.id}/t.xlsx", content=XLSX_BYTES_1,
+                      created_at=t0)
+
+    # No site options at all: the stale move-only columns must not leak.
+    run_no_options, _ = await _run(db, requester=requester, initiative=initiative,
+                                   options={"partner_id": str(partner.id)})
+    data_no_options = await gather(db, run_no_options)
+    assert data_no_options.origin is None
+    assert data_no_options.destination is None
+
+    # Option sites still win when given.
+    run_with_option, _ = await _run(db, requester=requester, initiative=initiative, options={
+        "partner_id": str(partner.id), "source_site_id": str(option_origin.id),
+    })
+    data_with_option = await gather(db, run_with_option)
+    assert data_with_option.origin.id == option_origin.id
+    assert data_with_option.destination is None
 
 
 async def test_no_initiative_run_uses_option_sites_and_has_zero_assets(db, requester):
@@ -366,7 +407,39 @@ async def test_site_photos_are_capped_at_ten_newest_first(db, requester):
     data = await gather(db, run)
     assert len(data.photos) == 1
     label, images = data.photos[0]
-    assert label == "Photo Site"
+    assert label == "Origin: Photo Site"
     assert len(images) == 10
     assert images[0] == b"photo-11"  # newest (index 11, created last) first
     assert images[-1] == b"photo-2"  # the two oldest (0, 1) were dropped
+
+
+async def test_photos_skip_destination_when_it_is_the_same_site_as_origin(db, requester):
+    """An origin/destination override pair (or a move whose two ends
+    were set to the same site) must not show one site's photos twice
+    under both an "Origin:" and a "Destination:" heading."""
+    t0, = _times(1)
+    partner = _partner()
+    shared_site = _site(name="Shared Site")
+    db.add_all([partner, shared_site])
+    await db.flush()
+
+    await _attachment(db, entity_type="partner", entity_id=partner.id, kind="survey_template",
+                      filename="template.xlsx",
+                      content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                      storage_key=f"test/sms/{partner.id}/t.xlsx", content=XLSX_BYTES_1,
+                      created_at=t0)
+    await _attachment(db, entity_type="site", entity_id=shared_site.id, kind="photo",
+                      filename="dock.jpg", content_type="image/jpeg",
+                      storage_key=f"test/sms/{shared_site.id}/dock.jpg", content=PHOTO_BYTES,
+                      created_at=t0)
+
+    run, _ = await _run(db, requester=requester, options={
+        "partner_id": str(partner.id),
+        "source_site_id": str(shared_site.id),
+        "destination_site_id": str(shared_site.id),
+    })
+
+    data = await gather(db, run)
+    assert data.origin.id == shared_site.id
+    assert data.destination.id == shared_site.id
+    assert data.photos == [("Origin: Shared Site", [PHOTO_BYTES])]
