@@ -48,9 +48,12 @@
   /* Status columns must WRAP, not ellipsize — at 14 pipeline columns each
      is ~12.6mm wide, too narrow for "03/16 04:00" or a status label on one
      line. V2 rendered these as small wrapping Paragraphs (its `TS` style). */
-  th.status { white-space: normal; overflow-wrap: anywhere; }
+  /* Wrap headers at word boundaries; only break inside a word that cannot fit a line on its own. */
+  th.status { white-space: normal; overflow-wrap: break-word; font-size: 6pt; }
   td.status { white-space: normal; overflow-wrap: anywhere; font-size: 6pt; }
   .empty-row td { font-style: normal; color: #333; white-space: normal; }
+  .group-caption { font-size: 8pt; color: #555; margin: 3mm 0 1mm; }
+  table.overview + .group-caption { page-break-before: auto; }
   .closing { font-style: italic; color: #666; margin-top: 6mm; }
 </style>
 </head>
@@ -71,19 +74,21 @@
 
 <h2>Status Overview</h2>
 {% if has_assets %}
-<table class="overview" style="width: {{ overview_table_width_mm }}mm">
+{% for group in overview_groups %}
+{% if group.caption %}<p class="group-caption">{{ group.caption }}</p>{% endif %}
+<table class="overview" style="width: {{ group.table_width_mm }}mm">
   <colgroup>
     {% for w in fixed_col_widths %}<col style="width: {{ w }}mm">{% endfor %}
-    {% for col in overview_columns %}<col style="width: {{ col.width_mm }}mm">{% endfor %}
+    {% for col in group.columns %}<col style="width: {{ col.width_mm }}mm">{% endfor %}
   </colgroup>
   <thead>
     <tr>
       <th>Asset ID</th><th>Serial #</th><th>Asset Name</th>
-      {% for col in overview_columns %}<th class="status">{{ col.label }}</th>{% endfor %}
+      {% for col in group.columns %}<th class="status">{{ col.label }}</th>{% endfor %}
     </tr>
   </thead>
   <tbody>
-    {% for row in overview_rows %}
+    {% for row in group.rows %}
     <tr>
       <td>{{ row.asset_id }}</td><td>{{ row.serial_number }}</td><td>{{ row.name }}</td>
       {% for cell in row.cells %}<td class="status">{{ cell }}</td>{% endfor %}
@@ -91,6 +96,7 @@
     {% endfor %}
   </tbody>
 </table>
+{% endfor %}
 {% else %}
 <p class="empty-row">No assets found in this move.</p>
 {% endif %}

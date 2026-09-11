@@ -220,3 +220,29 @@ async def test_build_produces_pdf_through_the_registry(db, monkeypatch):
     # the spec's headline "deliberate difference" — V2 minted a random
     # uuid; V3's Document Tracking ID is the run id, traceable back to it.
     assert captured["tracking_id"] == str(run.id)
+
+
+def test_chunk_columns_balances_groups_at_the_readable_width():
+    from serversherpa.reports.move_scan_history.pdf import chunk_columns, max_status_columns_per_table
+
+    assert max_status_columns_per_table() == 12
+    assert chunk_columns([]) == []
+    assert [len(g) for g in chunk_columns(list(range(5)))] == [5]
+    assert [len(g) for g in chunk_columns(list(range(14)))] == [7, 7]
+    assert [len(g) for g in chunk_columns(list(range(28)))] == [10, 9, 9]
+    assert [x for g in chunk_columns(list(range(28))) for x in g] == list(range(28))  # order kept
+
+
+def test_render_html_splits_wide_overviews_into_captioned_groups():
+    from serversherpa.reports.move_scan_history.gather import StatusCol
+    from serversherpa.reports.move_scan_history.pdf import render_html
+
+    data = _populated_data()
+    columns = [StatusCol(key=f"s{i}", label=f"Status {i}", color="#000", in_pipeline=True, scan_count=0)
+               for i in range(14)]
+    html = render_html(data, columns, generated_at=datetime(2026, 3, 17, 8, 0, tzinfo=UTC),
+                       tracking_id="t", tz=TZ)
+    assert html.count('<table class="overview"') == 2
+    assert "Columns 1–7 of 14" in html and "Columns 8–14 of 14" in html
+    # every group repeats the identity headers
+    assert html.count("<th>Serial #</th>") == 2   # the detail table says "Serial Number"

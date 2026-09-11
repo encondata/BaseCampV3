@@ -64,6 +64,14 @@ class _DetailRow:
                              # "01/01/2026" before "12/31/2025")
 
 
+# Narrowest status column that still fits "%m/%d %H:%M" on one 6 pt line
+# with a little air. V2 let columns shrink without limit (18 mm cap only),
+# which made a 20+ status vocabulary unreadable; V3 instead splits the
+# Status Overview into column groups, repeating the three identity columns
+# in each, so no group has more status columns than fit at this width.
+_MIN_STATUS_COL_MM = 14
+
+
 def _status_col_width_mm(n: int) -> float:
     if n == 0:
         return 0.0
@@ -72,23 +80,67 @@ def _status_col_width_mm(n: int) -> float:
     return min(_MAX_STATUS_COL_MM, remaining / n)
 
 
+def max_status_columns_per_table() -> int:
+    """How many status columns fit beside the identity columns at the
+    minimum readable width."""
+    remaining = _PAGE_WIDTH_MM - 2 * _MARGIN_MM - sum(_FIXED_COL_WIDTHS_MM)
+    return max(1, int(remaining // _MIN_STATUS_COL_MM))
+
+
+def chunk_columns(columns: list, per_table: int | None = None) -> list[list]:
+    """Split the status columns into balanced groups of at most
+    `per_table` (default: what fits at the minimum width). 14 pipeline
+    columns become two groups of 7; 28 become three of 10/9/9; anything
+    that fits stays one group. Order is preserved."""
+    if not columns:
+        return []
+    cap = per_table or max_status_columns_per_table()
+    groups = -(-len(columns) // cap)            # ceil
+    base, extra = divmod(len(columns), groups)
+    out, start = [], 0
+    for i in range(groups):
+        size = base + (1 if i < extra else 0)
+        out.append(columns[start:start + size])
+        start += size
+    return out
+
+
+@dataclass
+class _OverviewGroup:
+    caption: str               # "" for a single group; "Columns 1–7 of 14" otherwise
+    columns: list
+    rows: list
+    table_width_mm: float
+
+
 def render_html(data: ScanHistoryData, columns: list[StatusCol], *, generated_at: datetime,
                 tracking_id: str, tz: ZoneInfo) -> str:
     scheduled_start = (data.scheduled_start.astimezone(tz).strftime(_DATE_FMT)
                        if data.scheduled_start else "Not scheduled")
     stamp = generated_at.astimezone(tz).strftime(_STAMP_FMT)
 
-    status_width = _status_col_width_mm(len(columns))
-    overview_columns = [_Column(label=c.label, width_mm=status_width) for c in columns]
-
-    overview_rows = []
-    for asset in data.assets:
-        by_status = {h.status_key: h.at for h in data.scan_progress.get(asset.asset_id, ())}
-        cells = []
-        for col in columns:
-            at = by_status.get(col.key)
-            cells.append(at.astimezone(tz).strftime(_OVERVIEW_TS_FMT) if at else "")
-        overview_rows.append(_OverviewRow(asset.asset_id, asset.serial_number, asset.name, cells))
+    # One overview table per column group (see chunk_columns); every group
+    # repeats the identity columns so a row can be read on its own.
+    overview_groups: list[_OverviewGroup] = []
+    groups = chunk_columns(columns)
+    offset = 0
+    for gi, group in enumerate(groups):
+        status_width = _status_col_width_mm(len(group))
+        cols = [_Column(label=c.label, width_mm=status_width) for c in group]
+        rows = []
+        for asset in data.assets:
+            by_status = {h.status_key: h.at for h in data.scan_progress.get(asset.asset_id, ())}
+            cells = []
+            for col in group:
+                at = by_status.get(col.key)
+                cells.append(at.astimezone(tz).strftime(_OVERVIEW_TS_FMT) if at else "")
+            rows.append(_OverviewRow(asset.asset_id, asset.serial_number, asset.name, cells))
+        caption = ("" if len(groups) == 1 else
+                   f"Columns {offset + 1}\u2013{offset + len(group)} of {len(columns)}")
+        overview_groups.append(_OverviewGroup(
+            caption=caption, columns=cols, rows=rows,
+            table_width_mm=sum(_FIXED_COL_WIDTHS_MM) + status_width * len(group)))
+        offset += len(group)
 
     asset_lookup = {a.asset_id: a for a in data.assets}
     detail_rows: list[_DetailRow] = []
@@ -108,7 +160,6 @@ def render_html(data: ScanHistoryData, columns: list[StatusCol], *, generated_at
 
     barcode_data_uri = pdf417_data_uri(tracking_id)
 
-    overview_table_width_mm = sum(_FIXED_COL_WIDTHS_MM) + status_width * len(columns)
     detail_table_width_mm = sum(_DETAIL_COL_WIDTHS_MM)
 
     return _ENV.get_template("move_scan_history.html").render(
@@ -120,9 +171,7 @@ def render_html(data: ScanHistoryData, columns: list[StatusCol], *, generated_at
         total_assets=data.total_assets,
         completion_pct=data.completion_pct,
         fixed_col_widths=_FIXED_COL_WIDTHS_MM,
-        overview_columns=overview_columns,
-        overview_rows=overview_rows,
-        overview_table_width_mm=overview_table_width_mm,
+        overview_groups=overview_groups,
         detail_col_widths=_DETAIL_COL_WIDTHS_MM,
         detail_rows=detail_rows,
         detail_table_width_mm=detail_table_width_mm,

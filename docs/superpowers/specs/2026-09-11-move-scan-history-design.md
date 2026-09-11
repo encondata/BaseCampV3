@@ -55,6 +55,7 @@ V2 (`api/reports/scan_history_report.py`, `portal-v2/src/pages/MoveScanHistoryRe
 - XLSX Overview block gains Scheduled Start / Source / Destination rows.
 - V3 filename house style.
 - Timestamps rendered in the system time zone.
+- PDF Status Overview is split into column groups (identity columns repeated, at most 12 status columns per table, balanced — 14 pipeline columns become 7 + 7) so every timestamp fits on one line; V2 shrank columns without limit.
 - PDF: both "Status Overview" and "Scan History Detail" headings always render, with a per-section empty-state message ("No assets found in this move." / "No scan history found.") replacing the table body when that section has nothing — V2 drops both sections entirely when the move has no assets at all.
 
 ## Out of scope
