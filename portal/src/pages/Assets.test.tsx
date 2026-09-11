@@ -1,0 +1,138 @@
+// @vitest-environment jsdom
+/**
+ * /assets — covers the identity columns specifically: "Serial / Name"
+ * (the combined cell, default on), plus the separate "Serial" and "Name"
+ * columns the Columns picker can swap in, and the backward-compatible
+ * hydration of a saved layout that predates all three. Generic
+ * toolbar/column-menu/reorder/CSV behavior is covered by
+ * lib/listTools.test.tsx and lib/columnMenu.test.tsx.
+ */
+
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+
+import type { AssetItem, UiPreferences } from '../lib/api';
+
+const auth = vi.hoisted(() => {
+  const state: { listPrefs: Record<string, unknown> } = { listPrefs: {} };
+  return state;
+});
+
+vi.mock('../auth/AuthContext', () => ({
+  useAuth: () => ({
+    can: () => true,
+    godMode: false,
+    preferences: {
+      accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default',
+      motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default',
+      notif: { critical: true, email: true, maint: true, digest: true, sound: 'chime' },
+      list_prefs: auth.listPrefs,
+    } as unknown as UiPreferences,
+    updatePreferences: vi.fn(() => Promise.resolve()),
+  }),
+}));
+
+const api = vi.hoisted(() => ({
+  listAssets: vi.fn(),
+  listAssetStatuses: vi.fn(),
+  listAssetModels: vi.fn(),
+  listClients: vi.fn(),
+  listSites: vi.fn(),
+  updateAsset: vi.fn(),
+}));
+
+vi.mock('../lib/api', async (importActual) => ({
+  ...(await importActual<typeof import('../lib/api')>()),
+  ...api,
+}));
+
+const ASSETS: AssetItem[] = [
+  {
+    id: 'a1', legacy_id: 100042, serial_number: 'SN-ALPHA', name: 'web-01',
+    rfid_tag: null, model_id: null, model: null,
+    client_id: null, client_name: 'Acme', site_id: null, site_name: 'DC1',
+    location_detail: 'Rack 3', status: 'active', status_label: 'Active',
+    status_color: '#178a4c', has_rails: null, last_seen_at: null,
+    archived_at: null, created_at: '2026-08-05T00:00:00Z',
+  },
+];
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  auth.listPrefs = {};
+  api.listAssets.mockResolvedValue(ASSETS);
+  api.listAssetStatuses.mockResolvedValue([]);
+  api.listAssetModels.mockResolvedValue([]);
+  api.listClients.mockResolvedValue([]);
+  api.listSites.mockResolvedValue([]);
+});
+
+afterEach(cleanup);
+
+const { default: Assets } = await import('./Assets');
+
+const mount = () => render(<MemoryRouter><Assets /></MemoryRouter>);
+
+const headerNames = () => Array.from(document.querySelectorAll('.list-head .col-head button.sortable'))
+  .map((b) => b.textContent?.trim().replace(/\s*[▲▼]$/, '').trim() ?? '');
+
+it('defaults to the combined Serial / Name column', async () => {
+  mount();
+  await waitFor(() => expect(screen.queryByText('SN-ALPHA')).not.toBeNull());
+
+  expect(headerNames()).toContain('Serial / Name');
+  expect(headerNames()).not.toContain('Serial');
+  expect(headerNames()).not.toContain('Name');
+
+  const primary = document.querySelector('.dir-row .cell.cell-primary');
+  expect(primary).not.toBeNull();
+  expect(within(primary as HTMLElement).queryByText('SN-ALPHA')).not.toBeNull();
+  expect(within(primary as HTMLElement).queryByText('web-01')).not.toBeNull();
+});
+
+it('Columns picker swaps the combined column for separate Serial and Name', async () => {
+  mount();
+  await waitFor(() => expect(screen.queryByText('SN-ALPHA')).not.toBeNull());
+
+  await userEvent.click(screen.getByRole('button', { name: /Columns/ }));
+  const menu = document.querySelector('.pop-menu') as HTMLElement;
+  await userEvent.click(within(menu).getByText('Serial', { selector: '.pop-item' }));
+  await userEvent.click(within(menu).getByText('Name', { selector: '.pop-item' }));
+  await userEvent.click(within(menu).getByText('Serial / Name', { selector: '.pop-item' }));
+
+  await waitFor(() => expect(headerNames()).toContain('Serial'));
+  expect(headerNames()).toContain('Name');
+  expect(headerNames()).not.toContain('Serial / Name');
+  expect(document.querySelector('.dir-row .cell.cell-primary')).toBeNull();
+
+  const row = document.querySelector('.dir-row .row-main') as HTMLElement;
+  const cells = Array.from(row.querySelectorAll(':scope > .cell'));
+  const labels = headerNames();
+  const cellText = (label: string) => cells[labels.indexOf(label)]?.textContent?.trim();
+  expect(cellText('Serial')).toBe('SN-ALPHA');
+  expect(cellText('Name')).toBe('web-01');
+});
+
+it('a saved layout that predates the identity columns still shows the combined one, first', async () => {
+  auth.listPrefs = {
+    assets: {
+      visible: ['asset_id', 'model', 'client', 'site', 'status'],
+      order: ['model', 'client'],
+      sortKey: 'primary',
+      sortDir: 1,
+    },
+  };
+  mount();
+  await waitFor(() => expect(screen.queryByText('SN-ALPHA')).not.toBeNull());
+
+  expect(headerNames()[0]).toBe('Serial / Name');
+  expect(headerNames()).not.toContain('Serial');
+  expect(headerNames()).not.toContain('Name');
+
+  const row = document.querySelector('.dir-row .row-main') as HTMLElement;
+  const first = row.querySelector(':scope > .cell') as HTMLElement;
+  expect(first.classList.contains('cell-primary')).toBe(true);
+  expect(within(first).queryByText('SN-ALPHA')).not.toBeNull();
+});

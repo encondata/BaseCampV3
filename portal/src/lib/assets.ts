@@ -6,6 +6,7 @@ import type { ComboOption } from '../components/ComboBox';
 import type { AssetItem, AssetModelItem } from './api';
 import { displayRfid } from './format';
 import { boolTriToPatch, numberToPatch, type GodField } from './godEdit';
+import type { ColumnDef } from './listTools';
 
 export const LB_TO_KG = 0.453592;
 export const IN_TO_CM = 2.54;
@@ -44,13 +45,16 @@ export function assetSearchText(a: AssetItem): string {
 /** Column-menu accessor (lib/columnMenu.tsx's `CellText<T>`) — one row's
  *  display text for a given column key. Mirrors exactly what the page's
  *  own cell renderer shows (including its '—' fallback), so the filter
- *  checkbox list and the grid cell never disagree. 'primary' and
- *  'archived' aren't real COLUMNS entries — 'primary' is the always-shown
- *  serial+name cell, 'archived' is the pseudo-column behind the chevron
- *  header's ColumnMenu that drives the archived-visibility rule. */
+ *  checkbox list and the grid cell never disagree. 'primary' is the
+ *  combined serial+name cell (a real, default-on column); 'serial' and
+ *  'name' are its selectable split halves. 'archived' isn't a real
+ *  COLUMNS entry — it's the pseudo-column behind the chevron header's
+ *  ColumnMenu that drives the archived-visibility rule. */
 export function assetCellText(a: AssetItem, colKey: string): string {
   switch (colKey) {
     case 'primary': return `${a.serial_number ?? ''} ${a.name ?? ''}`.trim();
+    case 'serial': return a.serial_number ?? '—';
+    case 'name': return a.name ?? '—';
     case 'asset_id': return a.legacy_id != null ? String(a.legacy_id) : '—';
     case 'status': return a.status_label;
     case 'category': return a.model?.category_label ?? '';
@@ -65,6 +69,24 @@ export function assetCellText(a: AssetItem, colKey: string): string {
     case 'archived': return a.archived_at ? 'Yes' : 'No';
     default: return '';
   }
+}
+
+/* ── identity columns: saved-layout compatibility ──────────────────
+ * 'primary' (Serial / Name), 'serial' and 'name' became real, selectable
+ * columns after people had already saved Assets layouts. Those saved
+ * entries mention none of the three — the combined cell used to be
+ * hardcoded, always first, outside the column registry. Visibility needs
+ * no help (usePersistentListState surfaces never-seen default columns),
+ * but the column order does: applyColumnOrder parks unknown keys last.
+ * Pure function so the rule is unit-testable without jsdom. */
+
+export const IDENTITY_KEYS = ['primary', 'serial', 'name'] as const;
+
+/** Identity columns the saved order doesn't mention go FIRST (they were
+ *  always first), not last where applyColumnOrder parks unknown keys. */
+export function identityFirst(cols: ColumnDef[], order: string[]): ColumnDef[] {
+  const unplaced = new Set<string>(IDENTITY_KEYS.filter((k) => !order.includes(k)));
+  return [...cols.filter((c) => unplaced.has(c.key)), ...cols.filter((c) => !unplaced.has(c.key))];
 }
 
 export function modelSearchText(m: AssetModelItem): string {

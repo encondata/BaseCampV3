@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AssetItem, AssetModelItem } from './api';
+import type { ColumnDef } from './listTools';
+import { applyColumnOrder } from './listTools';
 import {
-  ASSET_ERRORS, ASSET_GOD_FIELDS, MODEL_ERRORS, MODEL_GOD_FIELDS,
+  ASSET_ERRORS, ASSET_GOD_FIELDS, IDENTITY_KEYS, MODEL_ERRORS, MODEL_GOD_FIELDS,
   assetCellText, assetSearchText, assetPayload, duplicateSerials, formFromAsset, formFromModel,
-  formatDims, modelCellText, modelPayload, needsModelCreate, parseDims, partnerFor,
+  formatDims, identityFirst, modelCellText, modelPayload, needsModelCreate, parseDims, partnerFor,
 } from './assets';
 
 const asset = (over: Partial<AssetItem> = {}): AssetItem => ({
@@ -407,5 +409,53 @@ describe('Asset ID column', () => {
     expect(assetCellText(asset(), 'asset_id')).toBe('100042');
     expect(assetCellText(asset({ legacy_id: null }), 'asset_id')).toBe('—');
     expect(assetSearchText(asset())).toContain('100042');
+  });
+});
+
+describe('identity columns (Serial / Name, Serial, Name)', () => {
+  it('assetCellText reads the split serial and name columns', () => {
+    const a = asset({ serial_number: 'SN9', name: 'web-09' });
+    expect(assetCellText(a, 'serial')).toBe('SN9');
+    expect(assetCellText(a, 'name')).toBe('web-09');
+    expect(assetCellText(a, 'primary')).toBe('SN9 web-09');
+  });
+
+  it('assetCellText dashes a null serial or name', () => {
+    const blank = asset({ serial_number: null, name: null });
+    expect(assetCellText(blank, 'serial')).toBe('—');
+    expect(assetCellText(blank, 'name')).toBe('—');
+  });
+
+  it('IDENTITY_KEYS names the three identity columns', () => {
+    expect([...IDENTITY_KEYS]).toEqual(['primary', 'serial', 'name']);
+  });
+
+  describe('identityFirst', () => {
+    const cols: ColumnDef[] = [
+      { key: 'primary', label: 'Serial / Name', width: '2.2fr', default: true },
+      { key: 'serial', label: 'Serial', width: '1.2fr', default: false },
+      { key: 'name', label: 'Name', width: '1.4fr', default: false },
+      { key: 'asset_id', label: 'Asset ID', width: '0.7fr', default: true },
+      { key: 'model', label: 'Make / Model', width: '1.5fr', default: true },
+      { key: 'client', label: 'Client', width: '1.2fr', default: true },
+    ];
+    const keys = (list: ColumnDef[]) => list.map((c) => c.key);
+
+    it('puts every unmentioned identity column first, not last', () => {
+      const order = ['model', 'client'];
+      expect(keys(identityFirst(applyColumnOrder(cols, order), order)))
+        .toEqual(['primary', 'serial', 'name', 'model', 'client', 'asset_id']);
+    });
+
+    it('respects an identity column the saved order does place', () => {
+      const order = ['model', 'primary'];
+      expect(keys(identityFirst(applyColumnOrder(cols, order), order)))
+        .toEqual(['serial', 'name', 'model', 'primary', 'asset_id', 'client']);
+    });
+
+    it('is a no-op once the saved order mentions all three', () => {
+      const order = ['model', 'primary', 'serial', 'name', 'client', 'asset_id'];
+      expect(keys(identityFirst(applyColumnOrder(cols, order), order))).toEqual(order);
+    });
   });
 });

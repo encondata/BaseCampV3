@@ -28,6 +28,7 @@ import {
 } from '../lib/api';
 import {
   ASSET_ERRORS, ASSET_GOD_FIELDS, assetCellText, assetSearchText, duplicateSerials,
+  identityFirst,
 } from '../lib/assets';
 import { initialOpenId } from '../lib/auditFormat';
 import {
@@ -58,6 +59,12 @@ import '../styles/assets.css';
 import { displayRfid } from '../lib/format';
 
 const COLUMNS: ColumnDef[] = [
+  // The identity trio: the combined serial+name cell stays the default,
+  // with its two halves offered as separate columns for anyone who wants
+  // them side by side (or only one of them).
+  { key: 'primary', label: 'Serial / Name', width: '2.2fr', default: true },
+  { key: 'serial', label: 'Serial', width: '1.2fr', default: false },
+  { key: 'name', label: 'Name', width: '1.4fr', default: false },
   { key: 'asset_id', label: 'Asset ID', width: '0.7fr', default: true },
   { key: 'model', label: 'Make / Model', width: '1.5fr', default: true },
   { key: 'category', label: 'Category', width: '1fr', default: true },
@@ -71,12 +78,13 @@ const COLUMNS: ColumnDef[] = [
   { key: 'has_rails', label: 'Rails', width: '0.8fr', default: false, godOnly: true },
 ];
 
-// Every column the page can offer (incl. godOnly) plus the two pseudo-
-// columns that aren't real COLUMNS entries — 'primary' (the always-shown
-// serial+name cell) and 'archived' (the chevron-header filter-only column)
-// — so a persisted filter/sort/visibility referencing either one survives
-// usePersistentListState's rehydrate-time sanitization.
-const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'primary', 'archived']);
+// Every column the page can offer (incl. godOnly) plus the one pseudo-
+// column that isn't a real COLUMNS entry — 'archived', the chevron-header
+// filter-only column — so a persisted filter/sort/visibility referencing
+// it survives usePersistentListState's rehydrate-time sanitization.
+// ('primary' needs no special case any more: it's a real column now, and
+// keeping that key is what lets an old saved sort/filter survive.)
+const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'archived']);
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
 /** Sort value per column key — deliberately separate from `assetCellText`:
@@ -87,6 +95,8 @@ const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c)
 function sortValueFor(a: AssetItem, key: string): string {
   switch (key) {
     case 'primary': return (a.serial_number ?? '').toLowerCase();
+    case 'serial': return (a.serial_number ?? '').toLowerCase();
+    case 'name': return (a.name ?? '').toLowerCase();
     case 'asset_id': return a.legacy_id != null ? String(a.legacy_id).padStart(12, '0') : '';
     case 'model': return a.model ? `${a.model.make} ${a.model.model}`.toLowerCase() : '';
     case 'category': return (a.model?.category_label ?? '').toLowerCase();
@@ -263,15 +273,64 @@ export default function Assets() {
   const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
-  const orderedCols = applyColumnOrder(COLUMNS, colOrder);
+  // Saved layouts predate the identity columns: usePersistentListState's
+  // `seen` surfacing turns the (default-visible) combined column on for
+  // them, and identityFirst puts identity keys an old order never
+  // mentioned at the front, where the combined cell always sat — not
+  // appended last, which is applyColumnOrder's rule for unknown keys.
+  const orderedCols = identityFirst(applyColumnOrder(COLUMNS, colOrder), colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 30px` };
 
-  const cellFor = (a: AssetItem, key: string) => {
+  /** The amber chip the serial-bearing cells carry when a serial is shared
+   *  by two or more assets. Rendered by whichever identity column is on. */
+  const dupeChip = (isDupe: boolean) =>
+    (isDupe ? <span className="chip c-amber">Duplicate SN</span> : null);
+
+  const cellFor = (a: AssetItem, key: string, isDupe = false) => {
+    // The identity trio comes first, ahead of the generic god-edit branch
+    // below: 'primary' has a god field of its own (serial) that the generic
+    // branch would render alone, losing the name half, and 'serial'/'name'
+    // have no god field under those column keys at all — they borrow
+    // 'primary'/'primary2'.
+    switch (key) {
+      case 'primary':
+        return (
+          <>
+            {god.editing && godFieldFor('primary') && godFieldFor('primary2') ? (
+              <div className="pn god-primary-edit">
+                <GodCell row={a} gf={godFieldFor('primary')!} patch={updateAsset}
+                         onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
+                <GodCell row={a} gf={godFieldFor('primary2')!} patch={updateAsset}
+                         onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
+              </div>
+            ) : (
+              <div className="pn"><b>{a.serial_number ?? '—'}</b><span>{a.name ?? '—'}</span></div>
+            )}
+            {dupeChip(isDupe)}
+          </>
+        );
+      case 'serial':
+        return god.editing && godFieldFor('primary')
+          ? (
+            <GodCell row={a} gf={godFieldFor('primary')!} patch={updateAsset}
+                     onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
+          )
+          : <><b>{a.serial_number ?? '—'}</b>{dupeChip(isDupe)}</>;
+      case 'name':
+        return god.editing && godFieldFor('primary2')
+          ? (
+            <GodCell row={a} gf={godFieldFor('primary2')!} patch={updateAsset}
+                     onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
+          )
+          : a.name ?? '—';
+      default:
+        break;
+    }
     if (god.editing) {
       const gf = godFieldFor(key);
       if (gf) {
@@ -371,17 +430,6 @@ export default function Assets() {
       {!error && (
         <div className="dir-list">
           <div className="list-head" style={grid}>
-            <span className="col-head">
-              <button className="sortable" onClick={() => toggleSort('primary')}>
-                Serial {caret('primary')}
-              </button>
-              <ColumnMenu colKey="primary" label="Serial"
-                          allRows={assets ?? []} filters={filters}
-                          text={assetCellText}
-                          filter={filters.primary} onFilter={setFilter}
-                          sortDir={sortKey === 'primary' ? sortDir : null}
-                          onSort={(dir) => setSort('primary', dir)} />
-            </span>
             {shownCols.map((c) => (
               <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
                     {...headerDrag.dragProps(c.key)}>
@@ -420,21 +468,13 @@ export default function Assets() {
                    {...vp} style={vp?.style}>
                 <div className="row-main" style={grid}
                      onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : a.id); }}>
-                  <div className="cell cell-primary">
-                    {god.editing && godFieldFor('primary') && godFieldFor('primary2') ? (
-                      <div className="pn god-primary-edit">
-                        <GodCell row={a} gf={godFieldFor('primary')!} patch={updateAsset}
-                                 onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
-                        <GodCell row={a} gf={godFieldFor('primary2')!} patch={updateAsset}
-                                 onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
-                      </div>
-                    ) : (
-                      <div className="pn"><b>{a.serial_number ?? '—'}</b><span>{a.name ?? '—'}</span></div>
-                    )}
-                    {isDupe && <span className="chip c-amber">Duplicate SN</span>}
-                  </div>
                   {shownCols.map((c) => (
-                    <div className="cell" key={c.key}>{cellFor(a, c.key)}</div>
+                    // `.cell-primary` (two-line layout, and the mobile
+                    // grid-column: 1 / -1 rule) belongs to the combined cell
+                    // alone — the split halves are ordinary cells.
+                    <div className={`cell${c.key === 'primary' ? ' cell-primary' : ''}`} key={c.key}>
+                      {cellFor(a, c.key, isDupe)}
+                    </div>
                   ))}
                   <div className="cell chevron-cell">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
