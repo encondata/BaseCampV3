@@ -104,7 +104,7 @@ async def test_build_falls_back_to_definition_options_when_run_omits_them(db):
 
     wb = openpyxl.load_workbook(BytesIO(result.content))
     ws = wb["Overview"]
-    header_row = 10
+    header_row = 11   # 9 block rows + blank separator
     headers = [ws.cell(row=header_row, column=c).value
               for c in range(4, 4 + len(PIPELINE_STATUS_KEYS) + 1)]
     # pipeline mode (from the definition): exactly the 14 pipeline columns
@@ -119,7 +119,7 @@ async def test_build_run_status_columns_overrides_definition_and_widens_header(d
 
     wb = openpyxl.load_workbook(BytesIO(result.content))
     ws = wb["Overview"]
-    header_row = 10
+    header_row = 11   # 9 block rows + blank separator
     # "Asset ID"/"Serial Number"/"Asset Name" + every status column
     header_count = 0
     col = 1

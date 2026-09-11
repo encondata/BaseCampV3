@@ -88,6 +88,10 @@ def test_render_html_contains_title_sections_and_data():
     assert tracking_id in html
     assert "data:image/png;base64," in html
     assert "End of Report" in html
+    # the zone is named once up front and tagged on the generated stamp
+    assert "Time Zone: America/New_York (EDT, UTC-04:00)" in html
+    assert "04:00:00 AM EDT" in html
+    assert "Timestamp (EDT)" in html
 
 
 def test_render_html_empty_move_shows_both_empty_state_messages():

@@ -64,7 +64,8 @@ def test_overview_block_rows_and_bold_labels():
         ("Scheduled Start", "03/15/2026"),
         ("Source", "DC-A"),
         ("Destination", "DC-B"),
-        ("Date Generated", "03/17/2026, 04:00:00 AM"),
+        ("Date Generated", "03/17/2026, 04:00:00 AM EDT"),
+        ("Time Zone", "America/New_York (EDT, UTC-04:00)"),
         ("Total Assets", 2),
         ("Completion", "50%"),
     ]
@@ -72,7 +73,7 @@ def test_overview_block_rows_and_bold_labels():
         assert ws.cell(row=row_idx, column=1).value == label
         assert ws.cell(row=row_idx, column=1).font.bold is True
         assert ws.cell(row=row_idx, column=2).value == value
-    assert ws.cell(row=9, column=1).value is None  # blank separator row
+    assert ws.cell(row=10, column=1).value is None  # blank separator row
 
 
 def test_overview_missing_client_and_site_names_render_na_and_not_scheduled():
@@ -94,7 +95,7 @@ def test_overview_header_row_and_asset_rows():
     wb = _load(build_workbook(data, COLUMNS, generated_at, TZ))
     ws = wb["Overview"]
 
-    header_row = 10
+    header_row = 11   # 9 block rows + blank separator
     assert [ws.cell(row=header_row, column=c).value for c in range(1, 5)] == (
         ["Asset ID", "Serial Number", "Asset Name", "Pre-Stage"])
     assert ws.cell(row=header_row, column=5).value == "Complete"
@@ -119,7 +120,7 @@ def test_overview_no_assets_shows_placeholder_message():
         total_assets=0, scanned_assets=0, completed=0, completion_pct=0, last_scan_at=None)
     wb = _load(build_workbook(data, [], datetime(2026, 3, 17, 8, 0, tzinfo=UTC), TZ))
     ws = wb["Overview"]
-    assert ws.cell(row=10, column=1).value == "No assets found in this move"
+    assert ws.cell(row=11, column=1).value == "No assets found in this move"
 
 
 def test_scan_history_sheet_header_and_detail_sort():
@@ -129,7 +130,7 @@ def test_scan_history_sheet_header_and_detail_sort():
     ws = wb["Scan History"]
 
     assert [ws.cell(row=1, column=c).value for c in range(1, 6)] == [
-        "Asset ID", "Serial Number", "Asset Name", "Status Name", "Timestamp"]
+        "Asset ID", "Serial Number", "Asset Name", "Status Name", "Timestamp (EDT)"]
     for col in range(1, 6):
         assert ws.cell(row=1, column=col).font.bold is True
 

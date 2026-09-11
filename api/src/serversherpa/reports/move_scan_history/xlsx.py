@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
+from serversherpa.reports.move_scan_history.timefmt import timezone_label, zone_abbrev
 from serversherpa.reports.move_scan_history.gather import ScanHistoryData, StatusCol
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -51,7 +52,9 @@ def _build_overview(wb: Workbook, data: ScanHistoryData, columns: list[StatusCol
         ["Scheduled Start", scheduled_start],
         ["Source", data.source_name or "N/A"],
         ["Destination", data.destination_name or "N/A"],
-        ["Date Generated", _fmt(generated_at, tz, _OVERVIEW_DT_FMT)],
+        ["Date Generated", f"{_fmt(generated_at, tz, _OVERVIEW_DT_FMT)} {zone_abbrev(tz, generated_at)}"],
+        # Named once here — every timestamp on both sheets is in this zone.
+        ["Time Zone", timezone_label(tz, generated_at)],
         ["Total Assets", data.total_assets],
         ["Completion", f"{data.completion_pct}%"],
     ]
@@ -83,9 +86,10 @@ def _build_overview(wb: Workbook, data: ScanHistoryData, columns: list[StatusCol
     _autofit(ws)
 
 
-def _build_scan_history(wb: Workbook, data: ScanHistoryData, tz: ZoneInfo) -> None:
+def _build_scan_history(wb: Workbook, data: ScanHistoryData, tz: ZoneInfo,
+                        generated_at: datetime) -> None:
     ws = wb.create_sheet("Scan History")
-    ws.append(["Asset ID", "Serial Number", "Asset Name", "Status Name", "Timestamp"])
+    ws.append(["Asset ID", "Serial Number", "Asset Name", "Status Name", f"Timestamp ({zone_abbrev(tz, generated_at)})"])
     for col_idx in range(1, 6):
         ws.cell(row=1, column=col_idx).font = _BOLD
 
@@ -113,7 +117,7 @@ def build_workbook(data: ScanHistoryData, columns: list[StatusCol],
                     generated_at: datetime, tz: ZoneInfo) -> bytes:
     wb = Workbook()
     _build_overview(wb, data, columns, generated_at, tz)
-    _build_scan_history(wb, data, tz)
+    _build_scan_history(wb, data, tz, generated_at)
 
     buf = BytesIO()
     wb.save(buf)

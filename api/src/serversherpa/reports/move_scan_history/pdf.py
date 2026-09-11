@@ -13,6 +13,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from serversherpa.reports.move_report.render import css_string, render_pdf_async
 from serversherpa.reports.move_scan_history.barcode import pdf417_data_uri
+from serversherpa.reports.move_scan_history.timefmt import timezone_label, zone_abbrev
 from serversherpa.reports.move_scan_history.gather import ScanHistoryData, StatusCol
 
 _ENV = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"),
@@ -117,7 +118,9 @@ def render_html(data: ScanHistoryData, columns: list[StatusCol], *, generated_at
                 tracking_id: str, tz: ZoneInfo) -> str:
     scheduled_start = (data.scheduled_start.astimezone(tz).strftime(_DATE_FMT)
                        if data.scheduled_start else "Not scheduled")
-    stamp = generated_at.astimezone(tz).strftime(_STAMP_FMT)
+    stamp = f"{generated_at.astimezone(tz).strftime(_STAMP_FMT)} {zone_abbrev(tz, generated_at)}"
+    tz_label = timezone_label(tz, generated_at)
+    tz_abbrev = zone_abbrev(tz, generated_at)
 
     # One overview table per column group (see chunk_columns); every group
     # repeats the identity columns so a row can be read on its own.
@@ -177,6 +180,8 @@ def render_html(data: ScanHistoryData, columns: list[StatusCol], *, generated_at
         detail_table_width_mm=detail_table_width_mm,
         has_assets=bool(data.assets),
         stamp=stamp,
+        tz_label=tz_label,
+        tz_abbrev=tz_abbrev,
         tracking_id=tracking_id,
         barcode_data_uri=barcode_data_uri,
     )
