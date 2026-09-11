@@ -6,7 +6,7 @@
  * `PUT /sites/{id}/survey/{field_key}` on Save, then hands control back
  * to the caller (which queues the run).
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { ApiError, putSiteSurveyValue } from '../../lib/api';
 import type { MissingSurveyField } from '../../lib/siteMoveSurvey';
@@ -37,6 +37,25 @@ export default function CompleteSiteSurveyModal({
 
   const set = (key: string, v: FieldValue) => setValues((prev) => ({ ...prev, [key]: v }));
   const ready = fields.every((f) => isFilled(f, values[f.key]));
+
+  // Registered on the CAPTURE phase so it runs before GenerateReportModal's
+  // own bubble-phase Escape listener (both are on `document` — a later
+  // bubble-phase listener never runs before an earlier capture-phase one,
+  // regardless of attach order). Always marks the keypress handled
+  // (preventDefault) so the outer modal's listener bails out and only
+  // this inner prompt closes, even while `saving` — the outer modal never
+  // sees an "unhandled" Escape while this one is open — but only actually
+  // dismisses when not mid-save (matching the Cancel button's own guard).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!saving) onCancel();
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [saving, onCancel]);
 
   const save = async () => {
     setSaving(true);
@@ -69,10 +88,19 @@ export default function CompleteSiteSurveyModal({
           </p>
           <div className="pf-form">
             {fields.map((f) => (
+              // bool/select have no single form control an htmlFor could
+              // point at (a segmented button group; a ComboBox with an
+              // unexposed input id) — those get a plain id'd label the
+              // control group references via aria-labelledby instead of a
+              // dangling `for`.
               <div key={f.key} style={f.kind === 'textarea' ? { gridColumn: '1 / -1' } : undefined}>
-                <label htmlFor={`survey-${f.key}`}>{f.label}</label>
+                {f.kind === 'int' || f.kind === 'text' || f.kind === 'textarea' ? (
+                  <label htmlFor={`survey-${f.key}`}>{f.label}</label>
+                ) : (
+                  <label id={`survey-${f.key}-label`}>{f.label}</label>
+                )}
                 {f.kind === 'bool' && (
-                  <div className="segmented" role="radiogroup" aria-label={f.label}>
+                  <div className="segmented" role="radiogroup" aria-labelledby={`survey-${f.key}-label`}>
                     <button type="button" className={values[f.key] === true ? 'on' : ''}
                             onClick={() => set(f.key, true)}>Yes</button>
                     <button type="button" className={values[f.key] === false ? 'on' : ''}
@@ -93,12 +121,14 @@ export default function CompleteSiteSurveyModal({
                             onChange={(e) => set(f.key, e.target.value)} />
                 )}
                 {f.kind === 'select' && (
-                  <ComboBox
-                    placeholder={`Choose ${f.label.toLowerCase()}…`}
-                    value={values[f.key] as string ?? ''}
-                    onChange={(v) => set(f.key, v)}
-                    options={f.options.map((o) => ({ value: o, label: o }))}
-                  />
+                  <div role="group" aria-labelledby={`survey-${f.key}-label`}>
+                    <ComboBox
+                      placeholder={`Choose ${f.label.toLowerCase()}…`}
+                      value={values[f.key] as string ?? ''}
+                      onChange={(v) => set(f.key, v)}
+                      options={f.options.map((o) => ({ value: o, label: o }))}
+                    />
+                  </div>
                 )}
               </div>
             ))}

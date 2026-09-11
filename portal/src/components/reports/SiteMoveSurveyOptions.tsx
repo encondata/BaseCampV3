@@ -1,15 +1,17 @@
 /**
  * GenerateReportModal's options step for `report_type === 'site_move_survey'`.
- * One scrollable form (no internal wizard navigation) covering every
- * field the spec's "Portal" section lists: an optional initiative,
- * partner (auto-selected from the move's shipping partner when
- * possible), company contact (defaults to the signed-in user), the
- * source/destination sites (auto-detected from a move, overridable),
- * an assets preview with a condensed/per-asset toggle (or an asset-notes
- * textarea when the move has none), and the three per-run option
- * switches. Generate is gated on a partner plus an initiative or a
- * source site; when the source site is missing required survey answers
- * it opens `CompleteSiteSurveyModal` before queuing the run.
+ * The initiative itself is picked by the shared "pick" step (with a "No
+ * initiative — choose sites manually" choice added there for this report
+ * type) — this component receives the result (`initiative: InitiativeItem
+ * | null`) and covers everything after it: partner (auto-selected from
+ * the move's shipping partner when possible), company contact (defaults
+ * to the signed-in user), the source/destination sites (auto-detected
+ * from a move, overridable), an assets preview with a condensed/per-asset
+ * toggle (or an asset-notes textarea when the move has none), and the
+ * three per-run option switches. Generate is gated on a partner plus an
+ * initiative or a source site; when the source site is missing required
+ * survey answers it opens `CompleteSiteSurveyModal` before queuing the
+ * run.
  */
 import { useEffect, useMemo, useState } from 'react';
 
@@ -28,12 +30,12 @@ import ComboBox from '../ComboBox';
 import { Switch } from '../Switch';
 import CompleteSiteSurveyModal, { saveSurveyValues } from './CompleteSiteSurveyModal';
 
-type InitiativeMode = 'pick' | 'manual';
-
-export default function SiteMoveSurveyOptions({ definition, initiatives, onCancel, onGenerate }: {
+export default function SiteMoveSurveyOptions({ definition, initiative, onBack, onGenerate }: {
   definition: ReportDefinition;
-  initiatives: InitiativeItem[];
-  onCancel: () => void;
+  /** Already picked by GenerateReportModal's shared "pick" step; `null`
+   *  when the requester chose "No initiative — choose sites manually". */
+  initiative: InitiativeItem | null;
+  onBack: () => void;
   // `options` is really `SiteMoveSurveyRunOptions` (see buildRunOptions),
   // but declared as the wider `Record<string, unknown>` here so it slots
   // straight into GenerateReportModal's report_type-agnostic run payload.
@@ -42,9 +44,6 @@ export default function SiteMoveSurveyOptions({ definition, initiatives, onCance
   }) => void;
 }) {
   const { person } = useAuth();
-
-  const [initiativeMode, setInitiativeMode] = useState<InitiativeMode>('pick');
-  const [initiativeId, setInitiativeId] = useState('');
 
   const [partners, setPartners] = useState<SurveyPartnerOption[] | null>(null);
   const [partnerId, setPartnerId] = useState('');
@@ -94,44 +93,29 @@ export default function SiteMoveSurveyOptions({ definition, initiatives, onCance
     return () => { cancelled = true; };
   }, [definition.id]);
 
-  const selectedInitiative = useMemo(
-    () => (initiativeMode === 'pick' ? initiatives.find((i) => i.id === initiativeId) ?? null : null),
-    [initiativeMode, initiativeId, initiatives],
-  );
-
-  // A different (or cleared) initiative invalidates any manual site
-  // overrides and the asset notes drafted for the old selection.
   useEffect(() => {
-    setSourceOverride(false);
-    setDestOverride(false);
-    setManualSourceId('');
-    setManualDestId('');
-    setAssetNotes('');
-  }, [initiativeId, initiativeMode]);
-
-  useEffect(() => {
-    if (!selectedInitiative) { setAssets([]); return; }
+    if (!initiative) { setAssets([]); return; }
     let cancelled = false;
-    listInitiativeAssets(selectedInitiative.id)
+    listInitiativeAssets(initiative.id)
       .then((rows) => { if (!cancelled) setAssets(rows); })
       .catch(() => { if (!cancelled) setAssets([]); });
     return () => { cancelled = true; };
-  }, [selectedInitiative]);
+  }, [initiative]);
 
   // Auto-select the move's shipping partner once it's known to be a
   // logistics partner in the picker — but only until the user picks one
   // themselves, so the auto-pick never fights a manual choice.
   useEffect(() => {
-    if (partnerTouched || !partners || !selectedInitiative?.shipping_partner_id) return;
-    if (partners.some((p) => p.id === selectedInitiative.shipping_partner_id)) {
-      setPartnerId(selectedInitiative.shipping_partner_id);
+    if (partnerTouched || !partners || !initiative?.shipping_partner_id) return;
+    if (partners.some((p) => p.id === initiative.shipping_partner_id)) {
+      setPartnerId(initiative.shipping_partner_id);
     }
-  }, [selectedInitiative, partners, partnerTouched]);
+  }, [initiative, partners, partnerTouched]);
 
-  const autoSourceId = selectedInitiative?.origin_site_id ?? null;
-  const autoSourceName = selectedInitiative?.origin_site_name ?? null;
-  const autoDestId = selectedInitiative?.destination_site_id ?? null;
-  const autoDestName = selectedInitiative?.destination_site_name ?? null;
+  const autoSourceId = initiative?.origin_site_id ?? null;
+  const autoSourceName = initiative?.origin_site_name ?? null;
+  const autoDestId = initiative?.destination_site_id ?? null;
+  const autoDestName = initiative?.destination_site_name ?? null;
 
   const sourceSiteId = autoSourceId && !sourceOverride ? autoSourceId : manualSourceId;
   const destinationSiteId = autoDestId && !destOverride ? autoDestId : manualDestId;
@@ -145,8 +129,7 @@ export default function SiteMoveSurveyOptions({ definition, initiatives, onCance
   // off (and off in the payload) whenever there's no docx to append.
   const effectiveIncludeStandards = includeStandards && hasStandardsDoc;
 
-  const canGenerate = !!partnerId
-    && ((initiativeMode === 'pick' && !!initiativeId) || !!sourceSiteId);
+  const canGenerate = !!partnerId && (!!initiative || !!sourceSiteId);
 
   const proceed = () => {
     const options = buildRunOptions({
@@ -155,7 +138,7 @@ export default function SiteMoveSurveyOptions({ definition, initiatives, onCance
       includeSitePhotos: includePhotos, condensedAssets: condensed,
     });
     onGenerate({
-      initiative_id: initiativeMode === 'pick' && initiativeId ? initiativeId : null,
+      initiative_id: initiative?.id ?? null,
       // `options`'s own shape (SiteMoveSurveyRunOptions) has no index
       // signature, so it needs an explicit widen for the report-agnostic
       // payload type GenerateReportModal's `createReportRun` call expects.
@@ -193,29 +176,6 @@ export default function SiteMoveSurveyOptions({ definition, initiatives, onCance
   return (
     <>
       <div className="modal-body">
-        <div className="modal-section">Initiative</div>
-        <div className="pf-form">
-          <div>
-            <label>Initiative</label>
-            <ComboBox
-              placeholder="Type to search initiatives…"
-              value={initiativeMode === 'manual' ? '' : initiativeId}
-              clearable
-              disabled={initiativeMode === 'manual'}
-              onChange={setInitiativeId}
-              options={initiatives.map((i) => ({ value: i.id, label: i.name, sub: i.client_name }))}
-            />
-            <label className="survey-manual-toggle">
-              <input type="checkbox" checked={initiativeMode === 'manual'}
-                     onChange={(e) => {
-                       setInitiativeMode(e.target.checked ? 'manual' : 'pick');
-                       setInitiativeId('');
-                     }} />
-              {' '}No initiative — choose sites manually
-            </label>
-          </div>
-        </div>
-
         <div className="modal-section">Partner</div>
         <div className="pf-form">
           <div>
@@ -261,7 +221,8 @@ export default function SiteMoveSurveyOptions({ definition, initiatives, onCance
               <div className="mini-row flex">
                 <span className="cell-top">{autoSourceName}</span>
                 <span className="chip c-slate">Auto-detected</span>
-                <button type="button" className="mini-btn" onClick={() => setSourceOverride(true)}>
+                <button type="button" className="mini-btn" aria-label="Change source site"
+                        onClick={() => setSourceOverride(true)}>
                   Change
                 </button>
               </div>
@@ -281,7 +242,8 @@ export default function SiteMoveSurveyOptions({ definition, initiatives, onCance
               <div className="mini-row flex">
                 <span className="cell-top">{autoDestName}</span>
                 <span className="chip c-slate">Auto-detected</span>
-                <button type="button" className="mini-btn" onClick={() => setDestOverride(true)}>
+                <button type="button" className="mini-btn" aria-label="Change destination site"
+                        onClick={() => setDestOverride(true)}>
                   Change
                 </button>
               </div>
@@ -323,6 +285,11 @@ export default function SiteMoveSurveyOptions({ definition, initiatives, onCance
         ) : (
           <div className="pf-form">
             <div style={{ gridColumn: '1 / -1' }}>
+              <p className="page-hint">
+                {initiative
+                  ? 'No assets associated with this initiative. Notes you enter below will be inserted into the generated survey in place of the equipment listing.'
+                  : "No initiative selected, so there's no equipment list. Notes you enter below will be inserted into the generated survey in place of the equipment listing."}
+              </p>
               <label htmlFor="survey-asset-notes">Asset notes (optional)</label>
               <textarea id="survey-asset-notes" rows={3}
                         placeholder="e.g. Equipment list will be provided separately. Approximately 40 1U servers and 6 storage arrays."
@@ -364,7 +331,7 @@ export default function SiteMoveSurveyOptions({ definition, initiatives, onCance
         {(loadError || generateError) && <p className="pf-error">{loadError || generateError}</p>}
       </div>
       <div className="modal-foot">
-        <button type="button" className="btn-ghost" onClick={onCancel}>Cancel</button>
+        <button type="button" className="btn-ghost" onClick={onBack}>Back</button>
         <button type="button" className="btn-solid" disabled={!canGenerate || checking}
                 onClick={() => void generate()}>
           {checking ? 'Checking…' : 'Generate Report'}

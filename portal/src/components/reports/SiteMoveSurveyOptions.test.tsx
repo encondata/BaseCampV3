@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -118,15 +118,9 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-async function pickInitiative(user: ReturnType<typeof userEvent.setup>, name: string) {
-  const combo = screen.getByPlaceholderText('Type to search initiatives…');
-  await user.click(combo);
-  await user.click(await screen.findByText(name));
-}
-
 it('shows a Template chip for a partner with a template, and No template otherwise', async () => {
   const user = userEvent.setup();
-  render(<SiteMoveSurveyOptions definition={DEF} initiatives={[]} onCancel={() => {}} onGenerate={() => {}} />);
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={null} onBack={() => {}} onGenerate={() => {}} />);
   const combo = await screen.findByPlaceholderText('Type to search partners…');
   await user.click(combo);
   await user.click(await screen.findByText('Acme Logistics'));
@@ -138,15 +132,14 @@ it('shows a Template chip for a partner with a template, and No template otherwi
 });
 
 it('defaults the company contact to the signed-in user, showing their email', async () => {
-  render(<SiteMoveSurveyOptions definition={DEF} initiatives={[]} onCancel={() => {}} onGenerate={() => {}} />);
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={null} onBack={() => {}} onGenerate={() => {}} />);
   await waitFor(() => expect(screen.getByPlaceholderText('Type to search people…')).toBeTruthy());
   expect(await screen.findByText('me@example.com')).toBeTruthy();
 });
 
 it('auto-detects source/destination sites from the picked initiative, overridable', async () => {
   const user = userEvent.setup();
-  render(<SiteMoveSurveyOptions definition={DEF} initiatives={[ini()]} onCancel={() => {}} onGenerate={() => {}} />);
-  await pickInitiative(user, 'Champagne Move');
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
 
   const autoDetected = await screen.findAllByText('Auto-detected');
   expect(autoDetected).toHaveLength(2);
@@ -154,44 +147,51 @@ it('auto-detects source/destination sites from the picked initiative, overridabl
   expect(screen.getByText('NAP22')).toBeTruthy();
 
   // Overriding the source site swaps the auto-detected row for a picker.
-  const sourceLabel = screen.getByText('Source site');
-  const sourceCard = sourceLabel.parentElement as HTMLElement;
-  await user.click(within(sourceCard).getByRole('button', { name: 'Change' }));
-  expect(within(sourceCard).getByPlaceholderText('Type to search source sites…')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Change source site' }));
+  expect(screen.getByPlaceholderText('Type to search source sites…')).toBeTruthy();
   expect(screen.getAllByText('Auto-detected')).toHaveLength(1);   // destination still auto
+  expect(screen.getByRole('button', { name: 'Change destination site' })).toBeTruthy();
 });
 
 it('also auto-selects the initiative\'s logistics shipping partner', async () => {
-  const user = userEvent.setup();
-  render(<SiteMoveSurveyOptions definition={DEF} initiatives={[ini()]} onCancel={() => {}} onGenerate={() => {}} />);
-  await pickInitiative(user, 'Champagne Move');
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
   expect(await screen.findByText('Template')).toBeTruthy();   // p1 = Acme Logistics
 });
 
 it('hides the asset-notes textarea once the move has assets', async () => {
-  const user = userEvent.setup();
   api.listInitiativeAssets.mockResolvedValue([assetRow('a1')]);
-  render(<SiteMoveSurveyOptions definition={DEF} initiatives={[ini()]} onCancel={() => {}} onGenerate={() => {}} />);
-  await pickInitiative(user, 'Champagne Move');
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
   await screen.findByText('Dell R640');
   expect(screen.queryByLabelText('Asset notes (optional)')).toBeNull();
 });
 
-it('shows the asset-notes textarea when the move has zero assets', async () => {
-  const user = userEvent.setup();
+it('shows the asset-notes textarea (with V2\'s explanatory hint) when the move has zero assets', async () => {
   api.listInitiativeAssets.mockResolvedValue([]);
-  render(<SiteMoveSurveyOptions definition={DEF} initiatives={[ini()]} onCancel={() => {}} onGenerate={() => {}} />);
-  await pickInitiative(user, 'Champagne Move');
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
   expect(await screen.findByLabelText('Asset notes (optional)')).toBeTruthy();
+  expect(screen.getByText(
+    'No assets associated with this initiative. Notes you enter below will be inserted into the generated survey in place of the equipment listing.',
+  )).toBeTruthy();
 });
 
-it('the condensed/per-asset toggle changes the preview grouping', async () => {
+it('shows a "no initiative" flavored hint when there is no initiative at all', async () => {
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={null} onBack={() => {}} onGenerate={() => {}} />);
+  expect(await screen.findByLabelText('Asset notes (optional)')).toBeTruthy();
+  expect(screen.getByText(/No initiative selected/)).toBeTruthy();
+});
+
+it('the condensed/per-asset toggle changes the preview grouping and the run payload', async () => {
   const user = userEvent.setup();
+  const onGenerate = vi.fn();
   api.listInitiativeAssets.mockResolvedValue([
     assetRow('a1'), assetRow('a2'), assetRow('a3', { model_make: 'HP', model_name: 'DL380' }),
   ]);
-  render(<SiteMoveSurveyOptions definition={DEF} initiatives={[ini()]} onCancel={() => {}} onGenerate={() => {}} />);
-  await pickInitiative(user, 'Champagne Move');
+  api.listSiteSurvey.mockResolvedValue([
+    { field_key: 'contact_name', label: 'Contact name', group: 'contact', group_label: 'Site contact',
+      kind: 'text', options: [], value: 'Jane', raw_id: 1, updated_by: null, updated_by_name: null,
+      updated_at: null },
+  ]);
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={onGenerate} />);
 
   await screen.findByText('Dell R640');
   expect(screen.getByText('×2')).toBeTruthy();     // condensed: 2 Dell rows collapse to one
@@ -199,21 +199,34 @@ it('the condensed/per-asset toggle changes the preview grouping', async () => {
   await user.click(screen.getByRole('tab', { name: 'Per asset' }));
   expect(screen.getAllByText('Dell R640')).toHaveLength(2);
   expect(screen.queryByText('×2')).toBeNull();
+
+  await user.click(await screen.findByRole('button', { name: 'Generate Report' }));
+  await waitFor(() => expect(onGenerate).toHaveBeenCalled());
+  const payload = onGenerate.mock.calls[0][0];
+  expect(payload.options.condensed_assets).toBe(false);
 });
 
-it('Generate is disabled without a partner, then enabled once one is chosen', async () => {
+it('Generate is disabled without a partner, then enabled once one is auto-selected', async () => {
   const user = userEvent.setup();
   const onGenerate = vi.fn();
-  render(<SiteMoveSurveyOptions definition={DEF} initiatives={[ini()]} onCancel={() => {}} onGenerate={onGenerate} />);
-  await pickInitiative(user, 'Champagne Move');
-  // partner auto-selected by the initiative's shipping partner, so Generate
-  // should already be enabled with no missing survey fields.
+  render(<SiteMoveSurveyOptions definition={DEF}
+                                 initiative={ini({ shipping_partner_id: null, shipping_partner_name: null })}
+                                 onBack={() => {}} onGenerate={onGenerate} />);
+  // no partner yet (the initiative has none to auto-select) — Generate is disabled
+  await waitFor(() => expect(
+    (screen.getByRole('button', { name: 'Generate Report' }) as HTMLButtonElement).disabled,
+  ).toBe(true));
+
+  const partnerCombo = screen.getByPlaceholderText('Type to search partners…');
+  await user.click(partnerCombo);
+  await user.click(await screen.findByText('Acme Logistics'));
+
   api.listSiteSurvey.mockResolvedValue([
     { field_key: 'contact_name', label: 'Contact name', group: 'contact', group_label: 'Site contact',
       kind: 'text', options: [], value: 'Jane', raw_id: 1, updated_by: null, updated_by_name: null,
       updated_at: null },
   ]);
-  const generate = await screen.findByRole('button', { name: 'Generate Report' });
+  const generate = screen.getByRole('button', { name: 'Generate Report' });
   expect((generate as HTMLButtonElement).disabled).toBe(false);
   await user.click(generate);
   await waitFor(() => expect(onGenerate).toHaveBeenCalledWith({
@@ -235,8 +248,7 @@ it('opens the missing-survey modal when the source site lacks required answers, 
       kind: 'text', options: [], value: null, raw_id: null, updated_by: null, updated_by_name: null,
       updated_at: null },
   ]);
-  render(<SiteMoveSurveyOptions definition={DEF} initiatives={[ini()]} onCancel={() => {}} onGenerate={onGenerate} />);
-  await pickInitiative(user, 'Champagne Move');
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={onGenerate} />);
   await screen.findByText('Template');
 
   await user.click(await screen.findByRole('button', { name: 'Generate Report' }));
@@ -247,4 +259,12 @@ it('opens the missing-survey modal when the source site lacks required answers, 
 
   await waitFor(() => expect(api.putSiteSurveyValue).toHaveBeenCalledWith('s1', 'contact_name', 'Jane Doe'));
   await waitFor(() => expect(onGenerate).toHaveBeenCalled());
+});
+
+it('Back calls onBack', async () => {
+  const user = userEvent.setup();
+  const onBack = vi.fn();
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={null} onBack={onBack} onGenerate={() => {}} />);
+  await user.click(screen.getByRole('button', { name: 'Back' }));
+  expect(onBack).toHaveBeenCalled();
 });

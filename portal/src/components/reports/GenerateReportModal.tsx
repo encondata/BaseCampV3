@@ -1,7 +1,10 @@
 /**
- * Generate <definition> — one dialog, three states: pick an initiative,
- * choose sections, then progress (poll the run every 2 s) with
- * "Notify me when it's ready" / Close, ending in Download or Try again.
+ * Generate <definition> — one dialog, three states: pick an initiative
+ * (Site & Move Survey's own "No initiative — choose sites manually" row
+ * lives in this same picker), choose sections/options (delegated to
+ * `SiteMoveSurveyOptions` for that report type; Move Report keeps its own
+ * sections UI here), then progress (poll the run every 2 s) with "Notify
+ * me when it's ready" / Close, ending in Download or Try again.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -35,15 +38,17 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
   onToast?: (message: string) => void;
 }) {
   const { status: sys } = useSystemStatus();
-  // Site & Move Survey's initiative is optional and lives inside its own
-  // options component, so this modal skips the shared "pick" screen for
-  // that report type and opens straight on "sections".
   const isSurvey = definition.report_type === 'site_move_survey';
-  const [step, setStep] = useState<Step>(isSurvey ? 'sections' : 'pick');
+  const [step, setStep] = useState<Step>('pick');
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);
   const [search, setSearch] = useState('');
   const [type, setType] = useState('');
   const [picked, setPicked] = useState<InitiativeItem | null>(null);
+  // Site & Move Survey only: the shared pick step's own "No initiative —
+  // choose sites manually" choice, radio-grouped alongside the real
+  // initiatives so exactly one of "an initiative" / "no initiative" is
+  // ever selected at a time.
+  const [noInitiative, setNoInitiative] = useState(false);
   const [options, setOptions] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(MOVE_REPORT_SECTIONS.map((s) => [s.key, !!definition.options[s.key]])));
   const [run, setRun] = useState<ReportRun | null>(null);
@@ -60,7 +65,14 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
   }, []);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    // `CompleteSiteSurveyModal` — nested inside this modal when the source
+    // site's survey is incomplete — marks Escape as handled (capture-phase
+    // listener + preventDefault) so it can dismiss only itself; without
+    // this check that same Escape keypress would also close the whole
+    // Generate flow and drop everything the user picked.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented) onClose();
+    };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -166,14 +178,27 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
                 </select>
               </div>
               <div className="mini-list ini-picker-list" role="radiogroup">
+                {isSurvey && (
+                  <label className={`mini-row ini-picker-row ${noInitiative ? 'on' : ''}`}>
+                    <input type="radio" name="initiative"
+                           aria-label="No initiative — choose sites manually"
+                           checked={noInitiative}
+                           onChange={() => { setNoInitiative(true); setPicked(null); }} />
+                    <span className="cell-primary">
+                      <span className="pn"><b>No initiative — choose sites manually</b></span>
+                    </span>
+                    <span className="cell-sub">Pick a partner and enter the sites directly</span>
+                  </label>
+                )}
                 {initiatives === null && <div className="ini-picker-empty">Loading…</div>}
-                {initiatives !== null && shown.length === 0 && (
+                {initiatives !== null && shown.length === 0 && !isSurvey && (
                   <div className="ini-picker-empty">No initiatives match.</div>
                 )}
                 {shown.map((i) => (
                   <label key={i.id} className={`mini-row ini-picker-row ${picked?.id === i.id ? 'on' : ''}`}>
                     <input type="radio" name="initiative" aria-label={i.name}
-                           checked={picked?.id === i.id} onChange={() => setPicked(i)} />
+                           checked={picked?.id === i.id}
+                           onChange={() => { setPicked(i); setNoInitiative(false); }} />
                     <span className="cell-primary"><span className="pn"><b>{i.name}</b></span></span>
                     <span className="cell-sub">{i.client_name ?? '—'}</span>
                     <span className="chip custom" style={{ '--chip': i.status_color } as CSSProperties}>
@@ -187,7 +212,7 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
             </div>
             <div className="modal-foot">
               <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
-              <button type="button" className="btn-solid" disabled={!picked}
+              <button type="button" className="btn-solid" disabled={!picked && !noInitiative}
                       onClick={() => setStep('sections')}>Next</button>
             </div>
           </>
@@ -196,8 +221,8 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
         {step === 'sections' && isSurvey && (
           <SiteMoveSurveyOptions
             definition={definition}
-            initiatives={sorted}
-            onCancel={onClose}
+            initiative={noInitiative ? null : picked}
+            onBack={() => setStep('pick')}
             onGenerate={(p) => void start(p)}
           />
         )}
