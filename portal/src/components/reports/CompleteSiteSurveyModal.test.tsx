@@ -38,6 +38,7 @@ it('Save & continue is disabled until every field has a value', async () => {
                                    onSave={async () => {}} onCancel={() => {}} />);
   const save = screen.getByRole('button', { name: /Save & continue/ });
   expect((save as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByRole('status').textContent).toMatch(/answers? still needed/);
 
   await user.type(screen.getByLabelText('Contact name'), 'Jane Doe');
   await user.type(screen.getByLabelText('Floor'), '2');
@@ -48,6 +49,7 @@ it('Save & continue is disabled until every field has a value', async () => {
   await user.click(combo);
   await user.click(await screen.findByText('carpet'));
   expect((save as HTMLButtonElement).disabled).toBe(false);
+  expect(screen.queryByRole('status')).toBeNull();
 });
 
 it('calls onSave with the collected values and shows the error on failure', async () => {

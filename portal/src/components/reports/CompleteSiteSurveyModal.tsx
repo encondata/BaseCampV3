@@ -36,7 +36,11 @@ export default function CompleteSiteSurveyModal({
   const [error, setError] = useState('');
 
   const set = (key: string, v: FieldValue) => setValues((prev) => ({ ...prev, [key]: v }));
-  const ready = fields.every((f) => isFilled(f, values[f.key]));
+  const remaining = fields.filter((f) => !isFilled(f, values[f.key])).length;
+  // Every listed field is required (the parent already filtered the notes
+  // group out), so the footer says how many are still blank rather than
+  // leaving a silently disabled button.
+  const ready = remaining === 0;
 
   // Registered on the CAPTURE phase so it runs before GenerateReportModal's
   // own bubble-phase Escape listener (both are on `document` — a later
@@ -141,6 +145,11 @@ export default function CompleteSiteSurveyModal({
             {saving ? 'Saving…' : 'Save & continue'}
           </button>
           <button type="button" className="mini-btn" onClick={onCancel} disabled={saving}>Cancel</button>
+          {!ready && remaining > 0 && (
+            <span className="page-hint" role="status">
+              {remaining === 1 ? '1 answer still needed' : `${remaining} answers still needed`}
+            </span>
+          )}
         </div>
       </div>
     </div>
