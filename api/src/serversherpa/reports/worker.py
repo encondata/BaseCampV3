@@ -19,17 +19,21 @@ someone tried to reuse."""
 import asyncio
 import logging
 import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import Attachment, Initiative, ReportDefinition, ReportRun
+from serversherpa.db.models import (
+    Attachment, Initiative, Partner, ReportDefinition, ReportRun,
+)
 from serversherpa.notifications.inbox import notify
 from serversherpa.reports.jobs import claim_next, requeue_stale
 from serversherpa.reports.move_report.gather import InitiativeUnavailable
 from serversherpa.reports.rack_renderer import RackRendererUnavailable
 from serversherpa.reports.registry import get_module
+from serversherpa.reports.site_move_survey.gather import SurveyGatherError
 from serversherpa.services.audit import audit
 from serversherpa.services.storage import put_object
 
@@ -71,6 +75,20 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
     initiative = await db.get(Initiative, run.initiative_id) if run.initiative_id else None
     definition_name = definition.name if definition else run.report_type
     initiative_name = initiative.name if initiative else ("—" if run.initiative_id is None else "?")
+    if initiative is None and run.initiative_id is None and run.report_type == "site_move_survey":
+        # A standalone survey (partner + manually chosen sites, no
+        # initiative) has no initiative name to show in the "report_ready"
+        # inbox row — the partner is the closest equivalent, and beats a
+        # bare "—" for a requester juggling several partners' surveys.
+        raw_partner_id = (run.options or {}).get("partner_id")
+        partner = None
+        if raw_partner_id:
+            try:
+                partner = await db.get(Partner, uuid.UUID(str(raw_partner_id)))
+            except ValueError:
+                partner = None
+        if partner is not None:
+            initiative_name = partner.name
     error: str | None = None
     try:
         module = get_module(run.report_type)
@@ -101,6 +119,8 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
         await db.commit()                   # a failure here is a failed run too
     except InitiativeUnavailable:
         error = "initiative_unavailable"
+    except SurveyGatherError as exc:
+        error = exc.code
     except RackRendererUnavailable as exc:
         error = f"rack renderer unavailable: {exc}"
     except TimeoutError:

@@ -4,19 +4,40 @@ into V3's reports framework; see
 docs/superpowers/specs/2026-09-11-site-move-survey-design.md § Report
 module.
 
-This module currently exposes the registry entry point and option schema
-(so the definition can be seeded — migration 0052 — and its options
-edited) plus the pure fill engine (`fill.py`), context builder
-(`context.py`), and asset-row shaping (`assets.py`). `build()` itself is
-completed in Task 4, once `gather.py` (Task 3) can read the database.
+This module exposes the registry entry point and option schema (so the
+definition can be seeded — migration 0052 — and its options edited),
+the pure fill engine (`fill.py`), context builder (`context.py`), and
+asset-row shaping (`assets.py`), plus `build()` itself: gather (Task 3's
+`gather.py`) -> context -> fill -> optional standards/photos sheets ->
+xlsx bytes.
 """
 
+import re
 import uuid
+from datetime import datetime
+from io import BytesIO
 
+import openpyxl
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import ReportRun
+from serversherpa.db.models import ReportDefinition, ReportRun
 from serversherpa.reports.registry import OptionsError, ReportResult
+from serversherpa.reports.site_move_survey.assets import asset_rows
+from serversherpa.reports.site_move_survey.context import build_context
+from serversherpa.reports.site_move_survey.fill import fill_workbook
+from serversherpa.reports.site_move_survey.gather import SurveyGatherError, gather
+from serversherpa.reports.site_move_survey.photos import append_site_photos
+from serversherpa.reports.site_move_survey.standards import (
+    append_standards_sheet, parse_standards_cached,
+)
+
+XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+# Same set `move_report.build` strips from its filename (backslash, slash,
+# colon, asterisk, question mark, quote, angle brackets, pipe, plus any
+# stray newline/tab) — characters invalid (or awkward) in a filename on
+# every OS this runs on.
+_FILENAME_UNSAFE_RE = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 
 report_type = "site_move_survey"
 
@@ -124,7 +145,70 @@ def validate_run_options(options: dict) -> dict:
     return _normalize(options)
 
 
+def _sanitize_filename_part(value: str) -> str:
+    return _FILENAME_UNSAFE_RE.sub("-", value or "").strip() or "partner"
+
+
+def _merged_run_options(definition_options: dict | None, run_options: dict) -> dict:
+    """The definition's saved options (`company_name` + the three
+    toggles) are the baseline; the run's own options — which always
+    carry `partner_id` and may carry the toggle overrides the Generate
+    modal's per-run checkboxes send — win on any key they actually
+    contain. Merging the RAW dicts before the single `validate_run_options`
+    call (rather than validating `run_options` first) matters: once
+    normalized, `validate_run_options` fills in every toggle/`company_name`
+    key with this module's hardcoded defaults, which would then stomp the
+    definition's real values for any key the run never mentioned (e.g.
+    `company_name`, which the Generate modal never sends at all)."""
+    merged = dict(definition_options or {})
+    merged.update(run_options or {})
+    return validate_run_options(merged)
+
+
 async def build(db: AsyncSession, run: ReportRun) -> ReportResult:
-    """Completed in Task 4: gather (Task 3) -> context.build_context ->
-    fill.fill_workbook -> optional standards/photos sheets -> bytes."""
-    raise NotImplementedError("site_move_survey.build is implemented in Task 4")
+    """gather (Task 3) -> context.build_context -> fill.fill_workbook ->
+    optional standards/photos sheets -> xlsx bytes.
+
+    `SurveyGatherError` propagates unchanged from `gather()` so
+    `reports/worker.py` can map its `.code` onto the run's `error`
+    column; a template openpyxl can't load raises the same exception
+    type with code `template_unreadable` so the worker needs only one
+    extra `except` clause for every failure this module can produce.
+    """
+    definition = await db.get(ReportDefinition, run.definition_id)
+    options = _merged_run_options(definition.options if definition else None, run.options or {})
+
+    data = await gather(db, run)
+
+    rows = asset_rows(data.assets, condensed=options["condensed_assets"])
+    context = build_context(
+        partner=data.partner, company_name=options["company_name"], contact=data.contact,
+        client_address=data.client_address, initiative=data.initiative, origin=data.origin,
+        destination=data.destination, origin_survey=data.origin_survey,
+        destination_survey=data.destination_survey, assets_notes=data.asset_notes,
+        asset_count=len(data.assets))
+
+    try:
+        wb = openpyxl.load_workbook(BytesIO(data.template_bytes))
+    except Exception as exc:
+        raise SurveyGatherError("template_unreadable") from exc
+
+    fill_workbook(wb, context, rows, data.asset_notes,
+                 include_transportation_standards=options["include_transportation_standards"])
+
+    has_transport_sheet = any("transport" in title.lower() for title in wb.sheetnames)
+    if (options["include_transportation_standards"] and data.standards_docx_bytes
+            and not has_transport_sheet):
+        items = parse_standards_cached(data.standards_attachment_id, data.standards_docx_bytes)
+        append_standards_sheet(wb, items)
+
+    if options["include_site_photos"]:
+        append_site_photos(wb, data.photos)      # no-op when every entry is empty
+
+    buf = BytesIO()
+    wb.save(buf)
+    content = buf.getvalue()
+
+    partner_name = _sanitize_filename_part(data.partner.name)
+    filename = (f"Site & Move Survey - {partner_name} - {datetime.now():%Y-%m-%d %H%M}.xlsx")
+    return ReportResult(content=content, filename=filename, content_type=XLSX_CONTENT_TYPE)

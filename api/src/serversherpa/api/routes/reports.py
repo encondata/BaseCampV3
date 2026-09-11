@@ -13,9 +13,11 @@ from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     ReportDefinitionOut, ReportDefinitionUpdateIn, ReportDownloadOut,
-    ReportRunCreateIn, ReportRunNotifyIn, ReportRunOut,
+    ReportRunCreateIn, ReportRunNotifyIn, ReportRunOut, SurveyPartnerOut,
 )
-from serversherpa.db.models import Initiative, Person, ReportDefinition, ReportRun
+from serversherpa.db.models import (
+    Attachment, Initiative, Partner, Person, ReportDefinition, ReportRun,
+)
 from serversherpa.reports.registry import OptionsError, get_module
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import presign_get
@@ -44,9 +46,18 @@ async def _name_taken(db: DbSession, name: str, *, exclude: uuid.UUID | None) ->
     return (await db.scalar(q)) is not None
 
 
-def _validated_options(report_type: str, options: dict) -> dict:
+def _validated_options(report_type: str, options: dict, *, run: bool = False) -> dict:
+    """Definition PATCHes always shape-check via the module's
+    `validate_options`; queuing a run (`run=True`) uses `validate_run_options`
+    when the module has one (only Site & Move Survey does today — it's the
+    only type with run-only keys, `partner_id` chief among them), falling
+    back to `validate_options` for every other type so this stays a no-op
+    for Move Report."""
+    module = get_module(report_type)
+    validator = (getattr(module, "validate_run_options", None) or module.validate_options
+                if run else module.validate_options)
     try:
-        return get_module(report_type).validate_options(options)
+        return validator(options)
     except OptionsError as exc:
         raise _err(422, "invalid_options", problems=exc.problems) from None
 
@@ -186,23 +197,56 @@ async def create_run(
     actor: AuthContext = require_permission("reports", "add"),
 ) -> ReportRunOut:
     d = await _definition(db, body.definition_id)
-    ini = await db.get(Initiative, body.initiative_id)
-    cond = scope_conditions("initiatives", actor.access, actor.person.id)
-    if ini is None or ini.archived_at is not None or (
-            cond is not None and await db.scalar(
-                select(Initiative.id).where(Initiative.id == ini.id, cond)) is None):
-        raise _err(404, "initiative_not_found")
-    options = _validated_options(d.report_type, body.options)
-    run = ReportRun(definition_id=d.id, report_type=d.report_type, initiative_id=ini.id,
+    ini: Initiative | None = None
+    if body.initiative_id is None:
+        # Only Site & Move Survey can run against a partner + manually
+        # chosen sites with no initiative at all — every other type still
+        # needs one to report on.
+        if d.report_type != "site_move_survey":
+            raise _err(422, "initiative_required")
+    else:
+        ini = await db.get(Initiative, body.initiative_id)
+        cond = scope_conditions("initiatives", actor.access, actor.person.id)
+        if ini is None or ini.archived_at is not None or (
+                cond is not None and await db.scalar(
+                    select(Initiative.id).where(Initiative.id == ini.id, cond)) is None):
+            raise _err(404, "initiative_not_found")
+    options = _validated_options(d.report_type, body.options, run=True)
+    run = ReportRun(definition_id=d.id, report_type=d.report_type,
+                    initiative_id=ini.id if ini is not None else None,
                     options=options, requested_by=actor.person.id,
                     requested_rank=actor.access.max_rank, notify=body.notify)
     db.add(run)
     await db.flush()
     audit(db, actor_id=actor.person.id, entity_type="report_run", entity_id=str(run.id),
           action="create", changes={"definition": {"from": None, "to": d.name},
-                                    "initiative_id": {"from": None, "to": str(ini.id)}})
+                                    "initiative_id": {
+                                        "from": None,
+                                        "to": str(ini.id) if ini is not None else None}})
     await db.commit()
     return await _visible_run(db, run.id, actor)
+
+
+@router.get("/site-move-survey/partners", response_model=list[SurveyPartnerOut])
+async def list_survey_partners(
+    db: DbSession, _actor: AuthContext = require_permission("reports", "view"),
+) -> list[SurveyPartnerOut]:
+    """Logistics partners the Generate modal's Partner step can choose,
+    each tagged with whether it already has a `survey_template`
+    attachment to fill — the modal shows a "Template"/"No template" chip
+    off `has_template` rather than making the caller fetch every
+    partner's Files panel to find out."""
+    has_template = (
+        select(Attachment.id)
+        .where(Attachment.entity_type == "partner", Attachment.entity_id == Partner.id,
+               Attachment.kind == "survey_template", Attachment.deleted_at.is_(None))
+        .exists())
+    rows = (await db.execute(
+        select(Partner.id, Partner.name, has_template)
+        .where(Partner.archived_at.is_(None), Partner.partner_types.any("logistics"))
+        .order_by(Partner.name))).all()
+    return [SurveyPartnerOut(id=pid, name=name, has_template=bool(templated))
+            for pid, name, templated in rows]
 
 
 @router.get("/runs", response_model=list[ReportRunOut])
