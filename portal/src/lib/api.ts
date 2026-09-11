@@ -3622,6 +3622,33 @@ export async function setReportRunNotify(id: string, notify: boolean): Promise<R
   return resp.json();
 }
 
+/** One status column in the Move Scan History preview — `all`-mode
+ *  order, with `in_pipeline` so the modal can derive both column
+ *  modes (see `moveScanHistory.ts`'s `columnsForMode`) without a
+ *  second request. */
+export interface ScanHistoryPreviewStatus {
+  key: string; label: string; color: string | null;
+  in_pipeline: boolean; scan_count: number;
+}
+
+export interface ScanHistoryPreview {
+  initiative: {
+    id: string; name: string; client_name: string | null;
+    scheduled_start: string | null;
+    source_name: string | null; destination_name: string | null;
+  };
+  total_assets: number; scanned_assets: number; completed: number; completion_pct: number;
+  last_scan_at: string | null;
+  statuses: ScanHistoryPreviewStatus[];
+}
+
+export async function getScanHistoryPreview(initiativeId: string): Promise<ScanHistoryPreview> {
+  const resp = await apiFetch(
+    `/reports/move-scan-history/preview?initiative_id=${encodeURIComponent(initiativeId)}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /* ── in-app inbox ─────────────────────────────────────────────────── */
 
 export interface InboxItem {

@@ -20,7 +20,8 @@ vi.mock('../../lib/api', async (importActual) => ({
 const { default: GenerateReportModal } = await import('./GenerateReportModal');
 
 const DEF: ReportDefinition = {
-  id: 'd1', name: 'Move Report', description: '', report_type: 'move_report', is_system: true,
+  id: 'd1', name: 'Move Report', description: 'Sections covering a move end to end.',
+  report_type: 'move_report', is_system: true,
   updated_at: '2026-09-09T10:00:00Z',
   options: { summary: true, assets_by_source: true, assets_by_destination: true, size_weight: true,
     rail_usage: true, collisions: false, source_racks: true, destination_racks: true },
@@ -56,11 +57,37 @@ async function toStep2(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: 'Next' }));
 }
 
+it('the shell header shows the eyebrow, definition name/description, and the step indicator', async () => {
+  render(<GenerateReportModal definition={DEF} onClose={() => {}} />);
+  await screen.findByText('NAP11');
+  expect(screen.getByText('Generate report')).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Move Report' })).toBeTruthy();
+  expect(screen.getByText('Sections covering a move end to end.')).toBeTruthy();
+  expect(screen.getByText('Initiative')).toBeTruthy();
+  expect(screen.getByText('Options')).toBeTruthy();
+  expect(screen.getByText('Progress')).toBeTruthy();
+});
+
+it('the pick step shows the empty summary copy, then fills in once an initiative is picked', async () => {
+  const user = userEvent.setup();
+  render(<GenerateReportModal definition={DEF} onClose={() => {}} />);
+  await screen.findByText('NAP11');
+  expect(screen.getByText('Pick an initiative to see its details here.')).toBeTruthy();
+  const acmeBefore = screen.getAllByText('Acme').length;   // every seeded row shares this client
+  const nap11Before = screen.getAllByText('NAP11').length;
+  await user.click(screen.getByLabelText('NAP11'));
+  expect(screen.queryByText('Pick an initiative to see its details here.')).toBeNull();
+  // the summary card renders the same name/client text again, alongside the picker row.
+  expect(screen.getAllByText('NAP11').length).toBe(nap11Before + 1);
+  expect(screen.getAllByText('Acme').length).toBe(acmeBefore + 1);
+  // the summary card's type chip (the type filter's own "move" <option> also matches "move")
+  expect(screen.getByText('move', { selector: '.rgm-summary-chips .chip' })).toBeTruthy();
+});
+
 it('step 1 sorts active first, filters by type and search, Next needs a pick', async () => {
   const user = userEvent.setup();
   render(<GenerateReportModal definition={DEF} onClose={() => {}} />);
   await screen.findByText('NAP11');
-  expect(screen.getByRole('heading', { name: 'Generate Move Report' })).toBeTruthy();
   const names = screen.getAllByRole('radio').map((r) => r.getAttribute('aria-label'));
   expect(names).toEqual(['NAP11', 'Beta', 'Zeta']);
   expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(true);

@@ -28,6 +28,11 @@ const SURVEY_DEF: ReportDefinition = {
   options: { company_name: 'Cumulus Solutions Group', include_transportation_standards: true,
     include_site_photos: true, condensed_assets: true },
 };
+const SCAN_HISTORY_DEF: ReportDefinition = {
+  id: 'd3', name: 'Move Scan History', description: '', report_type: 'move_scan_history',
+  is_system: true, updated_at: '2026-09-09T10:00:00Z',
+  options: { default_format: 'xlsx', status_columns: 'pipeline' },
+};
 const file = (over: Partial<AttachmentOut> = {}): AttachmentOut => ({
   id: 'f1', entity_type: 'report_definition', entity_id: 'd2', kind: 'report_asset',
   storage_key: 'k', filename: 'Transportation Standards.docx', content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -132,6 +137,31 @@ it('offers a Download link for files the API presigned', async () => {
   expect(link.getAttribute('target')).toBe('_blank');
   expect(screen.getByRole('link', { name: /📎 Transportation Standards\.docx/ }).getAttribute('href'))
     .toBe('https://minio.example/k?sig=1');
+});
+
+it('Move Scan History has no company field, no Files, and no Default sections; shows the two segmented options', async () => {
+  render(<EditDefinitionModal definition={SCAN_HISTORY_DEF} onClose={() => {}} onSaved={() => {}} />);
+  expect(screen.queryByLabelText('Company name')).toBeNull();
+  expect(screen.queryByText('Files')).toBeNull();
+  expect(screen.queryByText('Default sections')).toBeNull();
+  expect(screen.queryByText('Default options')).toBeNull();
+  expect(screen.getByText('Default format')).toBeTruthy();
+  expect(screen.getByText('Status columns')).toBeTruthy();
+  expect(screen.getByRole('tab', { name: 'Excel' }).className).toContain('on');
+  expect(screen.getByRole('tab', { name: 'Pipeline' }).className).toContain('on');
+});
+
+it('Move Scan History patches default_format/status_columns from the segmented controls', async () => {
+  const user = userEvent.setup();
+  api.updateReportDefinition.mockResolvedValue(SCAN_HISTORY_DEF);
+  render(<EditDefinitionModal definition={SCAN_HISTORY_DEF} onClose={() => {}} onSaved={() => {}} />);
+  await user.click(screen.getByRole('tab', { name: 'PDF' }));
+  await user.click(screen.getByRole('tab', { name: 'All statuses' }));
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateReportDefinition).toHaveBeenCalledWith('d3', {
+    name: 'Move Scan History', description: '',
+    options: { default_format: 'pdf', status_columns: 'all' },
+  }));
 });
 
 it('deletes a file', async () => {

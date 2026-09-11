@@ -17,6 +17,7 @@ import {
 import type { InitiativeItem, ReportDefinition, ReportRun } from '../../lib/api';
 import { MOVE_REPORT_SECTIONS, openPresigned, sortInitiativesForPicker } from '../../lib/reports';
 import { useSystemStatus } from '../../lib/systemStatusContext';
+import MoveScanHistoryOptions from './MoveScanHistoryOptions';
 import SiteMoveSurveyOptions from './SiteMoveSurveyOptions';
 import '../../styles/directory.css';  /* .dir-search, .org-select (picker tools) */
 
@@ -39,6 +40,7 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
 }) {
   const { status: sys } = useSystemStatus();
   const isSurvey = definition.report_type === 'site_move_survey';
+  const isScanHistory = definition.report_type === 'move_scan_history';
   const [step, setStep] = useState<Step>('pick');
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);
   const [search, setSearch] = useState('');
@@ -154,59 +156,115 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
     <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal-card reports-modal-card">
         <div className="modal-head">
-          <h3>Generate {definition.name}</h3>
+          <div className="rgm-head-text">
+            <div className="eyebrow">Generate report</div>
+            <h3>{definition.name}</h3>
+            {definition.description && <p className="page-hint">{definition.description}</p>}
+          </div>
           <button type="button" className="modal-close" aria-label="Close" onClick={onClose}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
                  strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
           </button>
         </div>
+        <div className="rgm-steps">
+          <span className={`rgm-step ${step === 'pick' ? 'on' : ''}`}>
+            <span className="rgm-step-num">1</span>
+            <span className="rgm-step-label">Initiative</span>
+          </span>
+          <span className="rgm-step-sep" />
+          <span className={`rgm-step ${step === 'sections' ? 'on' : ''} ${step === 'progress' ? 'done' : ''}`}>
+            <span className="rgm-step-num">2</span>
+            <span className="rgm-step-label">Options</span>
+          </span>
+          <span className="rgm-step-sep" />
+          <span className={`rgm-step ${step === 'progress' ? 'on' : ''}`}>
+            <span className="rgm-step-num">3</span>
+            <span className="rgm-step-label">Progress</span>
+          </span>
+        </div>
 
         {step === 'pick' && (
           <>
-            <div className="modal-body ini-picker">
-              <div className="ini-picker-tools">
-                <div className="dir-search">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                       strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
-                  <input placeholder="Search initiatives…" value={search}
-                         onChange={(e) => setSearch(e.target.value)} />
+            <div className="modal-body">
+              <div className="rgm-pick-cols">
+                <div className="ini-picker">
+                  <div className="ini-picker-tools">
+                    <div className="dir-search">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                           strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
+                      <input placeholder="Search initiatives…" value={search}
+                             onChange={(e) => setSearch(e.target.value)} />
+                    </div>
+                    <select className="org-select" aria-label="Type" value={type}
+                            onChange={(e) => setType(e.target.value)}>
+                      <option value="">All types</option>
+                      {types.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+                    </select>
+                  </div>
+                  <div className="mini-list ini-picker-list" role="radiogroup">
+                    {isSurvey && (
+                      <label className={`mini-row ini-picker-row ${noInitiative ? 'on' : ''}`}>
+                        <input type="radio" name="initiative"
+                               aria-label="No initiative — choose sites manually"
+                               checked={noInitiative}
+                               onChange={() => { setNoInitiative(true); setPicked(null); }} />
+                        <span className="cell-primary">
+                          <span className="pn"><b>No initiative — choose sites manually</b></span>
+                        </span>
+                        <span className="cell-sub">Pick a partner and enter the sites directly</span>
+                      </label>
+                    )}
+                    {initiatives === null && <div className="ini-picker-empty">Loading…</div>}
+                    {initiatives !== null && shown.length === 0 && !isSurvey && (
+                      <div className="ini-picker-empty">No initiatives match.</div>
+                    )}
+                    {shown.map((i) => (
+                      <label key={i.id} className={`mini-row ini-picker-row ${picked?.id === i.id ? 'on' : ''}`}>
+                        <input type="radio" name="initiative" aria-label={i.name}
+                               checked={picked?.id === i.id}
+                               onChange={() => { setPicked(i); setNoInitiative(false); }} />
+                        <span className="cell-primary"><span className="pn"><b>{i.name}</b></span></span>
+                        <span className="cell-sub">{i.client_name ?? '—'}</span>
+                        <span className="chip custom" style={{ '--chip': i.status_color } as CSSProperties}>
+                          <span className="dot" />{i.status_label}
+                        </span>
+                        <span className="cell-sub">{i.type_label} · {fmtDate(i.scheduled_start)}{i.scheduled_end ? ` → ${fmtDate(i.scheduled_end)}` : ''}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
-                <select className="org-select" aria-label="Type" value={type}
-                        onChange={(e) => setType(e.target.value)}>
-                  <option value="">All types</option>
-                  {types.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
-                </select>
-              </div>
-              <div className="mini-list ini-picker-list" role="radiogroup">
-                {isSurvey && (
-                  <label className={`mini-row ini-picker-row ${noInitiative ? 'on' : ''}`}>
-                    <input type="radio" name="initiative"
-                           aria-label="No initiative — choose sites manually"
-                           checked={noInitiative}
-                           onChange={() => { setNoInitiative(true); setPicked(null); }} />
-                    <span className="cell-primary">
-                      <span className="pn"><b>No initiative — choose sites manually</b></span>
-                    </span>
-                    <span className="cell-sub">Pick a partner and enter the sites directly</span>
-                  </label>
-                )}
-                {initiatives === null && <div className="ini-picker-empty">Loading…</div>}
-                {initiatives !== null && shown.length === 0 && !isSurvey && (
-                  <div className="ini-picker-empty">No initiatives match.</div>
-                )}
-                {shown.map((i) => (
-                  <label key={i.id} className={`mini-row ini-picker-row ${picked?.id === i.id ? 'on' : ''}`}>
-                    <input type="radio" name="initiative" aria-label={i.name}
-                           checked={picked?.id === i.id}
-                           onChange={() => { setPicked(i); setNoInitiative(false); }} />
-                    <span className="cell-primary"><span className="pn"><b>{i.name}</b></span></span>
-                    <span className="cell-sub">{i.client_name ?? '—'}</span>
-                    <span className="chip custom" style={{ '--chip': i.status_color } as CSSProperties}>
-                      <span className="dot" />{i.status_label}
-                    </span>
-                    <span className="cell-sub">{i.type_label} · {fmtDate(i.scheduled_start)}{i.scheduled_end ? ` → ${fmtDate(i.scheduled_end)}` : ''}</span>
-                  </label>
-                ))}
+                <aside className="rgm-summary">
+                  <div className="modal-section">Selected initiative</div>
+                  {picked && (
+                    <>
+                      <div className="cell-top">{picked.name}</div>
+                      <div className="cell-sub">{picked.client_name ?? '—'}</div>
+                      <div className="rgm-summary-chips">
+                        <span className="chip custom" style={{ '--chip': picked.type_color } as CSSProperties}>
+                          {picked.type_label}
+                        </span>
+                        <span className="chip custom" style={{ '--chip': picked.status_color } as CSSProperties}>
+                          <span className="dot" />{picked.status_label}
+                        </span>
+                      </div>
+                      <div className="cell-sub">
+                        {fmtDate(picked.scheduled_start)}
+                        {picked.scheduled_end ? ` → ${fmtDate(picked.scheduled_end)}` : ''}
+                      </div>
+                      <div className="cell-sub">
+                        {picked.origin_site_name ?? '—'} → {picked.destination_site_name ?? '—'}
+                      </div>
+                    </>
+                  )}
+                  {noInitiative && (
+                    <p className="page-hint">
+                      Sites and a logistics partner will be chosen manually on the next step.
+                    </p>
+                  )}
+                  {!picked && !noInitiative && (
+                    <p className="page-hint">Pick an initiative to see its details here.</p>
+                  )}
+                </aside>
               </div>
               {error && <div className="pf-error">{error}</div>}
             </div>
@@ -227,7 +285,16 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
           />
         )}
 
-        {step === 'sections' && !isSurvey && (
+        {step === 'sections' && isScanHistory && (
+          <MoveScanHistoryOptions
+            definition={definition}
+            initiative={picked}
+            onBack={() => setStep('pick')}
+            onGenerate={(p) => void start(p)}
+          />
+        )}
+
+        {step === 'sections' && !isSurvey && !isScanHistory && (
           <>
             <div className="modal-body">
               <p className="cell-sub">Select which sections to include in the PDF report for <b>{picked?.name}</b>:</p>

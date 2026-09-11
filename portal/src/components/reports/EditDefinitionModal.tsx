@@ -43,6 +43,7 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
   onSaved: (d: ReportDefinition) => void;
 }) {
   const isSurvey = definition.report_type === 'site_move_survey';
+  const isScanHistory = definition.report_type === 'move_scan_history';
   const [name, setName] = useState(definition.name);
   const [description, setDescription] = useState(definition.description);
   const [companyName, setCompanyName] = useState(String(definition.options.company_name ?? ''));
@@ -51,11 +52,19 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
   // never end up coerced into this boolean map (it would overwrite the
   // real company_name with `true`/`false` on save).
   const [boolOptions, setBoolOptions] = useState<Record<string, boolean>>(() => {
+    if (isScanHistory) return {};
     const keys = isSurvey ? SURVEY_SWITCHES.map((s) => s.key) : MOVE_REPORT_SECTIONS.map((s) => s.key);
     const out: Record<string, boolean> = {};
     for (const k of keys) out[k] = !!definition.options[k];
     return out;
   });
+  // Move Scan History's two string options — a `.segmented` pair each,
+  // patched as `{ default_format, status_columns }` (see
+  // EditDefinitionModal.test.tsx and the design spec's "Portal" section).
+  const [defaultFormat, setDefaultFormat] = useState<'xlsx' | 'pdf'>(
+    () => (definition.options.default_format === 'pdf' ? 'pdf' : 'xlsx'));
+  const [statusColumns, setStatusColumns] = useState<'pipeline' | 'all'>(
+    () => (definition.options.status_columns === 'all' ? 'all' : 'pipeline'));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -82,6 +91,8 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
     try {
       const options = isSurvey
         ? { company_name: companyName.trim(), ...boolOptions }
+        : isScanHistory
+        ? { default_format: defaultFormat, status_columns: statusColumns }
         : boolOptions;
       const d = await updateReportDefinition(definition.id, {
         name: name.trim(), description, options,
@@ -154,19 +165,46 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
             )}
           </div>
 
-          <div className="modal-section">{isSurvey ? 'Default options' : 'Default sections'}</div>
-          <div className="mini-list report-sections">
-            {(isSurvey ? SURVEY_SWITCHES : MOVE_REPORT_SECTIONS).map((s) => (
-              <label key={s.key} className="mini-row report-section-row">
-                <Switch checked={!!boolOptions[s.key]}
-                        onChange={(v) => setBoolOptions((o) => ({ ...o, [s.key]: v }))} />
-                <span className="report-section-text">
-                  <span className="cell-top">{s.title}</span>
-                  <span className="cell-sub">{s.description}</span>
-                </span>
-              </label>
-            ))}
-          </div>
+          {isScanHistory && (
+            <>
+              <div className="modal-section">Default format</div>
+              <div className="segmented" role="tablist" aria-label="Default format">
+                <button type="button" role="tab" aria-selected={defaultFormat === 'xlsx'}
+                        className={defaultFormat === 'xlsx' ? 'on' : ''}
+                        onClick={() => setDefaultFormat('xlsx')}>Excel</button>
+                <button type="button" role="tab" aria-selected={defaultFormat === 'pdf'}
+                        className={defaultFormat === 'pdf' ? 'on' : ''}
+                        onClick={() => setDefaultFormat('pdf')}>PDF</button>
+              </div>
+              <div className="modal-section">Status columns</div>
+              <div className="segmented" role="tablist" aria-label="Status columns">
+                <button type="button" role="tab" aria-selected={statusColumns === 'pipeline'}
+                        className={statusColumns === 'pipeline' ? 'on' : ''}
+                        onClick={() => setStatusColumns('pipeline')}>Pipeline</button>
+                <button type="button" role="tab" aria-selected={statusColumns === 'all'}
+                        className={statusColumns === 'all' ? 'on' : ''}
+                        onClick={() => setStatusColumns('all')}>All statuses</button>
+              </div>
+            </>
+          )}
+
+          {!isScanHistory && (
+            <>
+              <div className="modal-section">{isSurvey ? 'Default options' : 'Default sections'}</div>
+              <div className="mini-list report-sections">
+                {(isSurvey ? SURVEY_SWITCHES : MOVE_REPORT_SECTIONS).map((s) => (
+                  <label key={s.key} className="mini-row report-section-row">
+                    <Switch checked={!!boolOptions[s.key]}
+                            onChange={(v) => setBoolOptions((o) => ({ ...o, [s.key]: v }))} />
+                    <span className="report-section-text">
+                      <span className="cell-top">{s.title}</span>
+                      <span className="cell-sub">{s.description}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </>
+          )}
 
           {isSurvey && (
             <>
