@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 
 import { AuthProvider } from './auth/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -55,6 +55,13 @@ import Users from './pages/Users';
 import Variables from './pages/Variables';
 import Workers from './pages/Workers';
 import WorkerDetailPage from './pages/WorkerDetail';
+
+/** Old URL kept alive for bookmarks and audit links — carries the query
+ *  string (e.g. ?open=<id>) and router state to the new path. */
+function LegacyRedirect({ to }: { to: string }) {
+  const loc = useLocation();
+  return <Navigate to={`${to}${loc.search}${loc.hash}`} state={loc.state} replace />;
+}
 
 export default function App() {
   return (
@@ -180,9 +187,10 @@ export default function App() {
                   <ProtectedRoute resource="devtools"><ProcessLogs /></ProtectedRoute>
                 } />
                 <Route path="/access" element={<ProtectedRoute resource="access"><Access /></ProtectedRoute>} />
-                <Route path="/admin/asset-models" element={
+                <Route path="/assets/models" element={
                   <ProtectedRoute resource="asset_models"><AssetModels /></ProtectedRoute>
                 } />
+                <Route path="/admin/asset-models" element={<LegacyRedirect to="/assets/models" />} />
                 <Route path="/admin/audit" element={<ProtectedRoute resource="audit"><Audit /></ProtectedRoute>} />
                 <Route path="/admin/scans" element={<ProtectedRoute resource="scans"><Scans /></ProtectedRoute>} />
                 <Route path="/admin/status-rules" element={

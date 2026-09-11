@@ -50,7 +50,7 @@ async def test_registry_shape():
     assert REGISTRY["assets"].visible_to == frozenset({"global", "client"})
     assert REGISTRY["asset_models"].visible_to == frozenset({"global"})
     assert "/assets" in REGISTRY["assets"].routes
-    assert "/admin/asset-models" in REGISTRY["asset_models"].routes
+    assert "/assets/models" in REGISTRY["asset_models"].routes
 
 
 async def test_scope_map(db, seeded_user):

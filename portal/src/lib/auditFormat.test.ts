@@ -16,7 +16,7 @@ describe('entityHref', () => {
     expect(entityHref(row('client', 'c-1'))).toBe('/stakeholders/clients?open=c-1');
     expect(entityHref(row('partner', 'v-1'))).toBe('/stakeholders/partners?open=v-1');
     expect(entityHref(row('asset', 'as-1'))).toBe('/assets?open=as-1');
-    expect(entityHref(row('asset_model', 'am-1'))).toBe('/admin/asset-models?open=am-1');
+    expect(entityHref(row('asset_model', 'am-1'))).toBe('/assets/models?open=am-1');
     expect(entityHref(row('container', 'ct-1'))).toBe('/logistics/containers?open=ct-1');
   });
   it('returns null for pageless types and missing ids', () => {

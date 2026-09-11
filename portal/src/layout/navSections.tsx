@@ -105,7 +105,7 @@ export const NAV_SECTIONS: NavSection[] = [
         ),
       },
       {
-        to: '/admin/asset-models',
+        to: '/assets/models',
         label: 'Makes / Models',
         resource: 'asset_models',
         icon: (

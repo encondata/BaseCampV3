@@ -107,7 +107,7 @@ export function entityHref(row: AuditRowLike): string | null {
     client: '/stakeholders/clients',
     partner: '/stakeholders/partners',
     asset: '/assets',
-    asset_model: '/admin/asset-models',
+    asset_model: '/assets/models',
     container: '/logistics/containers',
     processed_scan: '/admin/scans',
   };

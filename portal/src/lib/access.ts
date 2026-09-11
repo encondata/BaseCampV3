@@ -34,7 +34,7 @@ export const ROUTE_RESOURCE: Record<string, string> = {
   '/settings': 'settings',
   '/system/notifications': 'notifications',
   '/access': 'access',
-  '/admin/asset-models': 'asset_models',
+  '/assets/models': 'asset_models',
   '/admin/status-rules': 'status_rules',
   '/audit': 'audit',
   '/dev': 'devtools',

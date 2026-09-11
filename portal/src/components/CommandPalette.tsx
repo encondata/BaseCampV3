@@ -93,7 +93,7 @@ export default function CommandPalette() {
       ...navGated('Fixed Readers', '/hardware/fixed-readers', 'scanning_hardware'),
       ...navGated('Kiosk Devices', '/hardware/kiosks', 'scanning_hardware'),
       ...navGated('Routers', '/hardware/routers', 'scanning_hardware'),
-      ...navGated('Makes / Models', '/admin/asset-models', 'asset_models'),
+      ...navGated('Makes / Models', '/assets/models', 'asset_models'),
       ...navGated('Scans', '/admin/scans', 'scans'),
       ...navGated('Status rules', '/admin/status-rules', 'status_rules'),
       ...navGated('Access control', '/access', 'access'),

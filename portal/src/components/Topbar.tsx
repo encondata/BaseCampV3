@@ -40,7 +40,7 @@ const CRUMBS: Record<string, string[]> = {
   '/hardware/fixed-readers': ['Scanning Hardware', 'Fixed Readers'],
   '/hardware/kiosks': ['Scanning Hardware', 'Kiosk Devices'],
   '/hardware/routers': ['Scanning Hardware', 'Routers'],
-  '/admin/asset-models': ['Admin', 'Makes / Models'],
+  '/assets/models': ['Assets', 'Makes / Models'],
   '/admin/status-rules': ['Admin', 'Status rules'],
   '/settings': ['System', 'Settings'],
   '/system/notifications': ['System', 'Notifications'],
@@ -76,7 +76,7 @@ const PAGES = [
   { label: 'Fixed Readers', to: '/hardware/fixed-readers' },
   { label: 'Kiosk Devices', to: '/hardware/kiosks' },
   { label: 'Routers', to: '/hardware/routers' },
-  { label: 'Makes / Models', to: '/admin/asset-models' },
+  { label: 'Makes / Models', to: '/assets/models' },
   { label: 'Status rules', to: '/admin/status-rules' },
   { label: 'Settings', to: '/settings' },
   { label: 'Notifications', to: '/system/notifications' },
@@ -173,7 +173,7 @@ export default function Topbar() {
       // list. Other kinds follow as their detail pages get built.
       navigate(`/initiatives/${hit.id}`);
     } else if (hit.kind === 'asset_model') {
-      navigate('/admin/asset-models', { state: { openRow: hit.id } });
+      navigate('/assets/models', { state: { openRow: hit.id } });
     }
   };
 

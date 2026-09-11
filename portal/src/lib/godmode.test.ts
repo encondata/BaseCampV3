@@ -79,19 +79,19 @@ describe('NAV_SECTIONS', () => {
     expect(isNavItemVisible(assets!, canAll, false, 0, true)).toBe(true);
 
     const models = NAV_SECTIONS.flatMap((s) => s.items)
-      .find((i) => i.to === '/admin/asset-models');
-    expect(models, 'no nav item for /admin/asset-models').toBeDefined();
+      .find((i) => i.to === '/assets/models');
+    expect(models, 'no nav item for /assets/models').toBeDefined();
     expect(models!.resource).toBe('asset_models');
     expect(isNavItemVisible(models!, canAllBut('asset_models'), false, 0, true)).toBe(false);
 
     // Makes / Models lives under Assets (moved out of Admin 2026-09-10);
     // Admin is still exactly one section holding the Audit log.
     const assetsSection = NAV_SECTIONS.find((s) => s.label === 'Assets');
-    expect(assetsSection?.items.map((i) => i.to)).toContain('/admin/asset-models');
+    expect(assetsSection?.items.map((i) => i.to)).toContain('/assets/models');
     const adminSections = NAV_SECTIONS.filter((s) => s.label === 'Admin');
     expect(adminSections).toHaveLength(1);
     const adminItems = adminSections[0].items.map((i) => i.to);
-    expect(adminItems).not.toContain('/admin/asset-models');
+    expect(adminItems).not.toContain('/assets/models');
     expect(adminItems).toContain('/admin/audit');
   });
 });

@@ -52,7 +52,7 @@ _RESOURCES = [
              # client-visible: client org roles see their own org's assets
              # read-only via SCOPE_COLUMNS; writes are globally anchored.
              visible_to=frozenset({"global", "client"})),
-    Resource("asset_models", "Makes / Models", routes=("/admin/asset-models",),
+    Resource("asset_models", "Makes / Models", routes=("/assets/models",),
              # internal-only: the catalog (incl. the knowledge field) is house
              # IP. Asset payloads embed a read-only model summary instead.
              visible_to=frozenset({"global"})),
