@@ -6,7 +6,8 @@ import { applyColumnOrder } from './listTools';
 import {
   ASSET_ERRORS, ASSET_GOD_FIELDS, IDENTITY_KEYS, MODEL_ERRORS, MODEL_GOD_FIELDS,
   assetCellText, assetSearchText, assetPayload, duplicateSerials, formFromAsset, formFromModel,
-  formatDims, identityFirst, modelCellText, modelPayload, needsModelCreate, parseDims, partnerFor,
+  formatDims, identityFirst, migrateIdentityColumns, modelCellText, modelPayload, needsModelCreate,
+  parseDims, partnerFor,
 } from './assets';
 
 const asset = (over: Partial<AssetItem> = {}): AssetItem => ({
@@ -456,6 +457,60 @@ describe('identity columns (Serial / Name, Serial, Name)', () => {
     it('is a no-op once the saved order mentions all three', () => {
       const order = ['model', 'primary', 'serial', 'name', 'client', 'asset_id'];
       expect(keys(identityFirst(applyColumnOrder(cols, order), order))).toEqual(order);
+    });
+  });
+
+  describe('migrateIdentityColumns', () => {
+    const OTHERS = ['asset_id', 'model', 'category', 'client', 'site', 'status'];
+
+    it('leaves a pre-`seen` layout alone (the hook already surfaces primary)', () => {
+      // shape (a): no `seen` at all — usePersistentListState's never-seen
+      // surfacing turns the default-visible combined column on by itself.
+      const stored = { visible: [...OTHERS], order: ['model', 'client'] };
+      expect(migrateIdentityColumns(stored)).toBe(stored);
+    });
+
+    it("turns the combined column back on when 'primary' was only a pseudo-key", () => {
+      // shape (b): saved while 'primary' lived in ALL_COLUMN_KEYS but not in
+      // COLUMNS, so `seen` names it and `visible` never could.
+      const stored = { visible: [...OTHERS], seen: ['primary', ...OTHERS, 'archived'] };
+      expect(migrateIdentityColumns(stored)).toEqual({
+        visible: [...OTHERS, 'primary'],
+        seen: ['primary', ...OTHERS, 'archived'],
+      });
+    });
+
+    it('respects a layout saved after the split, with all three turned off', () => {
+      // shape (c): the user was offered serial/name and unchecked everything.
+      const stored = {
+        visible: ['model'],
+        seen: ['primary', 'serial', 'name', ...OTHERS, 'archived'],
+      };
+      expect(migrateIdentityColumns(stored)).toBe(stored);
+    });
+
+    it('leaves a layout that already shows an identity column alone', () => {
+      for (const key of ['primary', 'serial', 'name']) {
+        const stored = { visible: [key, ...OTHERS], seen: ['primary', ...OTHERS] };
+        expect(migrateIdentityColumns(stored)).toBe(stored);
+      }
+    });
+
+    it('leaves non-array visible/seen fields untouched', () => {
+      const noSeen = { visible: ['model'] };
+      expect(migrateIdentityColumns(noSeen)).toBe(noSeen);
+      const junkSeen = { visible: ['model'], seen: 'primary' };
+      expect(migrateIdentityColumns(junkSeen)).toBe(junkSeen);
+      const junkVisible = { visible: 'model', seen: ['primary'] };
+      expect(migrateIdentityColumns(junkVisible)).toBe(junkVisible);
+    });
+
+    it('preserves every other stored field', () => {
+      const stored = {
+        visible: ['model'], seen: ['primary', 'model'], order: ['model'],
+        sortKey: 'primary', sortDir: -1 as const, filters: { model: { text: 'dell' } },
+      };
+      expect(migrateIdentityColumns(stored)).toEqual({ ...stored, visible: ['model', 'primary'] });
     });
   });
 });

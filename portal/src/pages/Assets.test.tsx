@@ -136,3 +136,46 @@ it('a saved layout that predates the identity columns still shows the combined o
   expect(first.classList.contains('cell-primary')).toBe(true);
   expect(within(first).queryByText('SN-ALPHA')).not.toBeNull();
 });
+
+it("a layout saved while 'primary' was only a pseudo-key gets the combined column back", async () => {
+  // Saved between the Asset ID change and the identity-columns change:
+  // `seen` names 'primary' (it was in ALL_COLUMN_KEYS), `visible` can't
+  // (it wasn't a COLUMNS entry), and 'serial'/'name' didn't exist yet.
+  auth.listPrefs = {
+    assets: {
+      visible: ['asset_id', 'model', 'category', 'client', 'site', 'status'],
+      seen: ['primary', 'asset_id', 'model', 'category', 'client', 'site', 'status',
+             'ru', 'location', 'rfid', 'last_seen', 'has_rails', 'archived'],
+      order: [],
+      sortKey: 'primary',
+      sortDir: 1,
+    },
+  };
+  mount();
+  await waitFor(() => expect(screen.queryByText('SN-ALPHA')).not.toBeNull());
+
+  expect(headerNames()[0]).toBe('Serial / Name');
+  expect(headerNames()).not.toContain('Serial');
+  expect(headerNames()).not.toContain('Name');
+});
+
+it('a layout saved after the split with all three identity columns off stays that way', async () => {
+  auth.listPrefs = {
+    assets: {
+      visible: ['model'],
+      seen: ['primary', 'serial', 'name', 'asset_id', 'model', 'category', 'client', 'site',
+             'status', 'ru', 'location', 'rfid', 'last_seen', 'has_rails', 'archived'],
+      order: [],
+      sortKey: 'model',
+      sortDir: 1,
+    },
+  };
+  mount();
+  // The serial never renders here — that's the point — so wait on the row.
+  await waitFor(() => expect(document.querySelector('.dir-row')).not.toBeNull());
+
+  expect(headerNames()).not.toContain('Serial / Name');
+  expect(headerNames()).not.toContain('Serial');
+  expect(headerNames()).not.toContain('Name');
+  expect(document.querySelector('.dir-row .cell.cell-primary')).toBeNull();
+});

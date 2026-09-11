@@ -5,6 +5,7 @@
 import type { ComboOption } from '../components/ComboBox';
 import type { AssetItem, AssetModelItem } from './api';
 import { displayRfid } from './format';
+import type { StoredListPrefs } from './columnMenu';
 import { boolTriToPatch, numberToPatch, type GodField } from './godEdit';
 import type { ColumnDef } from './listTools';
 
@@ -87,6 +88,22 @@ export const IDENTITY_KEYS = ['primary', 'serial', 'name'] as const;
 export function identityFirst(cols: ColumnDef[], order: string[]): ColumnDef[] {
   const unplaced = new Set<string>(IDENTITY_KEYS.filter((k) => !order.includes(k)));
   return [...cols.filter((c) => unplaced.has(c.key)), ...cols.filter((c) => !unplaced.has(c.key))];
+}
+
+/** Layouts saved while 'primary' was only a pseudo-key (between the Asset ID
+ *  change and the identity-columns change) carry it in `seen` but not in
+ *  `visible`; `seen` can't yet mention 'serial'/'name'. Turn the combined
+ *  column back on for exactly those, and nothing else — a layout saved
+ *  before `seen` existed is handled by usePersistentListState's never-seen
+ *  surfacing, and one saved after the split with all three off is the
+ *  user's deliberate choice. */
+export function migrateIdentityColumns(stored: StoredListPrefs): StoredListPrefs {
+  const seen = Array.isArray(stored.seen) ? stored.seen : null;
+  const visible = Array.isArray(stored.visible) ? stored.visible : null;
+  if (!seen || !visible) return stored;
+  const legacy = seen.includes('primary') && !seen.includes('serial') && !seen.includes('name');
+  const hasIdentity = IDENTITY_KEYS.some((k) => visible.includes(k));
+  return legacy && !hasIdentity ? { ...stored, visible: [...visible, 'primary'] } : stored;
 }
 
 export function modelSearchText(m: AssetModelItem): string {

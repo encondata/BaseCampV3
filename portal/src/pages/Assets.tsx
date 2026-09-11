@@ -28,7 +28,7 @@ import {
 } from '../lib/api';
 import {
   ASSET_ERRORS, ASSET_GOD_FIELDS, assetCellText, assetSearchText, duplicateSerials,
-  identityFirst,
+  identityFirst, migrateIdentityColumns,
 } from '../lib/assets';
 import { initialOpenId } from '../lib/auditFormat';
 import {
@@ -171,7 +171,12 @@ export default function Assets() {
     filters, setFilter, clearFilters,
     colOrder, setColOrder,
   } = usePersistentListState(
-    'assets', { visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1 }, ALL_COLUMN_KEYS,
+    'assets',
+    {
+      visible: DEFAULT_VISIBLE, sortKey: 'primary', sortDir: 1,
+      migrate: migrateIdentityColumns,
+    },
+    ALL_COLUMN_KEYS,
   );
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -297,6 +302,8 @@ export default function Assets() {
     // branch would render alone, losing the name half, and 'serial'/'name'
     // have no god field under those column keys at all — they borrow
     // 'primary'/'primary2'.
+    // In god mode all three visible at once means three editors bound to the
+    // same two fields; they only reconcile when the row saves and re-renders.
     switch (key) {
       case 'primary':
         return (
@@ -320,14 +327,14 @@ export default function Assets() {
             <GodCell row={a} gf={godFieldFor('primary')!} patch={updateAsset}
                      onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
           )
-          : <><b>{a.serial_number ?? '—'}</b>{dupeChip(isDupe)}</>;
+          : <><span className="mono">{a.serial_number ?? '—'}</span>{dupeChip(isDupe)}</>;
       case 'name':
         return god.editing && godFieldFor('primary2')
           ? (
             <GodCell row={a} gf={godFieldFor('primary2')!} patch={updateAsset}
                      onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
           )
-          : a.name ?? '—';
+          : <span className="cell-top">{a.name ?? '—'}</span>;
       default:
         break;
     }

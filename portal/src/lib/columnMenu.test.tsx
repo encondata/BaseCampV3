@@ -341,6 +341,36 @@ describe('usePersistentListState', () => {
     expect(Array.from(result.current.visibleCols)).toEqual(['name']);
   });
 
+  it("runs the page's `migrate` on the stored entry BEFORE sanitizing it", () => {
+    auth.preferences.list_prefs = {
+      sites: {
+        visible: ['name'],
+        seen: ['name', 'status', 'region'], // 'region' counts as seen, so no surfacing
+        sortKey: 'name',
+        sortDir: 1,
+        filters: {},
+      },
+    };
+    const seenByMigrate: unknown[] = [];
+    const { result } = renderHook(() => usePersistentListState(
+      'sites',
+      {
+        visible: new Set(['name', 'status']),
+        sortKey: 'name',
+        sortDir: 1,
+        migrate: (stored) => {
+          seenByMigrate.push(stored.visible);
+          // 'ghost' is not a known column: it survives migrate but must not
+          // survive sanitize, which proves the order of the two steps.
+          return { ...stored, visible: [...(stored.visible as string[]), 'region', 'ghost'] };
+        },
+      },
+      new Set(['name', 'status', 'region']),
+    ));
+    expect(Array.from(result.current.visibleCols)).toEqual(['name', 'region']);
+    expect(seenByMigrate[0]).toEqual(['name']); // migrate saw the raw stored entry
+  });
+
   it('falls back to the default sortKey when the stored sortKey is not in allKeys', () => {
     auth.preferences.list_prefs = {
       sites: {

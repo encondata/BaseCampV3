@@ -287,9 +287,16 @@ export interface PersistentListDefaults {
   visible: Set<string>;
   sortKey: string;
   sortDir: 1 | -1;
+  /** Optional per-page rewrite of a stored entry, applied before any
+   *  sanitization. For layouts saved under an older column vocabulary that
+   *  sanitize's own rules can't repair — e.g. a key that used to be a
+   *  pseudo-column and so could never appear in `visible`. Must be pure:
+   *  it runs on every hydrating render, and its output still goes through
+   *  the normal known-key filtering. */
+  migrate?: (stored: StoredListPrefs) => StoredListPrefs;
 }
 
-interface StoredListPrefs {
+export interface StoredListPrefs {
   visible?: unknown;
   sortKey?: unknown;
   sortDir?: unknown;
@@ -310,8 +317,13 @@ const SAVE_DEBOUNCE_MS = 600;
  *  `defaults.visible`). A column dropped from the codebase, or a stale/
  *  malformed value written by an older shape, never survives hydration. */
 export function sanitize(
-  stored: StoredListPrefs, known: Set<string>, defaults: PersistentListDefaults,
+  raw: StoredListPrefs, known: Set<string>, defaults: PersistentListDefaults,
 ): { visible: Set<string>; sortKey: string; sortDir: 1 | -1; filters: ColumnFilters; order: string[] } {
+  // The page's own migration runs first, on the untouched stored entry, so
+  // it can reason about the exact shape that was written; everything it
+  // produces is then filtered against `known` like any stored value.
+  const stored = defaults.migrate ? defaults.migrate(raw) : raw;
+
   let visible = defaults.visible;
   if (Array.isArray(stored.visible)) {
     const kept = stored.visible.filter(
