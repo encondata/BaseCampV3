@@ -130,7 +130,11 @@ afterEach(() => { cleanup(); vi.clearAllMocks(); });
 it('shows a notice and disables Generate when the definition has no survey template', async () => {
   api.listAttachments.mockResolvedValue([]);
   render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
-  expect(await screen.findByText(
+  // wait for the load (Promise.all, including listAttachments) to resolve
+  // before asserting the notice — otherwise this test would pass even if
+  // the notice were shown unconditionally from first paint.
+  await screen.findByText('me@example.com');
+  expect(screen.getByText(
     'This report has no survey template yet. Upload an .xlsx template under Edit report › Files.',
   )).toBeTruthy();
   await waitFor(() => expect(
@@ -146,6 +150,15 @@ it('shows no notice and enables Generate once the definition carries a survey te
   await waitFor(() => expect(
     (screen.getByRole('button', { name: 'Generate Report' }) as HTMLButtonElement).disabled,
   ).toBe(false));
+});
+
+it('never shows the "no template" notice while attachments are still loading', async () => {
+  // a promise that never resolves during this test — simulates the window
+  // between mount and the Promise.all settling
+  api.listAttachments.mockReturnValue(new Promise(() => {}));
+  render(<SiteMoveSurveyOptions definition={DEF} initiative={ini()} onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByPlaceholderText('Type to search partners…');
+  expect(screen.queryByText(/no survey template yet/)).toBeNull();
 });
 
 it('defaults the company contact to the signed-in user, showing their email', async () => {

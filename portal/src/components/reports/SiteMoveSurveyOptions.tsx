@@ -68,7 +68,10 @@ export default function SiteMoveSurveyOptions({ definition, initiative, onBack, 
   // The survey template now lives on the report definition (several may
   // exist; the newest is the one a run fills), not on the partner — see
   // EditDefinitionModal's Files section, which is where staff upload it.
-  const [hasTemplate, setHasTemplate] = useState(false);
+  // Tri-state: `null` until the attachments load resolves (or fails), so
+  // the "no template" notice never flashes on first paint and never shows
+  // a misleading diagnosis alongside a load error.
+  const [hasTemplate, setHasTemplate] = useState<boolean | null>(null);
   const [includeStandards, setIncludeStandards] = useState(
     () => !!definition.options.include_transportation_standards);
   const [includePhotos, setIncludePhotos] = useState(
@@ -135,7 +138,7 @@ export default function SiteMoveSurveyOptions({ definition, initiative, onBack, 
   // off (and off in the payload) whenever there's no docx to append.
   const effectiveIncludeStandards = includeStandards && hasStandardsDoc;
 
-  const canGenerate = !!partnerId && (!!initiative || !!sourceSiteId) && hasTemplate;
+  const canGenerate = !!partnerId && (!!initiative || !!sourceSiteId) && hasTemplate === true;
 
   const proceed = () => {
     const options = buildRunOptions({
@@ -182,7 +185,7 @@ export default function SiteMoveSurveyOptions({ definition, initiative, onBack, 
   return (
     <>
       <div className="modal-body">
-        {!hasTemplate && (
+        {hasTemplate === false && (
           <p className="pf-notice">
             This report has no survey template yet. Upload an .xlsx template under Edit report ›
             Files.

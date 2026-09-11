@@ -200,7 +200,7 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
                 ))}
               </ul>
               <p className="page-hint">The newest survey template is the one a run fills.</p>
-              <div className="segmented" role="tablist" style={{ marginBottom: 8 }}>
+              <div className="segmented" role="tablist" aria-label="Upload type" style={{ marginBottom: 8 }}>
                 <button type="button" role="tab" aria-selected={uploadKind === 'survey_template'}
                         className={uploadKind === 'survey_template' ? 'on' : ''}
                         onClick={() => setUploadKind('survey_template')}>Survey template</button>

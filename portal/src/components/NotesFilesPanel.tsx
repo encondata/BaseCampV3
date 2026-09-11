@@ -25,7 +25,7 @@ const isImage = (file: AttachmentOut) =>
  *  and anything else falls back to the raw string. */
 const KIND_LABEL: Record<string, string> = {
   avatar: 'Avatar', photo: 'Photo', document: 'Document',
-  survey_template: 'Survey template', report_asset: 'Report asset',
+  survey_template: 'Survey template', report_asset: 'Document',
 };
 const kindLabel = (kind: string) => KIND_LABEL[kind] ?? kind;
 
