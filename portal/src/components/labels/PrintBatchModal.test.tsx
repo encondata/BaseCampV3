@@ -77,4 +77,14 @@ describe('PrintBatchModal', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(h.onCancel).not.toHaveBeenCalled();
   });
+
+  it('offers Reprint only when a batch fails: next-batch button disabled, success line hidden', () => {
+    setup({
+      printing: false, batchComplete: true, printedCount: 50,
+      error: 'Batch 1 failed: Printer connection lost. Please reconnect.',
+    });
+    expect((screen.getByRole('button', { name: 'Reprint current batch' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Print next batch (50 labels)' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText('Batch 1 complete! Ready to print next batch.')).toBeNull();
+  });
 });

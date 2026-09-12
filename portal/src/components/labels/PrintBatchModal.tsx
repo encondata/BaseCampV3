@@ -98,7 +98,7 @@ export default function PrintBatchModal({
               </p>
             </div>
           )}
-          {batchComplete && !allComplete && !printing && (
+          {batchComplete && !allComplete && !printing && !error && (
             <div className={`plabels-notice ${autoCountdown !== null ? 'info' : 'success'}`}>
               <p className="page-hint">
                 {autoCountdown !== null
@@ -127,7 +127,7 @@ export default function PrintBatchModal({
               <button type="button" className="mini-btn" onClick={onReprint} disabled={printing || !batchComplete}>
                 Reprint current batch
               </button>
-              <button type="button" className="btn-solid" onClick={onPrintNext} disabled={printing || !batchComplete}>
+              <button type="button" className="btn-solid" onClick={onPrintNext} disabled={printing || !batchComplete || !!error}>
                 {printing ? 'Printing…' : `Print next batch (${nextCount} labels)`}
               </button>
             </>

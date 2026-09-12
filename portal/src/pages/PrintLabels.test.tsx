@@ -218,6 +218,8 @@ it('a failed batch can be reprinted', async () => {
   const reprint = screen.getByRole('button', { name: 'Reprint current batch' }) as HTMLButtonElement;
   expect(reprint.disabled).toBe(false);
   await userEvent.click(reprint);
+  // 1 failed send (the rejected mock) + 2 successful sends on reprint (batch size 2, both assets resend).
+  await waitFor(() => expect(printer.send).toHaveBeenCalledTimes(3));
   expect(await screen.findByText('Batch 1 complete! Ready to print next batch.')).toBeTruthy();
 });
 

@@ -258,7 +258,7 @@ export default function PrintLabels() {
   const printableIds = useMemo(() => printOrder(selected, displayed, settings), [selected, displayed, settings]);
 
   const validateForPrint = (): { ids: string[]; stale: number } | null => {
-    if (!printer.connected || !labelType || selected.length === 0) {
+    if (!printer.connected || !labelType || printableIds.length === 0) {
       setNotice({ type: 'error', message: 'Please connect a printer, select a label type, and select assets to print' });
       return null;
     }
