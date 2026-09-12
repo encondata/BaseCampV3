@@ -2408,6 +2408,31 @@ class GeneratedLabelOut(BaseModel):
     code: str
 
 
+class GeneratedLabelBundleItemOut(BaseModel):
+    id: uuid.UUID
+    entity_type: str
+    entity_id: uuid.UUID
+    template_id: uuid.UUID
+    template_name: str
+    template_version: int
+    language_key: str
+    size_key: str
+    dpi_key: str
+    stale: bool
+    generated_at: datetime
+    code: str
+
+
+class GeneratedLabelBundleOut(BaseModel):
+    """Every generated label for one initiative + label type — the Print
+    Labels page's print payload and its offline-cache entry. Not paged:
+    an initiative's labels are bounded by its roster."""
+    initiative_id: uuid.UUID
+    label_type: str
+    fetched_at: datetime
+    labels: list[GeneratedLabelBundleItemOut]
+
+
 # ── reports ───────────────────────────────────────────────────────
 
 class ReportDefinitionOut(BaseModel):
