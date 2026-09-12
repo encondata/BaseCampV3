@@ -687,14 +687,21 @@ async def test_runner_falls_back_to_no_template_when_override_deactivated(db):
 
 # ── migration / head ──────────────────────────────────────────────
 
-async def test_single_alembic_head_is_0056():
+async def test_single_alembic_head_and_0056_in_history():
+    """One head only (a competing migration would show two), and the
+    label-run override migration is part of the chain. Not pinned to a
+    specific head number — every later migration would otherwise have
+    to edit this test."""
     import subprocess
     from pathlib import Path
 
     api_dir = Path(__file__).resolve().parents[1]
-    out = subprocess.run([str(api_dir / ".venv/bin/alembic"), "heads"], cwd=api_dir,
-                         capture_output=True, text=True, check=True).stdout
-    assert out.strip().split()[0] == "0056"
+    heads = subprocess.run([str(api_dir / ".venv/bin/alembic"), "heads"], cwd=api_dir,
+                           capture_output=True, text=True, check=True).stdout
+    assert len(heads.strip().splitlines()) == 1, heads
+    history = subprocess.run([str(api_dir / ".venv/bin/alembic"), "history"], cwd=api_dir,
+                             capture_output=True, text=True, check=True).stdout
+    assert "-> 0056" in history
 
 
 async def test_migration_0055_schema_and_unique_indexes(db):
