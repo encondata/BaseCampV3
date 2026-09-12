@@ -586,3 +586,27 @@ async def test_migration_0055_schema_and_unique_indexes(db):
     with pytest.raises(IntegrityError):
         await db.commit()
     await db.rollback()
+
+
+async def test_runner_upsert_survives_postgres_generic_plan_switch(db):
+    """Regression: the ON CONFLICT target for generated_labels includes
+    `coalesce(initiative_id, <nil uuid>)`. When that nil uuid was a bound
+    parameter, Postgres matched the unique index only while asyncpg's
+    prepared statement used custom plans — after five executions it switches
+    to a generic plan, the parameter no longer folds to the index constant,
+    and EVERY label from the sixth on failed with "no unique or exclusion
+    constraint matching the ON CONFLICT specification". Eight assets in one
+    session crosses that threshold; the sentinel must render inline."""
+    initiative, person, assets, template = await _seed_initiative(db, n_assets=8)
+    run = _queued_run(initiative.id, person.id, label_types=["top"])
+    db.add(run)
+    await db.commit()
+
+    status = await process_run(db, run, sessionmaker=get_sessionmaker())
+
+    assert status == "completed"
+    await db.refresh(run)
+    assert run.generated == 8 and run.errors == 0, run.error_summary
+    rows = (await db.execute(select(GeneratedLabel).where(
+        GeneratedLabel.initiative_id == initiative.id))).scalars().all()
+    assert len(rows) == 8

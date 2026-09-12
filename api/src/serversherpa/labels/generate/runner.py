@@ -27,7 +27,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import literal_column, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,6 +47,8 @@ ERROR_DETAILS_MAX = 50
 ERROR_MESSAGE_MAX = 500
 ERROR_MAX = 2000
 NIL_UUID = uuid.UUID("00000000-0000-0000-0000-000000000000")
+# The same sentinel rendered verbatim into SQL (see _upsert_label).
+NIL_UUID_SQL = literal_column(f"'{NIL_UUID}'::uuid")
 
 
 def _record_error(details: list[dict], *, item: str, label_type: str, kind: str,
@@ -118,7 +120,13 @@ async def _upsert_label(db: AsyncSession, *, initiative_id: uuid.UUID, run_id: u
                if k not in ("entity_type", "entity_id", "initiative_id", "label_type")}
     stmt = stmt.on_conflict_do_update(
         index_elements=[GeneratedLabel.entity_type, GeneratedLabel.entity_id,
-                        func.coalesce(GeneratedLabel.initiative_id, NIL_UUID),
+                        # Inline literal, NOT a bind parameter: Postgres infers the
+                        # ON CONFLICT target at plan time, and once asyncpg's prepared
+                        # statement flips to a generic plan (after 5 executions) a
+                        # parameter no longer folds to the index's constant — the
+                        # 6th label of every run then failed with "no unique or
+                        # exclusion constraint matching the ON CONFLICT specification".
+                        func.coalesce(GeneratedLabel.initiative_id, NIL_UUID_SQL),
                         GeneratedLabel.label_type],
         set_=settable)
     async with db.begin_nested():        # SAVEPOINT: a failure here rolls back
