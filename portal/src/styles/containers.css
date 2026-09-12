@@ -12,32 +12,29 @@
 }
 
 /* ── nested (by-initiative) list view: group header row ──────────
- * The header button IS a `.row-main` (plus this class) so it inherits
- * the list's own typography/density tokens for free — grid/gap/padding,
- * `--list-fs-cell`, `--list-row-pad-y`, `--list-row-min-h`, hover tint
- * (`.row-main:hover`) and the open tint (`.dir-row.open .row-main`) all
- * come from directory.css unmodified, so `list_size`/`density` preferences
- * apply to the header exactly like every container row. This class is
- * only the native-`<button>` chrome reset (the same properties
- * `.list-head .sortable` resets) plus the one thing that makes it look
- * like a header rather than a row: a distinct background. No
- * font-size/family/weight/line-height/min-height here — the list-
- * typography guardrail bans those on any *row*/*list*/*head* selector,
- * and the label goes through the golden `.cell-primary .pn b` primitive
- * (guardrail check (d)) instead of a bare `<b>`. */
+ * The header IS a `.row-main` (a focusable div with role=button, NOT a
+ * native <button>: the global button chrome — border, intrinsic width —
+ * outranks a single class and rendered it as a shrink-wrapped control), so
+ * it inherits the list's typography/density tokens, hover tint and open
+ * tint from directory.css unchanged. This class only adds the group band
+ * look: a tinted full-width background with an amber edge. No font-size/
+ * family/weight/line-height/min-height here (guardrail); the label goes
+ * through `.cell-primary .pn b`. */
 .dir-grouprow-main {
   background: var(--surface-2);
-  border: 0;
-  font: inherit;
+  box-shadow: inset 3px 0 0 var(--amber);
   color: inherit;
-  width: 100%;
-  text-align: left;
+  cursor: pointer;
 }
+.dir-grouprow-main:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.dir-grouprow.open .dir-grouprow-main { background: rgba(var(--accent-rgb), 0.07); }
 .dir-grouprow-content {
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
 }
+.dir-grouprow-content .cell-primary { flex: 0 1 auto; min-width: 0; }
 .dir-grouprow-archived { color: var(--text-mute); }
+.dir-grouprow-hint { margin-left: auto; color: var(--text-mute); }

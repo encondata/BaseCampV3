@@ -478,8 +478,11 @@ export default function Containers() {
               return (
                 <div key={`g:${row.key}`} className={`dir-row dir-grouprow ${row.expanded ? 'open' : ''}`}
                      {...vp} style={vp?.style}>
-                  <button type="button" className="row-main dir-grouprow-main" style={grid}
-                          aria-expanded={row.expanded} onClick={() => toggleGroup(row.key)}>
+                  <div role="button" tabIndex={0} className="row-main dir-grouprow-main" style={grid}
+                       aria-expanded={row.expanded} onClick={() => toggleGroup(row.key)}
+                       onKeyDown={(e) => {
+                         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(row.key); }
+                       }}>
                     <div className="dir-grouprow-content">
                       <span className="chevron-cell">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -494,8 +497,9 @@ export default function Containers() {
                       {row.archivedCount > 0 && (
                         <span className="dir-grouprow-archived">({row.archivedCount} archived)</span>
                       )}
+                      <span className="dir-grouprow-hint">{row.expanded ? 'Hide' : 'Show'}</span>
                     </div>
-                  </button>
+                  </div>
                 </div>
               );
             }

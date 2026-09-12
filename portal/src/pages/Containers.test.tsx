@@ -298,7 +298,7 @@ it('search narrows rows before grouping, so counts and the group set reflect the
 const groupHeaderButton = (label: string) => {
   const b = Array.from(document.querySelectorAll('.dir-grouprow b'))
     .find((el) => el.textContent === label)!;
-  return b.closest('button') as HTMLElement;
+  return b.closest('[role="button"]') as HTMLElement;
 };
 
 it('a deep-linked container auto-expands its group in the nested view', async () => {
@@ -362,7 +362,7 @@ it('collapsing the group that holds the open row closes it, so re-expanding does
   expect(reopenedRow.classList.contains('open')).toBe(false);
 });
 
-it('Enter and Space toggle a group header via native button semantics, flipping aria-expanded', async () => {
+it('Enter and Space toggle a group header via keyboard, flipping aria-expanded', async () => {
   api.listContainers.mockResolvedValue(GROUPED_CONTAINERS);
   const user = userEvent.setup();
   mount();
