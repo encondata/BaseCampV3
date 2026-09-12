@@ -83,16 +83,19 @@ async def test_migration_insert_sql_seeds_and_is_idempotent(db):
     assert "Avery 5164" in description
 
 
-def test_alembic_reports_a_single_head_at_0058():
-    """0058 (containers.label_tag) is now the head; this test moved past
-    0057 rather than staying pinned there — see test_container_label_tag.py
-    for that migration's own structural tests."""
+def test_alembic_single_head_and_container_migrations_in_history():
+    """One head only (a competing migration shows two) and both container
+    migrations are in the chain. Not pinned to a head number — every later
+    migration would otherwise have to edit this test."""
     result = subprocess.run(
         [str(API_DIR / ".venv/bin/alembic"), "heads"],
         cwd=API_DIR, capture_output=True, text=True, check=True)
     heads = [line for line in result.stdout.splitlines() if line.strip()]
     assert len(heads) == 1, f"expected a single alembic head, got: {heads}"
-    assert heads[0].startswith("0058"), heads[0]
+    history = subprocess.run(
+        [str(API_DIR / ".venv/bin/alembic"), "history"],
+        cwd=API_DIR, capture_output=True, text=True, check=True).stdout
+    assert "-> 0057" in history and "-> 0058" in history
 
 
 # ── validate_options / validate_run_options ───────────────────────────
