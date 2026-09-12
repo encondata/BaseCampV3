@@ -23,6 +23,17 @@ vi.mock('../../auth/AuthContext', () => ({
   useAuth: () => ({ godMode: auth.godMode }),
 }));
 
+const sys = vi.hoisted(() => ({ readOnly: false }));
+
+vi.mock('../../lib/systemStatusContext', () => ({
+  useSystemStatus: () => ({
+    status: {
+      read_only: sys.readOnly, read_only_message: '', workers_paused: false, banner: null,
+    },
+    refresh: () => {},
+  }),
+}));
+
 const api = vi.hoisted(() => ({
   getDbTestingStatus: vi.fn(),
   startDbTesting: vi.fn(),
@@ -60,6 +71,7 @@ function statusOut(overrides: Partial<DbTestingStatusOut> = {}): DbTestingStatus
 
 beforeEach(() => {
   auth.godMode = true;
+  sys.readOnly = false;
   api.getDbTestingStatus.mockReset().mockResolvedValue(statusOut());
   api.startDbTesting.mockReset().mockResolvedValue(session({ status: 'snapshotting' }));
   api.endDbTesting.mockReset().mockResolvedValue(session({ status: 'ended', ended_with: 'kept' }));
@@ -112,14 +124,34 @@ it('renders the reverting status', async () => {
   await waitFor(() => expect(screen.queryByText('Reverting…')).not.toBeNull());
 });
 
-it('renders the failed status with the read-only hint', async () => {
+it('derives the failed status from `recent` (the API never puts it in `session`) and stays startable', async () => {
+  sys.readOnly = true;
   api.getDbTestingStatus.mockResolvedValue(statusOut({
-    session: session({ status: 'failed', error: 'psql exited 1' }),
+    session: null, // as the real API always sends it once a session is no longer live
+    recent: [session({ id: 'r1', status: 'failed', ended_with: null, error: 'psql exited 1' })],
   }));
+  const user = userEvent.setup();
   render(<DbTestingTab />);
   await waitFor(() => expect(screen.queryByText(/Failed: psql exited 1/)).not.toBeNull());
+  expect(screen.queryByText(/Idle/)).not.toBeNull();
   expect(screen.queryByText(/read-only on purpose/)).not.toBeNull();
   expect(screen.queryByText(/Settings › Maintenance/)).not.toBeNull();
+
+  // Start stays enabled after a failure — the server allows a new attempt.
+  await user.type(screen.getByLabelText('Testing password'), 'hunter2');
+  const startBtn = screen.getByRole('button', { name: 'Set DB for Testing' }) as HTMLButtonElement;
+  expect(startBtn.disabled).toBe(false);
+});
+
+it('hides the read-only hint on a failed session when the portal is not actually read-only', async () => {
+  sys.readOnly = false; // e.g. a failed *snapshot*, which never flips read-only on
+  api.getDbTestingStatus.mockResolvedValue(statusOut({
+    session: null,
+    recent: [session({ id: 'r1', status: 'failed', ended_with: null, error: 'pg_dump not found' })],
+  }));
+  render(<DbTestingTab />);
+  await waitFor(() => expect(screen.queryByText(/Failed: pg_dump not found/)).not.toBeNull());
+  expect(screen.queryByText(/read-only on purpose/)).toBeNull();
 });
 
 it('start posts the password and clears the field', async () => {
@@ -230,11 +262,67 @@ it('polls status again after 5 seconds while a session is active', async () => {
   expect(api.getDbTestingStatus.mock.calls.length).toBeGreaterThan(before);
 });
 
-it('does not poll while idle', async () => {
+it('does not poll while idle and the worker is online', async () => {
   vi.useFakeTimers();
   render(<DbTestingTab />);
   await act(() => vi.advanceTimersByTimeAsync(0));
   const before = api.getDbTestingStatus.mock.calls.length;
   await act(() => vi.advanceTimersByTimeAsync(5000));
+  expect(api.getDbTestingStatus.mock.calls.length).toBe(before);
+});
+
+it('stops polling once the session ends (no more calls once `session` goes null)', async () => {
+  vi.useFakeTimers();
+  // base: what every poll tick sees once the session has ended
+  api.getDbTestingStatus.mockResolvedValue(statusOut({ session: null }));
+  // override just the very first call: still active, so the 5s poll starts
+  api.getDbTestingStatus.mockResolvedValueOnce(statusOut({ session: session() }));
+
+  render(<DbTestingTab />);
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  expect(api.getDbTestingStatus.mock.calls.length).toBe(1);
+
+  // tick #1: the poll fires because the session was still active; the
+  // response it gets back says the session has ended
+  await act(() => vi.advanceTimersByTimeAsync(5000));
+  expect(api.getDbTestingStatus.mock.calls.length).toBe(2);
+
+  // no more polling should be scheduled now that the session is gone
+  await act(() => vi.advanceTimersByTimeAsync(15_000));
+  expect(api.getDbTestingStatus.mock.calls.length).toBe(2);
+});
+
+it('stops polling on unmount', async () => {
+  vi.useFakeTimers();
+  api.getDbTestingStatus.mockResolvedValue(statusOut({ session: session() }));
+  const { unmount } = render(<DbTestingTab />);
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  const before = api.getDbTestingStatus.mock.calls.length;
+
+  unmount();
+  await act(() => vi.advanceTimersByTimeAsync(20_000));
+  expect(api.getDbTestingStatus.mock.calls.length).toBe(before);
+});
+
+it('polls slowly while idle with the worker offline, and stops once it comes back online', async () => {
+  vi.useFakeTimers();
+  api.getDbTestingStatus.mockResolvedValue(statusOut({ worker_online: false }));
+
+  render(<DbTestingTab />);
+  await act(() => vi.advanceTimersByTimeAsync(0));
+  expect(api.getDbTestingStatus.mock.calls.length).toBe(1);
+
+  // a 5s live-session tick would NOT run here (there's no session) — only
+  // the slower 15s idle-worker poll should.
+  await act(() => vi.advanceTimersByTimeAsync(5000));
+  expect(api.getDbTestingStatus.mock.calls.length).toBe(1);
+
+  api.getDbTestingStatus.mockResolvedValue(statusOut({ worker_online: true }));
+  await act(() => vi.advanceTimersByTimeAsync(10_000)); // completes the 15s tick
+  expect(api.getDbTestingStatus.mock.calls.length).toBe(2);
+
+  // worker is online now — the idle poll should have torn itself down
+  const before = api.getDbTestingStatus.mock.calls.length;
+  await act(() => vi.advanceTimersByTimeAsync(15_000));
   expect(api.getDbTestingStatus.mock.calls.length).toBe(before);
 });

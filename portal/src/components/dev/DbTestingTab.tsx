@@ -13,13 +13,22 @@
  * purpose, so the tab points at Settings › Maintenance instead of
  * pretending it can fix itself).
  *
+ * `GET .../status` only ever puts an UNFINISHED session (snapshotting/
+ * active/reverting) in `session` — a `failed` one lands in `recent`
+ * instead (devtools.py's status read). So a failure is read from
+ * `recent[0]` whenever there's no live session, and the read-only hint
+ * only shows when the portal is actually read-only right now
+ * (`useSystemStatus()` — a failed *snapshot*, as opposed to a failed
+ * revert, never sets it).
+ *
  * The revert confirmation follows the roomy modal header pattern
- * (rgm-head-text/rgm-card — see GenerateReportModal, BulkContainersModal,
- * LabelRunErrorsModal) — Jimmy's standing rule for every modal, sized to
- * its content rather than a generic fixed width.
+ * (rgm-head-text — see GenerateReportModal, BulkContainersModal,
+ * LabelRunErrorsModal) — Jimmy's standing rule for every modal — but
+ * skips GenerateReportModal's `rgm-card` width modifier so the card
+ * sizes to its one-field content instead of stretching to 980px.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { useAuth } from '../../auth/AuthContext';
 import {
@@ -33,13 +42,18 @@ import {
   type DbTestingStatusOut,
 } from '../../lib/api';
 import { longDate } from '../../lib/format';
+import { useSystemStatus } from '../../lib/systemStatusContext';
 import '../../styles/directory.css'; /* .dir-list, .dir-row, .dir-empty */
 import '../../styles/profile.css'; /* .pf-form, .pf-error, .pf-notice, .btn-solid */
 import '../../styles/initiatives.css'; /* .init-panel */
 import '../../styles/system.css'; /* .eyebrow-sm, .sysconf-card, .sysconf-row/-field/-label */
-import '../../styles/reports.css'; /* .rgm-head-text, .rgm-card (roomy modal header) */
+import '../../styles/reports.css'; /* .rgm-head-text (roomy modal header), .report-progress .spinner */
 
 const POLL_MS = 5000;
+// While idle with the worker offline, poll more slowly than the live-session
+// 5s rate just so the chip (and Start) recover on their own once the worker
+// comes back, without requiring a remount.
+const IDLE_WORKER_POLL_MS = 15_000;
 const LIVE_STATUSES: DbTestingSessionStatus[] = ['snapshotting', 'active', 'reverting'];
 
 const RECENT_GRID = { gridTemplateColumns: '1.3fr 1.1fr 1.3fr 100px 1.6fr 1fr' };
@@ -91,7 +105,23 @@ function ChangesSummary({ changes }: { changes: DbTestingChanges | null }) {
   );
 }
 
-function StatusCard({ status, loadError }: { status: DbTestingStatusOut | null; loadError: string }) {
+function Spinner({ label }: { label: string }) {
+  return (
+    <div className="report-progress" style={{ padding: 0, alignItems: 'flex-start', flexDirection: 'row' }}>
+      <div className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />
+      <p className="page-hint" style={{ margin: 0 }}>{label}</p>
+    </div>
+  );
+}
+
+function StatusCard({ status, loadError, failedSession, readOnly }: {
+  status: DbTestingStatusOut | null;
+  loadError: string;
+  // the most recent `failed` session, when there's no live one to show instead
+  // (see the file header — `session` never carries `failed` from the real API).
+  failedSession: DbTestingSession | null;
+  readOnly: boolean;
+}) {
   const session = status?.session ?? null;
 
   return (
@@ -100,31 +130,9 @@ function StatusCard({ status, loadError }: { status: DbTestingStatusOut | null; 
 
       {loadError && <p className="pf-error" style={{ marginTop: 0 }}>{loadError}</p>}
 
-      {!loadError && !session && (
-        <p className="page-hint" style={{ marginTop: 0, marginBottom: 0 }}>
-          Idle — no testing session is running.
-        </p>
-      )}
+      {!loadError && session?.status === 'snapshotting' && <Spinner label="Snapshotting…" />}
 
-      {!loadError && session?.status === 'snapshotting' && (
-        <p className="page-hint" style={{ marginTop: 0, marginBottom: 0 }}>Snapshotting…</p>
-      )}
-
-      {!loadError && session?.status === 'reverting' && (
-        <p className="page-hint" style={{ marginTop: 0, marginBottom: 0 }}>Reverting…</p>
-      )}
-
-      {!loadError && session?.status === 'failed' && (
-        <>
-          <p className="pf-error" style={{ marginTop: 0 }}>
-            Failed{session.error ? `: ${session.error}` : ''}
-          </p>
-          <p className="page-hint" style={{ marginTop: 0, marginBottom: 0 }}>
-            The database was left read-only on purpose — clear it under Settings › Maintenance
-            once you have checked it.
-          </p>
-        </>
-      )}
+      {!loadError && session?.status === 'reverting' && <Spinner label="Reverting…" />}
 
       {!loadError && session?.status === 'active' && (
         <>
@@ -136,6 +144,27 @@ function StatusCard({ status, loadError }: { status: DbTestingStatusOut | null; 
             )}
           </p>
           <ChangesSummary changes={status?.changes ?? null} />
+        </>
+      )}
+
+      {!loadError && !session && (
+        <>
+          {failedSession && (
+            <>
+              <p className="pf-error" style={{ marginTop: 0 }}>
+                Failed{failedSession.error ? `: ${failedSession.error}` : ''}
+              </p>
+              {readOnly && (
+                <p className="page-hint" style={{ marginTop: 0, marginBottom: 0 }}>
+                  The database was left read-only on purpose — clear it under Settings ›
+                  Maintenance once you have checked it.
+                </p>
+              )}
+            </>
+          )}
+          <p className="page-hint" style={{ marginTop: failedSession ? 8 : 0, marginBottom: 0 }}>
+            Idle — no testing session is running.
+          </p>
         </>
       )}
     </div>
@@ -153,10 +182,10 @@ function DbTestingRevertModal({ session, changes, busy, error, onCancel, onConfi
   const [password, setPassword] = useState('');
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel(); };
+    const onKey = (e: KeyboardEvent) => { if (!busy && e.key === 'Escape') onCancel(); };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [onCancel]);
+  }, [busy, onCancel]);
 
   const submit = () => {
     if (!password) return;
@@ -166,8 +195,11 @@ function DbTestingRevertModal({ session, changes, busy, error, onCancel, onConfi
   };
 
   return (
-    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
-      <div className="modal-card reports-modal-card rgm-card">
+    <div
+      className="modal-scrim"
+      onMouseDown={(e) => { if (!busy && e.target === e.currentTarget) onCancel(); }}
+    >
+      <div className="modal-card reports-modal-card">
         <div className="modal-head">
           <div className="rgm-head-text">
             <div className="eyebrow">Database</div>
@@ -183,7 +215,7 @@ function DbTestingRevertModal({ session, changes, busy, error, onCancel, onConfi
               )}
             </p>
           </div>
-          <button type="button" className="modal-close" aria-label="Close" onClick={onCancel}>
+          <button type="button" className="modal-close" aria-label="Close" disabled={busy} onClick={onCancel}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
                  strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
           </button>
@@ -233,12 +265,29 @@ export default function DbTestingTab() {
   const [reverting, setReverting] = useState(false);
   const [revertError, setRevertError] = useState('');
 
+  // In-flight guard: a poll tick checks this before calling load() at all
+  // (see the two poll effects below), so a slow status read is never asked
+  // to overlap with another. `seqRef` additionally makes sure that if two
+  // reads somehow land in flight together (e.g. a manual action's own
+  // `await load()` racing a tick that started just before it), only the
+  // response to the LAST request applies — an earlier one resolving late
+  // can't clobber newer state.
+  const loadingRef = useRef(false);
+  const seqRef = useRef(0);
+
   const load = async () => {
+    loadingRef.current = true;
+    const seq = ++seqRef.current;
     try {
-      setStatus(await getDbTestingStatus());
-      setLoadError('');
+      const out = await getDbTestingStatus();
+      if (seq === seqRef.current) {
+        setStatus(out);
+        setLoadError('');
+      }
     } catch {
-      setLoadError('Failed to load testing status.');
+      if (seq === seqRef.current) setLoadError('Failed to load testing status.');
+    } finally {
+      loadingRef.current = false;
     }
   };
 
@@ -254,9 +303,29 @@ export default function DbTestingTab() {
   useEffect(() => {
     if (!godMode) return;
     if (!liveSessionStatus || !LIVE_STATUSES.includes(liveSessionStatus)) return;
-    const timer = window.setInterval(() => { void load(); }, POLL_MS);
+    const timer = window.setInterval(() => {
+      if (loadingRef.current) return; // never overlap a pending load
+      void load();
+    }, POLL_MS);
     return () => window.clearInterval(timer);
   }, [godMode, liveSessionStatus]);
+
+  // Slow idle poll while the worker is offline and nothing is running, so
+  // the chip (and Start) recover on their own once the worker comes back
+  // instead of needing a remount — the 5s live-session poll above doesn't
+  // run in this state at all.
+  const idleWorkerOffline = godMode && status !== null
+    && status.session === null && !status.worker_online;
+  useEffect(() => {
+    if (!idleWorkerOffline) return;
+    const timer = window.setInterval(() => {
+      if (loadingRef.current) return;
+      void load();
+    }, IDLE_WORKER_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [idleWorkerOffline]);
+
+  const { status: systemStatus } = useSystemStatus();
 
   if (!godMode) {
     return <p className="pf-notice">Unlock god mode to use database testing.</p>;
@@ -265,6 +334,10 @@ export default function DbTestingTab() {
   const session = status?.session ?? null;
   const workerOnline = status?.worker_online ?? false;
   const isActive = session?.status === 'active';
+  const recent = status?.recent ?? [];
+  // the API only ever puts an unfinished session in `session` — a `failed`
+  // one shows up as the newest row in `recent` instead (see file header).
+  const failedSession = !session && recent[0]?.status === 'failed' ? recent[0] : null;
 
   const handleStart = async () => {
     if (!password) return;
@@ -312,8 +385,6 @@ export default function DbTestingTab() {
     }
   };
 
-  const recent = status?.recent ?? [];
-
   return (
     <>
       <p className="page-hint" style={{ marginBottom: 16 }}>
@@ -321,7 +392,12 @@ export default function DbTestingTab() {
         back to the snapshot. The portal goes read-only for everyone while a revert runs.
       </p>
 
-      <StatusCard status={status} loadError={loadError} />
+      <StatusCard
+        status={status}
+        loadError={loadError}
+        failedSession={failedSession}
+        readOnly={systemStatus.read_only}
+      />
 
       <div className="init-panel sysconf-card" style={{ marginBottom: 20 }}>
         <div className="eyebrow-sm">Actions</div>
