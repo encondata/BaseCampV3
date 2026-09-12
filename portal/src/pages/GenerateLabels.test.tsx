@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 /**
- * /labels/generate — picker, type cards, gating, start→progress polling→
- * runs-list refresh, cancel, the errors modal, and the ?run= deep link.
- * Mocks the API entirely (see the worktree brief: the API implementer's
- * routes land in parallel on this same branch).
+ * /labels/generate — three-step band (Initiative / Label types /
+ * Generate), per-type template resolution (auto-match / override /
+ * choose-when-unmatched), gating, start→progress polling→runs-list
+ * refresh, cancel, the errors modal, and the ?run= deep link. Mocks the
+ * API entirely (see the worktree brief: the API implementer's routes
+ * land in parallel on this same branch).
  */
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -37,6 +39,11 @@ vi.mock('../lib/api', async (importActual) => ({
   ...api,
 }));
 
+// jsdom doesn't implement Element.scrollIntoView — ComboBox calls it when
+// the active option changes (e.g. hovering a non-first item while
+// choosing a template below), which would otherwise throw.
+if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
+
 const { default: GenerateLabels } = await import('./GenerateLabels');
 
 const ini = (id: string, name: string, status: string, clientName = 'Acme'): InitiativeItem => ({
@@ -53,6 +60,8 @@ const vocabRow = (key: string, label: string): LabelVocab => ({
 });
 const VOCAB = [vocabRow('top', 'Top'), vocabRow('front', 'Front')];
 
+const TOP_AUTO = { id: 't1', name: 'Top asset tag', version: 5, scope: 'site' as const };
+
 const preview = (over: Partial<LabelGeneratePreview> = {}): LabelGeneratePreview => ({
   initiative: {
     id: 'i2', name: 'NAP11', client_name: 'Acme', status: 'in_progress',
@@ -60,8 +69,8 @@ const preview = (over: Partial<LabelGeneratePreview> = {}): LabelGeneratePreview
     asset_count: 42,
   },
   types: [
-    { key: 'top', label: 'Top', template: { id: 't1', name: 'Top asset tag', version: 5, scope: 'site' }, current: 3, stale: 1 },
-    { key: 'front', label: 'Front', template: null, current: 0, stale: 0 },
+    { key: 'top', label: 'Top', template: TOP_AUTO, candidates: [{ ...TOP_AUTO, site_names: [] }], current: 3, stale: 1 },
+    { key: 'front', label: 'Front', template: null, candidates: [], current: 0, stale: 0 },
   ],
   active_run_id: null,
   ...over,
@@ -110,6 +119,13 @@ it('renders the eyebrow, title, and description', async () => {
   expect(screen.getByText(/Generate printable labels for every asset/)).not.toBeNull();
 });
 
+it('renders the three step cards with their eyebrows and titles', async () => {
+  renderAt();
+  expect(screen.getByText('1 · Initiative')).not.toBeNull();
+  expect(screen.getByText('2 · Label types')).not.toBeNull();
+  expect(screen.getByText('3 · Generate')).not.toBeNull();
+});
+
 it('the picker hides finished initiatives', async () => {
   const user = userEvent.setup();
   renderAt();
@@ -125,7 +141,7 @@ it('type cards come from vocab and show a template chip / disabled state from th
   await pickNap11(user);
   expect((screen.getByRole('checkbox', { name: /Top/ }) as HTMLButtonElement).disabled).toBe(false);
   expect((screen.getByRole('checkbox', { name: /Front/ }) as HTMLButtonElement).disabled).toBe(true);
-  expect(screen.getByText('No active template', { selector: '.chip' })).not.toBeNull();
+  expect(screen.getByText('No active template of this type.')).not.toBeNull();
 });
 
 it('Generate is disabled until an initiative and a type are picked', async () => {
@@ -138,15 +154,69 @@ it('Generate is disabled until an initiative and a type are picked', async () =>
   expect((screen.getByRole('button', { name: 'Generate labels' }) as HTMLButtonElement).disabled).toBe(false);
 });
 
-it('an active run for the initiative disables Generate with a hint', async () => {
+it('a type with no auto-match becomes selectable only after choosing a template from its combo', async () => {
   const user = userEvent.setup();
-  api.getLabelGeneratePreview.mockResolvedValue(preview({ active_run_id: 'r-active' }));
-  api.getLabelRun.mockResolvedValue(run({ id: 'r-active', status: 'running' }));
+  api.getLabelGeneratePreview.mockResolvedValue(preview({
+    types: [
+      { key: 'top', label: 'Top', template: TOP_AUTO, candidates: [{ ...TOP_AUTO, site_names: [] }], current: 3, stale: 1 },
+      {
+        key: 'front', label: 'Front', template: null,
+        candidates: [{ id: 'c1', name: 'Front label', version: 2, scope: 'global', site_names: [] }],
+        current: 0, stale: 0,
+      },
+    ],
+  }));
+  renderAt();
+  await pickNap11(user);
+  expect((screen.getByRole('checkbox', { name: /Front/ }) as HTMLButtonElement).disabled).toBe(true);
+
+  await user.click(screen.getByPlaceholderText('Choose a template…'));
+  await user.click(await screen.findByText('Front label v2'));
+  expect((screen.getByRole('checkbox', { name: /Front/ }) as HTMLButtonElement).disabled).toBe(false);
+
+  await user.click(screen.getByRole('checkbox', { name: /Front/ }));
+  expect((screen.getByRole('button', { name: 'Generate labels' }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+it('overriding an auto-matched type via Change carries only that type in the templates payload', async () => {
+  const user = userEvent.setup();
+  api.getLabelGeneratePreview.mockResolvedValue(preview({
+    types: [
+      {
+        key: 'top', label: 'Top', template: TOP_AUTO,
+        candidates: [{ ...TOP_AUTO, site_names: [] }, { id: 't2', name: 'Top asset tag', version: 6, scope: 'global', site_names: [] }],
+        current: 3, stale: 1,
+      },
+      { key: 'front', label: 'Front', template: null, candidates: [], current: 0, stale: 0 },
+    ],
+  }));
+  api.startLabelRun.mockResolvedValue(run({ status: 'queued' }));
   renderAt();
   await pickNap11(user);
   await user.click(screen.getByRole('checkbox', { name: /Top/ }));
-  await screen.findByText('A run is already active for this initiative.');
-  expect((screen.getByRole('button', { name: 'Generate labels' }) as HTMLButtonElement).disabled).toBe(true);
+
+  await user.click(screen.getByRole('button', { name: 'Change Top template' }));
+  await user.click(screen.getByPlaceholderText('Choose a template…'));
+  await user.click(await screen.findByText('Top asset tag v6'));
+  await screen.findByText('manual');
+
+  await user.click(screen.getByRole('button', { name: 'Generate labels' }));
+  await waitFor(() => expect(api.startLabelRun).toHaveBeenCalledWith({
+    initiative_id: 'i2', label_types: ['top'], regenerate_existing: false, notify: false,
+    templates: { top: 't2' },
+  }));
+});
+
+it('an active run for the initiative shows the progress panel instead of the Generate button', async () => {
+  const user = userEvent.setup();
+  api.getLabelGeneratePreview.mockResolvedValue(preview({ active_run_id: 'r-active' }));
+  api.getLabelRun.mockResolvedValue(run({
+    id: 'r-active', status: 'running', processed: 2, total: 8, current_label_type: 'top',
+  }));
+  renderAt();
+  await pickNap11(user);
+  await screen.findByText(/Processing Top/);
+  expect(screen.queryByRole('button', { name: 'Generate labels' })).toBeNull();
 });
 
 it('Generate posts the expected body and the progress panel polls until completed, then refreshes the runs list', async () => {
@@ -163,6 +233,9 @@ it('Generate posts the expected body and the progress panel polls until complete
   await waitFor(() => expect(api.startLabelRun).toHaveBeenCalledWith({
     initiative_id: 'i2', label_types: ['top'], regenerate_existing: false, notify: false,
   }));
+
+  // progress replaces the button as soon as the run starts
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Generate labels' })).toBeNull());
 
   await screen.findByText(/Processing Top · 5 \/ 10/, {}, { timeout: 6000 });
   await screen.findByText('Completed', {}, { timeout: 6000 });
@@ -213,7 +286,7 @@ it('polling stops once the run is canceled — no further getLabelRun calls', as
   expect(api.getLabelRun).toHaveBeenCalledTimes(2);
 }, 12000);
 
-it('a 409 run_active on Generate fetches and shows the already-active run', async () => {
+it('a 409 run_active on Generate fetches the already-active run and shows its progress', async () => {
   const user = userEvent.setup();
   api.startLabelRun.mockRejectedValue(new ApiError(409, 'run_active', { code: 'run_active', run_id: 'r-x' }));
   api.getLabelRun.mockResolvedValue(run({ id: 'r-x', status: 'running', processed: 3, total: 9 }));
@@ -222,9 +295,20 @@ it('a 409 run_active on Generate fetches and shows the already-active run', asyn
   await user.click(screen.getByRole('checkbox', { name: /Top/ }));
   await user.click(screen.getByRole('button', { name: 'Generate labels' }));
   await waitFor(() => expect(api.getLabelRun).toHaveBeenCalledWith('r-x'));
-  await screen.findByText('A run is already active for this initiative.');
-  expect((screen.getByRole('button', { name: 'Generate labels' }) as HTMLButtonElement).disabled).toBe(true);
   await screen.findByText('Generating');
+  expect(screen.queryByRole('button', { name: 'Generate labels' })).toBeNull();
+});
+
+it('a 422 invalid_templates on Generate shows the problems in the error strip', async () => {
+  const user = userEvent.setup();
+  api.startLabelRun.mockRejectedValue(new ApiError(
+    422, 'invalid_templates', { code: 'invalid_templates', problems: ['top: template is not active'] },
+  ));
+  renderAt();
+  await pickNap11(user);
+  await user.click(screen.getByRole('checkbox', { name: /Top/ }));
+  await user.click(screen.getByRole('button', { name: 'Generate labels' }));
+  await screen.findByText(/top: template is not active/);
 });
 
 it('Cancel posts a cancel for the active run', async () => {
@@ -258,6 +342,13 @@ it('the errors modal shows summary chips, sample rows, and the hidden-count note
   expect(screen.getByText(/no_template/)).not.toBeNull();
   expect(screen.getByText('A-0')).not.toBeNull();
   expect(screen.getByText(/Only the first 3 of 60 errors are shown/)).not.toBeNull();
+});
+
+it('the runs list marks an overridden type\'s chip as a manual template', async () => {
+  api.listLabelRuns.mockResolvedValue([run({ id: 'r-manual', template_overrides: { top: 't2' } })]);
+  renderAt();
+  const chip = await screen.findByText('Top', { selector: '.chip' });
+  expect(chip.getAttribute('title')).toBe('Manual template');
 });
 
 it('?run= deep link opens that run\'s progress when still active', async () => {

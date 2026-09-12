@@ -45,7 +45,15 @@ export default function LabelRunsList({ runs, highlightRunId, typeLabel, onViewE
             <div className="cell"><b className="cell-top">{r.initiative_name}</b></div>
             <div className="cell">
               <span className="chips-wrap" style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                {r.label_types.map((t) => <span key={t} className="chip tag">{typeLabel(t)}</span>)}
+                {r.label_types.map((t) => {
+                  const manual = !!r.template_overrides?.[t];
+                  return (
+                    <span key={t} className="chip tag" title={manual ? 'Manual template' : undefined}
+                          aria-label={manual ? `${typeLabel(t)} (manual template)` : undefined}>
+                      {typeLabel(t)}
+                    </span>
+                  );
+                })}
               </span>
             </div>
             <div className="cell"><span className="cell-top">{r.requested_by_name}</span></div>

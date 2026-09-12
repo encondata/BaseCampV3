@@ -96,20 +96,47 @@
 .glabels-progress { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
 .glabels-progress-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .glabels-progress-actions { display: flex; justify-content: flex-end; }
-/* Generate Labels page — layout only. Set-up band (initiative card left,
-   what-to-generate right), then full-width Current run + Recent runs. */
-.glabels-setup { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 22px; align-items: start; }
-@media (max-width: 900px) { .glabels-setup { grid-template-columns: 1fr; } }
-.glabels-options { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
-.glabels-options .rgm-choice-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
-.glabels-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 4px; }
-.glabels-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 10px 0 4px; }
-.glabels-tpl-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--paper-line); }
-.glabels-tpl-list .eyebrow { margin: 0; }
-.glabels-tpl-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; }
-.glabels-tpl-row .chip { grid-column: 1 / -1; justify-self: start; }
+.glabels-progress .dash-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+/* Generate Labels page — layout only. Three equal-height step cards
+   (Initiative / Label types / Generate), then full-width Recent runs. */
+.glabels-steps {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(360px, 1.5fr) minmax(280px, 1fr);
+  gap: 18px;
+  align-items: start;
+  margin-bottom: 26px;
+}
+@media (max-width: 1100px) { .glabels-steps { grid-template-columns: 1fr; } }
+.glabels-step {
+  display: flex; flex-direction: column; gap: 12px;
+  min-width: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--paper-line); border-radius: 12px;
+  background: var(--surface-2, #f5f7fa);
+}
+/* "head" is a list-typography trigger word (guardrail: no font-size/
+   family/weight/line-height/min-height here) — this class only ever sets
+   flex layout, so that's a non-issue; the eyebrow/modal-section children
+   carry their own golden typography already. */
+.glabels-step-head { display: flex; flex-direction: column; gap: 2px; }
+.glabels-step-head .eyebrow { margin: 0; }
+.glabels-step-head .modal-section { margin: 0; }
+.glabels-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 6px 0 0; }
+/* Card 2's rows: each is a ChoiceCard plus its own template line —
+   .rgm-choice-cards (reports.css) already stacks them vertically; this
+   just gives each row room for the line underneath its ChoiceCard. */
+.glabels-type-row { display: flex; flex-direction: column; gap: 6px; }
+.glabels-tpl-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.glabels-tpl-line .mini-btn { margin-left: auto; }
+.glabels-tpl-line .combo-wrap { flex: 1; min-width: 200px; }
+/* Card 3: Generate button + gating hint stacked, not squeezed onto one line. */
+.glabels-step-actions { display: flex; flex-direction: column; gap: 6px; }
+.glabels-step-actions .btn-solid { width: 100%; }
+.glabels-step-actions .page-hint { margin: 0; }
+.glabels-step .glabels-progress { margin: 0; }
+.glabels-step .glabels-progress .dash-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
 .glabels-section { margin-top: 26px; }
 .glabels-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 .glabels-section-head .modal-section { margin: 0; }
-.glabels-run-card { border: 1px solid var(--paper-line); border-radius: 12px; padding: 14px 16px; background: var(--surface-1, #fff); }
-.glabels-progress .dash-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }

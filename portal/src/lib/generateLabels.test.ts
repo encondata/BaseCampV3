@@ -1,9 +1,10 @@
 import { expect, it } from 'vitest';
 
-import type { InitiativeItem } from './api';
+import type { InitiativeItem, LabelGeneratePreviewType } from './api';
 import {
-  canGenerate, hasHiddenErrors, isRunActive, isValidToken, jsonToRuleRows, progressPct,
-  ruleRowsToJson, sortedErrorSummary, validateRuleRows, visibleInitiativesForGenerate,
+  candidateScopeText, canGenerate, firstUnresolvedType, hasHiddenErrors, isRunActive, isValidToken,
+  jsonToRuleRows, progressPct, resolvedTemplateId, ruleRowsToJson, sortedErrorSummary,
+  templatesPayloadFor, validateRuleRows, visibleInitiativesForGenerate,
 } from './generateLabels';
 
 const ini = (id: string, status: string, createdAt: string, archived: string | null = null) => ({
@@ -26,6 +27,48 @@ it('canGenerate requires an initiative and >=1 type, and blocks while a run is a
   expect(canGenerate({ initiativeId: 'i1', labelTypes: [], activeRunId: null })).toBe(false);
   expect(canGenerate({ initiativeId: 'i1', labelTypes: ['top'], activeRunId: null })).toBe(true);
   expect(canGenerate({ initiativeId: 'i1', labelTypes: ['top'], activeRunId: 'r1' })).toBe(false);
+});
+
+it('canGenerate also blocks while a selected type has no resolved template', () => {
+  expect(canGenerate({
+    initiativeId: 'i1', labelTypes: ['top'], activeRunId: null, unresolvedType: 'top',
+  })).toBe(false);
+  expect(canGenerate({
+    initiativeId: 'i1', labelTypes: ['top'], activeRunId: null, unresolvedType: null,
+  })).toBe(true);
+});
+
+const previewType = (key: string, over: Partial<LabelGeneratePreviewType> = {}): LabelGeneratePreviewType => ({
+  key, label: key, template: null, candidates: [], current: 0, stale: 0, ...over,
+});
+const AUTO = { id: 't1', name: 'Top asset tag', version: 5, scope: 'site' as const };
+
+it('candidateScopeText names this site, global, or the other sites a candidate is linked to', () => {
+  expect(candidateScopeText({ scope: 'site', site_names: [] })).toBe('This site');
+  expect(candidateScopeText({ scope: 'global', site_names: [] })).toBe('Global');
+  expect(candidateScopeText({ scope: 'other', site_names: ['NAP7', 'NAP11'] })).toBe('Linked to other sites: NAP7, NAP11');
+});
+
+it('resolvedTemplateId prefers an explicit override over the auto-match, and is null with neither', () => {
+  const type = previewType('top', { template: AUTO });
+  expect(resolvedTemplateId(type, undefined)).toBe('t1');
+  expect(resolvedTemplateId(type, 't2')).toBe('t2');
+  expect(resolvedTemplateId(previewType('front'), undefined)).toBeNull();
+});
+
+it('firstUnresolvedType names the first selected type with no resolved template, in selection order', () => {
+  const types = [previewType('top', { template: AUTO }), previewType('front')];
+  expect(firstUnresolvedType(types, ['top', 'front'], {})).toBe('front');
+  expect(firstUnresolvedType(types, ['front', 'top'], {})).toBe('front');
+  expect(firstUnresolvedType(types, ['top'], {})).toBeNull();
+  expect(firstUnresolvedType(types, ['front'], { front: 'c1' })).toBeNull();
+  expect(firstUnresolvedType(null, ['front'], {})).toBeNull();
+});
+
+it('templatesPayloadFor carries only overridden/chosen types, never an untouched auto-match', () => {
+  expect(templatesPayloadFor(['top', 'front'], { front: 'c1' })).toEqual({ front: 'c1' });
+  expect(templatesPayloadFor(['top'], {})).toEqual({});
+  expect(templatesPayloadFor([], { front: 'c1' })).toEqual({});
 });
 
 it('isRunActive is true only for queued/running', () => {

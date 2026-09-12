@@ -3,7 +3,9 @@
  * Generation rules panel — no React/DOM dependencies, so they're
  * trivially unit-testable and reusable from both places.
  */
-import type { InitiativeItem, LabelGenerationRules, LabelRun } from './api';
+import type {
+  InitiativeItem, LabelGeneratePreviewType, LabelGenerationRules, LabelRun, LabelTemplateCandidate,
+} from './api';
 
 /** Seeded `status_values` keys (record_type=initiative, migration 0016)
  *  that mean "nothing left to generate labels for" — mirrors the
@@ -20,13 +22,21 @@ export function visibleInitiativesForGenerate(items: InitiativeItem[]): Initiati
 }
 
 /** Generate is reachable only once an initiative and at least one label
- *  type are picked, and only when that initiative has no run already
+ *  type are picked, only when that initiative has no run already
  *  queued/running (the API's own 409 `run_active` backs this up — this is
- *  just the button gating so the operator sees why up front). */
-export function canGenerate({ initiativeId, labelTypes, activeRunId }: {
+ *  just the button gating so the operator sees why up front), and only
+ *  once every selected type has a resolved template (`unresolvedType` is
+ *  the first selected type still missing one, from `firstUnresolvedType`
+ *  below — normally the per-type row's own disabled state already keeps
+ *  an unresolved type out of `labelTypes`, but a type can still land here
+ *  unresolved if it was checked before the preview loaded and then
+ *  resolved to "no auto-match", so Generate double-checks rather than
+ *  trusting the row alone). */
+export function canGenerate({ initiativeId, labelTypes, activeRunId, unresolvedType = null }: {
   initiativeId: string | null; labelTypes: string[]; activeRunId: string | null;
+  unresolvedType?: string | null;
 }): boolean {
-  return !!initiativeId && labelTypes.length > 0 && !activeRunId;
+  return !!initiativeId && labelTypes.length > 0 && !activeRunId && !unresolvedType;
 }
 
 /** A run in flight — used to gate Generate/show Cancel/keep the progress
@@ -44,6 +54,61 @@ export function progressPct(run: { progress_pct?: number | null; processed: numb
   }
   if (!run.total) return 0;
   return Math.max(0, Math.min(100, Math.round((run.processed / run.total) * 100)));
+}
+
+// ── Per-type template resolution (Label types card / Generate gating) ─
+
+/** The scope sub-line shown beside a template candidate in the "Choose a
+ *  template…" combo — `'other'` names the sites it IS linked to (never
+ *  this initiative's own site, or it'd already be a `'site'` candidate). */
+export function candidateScopeText(c: Pick<LabelTemplateCandidate, 'scope' | 'site_names'>): string {
+  if (c.scope === 'site') return 'This site';
+  if (c.scope === 'global') return 'Global';
+  return `Linked to other sites: ${c.site_names.join(', ')}`;
+}
+
+/** The template id that will actually be used for one type: an explicit
+ *  override (operator picked it, whether or not there was an auto-match)
+ *  wins over the preview's own auto-match; `null` when neither exists —
+ *  the type isn't resolved yet. */
+export function resolvedTemplateId(
+  type: Pick<LabelGeneratePreviewType, 'template'> | undefined,
+  overrideId: string | undefined,
+): string | null {
+  return overrideId ?? type?.template?.id ?? null;
+}
+
+/** The first selected type with no resolved template, in selection order
+ *  — names the type Generate's gating hint should point at, or `null`
+ *  once every selected type is resolved (including when `types` hasn't
+ *  loaded yet, since there's nothing to judge against). */
+export function firstUnresolvedType(
+  types: LabelGeneratePreviewType[] | null,
+  selected: string[],
+  overrides: Record<string, string>,
+): string | null {
+  if (!types) return null;
+  for (const key of selected) {
+    const type = types.find((t) => t.key === key);
+    if (!resolvedTemplateId(type, overrides[key])) return key;
+  }
+  return null;
+}
+
+/** `startLabelRun`'s own `templates` body field: only the types the
+ *  operator resolved themselves belong here — an auto-matched type with
+ *  no override is omitted entirely (the server already knows its
+ *  template), which is exactly every key present in `overrides` since an
+ *  override is the only way a value ever lands there, whether it replaced
+ *  an auto-match or supplied one that didn't exist. */
+export function templatesPayloadFor(
+  selected: string[], overrides: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of selected) {
+    if (overrides[key]) out[key] = overrides[key];
+  }
+  return out;
 }
 
 /** Error-type summary rows, busiest first (ties broken alphabetically so

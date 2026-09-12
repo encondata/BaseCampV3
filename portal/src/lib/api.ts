@@ -3482,13 +3482,24 @@ export interface LabelRun {
   notify: boolean;
   created_at: string; started_at: string | null; finished_at: string | null;
   progress_pct: number;
+  // Optional so existing fixtures/tests predating this field (which the
+  // API always sends, defaulting to `{}`) don't need updating — same
+  // reasoning as `LabelTemplate.generation_rules`. Keyed by label type;
+  // the runs list uses it to mark a chip "manual" when that run's
+  // operator overrode (or hand-picked) that type's template.
+  template_overrides?: Record<string, string>;
 }
 
 /** POST /labels/generate/runs — 404 `initiative_not_found`, 422
- *  `invalid_label_types`, 409 `run_active` (`err.detail` carries `run_id`
- *  alongside `code` for that last one). */
+ *  `invalid_label_types`/`invalid_templates` (the latter's `err.detail`
+ *  carries `problems: string[]` alongside `code`), 409 `run_active`
+ *  (`err.detail` carries `run_id` alongside `code` for that one). */
 export async function startLabelRun(body: {
   initiative_id: string; label_types: string[]; regenerate_existing: boolean; notify: boolean;
+  /** Only the types the operator resolved themselves — an auto-matched
+   *  type with no override never appears here. Omit entirely when empty
+   *  rather than sending `{}`. */
+  templates?: Record<string, string>;
 }): Promise<LabelRun> {
   const resp = await apiFetch('/labels/generate/runs', {
     method: 'POST',
@@ -3525,9 +3536,26 @@ export async function cancelLabelRun(id: string): Promise<LabelRun> {
   return resp.json();
 }
 
+/** One template Generate Labels' per-type template line can offer the
+ *  operator instead of (or in addition to) the auto-match: `scope`
+ *  `'site'`/`'global'` mirror `template`'s own scope values, and `'other'`
+ *  is a template linked only to sites outside this initiative (never
+ *  auto-matched, but still pickable — `site_names` names those sites). */
+export interface LabelTemplateCandidate {
+  id: string; name: string; version: number;
+  scope: 'site' | 'global' | 'other'; site_names: string[];
+}
+
 export interface LabelGeneratePreviewType {
   key: string; label: string;
+  /** The server's own auto-match — `null` when nothing on the
+   *  site/global scopes resolved (including when `candidates` holds only
+   *  `'other'`-scope entries, which are never auto-matched). */
   template: { id: string; name: string; version: number; scope: 'site' | 'global' } | null;
+  /** Every template of this type the operator could pick instead — the
+   *  Label types card's template line shows a chooser from this list
+   *  whenever `template` is null but this isn't empty. */
+  candidates: LabelTemplateCandidate[];
   current: number; stale: number;
 }
 

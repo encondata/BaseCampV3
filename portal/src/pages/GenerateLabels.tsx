@@ -5,14 +5,15 @@
  * progress (polled every ~1.75s while queued/running), and review recent
  * runs (with a per-run error drill-down) for the initiative in view.
  *
- * Layout follows the report Generate modals' two-column shape
- * (`OptionsGrid`/`PreviewCard`/`OptionGroup` from
+ * Layout is a three-step band (Initiative / Label types / Generate),
+ * each an equal-height bordered card in the report Generate modals' own
+ * look (`ChoiceCard`/`InitiativeSummary` from
  * `components/reports/ReportOptionsLayout`) even though this is a full
  * page, not a modal — the pieces are generic. The one true modal here
  * (`LabelRunErrorsModal`) still carries the roomy eyebrow/title/
  * description header per the house rule for new modals.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import {
@@ -20,7 +21,9 @@ import {
   listLabelVocab, startLabelRun,
   type InitiativeItem, type LabelGeneratePreview, type LabelRun, type LabelVocab,
 } from '../lib/api';
-import { canGenerate, isRunActive, visibleInitiativesForGenerate } from '../lib/generateLabels';
+import {
+  canGenerate, firstUnresolvedType, isRunActive, templatesPayloadFor, visibleInitiativesForGenerate,
+} from '../lib/generateLabels';
 import { vocabLabel, vocabOfKind } from '../lib/labels';
 import { useSystemStatus } from '../lib/systemStatusContext';
 import ComboBox from '../components/ComboBox';
@@ -28,17 +31,30 @@ import GenerationProgress from '../components/labels/GenerationProgress';
 import LabelRunErrorsModal from '../components/labels/LabelRunErrorsModal';
 import LabelRunsList from '../components/labels/LabelRunsList';
 import LabelTypeCards from '../components/labels/LabelTypeCards';
-import {
-  InitiativeSummary, OptionGroup, PreviewCard,
-} from '../components/reports/ReportOptionsLayout';
+import { InitiativeSummary } from '../components/reports/ReportOptionsLayout';
 import { Switch } from '../components/Switch';
 import '../styles/directory.css';
-import '../styles/dashboard.css';  /* .dash-kpis (progress panel's live counters) */
-import '../styles/reports.css';    /* .rgm-grid/.rgm-options/.rgm-summary/.rgm-progress-* etc. */
+import '../styles/dashboard.css';  /* .dash-kpis (KPI tiles / progress panel's live counters) */
+import '../styles/reports.css';    /* .rgm-choice-cards/.rgm-progress-* etc. */
 import '../styles/labels.css';
 
 const RUNS_LIMIT = 25;
 const POLL_MS = 1750;
+
+/** One card of the three-step band — a numbered eyebrow + title header
+ *  over arbitrary content, styled as a bordered card (`.glabels-step`,
+ *  the same look as `PreviewCard`'s `.rgm-summary`). */
+function StepCard({ step, title, children }: { step: string; title: string; children: ReactNode }) {
+  return (
+    <section className="glabels-step" aria-label={title}>
+      <div className="glabels-step-head">
+        <span className="eyebrow">{step}</span>
+        <div className="modal-section">{title}</div>
+      </div>
+      {children}
+    </section>
+  );
+}
 
 export default function GenerateLabels() {
   const { status: sys } = useSystemStatus();
@@ -48,6 +64,7 @@ export default function GenerateLabels() {
   const [vocab, setVocab] = useState<LabelVocab[]>([]);
   const [initiativeId, setInitiativeId] = useState('');
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
+  const [templateOverrides, setTemplateOverrides] = useState<Record<string, string>>({});
   const [regenerateExisting, setRegenerateExisting] = useState(false);
   const [notify, setNotify] = useState(false);
 
@@ -163,26 +180,44 @@ export default function GenerateLabels() {
   const toggleType = (key: string) =>
     setSelectedTypes((cur) => (cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]));
 
+  const setOverride = (key: string, templateId: string | null) =>
+    setTemplateOverrides((cur) => {
+      if (!templateId) {
+        if (!(key in cur)) return cur;
+        const next = { ...cur };
+        delete next[key];
+        return next;
+      }
+      return { ...cur, [key]: templateId };
+    });
+
   const activeBlockingId = activeRun && isRunActive(activeRun) ? activeRun.id : null;
-  const canGo = canGenerate({ initiativeId: initiativeId || null, labelTypes: selectedTypes, activeRunId: activeBlockingId });
+  const unresolvedType = firstUnresolvedType(preview?.types ?? null, selectedTypes, templateOverrides);
+  const canGo = canGenerate({
+    initiativeId: initiativeId || null, labelTypes: selectedTypes, activeRunId: activeBlockingId, unresolvedType,
+  });
 
   const generate = async () => {
     if (!canGo) return;
     setError('');
     try {
+      const templates = templatesPayloadFor(selectedTypes, templateOverrides);
       const run = await startLabelRun({
         initiative_id: initiativeId, label_types: selectedTypes,
         regenerate_existing: regenerateExisting, notify,
+        ...(Object.keys(templates).length ? { templates } : {}),
       });
       setActiveRun(run);
       void loadRuns();
     } catch (err) {
       if (err instanceof ApiError && err.code === 'run_active') {
-        // The "active run" hint beside Generate already says this once
-        // the fetched run lands in `activeRun` — no need for a second,
-        // redundant banner above the fold.
+        // The progress panel already replaces the button once `activeRun`
+        // lands — no need for a second, redundant banner above the fold.
         const runId = (err.detail as { run_id?: string } | null | undefined)?.run_id;
         if (runId) void getLabelRun(runId).then(setActiveRun).catch(() => undefined);
+      } else if (err instanceof ApiError && err.code === 'invalid_templates') {
+        const problems = (err.detail as { problems?: string[] } | null | undefined)?.problems ?? [];
+        setError(problems.length ? `Couldn't start the run: ${problems.join('; ')}` : err.message);
       } else {
         setError(err instanceof ApiError ? err.message : "Couldn't start the run.");
       }
@@ -215,6 +250,14 @@ export default function GenerateLabels() {
   const runSummary = initiativeId && preview && selectedTypes.length > 0
     ? `${pickedTypeLabels.join(' + ')} for ${preview.initiative.asset_count.toLocaleString()} asset${preview.initiative.asset_count === 1 ? '' : 's'} on ${preview.initiative.name}`
     : null;
+  const generateHint = unresolvedType
+    ? `Choose a template for ${typeLabelFor(unresolvedType)} to continue.`
+    : runSummary ?? 'Choose an initiative and at least one label type.';
+
+  const autoCount = preview
+    ? selectedTypes.filter((k) => !templateOverrides[k] && preview.types.find((t) => t.key === k)?.template).length
+    : 0;
+  const manualCount = selectedTypes.filter((k) => !!templateOverrides[k]).length;
 
   return (
     <div className="portal-page glabels-page">
@@ -231,11 +274,10 @@ export default function GenerateLabels() {
 
       {error && <div className="pf-error" style={{ marginBottom: 12 }}>{error}</div>}
 
-      {/* Set-up band: the initiative on the left, what to generate on the right. */}
-      <section className="glabels-setup" aria-label="Set up a run">
-        <PreviewCard title="Initiative">
+      <div className="glabels-steps">
+        <StepCard step="1 · Initiative" title="Initiative">
           <ComboBox options={pickerOptions} value={initiativeId}
-                    onChange={(v) => { setInitiativeId(v); setSelectedTypes([]); }}
+                    onChange={(v) => { setInitiativeId(v); setSelectedTypes([]); setTemplateOverrides({}); }}
                     placeholder="Choose an initiative…" clearable />
           {!initiativeId && (
             <p className="page-hint">Pick an initiative to see its sites, asset count, and which template each label type will use.</p>
@@ -262,81 +304,81 @@ export default function GenerateLabels() {
                   <span className="dash-kpi-value">{preview.initiative.asset_count.toLocaleString()}</span>
                 </div>
                 <div className="dash-kpi">
-                  <span className="dash-kpi-label">Label types</span>
+                  <span className="dash-kpi-label">Templates matched</span>
                   <span className="dash-kpi-value">{preview.types.filter((t) => t.template).length} / {preview.types.length}</span>
                 </div>
               </div>
-              <div className="glabels-tpl-list" aria-label="Templates by label type">
-                <div className="eyebrow">Templates</div>
-                {preview.types.map((t) => (
-                  <div className="glabels-tpl-row" key={t.key}>
-                    <span className="cell-top">{typeLabelFor(t.key)}</span>
-                    <span className="cell-sub">{t.current} current · {t.stale} stale</span>
-                    {t.template ? (
-                      <span className="chip tag">
-                        {t.template.name} v{t.template.version} · {t.template.scope === 'site' ? 'site' : 'global'}
-                      </span>
-                    ) : (
-                      <span className="chip c-red">No active template</span>
-                    )}
-                  </div>
-                ))}
-              </div>
             </>
           )}
-        </PreviewCard>
+        </StepCard>
 
-        <div className="glabels-options">
-          <OptionGroup title="Label types"
-                       hint={initiativeId ? 'Pick one or more. Types without an active template for this initiative stay disabled.'
-                                          : 'Pick an initiative first to see which types have a template.'}>
-            <LabelTypeCards vocab={typeVocab} types={preview?.types ?? null}
-                             selected={selectedTypes} onToggle={toggleType} />
-          </OptionGroup>
+        <StepCard step="2 · Label types" title="Label types">
+          {!initiativeId && (
+            <p className="page-hint">Pick an initiative first to see which types have a template.</p>
+          )}
+          {initiativeId && (
+            <p className="page-hint">
+              Pick one or more. A type needs a resolved template — automatic or chosen — before it can be generated.
+            </p>
+          )}
+          <LabelTypeCards vocab={typeVocab} types={preview?.types ?? null}
+                           selected={selectedTypes} onToggle={toggleType}
+                           overrides={templateOverrides} onOverride={setOverride} />
+        </StepCard>
 
-          <OptionGroup title="Options">
-            <div className="mini-list report-sections">
-              <label className="mini-row report-section-row">
-                <Switch checked={regenerateExisting} onChange={setRegenerateExisting} />
-                <span className="report-section-text">
-                  <span className="cell-top">Regenerate existing labels</span>
-                  <span className="cell-sub">Off skips assets that already have a current label for the type.</span>
-                </span>
-              </label>
-              <label className="mini-row report-section-row">
-                <Switch checked={notify} onChange={setNotify} />
-                <span className="report-section-text">
-                  <span className="cell-top">Notify me when finished</span>
-                  <span className="cell-sub">Get an inbox notification when the run completes.</span>
-                </span>
-              </label>
-            </div>
-          </OptionGroup>
-
-          <div className="glabels-actions">
-            <button type="button" className="btn-solid" disabled={!canGo} onClick={() => void generate()}>
-              Generate labels
-            </button>
-            {activeBlockingId ? (
-              <span className="page-hint" style={{ margin: 0 }}>A run is already active for this initiative.</span>
-            ) : runSummary ? (
-              <span className="page-hint" style={{ margin: 0 }}>{runSummary}</span>
-            ) : (
-              <span className="page-hint" style={{ margin: 0 }}>Choose an initiative and at least one label type.</span>
-            )}
+        <StepCard step="3 · Generate" title="Generate">
+          <div className="mini-list report-sections">
+            <label className="mini-row report-section-row">
+              <Switch checked={regenerateExisting} onChange={setRegenerateExisting} />
+              <span className="report-section-text">
+                <span className="cell-top">Regenerate existing labels</span>
+                <span className="cell-sub">Off skips assets that already have a current label for the type.</span>
+              </span>
+            </label>
+            <label className="mini-row report-section-row">
+              <Switch checked={notify} onChange={setNotify} />
+              <span className="report-section-text">
+                <span className="cell-top">Notify me when finished</span>
+                <span className="cell-sub">Get an inbox notification when the run completes.</span>
+              </span>
+            </label>
           </div>
-        </div>
-      </section>
 
-      {activeRun && (
-        <section className="glabels-section" aria-label="Current run">
-          <div className="modal-section">Current run</div>
-          <div className="glabels-run-card">
+          {preview && selectedTypes.length > 0 && (
+            <dl className="kv">
+              <dt>Initiative</dt>
+              <dd>{preview.initiative.name}</dd>
+              <dt>Types</dt>
+              <dd>
+                <span style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {selectedTypes.map((k) => <span key={k} className="chip tag">{typeLabelFor(k)}</span>)}
+                </span>
+              </dd>
+              <dt>Assets</dt>
+              <dd>{preview.initiative.asset_count.toLocaleString()}</dd>
+              <dt>Templates</dt>
+              <dd>{autoCount} auto · {manualCount} manual</dd>
+            </dl>
+          )}
+
+          {/* While a run is active this replaces the button outright; once it
+              settles, the button comes back (so another run can start) but
+              the just-finished run's own status/tallies stay in view above
+              it rather than disappearing the instant it's done. */}
+          {activeRun && (
             <GenerationProgress run={activeRun} typeLabel={typeLabelFor}
                                  paused={sys.workers_paused} onCancel={() => void cancel()} />
-          </div>
-        </section>
-      )}
+          )}
+          {!activeBlockingId && (
+            <div className="glabels-step-actions">
+              <button type="button" className="btn-solid" disabled={!canGo} onClick={() => void generate()}>
+                Generate labels
+              </button>
+              <p className="page-hint">{generateHint}</p>
+            </div>
+          )}
+        </StepCard>
+      </div>
 
       <section className="glabels-section" aria-label="Recent runs">
         <div className="glabels-section-head">
