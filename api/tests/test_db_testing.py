@@ -193,6 +193,7 @@ async def test_start_creates_snapshotting_session(client, db, seeded_user, testi
     body = resp.json()
     assert body["status"] == "snapshotting"
     assert body["started_by_name"] == "Alice Anderson"
+    assert body["snapshot_filename"] is None
 
     row = await db.scalar(select(AuditLog).where(AuditLog.action == "db_testing.start"))
     assert row is not None
@@ -426,6 +427,37 @@ async def test_status_reports_worker_online_and_recent(client, db, seeded_user,
     await _mark_worker(db)
     resp = await client.get("/devtools/db-testing/status", headers=hdrs)
     assert resp.json()["worker_online"] is True
+
+
+async def test_status_snapshot_filename_null_then_set(
+        client, db, seeded_user, testing_password, fake_storage, fake_pg_dump):
+    hdrs, session_id = await _start_session(db, client, seeded_user, testing_password)
+
+    # still snapshotting — no backup row yet, so no filename
+    before = (await client.get("/devtools/db-testing/status", headers=hdrs)).json()
+    assert before["session"]["status"] == "snapshotting"
+    assert before["session"]["snapshot_filename"] is None
+
+    assert await worker.run_once(get_sessionmaker()) is True
+
+    after = (await client.get("/devtools/db-testing/status", headers=hdrs)).json()
+    assert after["session"]["status"] == "active"
+    assert after["session"]["snapshot_filename"] is not None
+    assert after["session"]["snapshot_filename"].startswith("testing_snapshot_")
+
+    session = await db.get(DbTestingSession, uuid.UUID(session_id))
+    backup = await db.get(DbBackup, session.snapshot_backup_id)
+    assert after["session"]["snapshot_filename"] == backup.filename
+
+    resp = await client.post("/devtools/db-testing/end", headers=hdrs,
+                             json={"password": TESTING_PASSWORD, "revert": False})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["snapshot_filename"] == backup.filename
+
+    recent = (await client.get(
+        "/devtools/db-testing/status", headers=hdrs)).json()["recent"]
+    ended = next(s for s in recent if s["id"] == session_id)
+    assert ended["snapshot_filename"] == backup.filename
 
 
 async def test_status_changes_reports_deltas_and_audit_rows(

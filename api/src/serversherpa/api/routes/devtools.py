@@ -501,13 +501,24 @@ async def delete_db_backup(
 # ── db testing mode ───────────────────────────────────────────────────
 
 
-def _session_out(session: DbTestingSession, name: str | None) -> DbTestingSessionOut:
+def _session_out(session: DbTestingSession, name: str | None,
+                 filename: str | None = None) -> DbTestingSessionOut:
     return DbTestingSessionOut(
         id=session.id, status=session.status,
         snapshot_backup_id=session.snapshot_backup_id,
+        snapshot_filename=filename,
         started_by=session.started_by, started_by_name=name,
         started_at=session.started_at, ended_at=session.ended_at,
         ended_with=session.ended_with, error=session.error)
+
+
+async def _backup_filename(db: DbSession, backup_id) -> str | None:
+    """db_backups.filename for a snapshot_backup_id — null while
+    snapshotting (no backup row yet) or if the backup row is gone."""
+    if backup_id is None:
+        return None
+    backup = await db.get(DbBackup, backup_id)
+    return backup.filename if backup is not None else None
 
 
 async def _person_name(db: DbSession, person_id) -> str | None:
@@ -589,18 +600,21 @@ async def db_testing_status(
     changes = None
     if session is not None:
         session_out = _session_out(
-            session, await _person_name(db, session.started_by))
+            session, await _person_name(db, session.started_by),
+            await _backup_filename(db, session.snapshot_backup_id))
         if session.status == "active":
             changes = await _compute_changes(db, session)
 
     recent_rows = (await db.execute(
-        select(DbTestingSession, Person)
+        select(DbTestingSession, Person, DbBackup)
         .outerjoin(Person, Person.id == DbTestingSession.started_by)
+        .outerjoin(DbBackup, DbBackup.id == DbTestingSession.snapshot_backup_id)
         .where(DbTestingSession.status.in_(("ended", "failed")))
         .order_by(DbTestingSession.started_at.desc())
         .limit(10))).all()
-    recent = [_session_out(s, f"{p.first_name} {p.last_name}" if p else None)
-              for s, p in recent_rows]
+    recent = [_session_out(s, f"{p.first_name} {p.last_name}" if p else None,
+                           b.filename if b is not None else None)
+              for s, p, b in recent_rows]
 
     return DbTestingStatusOut(
         session=session_out, changes=changes, recent=recent,
@@ -672,4 +686,6 @@ async def db_testing_end(
         session.ended_at = datetime.now(UTC)
 
     await db.commit()
-    return _session_out(session, f"{actor.person.first_name} {actor.person.last_name}")
+    return _session_out(
+        session, f"{actor.person.first_name} {actor.person.last_name}",
+        await _backup_filename(db, session.snapshot_backup_id))

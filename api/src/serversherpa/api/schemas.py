@@ -1340,6 +1340,9 @@ class DbTestingSessionOut(BaseModel):
     id: uuid.UUID
     status: str
     snapshot_backup_id: uuid.UUID | None = None
+    # db_backups.filename for snapshot_backup_id — null while snapshotting
+    # (no backup row yet) or if the backup row is gone.
+    snapshot_filename: str | None = None
     started_by: uuid.UUID | None = None
     started_by_name: str | None = None
     started_at: datetime
