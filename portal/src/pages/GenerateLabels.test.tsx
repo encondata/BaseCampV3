@@ -121,9 +121,9 @@ it('renders the eyebrow, title, and description', async () => {
 
 it('renders the three step cards with their eyebrows and titles', async () => {
   renderAt();
-  expect(screen.getByText('1 · Initiative')).not.toBeNull();
-  expect(screen.getByText('2 · Label types')).not.toBeNull();
-  expect(screen.getByText('3 · Generate')).not.toBeNull();
+  expect(screen.getByText('Step 1')).not.toBeNull();
+  expect(screen.getByText('Step 2')).not.toBeNull();
+  expect(screen.getByText('Step 3')).not.toBeNull();
 });
 
 it('the picker hides finished initiatives', async () => {

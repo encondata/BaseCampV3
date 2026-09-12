@@ -44,14 +44,17 @@ const POLL_MS = 1750;
 /** One card of the three-step band — a numbered eyebrow + title header
  *  over arbitrary content, styled as a bordered card (`.glabels-step`,
  *  the same look as `PreviewCard`'s `.rgm-summary`). */
-function StepCard({ step, title, children }: { step: string; title: string; children: ReactNode }) {
+function StepCard({ step, title, hint, children }: {
+  step: string; title: string; hint?: ReactNode; children: ReactNode;
+}) {
   return (
     <section className="glabels-step" aria-label={title}>
       <div className="glabels-step-head">
         <span className="eyebrow">{step}</span>
         <div className="modal-section">{title}</div>
+        {hint && <p className="page-hint">{hint}</p>}
       </div>
-      {children}
+      <div className="glabels-step-body">{children}</div>
     </section>
   );
 }
@@ -275,7 +278,9 @@ export default function GenerateLabels() {
       {error && <div className="pf-error" style={{ marginBottom: 12 }}>{error}</div>}
 
       <div className="glabels-steps">
-        <StepCard step="1 · Initiative" title="Initiative">
+        <StepCard step="Step 1" title="Initiative"
+                  hint="Pick the initiative whose assets get labels. Its sites decide which templates match.">
+          <div className="glabels-initiative">
           <ComboBox options={pickerOptions} value={initiativeId}
                     onChange={(v) => { setInitiativeId(v); setSelectedTypes([]); setTemplateOverrides({}); }}
                     placeholder="Choose an initiative…" clearable />
@@ -287,7 +292,7 @@ export default function GenerateLabels() {
             <div className="pf-error">{previewError}</div>
           )}
           {initiativeId && !previewLoading && !previewError && preview && (
-            <>
+            <div>
               <InitiativeSummary
                 initiative={{
                   name: preview.initiative.name, clientName: preview.initiative.client_name,
@@ -308,25 +313,23 @@ export default function GenerateLabels() {
                   <span className="dash-kpi-value">{preview.types.filter((t) => t.template).length} / {preview.types.length}</span>
                 </div>
               </div>
-            </>
+            </div>
           )}
+          </div>
         </StepCard>
 
-        <StepCard step="2 · Label types" title="Label types">
-          {!initiativeId && (
-            <p className="page-hint">Pick an initiative first to see which types have a template.</p>
-          )}
-          {initiativeId && (
-            <p className="page-hint">
-              Pick one or more. A type needs a resolved template — automatic or chosen — before it can be generated.
-            </p>
-          )}
+        <StepCard step="Step 2" title="Label types"
+                  hint={initiativeId
+                    ? 'Pick one or more. A type needs a resolved template — automatic or chosen — before it can be generated.'
+                    : 'Pick an initiative first to see which types have a template.'}>
           <LabelTypeCards vocab={typeVocab} types={preview?.types ?? null}
                            selected={selectedTypes} onToggle={toggleType}
                            overrides={templateOverrides} onOverride={setOverride} />
         </StepCard>
 
-        <StepCard step="3 · Generate" title="Generate">
+        <StepCard step="Step 3" title="Generate"
+                  hint="Review the run, then queue it for the label worker.">
+          <div className="glabels-generate">
           <div className="mini-list report-sections">
             <label className="mini-row report-section-row">
               <Switch checked={regenerateExisting} onChange={setRegenerateExisting} />
@@ -344,6 +347,7 @@ export default function GenerateLabels() {
             </label>
           </div>
 
+          <div>
           {preview && selectedTypes.length > 0 && (
             <dl className="kv">
               <dt>Initiative</dt>
@@ -365,10 +369,6 @@ export default function GenerateLabels() {
               settles, the button comes back (so another run can start) but
               the just-finished run's own status/tallies stay in view above
               it rather than disappearing the instant it's done. */}
-          {activeRun && (
-            <GenerationProgress run={activeRun} typeLabel={typeLabelFor}
-                                 paused={sys.workers_paused} onCancel={() => void cancel()} />
-          )}
           {!activeBlockingId && (
             <div className="glabels-step-actions">
               <button type="button" className="btn-solid" disabled={!canGo} onClick={() => void generate()}>
@@ -377,6 +377,12 @@ export default function GenerateLabels() {
               <p className="page-hint">{generateHint}</p>
             </div>
           )}
+          </div>
+          {activeRun && (
+            <GenerationProgress run={activeRun} typeLabel={typeLabelFor}
+                                 paused={sys.workers_paused} onCancel={() => void cancel()} />
+          )}
+          </div>
         </StepCard>
       </div>
 
