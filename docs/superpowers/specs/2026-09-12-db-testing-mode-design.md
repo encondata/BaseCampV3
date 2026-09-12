@@ -43,4 +43,4 @@ Jimmy: a Testing tab on Developer › Database, password-protected above the dev
 
 ## Deliberate limits
 
-Plain-SQL snapshots only (no encryption — the snapshot is an internal safety net); dev-scale row counting; the revert briefly kills every DB connection (API requests in flight fail once; workers reconnect); a failed revert leaves the system read-only on purpose.
+A revert interrupted after a successful restore but before its final bookkeeping commit can be re-claimed by the stale sweep as a fresh `snapshotting` session (the restored database is snapshotted again and the banner comes back); the operator ends it with Keep — nothing is lost. The schema drop travels inside `psql --single-transaction` with the restore, so a failed restore rolls back to the pre-revert state. Plain-SQL snapshots only (no encryption — the snapshot is an internal safety net); dev-scale row counting; the revert briefly kills every DB connection (API requests in flight fail once; workers reconnect); a failed revert leaves the system read-only on purpose.
