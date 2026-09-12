@@ -111,6 +111,33 @@ describe('PrintAssetList', () => {
     expect(screen.getByText('No assets match your search')).toBeTruthy();
   });
 
+  it('does not re-report displayed rows on unrelated re-renders', () => {
+    const onDisplayedChange = vi.fn();
+    const onSelectedChange = vi.fn();
+    const onRefresh = vi.fn();
+    const selectedFixture: string[] = [];
+    const { rerender } = render(
+      <PrintAssetList rows={ROWS} statusOf={statusOf} selected={selectedFixture} refreshing={false}
+                      onSelectedChange={onSelectedChange} onDisplayedChange={onDisplayedChange} onRefresh={onRefresh} />,
+    );
+    expect(onDisplayedChange).toHaveBeenCalledTimes(1);
+
+    // Same rows/statusOf/selected references, only `refreshing` flips — the
+    // `displayed` memo must not recompute, so onDisplayedChange must not re-fire.
+    rerender(
+      <PrintAssetList rows={ROWS} statusOf={statusOf} selected={selectedFixture} refreshing={true}
+                      onSelectedChange={onSelectedChange} onDisplayedChange={onDisplayedChange} onRefresh={onRefresh} />,
+    );
+    expect(onDisplayedChange).toHaveBeenCalledTimes(1);
+
+    const newRows = [...ROWS];
+    rerender(
+      <PrintAssetList rows={newRows} statusOf={statusOf} selected={selectedFixture} refreshing={true}
+                      onSelectedChange={onSelectedChange} onDisplayedChange={onDisplayedChange} onRefresh={onRefresh} />,
+    );
+    expect(onDisplayedChange).toHaveBeenCalledTimes(2);
+  });
+
   it('refresh button calls back and disables while refreshing', async () => {
     const h = setup({ refreshing: true });
     const btn = screen.getByRole('button', { name: 'Refresh' }) as HTMLButtonElement;

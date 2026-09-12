@@ -47,6 +47,12 @@ const DEFAULT_VISIBLE = new Set(COLUMNS.filter((c) => c.default).map((c) => c.ke
 const STATUS_LABEL: Record<LabelStatus, string> = { ready: 'Ready', stale: 'Stale', missing: 'Missing', unsupported: 'Unsupported' };
 const STATUS_CHIP: Record<LabelStatus, string> = { ready: 'c-green', stale: 'c-amber', missing: 'c-slate', unsupported: 'c-red' };
 
+/** Stable search-text function for `useSearchHaystacks` — must keep its
+ *  identity across renders (see that hook's docstring) or the `displayed`
+ *  memo's `haystack` dep churns every render. */
+const searchText = (r: InitiativeAssetRow): string =>
+  ['asset_id', 'name', 'serial', 'make', 'model'].map((k) => assetCellText(r, null, k)).join(' ').toLowerCase();
+
 export function assetCellText(row: InitiativeAssetRow, status: LabelStatus | null, key: string): string {
   switch (key) {
     case 'asset_id': return row.asset.legacy_id != null ? String(row.asset.legacy_id) : '';
@@ -108,8 +114,7 @@ export default function PrintAssetList({
 
   const status = (r: InitiativeAssetRow): LabelStatus | null => (statusOf ? statusOf(r) : null);
   const cellText: CellText<InitiativeAssetRow> = (r, key) => assetCellText(r, status(r), key);
-  const haystack = useSearchHaystacks(rows, (r) =>
-    ['asset_id', 'name', 'serial', 'make', 'model'].map((k) => assetCellText(r, null, k)).join(' ').toLowerCase());
+  const haystack = useSearchHaystacks(rows, searchText);
 
   const displayed = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -123,6 +128,8 @@ export default function PrintAssetList({
       return !q || haystack(r).includes(q);
     });
     return sortRows(filtered, status, sortKey, sortDir);
+    // `cellText`/`status` are intentionally omitted: both are re-created each
+    // render but are pure functions of `statusOf`, which is already a dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, statusOf, labelFilter, filters, query, sortKey, sortDir, haystack]);
 
@@ -140,8 +147,14 @@ export default function PrintAssetList({
   // V2 semantics: select-all REPLACES the selection with the filtered rows; unchecking clears it.
   const toggleAll = () => onSelectedChange(allSelected ? [] : displayedIds);
 
-  const orderedCols = applyColumnOrder(COLUMNS.filter((c) => statusOf || c.key !== 'label'), colOrder);
-  const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
+  const orderedCols = useMemo(
+    () => applyColumnOrder(COLUMNS.filter((c) => statusOf || c.key !== 'label'), colOrder),
+    [statusOf, colOrder],
+  );
+  const shownCols = useMemo(
+    () => visibleColumnsFor(orderedCols, visibleCols, false),
+    [orderedCols, visibleCols],
+  );
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
