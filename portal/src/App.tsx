@@ -34,8 +34,8 @@ import Notifications from './pages/Notifications';
 import NotificationGroupDetailPage from './pages/NotificationGroupDetail';
 import Partners from './pages/Partners';
 import PeopleDashboard from './pages/PeopleDashboard';
-import Placeholder from './pages/Placeholder';
 import Printers from './pages/Printers';
+import PrintLabels from './pages/PrintLabels';
 import Reports from './pages/Reports';
 import Login from './pages/Login';
 import Profile from './pages/Profile';
@@ -140,10 +140,7 @@ export default function App() {
                   <ProtectedRoute resource="partners"><StakeholderDetail kind="partner" /></ProtectedRoute>
                 } />
                 <Route path="/labels/print" element={
-                  <ProtectedRoute resource="labels">
-                    <Placeholder eyebrow="Labels" title="Print Labels"
-                                 hint="Download cached labels and print at the dock — even offline." />
-                  </ProtectedRoute>
+                  <ProtectedRoute resource="labels"><PrintLabels /></ProtectedRoute>
                 } />
                 <Route path="/labels/templates" element={
                   <ProtectedRoute resource="labels"><LabelTemplates /></ProtectedRoute>

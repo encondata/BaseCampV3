@@ -22,6 +22,7 @@ from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     GeneratedLabelOut,
+    GeneratedLabelBundleItemOut, GeneratedLabelBundleOut,
     LabelCompileIn, LabelCompileOut,
     LabelGeneratePreviewCandidateOut, LabelGeneratePreviewInitiativeOut,
     LabelGeneratePreviewOut, LabelGeneratePreviewTemplateOut, LabelGeneratePreviewTypeOut,
@@ -873,3 +874,32 @@ async def list_generated_labels(
             template_version=template_version, generated_at=gl.generated_at,
             stale=gl.stale, code=gl.code))
     return out
+
+
+@router.get("/generated/bundle", response_model=GeneratedLabelBundleOut)
+async def get_generated_label_bundle(
+    db: DbSession, initiative_id: uuid.UUID, label_type: str,
+    actor: AuthContext = require_permission("labels", "view"),
+) -> GeneratedLabelBundleOut:
+    """Print Labels' data source: every asset label of one type on one
+    initiative, with the language/size/dpi keys the page needs to decide
+    what a Zebra printer can take. Unknown/archived/out-of-scope
+    initiatives read as 404 like the preview endpoint."""
+    ini = await _scoped_initiative(db, actor, initiative_id)
+    rows = (await db.execute(
+        select(GeneratedLabel, LabelTemplate.name)
+        .join(LabelTemplate, LabelTemplate.id == GeneratedLabel.template_id)
+        .where(GeneratedLabel.initiative_id == ini.id,
+               GeneratedLabel.entity_type == "asset",
+               GeneratedLabel.label_type == label_type)
+        .order_by(GeneratedLabel.generated_at, GeneratedLabel.id))).all()
+    return GeneratedLabelBundleOut(
+        initiative_id=ini.id, label_type=label_type, fetched_at=datetime.now(UTC),
+        labels=[
+            GeneratedLabelBundleItemOut(
+                id=gl.id, entity_type=gl.entity_type, entity_id=gl.entity_id,
+                template_id=gl.template_id, template_name=template_name,
+                template_version=gl.template_version, language_key=gl.language_key,
+                size_key=gl.size_key, dpi_key=gl.dpi_key, stale=gl.stale,
+                generated_at=gl.generated_at, code=gl.code)
+            for gl, template_name in rows])
