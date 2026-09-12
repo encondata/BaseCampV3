@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ContainerItem, InitiativeItem } from './api';
+import type { TagKey } from '../labels/tagTypes';
 import {
   applyBulkTag, buildRunOptions, changedTagIds, containerDisplayName, filterContainers,
-  initiativeDisplayName, labeledContainers, persistTagChanges, selectAllFiltered, tagsFromContainers,
-  tagsInUse, toggleSelection, toPdfInput,
+  initiativeDisplayName, labeledContainers, persistTagChanges, revertFailedTags, selectAllFiltered,
+  tagsFromContainers, tagsInUse, toggleSelection, toPdfInput,
 } from './containerLabels';
 
 function container(over: Partial<ContainerItem> = {}): ContainerItem {
@@ -208,7 +209,7 @@ describe('persistTagChanges', () => {
     const updateFn = vi.fn();
     const out = await persistTagChanges({ c1: 'priority' }, { c1: 'priority' }, updateFn);
     expect(updateFn).not.toHaveBeenCalled();
-    expect(out).toEqual({ tags: { c1: 'priority' }, failed: false });
+    expect(out).toEqual({ failedIds: [] });
   });
 
   it('PATCHes every changed id with its new tag (or null when cleared)', async () => {
@@ -217,7 +218,7 @@ describe('persistTagChanges', () => {
     expect(updateFn).toHaveBeenCalledWith('c1', 'priority');
     expect(updateFn).toHaveBeenCalledWith('c2', 'vendor');
     expect(updateFn).toHaveBeenCalledTimes(2);
-    expect(out).toEqual({ tags: { c1: 'priority', c2: 'vendor' }, failed: false });
+    expect(out).toEqual({ failedIds: [] });
   });
 
   it('sends null for a cleared tag', async () => {
@@ -226,21 +227,48 @@ describe('persistTagChanges', () => {
     expect(updateFn).toHaveBeenCalledWith('c1', null);
   });
 
-  it('reverts only the failed id\'s tag and reports failed: true, leaving other successful changes in place', async () => {
+  it('reports only the failed id(s), leaving successful ones out of failedIds', async () => {
     const updateFn = vi.fn()
       .mockImplementation((id: string) => (id === 'c1' ? Promise.reject(new Error('boom')) : Promise.resolve({})));
     const out = await persistTagChanges(
       { c1: 'priority', c2: 'ewaste' }, { c1: 'vendor', c2: 'warehouse' }, updateFn,
     );
-    expect(out.failed).toBe(true);
-    expect(out.tags).toEqual({ c1: 'priority', c2: 'warehouse' });
+    expect(out.failedIds).toEqual(['c1']);
   });
 
-  it('a failed PATCH for a newly-set tag (no prior value) reverts to absent, not null-ish leftovers', async () => {
+  it('reports every rejected id when more than one PATCH fails', async () => {
     const updateFn = vi.fn().mockRejectedValue(new Error('boom'));
-    const out = await persistTagChanges({}, { c1: 'priority' }, updateFn);
-    expect(out.failed).toBe(true);
-    expect(out.tags).toEqual({});
+    const out = await persistTagChanges({}, { c1: 'priority', c2: 'vendor' }, updateFn);
+    expect(out.failedIds.sort()).toEqual(['c1', 'c2']);
+  });
+});
+
+describe('revertFailedTags', () => {
+  it('no-ops when nothing failed', () => {
+    const cur: Record<string, TagKey> = { c1: 'priority' };
+    expect(revertFailedTags(cur, {}, [])).toBe(cur);   // same reference — no unnecessary re-render
+  });
+
+  it('reverts a failed id to its prior value, leaving every other id (including ones changed since) untouched', () => {
+    // c1 failed and had no prior value; c2 succeeded (not in failedIds) and
+    // must survive even though it wasn't in `prev` either — this is the
+    // shape of a concurrent second change landing while c1's PATCH was
+    // still in flight.
+    const cur: Record<string, TagKey> = { c2: 'vendor' };
+    const out = revertFailedTags(cur, {}, ['c1']);
+    expect(out).toEqual({ c2: 'vendor' });
+  });
+
+  it('restores a prior tag for a failed clear', () => {
+    const cur: Record<string, TagKey> = {};
+    const out = revertFailedTags(cur, { c1: 'priority' }, ['c1']);
+    expect(out).toEqual({ c1: 'priority' });
+  });
+
+  it('reverts only the ids named in failedIds, not every id that differs from prev', () => {
+    const cur: Record<string, TagKey> = { c1: 'vendor', c2: 'warehouse' };
+    const out = revertFailedTags(cur, { c1: 'priority', c2: 'ewaste' }, ['c1']);
+    expect(out).toEqual({ c1: 'priority', c2: 'warehouse' });
   });
 });
 

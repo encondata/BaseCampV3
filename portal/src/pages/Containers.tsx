@@ -60,6 +60,20 @@ import '../styles/assets.css';
 import '../styles/containers.css';
 import { displayRfid } from '../lib/format';
 
+/** Shared by the list cell and the row detail block so both render the
+ *  Label tag the same way: a colored `chip custom`, or a plain '—' when
+ *  the container has none. */
+function LabelTagChip({ tag }: { tag: ContainerItem['label_tag'] }) {
+  const opt = LABEL_TAG_OPTIONS.find((o) => o.key === tag);
+  return opt
+    ? (
+      <span className="chip custom" style={{ '--chip': opt.color } as CSSProperties}>
+        <span className="dot" />{opt.label}
+      </span>
+    )
+    : <span className="cell-top">—</span>;
+}
+
 const COLUMNS: ColumnDef[] = [
   { key: 'type', label: 'Type', width: '1fr', default: true },
   { key: 'rfid', label: 'RFID', width: '1fr', default: true },
@@ -261,16 +275,8 @@ export default function Containers() {
         return <span className="cell-top">{c.site_name ?? '—'}</span>;
       case 'initiative':
         return <span className="cell-top">{c.initiative_name ?? '—'}</span>;
-      case 'label_tag': {
-        const opt = LABEL_TAG_OPTIONS.find((o) => o.key === c.label_tag);
-        return opt
-          ? (
-            <span className="chip custom" style={{ '--chip': opt.color } as CSSProperties}>
-              <span className="dot" />{opt.label}
-            </span>
-          )
-          : <span className="cell-top">—</span>;
-      }
+      case 'label_tag':
+        return <LabelTagChip tag={c.label_tag} />;
       case 'location':
         return <span className="cell-top">{c.location_detail || '—'}</span>;
       case 'updated':
@@ -472,7 +478,7 @@ function ContainerRowDetail({
         <dl className="kv">
           <dt>Name</dt><dd>{container.name}</dd>
           <dt>Type</dt><dd>{container.type_label ?? '—'}</dd>
-          <dt>Label tag</dt><dd>{labelTagText(container) || '—'}</dd>
+          <dt>Label tag</dt><dd><LabelTagChip tag={container.label_tag} /></dd>
           <dt>RFID tag</dt><dd className="mono" title={container.rfid_tag ?? undefined}>{displayRfid(container.rfid_tag)}</dd>
           <dt>Last audit</dt>
           <dd>{container.last_audit_at

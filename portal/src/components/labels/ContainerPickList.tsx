@@ -19,7 +19,7 @@ import type { ContainerItem } from '../../lib/api';
 import {
   applyBulkTag, containerDisplayName, filterContainers, selectAllFiltered, TAG_CHOICES, toggleSelection,
 } from '../../lib/containerLabels';
-import { TAG_TYPES, type TagKey } from '../../labels/containerLabelSheet';
+import { TAG_TYPES, type TagKey } from '../../labels/tagTypes';
 import ContainerTagPicker from './ContainerTagPicker';
 import '../../styles/directory.css';
 

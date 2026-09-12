@@ -7,15 +7,15 @@
  * containers and tags identically, then hands `{ container_ids, tags }`
  * back to GenerateReportModal's own progress step.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   ApiError, listContainers, updateContainer, type ContainerItem, type InitiativeItem, type ReportDefinition,
 } from '../../lib/api';
 import {
-  buildRunOptions, labeledContainers, persistTagChanges, tagsFromContainers, tagsInUse,
+  buildRunOptions, labeledContainers, persistTagChanges, revertFailedTags, tagsFromContainers, tagsInUse,
 } from '../../lib/containerLabels';
-import { TAG_TYPES, type TagKey } from '../../labels/containerLabelSheet';
+import { TAG_TYPES, type TagKey } from '../../labels/tagTypes';
 import ContainerPickList from '../labels/ContainerPickList';
 import { Switch } from '../Switch';
 import { InitiativeSummary, OptionGroup, OptionsGrid, PreviewCard, summaryFromInitiative } from './ReportOptionsLayout';
@@ -38,6 +38,12 @@ export default function ContainerLabelsOptions({ initiative, onBack, onGenerate 
   const [tagsError, setTagsError] = useState('');
   const [filteredIds, setFilteredIds] = useState<string[]>([]);
   const [notify, setNotify] = useState(false);
+  // Synced every render — see ContainerLabels.tsx's own `initiativeIdRef`
+  // comment: guards the post-save refetch against the operator (or
+  // GenerateReportModal's own "pick" step) switching to a different
+  // initiative while it was in flight.
+  const initiativeRef = useRef(initiative);
+  initiativeRef.current = initiative;
 
   useEffect(() => {
     if (!initiative) { setContainers(null); return; }
@@ -62,21 +68,25 @@ export default function ContainerLabelsOptions({ initiative, onBack, onGenerate 
   }, [initiative]);
 
   // Same read/write-through-the-container behavior as the standalone
-  // /labels/containers page (ContainerLabels.tsx) — see its own comment.
+  // /labels/containers page (ContainerLabels.tsx) — see its own comment
+  // (functional per-id revert, initiative-switch-guarded refetch).
   const applyTagsChange = async (next: Record<string, TagKey>) => {
     const prev = tags;
+    const forInitiative = initiative;
     setTags(next);
     setTagsError('');
-    const { tags: settled, failed } = await persistTagChanges(
+    const { failedIds } = await persistTagChanges(
       prev, next, (id, tag) => updateContainer(id, { label_tag: tag }),
     );
-    setTags(settled);
-    if (failed) setTagsError("Couldn't save one or more tags — try again.");
-    if (!initiative) return;
+    if (failedIds.length > 0) {
+      setTags((cur) => revertFailedTags(cur, prev, failedIds));
+      setTagsError("Couldn't save one or more tags — try again.");
+    }
+    if (!forInitiative || initiativeRef.current?.id !== forInitiative.id) return;
     try {
-      // See ContainerLabels.tsx's own comment: `tags` stays `settled`
-      // rather than being re-derived from this refresh.
-      setContainers(await listContainers({ initiative_id: initiative.id }));
+      const rows = await listContainers({ initiative_id: forInitiative.id });
+      if (initiativeRef.current?.id !== forInitiative.id) return;
+      setContainers(rows);
     } catch {
       // Keep the currently loaded containers if the refresh itself fails.
     }

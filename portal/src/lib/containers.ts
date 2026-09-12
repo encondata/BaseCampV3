@@ -10,7 +10,7 @@ import { LABEL_TAG_OPTIONS } from './labelTags';
 
 export function containerSearchText(c: ContainerItem): string {
   return [c.name, c.rfid_tag, c.type_label, c.status_label,
-          c.site_name, c.location_detail]
+          c.site_name, c.location_detail, labelTagText(c)]
     .filter(Boolean).join(' ').toLowerCase();
 }
 

@@ -22,6 +22,16 @@ describe('containerSearchText', () => {
     expect(t).toContain('dc-east');
     expect(t).toContain('cart');
   });
+
+  it('includes the label tag\'s own text, so the global search box can find it', () => {
+    expect(containerSearchText({ ...row, label_tag: 'priority' })).toContain('priority');
+    expect(containerSearchText({ ...row, label_tag: 'ewaste' })).toContain('e-waste');
+  });
+
+  it('carries no extra text when untagged', () => {
+    expect(containerSearchText(row)).not.toContain('undefined');
+    expect(containerSearchText(row)).not.toContain('null');
+  });
 });
 
 describe('containerCellText', () => {

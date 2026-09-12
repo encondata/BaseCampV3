@@ -125,6 +125,23 @@ it('create mode starts with no label tag selected', () => {
   expect(screen.getByPlaceholderText('None')).toBeTruthy();
 });
 
+it('create mode sends the picked label tag on submit', async () => {
+  const user = userEvent.setup();
+  render(<ContainerEditModal container={null} statuses={[]} types={[]} sites={[]}
+                              initiatives={INITIATIVES} canChange
+                              onClose={() => {}} onSaved={() => {}} />);
+  // Name has no htmlFor/id (a bare sibling <label>), so it's found the
+  // same way — position, not accessible name — as any other bare `pf-form`
+  // text input in this modal; it's the first `.pf-form` textbox rendered.
+  await user.type(screen.getAllByRole('textbox')[0], 'New Crate');
+  await user.click(screen.getByPlaceholderText('None'));
+  await user.click(await screen.findByText('Warehouse'));
+  await user.click(screen.getByRole('button', { name: 'Create container' }));
+
+  await waitFor(() => expect(api.createContainer).toHaveBeenCalled());
+  expect(api.createContainer.mock.calls[0][0]).toMatchObject({ label_tag: 'warehouse' });
+});
+
 it('sorts initiative options newest-first without filtering any out', async () => {
   const user = userEvent.setup();
   const initiatives: InitiativeItem[] = [

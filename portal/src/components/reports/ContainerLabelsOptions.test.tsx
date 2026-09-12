@@ -113,18 +113,22 @@ it('a row tag change PATCHes that container with {label_tag} and refreshes the l
   await waitFor(() => expect(api.listContainers).toHaveBeenCalledWith({ initiative_id: 'i2' }));
 });
 
-it('bulk Set tag PATCHes every selected container in parallel', async () => {
+it('bulk Set tag PATCHes only the selected containers, never an unselected one', async () => {
+  api.listContainers.mockResolvedValue([
+    ...CONTAINERS, container({ id: 'c3', name: 'Cable Tote' }),
+  ]);
   const user = userEvent.setup();
   render(<ContainerLabelsOptions definition={DEF} initiative={INITIATIVE}
                                   onBack={() => {}} onGenerate={() => {}} />);
   await screen.findByText('Rack Cart 1');
   await user.click(screen.getByText('Rack Cart 1'));
-  await user.click(screen.getByText('Server Bin'));
+  await user.click(screen.getByText('Server Bin'));   // Cable Tote (c3) stays unselected
 
   await user.click(screen.getByRole('button', { name: 'Vendor' }));
 
   await waitFor(() => expect(api.updateContainer).toHaveBeenCalledWith('c1', { label_tag: 'vendor' }));
   expect(api.updateContainer).toHaveBeenCalledWith('c2', { label_tag: 'vendor' });
+  expect(api.updateContainer).not.toHaveBeenCalledWith('c3', expect.anything());
   expect(api.updateContainer).toHaveBeenCalledTimes(2);
 });
 
@@ -140,6 +144,28 @@ it('reverts a container\'s tag and shows the error strip when its PATCH is rejec
 
   expect(await screen.findByText(/Couldn.t save one or more tags/)).toBeTruthy();
   await waitFor(() => expect(screen.getByLabelText('Tag for Rack Cart 1').textContent).toContain('No tag'));
+});
+
+it('a concurrent second tag change is not undone when an earlier one\'s PATCH later rejects', async () => {
+  let rejectC1: (err: unknown) => void = () => {};
+  const c1Pending = new Promise((_resolve, reject) => { rejectC1 = reject; });
+  api.updateContainer.mockImplementation((id: string) => (id === 'c1' ? c1Pending : Promise.resolve({})));
+  const user = userEvent.setup();
+  render(<ContainerLabelsOptions definition={DEF} initiative={INITIATIVE}
+                                  onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByText('Rack Cart 1');
+
+  await user.click(screen.getByLabelText('Tag for Rack Cart 1'));
+  await user.click(await screen.findByRole('menuitem', { name: /Priority/ }));
+  expect(screen.getByLabelText('Tag for Rack Cart 1').textContent).toContain('Priority');
+
+  await user.click(screen.getByLabelText('Tag for Server Bin'));
+  await user.click(await screen.findByRole('menuitem', { name: /Vendor/ }));
+  await waitFor(() => expect(screen.getByLabelText('Tag for Server Bin').textContent).toContain('Vendor'));
+
+  rejectC1(new Error('nope'));
+  await waitFor(() => expect(screen.getByLabelText('Tag for Rack Cart 1').textContent).toContain('No tag'));
+  expect(screen.getByLabelText('Tag for Server Bin').textContent).toContain('Vendor');
 });
 
 it('Back calls onBack', async () => {

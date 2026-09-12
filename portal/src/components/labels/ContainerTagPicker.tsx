@@ -13,7 +13,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 
 import { TAG_CHOICES } from '../../lib/containerLabels';
-import { TAG_TYPES, type TagKey } from '../../labels/containerLabelSheet';
+import { TAG_TYPES, type TagKey } from '../../labels/tagTypes';
 import '../../styles/column-menu.css';
 
 const OPEN_UPWARD_THRESHOLD = 200;

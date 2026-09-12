@@ -21,7 +21,8 @@ import {
   type ReportRun,
 } from '../lib/api';
 import {
-  buildRunOptions, labeledContainers, persistTagChanges, tagsFromContainers, tagsInUse, toPdfInput,
+  buildRunOptions, labeledContainers, persistTagChanges, revertFailedTags, tagsFromContainers, tagsInUse,
+  toPdfInput,
 } from '../lib/containerLabels';
 import { visibleInitiativesForGenerate } from '../lib/generateLabels';
 import { openPresigned } from '../lib/reports';
@@ -81,6 +82,13 @@ export default function ContainerLabels() {
   const [run, setRun] = useState<ReportRun | null>(null);
   const [runError, setRunError] = useState('');
   const closedRef = useRef(false);
+  // Synced every render (no effect needed — same immediate-ref pattern as
+  // columnMenu.tsx's own `prefsRef`): lets `applyTagsChange`'s post-save
+  // refetch notice the operator has switched to a different initiative
+  // while it was in flight, so a slow response for initiative A never
+  // lands A's containers under initiative B.
+  const initiativeIdRef = useRef(initiativeId);
+  initiativeIdRef.current = initiativeId;
 
   useEffect(() => {
     closedRef.current = false;
@@ -118,28 +126,32 @@ export default function ContainerLabels() {
   // Container Labels reads/writes the tag straight from the container
   // (addendum 2026-09-12): a row-picker or bulk "Set tag" change applies
   // optimistically, then PATCHes every actually-changed container in
-  // parallel; a rejected PATCH reverts just that container's tag and
+  // parallel; a rejected PATCH reverts just that container's tag (via a
+  // FUNCTIONAL setTags update touching only the failed id(s) — see
+  // `persistTagChanges`'s own comment for why a second, concurrent tag
+  // change made while this one's PATCHes are in flight must survive) and
   // surfaces `tagsError`. Either way we refetch the initiative's
-  // containers afterward so `label_tag` (and anything else) stays
-  // server-current for the next visit / report run.
+  // containers afterward so anything else the PATCH may have changed is
+  // current for the next visit / report run — guarded against the
+  // operator having switched to a different initiative while the refetch
+  // was in flight (`initiativeIdRef`).
   const applyTagsChange = async (next: Record<string, TagKey>) => {
     const prev = tags;
+    const forInitiativeId = initiativeId;
     setTags(next);
     setTagsError('');
-    const { tags: settled, failed } = await persistTagChanges(
+    const { failedIds } = await persistTagChanges(
       prev, next, (id, tag) => updateContainer(id, { label_tag: tag }),
     );
-    setTags(settled);
-    if (failed) setTagsError("Couldn't save one or more tags — try again.");
-    if (!initiativeId) return;
+    if (failedIds.length > 0) {
+      setTags((cur) => revertFailedTags(cur, prev, failedIds));
+      setTagsError("Couldn't save one or more tags — try again.");
+    }
+    if (!forInitiativeId || initiativeIdRef.current !== forInitiativeId) return;
     try {
-      // Refresh the container list so anything else the PATCH may have
-      // changed (or another operator's concurrent edit) is current — but
-      // `tags` stays exactly `settled` (this session's own optimistic
-      // state, already reverted where a PATCH failed) rather than being
-      // re-derived from this response, which would otherwise race a
-      // save/refresh pair against each other for no benefit.
-      setContainers(await listContainers({ initiative_id: initiativeId }));
+      const rows = await listContainers({ initiative_id: forInitiativeId });
+      if (initiativeIdRef.current !== forInitiativeId) return;
+      setContainers(rows);
     } catch {
       // Keep the currently loaded containers if the refresh itself fails.
     }

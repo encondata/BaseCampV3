@@ -13,15 +13,20 @@
  * `'none'`.
  */
 import type { ContainerItem, InitiativeItem } from './api';
-import type { ContainerLabelInput, TagKey } from '../labels/containerLabelSheet';
+import { LABEL_TAG_OPTIONS } from './labelTags';
+import type { ContainerLabelInput } from '../labels/containerLabelSheet';
+import type { TagKey } from '../labels/tagTypes';
 
 /** The five real tags, in V2's own display order, for both
  *  `ContainerTagPicker`'s menu and `ContainerPickList`'s bulk `.segmented`
- *  row — one export so the two never drift apart. `TAG_TYPES`
- *  (`containerLabelSheet.ts`) also carries `'none'`, a harmless default
- *  the drawing routine falls back to; it is never offered as its own
- *  choice here (see this file's header comment). */
-export const TAG_CHOICES: TagKey[] = ['priority', 'vendor', 'accessories', 'ewaste', 'warehouse'];
+ *  row — one export so the two never drift apart. Derived from
+ *  `LABEL_TAG_OPTIONS` (the single option-list source `lib/labelTags.ts`
+ *  owns) rather than a second hand-written literal, so the two can't
+ *  drift out of sync. `TAG_TYPES` (`labels/tagTypes.ts`) also carries
+ *  `'none'`, a harmless default the drawing routine falls back to; it is
+ *  never offered as its own choice here (see this file's header
+ *  comment). */
+export const TAG_CHOICES: TagKey[] = LABEL_TAG_OPTIONS.map((o) => o.key);
 
 /** V2's own move/container name fallbacks, reused for the on-page summary
  *  and the PDF input alike. */
@@ -143,33 +148,51 @@ export function changedTagIds(
  *  `changedTagIds`) in parallel via the injected `updateFn` (dependency
  *  injected — rather than importing `updateContainer` here — so this
  *  stays a plain, jsdom-free unit under test, like the rest of this
- *  file), and rolls back `next` to `prev`'s value for any container whose
- *  PATCH rejected. The caller (`ContainerLabels.tsx` /
- *  `ContainerLabelsOptions.tsx`) applies `next` optimistically before
- *  calling this, then replaces it with the returned `tags`, and refreshes
- *  its container list afterward so `label_tag` stays server-current. */
+ *  file), and reports which ids' PATCH rejected.
+ *
+ *  Deliberately returns only `failedIds`, NOT a merged/settled `tags` map:
+ *  the caller (`ContainerLabels.tsx` / `ContainerLabelsOptions.tsx`)
+ *  applies `next` optimistically before calling this, then reverts ONLY
+ *  the failed ids via a FUNCTIONAL `setTags((cur) => …)` keyed off this
+ *  call's own `prev`/`next` closure. Returning a whole map here (as an
+ *  earlier version did) would let a second, concurrent tag change — made
+ *  while this call's PATCHes are still in flight — get clobbered wholesale
+ *  once this call's `setTags(settledMap)` finally lands, since that map
+ *  was computed from a `next` that predates the second change. Reverting
+ *  by id through a functional update, against whatever `tags` happens to
+ *  be *when this call's PATCHes settle*, leaves every other id (including
+ *  ones changed after this call started) untouched. */
 export async function persistTagChanges(
   prev: Record<string, TagKey>,
   next: Record<string, TagKey>,
   updateFn: (id: string, tag: TagKey | null) => Promise<unknown>,
-): Promise<{ tags: Record<string, TagKey>; failed: boolean }> {
+): Promise<{ failedIds: string[] }> {
   const changed = changedTagIds(prev, next);
-  if (changed.length === 0) return { tags: next, failed: false };
+  if (changed.length === 0) return { failedIds: [] };
 
   const results = await Promise.allSettled(
     changed.map((id) => updateFn(id, next[id] ?? null)),
   );
 
-  const out = { ...next };
-  let failed = false;
-  results.forEach((result, i) => {
-    if (result.status !== 'rejected') return;
-    failed = true;
-    const id = changed[i];
+  const failedIds = changed.filter((_, i) => results[i].status === 'rejected');
+  return { failedIds };
+}
+
+/** Reverts exactly `failedIds` in a `tags` map to their `prev` value (or
+ *  removes them if `prev` had none), leaving every other id untouched —
+ *  the shape a caller's functional `setTags((cur) => revertFailedTags(cur,
+ *  prev, failedIds))` update needs so a concurrent change to a DIFFERENT
+ *  id, made while this call's PATCHes were in flight, survives. */
+export function revertFailedTags(
+  cur: Record<string, TagKey>, prev: Record<string, TagKey>, failedIds: string[],
+): Record<string, TagKey> {
+  if (failedIds.length === 0) return cur;
+  const out = { ...cur };
+  for (const id of failedIds) {
     if (prev[id]) out[id] = prev[id];
     else delete out[id];
-  });
-  return { tags: out, failed };
+  }
+  return out;
 }
 
 /** Builds `buildContainerLabelPdf`'s input from the picked initiative and
