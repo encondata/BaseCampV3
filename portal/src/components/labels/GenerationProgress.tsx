@@ -51,6 +51,10 @@ export default function GenerationProgress({ run, typeLabel, paused, onCancel }:
 
       <div className="dash-kpis">
         <div className="dash-kpi">
+          <span className="dash-kpi-label">Processed</span>
+          <span className="dash-kpi-value">{run.processed.toLocaleString()} / {run.total.toLocaleString()}</span>
+        </div>
+        <div className="dash-kpi">
           <span className="dash-kpi-label">Generated</span>
           <span className="dash-kpi-value">{run.generated}</span>
         </div>

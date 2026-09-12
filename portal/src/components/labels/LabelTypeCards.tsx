@@ -8,6 +8,14 @@
 import type { LabelGeneratePreviewType, LabelVocab } from '../../lib/api';
 import { ChoiceCard } from '../reports/ReportOptionsLayout';
 
+/** V2's per-type blurbs, used when the vocabulary row carries no description. */
+const FALLBACK_DESCRIPTION: Record<string, string> = {
+  front: 'Front asset label with the destination position.',
+  top: 'Top label for identification from above.',
+  rail: 'Rail label for server positioning.',
+  container: 'Container label with the container id and contents.',
+};
+
 export default function LabelTypeCards({ vocab, types, selected, onToggle }: {
   vocab: LabelVocab[];
   /** The preview endpoint's per-type resolution — `null` (not yet
@@ -33,7 +41,7 @@ export default function LabelTypeCards({ vocab, types, selected, onToggle }: {
             key={v.key}
             variant="checkbox"
             title={v.label}
-            description={v.description || 'No description.'}
+            description={v.description || FALLBACK_DESCRIPTION[v.key] || 'Uses the active template for this type.'}
             selected={selected.includes(v.key)}
             disabled={disabled}
             hint={disabled ? 'No active template for this type.' : undefined}

@@ -29,7 +29,7 @@ import LabelRunErrorsModal from '../components/labels/LabelRunErrorsModal';
 import LabelRunsList from '../components/labels/LabelRunsList';
 import LabelTypeCards from '../components/labels/LabelTypeCards';
 import {
-  InitiativeSummary, OptionGroup, OptionsGrid, PreviewCard,
+  InitiativeSummary, OptionGroup, PreviewCard,
 } from '../components/reports/ReportOptionsLayout';
 import { Switch } from '../components/Switch';
 import '../styles/directory.css';
@@ -211,8 +211,13 @@ export default function GenerateLabels() {
     setParams(next, { replace: true });
   };
 
+  const pickedTypeLabels = selectedTypes.map(typeLabelFor);
+  const runSummary = initiativeId && preview && selectedTypes.length > 0
+    ? `${pickedTypeLabels.join(' + ')} for ${preview.initiative.asset_count.toLocaleString()} asset${preview.initiative.asset_count === 1 ? '' : 's'} on ${preview.initiative.name}`
+    : null;
+
   return (
-    <div className="portal-page">
+    <div className="portal-page glabels-page">
       <div className="dir-head">
         <div>
           <div className="eyebrow">Labels</div>
@@ -226,14 +231,15 @@ export default function GenerateLabels() {
 
       {error && <div className="pf-error" style={{ marginBottom: 12 }}>{error}</div>}
 
-      <OptionsGrid preview={
+      {/* Set-up band: the initiative on the left, what to generate on the right. */}
+      <section className="glabels-setup" aria-label="Set up a run">
         <PreviewCard title="Initiative">
-          <div style={{ marginBottom: 10 }}>
-            <ComboBox options={pickerOptions} value={initiativeId}
-                      onChange={(v) => { setInitiativeId(v); setSelectedTypes([]); }}
-                      placeholder="Choose an initiative…" clearable />
-          </div>
-          {!initiativeId && <p className="page-hint">Pick an initiative to see its details here.</p>}
+          <ComboBox options={pickerOptions} value={initiativeId}
+                    onChange={(v) => { setInitiativeId(v); setSelectedTypes([]); }}
+                    placeholder="Choose an initiative…" clearable />
+          {!initiativeId && (
+            <p className="page-hint">Pick an initiative to see its sites, asset count, and which template each label type will use.</p>
+          )}
           {initiativeId && previewLoading && <p className="page-hint">Loading preview…</p>}
           {initiativeId && !previewLoading && previewError && (
             <div className="pf-error">{previewError}</div>
@@ -250,68 +256,98 @@ export default function GenerateLabels() {
                 }}
                 emptyText="Pick an initiative to see its details here."
               />
-              <p className="cell-sub">
-                {preview.initiative.asset_count} asset{preview.initiative.asset_count === 1 ? '' : 's'}
-              </p>
-              {preview.types.map((t) => (
-                <div className="glabels-preview-type" key={t.key}>
-                  <span className="cell-sub">{typeLabelFor(t.key)}</span>
-                  {t.template ? (
-                    <span className="chip tag">
-                      {t.template.name} v{t.template.version} · {t.template.scope === 'site' ? 'site' : 'global'}
-                    </span>
-                  ) : (
-                    <span className="chip c-red">No active template</span>
-                  )}
-                  <span className="mono">{t.current} current · {t.stale} stale</span>
+              <div className="dash-kpis glabels-kpis">
+                <div className="dash-kpi">
+                  <span className="dash-kpi-label">Assets</span>
+                  <span className="dash-kpi-value">{preview.initiative.asset_count.toLocaleString()}</span>
                 </div>
-              ))}
+                <div className="dash-kpi">
+                  <span className="dash-kpi-label">Label types</span>
+                  <span className="dash-kpi-value">{preview.types.filter((t) => t.template).length} / {preview.types.length}</span>
+                </div>
+              </div>
+              <div className="glabels-tpl-list" aria-label="Templates by label type">
+                <div className="eyebrow">Templates</div>
+                {preview.types.map((t) => (
+                  <div className="glabels-tpl-row" key={t.key}>
+                    <span className="cell-top">{typeLabelFor(t.key)}</span>
+                    <span className="cell-sub">{t.current} current · {t.stale} stale</span>
+                    {t.template ? (
+                      <span className="chip tag">
+                        {t.template.name} v{t.template.version} · {t.template.scope === 'site' ? 'site' : 'global'}
+                      </span>
+                    ) : (
+                      <span className="chip c-red">No active template</span>
+                    )}
+                  </div>
+                ))}
+              </div>
             </>
           )}
         </PreviewCard>
-      }>
-        <OptionGroup title="Label types">
-          <LabelTypeCards vocab={typeVocab} types={preview?.types ?? null}
-                           selected={selectedTypes} onToggle={toggleType} />
-        </OptionGroup>
 
-        <OptionGroup title="Options">
-          <div className="mini-list report-sections">
-            <label className="mini-row report-section-row">
-              <Switch checked={regenerateExisting} onChange={setRegenerateExisting} />
-              <span className="report-section-text">
-                <span className="cell-top">Regenerate existing labels</span>
-                <span className="cell-sub">Off skips assets that already have a current label for the type.</span>
-              </span>
-            </label>
-            <label className="mini-row report-section-row">
-              <Switch checked={notify} onChange={setNotify} />
-              <span className="report-section-text">
-                <span className="cell-top">Notify me when finished</span>
-                <span className="cell-sub">Get an inbox notification when the run completes.</span>
-              </span>
-            </label>
+        <div className="glabels-options">
+          <OptionGroup title="Label types"
+                       hint={initiativeId ? 'Pick one or more. Types without an active template for this initiative stay disabled.'
+                                          : 'Pick an initiative first to see which types have a template.'}>
+            <LabelTypeCards vocab={typeVocab} types={preview?.types ?? null}
+                             selected={selectedTypes} onToggle={toggleType} />
+          </OptionGroup>
+
+          <OptionGroup title="Options">
+            <div className="mini-list report-sections">
+              <label className="mini-row report-section-row">
+                <Switch checked={regenerateExisting} onChange={setRegenerateExisting} />
+                <span className="report-section-text">
+                  <span className="cell-top">Regenerate existing labels</span>
+                  <span className="cell-sub">Off skips assets that already have a current label for the type.</span>
+                </span>
+              </label>
+              <label className="mini-row report-section-row">
+                <Switch checked={notify} onChange={setNotify} />
+                <span className="report-section-text">
+                  <span className="cell-top">Notify me when finished</span>
+                  <span className="cell-sub">Get an inbox notification when the run completes.</span>
+                </span>
+              </label>
+            </div>
+          </OptionGroup>
+
+          <div className="glabels-actions">
+            <button type="button" className="btn-solid" disabled={!canGo} onClick={() => void generate()}>
+              Generate labels
+            </button>
+            {activeBlockingId ? (
+              <span className="page-hint" style={{ margin: 0 }}>A run is already active for this initiative.</span>
+            ) : runSummary ? (
+              <span className="page-hint" style={{ margin: 0 }}>{runSummary}</span>
+            ) : (
+              <span className="page-hint" style={{ margin: 0 }}>Choose an initiative and at least one label type.</span>
+            )}
           </div>
-        </OptionGroup>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <button type="button" className="btn-solid" disabled={!canGo} onClick={() => void generate()}>
-            Generate labels
-          </button>
-          {activeBlockingId && (
-            <span className="page-hint" style={{ margin: 0 }}>A run is already active for this initiative.</span>
-          )}
         </div>
+      </section>
 
-        {activeRun && (
-          <GenerationProgress run={activeRun} typeLabel={typeLabelFor}
-                               paused={sys.workers_paused} onCancel={() => void cancel()} />
-        )}
+      {activeRun && (
+        <section className="glabels-section" aria-label="Current run">
+          <div className="modal-section">Current run</div>
+          <div className="glabels-run-card">
+            <GenerationProgress run={activeRun} typeLabel={typeLabelFor}
+                                 paused={sys.workers_paused} onCancel={() => void cancel()} />
+          </div>
+        </section>
+      )}
 
-        <div className="modal-section">Recent runs</div>
+      <section className="glabels-section" aria-label="Recent runs">
+        <div className="glabels-section-head">
+          <div className="modal-section">Recent runs</div>
+          <span className="page-hint" style={{ margin: 0 }}>
+            {pickedInitiative ? `Runs for ${pickedInitiative.name}` : 'Runs across all initiatives'}
+          </span>
+        </div>
         <LabelRunsList runs={runs} highlightRunId={highlightRunId} typeLabel={typeLabelFor}
                         onViewErrors={openErrors} />
-      </OptionsGrid>
+      </section>
 
       {viewingErrors && (
         <LabelRunErrorsModal run={viewingErrors} typeLabel={typeLabelFor} onClose={closeErrors} />

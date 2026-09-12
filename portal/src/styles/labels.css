@@ -96,4 +96,20 @@
 .glabels-progress { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
 .glabels-progress-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .glabels-progress-actions { display: flex; justify-content: flex-end; }
-.glabels-preview-type { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+/* Generate Labels page — layout only. Set-up band (initiative card left,
+   what-to-generate right), then full-width Current run + Recent runs. */
+.glabels-setup { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 22px; align-items: start; }
+@media (max-width: 900px) { .glabels-setup { grid-template-columns: 1fr; } }
+.glabels-options { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.glabels-options .rgm-choice-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.glabels-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 4px; }
+.glabels-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 10px 0 4px; }
+.glabels-tpl-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--paper-line); }
+.glabels-tpl-list .eyebrow { margin: 0; }
+.glabels-tpl-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; }
+.glabels-tpl-row .chip { grid-column: 1 / -1; justify-self: start; }
+.glabels-section { margin-top: 26px; }
+.glabels-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.glabels-section-head .modal-section { margin: 0; }
+.glabels-run-card { border: 1px solid var(--paper-line); border-radius: 12px; padding: 14px 16px; background: var(--surface-1, #fff); }
+.glabels-progress .dash-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
