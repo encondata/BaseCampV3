@@ -13,6 +13,7 @@ import Audit from './pages/Audit';
 import Clients from './pages/Clients';
 import ClientDashboard from './pages/ClientDashboard';
 import Containers from './pages/Containers';
+import ContainerLabels from './pages/ContainerLabels';
 import Dev from './pages/Dev';
 import MoveDashboard from './pages/MoveDashboard';
 import DevDatabase from './pages/DevDatabase';
@@ -153,6 +154,9 @@ export default function App() {
                   <ProtectedRoute resource="labels"><LabelTemplateEditor /></ProtectedRoute>} />
                 <Route path="/labels/generate" element={
                   <ProtectedRoute resource="labels"><GenerateLabels /></ProtectedRoute>
+                } />
+                <Route path="/labels/containers" element={
+                  <ProtectedRoute resource="labels"><ContainerLabels /></ProtectedRoute>
                 } />
                 <Route path="/labels/printers" element={
                   <ProtectedRoute resource="labels"><Printers /></ProtectedRoute>

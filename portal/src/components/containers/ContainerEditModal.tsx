@@ -20,6 +20,7 @@ import {
   type AssetItem,
   type ContainerAssetRow,
   type ContainerItem,
+  type InitiativeItem,
   type SiteItem,
   type StatusValue,
 } from '../../lib/api';
@@ -34,6 +35,11 @@ interface Props {
   statuses: StatusValue[];
   types: StatusValue[];
   sites: SiteItem[];
+  // Optional (defaults to none) so callers outside this task's file scope
+  // (e.g. Warehouse.tsx, which reuses this modal but doesn't load
+  // initiatives) keep compiling unchanged — they just won't offer the
+  // Initiative field's options.
+  initiatives?: InitiativeItem[];
   canChange: boolean;
   onClose: () => void;
   onSaved: () => Promise<void> | void;   // parent refetches
@@ -57,13 +63,17 @@ function mapError(err: unknown, fallback: string): string {
 }
 
 export default function ContainerEditModal({
-  container, statuses, types, sites, canChange, onClose, onSaved, initialSiteId,
+  container, statuses, types, sites, initiatives = [], canChange, onClose, onSaved, initialSiteId,
 }: Props) {
   const isCreateMode = container === null;
   const [form, setForm] = useState<ContainerFormState>(() => {
     const f = formFromContainer(container);
     return isCreateMode && initialSiteId ? { ...f, site_id: initialSiteId } : f;
   });
+  // Kept out of `ContainerFormState`/`containerPayload` (lib/containers.ts
+  // is out of this task's file scope) — tracked separately and merged
+  // into the payload on submit instead.
+  const [initiativeId, setInitiativeId] = useState(container?.initiative_id ?? '');
   const [archived, setArchived] = useState<boolean>(!!container?.archived_at);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -120,12 +130,25 @@ export default function ContainerEditModal({
     return list.map((t) => ({ value: t.key, label: t.label }));
   }, [types, container]);
 
+  // Same trap/fix as statusOptions/typeOptions above: `initiatives` may not
+  // include the container's own initiative (e.g. it's finished/archived, or
+  // no list was even passed — Warehouse.tsx's callsite doesn't load one) —
+  // seed that option back in so the field still shows its name.
+  const initiativeOptions = useMemo(() => {
+    const list = container?.initiative_id && !initiatives.some((i) => i.id === container.initiative_id)
+      ? [...initiatives, {
+          id: container.initiative_id, name: container.initiative_name ?? container.initiative_id,
+        } as InitiativeItem]
+      : initiatives;
+    return list.map((i) => ({ value: i.id, label: i.name, sub: i.client_name ?? undefined }));
+  }, [initiatives, container]);
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError('');
     try {
-      const payload = containerPayload(form);
+      const payload = { ...containerPayload(form), initiative_id: initiativeId || null };
       if (isCreateMode) {
         await createContainer(payload);
       } else {
@@ -243,6 +266,15 @@ export default function ContainerEditModal({
                   options={sites
                     .filter((s) => !s.archived_at || s.id === form.site_id)
                     .map((s) => ({ value: s.id, label: s.name }))}
+                /></div>
+              <div><label>Initiative</label>
+                <ComboBox
+                  placeholder="Type to search initiatives…"
+                  value={initiativeId}
+                  clearable
+                  disabled={locked}
+                  onChange={setInitiativeId}
+                  options={initiativeOptions}
                 /></div>
             </div>
 

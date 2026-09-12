@@ -18,10 +18,12 @@ import {
   listContainers,
   listContainerStatuses,
   listContainerTypes,
+  listInitiatives,
   listSites,
   updateContainer,
   type ContainerAssetRow,
   type ContainerItem,
+  type InitiativeItem,
   type SiteItem,
   type StatusValue,
 } from '../lib/api';
@@ -63,6 +65,7 @@ const COLUMNS: ColumnDef[] = [
   { key: 'assets', label: 'Assets', width: '0.6fr', default: true },
   { key: 'status', label: 'Status', width: '1.1fr', default: true },
   { key: 'site', label: 'Site', width: '1.2fr', default: true },
+  { key: 'initiative', label: 'Initiative', width: '1.2fr', default: false },
   { key: 'location', label: 'Location', width: '1.4fr', default: false },
   { key: 'updated', label: 'Created', width: '1fr', default: false },
 ];
@@ -80,11 +83,21 @@ function sortValueFor(c: ContainerItem, key: string): string {
     case 'assets': return String(c.asset_count).padStart(6, '0');
     case 'status': return c.status_label.toLowerCase();
     case 'site': return (c.site_name ?? '').toLowerCase();
+    case 'initiative': return (c.initiative_name ?? '').toLowerCase();
     case 'location': return c.location_detail.toLowerCase();
     case 'updated': return c.created_at;
     case 'archived': return c.archived_at ? '1' : '0';
     default: return '';
   }
+}
+
+// `containerCellText` (lib/containers.ts) doesn't know about the
+// 'initiative' column — that file is out of this task's scope — so this
+// page wraps it with the one extra case instead, and passes THIS to every
+// `ColumnMenu` in place of the bare import.
+function cellTextFor(c: ContainerItem, key: string): string {
+  if (key === 'initiative') return c.initiative_name ?? '';
+  return containerCellText(c, key);
 }
 
 const CSV_COLUMNS: [string, (c: ContainerItem) => string][] = [
@@ -95,6 +108,7 @@ const CSV_COLUMNS: [string, (c: ContainerItem) => string][] = [
   ['Assets', (c) => String(c.asset_count)],
   ['Status', (c) => c.status_label],
   ['Site', (c) => c.site_name ?? ''],
+  ['Initiative', (c) => c.initiative_name ?? ''],
   ['Location', (c) => c.location_detail],
   ['Created', (c) => c.created_at],
 ];
@@ -111,6 +125,7 @@ export default function Containers() {
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
   const [types, setTypes] = useState<StatusValue[]>([]);
   const [sites, setSites] = useState<SiteItem[]>([]);
+  const [initiatives, setInitiatives] = useState<InitiativeItem[]>([]);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
   const [openId, setOpenId] = useState<string | null>(initialOpenId);
@@ -152,6 +167,7 @@ export default function Containers() {
     void listContainerStatuses().then(setStatuses).catch(() => {});
     void listContainerTypes().then(setTypes).catch(() => {});
     if (canViewSites) void listSites().then(setSites).catch(() => {});
+    void listInitiatives().then(setInitiatives).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -248,6 +264,8 @@ export default function Containers() {
         );
       case 'site':
         return <span className="cell-top">{c.site_name ?? '—'}</span>;
+      case 'initiative':
+        return <span className="cell-top">{c.initiative_name ?? '—'}</span>;
       case 'location':
         return <span className="cell-top">{c.location_detail || '—'}</span>;
       case 'updated':
@@ -309,7 +327,7 @@ export default function Containers() {
               </button>
               <ColumnMenu colKey="primary" label="Name"
                           allRows={containers ?? []} filters={filters}
-                          text={containerCellText}
+                          text={cellTextFor}
                           filter={filters.primary} onFilter={setFilter}
                           sortDir={sortKey === 'primary' ? sortDir : null}
                           onSort={(dir) => setSort('primary', dir)} />
@@ -322,7 +340,7 @@ export default function Containers() {
                 </button>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={containers ?? []} filters={filters}
-                            text={containerCellText}
+                            text={cellTextFor}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
@@ -330,7 +348,7 @@ export default function Containers() {
             ))}
             <ColumnMenu colKey="archived" label="Archived"
                         allRows={containers ?? []} filters={filters}
-                        text={containerCellText}
+                        text={cellTextFor}
                         filter={filters.archived} onFilter={setFilter}
                         sortDir={sortKey === 'archived' ? sortDir : null}
                         onSort={(dir) => setSort('archived', dir)} />
@@ -400,6 +418,7 @@ export default function Containers() {
           statuses={statuses}
           types={types}
           sites={sites}
+          initiatives={initiatives}
           canChange={canChange}
           onClose={() => setEditingId(null)}
           onSaved={() => load()}
@@ -411,6 +430,7 @@ export default function Containers() {
           statuses={statuses}
           types={types}
           sites={sites}
+          initiatives={initiatives}
           canChange={canChange}
           onClose={() => setCreating(false)}
           onSaved={() => load()}

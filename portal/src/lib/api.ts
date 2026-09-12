@@ -1416,6 +1416,10 @@ export interface ContainerItem {
   location_detail: string; asset_count: number;
   last_audit_at: string | null; last_validated_at: string | null;
   archived_at: string | null; created_at: string;
+  // Optional (rather than required) so existing `ContainerItem` fixtures
+  // elsewhere in the codebase — outside this task's file scope — keep
+  // compiling unchanged; the API always returns both (migration 0057).
+  initiative_id?: string | null; initiative_name?: string | null;
 }
 
 export interface ContainerAssetRow {
@@ -1425,8 +1429,13 @@ export interface ContainerAssetRow {
   added_at: string; added_by_name: string | null;
 }
 
-export async function listContainers(): Promise<ContainerItem[]> {
-  const resp = await apiFetch('/containers');
+export async function listContainers(
+  params: { initiative_id?: string } = {},
+): Promise<ContainerItem[]> {
+  const qs = new URLSearchParams();
+  if (params.initiative_id) qs.set('initiative_id', params.initiative_id);
+  const query = qs.toString();
+  const resp = await apiFetch(`/containers${query ? `?${query}` : ''}`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

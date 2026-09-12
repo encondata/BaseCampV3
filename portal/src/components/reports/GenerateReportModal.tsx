@@ -17,6 +17,7 @@ import {
 import type { InitiativeItem, ReportDefinition, ReportRun } from '../../lib/api';
 import { fmtDate, openPresigned, sortInitiativesForPicker } from '../../lib/reports';
 import { useSystemStatus } from '../../lib/systemStatusContext';
+import ContainerLabelsOptions from './ContainerLabelsOptions';
 import MoveReportOptions from './MoveReportOptions';
 import MoveScanHistoryOptions from './MoveScanHistoryOptions';
 import { InitiativeSummary, PreviewCard, summaryFromInitiative } from './ReportOptionsLayout';
@@ -41,6 +42,7 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
   const { status: sys } = useSystemStatus();
   const isSurvey = definition.report_type === 'site_move_survey';
   const isScanHistory = definition.report_type === 'move_scan_history';
+  const isContainerLabels = definition.report_type === 'container_labels';
   const [step, setStep] = useState<Step>('pick');
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);
   const [search, setSearch] = useState('');
@@ -264,7 +266,16 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
           />
         )}
 
-        {step === 'sections' && !isSurvey && !isScanHistory && (
+        {step === 'sections' && isContainerLabels && (
+          <ContainerLabelsOptions
+            definition={definition}
+            initiative={picked}
+            onBack={() => setStep('pick')}
+            onGenerate={(p) => void start(p)}
+          />
+        )}
+
+        {step === 'sections' && !isSurvey && !isScanHistory && !isContainerLabels && (
           <MoveReportOptions
             definition={definition}
             initiative={picked}

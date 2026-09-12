@@ -143,3 +143,25 @@
 .glabels-section { margin-top: 26px; }
 .glabels-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
 .glabels-section-head .modal-section { margin: 0; }
+
+/* Container Labels — the page and its embedded report-options twin. */
+.cl-steps { display: flex; flex-direction: column; gap: 16px; margin-bottom: 28px; }
+.cl-step { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 12px 32px; align-items: start; padding: 18px 22px; border: 1px solid var(--paper-line); border-radius: 12px; background: var(--surface-2, #f5f7fa); }
+@media (max-width: 900px) { .cl-step { grid-template-columns: 1fr; } }
+.cl-step-head { display: flex; flex-direction: column; gap: 4px; }
+.cl-step-head .eyebrow { margin: 0; }
+.cl-step-head .modal-section { margin: 0; }
+.cl-step-head .page-hint { margin: 2px 0 0; }
+.cl-step-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.cl-step-actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.cl-step-actions .page-hint { margin: 0; }
+.cl-generate-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.cl-generate-summary { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* ContainerPickList */
+.cl-pick { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.cl-pick-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cl-pick-bulk { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+/* ContainerTagPicker trigger — layout only; typography rides `.chip`/`.cell-sub`. */
+.tag-picker-trigger { display: inline-flex; align-items: center; }

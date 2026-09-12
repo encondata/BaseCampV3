@@ -3,7 +3,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { InitiativeItem, ReportDefinition, ReportRun } from '../../lib/api';
+import type { ContainerItem, InitiativeItem, ReportDefinition, ReportRun } from '../../lib/api';
 
 const status = vi.hoisted(() => ({ workers_paused: false }));
 vi.mock('../../lib/systemStatusContext', () => ({
@@ -11,7 +11,7 @@ vi.mock('../../lib/systemStatusContext', () => ({
 }));
 const api = vi.hoisted(() => ({
   listInitiatives: vi.fn(), createReportRun: vi.fn(), getReportRun: vi.fn(),
-  getReportRunDownloadUrl: vi.fn(), setReportRunNotify: vi.fn(),
+  getReportRunDownloadUrl: vi.fn(), setReportRunNotify: vi.fn(), listContainers: vi.fn(),
 }));
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()), ...api,
@@ -47,6 +47,7 @@ beforeEach(() => {
   api.getReportRun.mockResolvedValue(run({}));
   api.getReportRunDownloadUrl.mockResolvedValue('https://spaces/x.pdf');
   api.setReportRunNotify.mockResolvedValue(run({ notify: true }));
+  api.listContainers.mockResolvedValue([]);
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
 
@@ -177,4 +178,35 @@ it('says paused while workers are paused', async () => {
   await toStep2(user);
   await user.click(screen.getByRole('button', { name: 'Generate Report' }));
   await screen.findByText('Paused for maintenance — will resume automatically');
+});
+
+it('delegates to ContainerLabelsOptions for report_type container_labels, and posts {container_ids, tags}', async () => {
+  const user = userEvent.setup();
+  const CL_DEF: ReportDefinition = {
+    id: 'd9', name: 'Container Labels', description: 'Avery 5164 sheets.',
+    report_type: 'container_labels', is_system: true,
+    updated_at: '2026-09-12T00:00:00Z', options: {},
+  };
+  const containers: ContainerItem[] = [
+    { id: 'c1', name: 'Rack Cart 1', rfid_tag: null, container_type: 'cart', type_label: 'Cart',
+      type_color: '#1890ff', status: 'available', status_label: 'Available', status_color: '#22aa55',
+      site_id: null, site_name: null, location_detail: '', asset_count: 3,
+      last_audit_at: null, last_validated_at: null, archived_at: null, created_at: '2026-09-01T00:00:00Z',
+      initiative_id: 'i2', initiative_name: 'NAP11' },
+  ];
+  api.listContainers.mockResolvedValue(containers);
+
+  render(<GenerateReportModal definition={CL_DEF} onClose={() => {}} />);
+  await screen.findByText('NAP11');
+  await user.click(screen.getByLabelText('NAP11'));
+  await user.click(screen.getByRole('button', { name: 'Next' }));
+
+  expect(await screen.findByText('Rack Cart 1')).toBeTruthy();
+  expect(api.listContainers).toHaveBeenCalledWith({ initiative_id: 'i2' });
+  await user.click(screen.getByText('Rack Cart 1'));
+  await user.click(screen.getByRole('button', { name: 'Generate Report' }));
+
+  await waitFor(() => expect(api.createReportRun).toHaveBeenCalledWith({
+    definition_id: 'd9', initiative_id: 'i2', options: { container_ids: ['c1'], tags: {} }, notify: false,
+  }));
 });
