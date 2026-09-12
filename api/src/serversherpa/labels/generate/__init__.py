@@ -33,6 +33,11 @@ from serversherpa.db.models import LabelGenerationRun, LabelTemplate, LabelVocab
 ACTIVE_STATUSES = ("queued", "running")
 
 
+# Vocab `type` keys that are NOT asset/device labels — excluded from Generate
+# Labels (the preview's type list and run validation). Container labels have
+# their own page and report (Avery sheets), see reports/container_labels.
+CONTAINER_LABEL_TYPES: frozenset[str] = frozenset({"container"})
+
 class InvalidLabelTypes(ValueError):
     """One or more requested label types are not active `type` vocab
     keys (or the list was empty). `problems` are the offending keys,
@@ -119,6 +124,14 @@ async def enqueue_run(
     requested = list(dict.fromkeys(label_types))          # de-dupe, keep order
     if not requested:
         raise InvalidLabelTypes([])
+    # Generate Labels renders asset/device labels only. Container labels are
+    # Avery sheets produced by the Container Labels page / report, so the
+    # `container` vocab type is never a valid asset run type even when active.
+    container_keys = [k for k in requested if k in CONTAINER_LABEL_TYPES]
+    if container_keys:
+        raise InvalidLabelTypes(
+            [f"{k}: container labels are generated from the Container Labels page"
+             for k in container_keys])
     active_keys = set((await db.execute(
         sa_select(LabelVocab.key).where(LabelVocab.kind == "type",
                                      LabelVocab.key.in_(requested),

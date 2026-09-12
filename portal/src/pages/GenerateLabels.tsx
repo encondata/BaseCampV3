@@ -14,7 +14,7 @@
  * description header per the house rule for new modals.
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 
 import {
   ApiError, cancelLabelRun, getLabelGeneratePreview, getLabelRun, listInitiatives, listLabelRuns,
@@ -22,7 +22,8 @@ import {
   type InitiativeItem, type LabelGeneratePreview, type LabelRun, type LabelVocab,
 } from '../lib/api';
 import {
-  canGenerate, firstUnresolvedType, isRunActive, templatesPayloadFor, visibleInitiativesForGenerate,
+  canGenerate, firstUnresolvedType, isAssetLabelType, isRunActive, templatesPayloadFor,
+  visibleInitiativesForGenerate,
 } from '../lib/generateLabels';
 import { vocabLabel, vocabOfKind } from '../lib/labels';
 import { useSystemStatus } from '../lib/systemStatusContext';
@@ -110,7 +111,8 @@ export default function GenerateLabels() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const typeVocab = useMemo(() => vocabOfKind(vocab, 'type'), [vocab]);
+  // Asset/device label types only — container labels live on their own page.
+  const typeVocab = useMemo(() => vocabOfKind(vocab, 'type').filter((v) => isAssetLabelType(v.key)), [vocab]);
   const typeLabelFor = (key: string) => vocabLabel(vocab, 'type', key);
 
   const pickerOptions = useMemo(
@@ -269,8 +271,8 @@ export default function GenerateLabels() {
           <div className="eyebrow">Labels</div>
           <h1 className="page-title">Generate Labels</h1>
           <p className="page-hint">
-            Generate printable labels for every asset on an initiative. Labels are rendered by the
-            label worker and kept for printing.
+            Generate printable asset and device labels for every asset on an initiative. Labels are
+            rendered by the label worker and kept for printing.
           </p>
         </div>
       </div>
@@ -319,9 +321,13 @@ export default function GenerateLabels() {
         </StepCard>
 
         <StepCard step="Step 2" title="Label types"
-                  hint={initiativeId
-                    ? 'Pick one or more. A type needs a resolved template — automatic or chosen — before it can be generated.'
-                    : 'Pick an initiative first to see which types have a template.'}>
+                  hint={<>
+                    {initiativeId
+                      ? 'Pick one or more. A type needs a resolved template — automatic or chosen — before it can be generated.'
+                      : 'Pick an initiative first to see which types have a template.'}
+                    {' '}These are asset and device labels; container label sheets come from the{' '}
+                    <Link to="/labels/containers">Container Labels</Link> page.
+                  </>}>
           <LabelTypeCards vocab={typeVocab} types={preview?.types ?? null}
                            selected={selectedTypes} onToggle={toggleType}
                            overrides={templateOverrides} onOverride={setOverride} />

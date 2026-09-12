@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from serversherpa.db.models import (
     Asset, AuditLog, Client, GeneratedLabel, Initiative, InitiativeAsset,
-    LabelGenerationRun, LabelTemplate, LabelTemplateSite, Site,
+    LabelGenerationRun, LabelTemplate, LabelTemplateSite, LabelVocab, Site,
 )
 
 from tests.test_sites_api import login
@@ -402,7 +402,7 @@ async def test_preview_shape_with_site_and_global_templates(client, db, seeded_u
     assert body["active_run_id"] is None
 
     types = {t["key"]: t for t in body["types"]}
-    assert set(types) == {"top", "front", "rail", "container"}
+    assert set(types) == {"top", "front", "rail"}   # container labels live on their own page
     assert types["top"]["template"]["id"] == str(top_tpl.id)
     assert types["top"]["template"]["scope"] == "site"
     assert types["top"]["current"] == 1
@@ -442,6 +442,19 @@ async def test_preview_other_only_type_has_candidates_but_no_auto_match(client, 
     assert candidates[0]["id"] == str(other_tpl.id)
     assert candidates[0]["scope"] == "other"
     assert candidates[0]["site_names"] == ["NAP-Other"]
+
+
+async def test_preview_excludes_the_container_type(client, db, seeded_user):
+    """The Container Labels page owns container labels; the Generate Labels
+    preview lists asset/device types only, even when `container` is active."""
+    ini = await _initiative(db)
+    if await db.get(LabelVocab, ("type", "container")) is None:
+        db.add(LabelVocab(kind="type", key="container", label="Container Label", is_active=True))
+    await db.commit()
+    hdrs = await login(client)
+    resp = await client.get(f"/labels/generate/preview?initiative_id={ini.id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert "container" not in {t["key"] for t in resp.json()["types"]}
 
 
 async def test_preview_404_unknown_initiative(client, db, seeded_user):

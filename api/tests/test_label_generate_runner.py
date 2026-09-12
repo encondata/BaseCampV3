@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     Asset, AssetModel, GeneratedLabel, Initiative, InitiativeAsset, LabelGenerationRun,
-    LabelTemplate, Notification, Person, Site,
+    LabelTemplate, LabelVocab, Notification, Person, Site,
 )
 from serversherpa.labels.generate import InvalidLabelTypes, InvalidTemplates, RunActive, enqueue_run
 from serversherpa.labels.generate.engine import render_label
@@ -505,6 +505,19 @@ async def test_enqueue_run_rejects_empty_types(db):
     assert exc.value.problems == []
 
 
+async def test_enqueue_run_rejects_container_type_even_when_active(db):
+    """`container` is an active vocab type, but container labels are Avery
+    sheets from the Container Labels page — never an asset run type."""
+    initiative, person, assets, template = await _seed_initiative(db, n_assets=1)
+    if await db.get(LabelVocab, ("type", "container")) is None:
+        db.add(LabelVocab(kind="type", key="container", label="Container Label", is_active=True))
+    await db.commit()
+    with pytest.raises(InvalidLabelTypes) as exc:
+        await enqueue_run(db, initiative_id=initiative.id, label_types=["top", "container"],
+                          regenerate_existing=False, requested_by=person.id, notify=False)
+    assert exc.value.problems == ["container: container labels are generated from the Container Labels page"]
+
+
 async def test_enqueue_run_rejects_unknown_types(db):
     initiative, person, *_ = await _seed_initiative(db, n_assets=1)
     with pytest.raises(InvalidLabelTypes) as exc:
@@ -517,13 +530,14 @@ async def test_enqueue_run_rejects_inactive_type(db):
     from serversherpa.db.models import LabelVocab
 
     initiative, person, *_ = await _seed_initiative(db, n_assets=1)
-    row = await db.get(LabelVocab, ("type", "container"))
+    # `rail` is a real asset type; deactivating it makes it "unknown" to a run.
+    row = await db.get(LabelVocab, ("type", "rail"))
     row.is_active = False
     await db.commit()
     with pytest.raises(InvalidLabelTypes) as exc:
-        await enqueue_run(db, initiative_id=initiative.id, label_types=["container"],
+        await enqueue_run(db, initiative_id=initiative.id, label_types=["rail"],
                           regenerate_existing=False, requested_by=person.id, notify=False)
-    assert exc.value.problems == ["container"]
+    assert exc.value.problems == ["rail"]
 
 
 async def test_enqueue_run_queues_and_rejects_second_active_run(db):
