@@ -11,14 +11,14 @@ from sqlalchemy import func, select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    ContainerAssetRow, ContainerAssetsAddIn, ContainerCreateIn, ContainerItem,
-    ContainerUpdateIn,
+    ContainerAssetRow, ContainerAssetsAddIn, ContainerBulkCreateIn,
+    ContainerBulkCreateOut, ContainerCreateIn, ContainerItem, ContainerUpdateIn,
 )
 from serversherpa.db.models import (
     Asset, AssetModel, Container, ContainerAsset, Initiative, Person, Site,
     StatusValue,
 )
-from serversherpa.labels.tags import LABEL_TAG_KEYS
+from serversherpa.labels.tags import LABEL_TAG_ASSIGNMENT_ORDER, LABEL_TAG_KEYS
 from serversherpa.logistics import bulk_import as bulk
 from serversherpa.services.audit import audit, diff, snapshot
 
@@ -223,6 +223,90 @@ async def create_container(
           entity_id=str(container.id), action="create", changes=changes)
     await db.commit()
     return await _detail(db, container)
+
+
+def _bulk_names(naming, count: int) -> list[str]:
+    names = []
+    for i in range(count):
+        n = naming.start + i
+        digits = str(n).zfill(naming.pad) if naming.pad else str(n)
+        names.append(f"{naming.prefix}{digits}{naming.suffix}")
+    return names
+
+
+def _bulk_tag_assignments(count: int, tags: dict[str, int]) -> list[str | None]:
+    """Assign tags in LABEL_TAG_ASSIGNMENT_ORDER to the first N created
+    rows (by name order); the rest are left untagged."""
+    assignments: list[str | None] = [None] * count
+    idx = 0
+    for key in LABEL_TAG_ASSIGNMENT_ORDER:
+        for _ in range(tags.get(key, 0)):
+            if idx < count:
+                assignments[idx] = key
+            idx += 1
+    return assignments
+
+
+@router.post("/bulk", response_model=ContainerBulkCreateOut, status_code=201)
+async def create_containers_bulk(
+    body: ContainerBulkCreateIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("containers", "add"),
+) -> ContainerBulkCreateOut:
+    tags = body.tags
+    for key, value in tags.items():
+        if key not in LABEL_TAG_KEYS or value < 0:
+            raise _err(422, "bad_tag_key", allowed=list(LABEL_TAG_KEYS))
+    if sum(tags.values()) > body.count:
+        raise _err(422, "tags_exceed_count")
+
+    await _check_refs(db, {"site_id": body.site_id,
+                           "initiative_id": body.initiative_id})
+
+    statuses, types = await _vocab(db)
+    if body.container_type not in types:
+        raise _err(422, "bad_container_type")
+    if body.status is not None and body.status not in statuses:
+        raise _err(422, "bad_status")
+
+    names = _bulk_names(body.naming, body.count)
+    if any(not name for name in names):
+        raise _err(422, "empty_name")
+
+    existing = {n.lower() for n in await db.scalars(
+        select(Container.name).where(
+            Container.name.in_(names), Container.archived_at.is_(None)))}
+    colliding = [name for name in names if name.lower() in existing]
+    if colliding:
+        raise _err(422, "name_collision", names=colliding)
+
+    tag_assignments = _bulk_tag_assignments(body.count, tags)
+    status = body.status or "available"
+    containers = []
+    for name, tag in zip(names, tag_assignments, strict=True):
+        container = Container(
+            name=name, container_type=body.container_type, status=status,
+            site_id=body.site_id, initiative_id=body.initiative_id,
+            label_tag=tag, created_by=actor.person.id)
+        db.add(container)
+        containers.append(container)
+    await db.flush()
+
+    # One audit row per container (same shape as the single create's audit
+    # row) rather than one bulk row — keeps the container audit trail
+    # queryable per-entity the same way regardless of how it was created.
+    for container in containers:
+        initial = snapshot(container, CONTAINER_FIELDS)
+        changes = {field: {"from": None, "to": value}
+                   for field, value in initial.items() if value not in (None, "")}
+        audit(db, actor_id=actor.person.id, entity_type="container",
+              entity_id=str(container.id), action="create", changes=changes)
+    await db.commit()
+
+    statuses, types, sites, initiatives, counts = await _context(db, containers)
+    return ContainerBulkCreateOut(created=[
+        ContainerItem(**_item(c, statuses, types, sites, initiatives, counts))
+        for c in containers])
 
 
 @router.patch("/{container_id}", response_model=ContainerItem)

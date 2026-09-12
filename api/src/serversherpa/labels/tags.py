@@ -9,6 +9,11 @@ Addendum 2026-09-12 — the label tag lives on the container."""
 
 LABEL_TAG_KEYS = ("priority", "vendor", "accessories", "ewaste", "warehouse")
 
+# Bulk-create assignment order (Jimmy: "we assign tags in order of Priority,
+# Vendor, Accessories, Warehouse and E-Waste") — deliberately NOT the same
+# order as LABEL_TAG_KEYS (which puts ewaste before warehouse for display).
+LABEL_TAG_ASSIGNMENT_ORDER = ("priority", "vendor", "accessories", "warehouse", "ewaste")
+
 # Display labels, for bulk import's by-label matching (e.g. "E-Waste").
 LABEL_TAG_LABELS = {
     "priority": "Priority",

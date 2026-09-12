@@ -1051,6 +1051,31 @@ class ContainerUpdateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class ContainerBulkNamingIn(BaseModel):
+    """Name = prefix + zero-padded(start + i) + suffix, i = 0..count-1."""
+
+    prefix: str = ""
+    start: int = Field(1, ge=0)
+    pad: int = Field(0, ge=0, le=6)
+    suffix: str = ""
+    model_config = ConfigDict(extra="forbid")
+
+
+class ContainerBulkCreateIn(BaseModel):
+    count: int = Field(ge=1, le=500)
+    container_type: str
+    naming: ContainerBulkNamingIn = ContainerBulkNamingIn()
+    initiative_id: uuid.UUID | None = None
+    site_id: uuid.UUID | None = None
+    status: str | None = None
+    tags: dict[str, int] = {}
+    model_config = ConfigDict(extra="forbid")
+
+
+class ContainerBulkCreateOut(BaseModel):
+    created: list[ContainerItem]
+
+
 class ContainerAssetRow(BaseModel):
     asset_id: uuid.UUID
     serial_number: str | None = None
