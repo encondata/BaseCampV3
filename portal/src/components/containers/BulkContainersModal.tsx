@@ -24,9 +24,9 @@ import {
   type NamingConfig, type TagCounts,
 } from '../../lib/bulkContainers';
 import { TAG_TYPES } from '../../labels/tagTypes';
-import { OptionGroup, OptionsGrid, PreviewCard } from '../reports/ReportOptionsLayout';
 import ComboBox from '../ComboBox';
-import '../../styles/reports.css';       // rgm-* (roomy header, two-column grid)
+import '../../styles/reports.css';       // rgm-* (roomy header)
+import '../../styles/bulkContainers.css';
 
 const ZERO_PAD_CHOICES = [0, 2, 3, 4];
 // API's `naming.prefix`/`naming.suffix` max_length — see
@@ -202,7 +202,7 @@ export default function BulkContainersModal({
     <div className="modal-scrim" onMouseDown={(e) => {
       if (e.target === e.currentTarget && !saving) onClose();
     }}>
-      <div className="modal-card reports-modal-card rgm-card">
+      <div className="modal-card reports-modal-card rgm-card bc-card">
         <div className="modal-head">
           <div className="rgm-head-text">
             <div className="eyebrow">Containers</div>
@@ -216,9 +216,10 @@ export default function BulkContainersModal({
         </div>
         <form onSubmit={(e) => void submit(e)}>
           <div className="modal-body">
-            <OptionsGrid preview={
-              <PreviewCard title="Batch">
-                <div className="pf-form">
+            <div className="bc-grid">
+              <section className="bc-col" aria-label="Batch">
+                <div className="modal-section">Batch</div>
+                <div className="pf-form bc-form">
                   <div>
                     <label htmlFor="bulk-count">Count</label>
                     <input id="bulk-count" type="number" min={1} max={500} disabled={saving}
@@ -235,7 +236,32 @@ export default function BulkContainersModal({
                       options={typeOptions}
                     />
                   </div>
+                  <div>
+                    <label>Initiative</label>
+                    <ComboBox
+                      placeholder="Type to search initiatives…"
+                      value={initiativeId}
+                      clearable
+                      disabled={saving}
+                      onChange={setInitiativeId}
+                      options={initiativeOptions}
+                    />
+                  </div>
+                  <div>
+                    <label>Site</label>
+                    <ComboBox
+                      placeholder="Type to search sites…"
+                      value={siteId}
+                      clearable
+                      disabled={saving}
+                      onChange={setSiteId}
+                      options={siteOptions}
+                    />
+                  </div>
+                </div>
 
+                <div className="modal-section">Naming convention</div>
+                <div className="pf-form bc-form bc-naming">
                   <div><label htmlFor="bulk-prefix">Prefix</label>
                     <input id="bulk-prefix" value={naming.prefix} disabled={saving}
                            maxLength={NAMING_PART_MAX_LENGTH}
@@ -250,7 +276,7 @@ export default function BulkContainersModal({
                         <button key={p} type="button" role="tab" aria-selected={naming.pad === p}
                                 className={naming.pad === p ? 'on' : ''} disabled={saving}
                                 onClick={() => setNaming((f) => ({ ...f, pad: p }))}>
-                          {p}
+                          {p === 0 ? 'None' : `${p} digits`}
                         </button>
                       ))}
                     </div>
@@ -259,60 +285,48 @@ export default function BulkContainersModal({
                     <input id="bulk-suffix" value={naming.suffix} disabled={saving}
                            maxLength={NAMING_PART_MAX_LENGTH}
                            onChange={(e) => setNaming((f) => ({ ...f, suffix: e.target.value }))} /></div>
-
-                  <div className="full">
-                    <p className="page-hint">Preview: {preview}</p>
-                    {collisionNames && collisionNames.length > 0 && (
-                      <p className="pf-error">Already exists: {collisionNames.join(', ')}</p>
-                    )}
-                  </div>
-
-                  <div><label>Initiative</label>
-                    <ComboBox
-                      placeholder="Type to search initiatives…"
-                      value={initiativeId}
-                      clearable
-                      disabled={saving}
-                      onChange={setInitiativeId}
-                      options={initiativeOptions}
-                    /></div>
-                  <div><label>Site</label>
-                    <ComboBox
-                      placeholder="Type to search sites…"
-                      value={siteId}
-                      clearable
-                      disabled={saving}
-                      onChange={setSiteId}
-                      options={siteOptions}
-                    /></div>
                 </div>
-              </PreviewCard>
-            }>
-              <OptionGroup title="Label tags"
-                           hint="Assigned in order — the first containers get Priority, then Vendor, Accessories, Warehouse, and E-Waste.">
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div className="bc-preview">
+                  <span className="eyebrow">Preview</span>
+                  <p className="page-hint" id="bulk-preview">{preview}</p>
+                  {collisionNames && collisionNames.length > 0 && (
+                    <p className="pf-error">Already exists: {collisionNames.join(', ')}</p>
+                  )}
+                </div>
+              </section>
+
+              <section className="bc-col" aria-label="Label tags">
+                <div className="modal-section">Label tags</div>
+                <p className="page-hint">
+                  Assigned in order — the first containers get Priority, then Vendor, Accessories, Warehouse, and E-Waste.
+                </p>
+                <div className="bc-tags">
                   {TAG_ASSIGNMENT_ORDER.map((key) => {
                     const opt = TAG_TYPES[key];
                     const n = tags[key] ?? 0;
                     return (
-                      <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <div key={key} className="bc-tag-row">
                         <span className="chip custom" style={{ '--chip': opt.color } as CSSProperties}>
                           <span className="dot" />{opt.label}
                         </span>
-                        <span style={{ flex: 1 }} />
-                        <button type="button" className="mini-btn" aria-label={`Fewer ${opt.label}`}
-                                disabled={saving || n <= 0} onClick={() => dec(key)}>−</button>
-                        <span className="mono">{n}</span>
-                        <button type="button" className="mini-btn" aria-label={`More ${opt.label}`}
-                                disabled={saving || total >= count} onClick={() => inc(key)}>+</button>
+                        <div className="bc-stepper" role="group" aria-label={`${opt.label} count`}>
+                          <button type="button" className="mini-btn" aria-label={`Fewer ${opt.label}`}
+                                  disabled={saving || n <= 0} onClick={() => dec(key)}>−</button>
+                          <span className="mono bc-stepper-value">{n}</span>
+                          <button type="button" className="mini-btn" aria-label={`More ${opt.label}`}
+                                  disabled={saving || total >= count} onClick={() => inc(key)}>+</button>
+                        </div>
                       </div>
                     );
                   })}
                 </div>
-                <p className="page-hint">{summaryText(count, tags)}</p>
-                {clampNotice && <p className="pf-error">{clampNotice}</p>}
-              </OptionGroup>
-            </OptionsGrid>
+                <div className="bc-summary">
+                  <span className="eyebrow">Summary</span>
+                  <p className="page-hint">{summaryText(count, tags)}</p>
+                  {clampNotice && <p className="pf-error">{clampNotice}</p>}
+                </div>
+              </section>
+            </div>
           </div>
           <div className="modal-foot">
             <button className="btn-solid" type="submit" disabled={!valid || saving}>

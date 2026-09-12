@@ -82,14 +82,14 @@ async function setCount(user: ReturnType<typeof userEvent.setup>, value: string)
 it('the Preview line updates live as naming fields change', async () => {
   const user = userEvent.setup();
   mount();
-  expect(screen.getByText(/Preview:/).textContent).toBe('Preview: 001');
+  expect(document.getElementById('bulk-preview')!.textContent).toBe('001');
 
   await user.type(numberInput('Prefix'), 'PLT-');
   await setCount(user, '5');
-  expect(screen.getByText(/Preview:/).textContent).toBe('Preview: PLT-001, PLT-002, PLT-003 … PLT-005');
+  expect(document.getElementById('bulk-preview')!.textContent).toBe('PLT-001, PLT-002, PLT-003 … PLT-005');
 
-  await user.click(screen.getByRole('tab', { name: '0' }));
-  expect(screen.getByText(/Preview:/).textContent).toBe('Preview: PLT-1, PLT-2, PLT-3 … PLT-5');
+  await user.click(screen.getByRole('tab', { name: 'None' }));
+  expect(document.getElementById('bulk-preview')!.textContent).toBe('PLT-1, PLT-2, PLT-3 … PLT-5');
 });
 
 it('Count can be fully cleared and retyped without losing digits or snapping back', async () => {

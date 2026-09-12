@@ -1,0 +1,30 @@
+/* Add containers in bulk — layout only (the guardrail forbids typography on
+   list-ish selectors; nothing here sets any). The card sizes to its two
+   columns and lets ComboBox lists overlay past its edge instead of being
+   clipped by the shared .modal-card overflow. */
+.modal-card.reports-modal-card.rgm-card.bc-card {
+  width: min(1180px, 96vw); max-width: 96vw;
+  overflow: visible; max-height: none;
+}
+.bc-grid { display: grid; grid-template-columns: minmax(440px, 1.2fr) minmax(360px, 1fr); gap: 12px 40px; align-items: start; }
+@media (max-width: 960px) { .bc-grid { grid-template-columns: 1fr; } }
+.bc-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.bc-col .modal-section { margin: 0; }
+.bc-col .page-hint { margin: 0; }
+.bc-form { grid-template-columns: 1fr 1fr; gap: 12px 18px; }
+.bc-form .segmented { display: inline-flex; }
+.bc-preview, .bc-summary {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 12px 14px; border: 1px solid var(--paper-line); border-radius: 10px;
+  background: var(--surface-2, #f5f7fa);
+}
+.bc-preview .eyebrow, .bc-summary .eyebrow { margin: 0; }
+.bc-preview .page-hint { overflow-wrap: anywhere; }
+.bc-tags { display: flex; flex-direction: column; gap: 8px; }
+.bc-tag-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  padding: 8px 12px; border: 1px solid var(--paper-line); border-radius: 10px; background: var(--surface, #fff);
+}
+.bc-stepper { display: inline-flex; align-items: center; gap: 6px; }
+.bc-stepper .mini-btn { width: 34px; padding: 0; justify-content: center; }
+.bc-stepper-value { display: inline-block; width: 36px; text-align: center; }
