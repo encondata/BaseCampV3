@@ -2213,7 +2213,11 @@ class LabelRunCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     initiative_id: uuid.UUID
-    label_types: list[str] = Field(min_length=1)
+    # No min_length here on purpose: an empty list must reach the route's
+    # enqueue_run() call so it 422s as {"code": "invalid_label_types",
+    # "problems": []} — the project's error shape — rather than a stock
+    # pydantic validation error with no `code` at all.
+    label_types: list[str]
     regenerate_existing: bool = False
     notify: bool = False
 

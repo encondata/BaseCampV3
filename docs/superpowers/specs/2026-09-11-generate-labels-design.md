@@ -33,7 +33,7 @@ V2's Generate Labels page picks a move and one or more label types, then a backg
 - `GET /labels/generate/runs?initiative_id=&limit=` (newest first, default 25) and `GET /labels/generate/runs/{id}` → `LabelRunOut` (all columns + `initiative_name`, `requested_by_name`, `progress_pct`).
 - `POST /labels/generate/runs/{id}/cancel` → sets `cancel_requested` on a queued/running run (a queued run flips straight to `canceled`); 409 otherwise.
 - `GET /labels/generate/preview?initiative_id=` → `{initiative: {id, name, client_name, status, scheduled_start, source_name, destination_name, asset_count}, types: [{key, label, template: {id, name, version, scope: 'site'|'global'} | null, current: <assets with a current label>, stale: <count>}], active_run_id}`.
-- `GET /labels/generated?initiative_id=&label_type=&entity_id=&limit=&cursor=` → rows (id, entity_type, entity_id, asset_id/serial/name for assets, label_type, template name/version, generated_at, stale, code) — the building block the future Print page and other callers use.
+- `GET /labels/generated?initiative_id=&label_type=&entity_id=&limit=&before=` → rows (id, entity_type, entity_id, asset_id/serial/name for assets, label_type, template name/version, generated_at, stale, code) — the building block the future Print page and other callers use.
 - Template create/PATCH accept `generation_rules`; `LabelTemplateOut` returns it. The V2 import script also maps `label_generation_code` → `generation_rules` when present (dry-run safe).
 
 ### Portal `/labels/generate` (page, house style; roomy header like the report modals)

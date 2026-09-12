@@ -14,7 +14,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
@@ -262,9 +262,12 @@ def _validate_generation_rules(rules: dict) -> list[str]:
     if unknown:
         problems.append(f"unknown keys: {', '.join(sorted(unknown))}")
     for side in ("destination", "source"):
-        mapping = rules.get(side)
-        if mapping is None:
+        if side not in rules:
             continue
+        mapping = rules[side]
+        # None (explicit JSON null) is NOT treated as "not provided" here —
+        # only an absent key skips validation; a side present with `null`
+        # is a malformed object, same as any other non-dict value.
         if not isinstance(mapping, dict):
             problems.append(f"{side} must be an object")
             continue
@@ -273,8 +276,8 @@ def _validate_generation_rules(rules: dict) -> list[str]:
                 problems.append(f"{side} position {pos!r} must be a positive integer string")
             if not (isinstance(name, str) and _GENERATION_TOKEN_RE.match(name)):
                 problems.append(f"{side}.{pos} token {name!r} must match [a-z0-9_]+")
-    limits = rules.get("length_limits")
-    if limits is not None:
+    if "length_limits" in rules:
+        limits = rules["length_limits"]
         if not isinstance(limits, dict):
             problems.append("length_limits must be an object")
         else:
@@ -631,16 +634,25 @@ def _run_out(run: LabelGenerationRun, initiative_name: str, requested_by_name: s
         progress_pct=progress_pct)
 
 
-def _runs_query():
-    return (select(LabelGenerationRun, Initiative.name, Person.preferred_name,
-                   Person.first_name, Person.last_name)
-            .join(Initiative, Initiative.id == LabelGenerationRun.initiative_id)
-            .join(Person, Person.id == LabelGenerationRun.requested_by))
+def _runs_query(actor: AuthContext):
+    q = (select(LabelGenerationRun, Initiative.name, Person.preferred_name,
+                Person.first_name, Person.last_name)
+         .join(Initiative, Initiative.id == LabelGenerationRun.initiative_id)
+         .join(Person, Person.id == LabelGenerationRun.requested_by))
+    # Defense in depth, same posture as reports.py's _visible_runs: `labels`
+    # is a global-only resource today (require_permission already blocked
+    # a non-global actor), so scope_conditions() always returns None here
+    # and this leg is unreachable — it stays so history narrows the day
+    # initiatives grow a scoped grant, instead of leaking.
+    cond = scope_conditions("initiatives", actor.access, actor.person.id)
+    if cond is not None:
+        q = q.where(cond)
+    return q
 
 
-async def _run_out_for_id(db: DbSession, run_id: uuid.UUID) -> LabelRunOut:
+async def _run_out_for_id(db: DbSession, run_id: uuid.UUID, actor: AuthContext) -> LabelRunOut:
     row = (await db.execute(
-        _runs_query().where(LabelGenerationRun.id == run_id))).first()
+        _runs_query(actor).where(LabelGenerationRun.id == run_id))).first()
     if row is None:
         raise _err(404, "run_not_found")
     run, initiative_name, preferred, first, last = row
@@ -680,16 +692,16 @@ async def create_generation_run(
           changes={"initiative_id": {"from": None, "to": str(body.initiative_id)},
                    "label_types": {"from": [], "to": list(run.label_types)}})
     await db.commit()
-    return await _run_out_for_id(db, run.id)
+    return await _run_out_for_id(db, run.id, actor)
 
 
 @router.get("/generate/runs", response_model=list[LabelRunOut])
 async def list_generation_runs(
     db: DbSession, initiative_id: uuid.UUID | None = None,
     limit: int = RUNS_DEFAULT_LIMIT,
-    _actor: AuthContext = require_permission("labels", "view"),
+    actor: AuthContext = require_permission("labels", "view"),
 ) -> list[LabelRunOut]:
-    q = _runs_query()
+    q = _runs_query(actor)
     if initiative_id is not None:
         q = q.where(LabelGenerationRun.initiative_id == initiative_id)
     q = (q.order_by(LabelGenerationRun.created_at.desc(), LabelGenerationRun.id.desc())
@@ -702,9 +714,9 @@ async def list_generation_runs(
 @router.get("/generate/runs/{run_id}", response_model=LabelRunOut)
 async def get_generation_run(
     run_id: uuid.UUID, db: DbSession,
-    _actor: AuthContext = require_permission("labels", "view"),
+    actor: AuthContext = require_permission("labels", "view"),
 ) -> LabelRunOut:
-    return await _run_out_for_id(db, run_id)
+    return await _run_out_for_id(db, run_id, actor)
 
 
 @router.post("/generate/runs/{run_id}/cancel", response_model=LabelRunOut)
@@ -716,6 +728,7 @@ async def cancel_generation_run(
     if run is None:
         raise _err(404, "run_not_found")
     before_status = run.status
+    before_cancel_requested = run.cancel_requested
     if run.status == "queued":
         run.status = "canceled"
         run.cancel_requested = True
@@ -724,12 +737,22 @@ async def cancel_generation_run(
         run.cancel_requested = True
     else:
         raise _err(409, "run_not_cancelable")
-    audit(db, actor_id=actor.person.id, entity_type="label_generation_run",
-          entity_id=str(run.id), action="cancel",
-          changes={"status": {"from": before_status, "to": run.status},
-                   "cancel_requested": {"from": False, "to": True}})
+    # A running run that already had cancel_requested=True (a repeat
+    # cancel click, or two callers racing) changes nothing here — record
+    # the TRUE prior value rather than hardcoding False->True, and skip
+    # the audit row entirely when nothing actually changed so a no-op
+    # cancel never fabricates a transition that didn't happen.
+    changes: dict = {}
+    if before_status != run.status:
+        changes["status"] = {"from": before_status, "to": run.status}
+    if before_cancel_requested != run.cancel_requested:
+        changes["cancel_requested"] = {"from": before_cancel_requested,
+                                       "to": run.cancel_requested}
+    if changes:
+        audit(db, actor_id=actor.person.id, entity_type="label_generation_run",
+              entity_id=str(run.id), action="cancel", changes=changes)
     await db.commit()
-    return await _run_out_for_id(db, run_id)
+    return await _run_out_for_id(db, run_id, actor)
 
 
 @router.get("/generate/preview", response_model=LabelGeneratePreviewOut)
@@ -803,12 +826,21 @@ async def list_generated_labels(
     db: DbSession, initiative_id: uuid.UUID | None = None,
     label_type: str | None = None, entity_id: uuid.UUID | None = None,
     limit: int = GENERATED_DEFAULT_LIMIT, before: datetime | None = None,
-    _actor: AuthContext = require_permission("labels", "view"),
+    actor: AuthContext = require_permission("labels", "view"),
 ) -> list[GeneratedLabelOut]:
     q = (select(GeneratedLabel, Asset.legacy_id, Asset.serial_number, Asset.name,
                 LabelTemplate.name, LabelTemplate.version)
          .outerjoin(Asset, Asset.id == GeneratedLabel.entity_id)
          .join(LabelTemplate, LabelTemplate.id == GeneratedLabel.template_id))
+    cond = scope_conditions("initiatives", actor.access, actor.person.id)
+    if cond is not None:
+        # Defense in depth, same posture as _runs_query above — unreachable
+        # today since `labels` is global-only. GeneratedLabel.initiative_id
+        # is nullable (a label may outlive its initiative), so the join
+        # must be OUTER and the scope check paired with "no initiative at
+        # all" rather than silently dropping those rows for a scoped actor.
+        q = (q.outerjoin(Initiative, Initiative.id == GeneratedLabel.initiative_id)
+              .where(or_(GeneratedLabel.initiative_id.is_(None), cond)))
     if initiative_id is not None:
         q = q.where(GeneratedLabel.initiative_id == initiative_id)
     if label_type is not None:

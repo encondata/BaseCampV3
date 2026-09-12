@@ -15,7 +15,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 it('builds the query string from every param and returns the parsed rows', async () => {
   const rows: GeneratedLabel[] = [{
-    id: 'g1', entity_type: 'asset', entity_id: 'a1', asset_id: 'a1', serial_number: 'SN1',
+    id: 'g1', entity_type: 'asset', entity_id: 'a1', asset_id: 1, serial_number: 'SN1',
     name: 'Asset 1', label_type: 'top', template_name: 'Top asset tag', template_version: 5,
     generated_at: '2026-09-11T00:00:00Z', stale: false, code: '^XA^XZ',
   }];

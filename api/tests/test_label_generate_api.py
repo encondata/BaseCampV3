@@ -5,11 +5,13 @@ internals, unaffected here) and test_labels_templates_api.py (the rest
 of template CRUD) — this file is the surface the portal (Task 3) calls."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import select
 
 from serversherpa.db.models import (
-    Asset, Client, GeneratedLabel, Initiative, InitiativeAsset, LabelGenerationRun,
-    LabelTemplate, LabelTemplateSite, Site,
+    Asset, AuditLog, Client, GeneratedLabel, Initiative, InitiativeAsset,
+    LabelGenerationRun, LabelTemplate, LabelTemplateSite, Site,
 )
 
 from tests.test_sites_api import login
@@ -92,6 +94,23 @@ async def test_create_run_202_shape(client, db, seeded_user):
     run = await db.get(LabelGenerationRun, uuid.UUID(body["id"]))
     assert run is not None and run.status == "queued"
 
+    audit_row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "label_generation_run", AuditLog.entity_id == body["id"],
+        AuditLog.action == "create"))
+    assert audit_row is not None
+    assert audit_row.changes["label_types"] == {"from": [], "to": ["top"]}
+
+
+async def test_create_run_422_empty_label_types(client, db, seeded_user):
+    ini = await _initiative(db)
+    hdrs = await login(client)
+
+    resp = await client.post("/labels/generate/runs", headers=hdrs,
+                             json=_run_payload(ini, []))
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_label_types"
+    assert resp.json()["detail"]["problems"] == []
+
 
 async def test_create_run_404_unknown_or_archived_initiative(client, db, seeded_user):
     hdrs = await login(client)
@@ -162,20 +181,26 @@ async def test_list_and_get_run(client, db, seeded_user):
     other = await _initiative(db)
     hdrs = await login(client)
 
-    created = (await client.post("/labels/generate/runs", headers=hdrs,
-                                 json=_run_payload(ini, ["top"]))).json()
-    other_run = (await client.post("/labels/generate/runs", headers=hdrs,
-                                   json=_run_payload(other, ["top"]))).json()
+    first = (await client.post("/labels/generate/runs", headers=hdrs,
+                               json=_run_payload(ini, ["top"]))).json()
+    # Backdate the first run's created_at so the two runs have an
+    # unambiguous order — same-transaction timestamps can otherwise tie.
+    run = await db.get(LabelGenerationRun, uuid.UUID(first["id"]))
+    run.created_at = datetime.now(UTC) - timedelta(minutes=5)
+    await db.commit()
+
+    second = (await client.post("/labels/generate/runs", headers=hdrs,
+                                json=_run_payload(other, ["top"]))).json()
 
     rows = (await client.get(f"/labels/generate/runs?initiative_id={ini.id}",
                              headers=hdrs)).json()
-    assert [r["id"] for r in rows] == [created["id"]]
+    assert [r["id"] for r in rows] == [first["id"]]
 
     rows = (await client.get("/labels/generate/runs", headers=hdrs)).json()
-    assert {r["id"] for r in rows} == {created["id"], other_run["id"]}
+    assert [r["id"] for r in rows] == [second["id"], first["id"]]   # newest first
 
-    got = await client.get(f"/labels/generate/runs/{created['id']}", headers=hdrs)
-    assert got.status_code == 200 and got.json()["id"] == created["id"]
+    got = await client.get(f"/labels/generate/runs/{first['id']}", headers=hdrs)
+    assert got.status_code == 200 and got.json()["id"] == first["id"]
 
     resp = await client.get(f"/labels/generate/runs/{uuid.uuid4()}", headers=hdrs)
     assert resp.status_code == 404 and resp.json()["detail"]["code"] == "run_not_found"
@@ -195,6 +220,13 @@ async def test_cancel_queued_run_is_immediate(client, db, seeded_user):
     assert body["status"] == "canceled"
     assert body["finished_at"] is not None
 
+    audit_row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "label_generation_run", AuditLog.entity_id == run["id"],
+        AuditLog.action == "cancel"))
+    assert audit_row is not None
+    assert audit_row.changes["status"] == {"from": "queued", "to": "canceled"}
+    assert audit_row.changes["cancel_requested"] == {"from": False, "to": True}
+
 
 async def test_cancel_running_run_sets_cancel_requested(client, db, seeded_user):
     ini = await _initiative(db)
@@ -211,6 +243,40 @@ async def test_cancel_running_run_sets_cancel_requested(client, db, seeded_user)
     body = resp.json()
     assert body["status"] == "running"          # worker still owns the transition to canceled
     assert body["cancel_requested"] is True
+
+    audit_row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "label_generation_run", AuditLog.entity_id == str(run.id),
+        AuditLog.action == "cancel"))
+    assert audit_row is not None
+    assert "status" not in audit_row.changes     # status never changed on this path
+    assert audit_row.changes["cancel_requested"] == {"from": False, "to": True}
+
+
+async def test_cancel_running_run_already_requested_is_a_no_op(client, db, seeded_user):
+    ini = await _initiative(db)
+    hdrs = await login(client)
+    created = (await client.post("/labels/generate/runs", headers=hdrs,
+                                 json=_run_payload(ini, ["top"]))).json()
+    run = await db.get(LabelGenerationRun, uuid.UUID(created["id"]))
+    run.status = "running"
+    run.started_at = datetime.now(UTC)
+    await db.commit()
+
+    first = await client.post(f"/labels/generate/runs/{run.id}/cancel", headers=hdrs)
+    assert first.status_code == 200
+
+    second = await client.post(f"/labels/generate/runs/{run.id}/cancel", headers=hdrs)
+    assert second.status_code == 200
+    body = second.json()
+    assert body["status"] == "running" and body["cancel_requested"] is True
+
+    # The second cancel changed nothing (cancel_requested was already True)
+    # — it must not write a fresh audit row claiming another False->True
+    # transition that never happened.
+    audit_rows = (await db.scalars(select(AuditLog).where(
+        AuditLog.entity_type == "label_generation_run", AuditLog.entity_id == str(run.id),
+        AuditLog.action == "cancel"))).all()
+    assert len(audit_rows) == 1
 
 
 async def test_cancel_finished_run_is_409(client, db, seeded_user):
@@ -353,8 +419,19 @@ async def test_generation_rules_validation_on_create(client, db, seeded_user):
                                  "length_limits": {"asset_name": -5},
                                  "unexpected": {}}))
     assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "bad_generation_rules"
-    assert resp.json()["detail"]["problems"]
+    body = resp.json()["detail"]
+    assert body["code"] == "bad_generation_rules"
+    problems = body["problems"]
+    # Four independent violations bundled into one payload — pins each
+    # individual rule AND that problems accumulate rather than stopping
+    # at the first hit (a validator that returns early on the first
+    # problem would leave the other three assertions failing here).
+    assert any("unknown keys" in p and "unexpected" in p for p in problems), problems
+    assert any("destination position" in p and "'0'" in p for p in problems), problems
+    assert any("token" in p and "Bad-Token!" in p for p in problems), problems
+    assert any("length_limits.asset_name" in p and "positive integer" in p
+              for p in problems), problems
+    assert len(problems) == 4
 
     good = {"destination": {"1": "nap", "2": "row"}, "source": {"1": "dc"},
             "length_limits": {"asset_name": 20}}
@@ -362,6 +439,22 @@ async def test_generation_rules_validation_on_create(client, db, seeded_user):
                              json=_template_body("gr-tpl-2", generation_rules=good))
     assert resp.status_code == 201, resp.text
     assert resp.json()["generation_rules"] == good
+
+
+async def test_generation_rules_validation_rejects_a_bad_token_alone(client, db, seeded_user):
+    """Isolates the token-shape check from the other three rules — a
+    single violation must produce exactly one problem, and a validator
+    that stopped checking tokens entirely (e.g. the regex weakened to
+    `isinstance(name, str)`) would let this payload through as 201."""
+    hdrs = await _make(db, client, "admin", "adm-gr-token@test.example.com")
+
+    resp = await client.post("/labels/templates", headers=hdrs,
+                             json=_template_body(
+                                 "gr-tpl-token", generation_rules={"source": {"1": "Bad Token"}}))
+    assert resp.status_code == 422
+    problems = resp.json()["detail"]["problems"]
+    assert len(problems) == 1
+    assert "token" in problems[0] and "Bad Token" in problems[0]
 
 
 async def test_generation_rules_default_is_empty_dict(client, db, seeded_user):
@@ -387,3 +480,25 @@ async def test_generation_rules_validation_on_patch(client, db, seeded_user):
     assert resp.status_code == 200, resp.text
     assert resp.json()["generation_rules"] == good
     assert resp.json()["version"] == 2
+
+
+async def test_generation_rules_null_side_is_rejected(client, db, seeded_user):
+    """A JSON `null` for a side/length_limits is a present-but-malformed
+    value, not "not provided" — it must 422, not silently store as a
+    JSON null (which values.py would tolerate at generation time but the
+    portal's editor never sends)."""
+    hdrs = await _make(db, client, "admin", "adm-gr-null@test.example.com")
+
+    resp = await client.post("/labels/templates", headers=hdrs,
+                             json=_template_body("gr-tpl-null-dest",
+                                                  generation_rules={"destination": None}))
+    assert resp.status_code == 422
+    problems = resp.json()["detail"]["problems"]
+    assert any(p == "destination must be an object" for p in problems), problems
+
+    resp = await client.post("/labels/templates", headers=hdrs,
+                             json=_template_body("gr-tpl-null-limits",
+                                                  generation_rules={"length_limits": None}))
+    assert resp.status_code == 422
+    problems = resp.json()["detail"]["problems"]
+    assert any(p == "length_limits must be an object" for p in problems), problems

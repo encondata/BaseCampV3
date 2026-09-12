@@ -3550,7 +3550,8 @@ export async function getLabelGeneratePreview(initiativeId: string): Promise<Lab
 
 export interface GeneratedLabel {
   id: string; entity_type: 'asset' | 'container'; entity_id: string;
-  asset_id: string | null; serial_number: string | null; name: string | null;
+  // the human Asset ID (assets.legacy_id, a BigInteger) — not a UUID.
+  asset_id: number | null; serial_number: string | null; name: string | null;
   label_type: string; template_name: string; template_version: number;
   generated_at: string; stale: boolean; code: string;
 }
