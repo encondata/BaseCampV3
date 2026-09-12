@@ -187,12 +187,12 @@ const GROUPED_CONTAINERS: ContainerItem[] = [
 const groupHeaderNames = () => Array.from(document.querySelectorAll('.dir-grouprow b'))
   .map((b) => b.textContent);
 
-it('defaults to Flat, and the toggle persists across remounts', async () => {
+it('defaults to By name, and the toggle persists across remounts', async () => {
   api.listContainers.mockResolvedValue(GROUPED_CONTAINERS);
   const user = userEvent.setup();
   const { unmount } = mount();
   await waitFor(() => expect(screen.queryByText('Alpha Crate')).not.toBeNull());
-  expect(screen.getByRole('tab', { name: 'Flat' }).getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByRole('tab', { name: 'By name' }).getAttribute('aria-selected')).toBe('true');
   expect(document.querySelector('.dir-grouprow')).toBeNull();
 
   await user.click(screen.getByRole('tab', { name: 'By initiative' }));

@@ -112,7 +112,7 @@ function sortValueFor(c: ContainerItem, key: string): string {
   }
 }
 
-/* View toggle (Flat / By initiative). `usePersistentListState` piggybacks
+/* View toggle (By name / By initiative). `usePersistentListState` piggybacks
  * on the account-wide preferences PATCH and only knows column-menu shape
  * (visible/sort/filters/order) — it has no room for an extra page-level
  * flag — so the view mode is persisted separately, under a sibling key,
@@ -383,7 +383,7 @@ export default function Containers() {
           <button role="tab" aria-selected={viewMode === 'flat'}
                   className={viewMode === 'flat' ? 'on' : ''}
                   onClick={() => setViewMode('flat')}>
-            Flat
+            By name
           </button>
           <button role="tab" aria-selected={viewMode === 'grouped'}
                   className={viewMode === 'grouped' ? 'on' : ''}
