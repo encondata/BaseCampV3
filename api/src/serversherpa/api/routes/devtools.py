@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, HTTPException, Response
-from sqlalchemy import CheckConstraint, String, cast, delete, func, select, update
+from sqlalchemy import CheckConstraint, String, cast, delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.schema import Table
 
@@ -563,11 +563,15 @@ async def _require_testing_password(
 
 
 async def _table_changes(db: DbSession, row_counts: dict) -> list[DbTestingTableChange]:
+    """Diff `row_counts` (captured by the worker from `pg_tables` — every
+    public table, ORM-mapped or not) against live counts using the same
+    raw `SELECT count(*)` the worker used to capture them — not an
+    `Base.metadata.tables` lookup, which would silently skip a table with
+    no ORM model (e.g. `alembic_version`) and under-report changes there."""
     changes: list[DbTestingTableChange] = []
     for table, before in row_counts.items():
         try:
-            after = await db.scalar(select(func.count()).select_from(
-                Base.metadata.tables[table])) if table in Base.metadata.tables else None
+            after = await db.scalar(text(f'SELECT count(*) FROM "{table}"'))
         except Exception:
             after = None
         if after is None:
@@ -663,6 +667,12 @@ async def db_testing_end(
         select(DbTestingSession).where(DbTestingSession.status == "active"))
     if session is None:
         raise _err(409, "session_not_active")
+
+    # A revert with no live worker would just park the session in
+    # 'reverting' forever (banner stuck, a new start refused as 409, no
+    # cancel API) — same guard as start. "Keep" needs no worker at all.
+    if body.revert and not await _worker_online(db):
+        raise _err(503, "worker_offline")
 
     audit(db, actor_id=actor.person.id, entity_type="system",
           entity_id=str(session.id), action="db_testing.end",

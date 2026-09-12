@@ -10,8 +10,8 @@ import pytest
 
 from serversherpa.db.models import DbBackup, Person, PersonRole
 from serversherpa.services.db_backup import (
-    PgDumpFailed, PgDumpUnavailable, _dump_argv, decrypt_openssl,
-    encrypt_openssl,
+    PgDumpFailed, PgDumpUnavailable, _dump_argv, _strip_unsupported_gucs,
+    decrypt_openssl, encrypt_openssl, run_psql_restore,
 )
 from tests.test_assets_api import login, make_login
 
@@ -99,6 +99,90 @@ def test_dump_argv_keeps_password_out_of_argv_and_only_in_env(monkeypatch):
     assert "dbhost" in conninfo
     assert "6543" in conninfo
     assert "serversherpa" in conninfo
+
+
+# ── psql restore: strips pg_dump-18-only GUCs the server may reject ─
+
+
+PG_DUMP_18_DUMP = (
+    b"--\n-- PostgreSQL database dump\n--\n\n"
+    b"SET statement_timeout = 0;\n"
+    b"SET transaction_timeout = 0;\n"
+    b"SET client_encoding = 'UTF8';\n"
+    b"SET lock_timeout = 0;\n\n"
+    b"CREATE TABLE public.widgets (id integer NOT NULL);\n"
+)
+
+
+def test_strip_unsupported_gucs_removes_only_the_transaction_timeout_line():
+    """pg_dump 18+ emits `SET transaction_timeout = 0;` unconditionally —
+    a PostgreSQL 17+ GUC a 16.x (or older) server rejects outright under
+    `-v ON_ERROR_STOP=1`, aborting the whole restore. It is always
+    restated at its own default, so dropping the line is harmless on any
+    server new enough to understand it too."""
+    stripped = _strip_unsupported_gucs(PG_DUMP_18_DUMP)
+    assert b"transaction_timeout" not in stripped
+    # nothing else in the dump is touched — including the OTHER `SET`
+    # lines and a real GUC value that happens to also read `= 0`
+    assert b"SET statement_timeout = 0;" in stripped
+    assert b"SET client_encoding = 'UTF8';" in stripped
+    assert b"SET lock_timeout = 0;" in stripped
+    assert b"CREATE TABLE public.widgets (id integer NOT NULL);" in stripped
+
+
+def test_strip_unsupported_gucs_is_a_no_op_without_the_line():
+    dump = b"SET client_encoding = 'UTF8';\nCREATE TABLE public.widgets ();\n"
+    assert _strip_unsupported_gucs(dump) == dump
+
+
+class _FakePsqlProcess:
+    def __init__(self, returncode: int = 0, stderr: bytes = b""):
+        self.returncode = returncode
+        self._stderr = stderr
+        self.received_input: bytes | None = None
+
+    async def communicate(self, input: bytes | None = None):  # noqa: A002
+        self.received_input = input
+        return b"", self._stderr
+
+
+async def test_run_psql_restore_strips_the_guc_before_it_ever_reaches_psql(monkeypatch):
+    """End-to-end through run_psql_restore itself (not just the helper):
+    proves the stripped SQL, not the raw dump, is what actually gets piped
+    to psql's stdin."""
+    from serversherpa.services import db_backup
+
+    monkeypatch.setattr(db_backup, "_resolve_psql", lambda: "/usr/bin/psql")
+    fake_proc = _FakePsqlProcess(returncode=0)
+
+    async def fake_exec(*argv, **kwargs):
+        fake_proc.argv = argv
+        return fake_proc
+
+    monkeypatch.setattr(db_backup.asyncio, "create_subprocess_exec", fake_exec)
+
+    await run_psql_restore(
+        "postgresql+asyncpg://dbuser:pw@dbhost:5432/serversherpa", PG_DUMP_18_DUMP)
+
+    assert b"transaction_timeout" not in fake_proc.received_input
+    assert b"CREATE TABLE public.widgets" in fake_proc.received_input
+    assert "-v" in fake_proc.argv and "ON_ERROR_STOP=1" in fake_proc.argv
+    assert "--single-transaction" in fake_proc.argv
+
+
+async def test_run_psql_restore_failure_raises_psqlfailed_with_stderr(monkeypatch):
+    from serversherpa.services import db_backup
+
+    monkeypatch.setattr(db_backup, "_resolve_psql", lambda: "/usr/bin/psql")
+    fake_proc = _FakePsqlProcess(returncode=3, stderr=b"ERROR: syntax error")
+
+    async def fake_exec(*argv, **kwargs):
+        return fake_proc
+
+    monkeypatch.setattr(db_backup.asyncio, "create_subprocess_exec", fake_exec)
+
+    with pytest.raises(db_backup.PsqlFailed, match="syntax error"):
+        await run_psql_restore("postgresql+asyncpg://u:p@h:5432/d", PG_DUMP_18_DUMP)
 
 
 # ── endpoint tests (storage + pg_dump mocked) ───────────────────────

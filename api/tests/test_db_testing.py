@@ -9,11 +9,12 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
-    AuditLog, DbBackup, DbTestingSession, Person, PersonRole, SystemProcess,
+    AuditLog, DbBackup, DbTestingSession, Person, PersonRole, SystemConfig,
+    SystemProcess,
 )
 from serversherpa.devtools.testing import worker
 from serversherpa.devtools.testing.jobs import claim_next, requeue_stale
@@ -68,10 +69,24 @@ def fake_pg_dump(monkeypatch):
 
 @pytest.fixture
 def fake_psql_restore(monkeypatch):
+    """Simulates what a REAL restore does — the snapshot's own db_backups
+    row and the admin config's `admin` row both post-date the dump, so a
+    genuine restore wipes them; the session row is deleted here too (the
+    reviewer's simulation, standing in for "gone, must be rebuilt from
+    memory" regardless of the finer point that a real restore actually
+    brings it back in its pre-snapshot shape — see the runner's
+    docstring). This makes the runner's re-insert/rewrite branches
+    load-bearing: disable any one of them and a test here must fail,
+    never pass silently because the stub never took anything away."""
     calls = []
 
     async def _fake(database_url, sql):
         calls.append((database_url, sql))
+        async with get_sessionmaker()() as wipe:
+            await wipe.execute(delete(DbTestingSession))
+            await wipe.execute(delete(DbBackup))
+            await wipe.execute(delete(SystemConfig).where(SystemConfig.section == "admin"))
+            await wipe.commit()
 
     monkeypatch.setattr("serversherpa.devtools.testing.runner.run_psql_restore", _fake)
     return calls
@@ -79,15 +94,19 @@ def fake_psql_restore(monkeypatch):
 
 @pytest.fixture
 def fake_terminate(monkeypatch):
-    """Stub the terminate-backends + drop/create-schema step: the suite
-    must never actually touch its own test schema."""
+    """Stub the terminate-other-backends-and-dispose step: the suite must
+    never actually terminate its own connections or dispose the shared
+    test engine. The schema drop/recreate itself is no longer part of
+    this step (see runner._SCHEMA_RESET_SQL) — it travels inside
+    run_psql_restore's own transaction, so `fake_psql_restore` above is
+    what simulates the wipe."""
     calls = []
 
     async def _fake(database_url):
         calls.append(database_url)
 
     monkeypatch.setattr(
-        "serversherpa.devtools.testing.runner._terminate_backends_and_reset_schema",
+        "serversherpa.devtools.testing.runner._terminate_other_backends_and_dispose",
         _fake)
     return calls
 
@@ -107,6 +126,21 @@ async def _mark_worker(db, *, online=True, stale=False):
         heartbeat_at=(datetime.now(UTC) - age) if age is not None else None,
         started_at=datetime.now(UTC))
     db.add(row)
+    await db.commit()
+
+
+PRE_TESTING_MESSAGE = "pre-existing maintenance note, unrelated to testing mode"
+
+
+async def _seed_pre_testing_admin_config(db):
+    """A non-default admin config row, so a revert test that asserts the
+    banner/read-only state "came back" can't be satisfied by coincidence:
+    Postgres's own defaults (read_only=False, banner_enabled=False) would
+    silently match an admin row that was never rewritten at all — this
+    sentinel wouldn't."""
+    db.add(SystemConfig(section="admin", data={
+        "read_only": False, "read_only_message": PRE_TESTING_MESSAGE,
+        "pause_workers": False, "banner_enabled": False, "banner_message": ""}))
     await db.commit()
 
 
@@ -315,12 +349,48 @@ async def test_end_when_not_active_is_409(client, db, seeded_user, testing_passw
     assert resp.json()["detail"]["code"] == "session_not_active"
 
 
+async def test_end_revert_with_worker_offline_is_503(
+        client, db, seeded_user, testing_password, fake_storage, fake_pg_dump):
+    hdrs, session_id = await _start_session(db, client, seeded_user, testing_password)
+    assert await worker.run_once(get_sessionmaker()) is True
+
+    # the worker that took the snapshot has since gone quiet
+    proc = await db.get(SystemProcess, "db-testing-worker")
+    proc.heartbeat_at = datetime.now(UTC) - timedelta(seconds=45)
+    await db.commit()
+
+    resp = await client.post("/devtools/db-testing/end", headers=hdrs,
+                             json={"password": TESTING_PASSWORD, "revert": True})
+    assert resp.status_code == 503
+    assert resp.json()["detail"]["code"] == "worker_offline"
+
+    session = await db.get(DbTestingSession, uuid.UUID(session_id))
+    assert session.status == "active"          # untouched — nothing was claimed
+
+
+async def test_end_keep_does_not_require_worker_online(
+        client, db, seeded_user, testing_password, fake_storage, fake_pg_dump):
+    """Keep is API-side and immediate — it needs no worker at all."""
+    hdrs, session_id = await _start_session(db, client, seeded_user, testing_password)
+    assert await worker.run_once(get_sessionmaker()) is True
+
+    proc = await db.get(SystemProcess, "db-testing-worker")
+    proc.heartbeat_at = None
+    await db.commit()
+
+    resp = await client.post("/devtools/db-testing/end", headers=hdrs,
+                             json={"password": TESTING_PASSWORD, "revert": False})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ended_with"] == "kept"
+
+
 # ── end: revert ──────────────────────────────────────────────────────
 
 
 async def test_end_revert_then_worker_restores_and_reinserts_rows(
         client, db, seeded_user, testing_password, fake_storage, fake_pg_dump,
         fake_psql_restore, fake_terminate):
+    await _seed_pre_testing_admin_config(db)
     hdrs, session_id = await _start_session(db, client, seeded_user, testing_password)
     assert await worker.run_once(get_sessionmaker()) is True
 
@@ -336,15 +406,19 @@ async def test_end_revert_then_worker_restores_and_reinserts_rows(
     assert session.ended_with == "reverted"
     assert session.ended_at is not None
 
-    # terminate-backends/schema-reset and the psql restore both ran, with
-    # the snapshot's own dump bytes fed back in
+    # terminate-backends and the psql restore both ran, with the schema
+    # drop/recreate prepended INSIDE the same SQL psql restores — never a
+    # separate, already-committed statement ahead of it — and the
+    # snapshot's own dump bytes fed back in after it
     assert len(fake_terminate) == 1
     assert len(fake_psql_restore) == 1
     _database_url, restored_sql = fake_psql_restore[0]
-    assert restored_sql == FAKE_DUMP
+    assert restored_sql.startswith(b"DROP SCHEMA public CASCADE;")
+    assert b"CREATE SCHEMA public;" in restored_sql
+    assert restored_sql.endswith(FAKE_DUMP)
 
     # the snapshot backup row still exists (re-inserted from the values
-    # held in memory, in a real restore that wiped it)
+    # held in memory — fake_psql_restore's stub genuinely deleted it)
     backup = await db.get(DbBackup, session.snapshot_backup_id)
     assert backup is not None
     assert backup.purpose == "testing_snapshot"
@@ -352,6 +426,10 @@ async def test_end_revert_then_worker_restores_and_reinserts_rows(
     cfg = await read_admin_config(db)
     assert cfg["read_only"] is False
     assert cfg["banner_enabled"] is False
+    # the pre-existing sentinel, not just Postgres's own defaults —
+    # proves _write_admin_config actually ran with previous_banner rather
+    # than the assertion above being satisfied by an absent row
+    assert cfg["read_only_message"] == PRE_TESTING_MESSAGE
 
     audit_row = await db.scalar(select(AuditLog).where(
         AuditLog.action == "db_testing.reverted"))
@@ -374,7 +452,7 @@ async def test_revert_turns_read_only_on_during_and_off_after(
             observed["cfg"] = await read_admin_config(check)
 
     monkeypatch.setattr(
-        "serversherpa.devtools.testing.runner._terminate_backends_and_reset_schema",
+        "serversherpa.devtools.testing.runner._terminate_other_backends_and_dispose",
         _check_read_only_then_noop)
 
     assert await worker.run_once(get_sessionmaker()) is True

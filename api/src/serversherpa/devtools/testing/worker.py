@@ -1,11 +1,20 @@
 """The db-testing-worker loop (`serversherpa db-testing-worker`) — a
 separate process from the API. Claims db_testing_sessions that need
 snapshotting or reverting and runs them to a terminal status via
-devtools.testing.runner. Mirrors reports/worker.py's claim/heartbeat/
-stale-sweep shape, with one deliberate difference: this worker does NOT
-honor the read-only maintenance mode's worker-pause sub-toggle — it is
-the process that turns that toggle on during a revert, so pausing itself
-on it would deadlock the very revert it just started."""
+devtools.testing.runner. Claim/heartbeat/stale-sweep mechanics follow
+labels/generate/jobs.py (a row that needs work, staleness judged on
+heartbeat_at, no queued<->running transition to fall back on) rather than
+reports/worker.py's queue. One deliberate difference from either sibling
+worker: this one does NOT honor the read-only maintenance mode's
+worker-pause sub-toggle — it is the process that turns that toggle on
+during a revert, so pausing itself on it would deadlock the very revert
+it just started.
+
+A revert disposes the ORM engine partway through (see
+devtools.testing.runner) — every session opened AFTER a call into
+process_session should come from a fresh `get_sessionmaker()` rather than
+whatever `sessionmaker` reference this loop was holding, so the worker
+never keeps a disposed engine alive."""
 
 import asyncio
 import logging
@@ -23,6 +32,7 @@ STALE_SWEEP_SECONDS = 60
 async def run_once(sessionmaker) -> bool:
     """Claim and process at most one session. False when there is nothing
     to do (no session in 'snapshotting' or 'reverting')."""
+    from serversherpa.db.engine import get_sessionmaker
     from serversherpa.system.db_logging import install
     install("db-testing-worker")
 
@@ -42,7 +52,10 @@ async def run_once(sessionmaker) -> bool:
             except Exception:
                 logger.warning("could not roll back the db-testing session %s",
                                session_id, exc_info=True)
-            async with sessionmaker() as fin:
+            # get_sessionmaker(), not `sessionmaker`: a revert disposes the
+            # engine partway through, so this fallback write must land on
+            # whatever is current rather than a possibly-disposed one.
+            async with get_sessionmaker()() as fin:
                 row = await fin.get(DbTestingSession, session_id)
                 if row is not None:
                     row.status = "failed"
@@ -82,12 +95,17 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
     # module docstring), so unlike report-worker/label-worker it carries
     # no `meta_fn`.
     heartbeat = start_heartbeat("db-testing-worker", "worker")
-    maker = get_sessionmaker()
     try:
-        await _sweep_stale(maker, sweep_state)          # startup sweep
+        await _sweep_stale(get_sessionmaker(), sweep_state)   # startup sweep
         swept_at = time.monotonic()
         logger.info("db-testing worker online — watching for sessions")
         while True:
+            # Re-fetched every iteration, deliberately not captured once
+            # outside the loop: a revert disposes the engine mid-run, and
+            # holding one `maker` reference for the whole process lifetime
+            # would keep that disposed engine alive instead of picking up
+            # the fresh one get_sessionmaker() builds on next access.
+            maker = get_sessionmaker()
             if time.monotonic() - swept_at >= STALE_SWEEP_SECONDS:
                 swept_at = time.monotonic()
                 await _sweep_stale(maker, sweep_state)

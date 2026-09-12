@@ -58,9 +58,13 @@ class PsqlUnavailable(Exception):
 
 
 class PsqlFailed(Exception):
-    """psql ran but exited non-zero (ON_ERROR_STOP aborts the restore on
-    the first bad statement, inside the single transaction, so a failed
-    restore leaves the database exactly as it was before the attempt)."""
+    """psql ran but exited non-zero. ON_ERROR_STOP aborts the restore on
+    the first bad statement, and `--single-transaction` means everything
+    fed to this call — including a schema drop/recreate a caller prepends
+    ahead of the dump — rolls back together, so a failed restore leaves
+    the database exactly as it was before the attempt. That guarantee
+    depends on the caller never running the drop as a separate, already-
+    committed statement outside this call."""
 
     def __init__(self, stderr: bytes):
         self.stderr = stderr
@@ -192,12 +196,31 @@ def _resolve_psql() -> str:
     raise PsqlUnavailable()
 
 
+# pg_dump 18+ emits this line unconditionally near the top of every dump
+# (always `= 0`, the wire default) — `transaction_timeout` is a PG 17+
+# GUC, so a dump taken with an 18.x client toolchain against an older
+# (e.g. 16.x) server fails immediately under `-v ON_ERROR_STOP=1` with
+# "unrecognized configuration parameter". Dropping the line is harmless
+# on any server new enough to understand it in the first place — it is
+# only ever restated at its own default.
+_UNSUPPORTED_GUC_PREFIX = b"SET transaction_timeout = "
+
+
+def _strip_unsupported_gucs(sql: bytes) -> bytes:
+    lines = sql.split(b"\n")
+    kept = [line for line in lines if not line.startswith(_UNSUPPORTED_GUC_PREFIX)]
+    return b"\n".join(kept)
+
+
 async def run_psql_restore(database_url: str, sql: bytes) -> None:
-    """Feed `sql` (a plain-SQL dump, as produced by run_pg_dump) into
-    `database_url` via psql. `-v ON_ERROR_STOP=1 --single-transaction`
-    means the very first failing statement aborts the whole restore inside
-    one transaction — a bad or partial dump never leaves the database
-    half-restored."""
+    """Feed `sql` (a plain-SQL dump, as produced by run_pg_dump, optionally
+    with DDL a caller prepended ahead of it) into `database_url` via psql.
+    `-v ON_ERROR_STOP=1 --single-transaction` means the very first failing
+    statement aborts the WHOLE restore inside one transaction — nothing
+    fed to this call, prepended DDL included, ever survives a partial
+    failure; see PsqlFailed. GUCs pg_dump's client tools emit that the
+    target server predates (see `_strip_unsupported_gucs`) are stripped
+    before anything is sent."""
     binary = _resolve_psql()
     url = make_url(database_url.replace("+asyncpg", ""))
     env = {**os.environ, "PGPASSWORD": url.password or ""}
@@ -210,6 +233,6 @@ async def run_psql_restore(database_url: str, sql: bytes) -> None:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _stdout, stderr = await proc.communicate(input=sql)
+    _stdout, stderr = await proc.communicate(input=_strip_unsupported_gucs(sql))
     if proc.returncode != 0:
         raise PsqlFailed(stderr)
