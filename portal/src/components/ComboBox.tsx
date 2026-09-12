@@ -130,6 +130,12 @@ export default function ComboBox({
       e.preventDefault();
       if (visible[active]) select(visible[active].value);
     } else if (e.key === 'Escape') {
+      // Scope Escape to the open list: preventDefault so a host modal's own
+      // Escape-closes-the-dialog listener (which checks defaultPrevented,
+      // GenerateReportModal's convention) sees this Escape as "handled
+      // here" and doesn't also dismiss the whole dialog. Nothing to scope
+      // when the list is already closed, so default proceeds untouched.
+      if (open) e.preventDefault();
       setOpen(false);
       setFilter('');
       inputRef.current?.blur();

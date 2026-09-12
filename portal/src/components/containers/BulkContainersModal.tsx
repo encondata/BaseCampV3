@@ -20,20 +20,23 @@ import {
   type StatusValue,
 } from '../../lib/api';
 import {
-  buildNames, clampTags, previewNames, summaryText, tagTotal, TAG_ASSIGNMENT_ORDER,
+  clampTags, previewNames, summaryText, tagTotal, TAG_ASSIGNMENT_ORDER,
   type NamingConfig, type TagCounts,
 } from '../../lib/bulkContainers';
-import { LABEL_TAG_OPTIONS } from '../../lib/labelTags';
+import { TAG_TYPES } from '../../labels/tagTypes';
 import { OptionGroup, OptionsGrid, PreviewCard } from '../reports/ReportOptionsLayout';
 import ComboBox from '../ComboBox';
 import '../../styles/reports.css';       // rgm-* (roomy header, two-column grid)
 
 const ZERO_PAD_CHOICES = [0, 2, 3, 4];
+// API's `naming.prefix`/`naming.suffix` max_length — see
+// ContainerBulkCreateIn (bc-api-report.md); bounding the inputs keeps a
+// too-long value from reaching the server as a generic (uncoded) 422.
+const NAMING_PART_MAX_LENGTH = 40;
 
 const BULK_ERRORS: Record<string, string> = {
   bad_container_type: 'Pick a container type from the list.',
   tags_exceed_count: 'Label tag counts cannot exceed the container count.',
-  empty_name: 'That naming convention produces an empty name — check the prefix/suffix.',
   initiative_not_found: 'That initiative no longer exists — pick another.',
   site_not_found: 'That site no longer exists — pick another.',
   forbidden: 'You do not have permission to add containers.',
@@ -49,7 +52,7 @@ function mapError(err: unknown): string {
 function clampNoticeText(trimmed: TagCounts): string {
   const parts = TAG_ASSIGNMENT_ORDER
     .filter((key) => (trimmed[key] ?? 0) > 0)
-    .map((key) => `${trimmed[key]} ${LABEL_TAG_OPTIONS.find((o) => o.key === key)!.label}`);
+    .map((key) => `${trimmed[key]} ${TAG_TYPES[key].label}`);
   return `Count dropped below the tag total — trimmed ${parts.join(', ')} to fit.`;
 }
 
@@ -64,7 +67,12 @@ interface Props {
 export default function BulkContainersModal({
   types, sites, initiatives = [], onClose, onCreated,
 }: Props) {
-  const [count, setCount] = useState(1);
+  // Free-typed text for the Count field — kept separate from the clamped
+  // numeric `count` derived below so the field can be emptied/retyped
+  // without a forced snap-back on every keystroke (that snap-back is what
+  // made the field impossible to clear, and walking through a transient
+  // small value while retyping used to trigger a spurious tag clamp).
+  const [countText, setCountText] = useState('1');
   const [containerType, setContainerType] = useState('');
   const [naming, setNaming] = useState<NamingConfig>({ prefix: '', start: 1, pad: 3, suffix: '' });
   const [initiativeId, setInitiativeId] = useState('');
@@ -75,26 +83,48 @@ export default function BulkContainersModal({
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
+  // The clamped 1..500 integer used everywhere else (preview, summary,
+  // footer label, tag-stepper `+` gating) — always well-formed even while
+  // `countText` is transiently empty or out of range mid-edit.
+  const count = useMemo(() => {
+    const n = Math.round(Number(countText));
+    return Number.isFinite(n) ? Math.max(1, Math.min(500, n)) : 1;
+  }, [countText]);
+
   // Escape closes the dialog (GenerateReportModal's own convention) —
   // skipped while a request is in flight, same as the backdrop click below.
+  // `!e.defaultPrevented` is the same convention GenerateReportModal uses
+  // for its nested CompleteSiteSurveyModal: an open ComboBox's own Escape
+  // handler (scoped to just closing its list) calls preventDefault, so
+  // that Escape dismisses the list only, not the whole form underneath it.
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !saving) onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented && !saving) onClose();
+    };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose, saving]);
 
   // Lowering Count below the tag total clamps it back down from the LAST
   // tag in assignment order — same rule the API applies — and explains
-  // what happened. Bumping Count (or leaving it alone) never trims
-  // anything (clampTags is a no-op when the total already fits).
-  useEffect(() => {
-    setTags((prev) => {
-      const { tags: next, trimmed } = clampTags(prev, count);
-      setClampNotice(Object.keys(trimmed).length > 0 ? clampNoticeText(trimmed) : '');
+  // what happened. Applied on Count blur (below) and again right before
+  // submit (Enter submits the form without ever blurring the field) —
+  // deliberately NOT on every keystroke: `count` is derived from
+  // `countText` above, and a per-keystroke effect on it would trim tags
+  // against transient values (e.g. an empty or momentarily-small string
+  // while retyping), losing counts the user never actually asked to
+  // reduce to. `clampTags` is a no-op when the total already fits, so
+  // calling this after Count only ever *increases* is harmless.
+  const applyCountClamp = () => {
+    const { tags: next, trimmed } = clampTags(tags, count);
+    if (Object.keys(trimmed).length > 0) {
+      setTags(next);
+      setClampNotice(clampNoticeText(trimmed));
       return next;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [count]);
+    }
+    setClampNotice('');
+    return tags;
+  };
 
   const typeOptions = useMemo(
     () => types.map((t) => ({ value: t.key, label: t.label })), [types]);
@@ -107,13 +137,12 @@ export default function BulkContainersModal({
     .filter((s) => !s.archived_at)
     .map((s) => ({ value: s.id, label: s.name })), [sites]);
 
-  const names = useMemo(() => buildNames(naming, count), [naming, count]);
   const preview = useMemo(() => previewNames(naming, count), [naming, count]);
   const total = tagTotal(tags);
 
-  const setCountClamped = (raw: string) => {
-    const n = Math.round(Number(raw));
-    setCount(Number.isFinite(n) ? Math.max(1, Math.min(500, n)) : 1);
+  const onCountBlur = () => {
+    setCountText(String(count));
+    applyCountClamp();
   };
   const setStart = (raw: string) => {
     const n = Math.round(Number(raw));
@@ -130,12 +159,16 @@ export default function BulkContainersModal({
     setTags((t) => (t[key] ? { ...t, [key]: t[key]! - 1 } : t));
   };
 
-  const valid = count >= 1 && count <= 500 && !!containerType
-    && names.length > 0 && names.every((n) => n.trim().length > 0);
+  const valid = count >= 1 && !!containerType;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (!valid || saving) return;
+    // Enter submits the form without ever blurring Count, so the clamp
+    // (normally applied on blur — see `applyCountClamp` above) needs its
+    // own pass here too: the payload must never carry a tag total the
+    // current Count can't fit, regardless of how submit was triggered.
+    const safeTags = applyCountClamp();
     setSaving(true);
     setError('');
     setCollisionNames(null);
@@ -147,7 +180,7 @@ export default function BulkContainersModal({
         initiative_id: initiativeId || null,
         site_id: siteId || null,
         status: null,
-        tags: Object.fromEntries(TAG_ASSIGNMENT_ORDER.map((key) => [key, tags[key] ?? 0])),
+        tags: Object.fromEntries(TAG_ASSIGNMENT_ORDER.map((key) => [key, safeTags[key] ?? 0])),
       };
       const { created } = await bulkCreateContainers(payload);
       await onCreated(created);
@@ -189,7 +222,8 @@ export default function BulkContainersModal({
                   <div>
                     <label htmlFor="bulk-count">Count</label>
                     <input id="bulk-count" type="number" min={1} max={500} disabled={saving}
-                           value={count} onChange={(e) => setCountClamped(e.target.value)} />
+                           value={countText} onChange={(e) => setCountText(e.target.value)}
+                           onBlur={onCountBlur} />
                   </div>
                   <div>
                     <label>Type</label>
@@ -204,6 +238,7 @@ export default function BulkContainersModal({
 
                   <div><label htmlFor="bulk-prefix">Prefix</label>
                     <input id="bulk-prefix" value={naming.prefix} disabled={saving}
+                           maxLength={NAMING_PART_MAX_LENGTH}
                            onChange={(e) => setNaming((f) => ({ ...f, prefix: e.target.value }))} /></div>
                   <div><label htmlFor="bulk-start">Start number</label>
                     <input id="bulk-start" type="number" min={0} disabled={saving}
@@ -222,6 +257,7 @@ export default function BulkContainersModal({
                   </div>
                   <div><label htmlFor="bulk-suffix">Suffix</label>
                     <input id="bulk-suffix" value={naming.suffix} disabled={saving}
+                           maxLength={NAMING_PART_MAX_LENGTH}
                            onChange={(e) => setNaming((f) => ({ ...f, suffix: e.target.value }))} /></div>
 
                   <div className="full">
@@ -256,7 +292,7 @@ export default function BulkContainersModal({
                            hint="Assigned in order — the first containers get Priority, then Vendor, Accessories, Warehouse, and E-Waste.">
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                   {TAG_ASSIGNMENT_ORDER.map((key) => {
-                    const opt = LABEL_TAG_OPTIONS.find((o) => o.key === key)!;
+                    const opt = TAG_TYPES[key];
                     const n = tags[key] ?? 0;
                     return (
                       <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>

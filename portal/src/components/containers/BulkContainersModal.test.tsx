@@ -2,11 +2,15 @@
 /**
  * BulkContainersModal — the "+ Add in bulk" flow. Covers: the live
  * naming preview, the per-tag stepper's bounds (0 and the running
- * count), the exact `POST /containers/bulk` payload, the `name_collision`
- * 422's message, and a successful create closing the modal and handing
- * the created rows to `onCreated`.
+ * count), the Count field's clear/retype/blur behavior (clamp applies on
+ * blur and at submit, never per keystroke), Escape scoped to an open
+ * ComboBox's own list rather than the whole dialog, the exact
+ * `POST /containers/bulk` payload (including a non-null Initiative/Site),
+ * the `name_collision` 422's message, the footer's Type-required gating,
+ * and a successful create closing the modal and handing the created rows
+ * to `onCreated`.
  */
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -27,6 +31,13 @@ const TYPES: StatusValue[] = [
 ];
 const SITES: SiteItem[] = [];
 const INITIATIVES: InitiativeItem[] = [];
+
+const NAMED_SITES: SiteItem[] = [
+  { id: 's1', name: 'NAP11', archived_at: null, created_at: '2026-01-01T00:00:00Z' } as unknown as SiteItem,
+];
+const NAMED_INITIATIVES: InitiativeItem[] = [
+  { id: 'i1', name: 'Hall Migration', client_name: 'Acme', created_at: '2026-01-01T00:00:00Z' } as unknown as InitiativeItem,
+];
 
 function container(over: Partial<ContainerItem> = {}): ContainerItem {
   return {
@@ -57,27 +68,47 @@ const mount = (over: Partial<Parameters<typeof BulkContainersModal>[0]> = {}) =>
 const numberInput = (label: string) =>
   screen.getByLabelText(label) as HTMLInputElement;
 
+/** Clear → retype → tab away (blurring the field) — the real interaction
+ *  a user replacing an existing Count performs, and the one that commits
+ *  the value (Count's clamp-tags side effect fires on blur, not on every
+ *  keystroke — see BulkContainersModal.tsx's `applyCountClamp`). */
+async function setCount(user: ReturnType<typeof userEvent.setup>, value: string) {
+  const input = numberInput('Count');
+  await user.clear(input);
+  await user.type(input, value);
+  await user.tab();
+}
+
 it('the Preview line updates live as naming fields change', async () => {
   const user = userEvent.setup();
   mount();
   expect(screen.getByText(/Preview:/).textContent).toBe('Preview: 001');
 
   await user.type(numberInput('Prefix'), 'PLT-');
-  // A single change event with the final value — the same one-shot update
-  // a spinner click or pasted value produces — rather than clearing then
-  // retyping digit-by-digit, which would otherwise walk Count through a
-  // transient smaller value and trip the live tag-clamp below.
-  fireEvent.change(numberInput('Count'), { target: { value: '5' } });
+  await setCount(user, '5');
   expect(screen.getByText(/Preview:/).textContent).toBe('Preview: PLT-001, PLT-002, PLT-003 … PLT-005');
 
   await user.click(screen.getByRole('tab', { name: '0' }));
   expect(screen.getByText(/Preview:/).textContent).toBe('Preview: PLT-1, PLT-2, PLT-3 … PLT-5');
 });
 
+it('Count can be fully cleared and retyped without losing digits or snapping back', async () => {
+  const user = userEvent.setup();
+  mount();
+  const input = numberInput('Count');
+  await user.clear(input);
+  expect(input.value).toBe('');   // not forced back to "1" while empty
+  await user.type(input, '15');
+  expect(input.value).toBe('15');
+  await user.tab();
+  expect(input.value).toBe('15'); // normalized (unchanged, already valid) on blur
+  expect(screen.getByRole('button', { name: 'Create 15 containers' })).toBeTruthy();
+});
+
 it('a tag stepper disables − at 0 and disables every + once the total reaches Count', async () => {
   const user = userEvent.setup();
   mount();
-  fireEvent.change(numberInput('Count'), { target: { value: '2' } });
+  await setCount(user, '2');
 
   const priorityMinus = screen.getByRole('button', { name: 'Fewer Priority' }) as HTMLButtonElement;
   const priorityPlus = screen.getByRole('button', { name: 'More Priority' }) as HTMLButtonElement;
@@ -98,12 +129,23 @@ it('a tag stepper disables − at 0 and disables every + once the total reaches 
   expect(priorityPlus.disabled).toBe(false);
 });
 
+it('the footer is disabled until a Type is chosen', async () => {
+  const user = userEvent.setup();
+  mount();
+  const footer = () => screen.getByRole('button', { name: /Create 1 container/ }) as HTMLButtonElement;
+  expect(footer().disabled).toBe(true);
+
+  await user.click(screen.getByPlaceholderText('Type to search types…'));
+  await user.click(await screen.findByText('Pallet'));
+  expect(footer().disabled).toBe(false);
+});
+
 it('submits the exact bulk-create payload', async () => {
   const user = userEvent.setup();
   api.bulkCreateContainers.mockResolvedValue({ created: [container()] });
   mount();
 
-  fireEvent.change(numberInput('Count'), { target: { value: '3' } });
+  await setCount(user, '3');
   await user.type(numberInput('Prefix'), 'PLT-');
   await user.click(screen.getByPlaceholderText('Type to search types…'));
   await user.click(await screen.findByText('Pallet'));
@@ -120,6 +162,27 @@ it('submits the exact bulk-create payload', async () => {
     site_id: null,
     status: null,
     tags: { priority: 1, vendor: 0, accessories: 0, warehouse: 0, ewaste: 0 },
+  });
+});
+
+it('sends the chosen Initiative and Site ids in their own (not swapped) payload fields', async () => {
+  const user = userEvent.setup();
+  api.bulkCreateContainers.mockResolvedValue({ created: [container()] });
+  mount({ sites: NAMED_SITES, initiatives: NAMED_INITIATIVES });
+
+  await user.click(screen.getByPlaceholderText('Type to search types…'));
+  await user.click(await screen.findByText('Pallet'));
+  await user.click(screen.getByPlaceholderText('Type to search initiatives…'));
+  await user.click(await screen.findByText('Hall Migration'));
+  await user.click(screen.getByPlaceholderText('Type to search sites…'));
+  await user.click(await screen.findByText('NAP11'));
+
+  await user.click(screen.getByRole('button', { name: /Create 1 container/ }));
+
+  await waitFor(() => expect(api.bulkCreateContainers).toHaveBeenCalled());
+  expect(api.bulkCreateContainers.mock.calls[0][0]).toMatchObject({
+    initiative_id: 'i1',
+    site_id: 's1',
   });
 });
 
@@ -160,20 +223,56 @@ it('Escape closes the modal', async () => {
   expect(onClose).toHaveBeenCalled();
 });
 
+it('Escape inside an open ComboBox list closes only the list, not the modal', async () => {
+  const user = userEvent.setup();
+  const { onClose } = mount();
+
+  await user.click(screen.getByPlaceholderText('Type to search types…'));
+  expect(await screen.findByText('Pallet')).toBeTruthy();
+
+  await user.keyboard('{Escape}');
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.queryByText('Pallet')).toBeNull();   // the list itself did close
+
+  await user.keyboard('{Escape}');
+  expect(onClose).toHaveBeenCalled();
+});
+
 it('lowering Count below the tag total clamps from the last tag backwards and shows a notice', async () => {
   const user = userEvent.setup();
   mount();
-  fireEvent.change(numberInput('Count'), { target: { value: '5' } });
+  await setCount(user, '5');
   const plus = (label: string) => screen.getByRole('button', { name: `More ${label}` });
   await user.click(plus('Priority'));
   await user.click(plus('Vendor'));
   await user.click(plus('Vendor'));
   // total is 3 (1 priority, 2 vendor); dropping Count to 2 must trim
   // vendor (the later tag) rather than priority.
-  fireEvent.change(numberInput('Count'), { target: { value: '2' } });
+  await setCount(user, '2');
 
   expect(screen.getByText(/trimmed/i)).toBeTruthy();
   const vendorCount = within(screen.getByRole('button', { name: 'More Vendor' }).parentElement!)
     .getByText('1');
+  expect(vendorCount).toBeTruthy();
+});
+
+it('a mid-retype dip in Count does not trim tags before the final value settles on blur', async () => {
+  const user = userEvent.setup();
+  mount();
+  await setCount(user, '5');
+  await user.click(screen.getByRole('button', { name: 'More Vendor' }));
+  await user.click(screen.getByRole('button', { name: 'More Vendor' }));
+
+  // Replacing "5" with "25" necessarily passes through "2" for one
+  // keystroke — that transient dip must not trim the 2 Vendor tags
+  // already set, since the final, settled value (25) fits them fine.
+  const input = numberInput('Count');
+  await user.clear(input);
+  await user.type(input, '25');
+  await user.tab();
+
+  expect(screen.queryByText(/trimmed/i)).toBeNull();
+  const vendorCount = within(screen.getByRole('button', { name: 'More Vendor' }).parentElement!)
+    .getByText('2');
   expect(vendorCount).toBeTruthy();
 });
