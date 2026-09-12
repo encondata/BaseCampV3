@@ -48,3 +48,12 @@ PDF (`AVERY_5164`: Letter portrait, 4" × 3.333" labels, 2 × 3 per sheet, margi
 ## Out of scope
 
 Storing tags on containers; ZPL container labels through the label worker (the `container` label type exists; wiring it into Generate Labels is a follow-up); RFID encoding.
+
+## Addendum 2026-09-12 — the label tag lives on the container
+
+Jimmy: the tag chosen per container (Priority / Vendor / Accessories / E-Waste / Warehouse) should be read from the container and saved back to it when changed, so the Container Labels page is no longer the only place that knows it.
+
+- **Data (migration 0058, `down_revision = "0057"`):** `containers.label_tag text NULL` with a CHECK constraint on the five keys (`priority, vendor, accessories, ewaste, warehouse`). `ContainerItem.label_tag: TagKey | None`; create/update accept `label_tag` (null clears; anything else → 422 `bad_label_tag`). Bulk import: optional `label tag` column mapped by key or label (unknown → row error) if the importer's column machinery makes it small; otherwise deferred and noted.
+- **Container Labels page:** the pick list's tag column shows each container's stored `label_tag`. Changing a tag (per row or bulk Set tag) PATCHes the container immediately (`{label_tag}`) — optimistic update, error strip + revert on failure — so the next visit, the report run, and the containers page all agree. The run options still carry `tags` (explicit per-run values), built from the stored tags at generate time.
+- **/logistics/containers:** list gets a "Label tag" column (colored `chip custom` with the tag's color, hidden by default? — no: visible by default, it is operational) and a facet; the edit modal gets a **Label tag** control (a `.segmented`-style picker or ComboBox over the five keys + None, colored chip preview); the detail block shows it. `TAG_TYPES` in `portal/src/labels/containerLabelSheet.ts` stays the single source of labels/colors; the portal exports a `LABEL_TAG_OPTIONS` helper from it for pickers.
+- **API tests:** migration/CHECK, create/patch/clear/422, list shows it. **Portal tests:** page initializes tags from containers and PATCHes on change (row + bulk), reverts on failure; edit modal round trip; list column/facet; detail row.
