@@ -5,14 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host",
-    "build": "tsc -b && vite build && npm run build:rack-renderer",
+    "build": "tsc -b && vite build && npm run build:rack-renderer && npm run build:container-labels",
     "build:rack-renderer": "vite build -c vite.rack-renderer.config.ts",
+    "build:container-labels": "vite build -c vite.container-labels.config.ts",
     "preview": "vite preview",
     "test": "vitest run"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.10",
+    "bwip-js": "^4.11.4",
     "gsap": "^3.12.5",
+    "jspdf": "^3.0.4",
     "leaflet": "^1.9.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
