@@ -8,10 +8,12 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
+import BulkContainersModal from '../components/containers/BulkContainersModal';
 import ContainerBulkImport from '../components/containers/ContainerBulkImport';
 import ContainerEditModal from '../components/containers/ContainerEditModal';
 import GodDeleteButton from '../components/GodDeleteButton';
 import NotesFilesPanel from '../components/NotesFilesPanel';
+import { useToast } from '../lib/notificationsContext';
 import {
   ApiError,
   listContainerAssets,
@@ -129,6 +131,7 @@ export default function Containers() {
   const canViewSites = can('sites', 'view');
   const god = useGodEdit();
   const pd = usePendingDeletes(godMode);
+  const toast = useToast();               // shared ToastHost (AppShell)
 
   const [containers, setContainers] = useState<ContainerItem[] | null>(null);
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
@@ -159,6 +162,7 @@ export default function Containers() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [bulkCreating, setBulkCreating] = useState(false);
 
   const load = async () => {
     try {
@@ -324,6 +328,11 @@ export default function Containers() {
               + New container
             </button>
           )}
+          {canAdd && (
+            <button className="btn-solid" onClick={() => setBulkCreating(true)}>
+              + Add in bulk
+            </button>
+          )}
         </div>
       </div>
 
@@ -451,6 +460,18 @@ export default function Containers() {
         <ContainerBulkImport
           onClose={() => setImporting(false)}
           onDone={() => load()}
+        />
+      )}
+      {bulkCreating && (
+        <BulkContainersModal
+          types={types}
+          sites={sites}
+          initiatives={initiatives}
+          onClose={() => setBulkCreating(false)}
+          onCreated={async (created) => {
+            await load();
+            toast(`Created ${created.length} container${created.length === 1 ? '' : 's'}`);
+          }}
         />
       )}
     </div>

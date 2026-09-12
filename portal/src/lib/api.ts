@@ -1553,6 +1553,28 @@ export async function downloadContainerTemplate(): Promise<Blob> {
   return resp.blob();
 }
 
+/** `BulkContainersModal`'s numbered-batch create — distinct from the
+ *  CSV/XLSX `bulk-import` flow above (`previewContainerBulk`/
+ *  `commitContainerBulk`): one call, all-or-nothing (a `name_collision`
+ *  422 carries `detail.names` and creates nothing). */
+export async function bulkCreateContainers(body: {
+  count: number;
+  container_type: string;
+  naming: { prefix: string; start: number; pad: number; suffix: string };
+  initiative_id: string | null;
+  site_id: string | null;
+  status: string | null;
+  tags: Record<string, number>;
+}): Promise<{ created: ContainerItem[] }> {
+  const resp = await apiFetch('/containers/bulk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /* ── trucks ───────────────────────────────────────────────────────── */
 
 export interface TruckLastUpdate {

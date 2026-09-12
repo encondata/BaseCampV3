@@ -161,3 +161,12 @@ it('the Label tag column facet lists Priority and — (blank collapsed)', async 
   expect(values).toContain('Priority');
   expect(values).toContain('—');
 });
+
+it('"+ Add in bulk" opens BulkContainersModal', async () => {
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(screen.queryByText('Rack Cart 1')).not.toBeNull());
+
+  await user.click(screen.getByRole('button', { name: '+ Add in bulk' }));
+  expect(await screen.findByText('Add containers in bulk')).toBeTruthy();
+});
