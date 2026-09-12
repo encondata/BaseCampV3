@@ -626,9 +626,16 @@ async def test_runner_override_wins_over_auto_match(db):
     initiative, person, assets, auto_template = await _seed_initiative(db, n_assets=2)
     override_template = LabelTemplate(
         name=f"override-top-{uuid.uuid4()}", label_type="top", size_key="4x2", dpi_key="203",
-        language_key="zpl", kind="code", code="OVERRIDE-{asset_id}")
+        language_key="zpl", kind="code", code="OVERRIDE-{asset_id}",
+        # Older than the seeded template so it can never BE the auto-match
+        # (select_template orders version desc, updated_at desc) — otherwise
+        # this test could pass with the override branch deleted.
+        updated_at=datetime(2020, 1, 1, tzinfo=UTC))
     db.add(override_template)
     await db.commit()
+    from serversherpa.labels.generate.select import select_template
+    auto = await select_template(db, "top", initiative.destination_site_id)
+    assert auto is not None and auto.id == auto_template.id and auto.id != override_template.id
 
     run = _queued_run(initiative.id, person.id, label_types=["top"])
     run.template_overrides = {"top": str(override_template.id)}
