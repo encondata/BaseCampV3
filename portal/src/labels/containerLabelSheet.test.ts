@@ -24,6 +24,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildContainerLabelPdf,
   containerLabelsFilename,
+  formatLabelDate,
   TAG_TYPES,
 } from './containerLabelSheet';
 import type {
@@ -88,9 +89,10 @@ function v2Draw(
     // Get move info for 6th label
     const sourceSite = moveData?.sourceSite || 'N/A';
     const destSite = moveData?.destSite || 'N/A';
-    const moveDate = moveData?.scheduledStart
-      ? new Date(moveData.scheduledStart).toLocaleDateString()
-      : 'N/A';
+    // V2 printed `new Date(...).toLocaleDateString()`; the port formats
+    // dd-MMM-yyyy on purpose (Jimmy, 2026-09-12) — the only intentional
+    // divergence, so the reference routine uses the same formatter here.
+    const moveDate = formatLabelDate(moveData?.scheduledStart);
 
     // Print 6 labels on the page (2 cols x 3 rows)
     // Labels 1-5: barcode + name, Label 6: info label with QR + RFID
@@ -454,3 +456,17 @@ describe('containerLabelsFilename', () => {
     expect(containerLabelsFilename(null, 'move-2')).toBe('Container-Labels-Move-move-2.pdf');
   });
 });
+
+describe('formatLabelDate', () => {
+  it('prints dd-MMM-yyyy with an uppercase month', () => {
+    // noon keeps the calendar day stable in every local zone the tests run in
+    expect(formatLabelDate('2026-09-01T12:00:00')).toBe('01-SEP-2026');
+    expect(formatLabelDate('2026-12-25T12:00:00')).toBe('25-DEC-2026');
+  });
+  it('falls back to N/A for missing or unparsable input', () => {
+    expect(formatLabelDate(null)).toBe('N/A');
+    expect(formatLabelDate(undefined)).toBe('N/A');
+    expect(formatLabelDate('not a date')).toBe('N/A');
+  });
+});
+

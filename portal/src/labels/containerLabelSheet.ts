@@ -91,6 +91,22 @@ export interface JsPdfLike {
  * placeholder). This is a direct port of V2's `handleGenerate` body — see
  * the file header for what changed and what didn't.
  */
+const MONTHS_UPPER = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
+/** The Date value on label 6, as `dd-MMM-yyyy` (e.g. `01-SEP-2026`).
+ *  DELIBERATE DIVERGENCE FROM V2 (Jimmy, 2026-09-12): V2 printed
+ *  `toLocaleDateString()` (mm/dd/yyyy), which reads ambiguously across the
+ *  regions the company operates in. Day/month/year are taken in the
+ *  runtime's local zone, exactly as V2's call did (the worker sets TZ to
+ *  the company zone). 'N/A' when the move has no scheduled start. */
+export function formatLabelDate(iso: string | null | undefined): string {
+  if (!iso) return 'N/A';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return 'N/A';
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${dd}-${MONTHS_UPPER[d.getMonth()]}-${d.getFullYear()}`;
+}
+
 export function buildContainerLabelPdf(
   input: ContainerLabelInput,
   adapters: Adapters,
@@ -116,9 +132,7 @@ export function buildContainerLabelPdf(
     // Move info for the 6th label
     const sourceSite = input.move.sourceSite || 'N/A';
     const destSite = input.move.destSite || 'N/A';
-    const moveDate = input.move.scheduledStart
-      ? new Date(input.move.scheduledStart).toLocaleDateString()
-      : 'N/A';
+    const moveDate = formatLabelDate(input.move.scheduledStart);
 
     // Print 6 labels on the page (2 cols x 3 rows)
     // Labels 1-5: barcode + name, Label 6: info label with QR + RFID
