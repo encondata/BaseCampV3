@@ -87,6 +87,9 @@ export default function PrintLabels() {
   const batchIdsRef = useRef<string[]>([]);
   const initiativeIdRef = useRef(initiativeId);
   initiativeIdRef.current = initiativeId;
+  const labelTypeRef = useRef(labelType);
+  labelTypeRef.current = labelType;
+  const batchStaleRef = useRef(0);
 
   // Printer notices flow into the page's strip.
   useEffect(() => {
@@ -110,7 +113,10 @@ export default function PrintLabels() {
         setOfflineSince((s) => s ?? (cached[0]?.cached_at ?? null));
         if (cached.length === 0) setNotice({ type: 'error', message: "Couldn't load initiatives." });
       });
-    listLabelVocab().then(setVocab).catch(() => undefined);
+    listLabelVocab().then(setVocab).catch(async () => {
+      const cached = await labelCache.listBundles();
+      if (cached.length === 0) setNotice({ type: 'error', message: "Couldn't load label types." });
+    });
     refreshCachedBundles();
   }, [refreshCachedBundles]);
 
@@ -164,14 +170,14 @@ export default function PrintLabels() {
   const loadBundle = useCallback(async (id: string, type: string) => {
     try {
       const b = await getGeneratedLabelBundle(id, type);
-      if (initiativeIdRef.current !== id) return;
+      if (initiativeIdRef.current !== id || labelTypeRef.current !== type) return;
       setBundle(b);
       const name = initiatives?.find((i) => i.id === id)?.name ?? id;
       await labelCache.putBundle(b, name);
       setCacheStamp({ cached_at: new Date().toISOString(), count: b.labels.length });
       refreshCachedBundles();
     } catch (err) {
-      if (initiativeIdRef.current !== id) return;
+      if (initiativeIdRef.current !== id || labelTypeRef.current !== type) return;
       const cached = isNetworkFailure(err) ? await labelCache.getBundle(id, type) : null;
       if (cached) {
         setBundle(cached);
@@ -186,7 +192,9 @@ export default function PrintLabels() {
   }, [initiatives, refreshCachedBundles]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!initiativeId || !labelType || labelType === LABEL_TYPE_CUSTOM) { setBundle(null); setCacheStamp(null); return; }
+    setBundle(null);
+    setCacheStamp(null);
+    if (!initiativeId || !labelType || labelType === LABEL_TYPE_CUSTOM) return;
     void loadBundle(initiativeId, labelType);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initiativeId, labelType]);
@@ -247,30 +255,31 @@ export default function PrintLabels() {
     return { formatsSent, blanksSent, skipped };
   };
 
-  const validateForPrint = (): string[] | null => {
+  const printableIds = useMemo(() => printOrder(selected, displayed, settings), [selected, displayed, settings]);
+
+  const validateForPrint = (): { ids: string[]; stale: number } | null => {
     if (!printer.connected || !labelType || selected.length === 0) {
       setNotice({ type: 'error', message: 'Please connect a printer, select a label type, and select assets to print' });
       return null;
     }
     if (isCustom) {
       if (!customZpl.trim()) { setNotice({ type: 'error', message: 'Please enter raw ZPL code for custom label printing' }); return null; }
-    } else {
-      const missing = missingLabelIds(selected, byEntity);
-      if (missing.length > 0) {
-        const unsupported = missing.filter((id) => labelStatusFor(id, byEntity) === 'unsupported').length;
-        setNotice({
-          type: 'error',
-          message: unsupported === missing.length
-            ? `${missing.length} selected asset(s) have labels compiled for a non-Zebra printer`
-            : `${missing.length} selected asset(s) do not have ${typeLabel(labelType)} data. Please generate labels first.`,
-          action: { label: 'Deselect missing', onClick: () => { setSelected((s) => s.filter((id) => !missing.includes(id))); setNotice(null); } },
-        });
-        return null;
-      }
-      const stale = staleLabelCount(selected, byEntity);
-      if (stale > 0) setNotice({ type: 'info', message: `${stale} labels were generated with an older template — regenerate for the latest layout.` });
+      return { ids: printableIds, stale: 0 };
     }
-    return printOrder(selected, displayed, settings);
+    const missing = missingLabelIds(printableIds, byEntity);
+    if (missing.length > 0) {
+      const unsupported = missing.filter((id) => labelStatusFor(id, byEntity) === 'unsupported').length;
+      setNotice({
+        type: 'error',
+        message: unsupported === missing.length
+          ? `${missing.length} selected asset(s) have labels compiled for a non-Zebra printer`
+          : `${missing.length} selected asset(s) do not have ${typeLabel(labelType)} data. Please generate labels first.`,
+        action: { label: 'Deselect missing', onClick: () => { setSelected((s) => s.filter((id) => !missing.includes(id))); setNotice(null); } },
+      });
+      return null;
+    }
+    const stale = staleLabelCount(printableIds, byEntity);
+    return { ids: printableIds, stale };
   };
 
   const printBatch = async (batchNumber: number, ids: string[]) => {
@@ -287,15 +296,17 @@ export default function PrintLabels() {
       setBatch((b) => b && { ...b, printedCount: end, finishing: false, printing: false, batchComplete: true, allComplete: allDone });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Print failed';
-      setBatch((b) => b && { ...b, printing: false, finishing: false, error: `Batch ${batchNumber} failed: ${message}` });
+      setBatch((b) => b && { ...b, printing: false, finishing: false, batchComplete: true, error: `Batch ${batchNumber} failed: ${message}` });
     }
   };
 
   const handlePrint = async () => {
-    const ids = validateForPrint();
-    if (!ids) return;
+    const result = validateForPrint();
+    if (!result) return;
+    const { ids, stale } = result;
     if (ids.length > settings.batchSize) {
       batchIdsRef.current = ids;
+      batchStaleRef.current = stale;
       setBatch({
         total: ids.length, batchSize: settings.batchSize, currentBatch: 1, totalBatches: batchCount(ids.length, settings.batchSize),
         printedCount: 0, printing: true, finishing: false, batchComplete: false, allComplete: false,
@@ -309,9 +320,10 @@ export default function PrintLabels() {
     setNotice({ type: 'info', message: `Printing ${ids.length} label(s)...` });
     try {
       const { formatsSent, skipped } = await sendRange(ids, 0, ids.length, (n) => setInlineProgress({ done: n, total: ids.length }));
+      const staleSuffix = stale > 0 ? `. ${stale} used an older template — regenerate for the latest layout.` : '';
       setNotice(skipped > 0
         ? { type: 'warning', message: `Printed ${formatsSent} label(s), skipped ${skipped} (no label data)` }
-        : { type: 'success', message: `Successfully printed ${ids.length} label(s)` });
+        : { type: 'success', message: `Successfully printed ${ids.length} label(s)${staleSuffix}` });
     } catch (err) {
       setNotice({ type: 'error', message: err instanceof Error ? err.message : 'Print failed' });
     } finally {
@@ -327,7 +339,11 @@ export default function PrintLabels() {
   };
   const reprintBatch = () => { if (batch) void printBatch(batch.currentBatch, batchIdsRef.current); };
   const closeBatch = () => {
-    if (batch?.allComplete) setNotice({ type: 'success', message: `Successfully printed ${batch.total} label(s)` });
+    if (batch?.allComplete) {
+      const stale = batchStaleRef.current;
+      const staleSuffix = stale > 0 ? `. ${stale} used an older template — regenerate for the latest layout.` : '';
+      setNotice({ type: 'success', message: `Successfully printed ${batch.total} label(s)${staleSuffix}` });
+    }
     setBatch(null);
   };
 
@@ -377,7 +393,7 @@ export default function PrintLabels() {
     }
   };
 
-  const canPrint = printer.connected && !!labelType && selected.length > 0 && !printing && !batch;
+  const canPrint = printer.connected && !!labelType && printableIds.length > 0 && !printing && !batch;
   const modified = settingsModified(settings);
 
   return (
@@ -409,7 +425,7 @@ export default function PrintLabels() {
         </div>
       )}
       {notice && (
-        <div className={`plabels-notice ${notice.type}`} role="status">
+        <div className={`plabels-notice ${notice.type}`} role={notice.type === 'error' ? 'alert' : 'status'}>
           <p className="page-hint">{notice.message}</p>
           <div className="plabels-notice-actions">
             {notice.action && <button type="button" className="mini-btn" onClick={notice.action.onClick}>{notice.action.label}</button>}
@@ -510,7 +526,8 @@ export default function PrintLabels() {
           <span className="cell-sub">
             {inlineProgress
               ? `Printing ${inlineProgress.done} of ${inlineProgress.total}…`
-              : selected.length === 0 ? 'Select assets to print labels' : `${selected.length} label(s) will be printed`}
+              : selected.length === 0 ? 'Select assets to print labels'
+              : `${printableIds.length} label(s) will be printed${selected.length > printableIds.length ? ` · ${selected.length - printableIds.length} selected asset(s) are hidden by the current filters` : ''}`}
           </span>
         </div>
         <div className="plabels-ready-actions">
@@ -520,7 +537,7 @@ export default function PrintLabels() {
             <span className={`chip ${printer.connected ? 'c-green' : 'c-slate'}`}>{printer.connected ? 'Printer ready' : 'No printer'}</span>
           </div>
           <button type="button" className="btn-solid" disabled={!canPrint} onClick={() => void handlePrint()}>
-            {printing ? 'Printing…' : `Print ${selected.length} label${selected.length === 1 ? '' : 's'}`}
+            {printing ? 'Printing…' : `Print ${printableIds.length} label${printableIds.length === 1 ? '' : 's'}`}
           </button>
         </div>
       </div>

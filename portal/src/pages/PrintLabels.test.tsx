@@ -75,11 +75,11 @@ const vocab: LabelVocab[] = [
   { kind: 'dpi', key: '300', label: '300 DPI', description: '', meta: { dots: 300 }, sort_order: 2, is_active: true, usage_count: null },
 ];
 
-const bundleFor = (ids: string[], type = 'top'): GeneratedLabelBundle => ({
+const bundleFor = (ids: string[], type = 'top', staleIds: string[] = []): GeneratedLabelBundle => ({
   initiative_id: 'i1', label_type: type, fetched_at: 'now',
   labels: ids.map((id) => ({
     id: `g-${id}`, entity_type: 'asset', entity_id: id, template_id: 't', template_name: 'T', template_version: 1,
-    language_key: 'zpl', size_key: '4x2', dpi_key: '203', stale: false, generated_at: 'now', code: `^XA^PW812^FD${id}^FS^XZ`,
+    language_key: 'zpl', size_key: '4x2', dpi_key: '203', stale: staleIds.includes(id), generated_at: 'now', code: `^XA^PW812^FD${id}^FS^XZ`,
   })),
 });
 
@@ -197,12 +197,66 @@ it('opens the batch modal above the batch size and walks batches', async () => {
   expect(await screen.findByText('Printing labels')).toBeTruthy();
   expect(await screen.findByText('Batch 1 complete! Ready to print next batch.')).toBeTruthy();
   expect(printer.send).toHaveBeenCalledTimes(2);
+  expect(printer.waitForIdle).toHaveBeenCalledWith(2, expect.any(Function));
   await userEvent.click(screen.getByRole('button', { name: 'Print next batch (1 labels)' }));
   expect(await screen.findByText('All 3 labels printed successfully!')).toBeTruthy();
   expect(printer.send).toHaveBeenCalledTimes(3);
   await userEvent.click(screen.getByRole('button', { name: 'Done' }));
   expect(screen.queryByText('Printing labels')).toBeNull();
   expect(screen.getByText('Successfully printed 3 label(s)')).toBeTruthy();
+});
+
+it('a failed batch can be reprinted', async () => {
+  localStorage.setItem('labels.print.settings', JSON.stringify({ batchSize: 2 }));
+  printer.connected = true;
+  printer.send.mockRejectedValueOnce(new Error('Printer connection lost. Please reconnect.'));
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByLabelText('Select all filtered assets'));
+  await userEvent.click(screen.getByRole('button', { name: 'Print 3 labels' }));
+  expect(await screen.findByText('Batch 1 failed: Printer connection lost. Please reconnect.')).toBeTruthy();
+  const reprint = screen.getByRole('button', { name: 'Reprint current batch' }) as HTMLButtonElement;
+  expect(reprint.disabled).toBe(false);
+  await userEvent.click(reprint);
+  expect(await screen.findByText('Batch 1 complete! Ready to print next batch.')).toBeTruthy();
+});
+
+it('reports stale labels in the success notice', async () => {
+  printer.connected = true;
+  api.getGeneratedLabelBundle.mockImplementation(async (_i: string, t: string) => bundleFor(['a1', 'a2', 'a3'], t, ['a1']));
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByLabelText('Select all filtered assets'));
+  await userEvent.click(screen.getByRole('button', { name: 'Print 3 labels' }));
+  expect(await screen.findByText('Successfully printed 3 label(s). 1 used an older template — regenerate for the latest layout.')).toBeTruthy();
+});
+
+it('counts only displayed selections', async () => {
+  printer.connected = true;
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByLabelText('Select all filtered assets'));
+  await userEvent.type(screen.getByPlaceholderText('Search assets…'), 'asset-3');
+  const print = await screen.findByRole('button', { name: 'Print 1 label' });
+  expect(screen.getByText(/2 selected asset\(s\) are hidden by the current filters/)).toBeTruthy();
+  await userEvent.click(print);
+  await waitFor(() => expect(printer.send).toHaveBeenCalledTimes(1));
+  expect(printer.send.mock.calls[0][0]).toBe('^XA^PW812^FDa3^FS^XZ');
+});
+
+it('ignores a bundle that arrives after the type changed', async () => {
+  printer.connected = true;
+  const deferredTop: { resolve?: (b: GeneratedLabelBundle) => void } = {};
+  api.getGeneratedLabelBundle.mockImplementation((_i: string, t: string) => {
+    if (t === 'top') return new Promise<GeneratedLabelBundle>((resolve) => { deferredTop.resolve = resolve; });
+    return Promise.resolve(bundleFor(['a1'], t));
+  });
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Front Label/ }));
+  await screen.findByText('1 of 3 assets have a Front Label · 2 missing');
+  deferredTop.resolve?.(bundleFor(['a1', 'a2', 'a3'], 'top'));
+  await waitFor(() => expect(screen.getByText('1 of 3 assets have a Front Label · 2 missing')).toBeTruthy());
 });
 
 it('settings modal edits persist to localStorage and mark the gear', async () => {
