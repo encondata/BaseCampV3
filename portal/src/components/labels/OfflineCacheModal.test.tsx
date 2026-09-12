@@ -70,4 +70,45 @@ describe('OfflineCacheModal', () => {
     expect(screen.queryByRole('button', { name: 'Download' })).toBeNull();
     expect(screen.getByText('Pick an initiative on the page to download its labels.')).toBeTruthy();
   });
+
+  it('checks label types that arrive after mount', async () => {
+    const h = {
+      onDownload: vi.fn(async () => undefined), onRemove: vi.fn(async () => undefined),
+      onClearAll: vi.fn(async () => undefined), onClose: vi.fn(),
+    };
+    const { rerender } = render(<OfflineCacheModal bundles={[bundle('i1', 'NAP11', 'top', 185)]}
+                                selectedInitiative={{ id: 'i1', name: 'NAP11' }} labelTypes={[]}
+                                downloading={false} downloadStatus={null} {...h} />);
+    expect(screen.queryByLabelText('Top Label')).toBeNull();
+    rerender(<OfflineCacheModal bundles={[bundle('i1', 'NAP11', 'top', 185)]}
+             selectedInitiative={{ id: 'i1', name: 'NAP11' }} labelTypes={TYPES}
+             downloading={false} downloadStatus={null} {...h} />);
+    expect((screen.getByLabelText('Top Label') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText('Front Label') as HTMLInputElement).checked).toBe(true);
+    await userEvent.click(screen.getByLabelText('Front Label'));
+    rerender(<OfflineCacheModal bundles={[bundle('i1', 'NAP11', 'top', 185)]}
+             selectedInitiative={{ id: 'i1', name: 'NAP11' }} labelTypes={[...TYPES]}
+             downloading={false} downloadStatus={null} {...h} />);
+    expect((screen.getByLabelText('Top Label') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText('Front Label') as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('uses the latest onRemove', async () => {
+    const oldRemove = vi.fn(async () => undefined);
+    const newRemove = vi.fn(async () => undefined);
+    const h = {
+      onDownload: vi.fn(async () => undefined), onRemove: oldRemove,
+      onClearAll: vi.fn(async () => undefined), onClose: vi.fn(),
+    };
+    const { rerender } = render(<OfflineCacheModal bundles={[bundle('i1', 'NAP11', 'top', 185)]}
+                                selectedInitiative={{ id: 'i1', name: 'NAP11' }} labelTypes={TYPES}
+                                downloading={false} downloadStatus={null} {...h} />);
+    rerender(<OfflineCacheModal bundles={[bundle('i1', 'NAP11', 'top', 185)]}
+             selectedInitiative={{ id: 'i1', name: 'NAP11' }} labelTypes={TYPES}
+             downloading={false} downloadStatus={null} onDownload={h.onDownload} onRemove={newRemove}
+             onClearAll={h.onClearAll} onClose={h.onClose} />);
+    await userEvent.click(screen.getAllByRole('button', { name: 'Remove' })[0]);
+    expect(newRemove).toHaveBeenCalledWith('i1', 'top');
+    expect(oldRemove).not.toHaveBeenCalled();
+  });
 });

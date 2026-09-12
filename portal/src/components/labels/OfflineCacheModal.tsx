@@ -4,7 +4,7 @@
  * on the page, and Clear all. Presentational: the page performs the cache
  * and API calls and passes the results back in.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { relativeTime } from '../../lib/format';
 import type { CachedBundle } from '../../lib/labelCache';
@@ -28,6 +28,7 @@ export default function OfflineCacheModal({
 }: Props) {
   const [checked, setChecked] = useState<Set<string>>(() => new Set(labelTypes.map((t) => t.key)));
   const [confirmClear, setConfirmClear] = useState(false);
+  const touched = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -37,9 +38,19 @@ export default function OfflineCacheModal({
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose, downloading]);
 
+  // Types can arrive after mount (vocab still loading, or offline) — keep
+  // "all checked" for any type the user hasn't touched yet.
+  useEffect(() => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      for (const t of labelTypes) if (!touched.current.has(t.key)) next.add(t.key);
+      return next;
+    });
+  }, [labelTypes]);
+
   const typeLabel = (key: string) => labelTypes.find((t) => t.key === key)?.label ?? key;
 
-  const rows = useMemo(() => [...bundles]
+  const rows = [...bundles]
     .sort((a, b) => a.initiative_name.localeCompare(b.initiative_name) || a.label_type.localeCompare(b.label_type))
     .map((b) => ({
       key: `${b.initiative_id}:${b.label_type}`,
@@ -51,13 +62,16 @@ export default function OfflineCacheModal({
         <button type="button" className="mini-btn" key="r" disabled={downloading}
                 onClick={() => void onRemove(b.initiative_id, b.label_type)}>Remove</button>,
       ],
-    })), [bundles, downloading, labelTypes]); // eslint-disable-line react-hooks/exhaustive-deps
+    }));
 
-  const toggle = (key: string) => setChecked((prev) => {
-    const next = new Set(prev);
-    if (next.has(key)) next.delete(key); else next.add(key);
-    return next;
-  });
+  const toggle = (key: string) => {
+    touched.current.add(key);
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
 
   const totalLabels = bundles.reduce((n, b) => n + b.labels.length, 0);
 
