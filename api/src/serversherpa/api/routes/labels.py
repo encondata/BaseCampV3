@@ -1,30 +1,45 @@
-"""Labels: vocabularies, placeholder catalog, templates, compile/preview.
+"""Labels: vocabularies, placeholder catalog, templates, compile/preview,
+and the label-generation queue (runs, preview, generated labels).
 
 Reads gate on labels:view; template mutations on labels:add/change/delete;
 vocab + placeholder mutations are devtools-gated (god-only), matching the
-rest of the Variables surface. All mutations audit into the caller's txn.
+rest of the Variables surface. The generate-labels routes (runs, preview,
+generated) all gate on labels:view uniformly, per the design spec — V2
+required only portal access to run this job. All mutations audit into
+the caller's txn.
 """
 
+import re
 import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Response
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
+from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
+    GeneratedLabelOut,
     LabelCompileIn, LabelCompileOut,
+    LabelGeneratePreviewInitiativeOut, LabelGeneratePreviewOut,
+    LabelGeneratePreviewTemplateOut, LabelGeneratePreviewTypeOut,
     LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
+    LabelRunCreateIn, LabelRunOut,
     LabelTemplateCreateIn, LabelTemplateOut, LabelTemplateUpdateIn,
     LabelVocabCreateIn, LabelVocabOut, LabelVocabUpdateIn,
     LabelZplPreviewIn,
 )
 from serversherpa.db.models import (
-    LabelPlaceholder, LabelTemplate, LabelTemplateSite, LabelVocab, Site,
+    Asset, Client, GeneratedLabel, Initiative, InitiativeAsset,
+    LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelTemplateSite,
+    LabelVocab, Person, Site,
 )
 from serversherpa.labels import labelary
 from serversherpa.labels.compile import UnsupportedLanguage, compile_design
+from serversherpa.labels.generate import InvalidLabelTypes, RunActive, enqueue_run
+from serversherpa.labels.generate.select import select_template
 from serversherpa.labels.model import DesignError, parse_design
 from serversherpa.labels.tokens import apply_placeholders
 from serversherpa.services.audit import audit, diff, snapshot
@@ -225,10 +240,50 @@ async def update_placeholder(
 
 
 TEMPLATE_FIELDS = ["name", "description", "label_type", "size_key",
-                   "dpi_key", "language_key", "design", "code", "is_active"]
+                   "dpi_key", "language_key", "design", "code", "is_active",
+                   "generation_rules"]
 
 _TEMPLATE_VOCAB = (("type", "label_type"), ("size", "size_key"),
                    ("dpi", "dpi_key"), ("language", "language_key"))
+
+_GENERATION_TOKEN_RE = re.compile(r"^[a-z0-9_]+$")
+
+
+def _validate_generation_rules(rules: dict) -> list[str]:
+    """422 bad_generation_rules problems for a template's generation_rules:
+    `{"destination": {"<1-based position>": "<token>"}, "source": {...},
+    "length_limits": {"<token>": <positive int>}}` — the V2
+    label_generation_code port (see db/models.py LabelTemplate docstring
+    and labels/generate/values.py). Returns [] when the whole dict is
+    valid; every problem is reported (not just the first) so a single
+    editor save can surface everything wrong at once."""
+    problems: list[str] = []
+    unknown = set(rules) - {"destination", "source", "length_limits"}
+    if unknown:
+        problems.append(f"unknown keys: {', '.join(sorted(unknown))}")
+    for side in ("destination", "source"):
+        mapping = rules.get(side)
+        if mapping is None:
+            continue
+        if not isinstance(mapping, dict):
+            problems.append(f"{side} must be an object")
+            continue
+        for pos, name in mapping.items():
+            if not (isinstance(pos, str) and pos.isdigit() and int(pos) > 0):
+                problems.append(f"{side} position {pos!r} must be a positive integer string")
+            if not (isinstance(name, str) and _GENERATION_TOKEN_RE.match(name)):
+                problems.append(f"{side}.{pos} token {name!r} must match [a-z0-9_]+")
+    limits = rules.get("length_limits")
+    if limits is not None:
+        if not isinstance(limits, dict):
+            problems.append("length_limits must be an object")
+        else:
+            for key, limit in limits.items():
+                if not (isinstance(key, str) and _GENERATION_TOKEN_RE.match(key)):
+                    problems.append(f"length_limits key {key!r} must match [a-z0-9_]+")
+                elif not (isinstance(limit, int) and not isinstance(limit, bool) and limit > 0):
+                    problems.append(f"length_limits.{key} must be a positive integer")
+    return problems
 
 
 async def _check_template_vocab(
@@ -322,6 +377,9 @@ async def create_template(
     values = body.model_dump()
     site_ids = values.pop("site_ids", None) or []
     site_ids = list(dict.fromkeys(site_ids))
+    problems = _validate_generation_rules(values.get("generation_rules") or {})
+    if problems:
+        raise _err(422, "bad_generation_rules", problems=problems)
     if values.get("design") is not None:
         try:
             parse_design(values["design"])
@@ -375,6 +433,10 @@ async def update_template(
         raise _err(422, "bad_payload", message="design templates carry no code")
     if row.kind == "code" and "design" in data and data["design"] is not None:
         raise _err(422, "bad_payload", message="code templates carry no design")
+    if "generation_rules" in data:
+        problems = _validate_generation_rules(data["generation_rules"] or {})
+        if problems:
+            raise _err(422, "bad_generation_rules", problems=problems)
     if data.get("design") is not None:
         try:
             parse_design(data["design"])
@@ -528,3 +590,245 @@ async def deactivate_template(
               entity_id=str(row.id), action="deactivate",
               changes={"name": row.name})
     await db.commit()
+
+
+# ── generate labels (runs, preview, generated) ─────────────────────
+
+RUNS_DEFAULT_LIMIT = 25
+RUNS_MAX_LIMIT = 200
+GENERATED_DEFAULT_LIMIT = 100
+GENERATED_MAX_LIMIT = 500
+ACTIVE_RUN_STATUSES = ("queued", "running")
+
+
+async def _scoped_initiative(
+    db: DbSession, actor: AuthContext, initiative_id: uuid.UUID,
+) -> Initiative:
+    """Same 404 initiative_not_found contract as reports.py's create_run:
+    unknown, archived, or out-of-scope all read identically to the
+    caller (no leaking which case it was)."""
+    ini = await db.get(Initiative, initiative_id)
+    cond = scope_conditions("initiatives", actor.access, actor.person.id)
+    if ini is None or ini.archived_at is not None or (
+            cond is not None and await db.scalar(
+                select(Initiative.id).where(Initiative.id == ini.id, cond)) is None):
+        raise _err(404, "initiative_not_found")
+    return ini
+
+
+def _run_out(run: LabelGenerationRun, initiative_name: str, requested_by_name: str) -> LabelRunOut:
+    progress_pct = round(run.processed / run.total * 100) if run.total else 0
+    return LabelRunOut(
+        id=run.id, initiative_id=run.initiative_id, initiative_name=initiative_name,
+        label_types=list(run.label_types), regenerate_existing=run.regenerate_existing,
+        status=run.status, cancel_requested=run.cancel_requested,
+        current_label_type=run.current_label_type, current_item=run.current_item,
+        total=run.total, processed=run.processed, generated=run.generated,
+        skipped=run.skipped, errors=run.errors, error_summary=run.error_summary,
+        error_details=run.error_details, error=run.error, requested_by=run.requested_by,
+        requested_by_name=requested_by_name, notify=run.notify, created_at=run.created_at,
+        started_at=run.started_at, finished_at=run.finished_at, worker_id=run.worker_id,
+        progress_pct=progress_pct)
+
+
+def _runs_query():
+    return (select(LabelGenerationRun, Initiative.name, Person.preferred_name,
+                   Person.first_name, Person.last_name)
+            .join(Initiative, Initiative.id == LabelGenerationRun.initiative_id)
+            .join(Person, Person.id == LabelGenerationRun.requested_by))
+
+
+async def _run_out_for_id(db: DbSession, run_id: uuid.UUID) -> LabelRunOut:
+    row = (await db.execute(
+        _runs_query().where(LabelGenerationRun.id == run_id))).first()
+    if row is None:
+        raise _err(404, "run_not_found")
+    run, initiative_name, preferred, first, last = row
+    return _run_out(run, initiative_name, f"{preferred or first} {last}".strip())
+
+
+@router.post("/generate/runs", response_model=LabelRunOut, status_code=202)
+async def create_generation_run(
+    body: LabelRunCreateIn, db: DbSession,
+    actor: AuthContext = require_permission("labels", "view"),
+) -> LabelRunOut:
+    await _scoped_initiative(db, actor, body.initiative_id)
+    try:
+        run = await enqueue_run(
+            db, initiative_id=body.initiative_id, label_types=body.label_types,
+            regenerate_existing=body.regenerate_existing, requested_by=actor.person.id,
+            notify=body.notify)
+    except InvalidLabelTypes as exc:
+        raise _err(422, "invalid_label_types", problems=exc.problems) from exc
+    except RunActive as exc:
+        raise _err(409, "run_active", run_id=str(exc.run_id)) from exc
+    except IntegrityError as exc:
+        # Defense in depth against the one-active-run-per-initiative
+        # partial unique index: a race between two concurrent enqueue_run
+        # calls surfaces here as a raw IntegrityError rather than
+        # RunActive (see gl-task-1-report.md's own note on this). Roll
+        # back the aborted transaction, then report the same clean 409.
+        await db.rollback()
+        existing = await db.scalar(select(LabelGenerationRun).where(
+            LabelGenerationRun.initiative_id == body.initiative_id,
+            LabelGenerationRun.status.in_(ACTIVE_RUN_STATUSES)))
+        if existing is not None:
+            raise _err(409, "run_active", run_id=str(existing.id)) from exc
+        raise
+    audit(db, actor_id=actor.person.id, entity_type="label_generation_run",
+          entity_id=str(run.id), action="create",
+          changes={"initiative_id": {"from": None, "to": str(body.initiative_id)},
+                   "label_types": {"from": [], "to": list(run.label_types)}})
+    await db.commit()
+    return await _run_out_for_id(db, run.id)
+
+
+@router.get("/generate/runs", response_model=list[LabelRunOut])
+async def list_generation_runs(
+    db: DbSession, initiative_id: uuid.UUID | None = None,
+    limit: int = RUNS_DEFAULT_LIMIT,
+    _actor: AuthContext = require_permission("labels", "view"),
+) -> list[LabelRunOut]:
+    q = _runs_query()
+    if initiative_id is not None:
+        q = q.where(LabelGenerationRun.initiative_id == initiative_id)
+    q = (q.order_by(LabelGenerationRun.created_at.desc(), LabelGenerationRun.id.desc())
+          .limit(max(1, min(limit, RUNS_MAX_LIMIT))))
+    rows = (await db.execute(q)).all()
+    return [_run_out(run, initiative_name, f"{preferred or first} {last}".strip())
+            for run, initiative_name, preferred, first, last in rows]
+
+
+@router.get("/generate/runs/{run_id}", response_model=LabelRunOut)
+async def get_generation_run(
+    run_id: uuid.UUID, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+) -> LabelRunOut:
+    return await _run_out_for_id(db, run_id)
+
+
+@router.post("/generate/runs/{run_id}/cancel", response_model=LabelRunOut)
+async def cancel_generation_run(
+    run_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("labels", "view"),
+) -> LabelRunOut:
+    run = await db.get(LabelGenerationRun, run_id)
+    if run is None:
+        raise _err(404, "run_not_found")
+    before_status = run.status
+    if run.status == "queued":
+        run.status = "canceled"
+        run.cancel_requested = True
+        run.finished_at = datetime.now(UTC)
+    elif run.status == "running":
+        run.cancel_requested = True
+    else:
+        raise _err(409, "run_not_cancelable")
+    audit(db, actor_id=actor.person.id, entity_type="label_generation_run",
+          entity_id=str(run.id), action="cancel",
+          changes={"status": {"from": before_status, "to": run.status},
+                   "cancel_requested": {"from": False, "to": True}})
+    await db.commit()
+    return await _run_out_for_id(db, run_id)
+
+
+@router.get("/generate/preview", response_model=LabelGeneratePreviewOut)
+async def preview_generation(
+    initiative_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("labels", "view"),
+) -> LabelGeneratePreviewOut:
+    ini = await _scoped_initiative(db, actor, initiative_id)
+
+    client_name = (await db.scalar(select(Client.name).where(Client.id == ini.client_id))
+                  if ini.client_id is not None else None)
+    source_name = (await db.scalar(select(Site.name).where(Site.id == ini.origin_site_id))
+                  if ini.origin_site_id is not None else None)
+    destination_name = (
+        await db.scalar(select(Site.name).where(Site.id == ini.destination_site_id))
+        if ini.destination_site_id is not None else None)
+    asset_count = await db.scalar(
+        select(func.count()).select_from(InitiativeAsset)
+        .where(InitiativeAsset.initiative_id == ini.id)) or 0
+
+    # Same site preference as the runner: destination, else origin.
+    template_site_id = ini.destination_site_id or ini.origin_site_id
+    type_rows = (await db.execute(
+        select(LabelVocab).where(LabelVocab.kind == "type", LabelVocab.is_active == True)  # noqa: E712
+        .order_by(LabelVocab.sort_order, LabelVocab.key))).scalars().all()
+
+    types: list[LabelGeneratePreviewTypeOut] = []
+    for vocab in type_rows:
+        template = await select_template(db, vocab.key, template_site_id)
+        template_out = None
+        if template is not None:
+            linked_sites = await db.scalar(
+                select(func.count()).select_from(LabelTemplateSite)
+                .where(LabelTemplateSite.template_id == template.id))
+            template_out = LabelGeneratePreviewTemplateOut(
+                id=template.id, name=template.name, version=template.version,
+                scope="site" if linked_sites else "global")
+
+        current = stale = 0
+        existing_rows = (await db.execute(
+            select(GeneratedLabel.template_id, GeneratedLabel.template_version,
+                   GeneratedLabel.stale)
+            .where(GeneratedLabel.initiative_id == ini.id,
+                   GeneratedLabel.entity_type == "asset",
+                   GeneratedLabel.label_type == vocab.key))).all()
+        for template_id, template_version, is_stale in existing_rows:
+            if (template is not None and template_id == template.id
+                    and template_version == template.version and not is_stale):
+                current += 1
+            else:
+                stale += 1
+
+        types.append(LabelGeneratePreviewTypeOut(
+            key=vocab.key, label=vocab.label, template=template_out,
+            current=current, stale=stale))
+
+    active_run_id = await db.scalar(select(LabelGenerationRun.id).where(
+        LabelGenerationRun.initiative_id == ini.id,
+        LabelGenerationRun.status.in_(ACTIVE_RUN_STATUSES)))
+
+    return LabelGeneratePreviewOut(
+        initiative=LabelGeneratePreviewInitiativeOut(
+            id=ini.id, name=ini.name, client_name=client_name, status=ini.status,
+            scheduled_start=ini.scheduled_start, source_name=source_name,
+            destination_name=destination_name, asset_count=asset_count),
+        types=types, active_run_id=active_run_id)
+
+
+@router.get("/generated", response_model=list[GeneratedLabelOut])
+async def list_generated_labels(
+    db: DbSession, initiative_id: uuid.UUID | None = None,
+    label_type: str | None = None, entity_id: uuid.UUID | None = None,
+    limit: int = GENERATED_DEFAULT_LIMIT, before: datetime | None = None,
+    _actor: AuthContext = require_permission("labels", "view"),
+) -> list[GeneratedLabelOut]:
+    q = (select(GeneratedLabel, Asset.legacy_id, Asset.serial_number, Asset.name,
+                LabelTemplate.name, LabelTemplate.version)
+         .outerjoin(Asset, Asset.id == GeneratedLabel.entity_id)
+         .join(LabelTemplate, LabelTemplate.id == GeneratedLabel.template_id))
+    if initiative_id is not None:
+        q = q.where(GeneratedLabel.initiative_id == initiative_id)
+    if label_type is not None:
+        q = q.where(GeneratedLabel.label_type == label_type)
+    if entity_id is not None:
+        q = q.where(GeneratedLabel.entity_id == entity_id)
+    if before is not None:
+        q = q.where(GeneratedLabel.generated_at < before)
+    q = (q.order_by(GeneratedLabel.generated_at.desc(), GeneratedLabel.id.desc())
+          .limit(max(1, min(limit, GENERATED_MAX_LIMIT))))
+    rows = (await db.execute(q)).all()
+    out = []
+    for gl, legacy_id, serial, name, template_name, template_version in rows:
+        is_asset = gl.entity_type == "asset"
+        out.append(GeneratedLabelOut(
+            id=gl.id, entity_type=gl.entity_type, entity_id=gl.entity_id,
+            asset_id=legacy_id if is_asset else None,
+            serial_number=serial if is_asset else None,
+            name=name if is_asset else None,
+            label_type=gl.label_type, template_name=template_name,
+            template_version=template_version, generated_at=gl.generated_at,
+            stale=gl.stale, code=gl.code))
+    return out

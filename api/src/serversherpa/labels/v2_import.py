@@ -10,8 +10,26 @@ Placeholder policy: V2's quote-variant spellings become V3 `{key}` tokens
 via the exact alias table from V2 label_generator.build_label_field_values.
 Handlebars `{{...}}` (manifest loops) and unknown aliases stay VERBATIM and
 are reported so review knows what to hand-fix — imports land inactive.
+
+generation_rules policy: V2's `label_generation_code` column holds a JSON
+string (already parsed to a dict on some dumps) shaped exactly like V3's
+`generation_rules` — {"destination": {...}, "source": {...},
+"length_limits": {...}} (portal_routes.py `process_label_generation_job`
+reads it the same way: `json.loads(...)` when it's a str). `_map_generation_rules`
+sanitizes it (dropping anything malformed rather than failing the whole
+import) and returns None when V2 has nothing usable to offer. The upsert
+below only ever writes `generation_rules` when that mapping is non-None —
+so a create always gets whatever V2 has (possibly nothing, landing the
+V3 default `{}`), and a re-run only touches an EXISTING template's
+generation_rules when V2 actually has a value this time; V2 is treated
+as the source of truth for every other field it maps (upserts always
+overwrite `code`/`label_type`/etc.), and generation_rules follows the
+same rule — the only case that never wipes a hand-edited value is V2
+offering nothing at all (NULL/blank/unparseable), which by definition
+can't "differ" from anything.
 """
 
+import json
 import re
 from collections.abc import Iterator
 
@@ -131,8 +149,61 @@ def map_label_type(v2_type: str | None) -> tuple[str, str | None]:
     return "top", f"unknown V2 type {v2_type!r} — defaulted to top"
 
 
+def _map_generation_rules(raw: object) -> dict | None:
+    """V2 `label_generation_code` -> V3 `generation_rules`.
+
+    V2 stores this as a JSON string (or an already-parsed dict/None) in
+    exactly V3's shape: {"destination": {"1": "nap", ...}, "source":
+    {...}, "length_limits": {"asset_name": 20}}. Only token-shaped keys
+    ([a-z0-9_]+) and the position/limit value contracts survive — the
+    same contract api/routes/labels.py's _validate_generation_rules
+    enforces on a direct template edit — so a malformed V2 value degrades
+    to whatever sub-parts ARE well-formed rather than failing the whole
+    import.
+
+    Returns None when V2 has nothing usable at all (NULL, blank, not
+    JSON, not a dict, or every entry inside it malformed) — the caller
+    then leaves an existing template's generation_rules untouched. A
+    non-None return is applied unconditionally on both create and
+    update, same as every other V2-owned field."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            raw = json.loads(text)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(raw, dict):
+        return None
+
+    out: dict = {}
+    for side in ("destination", "source"):
+        mapping = raw.get(side)
+        if not isinstance(mapping, dict):
+            continue
+        cleaned = {pos: name for pos, name in mapping.items()
+                  if isinstance(pos, str) and pos.isdigit() and int(pos) > 0
+                  and isinstance(name, str) and _V3_TOKEN_RE.match(name)}
+        if cleaned:
+            out[side] = cleaned
+
+    limits = raw.get("length_limits")
+    if isinstance(limits, dict):
+        cleaned_limits = {key: limit for key, limit in limits.items()
+                          if isinstance(key, str) and _V3_TOKEN_RE.match(key)
+                          and isinstance(limit, int) and not isinstance(limit, bool)
+                          and limit > 0}
+        if cleaned_limits:
+            out["length_limits"] = cleaned_limits
+
+    return out or None
+
+
 _UPDATE_FIELDS = ["code", "description", "label_type", "size_key",
-                  "dpi_key", "language_key"]
+                  "dpi_key", "language_key", "generation_rules"]
 
 
 def _rows(dump_path: str, table: str, cols: tuple) -> Iterator[dict]:
@@ -200,6 +271,12 @@ async def import_label_templates(db: AsyncSession, dump_path: str) -> dict:
                   "description": f"Imported from V2 backup (v2 id {row['id']}).",
                   "label_type": label_type, "size_key": size_key,
                   "dpi_key": dpi_key, "language_key": "zpl"}
+        gen_rules = _map_generation_rules(row.get("label_generation_code"))
+        if gen_rules is not None:
+            mapped["generation_rules"] = gen_rules
+            stats["notes"].append(
+                f"{name}: generation_rules mapped from label_generation_code "
+                f"({', '.join(sorted(gen_rules))})")
 
         existing = (await db.execute(select(LabelTemplate)
             .options(selectinload(LabelTemplate.site_links))

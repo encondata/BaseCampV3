@@ -1,5 +1,6 @@
 """End-to-end V2 label-template import against the test DB."""
 
+import json
 import uuid
 
 from sqlalchemy import select
@@ -27,6 +28,103 @@ def _write_dump(tmp_path):
     p = tmp_path / "v2.sql"
     p.write_text(DUMP_TEMPLATE.format(zpl=ZPL))
     return str(p)
+
+
+# ── label_generation_code -> generation_rules mapping ────────────────
+
+DUMP_WITH_RULES_TEMPLATE = """
+INSERT INTO label_templates (id, template_name, printer_type, template_code, sites, type, is_active, version, created_at, updated_at, label_generation_code, label_generation_code_json) VALUES (5, 'Vegas Destination', 'Zebra', '{zpl}', '3,99', 'asset_top', TRUE, 1, '2025-01-01 00:00:00+00', '2025-01-01 00:00:00+00', '{gen_rules}', NULL);
+"""
+
+GENERATION_RULES = {"destination": {"1": "nap", "2": "row"}, "source": {"1": "dc"},
+                    "length_limits": {"asset_name": 20}}
+
+# A dirty V2 value: a bad position key, a non-token name, a negative
+# limit, and an unrecognized top-level key — all of which must be
+# dropped rather than failing the whole row.
+DIRTY_GENERATION_RULES = {"destination": {"1": "nap", "0": "bad_pos"},
+                          "source": {"1": "Bad Token!"},
+                          "length_limits": {"asset_name": 20, "x": -5},
+                          "unexpected": "ignored"}
+
+
+def _write_dump_with_rules(tmp_path, rules: dict | None, *, name="v2_rules.sql"):
+    p = tmp_path / name
+    gen_rules = "NULL" if rules is None else f"'{json.dumps(rules)}'"
+    # NULL needs to land unquoted (a real NULL literal, not the string
+    # "NULL") — .format() can't conditionally drop the surrounding
+    # quotes, so build the whole VALUES literal for that column directly.
+    text = DUMP_WITH_RULES_TEMPLATE.format(zpl=ZPL, gen_rules="__GEN_RULES__")
+    text = text.replace("'__GEN_RULES__'", gen_rules)
+    p.write_text(text)
+    return str(p)
+
+
+async def test_import_maps_label_generation_code_to_generation_rules(
+        db, tmp_path, seeded_user):
+    await _seed_site(db)
+    stats = await import_label_templates(
+        db, _write_dump_with_rules(tmp_path, GENERATION_RULES))
+    await db.commit()
+    row = (await db.execute(select(LabelTemplate).where(
+        LabelTemplate.name == "Vegas Destination"))).scalar_one()
+    assert row.generation_rules == GENERATION_RULES
+    assert any("generation_rules mapped" in n for n in stats["notes"])
+
+
+async def test_import_sanitizes_a_dirty_generation_rules_value(
+        db, tmp_path, seeded_user):
+    await _seed_site(db)
+    await import_label_templates(
+        db, _write_dump_with_rules(tmp_path, DIRTY_GENERATION_RULES))
+    await db.commit()
+    row = (await db.execute(select(LabelTemplate).where(
+        LabelTemplate.name == "Vegas Destination"))).scalar_one()
+    # bad position ("0"), non-token source name, negative limit, and the
+    # unrecognized "unexpected" key all dropped; an empty "source" after
+    # cleaning is omitted entirely rather than kept as {}.
+    assert row.generation_rules == {
+        "destination": {"1": "nap"}, "length_limits": {"asset_name": 20}}
+
+
+async def test_reimport_without_rules_preserves_a_hand_edit(
+        db, tmp_path, seeded_user):
+    await _seed_site(db)
+    dump_without_rules = _write_dump(tmp_path)   # label_generation_code NULL
+    await import_label_templates(db, dump_without_rules)
+    await db.commit()
+    row = (await db.execute(select(LabelTemplate).where(
+        LabelTemplate.name == "Vegas Destination"))).scalar_one()
+    hand_edit = {"length_limits": {"asset_name": 9}}
+    row.generation_rules = hand_edit
+    await db.commit()
+
+    stats = await import_label_templates(db, dump_without_rules)
+    await db.commit()
+    assert stats["unchanged"] == ["Vegas Destination"]   # V2 offered nothing -> no touch
+    await db.refresh(row)
+    assert row.generation_rules == hand_edit
+
+
+async def test_reimport_with_rules_overwrites_when_v2_value_differs(
+        db, tmp_path, seeded_user):
+    await _seed_site(db)
+    dump1 = _write_dump_with_rules(tmp_path, GENERATION_RULES, name="v2_rules1.sql")
+    await import_label_templates(db, dump1)
+    await db.commit()
+    row = (await db.execute(select(LabelTemplate).where(
+        LabelTemplate.name == "Vegas Destination"))).scalar_one()
+    assert row.generation_rules == GENERATION_RULES
+    first_version = row.version
+
+    changed_rules = {"destination": {"1": "campus"}}
+    dump2 = _write_dump_with_rules(tmp_path, changed_rules, name="v2_rules2.sql")
+    stats = await import_label_templates(db, dump2)
+    await db.commit()
+    assert stats["updated"] == ["Vegas Destination"]
+    await db.refresh(row)
+    assert row.generation_rules == changed_rules
+    assert row.version == first_version + 1
 
 
 async def _seed_site(db):

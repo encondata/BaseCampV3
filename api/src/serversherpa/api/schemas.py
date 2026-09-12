@@ -2142,6 +2142,9 @@ class LabelTemplateOut(BaseModel):
     code: str | None
     version: int
     is_active: bool
+    # V2 label_generation_code port — position-split + length-limit rules;
+    # see api/routes/labels.py's _validate_generation_rules for the shape.
+    generation_rules: dict = Field(default_factory=dict)
     # assignment set; [] = global. Populated by the route, not from_attributes.
     site_ids: list[uuid.UUID] = Field(default_factory=list)
     created_at: datetime
@@ -2160,6 +2163,7 @@ class LabelTemplateCreateIn(BaseModel):
     kind: Literal["design", "code"]
     design: dict | None = None
     code: str | None = None
+    generation_rules: dict = Field(default_factory=dict)
     site_ids: list[uuid.UUID] | None = None
 
 
@@ -2175,6 +2179,7 @@ class LabelTemplateUpdateIn(BaseModel):
     design: dict | None = None
     code: str | None = None
     is_active: bool | None = None
+    generation_rules: dict | None = None
     site_ids: list[uuid.UUID] | None = None
 
 
@@ -2200,6 +2205,94 @@ class LabelZplPreviewIn(BaseModel):
     zpl: str = Field(min_length=1, max_length=20000)
     size_key: str
     dpi_key: str
+
+
+# ── generate labels (runs, preview, generated) ──────────────────────
+
+class LabelRunCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    initiative_id: uuid.UUID
+    label_types: list[str] = Field(min_length=1)
+    regenerate_existing: bool = False
+    notify: bool = False
+
+
+class LabelRunOut(BaseModel):
+    id: uuid.UUID
+    initiative_id: uuid.UUID
+    initiative_name: str
+    label_types: list[str]
+    regenerate_existing: bool
+    status: str
+    cancel_requested: bool
+    current_label_type: str | None
+    current_item: str | None
+    total: int
+    processed: int
+    generated: int
+    skipped: int
+    errors: int
+    error_summary: dict
+    error_details: list
+    error: str | None
+    requested_by: uuid.UUID
+    requested_by_name: str
+    notify: bool
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    worker_id: str | None
+    # round(processed/total*100) or 0 when total is 0 (nothing queued yet).
+    progress_pct: int
+
+
+class LabelGeneratePreviewInitiativeOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    client_name: str | None
+    status: str
+    scheduled_start: datetime | None
+    source_name: str | None
+    destination_name: str | None
+    asset_count: int
+
+
+class LabelGeneratePreviewTemplateOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    version: int
+    scope: Literal["site", "global"]
+
+
+class LabelGeneratePreviewTypeOut(BaseModel):
+    key: str
+    label: str
+    template: LabelGeneratePreviewTemplateOut | None
+    current: int
+    stale: int
+
+
+class LabelGeneratePreviewOut(BaseModel):
+    initiative: LabelGeneratePreviewInitiativeOut
+    types: list[LabelGeneratePreviewTypeOut]
+    active_run_id: uuid.UUID | None
+
+
+class GeneratedLabelOut(BaseModel):
+    id: uuid.UUID
+    entity_type: str
+    entity_id: uuid.UUID
+    # the human Asset ID (assets.legacy_id) — None for a non-asset entity.
+    asset_id: int | None
+    serial_number: str | None
+    name: str | None
+    label_type: str
+    template_name: str
+    template_version: int
+    generated_at: datetime
+    stale: bool
+    code: str
 
 
 # ── reports ───────────────────────────────────────────────────────
