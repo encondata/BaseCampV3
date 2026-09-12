@@ -317,3 +317,17 @@ async def test_201_shape_and_audit_rows(client, db, seeded_user):
     assert len(rows) == 3
     assert {r.action for r in rows} == {"create"}
     assert {r.entity_id for r in rows} == set(ids)
+
+
+async def test_pad_above_four_and_number_overflow_are_422(client, db, seeded_user):
+    hdrs = await login(client)
+    base = {"count": 3, "container_type": "pallet",
+            "naming": {"prefix": "OVF-", "start": 1, "pad": 2, "suffix": ""}}
+    body = {**base, "naming": {**base["naming"], "pad": 5}}
+    assert (await client.post("/containers/bulk", headers=hdrs, json=body)).status_code == 422
+    body = {**base, "naming": {**base["naming"], "start": 9998, "pad": 4}}
+    resp = await client.post("/containers/bulk", headers=hdrs, json=body)
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "number_overflow"
+    ok = {**base, "naming": {**base["naming"], "start": 9997, "pad": 4}}
+    assert (await client.post("/containers/bulk", headers=hdrs, json=ok)).status_code == 201
+

@@ -113,3 +113,19 @@ export function summaryText(count: number, tags: TagCounts): string {
   if (untagged > 0) parts.push(`${untagged} untagged`);
   return parts.join(' · ');
 }
+
+/** Zero-pad width is derived from the batch, never chosen: enough digits
+ *  for the LAST number plus one leading zero, capped at 4. 1..9 → 2,
+ *  10..99 → 3, 100..999 → 4, 1000+ → 4 (the leading zero drops away). */
+export const MAX_PAD = 4;
+export const MAX_NUMBER = 9999;
+
+export function autoPad(start: number, count: number): number {
+  const last = Math.max(0, start) + Math.max(1, count) - 1;
+  return Math.min(MAX_PAD, String(last).length + 1);
+}
+
+/** True when the batch would run past four digits (no name may exceed 9999). */
+export function numberOverflow(start: number, count: number): boolean {
+  return Math.max(0, start) + Math.max(1, count) - 1 > MAX_NUMBER;
+}

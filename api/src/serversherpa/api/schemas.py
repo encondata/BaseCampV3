@@ -1056,7 +1056,7 @@ class ContainerBulkNamingIn(BaseModel):
 
     prefix: str = Field("", max_length=40)
     start: int = Field(1, ge=0)
-    pad: int = Field(0, ge=0, le=6)
+    pad: int = Field(0, ge=0, le=4)   # never more than four digits of padding
     suffix: str = Field("", max_length=40)
     model_config = ConfigDict(extra="forbid")
 

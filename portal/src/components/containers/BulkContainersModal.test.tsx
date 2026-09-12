@@ -79,17 +79,36 @@ async function setCount(user: ReturnType<typeof userEvent.setup>, value: string)
   await user.tab();
 }
 
-it('the Preview line updates live as naming fields change', async () => {
+it('the Preview line updates live as naming fields change, with the zero-pad derived from the batch', async () => {
   const user = userEvent.setup();
   mount();
-  expect(document.getElementById('bulk-preview')!.textContent).toBe('001');
+  // count 1, start 1 → last number 1 → 2 digits (one leading zero)
+  expect(document.getElementById('bulk-preview')!.textContent).toBe('01');
 
   await user.type(numberInput('Prefix'), 'PLT-');
   await setCount(user, '5');
-  expect(document.getElementById('bulk-preview')!.textContent).toBe('PLT-001, PLT-002, PLT-003 … PLT-005');
+  expect(document.getElementById('bulk-preview')!.textContent).toBe('PLT-01, PLT-02, PLT-03 … PLT-05');
 
-  await user.click(screen.getByRole('tab', { name: 'None' }));
-  expect(document.getElementById('bulk-preview')!.textContent).toBe('PLT-1, PLT-2, PLT-3 … PLT-5');
+  // the automatic value is a MINIMUM: wider is allowed, narrower is not
+  expect((screen.getByRole('tab', { name: '2 digits' }) as HTMLButtonElement).disabled).toBe(false);
+  await user.click(screen.getByRole('tab', { name: '4 digits' }));
+  expect(document.getElementById('bulk-preview')!.textContent).toBe('PLT-0001, PLT-0002, PLT-0003 … PLT-0005');
+
+  // a bigger batch raises the minimum above a narrower override
+  await setCount(user, '120');
+  expect((screen.getByRole('tab', { name: '2 digits' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('tab', { name: '3 digits' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(document.getElementById('bulk-preview')!.textContent).toBe('PLT-0001, PLT-0002, PLT-0003 … PLT-0120');
+});
+
+it('warns and refuses when the batch would run past four digits', async () => {
+  const user = userEvent.setup();
+  mount();
+  await user.clear(numberInput('Start number'));
+  await user.type(numberInput('Start number'), '9998');
+  await setCount(user, '5');
+  expect(screen.getByText(/can't go past 9999/)).not.toBeNull();
+  expect((screen.getByRole('button', { name: /Create 5 containers/ }) as HTMLButtonElement).disabled).toBe(true);
 });
 
 it('Count can be fully cleared and retyped without losing digits or snapping back', async () => {
@@ -157,7 +176,7 @@ it('submits the exact bulk-create payload', async () => {
   expect(api.bulkCreateContainers).toHaveBeenCalledWith({
     count: 3,
     container_type: 'pallet',
-    naming: { prefix: 'PLT-', start: 1, pad: 3, suffix: '' },
+    naming: { prefix: 'PLT-', start: 1, pad: 2, suffix: '' },
     initiative_id: null,
     site_id: null,
     status: null,

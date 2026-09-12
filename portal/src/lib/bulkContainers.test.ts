@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assignTags, buildNames, clampTags, previewNames, summaryText, tagTotal, TAG_ASSIGNMENT_ORDER,
   type NamingConfig,
+  autoPad, numberOverflow,
 } from './bulkContainers';
 
 const naming = (over: Partial<NamingConfig> = {}): NamingConfig =>
@@ -136,5 +137,21 @@ describe('summaryText', () => {
 
   it('no tag segments at all when nothing is tagged', () => {
     expect(summaryText(4, {})).toBe('4 containers · 4 untagged');
+  });
+});
+
+describe('autoPad / numberOverflow', () => {
+  it('pads to the digits of the last number plus one leading zero, capped at 4', () => {
+    expect(autoPad(1, 1)).toBe(2);       // 1 → "01"
+    expect(autoPad(1, 9)).toBe(2);       // 9 → "09"
+    expect(autoPad(1, 10)).toBe(3);      // 10 → "010"
+    expect(autoPad(1, 120)).toBe(4);     // 120 → "0120"
+    expect(autoPad(1, 500)).toBe(4);
+    expect(autoPad(995, 20)).toBe(4);    // 1014 → cap, no leading zero left
+  });
+  it('flags batches whose last number exceeds 9999', () => {
+    expect(numberOverflow(9998, 2)).toBe(false);
+    expect(numberOverflow(9998, 3)).toBe(true);
+    expect(numberOverflow(1, 500)).toBe(false);
   });
 });

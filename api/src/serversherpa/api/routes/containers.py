@@ -225,6 +225,9 @@ async def create_container(
     return await _detail(db, container)
 
 
+BULK_MAX_NUMBER = 9999   # names never carry more than four digits
+
+
 def _bulk_names(naming, count: int) -> list[str]:
     names = []
     for i in range(count):
@@ -269,6 +272,8 @@ async def create_containers_bulk(
     if body.status is not None and body.status not in statuses:
         raise _err(422, "bad_status")
 
+    if body.naming.start + body.count - 1 > BULK_MAX_NUMBER:
+        raise _err(422, "number_overflow", max_number=BULK_MAX_NUMBER)
     names = _bulk_names(body.naming, body.count)
 
     existing = {n.lower() for n in await db.scalars(

@@ -20,18 +20,18 @@ import {
   type StatusValue,
 } from '../../lib/api';
 import {
-  clampTags, previewNames, summaryText, tagTotal, TAG_ASSIGNMENT_ORDER,
-  type NamingConfig, type TagCounts,
+  autoPad, clampTags, MAX_PAD, numberOverflow, previewNames, summaryText, tagTotal,
+  TAG_ASSIGNMENT_ORDER, type NamingConfig, type TagCounts,
 } from '../../lib/bulkContainers';
 import { TAG_TYPES } from '../../labels/tagTypes';
 import ComboBox from '../ComboBox';
 import '../../styles/reports.css';       // rgm-* (roomy header)
 import '../../styles/bulkContainers.css';
 
-const ZERO_PAD_CHOICES = [0, 2, 3, 4];
 // API's `naming.prefix`/`naming.suffix` max_length — see
 // ContainerBulkCreateIn (bc-api-report.md); bounding the inputs keeps a
 // too-long value from reaching the server as a generic (uncoded) 422.
+const PAD_CHOICES = [2, 3, 4];
 const NAMING_PART_MAX_LENGTH = 40;
 
 const BULK_ERRORS: Record<string, string> = {
@@ -74,7 +74,7 @@ export default function BulkContainersModal({
   // small value while retyping used to trigger a spurious tag clamp).
   const [countText, setCountText] = useState('1');
   const [containerType, setContainerType] = useState('');
-  const [naming, setNaming] = useState<NamingConfig>({ prefix: '', start: 1, pad: 3, suffix: '' });
+  const [namingBase, setNaming] = useState<Omit<NamingConfig, 'pad'>>({ prefix: '', start: 1, suffix: '' });
   const [initiativeId, setInitiativeId] = useState('');
   const [siteId, setSiteId] = useState('');
   const [tags, setTags] = useState<TagCounts>({});
@@ -137,6 +137,11 @@ export default function BulkContainersModal({
     .filter((s) => !s.archived_at)
     .map((s) => ({ value: s.id, label: s.name })), [sites]);
 
+  const [padChoice, setPadChoice] = useState<number | null>(null);   // null = automatic
+  const minPad = autoPad(namingBase.start, count);
+  const pad = Math.min(MAX_PAD, Math.max(minPad, padChoice ?? 0));
+  const overflow = numberOverflow(namingBase.start, count);
+  const naming: NamingConfig = useMemo(() => ({ ...namingBase, pad }), [namingBase, pad]);
   const preview = useMemo(() => previewNames(naming, count), [naming, count]);
   const total = tagTotal(tags);
 
@@ -159,7 +164,7 @@ export default function BulkContainersModal({
     setTags((t) => (t[key] ? { ...t, [key]: t[key]! - 1 } : t));
   };
 
-  const valid = count >= 1 && !!containerType;
+  const valid = count >= 1 && !!containerType && !overflow;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -272,14 +277,21 @@ export default function BulkContainersModal({
                   <div>
                     <label id="bulk-pad-label">Zero-pad</label>
                     <div className="segmented" role="tablist" aria-labelledby="bulk-pad-label">
-                      {ZERO_PAD_CHOICES.map((p) => (
-                        <button key={p} type="button" role="tab" aria-selected={naming.pad === p}
-                                className={naming.pad === p ? 'on' : ''} disabled={saving}
-                                onClick={() => setNaming((f) => ({ ...f, pad: p }))}>
-                          {p === 0 ? 'None' : `${p} digits`}
+                      {PAD_CHOICES.map((p) => (
+                        <button key={p} type="button" role="tab" aria-selected={pad === p}
+                                className={pad === p ? 'on' : ''}
+                                disabled={saving || p < minPad}
+                                title={p < minPad ? `At least ${minPad} digits are needed for this batch` : undefined}
+                                onClick={() => setPadChoice(p)}>
+                          {p} digits
                         </button>
                       ))}
                     </div>
+                    <p className="page-hint" id="bulk-pad" style={{ margin: '4px 0 0' }}>
+                      {padChoice !== null && padChoice > minPad
+                        ? `Override · the batch needs at least ${minPad}`
+                        : `Automatic minimum for ${count} starting at ${namingBase.start} (one leading zero, up to 4 digits)`}
+                    </p>
                   </div>
                   <div><label htmlFor="bulk-suffix">Suffix</label>
                     <input id="bulk-suffix" value={naming.suffix} disabled={saving}
@@ -289,6 +301,9 @@ export default function BulkContainersModal({
                 <div className="bc-preview">
                   <span className="eyebrow">Preview</span>
                   <p className="page-hint" id="bulk-preview">{preview}</p>
+                  {overflow && (
+                    <p className="pf-error">Numbers can't go past 9999 — lower the start number or the count.</p>
+                  )}
                   {collisionNames && collisionNames.length > 0 && (
                     <p className="pf-error">Already exists: {collisionNames.join(', ')}</p>
                   )}
