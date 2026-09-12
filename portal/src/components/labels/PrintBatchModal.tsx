@@ -128,7 +128,7 @@ export default function PrintBatchModal({
                 Reprint current batch
               </button>
               <button type="button" className="btn-solid" onClick={onPrintNext} disabled={printing || !batchComplete}>
-                Print next batch ({nextCount} labels)
+                {printing ? 'Printing…' : `Print next batch (${nextCount} labels)`}
               </button>
             </>
           )}

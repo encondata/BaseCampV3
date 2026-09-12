@@ -30,7 +30,7 @@ describe('PrintBatchModal', () => {
     expect(screen.getByText('Current batch').parentElement?.textContent).toContain('1');
     expect(screen.getByText('Per batch').parentElement?.textContent).toContain('50');
     expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: /Print next batch/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Printing…' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('progressbar') as HTMLElement).getAttribute('aria-valuenow')).toBe('10');
   });
 
