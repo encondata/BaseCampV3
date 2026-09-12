@@ -149,22 +149,32 @@ export interface ContainerItemRow {
 
 export type ContainerListRow = ContainerGroupRow | ContainerItemRow;
 
-/** Partitions `visible` by `initiative_id` into `ContainerListRow`s: one
- *  group-header row per initiative (ordered by initiative name, natural
- *  compare — case/number aware, matching every other list sort in the
- *  app), a final "No initiative" group for containers with none, and —
- *  for a group whose key is in `expandedKeys` — that group's container
- *  rows immediately after its header, in the same (already-sorted)
- *  order as `visible`. A collapsed group still gets its header row (so
- *  Expand all/deep-link can target it), just no container rows. */
-export function groupContainers(
-  visible: ContainerItem[], expandedKeys: ReadonlySet<string>,
-): ContainerListRow[] {
+/** The group key a given container falls into — a real `initiative_id`,
+ *  or the "no initiative" sentinel. Exposed so the page can map a
+ *  deep-linked container to its group without re-deriving the rule. */
+export function containerGroupKey(c: Pick<ContainerItem, 'initiative_id'>): string {
+  return c.initiative_id ?? NO_INITIATIVE_KEY;
+}
+
+interface ContainerGroupPartition {
+  key: string;
+  label: string;
+  items: ContainerItem[];
+}
+
+/** Shared partition step behind both `groupContainers` (which also needs
+ *  each group's containers, to emit their rows when expanded) and
+ *  `containerGroupKeys` (which only needs the key list, e.g. for Expand
+ *  all) — one grouping/ordering pass, not duplicated per caller. Ordered
+ *  by initiative name (natural compare — case/number aware, matching
+ *  every other list sort in the app), with the "No initiative" catch-all
+ *  always last. */
+function partitionByInitiative(visible: ContainerItem[]): ContainerGroupPartition[] {
   const order: string[] = [];
   const items = new Map<string, ContainerItem[]>();
   const labels = new Map<string, string>();
   for (const c of visible) {
-    const key = c.initiative_id ?? NO_INITIATIVE_KEY;
+    const key = containerGroupKey(c);
     if (!items.has(key)) {
       order.push(key);
       items.set(key, []);
@@ -179,20 +189,32 @@ export function groupContainers(
     return naturalCompare(labels.get(a)!, labels.get(b)!);
   });
 
+  return order.map((key) => ({ key, label: labels.get(key)!, items: items.get(key)! }));
+}
+
+/** Partitions `visible` by `initiative_id` into `ContainerListRow`s: one
+ *  group-header row per initiative, a final "No initiative" group for
+ *  containers with none, and — for a group whose key is in
+ *  `expandedKeys` — that group's container rows immediately after its
+ *  header, in the same (already-sorted) order as `visible`. A collapsed
+ *  group still gets its header row (so Expand all/deep-link can target
+ *  it), just no container rows. */
+export function groupContainers(
+  visible: ContainerItem[], expandedKeys: ReadonlySet<string>,
+): ContainerListRow[] {
   const rows: ContainerListRow[] = [];
-  for (const key of order) {
-    const groupItems = items.get(key)!;
+  for (const { key, label, items } of partitionByInitiative(visible)) {
     const expanded = expandedKeys.has(key);
     rows.push({
       kind: 'group',
       key,
-      label: labels.get(key)!,
-      count: groupItems.length,
-      archivedCount: groupItems.filter((c) => c.archived_at).length,
+      label,
+      count: items.length,
+      archivedCount: items.filter((c) => c.archived_at).length,
       expanded,
     });
     if (expanded) {
-      for (const item of groupItems) rows.push({ kind: 'container', item });
+      for (const item of items) rows.push({ kind: 'container', item });
     }
   }
   return rows;
@@ -200,16 +222,9 @@ export function groupContainers(
 
 /** Every group key `groupContainers` would produce for `visible` —
  *  independent of which are currently expanded. Used for Expand all
- *  (expand every key) and to validate a deep-link target's group. */
+ *  (expand every key) and to validate a deep-link target's group. Shares
+ *  `partitionByInitiative` with `groupContainers` rather than building
+ *  (and discarding) full container-item rows just to read off the keys. */
 export function containerGroupKeys(visible: ContainerItem[]): string[] {
-  return groupContainers(visible, new Set())
-    .filter((r): r is ContainerGroupRow => r.kind === 'group')
-    .map((r) => r.key);
-}
-
-/** The group key a given container falls into — the same rule
- *  `groupContainers` uses, exposed so the page can auto-expand a
- *  deep-linked container's group without re-deriving it. */
-export function containerGroupKey(c: Pick<ContainerItem, 'initiative_id'>): string {
-  return c.initiative_id ?? NO_INITIATIVE_KEY;
+  return partitionByInitiative(visible).map((g) => g.key);
 }

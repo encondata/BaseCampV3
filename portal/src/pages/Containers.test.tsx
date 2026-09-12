@@ -291,22 +291,96 @@ it('search narrows rows before grouping, so counts and the group set reflect the
   expect(within(bravoHeader).getByText('1 container')).toBeTruthy();
 });
 
+// Scoped to `.dir-grouprow b` (the header's own bold label) rather than
+// `screen.getByText` — an open container row's own detail block can show
+// the same initiative name as plain text (its "Initiative" field), which
+// would otherwise collide with the header's label.
+const groupHeaderButton = (label: string) => {
+  const b = Array.from(document.querySelectorAll('.dir-grouprow b'))
+    .find((el) => el.textContent === label)!;
+  return b.closest('button') as HTMLElement;
+};
+
 it('a deep-linked container auto-expands its group in the nested view', async () => {
   api.listContainers.mockResolvedValue(GROUPED_CONTAINERS);
   localStorage.setItem('containers.view', 'grouped');
+  const user = userEvent.setup();
   render(
     <MemoryRouter initialEntries={[{ pathname: '/', state: { openRow: 'g3' } }]}>
       <Containers />
     </MemoryRouter>,
   );
 
-  // its group (Bravo) auto-expanded; the others stay collapsed. useRecordFocus
-  // also opens the row's own detail (so "Bravo Crate" legitimately appears
-  // twice: the row + its expanded detail block) and pre-fills the search box
-  // with its name, so assert via count rather than a single-match query.
+  // its group (Bravo) auto-expanded; useRecordFocus also opens the row's own
+  // detail and pre-fills the search box with its name — clear the search so
+  // all three groups (not just the search-narrowed one) are back in view,
+  // then check aria-expanded per header rather than relying on visible text
+  // alone (that stayed true even while every group was expanded).
   await waitFor(() => expect(screen.getAllByText('Bravo Crate').length).toBeGreaterThan(0));
+  await user.clear(screen.getByPlaceholderText('Filter this list…'));
+
+  await waitFor(() => expect(groupHeaderNames()).toEqual(
+    ['Alpha Migration', 'Bravo Migration', 'No initiative']));
+  expect(groupHeaderButton('Alpha Migration').getAttribute('aria-expanded')).toBe('false');
+  expect(groupHeaderButton('Bravo Migration').getAttribute('aria-expanded')).toBe('true');
+  expect(groupHeaderButton('No initiative').getAttribute('aria-expanded')).toBe('false');
+
   expect(screen.queryByText('Alpha Crate')).toBeNull();
   expect(screen.queryByText('Loose Crate')).toBeNull();
+  expect(screen.getAllByText('Bravo Crate').length).toBeGreaterThan(0);
+});
+
+it('collapsing the group that holds the open row closes it, so re-expanding does not reopen its detail', async () => {
+  api.listContainers.mockResolvedValue(GROUPED_CONTAINERS);
+  localStorage.setItem('containers.view', 'grouped');
+  const user = userEvent.setup();
+  render(
+    <MemoryRouter initialEntries={[{ pathname: '/', state: { openRow: 'g3' } }]}>
+      <Containers />
+    </MemoryRouter>,
+  );
+  await waitFor(() => expect(screen.getAllByText('Bravo Crate').length).toBeGreaterThan(0));
+  await user.clear(screen.getByPlaceholderText('Filter this list…'));
+  await waitFor(() => expect(groupHeaderNames()).toEqual(
+    ['Alpha Migration', 'Bravo Migration', 'No initiative']));
+
+  // Bravo's row starts open (the deep link's target row detail).
+  const bravoRow = screen.getAllByText('Bravo Crate')[0].closest('.dir-row') as HTMLElement;
+  expect(bravoRow.classList.contains('open')).toBe(true);
+
+  const bravoHeader = groupHeaderButton('Bravo Migration');
+  await user.click(bravoHeader); // collapse — should also close the open row
+  await waitFor(() => expect(screen.queryByText('Bravo Crate')).toBeNull());
+
+  await user.click(bravoHeader); // re-expand
+  await waitFor(() => expect(screen.queryAllByText('Bravo Crate').length).toBeGreaterThan(0));
+  // exactly one match now (just the row's own name) — the detail block
+  // (which would add a second, in the Name <dd>) never came back, proving
+  // `openId` was cleared rather than surviving the collapse.
+  expect(screen.getAllByText('Bravo Crate').length).toBe(1);
+  const reopenedRow = screen.getAllByText('Bravo Crate')[0].closest('.dir-row') as HTMLElement;
+  expect(reopenedRow.classList.contains('open')).toBe(false);
+});
+
+it('Enter and Space toggle a group header via native button semantics, flipping aria-expanded', async () => {
+  api.listContainers.mockResolvedValue(GROUPED_CONTAINERS);
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(screen.queryByText('Alpha Crate')).not.toBeNull());
+  await user.click(screen.getByRole('tab', { name: 'By initiative' }));
+  await waitFor(() => expect(groupHeaderNames().length).toBe(3));
+
+  const alphaHeader = groupHeaderButton('Alpha Migration');
+  expect(alphaHeader.getAttribute('aria-expanded')).toBe('false');
+
+  alphaHeader.focus();
+  await user.keyboard('{Enter}');
+  await waitFor(() => expect(alphaHeader.getAttribute('aria-expanded')).toBe('true'));
+  expect(screen.queryByText('Alpha Crate')).not.toBeNull();
+
+  await user.keyboard(' ');
+  await waitFor(() => expect(alphaHeader.getAttribute('aria-expanded')).toBe('false'));
+  expect(screen.queryByText('Alpha Crate')).toBeNull();
 });
 
 it('flat view is unchanged: no group rows, all containers render directly', async () => {

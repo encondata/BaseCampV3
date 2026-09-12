@@ -195,11 +195,23 @@ export default function Containers() {
   // "no initiative" sentinel). Collapsed (absent) by default; not
   // persisted — only the view-mode choice itself is.
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const toggleGroup = (key: string) => setExpandedGroups((prev) => {
-    const next = new Set(prev);
-    if (next.has(key)) next.delete(key); else next.add(key);
-    return next;
-  });
+  const toggleGroup = (key: string) => {
+    // Collapsing the group that holds the currently open row must close
+    // that row too — otherwise `openId` outlives the row it named, and
+    // the deep-link auto-expand effect below would spring the group back
+    // open the next time `containers` refreshes (a god-edit save, a
+    // modal's onSaved/onDone reload) even though the user chose to
+    // collapse it.
+    if (expandedGroups.has(key) && openId && containers) {
+      const openRow = containers.find((c) => c.id === openId);
+      if (openRow && containerGroupKey(openRow) === key) setOpenId(null);
+    }
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
 
   const load = async () => {
     try {
@@ -464,15 +476,18 @@ export default function Containers() {
             renderRow={(row, vp) => {
             if (row.kind === 'group') {
               return (
-                <div key={row.key} className={`dir-row dir-grouprow ${row.expanded ? 'open' : ''}`}
+                <div key={`g:${row.key}`} className={`dir-row dir-grouprow ${row.expanded ? 'open' : ''}`}
                      {...vp} style={vp?.style}>
-                  <div className="dir-grouprow-main" style={grid} onClick={() => toggleGroup(row.key)}>
+                  <button type="button" className="row-main dir-grouprow-main" style={grid}
+                          aria-expanded={row.expanded} onClick={() => toggleGroup(row.key)}>
                     <div className="dir-grouprow-content">
                       <span className="chevron-cell">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                              strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
                       </span>
-                      <b>{row.label}</b>
+                      <div className="cell cell-primary">
+                        <div className="pn"><b>{row.label}</b></div>
+                      </div>
                       <span className="chip tag">
                         {`${row.count} container${row.count === 1 ? '' : 's'}`}
                       </span>
@@ -480,7 +495,7 @@ export default function Containers() {
                         <span className="dir-grouprow-archived">({row.archivedCount} archived)</span>
                       )}
                     </div>
-                  </div>
+                  </button>
                 </div>
               );
             }

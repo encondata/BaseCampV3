@@ -12,22 +12,27 @@
 }
 
 /* ── nested (by-initiative) list view: group header row ──────────
- * Layout only — no font-size/family/weight/line-height/min-height here
- * (the list-typography guardrail bans those on any *row*/*list*/*head*
- * selector); the bold label is a <b> tag, the count is the existing
- * `.chip.tag` primitive, so this file only positions and colors. The
- * header shares the row's own grid (`grid` — same gridTemplateColumns
- * as every `.row-main`) so it lines up with the list, but its content
- * spans the full width via grid-column instead of sitting in one cell. */
+ * The header button IS a `.row-main` (plus this class) so it inherits
+ * the list's own typography/density tokens for free — grid/gap/padding,
+ * `--list-fs-cell`, `--list-row-pad-y`, `--list-row-min-h`, hover tint
+ * (`.row-main:hover`) and the open tint (`.dir-row.open .row-main`) all
+ * come from directory.css unmodified, so `list_size`/`density` preferences
+ * apply to the header exactly like every container row. This class is
+ * only the native-`<button>` chrome reset (the same properties
+ * `.list-head .sortable` resets) plus the one thing that makes it look
+ * like a header rather than a row: a distinct background. No
+ * font-size/family/weight/line-height/min-height here — the list-
+ * typography guardrail bans those on any *row*/*list*/*head* selector,
+ * and the label goes through the golden `.cell-primary .pn b` primitive
+ * (guardrail check (d)) instead of a bare `<b>`. */
 .dir-grouprow-main {
-  display: grid;
-  align-items: center;
-  padding: 11px 20px;
-  cursor: pointer;
   background: var(--surface-2);
-  transition: background 0.15s;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  width: 100%;
+  text-align: left;
 }
-.dir-grouprow-main:hover { background: rgba(var(--accent-rgb), 0.06); }
 .dir-grouprow-content {
   grid-column: 1 / -1;
   display: flex;
