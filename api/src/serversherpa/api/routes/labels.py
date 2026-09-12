@@ -24,11 +24,9 @@ from serversherpa.db.models import (
     LabelPlaceholder, LabelTemplate, LabelTemplateSite, LabelVocab, Site,
 )
 from serversherpa.labels import labelary
-from serversherpa.labels.brother_escp import compile_escp
-from serversherpa.labels.brother_ptouch import compile_ptouch
+from serversherpa.labels.compile import UnsupportedLanguage, compile_design
 from serversherpa.labels.model import DesignError, parse_design
 from serversherpa.labels.tokens import apply_placeholders
-from serversherpa.labels.zpl import compile_zpl
 from serversherpa.services.audit import audit, diff, snapshot
 
 router = APIRouter(prefix="/labels", tags=["labels"])
@@ -420,27 +418,22 @@ async def _sample_values(db: DbSession) -> dict[str, str]:
 async def _compile_design(db: DbSession, design_json: dict, size_key: str,
                           dpi_key: str, language_key: str,
                           subs: dict[str, str] | None) -> str:
-    """Shared by the compile endpoint and convert-to-code: vocab lookups,
-    size override, parse, language dispatch."""
+    """Shared by the compile endpoint and convert-to-code: resolves the
+    size/dpi/language vocab rows, then calls the vocab-free core
+    (labels/compile.py, shared with the label-generation runner)."""
     size = await db.get(LabelVocab, ("size", size_key))
     dpi = await db.get(LabelVocab, ("dpi", dpi_key))
     lang = await db.get(LabelVocab, ("language", language_key))
     if size is None or dpi is None or lang is None:
         raise _err(404, "unknown_vocab")
     try:
-        design = parse_design({
-            **design_json,
-            "size": {"w": size.meta["width_in"], "h": size.meta["height_in"]},
-        })
+        return compile_design(
+            design_json, width_in=size.meta["width_in"], height_in=size.meta["height_in"],
+            dots=dpi.meta["dots"], language_key=lang.key, subs=subs)
     except DesignError as e:
         raise _err(422, "bad_design", problems=e.problems) from e
-    if lang.key == "zpl":
-        return compile_zpl(design, dpi.meta["dots"], subs)
-    if lang.key == "escp":
-        return compile_escp(design, subs)
-    if lang.key == "ptouch":
-        return compile_ptouch(design, subs)
-    raise _err(422, "unsupported_language", key=lang.key)
+    except UnsupportedLanguage as e:
+        raise _err(422, "unsupported_language", key=e.key) from e
 
 
 @router.post("/templates/compile", response_model=LabelCompileOut)

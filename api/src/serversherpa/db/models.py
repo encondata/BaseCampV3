@@ -1298,6 +1298,12 @@ class LabelTemplate(Base):
     code: Mapped[str | None]
     version: Mapped[int] = mapped_column(Integer, server_default="1")
     is_active: Mapped[bool] = mapped_column(server_default=text("true"))
+    # V2's `label_generation_code` port: {"destination": {"1": "nap", ...},
+    # "source": {...}, "length_limits": {"asset_name": 20}} — position maps
+    # split the raw location on "." (1-based) into extra placeholder
+    # tokens; length_limits truncate named values. See labels/generate/values.py.
+    generation_rules: Mapped[dict] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
@@ -1314,6 +1320,68 @@ class LabelTemplateSite(Base):
         primary_key=True)
     site_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("sites.id", ondelete="CASCADE"), primary_key=True)
+
+
+class LabelGenerationRun(Base):
+    """The label-worker's queue (same shape as ReportRun/ImportJob): the
+    API creates rows, `label-worker` claims them with FOR UPDATE SKIP
+    LOCKED and renders every asset on the initiative for each requested
+    label type into `generated_labels`. One active (queued/running) run
+    per initiative — enforced by a partial unique index (migration 0055)."""
+    __tablename__ = "label_generation_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    initiative_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("initiatives.id"))
+    label_types: Mapped[list[str]] = mapped_column(ARRAY(Text))
+    regenerate_existing: Mapped[bool] = mapped_column(server_default=text("false"))
+    status: Mapped[str] = mapped_column(server_default="queued")
+    cancel_requested: Mapped[bool] = mapped_column(server_default=text("false"))
+    current_label_type: Mapped[str | None]
+    current_item: Mapped[str | None]
+    total: Mapped[int] = mapped_column(Integer, server_default="0")
+    processed: Mapped[int] = mapped_column(Integer, server_default="0")
+    generated: Mapped[int] = mapped_column(Integer, server_default="0")
+    skipped: Mapped[int] = mapped_column(Integer, server_default="0")
+    errors: Mapped[int] = mapped_column(Integer, server_default="0")
+    error_summary: Mapped[dict] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"))
+    error_details: Mapped[list] = mapped_column(
+        JSONB, server_default=text("'[]'::jsonb"))
+    error: Mapped[str | None]
+    requested_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("people.id"))
+    notify: Mapped[bool] = mapped_column(server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    started_at: Mapped[datetime | None]
+    finished_at: Mapped[datetime | None]
+    worker_id: Mapped[str | None]
+
+
+class GeneratedLabel(Base):
+    """One row per (entity, initiative, label_type) — regenerating
+    replaces the row (upsert). `values` holds the substituted placeholder
+    values for audit/preview; `stale` is set only by explicit
+    regeneration (this phase never auto-invalidates it)."""
+    __tablename__ = "generated_labels"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    entity_type: Mapped[str]
+    entity_id: Mapped[uuid.UUID]
+    initiative_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("initiatives.id"))
+    label_type: Mapped[str]
+    template_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("label_templates.id"))
+    template_version: Mapped[int] = mapped_column(Integer)
+    language_key: Mapped[str]
+    dpi_key: Mapped[str]
+    size_key: Mapped[str]
+    code: Mapped[str]
+    values: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("label_generation_runs.id"))
+    generated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    stale: Mapped[bool] = mapped_column(server_default=text("false"))
 
 
 class ReportDefinition(Base):

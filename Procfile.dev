@@ -13,4 +13,5 @@ logsvc: api/.venv/bin/serversherpa log-service --reload
 notifsvc: api/.venv/bin/serversherpa notification-worker --reload
 scanmatch: api/.venv/bin/serversherpa scan-matching-worker --reload
 reportsvc: api/.venv/bin/serversherpa report-worker --reload
+labelsvc: api/.venv/bin/serversherpa label-worker --reload
 portal: npm --prefix portal run dev

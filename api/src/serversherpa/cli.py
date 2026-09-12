@@ -486,6 +486,57 @@ def report_worker(
     asyncio.run(_run())
 
 
+def _run_label_worker_process(poll_seconds: float) -> None:
+    """Reload-mode child entry point (see _run_worker_process)."""
+
+    async def _run() -> None:
+        from serversherpa.labels.generate import worker
+
+        await worker.run_forever(poll_seconds)
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass
+
+
+@app.command()
+def label_worker(
+    poll_seconds: float = typer.Option(2.0, help="Idle sleep between queue polls"),
+    once: bool = typer.Option(False, help="Process at most one run, then exit"),
+    reload: bool = typer.Option(
+        False, help="Dev mode: restart the worker whenever api/src changes"),
+) -> None:
+    """Run the label worker — renders queued label_generation_runs into
+    generated_labels rows for every asset on the initiative."""
+
+    if reload and once:
+        typer.secho("--once cannot be combined with --reload", fg="red")
+        raise typer.Exit(code=1)
+    if reload:
+        import watchfiles
+
+        src_dir = Path(__file__).resolve().parents[1]
+        typer.secho(f"[label-worker] dev reload — watching {src_dir}", fg="cyan")
+        watchfiles.run_process(src_dir, target=_run_label_worker_process,
+                               args=(poll_seconds,))
+        return
+
+    async def _run() -> None:
+        from serversherpa.db.engine import get_sessionmaker
+        from serversherpa.labels.generate import worker
+
+        if once:
+            worked = await worker.run_once(get_sessionmaker())
+            typer.secho("processed 1 run" if worked else "queue empty",
+                        fg="green" if worked else "yellow")
+        else:
+            await worker.run_forever(poll_seconds)
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
 def _run_log_service_process(poll_seconds: float) -> None:
     """Reload-mode child entry point (picklable, like the import
     worker's)."""
