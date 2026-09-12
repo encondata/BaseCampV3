@@ -3703,6 +3703,32 @@ export async function listGeneratedLabels(params: {
   return resp.json();
 }
 
+/** One row of a label bundle — `generated_labels` plus the template name,
+ *  including the language/size/dpi keys the print page needs (a label
+ *  compiled for a Brother printer must never be sent to a Zebra). */
+export interface GeneratedLabelBundleItem {
+  id: string; entity_type: 'asset' | 'container'; entity_id: string;
+  template_id: string; template_name: string; template_version: number;
+  language_key: string; size_key: string; dpi_key: string;
+  stale: boolean; generated_at: string; code: string;
+}
+
+/** Every generated asset label of one type on one initiative — the Print
+ *  Labels page's print payload and the unit its offline cache stores. */
+export interface GeneratedLabelBundle {
+  initiative_id: string; label_type: string; fetched_at: string;
+  labels: GeneratedLabelBundleItem[];
+}
+
+export async function getGeneratedLabelBundle(
+  initiativeId: string, labelType: string,
+): Promise<GeneratedLabelBundle> {
+  const qs = new URLSearchParams({ initiative_id: initiativeId, label_type: labelType });
+  const resp = await apiFetch(`/labels/generated/bundle?${qs.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 // ── People dashboard ──────────────────────────────────────────────────
 
 export interface TimeDayStat { day: string; minutes: number }
