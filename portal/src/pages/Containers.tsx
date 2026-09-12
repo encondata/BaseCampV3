@@ -30,7 +30,9 @@ import {
   type StatusValue,
 } from '../lib/api';
 import {
-  CONTAINER_ERRORS, CONTAINER_GOD_FIELDS, containerCellText, containerSearchText, labelTagText,
+  CONTAINER_ERRORS, CONTAINER_GOD_FIELDS, containerCellText, containerGroupKey,
+  containerGroupKeys, containerSearchText, groupContainers, labelTagText,
+  type ContainerListRow,
 } from '../lib/containers';
 import { LABEL_TAG_OPTIONS } from '../lib/labelTags';
 import { initialOpenId } from '../lib/auditFormat';
@@ -110,6 +112,26 @@ function sortValueFor(c: ContainerItem, key: string): string {
   }
 }
 
+/* View toggle (Flat / By initiative). `usePersistentListState` piggybacks
+ * on the account-wide preferences PATCH and only knows column-menu shape
+ * (visible/sort/filters/order) — it has no room for an extra page-level
+ * flag — so the view mode is persisted separately, under a sibling key,
+ * via the same plain try/catch localStorage idiom InitiativeTimeline.tsx
+ * and Warehouse.tsx already use for their own per-page toolbar state. */
+type ViewMode = 'flat' | 'grouped';
+const VIEW_STORAGE_KEY = 'containers.view';
+
+function loadViewMode(): ViewMode {
+  try {
+    return localStorage.getItem(VIEW_STORAGE_KEY) === 'grouped' ? 'grouped' : 'flat';
+  } catch {
+    return 'flat';
+  }
+}
+function saveViewMode(v: ViewMode) {
+  try { localStorage.setItem(VIEW_STORAGE_KEY, v); } catch { /* ignore */ }
+}
+
 const CSV_COLUMNS: [string, (c: ContainerItem) => string][] = [
   ['ID', (c) => c.id],
   ['Name', (c) => c.name],
@@ -163,6 +185,21 @@ export default function Containers() {
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
   const [bulkCreating, setBulkCreating] = useState(false);
+
+  const [viewMode, setViewModeState] = useState<ViewMode>(loadViewMode);
+  const setViewMode = (v: ViewMode) => {
+    setViewModeState(v);
+    saveViewMode(v);
+  };
+  // Which groups are expanded, keyed by initiative_id (or the
+  // "no initiative" sentinel). Collapsed (absent) by default; not
+  // persisted — only the view-mode choice itself is.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const toggleGroup = (key: string) => setExpandedGroups((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
 
   const load = async () => {
     try {
@@ -228,6 +265,30 @@ export default function Containers() {
       deepLinkTarget.current = null;
     }
   }, [visible]);
+
+  // Every group key the current (filtered + sorted) rows would produce,
+  // independent of which are expanded — Expand all's target set, and
+  // used below to auto-expand a deep-linked container's group.
+  const groupKeys = useMemo(() => containerGroupKeys(visible), [visible]);
+  const expandAllGroups = () => setExpandedGroups(new Set(groupKeys));
+  const collapseAllGroups = () => setExpandedGroups(new Set());
+
+  // A deep link (?open=<id> or the global-search "openRow" state) that
+  // lands on a container while the nested view is active must expand
+  // that container's group, or the row it targets stays hidden.
+  useEffect(() => {
+    if (viewMode !== 'grouped' || !openId || !containers) return;
+    const target = containers.find((c) => c.id === openId);
+    if (!target) return;
+    const key = containerGroupKey(target);
+    setExpandedGroups((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+  }, [viewMode, openId, containers]);
+
+  const listRows: ContainerListRow[] = useMemo(() => (
+    viewMode === 'grouped'
+      ? groupContainers(visible, expandedGroups)
+      : visible.map((item): ContainerListRow => ({ kind: 'container', item }))
+  ), [viewMode, visible, expandedGroups]);
 
   const caret = (key: string) =>
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
@@ -306,6 +367,18 @@ export default function Containers() {
       </div>
 
       <div className="dir-toolbar">
+        <div className="segmented" role="tablist">
+          <button role="tab" aria-selected={viewMode === 'flat'}
+                  className={viewMode === 'flat' ? 'on' : ''}
+                  onClick={() => setViewMode('flat')}>
+            Flat
+          </button>
+          <button role="tab" aria-selected={viewMode === 'grouped'}
+                  className={viewMode === 'grouped' ? 'on' : ''}
+                  onClick={() => setViewMode('grouped')}>
+            By initiative
+          </button>
+        </div>
         <div className="toolbar-right">
           <div className="dir-search" style={{ marginLeft: 0 }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -315,6 +388,12 @@ export default function Containers() {
           </div>
           <span className="result-count">{visible.length} of {containers?.length ?? 0} shown</span>
           <FilterSummaryChip filters={filters} onClear={clearFilters} />
+          {viewMode === 'grouped' && (
+            <>
+              <button className="mini-btn" onClick={expandAllGroups}>Expand all</button>
+              <button className="mini-btn" onClick={collapseAllGroups}>Collapse all</button>
+            </>
+          )}
           <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols} godMode={godMode} onReorder={setColOrder} />
           <ExportButton onExport={() => exportCsv('containers', CSV_COLUMNS, visible)} />
           <GodEditToggle editing={god.editing} onToggle={god.toggle} visible={godMode && canChange} />
@@ -381,8 +460,32 @@ export default function Containers() {
             </div>
           )}
 
-          <VirtualRows rows={visible}
-            renderRow={(c, vp) => {
+          <VirtualRows<ContainerListRow> rows={listRows}
+            renderRow={(row, vp) => {
+            if (row.kind === 'group') {
+              return (
+                <div key={row.key} className={`dir-row dir-grouprow ${row.expanded ? 'open' : ''}`}
+                     {...vp} style={vp?.style}>
+                  <div className="dir-grouprow-main" style={grid} onClick={() => toggleGroup(row.key)}>
+                    <div className="dir-grouprow-content">
+                      <span className="chevron-cell">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                             strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+                      </span>
+                      <b>{row.label}</b>
+                      <span className="chip tag">
+                        {`${row.count} container${row.count === 1 ? '' : 's'}`}
+                      </span>
+                      {row.archivedCount > 0 && (
+                        <span className="dir-grouprow-archived">({row.archivedCount} archived)</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+
+            const c = row.item;
             const open = openId === c.id;
             return (
               <div key={c.id} className={`dir-row ${open ? 'open' : ''} ${c.archived_at ? 'archived' : ''}`}

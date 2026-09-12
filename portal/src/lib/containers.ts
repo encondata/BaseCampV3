@@ -7,6 +7,7 @@ import type { ContainerItem } from './api';
 import { displayRfid } from './format';
 import type { GodField } from './godEdit';
 import { LABEL_TAG_OPTIONS } from './labelTags';
+import { naturalCompare } from './sites';
 
 export function containerSearchText(c: ContainerItem): string {
   return [c.name, c.rfid_tag, c.type_label, c.status_label,
@@ -117,4 +118,98 @@ export function CONTAINER_GOD_FIELDS(
     { column: 'status', field: 'status', kind: 'combo',
       fromRow: (c) => c.status, options: lookups.statuses },
   ];
+}
+
+/* ── nested (by-initiative) list view ─────────────────────────────
+ * The flat, filtered + sorted `visible` array can be presented instead
+ * as a two-level list: a group header row per initiative (plus one
+ * catch-all "No initiative" group, always last) followed by that
+ * group's container rows when expanded. `groupContainers` is the pure
+ * partition/order/shape step; the page owns which group keys are
+ * currently expanded (`expandedKeys`) and re-derives this array
+ * whenever that set, or the filtered rows, change. */
+
+/** Group key for containers with no initiative — never a real
+ *  initiative id, so it can't collide with one. */
+export const NO_INITIATIVE_KEY = '__no_initiative__';
+
+export interface ContainerGroupRow {
+  kind: 'group';
+  key: string;
+  label: string;
+  count: number;
+  archivedCount: number;
+  expanded: boolean;
+}
+
+export interface ContainerItemRow {
+  kind: 'container';
+  item: ContainerItem;
+}
+
+export type ContainerListRow = ContainerGroupRow | ContainerItemRow;
+
+/** Partitions `visible` by `initiative_id` into `ContainerListRow`s: one
+ *  group-header row per initiative (ordered by initiative name, natural
+ *  compare — case/number aware, matching every other list sort in the
+ *  app), a final "No initiative" group for containers with none, and —
+ *  for a group whose key is in `expandedKeys` — that group's container
+ *  rows immediately after its header, in the same (already-sorted)
+ *  order as `visible`. A collapsed group still gets its header row (so
+ *  Expand all/deep-link can target it), just no container rows. */
+export function groupContainers(
+  visible: ContainerItem[], expandedKeys: ReadonlySet<string>,
+): ContainerListRow[] {
+  const order: string[] = [];
+  const items = new Map<string, ContainerItem[]>();
+  const labels = new Map<string, string>();
+  for (const c of visible) {
+    const key = c.initiative_id ?? NO_INITIATIVE_KEY;
+    if (!items.has(key)) {
+      order.push(key);
+      items.set(key, []);
+      labels.set(key, key === NO_INITIATIVE_KEY ? 'No initiative' : (c.initiative_name ?? ''));
+    }
+    items.get(key)!.push(c);
+  }
+
+  order.sort((a, b) => {
+    if (a === NO_INITIATIVE_KEY) return 1;
+    if (b === NO_INITIATIVE_KEY) return -1;
+    return naturalCompare(labels.get(a)!, labels.get(b)!);
+  });
+
+  const rows: ContainerListRow[] = [];
+  for (const key of order) {
+    const groupItems = items.get(key)!;
+    const expanded = expandedKeys.has(key);
+    rows.push({
+      kind: 'group',
+      key,
+      label: labels.get(key)!,
+      count: groupItems.length,
+      archivedCount: groupItems.filter((c) => c.archived_at).length,
+      expanded,
+    });
+    if (expanded) {
+      for (const item of groupItems) rows.push({ kind: 'container', item });
+    }
+  }
+  return rows;
+}
+
+/** Every group key `groupContainers` would produce for `visible` —
+ *  independent of which are currently expanded. Used for Expand all
+ *  (expand every key) and to validate a deep-link target's group. */
+export function containerGroupKeys(visible: ContainerItem[]): string[] {
+  return groupContainers(visible, new Set())
+    .filter((r): r is ContainerGroupRow => r.kind === 'group')
+    .map((r) => r.key);
+}
+
+/** The group key a given container falls into — the same rule
+ *  `groupContainers` uses, exposed so the page can auto-expand a
+ *  deep-linked container's group without re-deriving it. */
+export function containerGroupKey(c: Pick<ContainerItem, 'initiative_id'>): string {
+  return c.initiative_id ?? NO_INITIATIVE_KEY;
 }

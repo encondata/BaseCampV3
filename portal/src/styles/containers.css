@@ -10,3 +10,29 @@
   padding: 6px 8px;
   border: 1px solid var(--paper-line); border-radius: 8px;
 }
+
+/* ── nested (by-initiative) list view: group header row ──────────
+ * Layout only — no font-size/family/weight/line-height/min-height here
+ * (the list-typography guardrail bans those on any *row*/*list*/*head*
+ * selector); the bold label is a <b> tag, the count is the existing
+ * `.chip.tag` primitive, so this file only positions and colors. The
+ * header shares the row's own grid (`grid` — same gridTemplateColumns
+ * as every `.row-main`) so it lines up with the list, but its content
+ * spans the full width via grid-column instead of sitting in one cell. */
+.dir-grouprow-main {
+  display: grid;
+  align-items: center;
+  padding: 11px 20px;
+  cursor: pointer;
+  background: var(--surface-2);
+  transition: background 0.15s;
+}
+.dir-grouprow-main:hover { background: rgba(var(--accent-rgb), 0.06); }
+.dir-grouprow-content {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.dir-grouprow-archived { color: var(--text-mute); }

@@ -71,6 +71,7 @@ const CONTAINERS: ContainerItem[] = [
 beforeEach(() => {
   vi.clearAllMocks();
   auth.listPrefs = {};
+  localStorage.clear(); // the view-mode toggle persists here — isolate each test
   api.listContainers.mockResolvedValue(CONTAINERS);
   api.listContainerStatuses.mockResolvedValue([]);
   api.listContainerTypes.mockResolvedValue([]);
@@ -169,4 +170,150 @@ it('"+ Add in bulk" opens BulkContainersModal', async () => {
 
   await user.click(screen.getByRole('button', { name: '+ Add in bulk' }));
   expect(await screen.findByText('Add containers in bulk')).toBeTruthy();
+});
+
+/* ── nested (by-initiative) view ──────────────────────────────────── */
+
+const GROUPED_CONTAINERS: ContainerItem[] = [
+  container({ id: 'g1', name: 'Alpha Crate', initiative_id: 'i-alpha', initiative_name: 'Alpha Migration' }),
+  container({
+    id: 'g2', name: 'Alpha Crate 2', initiative_id: 'i-alpha', initiative_name: 'Alpha Migration',
+    archived_at: '2026-01-01T00:00:00Z',
+  }),
+  container({ id: 'g3', name: 'Bravo Crate', initiative_id: 'i-bravo', initiative_name: 'Bravo Migration' }),
+  container({ id: 'g4', name: 'Loose Crate', initiative_id: null, initiative_name: null }),
+];
+
+const groupHeaderNames = () => Array.from(document.querySelectorAll('.dir-grouprow b'))
+  .map((b) => b.textContent);
+
+it('defaults to Flat, and the toggle persists across remounts', async () => {
+  api.listContainers.mockResolvedValue(GROUPED_CONTAINERS);
+  const user = userEvent.setup();
+  const { unmount } = mount();
+  await waitFor(() => expect(screen.queryByText('Alpha Crate')).not.toBeNull());
+  expect(screen.getByRole('tab', { name: 'Flat' }).getAttribute('aria-selected')).toBe('true');
+  expect(document.querySelector('.dir-grouprow')).toBeNull();
+
+  await user.click(screen.getByRole('tab', { name: 'By initiative' }));
+  await waitFor(() => expect(document.querySelector('.dir-grouprow')).not.toBeNull());
+  unmount();
+
+  mount();
+  await waitFor(() => expect(document.querySelector('.dir-grouprow')).not.toBeNull());
+  expect(screen.getByRole('tab', { name: 'By initiative' }).getAttribute('aria-selected')).toBe('true');
+});
+
+it('grouped view shows group headers with counts, no container rows while collapsed, and No initiative last', async () => {
+  api.listContainers.mockResolvedValue(GROUPED_CONTAINERS);
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(screen.queryByText('Alpha Crate')).not.toBeNull());
+  await user.click(screen.getByRole('tab', { name: 'By initiative' }));
+
+  await waitFor(() => expect(groupHeaderNames()).toEqual(
+    ['Alpha Migration', 'Bravo Migration', 'No initiative']));
+
+  // collapsed by default — group headers show counts, no container rows.
+  // g2 (Alpha) is archived, so — like the flat view — it's hidden by the
+  // page's own default (archived rows only show once that column filter
+  // is set to "Yes"), leaving Alpha at 1 of its 2 total containers.
+  expect(screen.queryByText('Alpha Crate')).toBeNull();
+  expect(screen.queryByText('Bravo Crate')).toBeNull();
+  expect(screen.queryByText('Loose Crate')).toBeNull();
+  const alphaHeader = screen.getByText('Alpha Migration').closest('.dir-grouprow')!;
+  expect(within(alphaHeader as HTMLElement).getByText('1 container')).toBeTruthy();
+  expect(within(alphaHeader as HTMLElement).queryByText(/archived/)).toBeNull();
+  const bravoHeader = screen.getByText('Bravo Migration').closest('.dir-grouprow')!;
+  expect(within(bravoHeader as HTMLElement).getByText('1 container')).toBeTruthy();
+});
+
+it('a group with a visible archived row shows the muted "(M archived)" count', async () => {
+  // Same fixture, but with the archived column filter set to both Yes and
+  // No (as if restored from persisted prefs) so archived rows join the
+  // rest of `visible` instead of being excluded — this is the case the
+  // group header's archived badge is actually for. (Selecting only "Yes"
+  // is a strict facet match that would show archived rows exclusively,
+  // same idiom as Assets.tsx's own showArchived/passesColumnFilters pair.)
+  auth.listPrefs = { containers: { filters: { archived: { values: ['Yes', 'No'] } } } };
+  api.listContainers.mockResolvedValue(GROUPED_CONTAINERS);
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(screen.queryByText('Alpha Crate')).not.toBeNull());
+  await user.click(screen.getByRole('tab', { name: 'By initiative' }));
+
+  await waitFor(() => expect(groupHeaderNames()).toEqual(
+    ['Alpha Migration', 'Bravo Migration', 'No initiative']));
+  const alphaHeader = screen.getByText('Alpha Migration').closest('.dir-grouprow')!;
+  expect(within(alphaHeader as HTMLElement).getByText('2 containers')).toBeTruthy();
+  expect(within(alphaHeader as HTMLElement).getByText('(1 archived)')).toBeTruthy();
+  const bravoHeader = screen.getByText('Bravo Migration').closest('.dir-grouprow')!;
+  expect(within(bravoHeader as HTMLElement).queryByText(/archived/)).toBeNull();
+});
+
+it('clicking a group header reveals its rows; Expand all / Collapse all affect every group', async () => {
+  api.listContainers.mockResolvedValue(GROUPED_CONTAINERS);
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(screen.queryByText('Alpha Crate')).not.toBeNull());
+  await user.click(screen.getByRole('tab', { name: 'By initiative' }));
+  await waitFor(() => expect(groupHeaderNames().length).toBe(3));
+
+  await user.click(screen.getByText('Alpha Migration'));
+  await waitFor(() => expect(screen.queryByText('Alpha Crate')).not.toBeNull());
+  expect(screen.queryByText('Bravo Crate')).toBeNull();
+
+  await user.click(screen.getByRole('button', { name: 'Expand all' }));
+  await waitFor(() => {
+    expect(screen.queryByText('Bravo Crate')).not.toBeNull();
+    expect(screen.queryByText('Loose Crate')).not.toBeNull();
+  });
+
+  await user.click(screen.getByRole('button', { name: 'Collapse all' }));
+  await waitFor(() => expect(screen.queryByText('Alpha Crate')).toBeNull());
+  expect(screen.queryByText('Bravo Crate')).toBeNull();
+  expect(screen.queryByText('Loose Crate')).toBeNull();
+  // headers themselves never disappear
+  expect(groupHeaderNames()).toEqual(['Alpha Migration', 'Bravo Migration', 'No initiative']);
+});
+
+it('search narrows rows before grouping, so counts and the group set reflect the filter', async () => {
+  api.listContainers.mockResolvedValue(GROUPED_CONTAINERS);
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(screen.queryByText('Alpha Crate')).not.toBeNull());
+  await user.click(screen.getByRole('tab', { name: 'By initiative' }));
+  await waitFor(() => expect(groupHeaderNames().length).toBe(3));
+
+  await user.type(screen.getByPlaceholderText('Filter this list…'), 'Bravo');
+  await waitFor(() => expect(groupHeaderNames()).toEqual(['Bravo Migration']));
+  const bravoHeader = screen.getByText('Bravo Migration').closest('.dir-grouprow') as HTMLElement;
+  expect(within(bravoHeader).getByText('1 container')).toBeTruthy();
+});
+
+it('a deep-linked container auto-expands its group in the nested view', async () => {
+  api.listContainers.mockResolvedValue(GROUPED_CONTAINERS);
+  localStorage.setItem('containers.view', 'grouped');
+  render(
+    <MemoryRouter initialEntries={[{ pathname: '/', state: { openRow: 'g3' } }]}>
+      <Containers />
+    </MemoryRouter>,
+  );
+
+  // its group (Bravo) auto-expanded; the others stay collapsed. useRecordFocus
+  // also opens the row's own detail (so "Bravo Crate" legitimately appears
+  // twice: the row + its expanded detail block) and pre-fills the search box
+  // with its name, so assert via count rather than a single-match query.
+  await waitFor(() => expect(screen.getAllByText('Bravo Crate').length).toBeGreaterThan(0));
+  expect(screen.queryByText('Alpha Crate')).toBeNull();
+  expect(screen.queryByText('Loose Crate')).toBeNull();
+});
+
+it('flat view is unchanged: no group rows, all containers render directly', async () => {
+  api.listContainers.mockResolvedValue(GROUPED_CONTAINERS);
+  mount();
+  await waitFor(() => expect(screen.queryByText('Alpha Crate')).not.toBeNull());
+  expect(document.querySelector('.dir-grouprow')).toBeNull();
+  expect(screen.queryByText('Bravo Crate')).not.toBeNull();
+  expect(screen.queryByText('Loose Crate')).not.toBeNull();
 });
