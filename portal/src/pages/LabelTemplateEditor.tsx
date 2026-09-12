@@ -14,6 +14,7 @@ import { useAuth } from '../auth/AuthContext';
 import CodePanel from '../components/labels/CodePanel';
 import EditorCanvas from '../components/labels/EditorCanvas';
 import ElementPalette from '../components/labels/ElementPalette';
+import GenerationRulesPanel from '../components/labels/GenerationRulesPanel';
 import PropertiesPanel from '../components/labels/PropertiesPanel';
 import TagInput from '../components/TagInput';
 import {
@@ -21,6 +22,7 @@ import {
   listLabelVocab, listSites, updateLabelTemplate,
   type LabelPlaceholder, type LabelVocab, type SiteItem,
 } from '../lib/api';
+import { jsonToRuleRows, ruleRowsToJson, validateRuleRows, type GenerationRulesRows } from '../lib/generateLabels';
 import { sizeMeta, vocabOfKind, type VocabKind } from '../lib/labels';
 import {
   editorReducer, emptyDesign, initialEditorState, newElement, type LabelDesign,
@@ -56,6 +58,7 @@ export default function LabelTemplateEditor() {
   const [placeholders, setPlaceholders] = useState<LabelPlaceholder[]>([]);
   const [sites, setSites] = useState<SiteItem[]>([]);
   const [siteIds, setSiteIds] = useState<string[]>([]);
+  const [rules, setRules] = useState<GenerationRulesRows>(jsonToRuleRows(undefined));
   const [meta, setMeta] = useState<Meta>({
     name: '', description: '', label_type: '', size_key: '', dpi_key: '', language_key: '',
   });
@@ -87,6 +90,7 @@ export default function LabelTemplateEditor() {
             size_key: t.size_key, dpi_key: t.dpi_key, language_key: t.language_key,
           });
           setSiteIds(t.site_ids);
+          setRules(jsonToRuleRows(t.generation_rules));
           setCodeText(t.code ?? '');
           if (t.kind === 'design' && t.design) {
             dispatch({ type: 'replace', design: t.design as unknown as LabelDesign });
@@ -117,13 +121,17 @@ export default function LabelTemplateEditor() {
     }
   };
 
+  const rulesError = validateRuleRows(rules);
+
   const save = async () => {
+    if (rulesError) return;
     setSaving(true);
     setError('');
     const body = {
       ...meta,
       kind,
       site_ids: siteIds,
+      generation_rules: ruleRowsToJson(rules),
       design: kind === 'design' ? (state.design as unknown as Record<string, unknown>) : null,
       code: kind === 'code' ? codeText : null,
     };
@@ -244,7 +252,7 @@ export default function LabelTemplateEditor() {
           </button>
         )}
         <button type="button" className="btn-solid"
-                disabled={saving || !can('labels', isCreate ? 'add' : 'change')}
+                disabled={saving || !!rulesError || !can('labels', isCreate ? 'add' : 'change')}
                 onClick={() => void save()}>
           Save
         </button>
@@ -257,6 +265,8 @@ export default function LabelTemplateEditor() {
                   options={sites.map((s) => ({ value: s.id, label: s.name }))}
                   placeholder={siteIds.length ? 'Add a site…' : 'All sites — add to narrow'} />
       </div>
+
+      <GenerationRulesPanel rows={rules} onChange={setRules} />
 
       {kind === 'code' ? (
         <>

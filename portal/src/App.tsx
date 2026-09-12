@@ -18,6 +18,7 @@ import MoveDashboard from './pages/MoveDashboard';
 import DevDatabase from './pages/DevDatabase';
 import External from './pages/External';
 import FixedReaders from './pages/FixedReaders';
+import GenerateLabels from './pages/GenerateLabels';
 import HandheldReaders from './pages/HandheldReaders';
 import Home from './pages/Home';
 import ImportMoveAssets from './pages/ImportMoveAssets';
@@ -151,10 +152,7 @@ export default function App() {
                 <Route path="/labels/templates/:id/edit" element={
                   <ProtectedRoute resource="labels"><LabelTemplateEditor /></ProtectedRoute>} />
                 <Route path="/labels/generate" element={
-                  <ProtectedRoute resource="labels">
-                    <Placeholder eyebrow="Labels" title="Generate Labels"
-                                 hint="Bulk-generate labels for initiatives, assets, and containers." />
-                  </ProtectedRoute>
+                  <ProtectedRoute resource="labels"><GenerateLabels /></ProtectedRoute>
                 } />
                 <Route path="/labels/printers" element={
                   <ProtectedRoute resource="labels"><Printers /></ProtectedRoute>

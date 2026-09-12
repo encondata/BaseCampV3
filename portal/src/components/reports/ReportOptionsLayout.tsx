@@ -127,14 +127,22 @@ export function InitiativeSummary({ initiative, emptyText }: {
   );
 }
 
-/** A big selectable card with radio semantics (generalizes Move Scan
- *  History's former format cards) — renders as one `role="radio"`
- *  member of its parent's `role="radiogroup"`. Arrow keys rove focus (and
- *  selection, native-radio style) between sibling `[role="radio"]`
- *  elements found via the closest `[role="radiogroup"]` ancestor, so a
- *  group of any size works without each caller wiring its own refs. */
-export function ChoiceCard({ title, description, selected, onSelect }: {
+/** A big selectable card, either radio semantics (generalizes Move Scan
+ *  History's former format cards — one `role="radio"` member of its
+ *  parent's `role="radiogroup"`, arrow keys rove focus and selection
+ *  between siblings) or checkbox semantics (Generate Labels' label-type
+ *  multi-select — one independent `role="checkbox"`, no roving group).
+ *  Arrow-key roving is found via the closest `[role="radiogroup"]`
+ *  ancestor, so a group of any size works without each caller wiring its
+ *  own refs; it's a no-op for the checkbox variant (no radiogroup to
+ *  find). `disabled` renders a native-disabled button (inert to click/
+ *  key) with an optional `hint` explaining why — Generate Labels uses
+ *  this for a type with no active template instead of hiding it. */
+export function ChoiceCard({
+  title, description, selected, onSelect, variant = 'radio', disabled = false, hint,
+}: {
   title: string; description: string; selected: boolean; onSelect: () => void;
+  variant?: 'radio' | 'checkbox'; disabled?: boolean; hint?: string;
 }) {
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
     if (e.key === 'ArrowLeft' || e.key === 'ArrowUp' || e.key === 'ArrowRight' || e.key === 'ArrowDown') {
@@ -154,12 +162,13 @@ export function ChoiceCard({ title, description, selected, onSelect }: {
     }
   };
   return (
-    <button type="button" role="radio" aria-checked={selected}
-            tabIndex={selected ? 0 : -1}
-            className={`rgm-choice-card ${selected ? 'on' : ''}`}
+    <button type="button" role={variant} aria-checked={selected} disabled={disabled}
+            tabIndex={variant === 'radio' ? (selected ? 0 : -1) : 0}
+            className={`rgm-choice-card ${selected ? 'on' : ''} ${disabled ? 'disabled' : ''}`}
             onClick={onSelect} onKeyDown={onKeyDown}>
       <span className="rgm-choice-title">{title}</span>
       <span className="rgm-choice-desc">{description}</span>
+      {hint && <span className="rgm-choice-hint">{hint}</span>}
     </button>
   );
 }

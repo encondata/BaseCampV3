@@ -79,3 +79,21 @@
 .lbl-code-actions { display: flex; gap: 8px; }
 .lbl-code { max-height: 240px; overflow: auto; background: #0e141b0d; padding: 10px 12px; border-radius: 8px; white-space: pre-wrap; }
 .lbl-preview-img { max-width: 100%; border: 1px solid var(--line, #ccc); }
+
+/* GenerationRulesPanel — template editor's Generation rules section.
+ * Layout only; no typography props on `.lbl-rules-*` (the family-prefix
+ * scan in listTypography.test.ts would flag them if `-line`/`-panel`
+ * matched a `-row`/`-list` suffix, which is exactly why "line" was
+ * picked over "row" here). */
+.lbl-rules-panel { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; max-width: 560px; }
+.lbl-rules-group { display: flex; flex-direction: column; gap: 6px; }
+.lbl-rules-line { display: flex; align-items: center; gap: 8px; }
+.lbl-rules-pos { width: 64px; text-align: center; }
+.lbl-rules-arrow { color: var(--text-mute); }
+.lbl-rules-bad { border-color: var(--c-red, #c03540) !important; }
+
+/* GenerateLabels — Task 19 */
+.glabels-progress { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
+.glabels-progress-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.glabels-progress-actions { display: flex; justify-content: flex-end; }
+.glabels-preview-type { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }

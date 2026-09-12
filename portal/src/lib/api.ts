@@ -3297,12 +3297,26 @@ export interface LabelPlaceholder {
   usage_count: number | null;
 }
 
+/** V2's `label_generation_code` port: position→token splits (1-based,
+ *  applied to the raw destination/source location string split on ".")
+ *  plus per-token length limits. Position/limit keys are strings on the
+ *  wire (JSON object keys); see `lib/generateLabels.ts` for the editor's
+ *  row-based form and its validation. */
+export interface LabelGenerationRules {
+  destination?: Record<string, string>;
+  source?: Record<string, string>;
+  length_limits?: Record<string, number>;
+}
+
 export interface LabelTemplate {
   id: string; name: string; description: string; label_type: string;
   size_key: string; dpi_key: string; language_key: string;
   kind: 'design' | 'code'; design: Record<string, unknown> | null;
   code: string | null; version: number; is_active: boolean;
   site_ids: string[];
+  // Optional so existing fixtures/tests predating this field (which the
+  // API always sends, defaulting to `{}`) don't need updating.
+  generation_rules?: LabelGenerationRules;
   created_at: string; updated_at: string;
 }
 
@@ -3441,6 +3455,115 @@ export async function previewZplRequest(body: {
   });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.blob();
+}
+
+// ── Generate Labels (worker-driven runs) ──────────────────────────────
+
+export type LabelRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'canceled';
+
+export interface LabelRunErrorDetail {
+  item: string; label_type: string; type: string; message: string;
+}
+
+export interface LabelRun {
+  id: string;
+  initiative_id: string; initiative_name: string;
+  label_types: string[];
+  regenerate_existing: boolean;
+  status: LabelRunStatus;
+  cancel_requested: boolean;
+  current_label_type: string | null;
+  current_item: string | null;
+  total: number; processed: number; generated: number; skipped: number; errors: number;
+  error_summary: Record<string, number>;
+  error_details: LabelRunErrorDetail[];
+  error: string | null;
+  requested_by: string; requested_by_name: string;
+  notify: boolean;
+  created_at: string; started_at: string | null; finished_at: string | null;
+  progress_pct: number;
+}
+
+/** POST /labels/generate/runs — 404 `initiative_not_found`, 422
+ *  `invalid_label_types`, 409 `run_active` (`err.detail` carries `run_id`
+ *  alongside `code` for that last one). */
+export async function startLabelRun(body: {
+  initiative_id: string; label_types: string[]; regenerate_existing: boolean; notify: boolean;
+}): Promise<LabelRun> {
+  const resp = await apiFetch('/labels/generate/runs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listLabelRuns(
+  params: { initiative_id?: string; limit?: number } = {},
+): Promise<LabelRun[]> {
+  const qs = new URLSearchParams();
+  if (params.initiative_id) qs.set('initiative_id', params.initiative_id);
+  if (params.limit != null) qs.set('limit', String(params.limit));
+  const query = qs.toString();
+  const resp = await apiFetch(`/labels/generate/runs${query ? `?${query}` : ''}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getLabelRun(id: string): Promise<LabelRun> {
+  const resp = await apiFetch(`/labels/generate/runs/${id}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** A queued run flips straight to `canceled`; a running one finishes its
+ *  current batch first. 409 when the run is no longer queued/running. */
+export async function cancelLabelRun(id: string): Promise<LabelRun> {
+  const resp = await apiFetch(`/labels/generate/runs/${id}/cancel`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export interface LabelGeneratePreviewType {
+  key: string; label: string;
+  template: { id: string; name: string; version: number; scope: 'site' | 'global' } | null;
+  current: number; stale: number;
+}
+
+export interface LabelGeneratePreview {
+  initiative: {
+    id: string; name: string; client_name: string | null; status: string;
+    scheduled_start: string | null; source_name: string | null; destination_name: string | null;
+    asset_count: number;
+  };
+  types: LabelGeneratePreviewType[];
+  active_run_id: string | null;
+}
+
+export async function getLabelGeneratePreview(initiativeId: string): Promise<LabelGeneratePreview> {
+  const resp = await apiFetch(
+    `/labels/generate/preview?initiative_id=${encodeURIComponent(initiativeId)}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export interface GeneratedLabel {
+  id: string; entity_type: 'asset' | 'container'; entity_id: string;
+  asset_id: string | null; serial_number: string | null; name: string | null;
+  label_type: string; template_name: string; template_version: number;
+  generated_at: string; stale: boolean; code: string;
+}
+
+export async function listGeneratedLabels(params: {
+  initiative_id?: string; label_type?: string; limit?: number;
+} = {}): Promise<GeneratedLabel[]> {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => { if (v !== undefined) qs.set(k, String(v)); });
+  const query = qs.toString();
+  const resp = await apiFetch(`/labels/generated${query ? `?${query}` : ''}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
 }
 
 // ── People dashboard ──────────────────────────────────────────────────
