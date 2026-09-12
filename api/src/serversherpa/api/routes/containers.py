@@ -18,6 +18,7 @@ from serversherpa.db.models import (
     Asset, AssetModel, Container, ContainerAsset, Initiative, Person, Site,
     StatusValue,
 )
+from serversherpa.labels.tags import LABEL_TAG_KEYS
 from serversherpa.logistics import bulk_import as bulk
 from serversherpa.services.audit import audit, diff, snapshot
 
@@ -25,7 +26,7 @@ router = APIRouter(prefix="/containers", tags=["containers"])
 
 CONTAINER_FIELDS = [
     "name", "rfid_tag", "container_type", "status", "site_id",
-    "initiative_id", "location_detail",
+    "initiative_id", "label_tag", "location_detail",
 ]
 NON_NULLABLE_FIELDS = ("name", "location_detail", "status")
 
@@ -83,6 +84,7 @@ def _item(c: Container, statuses: dict, types: dict, sites: dict,
         "site_id": c.site_id, "site_name": sites.get(c.site_id),
         "initiative_id": c.initiative_id,
         "initiative_name": initiatives.get(c.initiative_id),
+        "label_tag": c.label_tag,
         "location_detail": c.location_detail,
         "asset_count": counts.get(c.id, 0),
         "last_audit_at": c.last_audit_at,
@@ -176,6 +178,8 @@ async def _check_refs(db: DbSession, data: dict) -> None:
         initiative = await db.get(Initiative, data["initiative_id"])
         if initiative is None or initiative.archived_at is not None:
             raise _err(404, "initiative_not_found")
+    if data.get("label_tag") is not None and data["label_tag"] not in LABEL_TAG_KEYS:
+        raise _err(422, "bad_label_tag", allowed=list(LABEL_TAG_KEYS))
     for field, record_type, code in (
         ("status", "container", "unknown_status"),
         ("container_type", "container_type", "unknown_container_type"),

@@ -615,6 +615,10 @@ class Container(Base):
     # as an initiative link (V3 had no such link before).
     initiative_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("initiatives.id", ondelete="SET NULL"))
+    # Migration 0058 — the Container Labels tag now lives on the
+    # container itself (CHECK constraint enforces the five keys in
+    # serversherpa.labels.tags.LABEL_TAG_KEYS).
+    label_tag: Mapped[str | None] = mapped_column()
     location_detail: Mapped[str] = mapped_column(server_default="")
     last_audit_at: Mapped[datetime | None]
     audit_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))

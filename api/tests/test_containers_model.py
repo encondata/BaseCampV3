@@ -38,6 +38,25 @@ async def test_unknown_status_rejected_by_fk(db):
     await db.rollback()
 
 
+async def test_label_tag_defaults_null_and_round_trips(db):
+    c = Container(name="Untagged")
+    db.add(c)
+    await db.commit()
+    assert c.label_tag is None
+
+    c.label_tag = "vendor"
+    await db.commit()
+    await db.refresh(c)
+    assert c.label_tag == "vendor"
+
+
+async def test_label_tag_check_constraint_rejects_unknown_value(db):
+    db.add(Container(name="Bad Tag", label_tag="nope"))
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()
+
+
 async def test_one_container_per_asset(db):
     a = Asset(name="asset-1")
     c1, c2 = Container(name="C1"), Container(name="C2")

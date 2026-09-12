@@ -19,16 +19,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Container, Site, StatusValue
+from serversherpa.labels.tags import resolve_label_tag
 from serversherpa.services.audit import audit, snapshot
 from serversherpa.sites.bulk_import import BulkImportError  # content-agnostic
 
 TEMPLATE_COLUMNS = [
     "name", "container_type", "rfid_tag", "site_name",
-    "location_detail", "status",
+    "location_detail", "status", "label_tag",
 ]
 AUDIT_FIELDS = [
     "name", "rfid_tag", "container_type", "status", "site_id",
-    "location_detail",
+    "label_tag", "location_detail",
 ]
 MAX_ROWS = 1000
 
@@ -124,6 +125,11 @@ def _resolve(row: dict, refs: dict) -> tuple[dict, list[str]]:
             errors.append("duplicate_rfid_tag")
     if raw := str(row.get("location_detail", "")).strip():
         data["location_detail"] = raw
+    if raw := str(row.get("label_tag", "")).strip():
+        if key := resolve_label_tag(raw):
+            data["label_tag"] = key
+        else:
+            errors.append("bad_label_tag")
     return data, errors
 
 
@@ -187,6 +193,7 @@ async def commit_rows(db: AsyncSession, actor_person_id: uuid.UUID,
             container_type=data.get("container_type"),
             rfid_tag=data.get("rfid_tag"),
             site_id=data.get("site_id"),
+            label_tag=data.get("label_tag"),
             location_detail=data.get("location_detail", ""),
             status=data.get("status", "available"),
             source="bulk_import", created_by=actor_person_id)

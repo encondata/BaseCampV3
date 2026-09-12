@@ -177,6 +177,55 @@ async def test_initiative_id_404_for_unknown_and_archived(client, db, seeded_use
     assert resp.json()["detail"]["code"] == "initiative_not_found"
 
 
+async def test_label_tag_create_patch_clear_and_validation(client, db, seeded_user):
+    hdrs = await login(client)
+
+    resp = await client.post("/containers", headers=hdrs, json={
+        "name": "Tagged Crate", "label_tag": "priority",
+    })
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["label_tag"] == "priority"
+    cid = body["id"]
+
+    resp = await client.get(f"/containers/{cid}", headers=hdrs)
+    assert resp.json()["label_tag"] == "priority"
+    resp = await client.get("/containers", headers=hdrs)
+    assert next(c for c in resp.json() if c["id"] == cid)["label_tag"] == "priority"
+
+    # patch sets a new value
+    resp = await client.patch(f"/containers/{cid}", headers=hdrs,
+                              json={"label_tag": "ewaste"})
+    assert resp.status_code == 200
+    assert resp.json()["label_tag"] == "ewaste"
+
+    # omitted key leaves it unchanged (exclude_unset)
+    resp = await client.patch(f"/containers/{cid}", headers=hdrs,
+                              json={"location_detail": "Bay 9"})
+    assert resp.status_code == 200
+    assert resp.json()["label_tag"] == "ewaste"
+
+    # explicit null clears
+    resp = await client.patch(f"/containers/{cid}", headers=hdrs,
+                              json={"label_tag": None})
+    assert resp.status_code == 200
+    assert resp.json()["label_tag"] is None
+
+    # invalid value -> 422 bad_label_tag with the allowed set
+    resp = await client.post("/containers", headers=hdrs, json={
+        "name": "Bad Tag", "label_tag": "nope",
+    })
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "bad_label_tag"
+    assert set(resp.json()["detail"]["allowed"]) == {
+        "priority", "vendor", "accessories", "ewaste", "warehouse"}
+
+    resp = await client.patch(f"/containers/{cid}", headers=hdrs,
+                              json={"label_tag": "nope"})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "bad_label_tag"
+
+
 async def test_no_permission_403(client, db, seeded_user):
     org = Client(name="Org")
     db.add(org)

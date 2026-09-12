@@ -1018,6 +1018,7 @@ class ContainerItem(BaseModel):
     site_name: str | None = None
     initiative_id: uuid.UUID | None = None
     initiative_name: str | None = None
+    label_tag: str | None = None
     location_detail: str
     asset_count: int = 0
     last_audit_at: datetime | None = None
@@ -1033,6 +1034,7 @@ class ContainerCreateIn(BaseModel):
     status: str | None = None
     site_id: uuid.UUID | None = None
     initiative_id: uuid.UUID | None = None
+    label_tag: str | None = None
     location_detail: str = ""
     model_config = ConfigDict(extra="forbid")
 
@@ -1044,6 +1046,7 @@ class ContainerUpdateIn(BaseModel):
     status: str | None = None
     site_id: uuid.UUID | None = None
     initiative_id: uuid.UUID | None = None
+    label_tag: str | None = None
     location_detail: str | None = None
     model_config = ConfigDict(extra="forbid")
 

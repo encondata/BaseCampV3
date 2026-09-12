@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import ReportRun
+from serversherpa.labels.tags import LABEL_TAG_KEYS
 from serversherpa.reports import container_label_renderer
 from serversherpa.reports.container_labels.gather import gather
 from serversherpa.reports.move_report.gather import InitiativeUnavailable
@@ -24,7 +25,9 @@ from serversherpa.reports.registry import OptionsError, ReportResult
 
 report_type = "container_labels"
 
-TAG_KEYS = ("priority", "vendor", "accessories", "ewaste", "warehouse")
+# Single source of truth lives in serversherpa.labels.tags — also used by
+# containers.label_tag (schemas/routes/bulk import).
+TAG_KEYS = LABEL_TAG_KEYS
 
 # Same set move_report.build strips from its filename (backslash, slash,
 # colon, asterisk, question mark, quote, angle brackets, pipe, plus any

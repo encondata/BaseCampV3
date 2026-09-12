@@ -55,6 +55,21 @@ async def test_preview_rejects_rfid_matching_existing_container(db, seeded_user)
     assert results[0]["errors"] == ["duplicate_rfid_tag"]
 
 
+async def test_preview_resolves_label_tag_by_key_or_label(db, seeded_user):
+    results = await bulk.preview_rows(db, _rows(
+        {"name": "By Key", "label_tag": "priority"},
+        {"name": "By Label", "label_tag": "E-Waste"},
+        {"name": "By Label Case", "label_tag": "vendor"},
+        {"name": "Bad Tag", "label_tag": "not-a-tag"},
+    ))
+    assert [r["action"] for r in results] == [
+        "create", "create", "create", "error"]
+    assert results[0]["data"]["label_tag"] == "priority"
+    assert results[1]["data"]["label_tag"] == "ewaste"
+    assert results[2]["data"]["label_tag"] == "vendor"
+    assert results[3]["errors"] == ["bad_label_tag"]
+
+
 async def test_commit_creates_only_valid_rows(db, seeded_user, client):
     hdrs = await login(client)
     db.add(Site(name="DC-West"))
@@ -63,12 +78,15 @@ async def test_commit_creates_only_valid_rows(db, seeded_user, client):
     resp = await client.post("/containers/bulk-import/commit", headers=hdrs,
                              json={"rows": [
                                  {"name": "Bulk-1", "site_name": "DC-West"},
-                                 {"name": "Bulk-2", "status": "packed"},
+                                 {"name": "Bulk-2", "status": "packed",
+                                  "label_tag": "E-Waste"},
                              ]})
     assert resp.status_code == 200, resp.text
     assert resp.json()["created"] == 2
-    names = {c.name for c in await db.scalars(select(Container))}
-    assert {"Bulk-1", "Bulk-2"} <= names
+    containers = {c.name: c for c in await db.scalars(select(Container))}
+    assert {"Bulk-1", "Bulk-2"} <= containers.keys()
+    assert containers["Bulk-1"].label_tag is None
+    assert containers["Bulk-2"].label_tag == "ewaste"
 
 
 async def test_commit_rejects_invalid_rows(client, db, seeded_user):
@@ -86,4 +104,4 @@ async def test_template_endpoint(client, seeded_user):
                             headers=hdrs)
     assert resp.status_code == 200
     assert resp.text.splitlines()[0] == \
-        "name,container_type,rfid_tag,site_name,location_detail,status"
+        "name,container_type,rfid_tag,site_name,location_detail,status,label_tag"
