@@ -153,8 +153,6 @@
 .cl-step-head .modal-section { margin: 0; }
 .cl-step-head .page-hint { margin: 2px 0 0; }
 .cl-step-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-.cl-step-actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-.cl-step-actions .page-hint { margin: 0; }
 .cl-generate-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .cl-generate-summary { display: flex; flex-wrap: wrap; gap: 4px; }
 

@@ -15,6 +15,14 @@
 import type { ContainerItem, InitiativeItem } from './api';
 import type { ContainerLabelInput, TagKey } from '../labels/containerLabelSheet';
 
+/** The five real tags, in V2's own display order, for both
+ *  `ContainerTagPicker`'s menu and `ContainerPickList`'s bulk `.segmented`
+ *  row — one export so the two never drift apart. `TAG_TYPES`
+ *  (`containerLabelSheet.ts`) also carries `'none'`, a harmless default
+ *  the drawing routine falls back to; it is never offered as its own
+ *  choice here (see this file's header comment). */
+export const TAG_CHOICES: TagKey[] = ['priority', 'vendor', 'accessories', 'ewaste', 'warehouse'];
+
 /** V2's own move/container name fallbacks, reused for the on-page summary
  *  and the PDF input alike. */
 export function containerDisplayName(c: Pick<ContainerItem, 'id' | 'name'>): string {
@@ -40,19 +48,30 @@ export function toggleSelection(selected: string[], id: string): string[] {
     : [...selected, id];
 }
 
-/** Header checkbox action: select or clear every FILTERED row's id,
- *  leaving any selection outside the current filter untouched (so
- *  narrowing the search never silently drops a selection made before). */
-export function selectAllFiltered(
-  selected: string[], filteredIds: string[], checked: boolean,
-): string[] {
-  if (checked) {
-    const merged = new Set(selected);
-    filteredIds.forEach((id) => merged.add(id));
-    return [...merged];
-  }
-  const drop = new Set(filteredIds);
-  return selected.filter((id) => !drop.has(id));
+/** Header checkbox action, matching V2's own `handleSelectAll` exactly:
+ *  checking REPLACES the whole selection with the current filtered ids;
+ *  unchecking clears the selection to `[]` entirely — a selection made
+ *  outside the current search term does not survive either action, same
+ *  as V2's `setSelectedContainers(checked ? filteredContainers.map(...) : [])`.
+ *  (The header checkbox's own checked/indeterminate state stays
+ *  intersection-based — `selected ∩ filteredIds` — computed separately in
+ *  `ContainerPickList`; only this ACTION mirrors V2's replace/clear.) */
+export function selectAllFiltered(filteredIds: string[], checked: boolean): string[] {
+  return checked ? [...filteredIds] : [];
+}
+
+/** The containers actually labeled by Download/Generate-as-report: V2's
+ *  own `containersToLabel = filteredContainers.filter(selectedSet.has)` —
+ *  selected ids that are ALSO in the current filtered view, in `list`'s
+ *  display order. A selection made before narrowing the search (and thus
+ *  hidden by it) is excluded, exactly like V2, even though it stays
+ *  selected in the UI (so clearing the search brings it right back). */
+export function labeledContainers(
+  list: ContainerItem[], selected: string[], filteredIds: string[],
+): ContainerItem[] {
+  const selectedSet = new Set(selected);
+  const filteredSet = new Set(filteredIds);
+  return list.filter((c) => selectedSet.has(c.id) && filteredSet.has(c.id));
 }
 
 /** Bulk "Set tag" action for a set of ids: `key: null` clears the tag

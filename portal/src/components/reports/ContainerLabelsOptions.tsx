@@ -7,12 +7,12 @@
  * containers and tags identically, then hands `{ container_ids, tags }`
  * back to GenerateReportModal's own progress step.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import {
   ApiError, listContainers, type ContainerItem, type InitiativeItem, type ReportDefinition,
 } from '../../lib/api';
-import { buildRunOptions, tagsInUse } from '../../lib/containerLabels';
+import { buildRunOptions, labeledContainers, tagsInUse } from '../../lib/containerLabels';
 import { TAG_TYPES, type TagKey } from '../../labels/containerLabelSheet';
 import ContainerPickList from '../labels/ContainerPickList';
 import { Switch } from '../Switch';
@@ -33,6 +33,7 @@ export default function ContainerLabelsOptions({ initiative, onBack, onGenerate 
   const [loadError, setLoadError] = useState('');
   const [selected, setSelected] = useState<string[]>([]);
   const [tags, setTags] = useState<Record<string, TagKey>>({});
+  const [filteredIds, setFilteredIds] = useState<string[]>([]);
   const [notify, setNotify] = useState(false);
 
   useEffect(() => {
@@ -42,6 +43,7 @@ export default function ContainerLabelsOptions({ initiative, onBack, onGenerate 
     setLoadError('');
     setSelected([]);
     setTags({});
+    setFilteredIds([]);
     listContainers({ initiative_id: initiative.id })
       .then((rows) => { if (!cancelled) setContainers(rows); })
       .catch((err) => {
@@ -51,11 +53,19 @@ export default function ContainerLabelsOptions({ initiative, onBack, onGenerate 
     return () => { cancelled = true; };
   }, [initiative]);
 
-  const inUse = tagsInUse(selected, tags);
+  // V2 parity: only selected ids that are ALSO in the current search
+  // filter get labeled — see `labeledContainers`'s own header comment.
+  const toLabel = useMemo(
+    () => labeledContainers(containers ?? [], selected, filteredIds),
+    [containers, selected, filteredIds],
+  );
+  const toLabelIds = useMemo(() => toLabel.map((c) => c.id), [toLabel]);
+  const hiddenBySearch = selected.length - toLabel.length;
+  const inUse = tagsInUse(toLabelIds, tags);
 
   const generate = () => {
-    if (!initiative || selected.length === 0) return;
-    onGenerate({ initiative_id: initiative.id, options: buildRunOptions(selected, tags), notify });
+    if (!initiative || toLabel.length === 0) return;
+    onGenerate({ initiative_id: initiative.id, options: buildRunOptions(toLabelIds, tags), notify });
   };
 
   return (
@@ -72,7 +82,11 @@ export default function ContainerLabelsOptions({ initiative, onBack, onGenerate 
             )}
             {selected.length > 0 && (
               <>
-                <p className="page-hint">{selected.length} selected — {selected.length} sheet{selected.length === 1 ? '' : 's'}.</p>
+                <p className="page-hint">
+                  {hiddenBySearch === 0
+                    ? `${selected.length} selected — ${toLabel.length} sheet${toLabel.length === 1 ? '' : 's'}.`
+                    : `${selected.length} selected · ${hiddenBySearch} hidden by search — ${toLabel.length} sheet${toLabel.length === 1 ? '' : 's'}.`}
+                </p>
                 {inUse.length > 0 && (
                   <div className="cl-generate-summary">
                     {inUse.map((key) => (
@@ -95,7 +109,8 @@ export default function ContainerLabelsOptions({ initiative, onBack, onGenerate 
             )}
             {!loadError && initiative && containers !== null && containers.length > 0 && (
               <ContainerPickList containers={containers} selected={selected} tags={tags}
-                                  onSelectedChange={setSelected} onTagsChange={setTags} />
+                                  onSelectedChange={setSelected} onTagsChange={setTags}
+                                  onFilteredChange={setFilteredIds} />
             )}
           </OptionGroup>
 
@@ -114,7 +129,7 @@ export default function ContainerLabelsOptions({ initiative, onBack, onGenerate 
       </div>
       <div className="modal-foot">
         <button type="button" className="btn-ghost" onClick={onBack}>Back</button>
-        <button type="button" className="btn-solid" disabled={!initiative || selected.length === 0}
+        <button type="button" className="btn-solid" disabled={!initiative || toLabel.length === 0}
                 onClick={generate}>
           Generate Report
         </button>

@@ -70,6 +70,23 @@ it('Generate is disabled until at least one container is selected, then posts {c
   }));
 });
 
+it('excludes a selected container currently hidden by the search box (V2 parity)', async () => {
+  const user = userEvent.setup();
+  const onGenerate = vi.fn();
+  render(<ContainerLabelsOptions definition={DEF} initiative={INITIATIVE}
+                                  onBack={() => {}} onGenerate={onGenerate} />);
+  await screen.findByText('Rack Cart 1');
+  await user.click(screen.getByText('Rack Cart 1'));
+  await user.click(screen.getByText('Server Bin'));
+  await user.type(screen.getByPlaceholderText('Search containers…'), 'rack'); // hides Server Bin
+
+  expect(screen.getByText('2 selected · 1 hidden by search — 1 sheet.')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Generate Report' }));
+  await waitFor(() => expect(onGenerate).toHaveBeenCalledWith({
+    initiative_id: 'i2', options: { container_ids: ['c1'], tags: {} }, notify: false,
+  }));
+});
+
 it('Back calls onBack', async () => {
   const user = userEvent.setup();
   const onBack = vi.fn();

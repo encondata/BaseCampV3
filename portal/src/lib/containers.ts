@@ -24,6 +24,7 @@ export function containerCellText(c: ContainerItem, colKey: string): string {
     case 'assets': return String(c.asset_count);
     case 'status': return c.status_label;
     case 'site': return c.site_name ?? '';
+    case 'initiative': return c.initiative_name ?? '';
     case 'location': return c.location_detail || '—';
     case 'updated': return c.created_at ? new Date(c.created_at).toLocaleDateString() : '—';
     case 'archived': return c.archived_at ? 'Yes' : 'No';

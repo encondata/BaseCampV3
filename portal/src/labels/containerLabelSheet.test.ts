@@ -287,6 +287,12 @@ class RecordingPdf implements JsPdfLike {
     this.log.push({ method: 'getTextWidth', args: [text] });
     return width;
   }
+
+  // Not exercised by the drawing routine itself (see JsPdfLike's own
+  // comment) — stubbed only so RecordingPdf satisfies the interface.
+  save(filename: string): void {
+    this.log.push({ method: 'save', args: [filename] });
+  }
 }
 
 const fakeAdapters: Adapters = {

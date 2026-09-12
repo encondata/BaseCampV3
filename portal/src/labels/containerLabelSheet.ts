@@ -88,6 +88,12 @@ export interface JsPdfLike {
   setLineDashPattern(pattern: number[], phase: number): void;
   line(x1: number, y1: number, x2: number, y2: number): void;
   getTextWidth(text: string): number;
+  /** Not called by `buildContainerLabelPdf` itself — only by callers that
+   *  want the browser download (V2's own `pdf.save(...)`). Declared here
+   *  anyway so the return type is directly usable without a cast; a real
+   *  jsPDF instance already has it, and the exactness test's recording
+   *  fake below adds a harmless stub. */
+  save(filename: string): void;
 }
 
 /**

@@ -41,7 +41,7 @@ it('filters rows by name and type as the search term changes', async () => {
   expect(screen.getByText('Cable Tote')).toBeTruthy();
 });
 
-it('header select-all checks only the filtered rows, and unchecking drops only those', async () => {
+it('header select-all REPLACES the selection with the filtered ids when checked, and CLEARS it entirely when unchecked (V2 parity)', async () => {
   const user = userEvent.setup();
   // Dedicated fixture (rather than the shared ROWS) so the search term
   // unambiguously matches exactly two of the three rows.
@@ -51,8 +51,10 @@ it('header select-all checks only the filtered rows, and unchecking drops only t
     container({ id: 'c3', name: 'Yankee Three' }),
   ];
   const onSelectedChange = vi.fn();
+  // A selection made OUTSIDE the current filter ('x') does not survive
+  // checking select-all — V2 replaces, it doesn't merge.
   const { rerender } = render(
-    <ContainerPickList containers={AB_ROWS} selected={[]} tags={{}}
+    <ContainerPickList containers={AB_ROWS} selected={['x']} tags={{}}
                        onSelectedChange={onSelectedChange} onTagsChange={() => {}} />,
   );
 
@@ -65,11 +67,15 @@ it('header select-all checks only the filtered rows, and unchecking drops only t
     <ContainerPickList containers={AB_ROWS} selected={['c1', 'c2', 'c3']} tags={{}}
                        onSelectedChange={onSelectedChange} onTagsChange={() => {}} />,
   );
-  // search still "zulu" (rerender preserves the ContainerPickList's own state)
+  // search still "zulu" (rerender preserves the ContainerPickList's own
+  // state) — the header checkbox's own checked/indeterminate state stays
+  // intersection-based even though the ACTION below is replace/clear.
   const headerBox2 = screen.getByLabelText('Select all filtered containers') as HTMLInputElement;
   expect(headerBox2.checked).toBe(true);
   fireEvent.click(headerBox2);
-  expect(onSelectedChange).toHaveBeenLastCalledWith(['c3']);
+  // Unchecking clears EVERYTHING, including c3 (outside the filter) — not
+  // just the filtered ids.
+  expect(onSelectedChange).toHaveBeenLastCalledWith([]);
 });
 
 it('header checkbox is indeterminate when some but not all filtered rows are selected', () => {
@@ -121,12 +127,34 @@ it('bulk "None" clears the tag for every selected id', () => {
   expect(onTagsChange).toHaveBeenCalledWith({ c2: 'vendor' });
 });
 
-it('a per-row tag change only affects that row', async () => {
+it('a per-row tag change only affects that row, and never toggles the row\'s own selection', async () => {
   const user = userEvent.setup();
   const onTagsChange = vi.fn();
+  const onSelectedChange = vi.fn();
   render(<ContainerPickList containers={ROWS} selected={[]} tags={{ c2: 'vendor' }}
-                             onSelectedChange={() => {}} onTagsChange={onTagsChange} />);
-  await user.click(screen.getByLabelText('Tag for Rack Cart 1'));
-  await user.click(await screen.findByRole('menuitem', { name: /Priority/ }));
+                             onSelectedChange={onSelectedChange} onTagsChange={onTagsChange} />);
+  const trigger = screen.getByLabelText('Tag for Rack Cart 1');
+
+  await user.click(trigger);
+  expect(onSelectedChange).not.toHaveBeenCalled();   // opening the popover must not bubble into the row
+
+  const item = await screen.findByRole('menuitem', { name: /Priority/ });
+  await user.click(item);
   expect(onTagsChange).toHaveBeenCalledWith({ c1: 'priority', c2: 'vendor' });
+  expect(onSelectedChange).not.toHaveBeenCalled();   // nor must picking the tag
+
+  await user.click(trigger);
+  await user.keyboard('{Escape}');
+  expect(onSelectedChange).not.toHaveBeenCalled();   // nor dismissing it via Escape
+});
+
+it('reports the filtered id list via onFilteredChange as the search term changes', async () => {
+  const user = userEvent.setup();
+  const onFilteredChange = vi.fn();
+  render(<ContainerPickList containers={ROWS} selected={[]} tags={{}}
+                             onSelectedChange={() => {}} onTagsChange={() => {}}
+                             onFilteredChange={onFilteredChange} />);
+  expect(onFilteredChange).toHaveBeenLastCalledWith(['c1', 'c2', 'c3']);
+  await user.type(screen.getByPlaceholderText('Search containers…'), 'tote');
+  expect(onFilteredChange).toHaveBeenLastCalledWith(['c3']);
 });

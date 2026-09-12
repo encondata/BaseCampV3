@@ -33,6 +33,9 @@ describe('containerCellText', () => {
     expect(containerCellText(row, 'assets')).toBe('4');
     expect(containerCellText({ ...row, rfid_tag: null }, 'rfid')).toBe('—');
     expect(containerCellText(row, 'archived')).toBe('No');
+    expect(containerCellText({ ...row, initiative_name: 'NAP11 Hall Migration' }, 'initiative'))
+      .toBe('NAP11 Hall Migration');
+    expect(containerCellText(row, 'initiative')).toBe('');
   });
 });
 

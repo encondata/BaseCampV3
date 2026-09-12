@@ -12,14 +12,9 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 
+import { TAG_CHOICES } from '../../lib/containerLabels';
 import { TAG_TYPES, type TagKey } from '../../labels/containerLabelSheet';
 import '../../styles/column-menu.css';
-
-/** The five real tags, in V2's own display order — `TAG_TYPES` also
- *  carries `'none'` (a harmless default the drawing routine falls back
- *  to), which this picker never offers as its own row: "no tag" is the
- *  separate `null` choice at the top of the menu instead. */
-const TAG_CHOICES: TagKey[] = ['priority', 'vendor', 'accessories', 'ewaste', 'warehouse'];
 
 const OPEN_UPWARD_THRESHOLD = 200;
 const GAP = 4;

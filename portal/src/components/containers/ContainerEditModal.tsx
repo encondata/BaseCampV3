@@ -140,7 +140,13 @@ export default function ContainerEditModal({
           id: container.initiative_id, name: container.initiative_name ?? container.initiative_id,
         } as InitiativeItem]
       : initiatives;
-    return list.map((i) => ({ value: i.id, label: i.name, sub: i.client_name ?? undefined }));
+    // Spec: "initiatives, newest first, finished ones still selectable" —
+    // sort only, never filter (a finished/archived initiative the
+    // container already points at, or that the operator wants to pick,
+    // stays in the list).
+    const sorted = [...list].sort(
+      (a, b) => Date.parse(b.created_at ?? '') - Date.parse(a.created_at ?? ''));
+    return sorted.map((i) => ({ value: i.id, label: i.name, sub: i.client_name ?? undefined }));
   }, [initiatives, container]);
 
   const submit = async (e: FormEvent) => {

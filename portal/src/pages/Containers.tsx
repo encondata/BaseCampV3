@@ -91,15 +91,6 @@ function sortValueFor(c: ContainerItem, key: string): string {
   }
 }
 
-// `containerCellText` (lib/containers.ts) doesn't know about the
-// 'initiative' column — that file is out of this task's scope — so this
-// page wraps it with the one extra case instead, and passes THIS to every
-// `ColumnMenu` in place of the bare import.
-function cellTextFor(c: ContainerItem, key: string): string {
-  if (key === 'initiative') return c.initiative_name ?? '';
-  return containerCellText(c, key);
-}
-
 const CSV_COLUMNS: [string, (c: ContainerItem) => string][] = [
   ['ID', (c) => c.id],
   ['Name', (c) => c.name],
@@ -327,7 +318,7 @@ export default function Containers() {
               </button>
               <ColumnMenu colKey="primary" label="Name"
                           allRows={containers ?? []} filters={filters}
-                          text={cellTextFor}
+                          text={containerCellText}
                           filter={filters.primary} onFilter={setFilter}
                           sortDir={sortKey === 'primary' ? sortDir : null}
                           onSort={(dir) => setSort('primary', dir)} />
@@ -340,7 +331,7 @@ export default function Containers() {
                 </button>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={containers ?? []} filters={filters}
-                            text={cellTextFor}
+                            text={containerCellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
@@ -348,7 +339,7 @@ export default function Containers() {
             ))}
             <ColumnMenu colKey="archived" label="Archived"
                         allRows={containers ?? []} filters={filters}
-                        text={cellTextFor}
+                        text={containerCellText}
                         filter={filters.archived} onFilter={setFilter}
                         sortDir={sortKey === 'archived' ? sortDir : null}
                         onSort={(dir) => setSort('archived', dir)} />
@@ -480,6 +471,7 @@ function ContainerRowDetail({
         <p className="eyebrow-sm">Location</p>
         <dl className="kv">
           <dt>Site</dt><dd>{container.site_name ?? '—'}</dd>
+          <dt>Initiative</dt><dd>{container.initiative_name ?? '—'}</dd>
           <dt>Location</dt><dd>{container.location_detail || '—'}</dd>
           <dt>Assets</dt><dd>{container.asset_count}</dd>
         </dl>

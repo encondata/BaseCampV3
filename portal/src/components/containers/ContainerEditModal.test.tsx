@@ -81,3 +81,19 @@ it('renders with no `initiatives` prop at all (Warehouse.tsx-style caller) witho
                               onClose={() => {}} onSaved={() => {}} />);
   expect(screen.getByDisplayValue('NAP11 Hall Migration')).toBeTruthy(); // still shows the seeded label
 });
+
+it('sorts initiative options newest-first without filtering any out', async () => {
+  const user = userEvent.setup();
+  const initiatives: InitiativeItem[] = [
+    { id: 'old', name: 'Old One', client_name: 'A', created_at: '2026-01-01T00:00:00Z' } as unknown as InitiativeItem,
+    { id: 'new', name: 'New One', client_name: 'B', created_at: '2026-09-01T00:00:00Z' } as unknown as InitiativeItem,
+  ];
+  render(<ContainerEditModal container={{ ...CONTAINER, initiative_id: null, initiative_name: null }}
+                              statuses={[]} types={[]} sites={[]} initiatives={initiatives} canChange
+                              onClose={() => {}} onSaved={() => {}} />);
+  await user.click(screen.getByPlaceholderText('Type to search initiatives…'));
+  const items = screen.getAllByRole('button').filter((b) => b.className.includes('kbar-item'));
+  expect(items).toHaveLength(2);
+  expect(items[0].textContent?.startsWith('New One')).toBe(true);
+  expect(items[1].textContent?.startsWith('Old One')).toBe(true);
+});

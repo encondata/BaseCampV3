@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ContainerItem, InitiativeItem } from './api';
 import {
   applyBulkTag, buildRunOptions, containerDisplayName, filterContainers,
-  initiativeDisplayName, selectAllFiltered, tagsInUse, toggleSelection, toPdfInput,
+  initiativeDisplayName, labeledContainers, selectAllFiltered, tagsInUse, toggleSelection, toPdfInput,
 } from './containerLabels';
 
 function container(over: Partial<ContainerItem> = {}): ContainerItem {
@@ -78,14 +78,11 @@ describe('toggleSelection', () => {
 });
 
 describe('selectAllFiltered', () => {
-  it('adds every filtered id to an existing selection made outside the filter', () => {
-    expect(selectAllFiltered(['x'], ['a', 'b'], true).sort()).toEqual(['a', 'b', 'x']);
+  it('checking REPLACES the selection with exactly the filtered ids (V2 parity) — a selection made outside the filter does not survive', () => {
+    expect(selectAllFiltered(['a', 'b'], true)).toEqual(['a', 'b']);
   });
-  it('checking again with an overlapping selection stays de-duplicated', () => {
-    expect(selectAllFiltered(['a'], ['a', 'b'], true).sort()).toEqual(['a', 'b']);
-  });
-  it('unchecking drops only the filtered ids, leaving selections outside the filter', () => {
-    expect(selectAllFiltered(['a', 'b', 'x'], ['a', 'b'], false)).toEqual(['x']);
+  it('unchecking CLEARS the selection to [] entirely, not just the filtered ids', () => {
+    expect(selectAllFiltered(['a', 'b'], false)).toEqual([]);
   });
 });
 
@@ -168,5 +165,29 @@ describe('toPdfInput', () => {
   it('only carries tags for containers that actually have one', () => {
     const out = toPdfInput(initiative(), [container({ id: 'c1' })], {});
     expect(out.containers[0].tag).toBeNull();
+  });
+});
+
+describe('labeledContainers', () => {
+  const list = [
+    container({ id: 'c1', name: 'Rack Cart 1' }),
+    container({ id: 'c2', name: 'Server Bin' }),
+    container({ id: 'c3', name: 'Cable Tote' }),
+  ];
+
+  it('V2 parity: excludes a selected id that is currently hidden by the search filter', () => {
+    // c1 is selected but not in the current filtered view (e.g. hidden by
+    // a search term) — V2's own `containersToLabel` excludes it too.
+    expect(labeledContainers(list, ['c1', 'c2'], ['c2', 'c3']).map((c) => c.id)).toEqual(['c2']);
+  });
+
+  it('returns rows in the list\'s own display order, not selection order', () => {
+    expect(labeledContainers(list, ['c3', 'c1'], ['c1', 'c2', 'c3']).map((c) => c.id))
+      .toEqual(['c1', 'c3']);
+  });
+
+  it('empty when nothing is both selected and filtered-in', () => {
+    expect(labeledContainers(list, ['c1'], ['c2', 'c3'])).toEqual([]);
+    expect(labeledContainers(list, [], ['c1', 'c2', 'c3'])).toEqual([]);
   });
 });

@@ -17,24 +17,27 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import type { ContainerItem } from '../../lib/api';
 import {
-  applyBulkTag, containerDisplayName, filterContainers, selectAllFiltered, toggleSelection,
+  applyBulkTag, containerDisplayName, filterContainers, selectAllFiltered, TAG_CHOICES, toggleSelection,
 } from '../../lib/containerLabels';
 import { TAG_TYPES, type TagKey } from '../../labels/containerLabelSheet';
 import ContainerTagPicker from './ContainerTagPicker';
 import '../../styles/directory.css';
 
-const TAG_CHOICES: TagKey[] = ['priority', 'vendor', 'accessories', 'ewaste', 'warehouse'];
-
 const GRID = { gridTemplateColumns: '32px 2fr 1fr 0.7fr 1.1fr 1.3fr' };
 
 export default function ContainerPickList({
-  containers, selected, tags, onSelectedChange, onTagsChange, disabled = false,
+  containers, selected, tags, onSelectedChange, onTagsChange, onFilteredChange, disabled = false,
 }: {
   containers: ContainerItem[];
   selected: string[];
   tags: Record<string, TagKey>;
   onSelectedChange: (next: string[]) => void;
   onTagsChange: (next: Record<string, TagKey>) => void;
+  /** Fired whenever the filtered (currently searched-to) id list changes,
+   *  so a parent can derive V2's own "selected ∩ filtered, display order"
+   *  labeled set (`lib/containerLabels.ts`'s `labeledContainers`) — the
+   *  search term itself stays private state here. */
+  onFilteredChange?: (filteredIds: string[]) => void;
   disabled?: boolean;
 }) {
   const [term, setTerm] = useState('');
@@ -51,8 +54,13 @@ export default function ContainerPickList({
     if (headerRef.current) headerRef.current.indeterminate = someFilteredSelected;
   }, [someFilteredSelected]);
 
+  useEffect(() => {
+    onFilteredChange?.(filteredIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredIds]);
+
   const toggleOne = (id: string) => onSelectedChange(toggleSelection(selected, id));
-  const toggleAllFiltered = () => onSelectedChange(selectAllFiltered(selected, filteredIds, !allFilteredSelected));
+  const toggleAllFiltered = () => onSelectedChange(selectAllFiltered(filteredIds, !allFilteredSelected));
   const setTag = (id: string, tag: TagKey | null) =>
     onTagsChange(applyBulkTag(tags, [id], tag));
   const bulkTag = (tag: TagKey | null) => onTagsChange(applyBulkTag(tags, selected, tag));

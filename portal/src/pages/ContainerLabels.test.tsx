@@ -157,6 +157,32 @@ it('Download PDF passes tag images only for tags actually in use', async () => {
   expect(input.tagImages).toEqual({ priority: 'data:image/png;base64,AAA' });
 });
 
+it('Download PDF excludes a selected container currently hidden by the search box (V2 parity)', async () => {
+  const user = userEvent.setup();
+  await pickInitiativeAndContainers(user);                          // selects c1 ('Rack Cart 1')
+  await user.click(screen.getByText('Server Bin'));                 // also select c2
+  await user.type(screen.getByPlaceholderText('Search containers…'), 'rack'); // hides c2
+
+  expect(screen.getByText('2 selected · 1 hidden by search — 1 sheet.')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: /Download PDF/ }));
+  await waitFor(() => expect(sheet.save).toHaveBeenCalled());
+  const [input] = sheet.buildContainerLabelPdf.mock.calls.at(-1)!;
+  expect(input.containers).toEqual([{ id: 'c1', name: 'Rack Cart 1', tag: null }]);
+});
+
+it('Generate as report excludes a selected container currently hidden by the search box (V2 parity)', async () => {
+  const user = userEvent.setup();
+  await pickInitiativeAndContainers(user);                          // selects c1
+  await user.click(screen.getByText('Server Bin'));                 // also select c2
+  await user.type(screen.getByPlaceholderText('Search containers…'), 'rack'); // hides c2
+
+  await user.click(screen.getByRole('button', { name: 'Generate as report' }));
+  await waitFor(() => expect(api.createReportRun).toHaveBeenCalledWith({
+    definition_id: 'd9', initiative_id: 'i2',
+    options: { container_ids: ['c1'], tags: {} }, notify: false,
+  }));
+});
+
 it('Generate as report posts {container_ids, tags} against the container_labels definition', async () => {
   const user = userEvent.setup();
   await pickInitiativeAndContainers(user);

@@ -19,7 +19,7 @@ import {
   ApiError, createReportRun, getReportRun, getReportRunDownloadUrl, listContainers, listInitiatives,
   listReportDefinitions, type ContainerItem, type InitiativeItem, type ReportDefinition, type ReportRun,
 } from '../lib/api';
-import { buildRunOptions, tagsInUse, toPdfInput } from '../lib/containerLabels';
+import { buildRunOptions, labeledContainers, tagsInUse, toPdfInput } from '../lib/containerLabels';
 import { visibleInitiativesForGenerate } from '../lib/generateLabels';
 import { openPresigned } from '../lib/reports';
 import ComboBox from '../components/ComboBox';
@@ -60,6 +60,13 @@ export default function ContainerLabels() {
 
   const [selected, setSelected] = useState<string[]>([]);
   const [tags, setTags] = useState<Record<string, TagKey>>({});
+  // The currently search-filtered id list, reported by ContainerPickList —
+  // used (per V2's own `containersToLabel = filteredContainers.filter(
+  // selectedSet.has)`) to narrow `selected` down to what's actually
+  // labeled: a container selected before the search box hid it stays
+  // selected in the UI but is excluded from the PDF/report, exactly like
+  // V2, until the search is cleared or changed to include it again.
+  const [filteredIds, setFilteredIds] = useState<string[]>([]);
 
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfError, setPdfError] = useState('');
@@ -85,6 +92,7 @@ export default function ContainerLabels() {
     setContainersError('');
     setSelected([]);
     setTags({});
+    setFilteredIds([]);
     setRun(null);
     setRunError('');
     setPdfError('');
@@ -116,31 +124,29 @@ export default function ContainerLabels() {
   const pickedInitiative = initiatives?.find((i) => i.id === initiativeId) ?? null;
   const definition = definitions?.find((d) => d.report_type === 'container_labels') ?? null;
 
-  const selectedContainers = useMemo(
-    () => (containers ?? []).filter((c) => selected.includes(c.id)),
-    [containers, selected],
+  // V2 parity: only selected ids that are ALSO in the current search
+  // filter get labeled — see `labeledContainers`'s own header comment.
+  const toLabel = useMemo(
+    () => labeledContainers(containers ?? [], selected, filteredIds),
+    [containers, selected, filteredIds],
   );
-  const inUseTags = tagsInUse(selected, tags);
-  const canGenerate = !!pickedInitiative && selected.length > 0;
+  const toLabelIds = useMemo(() => toLabel.map((c) => c.id), [toLabel]);
+  const hiddenBySearch = selected.length - toLabel.length;
+  const inUseTags = tagsInUse(toLabelIds, tags);
+  const canGenerate = !!pickedInitiative && toLabel.length > 0;
   const runActive = !!run && (run.status === 'queued' || run.status === 'running');
 
   const downloadPdf = async () => {
-    if (!pickedInitiative || selectedContainers.length === 0) return;
+    if (!pickedInitiative || toLabel.length === 0) return;
     setPdfBusy(true);
     setPdfError('');
     setPdfStatus('Generating PDF…');
     try {
       const tagImages = await loadTagImages(inUseTags);
-      const input = { ...toPdfInput(pickedInitiative, selectedContainers, tags), tagImages };
-      // `JsPdfLike` (containerLabelSheet.ts) only declares the drawing
-      // surface `buildContainerLabelPdf` itself calls — not `.save`, which
-      // only the caller needs — so the real jsPDF instance it returns is
-      // narrowed back in here rather than widening that shared interface.
-      const doc = buildContainerLabelPdf(input, browserContainerLabelAdapters) as unknown as {
-        save(filename: string): void;
-      };
+      const input = { ...toPdfInput(pickedInitiative, toLabel, tags), tagImages };
+      const doc = buildContainerLabelPdf(input, browserContainerLabelAdapters);
       doc.save(containerLabelsFilename(pickedInitiative.name, pickedInitiative.id));
-      setPdfStatus(`Generated ${selectedContainers.length} container label sheet${selectedContainers.length === 1 ? '' : 's'}.`);
+      setPdfStatus(`Generated ${toLabel.length} container label sheet${toLabel.length === 1 ? '' : 's'}.`);
     } catch (err) {
       setPdfStatus('');
       setPdfError(err instanceof Error ? err.message : 'Failed to generate labels.');
@@ -150,13 +156,13 @@ export default function ContainerLabels() {
   };
 
   const generateReport = async () => {
-    if (!pickedInitiative || !definition || selectedContainers.length === 0) return;
+    if (!pickedInitiative || !definition || toLabel.length === 0) return;
     setRunError('');
     setRun(null);
     try {
       const created = await createReportRun({
         definition_id: definition.id, initiative_id: pickedInitiative.id,
-        options: buildRunOptions(selected, tags), notify,
+        options: buildRunOptions(toLabelIds, tags), notify,
       });
       setRun(created);
     } catch (err) {
@@ -230,7 +236,8 @@ export default function ContainerLabels() {
           )}
           {initiativeId && !containersError && containers !== null && containers.length > 0 && (
             <ContainerPickList containers={containers} selected={selected} tags={tags}
-                                onSelectedChange={setSelected} onTagsChange={setTags} />
+                                onSelectedChange={setSelected} onTagsChange={setTags}
+                                onFilteredChange={setFilteredIds} />
           )}
         </StepCard>
 
@@ -240,13 +247,25 @@ export default function ContainerLabels() {
             <p className="page-hint">
               {selected.length === 0
                 ? 'Select containers to generate label sheets.'
-                : `${selected.length} container${selected.length === 1 ? '' : 's'} selected — ${selected.length} sheet${selected.length === 1 ? '' : 's'}.`}
+                : hiddenBySearch === 0
+                  ? `${selected.length} container${selected.length === 1 ? '' : 's'} selected — ${toLabel.length} sheet${toLabel.length === 1 ? '' : 's'}.`
+                  : `${selected.length} selected · ${hiddenBySearch} hidden by search — ${toLabel.length} sheet${toLabel.length === 1 ? '' : 's'}.`}
             </p>
             {inUseTags.length > 0 && (
               <div className="cl-generate-summary">
                 {inUseTags.map((key) => <span key={key} className="chip tag">{TAG_TYPES[key].label}</span>)}
               </div>
             )}
+
+            <div className="mini-list report-sections">
+              <label className="mini-row report-section-row">
+                <Switch checked={notify} onChange={setNotify} />
+                <span className="report-section-text">
+                  <span className="cell-top">Notify me when finished</span>
+                  <span className="cell-sub">Only applies to Generate as report.</span>
+                </span>
+              </label>
+            </div>
 
             <div className="cl-generate-actions">
               <button type="button" className="btn-solid" disabled={!canGenerate || pdfBusy}
@@ -277,16 +296,6 @@ export default function ContainerLabels() {
               </div>
             )}
             {runError && <div className="pf-error">{runError}</div>}
-
-            <div className="mini-list report-sections" style={{ marginTop: 8 }}>
-              <label className="mini-row report-section-row">
-                <Switch checked={notify} onChange={setNotify} />
-                <span className="report-section-text">
-                  <span className="cell-top">Notify me when finished</span>
-                  <span className="cell-sub">Only applies to Generate as report.</span>
-                </span>
-              </label>
-            </div>
           </div>
         </StepCard>
       </div>
