@@ -59,7 +59,7 @@ async def test_preview_resolves_label_tag_by_key_or_label(db, seeded_user):
     results = await bulk.preview_rows(db, _rows(
         {"name": "By Key", "label_tag": "priority"},
         {"name": "By Label", "label_tag": "E-Waste"},
-        {"name": "By Label Case", "label_tag": "vendor"},
+        {"name": "By Label Case", "label_tag": "VeNdOr"},   # case-insensitive by key
         {"name": "Bad Tag", "label_tag": "not-a-tag"},
     ))
     assert [r["action"] for r in results] == [
