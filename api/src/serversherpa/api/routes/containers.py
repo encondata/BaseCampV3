@@ -15,7 +15,8 @@ from serversherpa.api.schemas import (
     ContainerUpdateIn,
 )
 from serversherpa.db.models import (
-    Asset, AssetModel, Container, ContainerAsset, Person, Site, StatusValue,
+    Asset, AssetModel, Container, ContainerAsset, Initiative, Person, Site,
+    StatusValue,
 )
 from serversherpa.logistics import bulk_import as bulk
 from serversherpa.services.audit import audit, diff, snapshot
@@ -24,7 +25,7 @@ router = APIRouter(prefix="/containers", tags=["containers"])
 
 CONTAINER_FIELDS = [
     "name", "rfid_tag", "container_type", "status", "site_id",
-    "location_detail",
+    "initiative_id", "location_detail",
 ]
 NON_NULLABLE_FIELDS = ("name", "location_detail", "status")
 
@@ -56,17 +57,21 @@ async def _context(db: DbSession, containers: list[Container]) -> tuple:
     sites = dict((await db.execute(
         select(Site.id, Site.name).where(Site.id.in_(site_ids))
     )).all()) if site_ids else {}
+    initiative_ids = {c.initiative_id for c in containers if c.initiative_id}
+    initiatives = dict((await db.execute(
+        select(Initiative.id, Initiative.name).where(Initiative.id.in_(initiative_ids))
+    )).all()) if initiative_ids else {}
     ids = [c.id for c in containers]
     counts = dict((await db.execute(
         select(ContainerAsset.container_id, func.count())
         .where(ContainerAsset.container_id.in_(ids))
         .group_by(ContainerAsset.container_id)
     )).all()) if ids else {}
-    return statuses, types, sites, counts
+    return statuses, types, sites, initiatives, counts
 
 
 def _item(c: Container, statuses: dict, types: dict, sites: dict,
-          counts: dict) -> dict:
+          initiatives: dict, counts: dict) -> dict:
     s_label, s_color = statuses.get(c.status, (c.status, "#51606f"))
     t_label, t_color = (types.get(c.container_type, (c.container_type, "#51606f"))
                         if c.container_type is not None else (None, None))
@@ -76,6 +81,8 @@ def _item(c: Container, statuses: dict, types: dict, sites: dict,
         "type_label": t_label, "type_color": t_color,
         "status": c.status, "status_label": s_label, "status_color": s_color,
         "site_id": c.site_id, "site_name": sites.get(c.site_id),
+        "initiative_id": c.initiative_id,
+        "initiative_name": initiatives.get(c.initiative_id),
         "location_detail": c.location_detail,
         "asset_count": counts.get(c.id, 0),
         "last_audit_at": c.last_audit_at,
@@ -85,19 +92,22 @@ def _item(c: Container, statuses: dict, types: dict, sites: dict,
 
 
 async def _detail(db: DbSession, container: Container) -> ContainerItem:
-    statuses, types, sites, counts = await _context(db, [container])
-    return ContainerItem(**_item(container, statuses, types, sites, counts))
+    statuses, types, sites, initiatives, counts = await _context(db, [container])
+    return ContainerItem(**_item(container, statuses, types, sites, initiatives, counts))
 
 
 @router.get("", response_model=list[ContainerItem])
 async def list_containers(
     db: DbSession,
+    initiative_id: uuid.UUID | None = None,
     actor: AuthContext = require_permission("containers", "view"),
 ) -> list[ContainerItem]:
-    containers = list(await db.scalars(
-        select(Container).order_by(Container.created_at.desc())))
-    statuses, types, sites, counts = await _context(db, containers)
-    return [ContainerItem(**_item(c, statuses, types, sites, counts))
+    query = select(Container).order_by(Container.created_at.desc())
+    if initiative_id is not None:
+        query = query.where(Container.initiative_id == initiative_id)
+    containers = list(await db.scalars(query))
+    statuses, types, sites, initiatives, counts = await _context(db, containers)
+    return [ContainerItem(**_item(c, statuses, types, sites, initiatives, counts))
             for c in containers]
 
 
@@ -162,6 +172,10 @@ async def _check_refs(db: DbSession, data: dict) -> None:
     if data.get("site_id") is not None and \
             await db.get(Site, data["site_id"]) is None:
         raise _err(422, "site_not_found")
+    if data.get("initiative_id") is not None:
+        initiative = await db.get(Initiative, data["initiative_id"])
+        if initiative is None or initiative.archived_at is not None:
+            raise _err(404, "initiative_not_found")
     for field, record_type, code in (
         ("status", "container", "unknown_status"),
         ("container_type", "container_type", "unknown_container_type"),

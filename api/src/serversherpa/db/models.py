@@ -611,6 +611,10 @@ class Container(Base):
     type_record_type: Mapped[str] = mapped_column(
         server_default=text("'container_type'"))  # GENERATED; never written
     site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
+    # Migration 0057 — Container Labels: V2's `containers.move_id`, ported
+    # as an initiative link (V3 had no such link before).
+    initiative_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="SET NULL"))
     location_detail: Mapped[str] = mapped_column(server_default="")
     last_audit_at: Mapped[datetime | None]
     audit_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))

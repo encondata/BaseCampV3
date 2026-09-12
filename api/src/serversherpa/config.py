@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     # Node script that renders rack elevations (portal's RackElevation, SSR).
     # Empty = <repo>/portal/dist-node/render-rack.js.
     report_rack_renderer: str = ""
+    # Node script that draws Container Labels PDFs (portal's jsPDF/bwip-js
+    # port). Empty = <repo>/portal/dist-node/render-container-labels.js.
+    report_container_label_renderer: str = ""
     report_node_bin: str = "node"
 
     @property
