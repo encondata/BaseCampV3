@@ -15,7 +15,7 @@ const STATUS_CHIP: Record<LabelRun['status'], string> = {
   queued: 'c-slate', running: 'c-violet', completed: 'c-green', failed: 'c-red', canceled: 'c-slate',
 };
 
-const GRID = { gridTemplateColumns: '1.3fr 1.6fr 1fr 1.1fr 1.4fr 100px' };
+const GRID = { gridTemplateColumns: '1.3fr 1.6fr 1fr 1fr 1.1fr 1.4fr 100px' };
 
 export default function LabelRunsList({ runs, highlightRunId, typeLabel, onViewErrors }: {
   runs: LabelRun[] | null;
@@ -29,6 +29,7 @@ export default function LabelRunsList({ runs, highlightRunId, typeLabel, onViewE
         <span className="col-head">Started</span>
         <span className="col-head">Initiative</span>
         <span className="col-head">Types</span>
+        <span className="col-head">Requested by</span>
         <span className="col-head">Status</span>
         <span className="col-head">Generated / Skipped / Errors</span>
         <span />
@@ -47,6 +48,7 @@ export default function LabelRunsList({ runs, highlightRunId, typeLabel, onViewE
                 {r.label_types.map((t) => <span key={t} className="chip tag">{typeLabel(t)}</span>)}
               </span>
             </div>
+            <div className="cell"><span className="cell-top">{r.requested_by_name}</span></div>
             <div className="cell">
               <span className={`chip ${STATUS_CHIP[r.status]}`}>{STATUS_LABEL[r.status]}</span>
             </div>

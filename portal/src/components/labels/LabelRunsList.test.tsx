@@ -29,6 +29,7 @@ it('shows loading, empty, and populated states', () => {
   expect(screen.getByText('Top Label')).not.toBeNull();
   expect(screen.getByText('Completed')).not.toBeNull();
   expect(screen.getByText('98 / 1 / 1')).not.toBeNull();
+  expect(screen.getByText('Alice')).not.toBeNull();
 });
 
 it('highlights the deep-linked run', () => {

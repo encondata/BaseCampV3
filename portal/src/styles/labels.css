@@ -90,9 +90,9 @@
 .lbl-rules-line { display: flex; align-items: center; gap: 8px; }
 .lbl-rules-pos { width: 64px; text-align: center; }
 .lbl-rules-arrow { color: var(--text-mute); }
-.lbl-rules-bad { border-color: var(--c-red, #c03540) !important; }
+.lbl-rules-line input.lbl-rules-bad { border-color: var(--c-red, #c03540); }
 
-/* GenerateLabels — Task 19 */
+/* GenerateLabels */
 .glabels-progress { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
 .glabels-progress-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .glabels-progress-actions { display: flex; justify-content: flex-end; }

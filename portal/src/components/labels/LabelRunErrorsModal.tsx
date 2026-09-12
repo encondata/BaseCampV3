@@ -4,6 +4,8 @@
  * type chip row (busiest first), and the first-50 sample rows via the
  * house `DataTable` (no bare table element).
  */
+import { useEffect } from 'react';
+
 import DataTable, { type DataTableRow } from '../DataTable';
 import { hasHiddenErrors, sortedErrorSummary } from '../../lib/generateLabels';
 import type { LabelRun } from '../../lib/api';
@@ -19,6 +21,12 @@ export default function LabelRunErrorsModal({ run, typeLabel, onClose }: {
   typeLabel: (key: string) => string;
   onClose: () => void;
 }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   const summary = sortedErrorSummary(run.error_summary);
   const rows: DataTableRow[] = run.error_details.map((d, i) => ({
     key: `${d.item}-${d.label_type}-${i}`,

@@ -1,9 +1,9 @@
 /**
  * Pure helpers for the Generate Labels page and the template editor's
- * Generation rules panel — kept dependency-free (no api.ts imports) so
- * they're trivially unit-testable and reusable from both places.
+ * Generation rules panel — no React/DOM dependencies, so they're
+ * trivially unit-testable and reusable from both places.
  */
-import type { InitiativeItem, LabelRun } from './api';
+import type { InitiativeItem, LabelGenerationRules, LabelRun } from './api';
 
 /** Seeded `status_values` keys (record_type=initiative, migration 0016)
  *  that mean "nothing left to generate labels for" — mirrors the
@@ -61,12 +61,11 @@ export function hasHiddenErrors(run: Pick<LabelRun, 'errors' | 'error_details'>)
 
 // ── Generation rules (template editor panel) ─────────────────────────
 
-/** A template's `generation_rules` JSON, as PATCHed/returned by the API. */
-export interface GenerationRulesJson {
-  destination?: Record<string, string>;
-  source?: Record<string, string>;
-  length_limits?: Record<string, number>;
-}
+/** A template's `generation_rules` JSON, as PATCHed/returned by the API —
+ *  same shape as `LabelTemplate.generation_rules` (api.ts); aliased here
+ *  under the name this file's own helpers were written against, rather
+ *  than keeping two separate interfaces for one shape. */
+export type GenerationRulesJson = LabelGenerationRules;
 
 export interface PositionRuleRow { position: string; token: string }
 export interface LimitRuleRow { token: string; limit: string }

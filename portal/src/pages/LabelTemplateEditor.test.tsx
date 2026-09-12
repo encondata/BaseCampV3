@@ -206,6 +206,41 @@ it('no convert button on new or code-kind templates', async () => {
   expect(screen.queryByRole('button', { name: /Edit as raw/ })).toBeNull();
 });
 
+it('loads generation_rules into the panel and PATCHes the (possibly edited) rules back on save', async () => {
+  api.getLabelTemplate.mockResolvedValue({
+    id: 't1', name: 'Front tag', description: '', label_type: 'front',
+    size_key: '4x2', dpi_key: '203', language_key: 'zpl', kind: 'code',
+    design: null, code: '^XA^XZ', version: 2, is_active: true,
+    site_ids: [], generation_rules: { destination: { '1': 'nap' } },
+    created_at: '', updated_at: '' });
+  api.updateLabelTemplate.mockResolvedValue({ id: 't1' });
+  renderAt('/labels/templates/t1/edit');
+  await waitFor(() =>
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Front tag'));
+  expect(screen.getByDisplayValue('nap')).not.toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateLabelTemplate).toHaveBeenCalledWith(
+    't1', expect.objectContaining({ generation_rules: { destination: { '1': 'nap' } } })));
+});
+
+it('a bad generation-rules token disables Save', async () => {
+  api.getLabelTemplate.mockResolvedValue({
+    id: 't1', name: 'Front tag', description: '', label_type: 'front',
+    size_key: '4x2', dpi_key: '203', language_key: 'zpl', kind: 'code',
+    design: null, code: '^XA^XZ', version: 2, is_active: true,
+    site_ids: [], generation_rules: {}, created_at: '', updated_at: '' });
+  renderAt('/labels/templates/t1/edit');
+  await waitFor(() =>
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Front tag'));
+  expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false);
+  await userEvent.click(screen.getAllByRole('button', { name: '+ Add position' })[0]);
+  await userEvent.type(screen.getAllByLabelText('Destination position')[0], '1');
+  await userEvent.type(screen.getAllByLabelText('Destination token')[0], 'Bad Token');
+  await waitFor(() =>
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true));
+  expect(api.updateLabelTemplate).not.toHaveBeenCalled();
+});
+
 it('new template defaults to no sites (global)', async () => {
   api.createLabelTemplate.mockResolvedValue({ id: 't-new', kind: 'code' });
   renderAt('/labels/templates/new?kind=code');

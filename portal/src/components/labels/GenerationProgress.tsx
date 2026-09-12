@@ -69,7 +69,7 @@ export default function GenerationProgress({ run, typeLabel, paused, onCancel }:
       {active && onCancel && (
         <div className="glabels-progress-actions">
           <button type="button" className="btn-ghost" disabled={run.cancel_requested} onClick={onCancel}>
-            {run.cancel_requested ? 'Cancelling…' : 'Cancel'}
+            {run.cancel_requested ? 'Canceling…' : 'Cancel'}
           </button>
         </div>
       )}

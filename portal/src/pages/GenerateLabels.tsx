@@ -40,11 +40,6 @@ import '../styles/labels.css';
 const RUNS_LIMIT = 25;
 const POLL_MS = 1750;
 
-const STATUS_TEXT: Record<string, string> = {
-  planned: 'Planned', scheduled: 'Scheduled', in_progress: 'In progress',
-  on_hold: 'On hold', completed: 'Completed', cancelled: 'Cancelled',
-};
-
 export default function GenerateLabels() {
   const { status: sys } = useSystemStatus();
   const [params, setParams] = useSearchParams();
@@ -66,6 +61,12 @@ export default function GenerateLabels() {
   const [error, setError] = useState('');
   const highlightRunId = params.get('run');
   const closedRef = useRef(false);
+  // Always-fresh ref for the poll's settle-time refresh, which is
+  // scheduled from an earlier render and must not refresh the *old*
+  // initiative's scope if the operator switched away while it was
+  // in flight — read from here instead of closing over `initiativeId`.
+  const initiativeIdRef = useRef(initiativeId);
+  initiativeIdRef.current = initiativeId;
 
   useEffect(() => {
     closedRef.current = false;
@@ -97,10 +98,17 @@ export default function GenerateLabels() {
       .map((i) => ({ value: i.id, label: i.name, sub: i.client_name })),
     [initiatives],
   );
+  // For the house status chip (color + label) — the preview endpoint's own
+  // initiative shape carries just the raw status key, not its vocab color.
+  const pickedInitiative = initiatives?.find((i) => i.id === initiativeId) ?? null;
 
+  // Reads the scope through the ref (see above) rather than closing over
+  // whatever `initiativeId` was in scope when this particular `loadRuns`
+  // closure was created — the poll's settle-time call is created well
+  // before it actually runs.
   const loadRuns = async () => {
     try {
-      setRuns(await listLabelRuns({ initiative_id: initiativeId || undefined, limit: RUNS_LIMIT }));
+      setRuns(await listLabelRuns({ initiative_id: initiativeIdRef.current || undefined, limit: RUNS_LIMIT }));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't load recent runs.");
     }
@@ -110,6 +118,7 @@ export default function GenerateLabels() {
   useEffect(() => {
     if (!initiativeId) { setPreview(null); setPreviewLoading(false); setPreviewError(''); return; }
     let cancelled = false;
+    setPreview(null);   // never show the previous initiative's template resolution while the new one loads
     setPreviewLoading(true);
     setPreviewError('');
     getLabelGeneratePreview(initiativeId)
@@ -125,6 +134,7 @@ export default function GenerateLabels() {
       })
       .catch((err) => {
         if (cancelled) return;
+        setPreview(null);   // a failed load must not leave the previous initiative's cards on screen either
         setPreviewError(err instanceof ApiError ? err.message : "Couldn't load the preview.");
         setPreviewLoading(false);
       });
@@ -168,7 +178,9 @@ export default function GenerateLabels() {
       void loadRuns();
     } catch (err) {
       if (err instanceof ApiError && err.code === 'run_active') {
-        setError('A run is already active for this initiative.');
+        // The "active run" hint beside Generate already says this once
+        // the fetched run lands in `activeRun` — no need for a second,
+        // redundant banner above the fold.
         const runId = (err.detail as { run_id?: string } | null | undefined)?.run_id;
         if (runId) void getLabelRun(runId).then(setActiveRun).catch(() => undefined);
       } else {
@@ -231,14 +243,15 @@ export default function GenerateLabels() {
               <InitiativeSummary
                 initiative={{
                   name: preview.initiative.name, clientName: preview.initiative.client_name,
+                  statusLabel: pickedInitiative?.status_label ?? null,
+                  statusColor: pickedInitiative?.status_color ?? null,
                   scheduledStart: preview.initiative.scheduled_start,
                   originName: preview.initiative.source_name, destinationName: preview.initiative.destination_name,
                 }}
                 emptyText="Pick an initiative to see its details here."
               />
               <p className="cell-sub">
-                {STATUS_TEXT[preview.initiative.status] ?? preview.initiative.status}
-                {' · '}{preview.initiative.asset_count} asset{preview.initiative.asset_count === 1 ? '' : 's'}
+                {preview.initiative.asset_count} asset{preview.initiative.asset_count === 1 ? '' : 's'}
               </p>
               {preview.types.map((t) => (
                 <div className="glabels-preview-type" key={t.key}>

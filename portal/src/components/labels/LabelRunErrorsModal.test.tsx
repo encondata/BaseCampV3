@@ -58,3 +58,11 @@ it('the footer Close button calls onClose', async () => {
   await user.click(screen.getByText('Close', { selector: 'button.btn-ghost' }));
   expect(onClose).toHaveBeenCalledTimes(1);
 });
+
+it('Escape calls onClose', async () => {
+  const user = userEvent.setup();
+  const onClose = vi.fn();
+  render(<LabelRunErrorsModal run={run({})} typeLabel={typeLabel} onClose={onClose} />);
+  await user.keyboard('{Escape}');
+  expect(onClose).toHaveBeenCalledTimes(1);
+});

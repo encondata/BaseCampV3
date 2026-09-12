@@ -10,9 +10,16 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type {
-  InitiativeItem, LabelGeneratePreview, LabelRun, LabelVocab,
+import {
+  ApiError,
+  type InitiativeItem, type LabelGeneratePreview, type LabelRun, type LabelVocab,
 } from '../lib/api';
+
+/** Real-timer wait — the page polls with a real `setInterval` (see
+ *  GenerateReportModal's own test convention), so proving a poll has
+ *  actually STOPPED needs to wait past its period, not just await a
+ *  promise. */
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 vi.mock('../lib/systemStatusContext', () => ({
   useSystemStatus: () => ({
@@ -80,7 +87,7 @@ beforeEach(() => {
   // about getLabelRun) never calls `.then` on an unmocked `undefined`.
   api.getLabelRun.mockResolvedValue(run({}));
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.resetAllMocks(); });
 
 function renderAt(path = '/labels/generate') {
   return render(
@@ -162,7 +169,63 @@ it('Generate posts the expected body and the progress panel polls until complete
   // mount + the pick-triggered reload + the start's own immediate refresh
   // (so the new run shows right away) + the post-completion refresh
   await waitFor(() => expect(api.listLabelRuns).toHaveBeenCalledTimes(4));
-}, 10000);
+
+  // Load-bearing: exactly the two polls that actually happened (running,
+  // then completed) — and no more once it settles. Waiting past another
+  // full POLL_MS proves the interval was actually torn down, not just
+  // that the assertion happened to run before a third tick could fire.
+  expect(api.getLabelRun).toHaveBeenCalledTimes(2);
+  await wait(2200);
+  expect(api.getLabelRun).toHaveBeenCalledTimes(2);
+}, 12000);
+
+it('polling stops once the run fails — no further getLabelRun calls', async () => {
+  const user = userEvent.setup();
+  api.startLabelRun.mockResolvedValue(run({ status: 'queued' }));
+  api.getLabelRun
+    .mockResolvedValueOnce(run({ status: 'running', processed: 5, total: 10, current_label_type: 'top' }))
+    .mockResolvedValueOnce(run({ status: 'failed', error: 'Boom' }));
+  renderAt();
+  await pickNap11(user);
+  await user.click(screen.getByRole('checkbox', { name: /Top/ }));
+  await user.click(screen.getByRole('button', { name: 'Generate labels' }));
+  await screen.findByText(/Processing Top/, {}, { timeout: 6000 });
+  await screen.findByText('Failed', {}, { timeout: 6000 });
+  expect(api.getLabelRun).toHaveBeenCalledTimes(2);
+  await wait(2200);
+  expect(api.getLabelRun).toHaveBeenCalledTimes(2);
+}, 12000);
+
+it('polling stops once the run is canceled — no further getLabelRun calls', async () => {
+  const user = userEvent.setup();
+  api.startLabelRun.mockResolvedValue(run({ status: 'queued' }));
+  api.getLabelRun
+    .mockResolvedValueOnce(run({ status: 'running', processed: 5, total: 10, current_label_type: 'top' }))
+    .mockResolvedValueOnce(run({ status: 'canceled', cancel_requested: true }));
+  renderAt();
+  await pickNap11(user);
+  await user.click(screen.getByRole('checkbox', { name: /Top/ }));
+  await user.click(screen.getByRole('button', { name: 'Generate labels' }));
+  await screen.findByText(/Processing Top/, {}, { timeout: 6000 });
+  await screen.findByText('Canceled', {}, { timeout: 6000 });
+  expect(api.getLabelRun).toHaveBeenCalledTimes(2);
+  await wait(2200);
+  expect(api.getLabelRun).toHaveBeenCalledTimes(2);
+}, 12000);
+
+it('a 409 run_active on Generate fetches and shows the already-active run', async () => {
+  const user = userEvent.setup();
+  api.startLabelRun.mockRejectedValue(new ApiError(409, 'run_active', { code: 'run_active', run_id: 'r-x' }));
+  api.getLabelRun.mockResolvedValue(run({ id: 'r-x', status: 'running', processed: 3, total: 9 }));
+  renderAt();
+  await pickNap11(user);
+  await user.click(screen.getByRole('checkbox', { name: /Top/ }));
+  await user.click(screen.getByRole('button', { name: 'Generate labels' }));
+  await waitFor(() => expect(api.getLabelRun).toHaveBeenCalledWith('r-x'));
+  await screen.findByText('A run is already active for this initiative.');
+  expect((screen.getByRole('button', { name: 'Generate labels' }) as HTMLButtonElement).disabled).toBe(true);
+  await screen.findByText('Generating');
+});
 
 it('Cancel posts a cancel for the active run', async () => {
   const user = userEvent.setup();

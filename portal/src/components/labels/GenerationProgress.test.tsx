@@ -54,5 +54,5 @@ it('Cancel button calls onCancel while active, and disables once cancel_requeste
   expect(onCancel).toHaveBeenCalled();
   cleanup();
   render(<GenerationProgress run={run({ cancel_requested: true })} typeLabel={typeLabel} onCancel={onCancel} />);
-  expect((screen.getByRole('button', { name: 'Cancelling…' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Canceling…' }) as HTMLButtonElement).disabled).toBe(true);
 });
