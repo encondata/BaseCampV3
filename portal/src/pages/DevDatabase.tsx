@@ -16,12 +16,17 @@
  *    server-side with the caller's own account password
  *    (POST /devtools/backups — see lib/api.ts for the error codes).
  *
+ *  - Testing: god-mode-gated "DB testing mode" — snapshot the database,
+ *    let changes accumulate, then keep or revert them. Its own component,
+ *    components/dev/DbTestingTab.tsx, since it's sizable on its own.
+ *
  * Tab bar follows the .sysconf-tabbar pattern from pages/SystemConfig.tsx.
  */
 
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
+import DbTestingTab from '../components/dev/DbTestingTab';
 import {
   ApiError,
   createDbBackup,
@@ -511,6 +516,9 @@ function BackupsTab() {
                   {!b.encrypted && (
                     <span className="chip tag" style={{ marginLeft: 8 }}>plain</span>
                   )}
+                  {b.purpose === 'testing_snapshot' && (
+                    <span className="chip tag" style={{ marginLeft: 8 }}>Testing snapshot</span>
+                  )}
                 </span>
               </div>
               <div className="cell">
@@ -555,6 +563,7 @@ function BackupsTab() {
 const TABS = [
   { key: 'reconcile', label: 'Reconcile' },
   { key: 'backups', label: 'Backups' },
+  { key: 'testing', label: 'Testing' },
 ] as const;
 
 export default function DevDatabase() {
@@ -580,7 +589,9 @@ export default function DevDatabase() {
         ))}
       </div>
 
-      {tab === 'reconcile' ? <ReconcileTab /> : <BackupsTab />}
+      {tab === 'reconcile' && <ReconcileTab />}
+      {tab === 'backups' && <BackupsTab />}
+      {tab === 'testing' && <DbTestingTab />}
     </div>
   );
 }

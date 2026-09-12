@@ -2597,6 +2597,10 @@ export interface DbBackupItem {
   created_at: string;
   created_by: string | null;
   created_by_name: string | null;
+  // 'testing_snapshot' rows are made by the db-testing worker right before
+  // a testing session goes active — the Backups tab tags them so they read
+  // as machine-made safety nets, not a manual backup someone requested.
+  purpose: 'manual' | 'testing_snapshot';
   // only populated by createDbBackup (a fresh presigned link) — list rows
   // leave this undefined, so downloading an older backup goes through
   // getDbBackupDownload for a freshly-signed URL instead.
@@ -2636,6 +2640,74 @@ export async function getDbBackupDownload(backupId: string): Promise<{ url: stri
 export async function deleteDbBackup(backupId: string): Promise<void> {
   const resp = await apiFetch(`/devtools/backups/${backupId}`, { method: 'DELETE' });
   if (!resp.ok && resp.status !== 404) throw await errorFrom(resp);
+}
+
+/* ── db testing mode ──────────────────────────────────────────────── */
+
+export type DbTestingSessionStatus = 'snapshotting' | 'active' | 'reverting' | 'ended' | 'failed';
+export type DbTestingOutcome = 'reverted' | 'kept' | null;
+
+export interface DbTestingSession {
+  id: string;
+  status: DbTestingSessionStatus;
+  started_by_name: string | null;
+  started_at: string;
+  ended_at: string | null;
+  ended_with: DbTestingOutcome;
+  snapshot_filename: string | null;
+  error: string | null;
+}
+
+export interface DbTestingTableDelta {
+  table: string;
+  before: number;
+  after: number;
+  delta: number;
+}
+
+export interface DbTestingChanges {
+  audit_rows: number;
+  tables: DbTestingTableDelta[];
+  since: string;
+}
+
+export interface DbTestingStatusOut {
+  // the current non-ended session, or null when idle.
+  session: DbTestingSession | null;
+  changes: DbTestingChanges | null;
+  recent: DbTestingSession[];
+  worker_online: boolean;
+}
+
+export async function getDbTestingStatus(): Promise<DbTestingStatusOut> {
+  const resp = await apiFetch('/devtools/db-testing/status');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Errors: 403 `invalid_testing_password`, 429 `too_many_attempts`,
+ *  409 `session_active`, 503 `worker_offline`. */
+export async function startDbTesting(password: string): Promise<DbTestingSession> {
+  const resp = await apiFetch('/devtools/db-testing/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** revert=true tips the session into `reverting` (worker takes over);
+ *  revert=false ends it immediately as `ended/kept`. 409 `session_not_active`
+ *  when there is no active session to end. */
+export async function endDbTesting(password: string, revert: boolean): Promise<DbTestingSession> {
+  const resp = await apiFetch('/devtools/db-testing/end', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password, revert }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
 }
 
 // ── system: process registry + logs ─────────────────────────────────
