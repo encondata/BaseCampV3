@@ -5,7 +5,8 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 
 from serversherpa.db.models import (
-    AuditLog, Client, Container, Initiative, Person, PersonRole, Site,
+    AuditLog, Client, Container, Initiative, PermissionOverride, Person,
+    PersonRole, Site,
 )
 
 from .test_assets_api import login, make_login
@@ -30,6 +31,62 @@ async def test_names_no_pad_no_prefix_suffix(client, db, seeded_user):
     assert resp.status_code == 201, resp.text
     names = [c["name"] for c in resp.json()["created"]]
     assert names == ["1", "2", "3"]
+
+
+async def test_naming_bounds(client, db, seeded_user):
+    hdrs = await login(client)
+
+    resp = await client.post("/containers/bulk", headers=hdrs, json={
+        "count": 2, "container_type": "pallet",
+        "naming": {"prefix": "P" * 41},
+    })
+    assert resp.status_code == 422
+
+    resp = await client.post("/containers/bulk", headers=hdrs, json={
+        "count": 2, "container_type": "pallet",
+        "naming": {"suffix": "S" * 41},
+    })
+    assert resp.status_code == 422
+
+    resp = await client.post("/containers/bulk", headers=hdrs, json={
+        "count": 2, "container_type": "pallet",
+        "naming": {"pad": 7},
+    })
+    assert resp.status_code == 422
+
+    resp = await client.post("/containers/bulk", headers=hdrs, json={
+        "count": 2, "container_type": "pallet",
+        "naming": {"start": -1},
+    })
+    assert resp.status_code == 422
+
+
+async def test_negative_tag_count_422(client, db, seeded_user):
+    hdrs = await login(client)
+    resp = await client.post("/containers/bulk", headers=hdrs, json={
+        "count": 2, "container_type": "pallet",
+        "tags": {"priority": -1},
+    })
+    assert resp.status_code == 422
+
+
+async def test_archived_collision_does_not_block_creation(client, db, seeded_user):
+    hdrs = await login(client)
+    db.add(Container(name="C-2", archived_at=datetime.now(UTC)))
+    await db.commit()
+
+    resp = await client.post("/containers/bulk", headers=hdrs, json={
+        "count": 3, "container_type": "pallet",
+        "naming": {"prefix": "C-", "pad": 1},
+    })
+    assert resp.status_code == 201, resp.text
+    names = [c["name"] for c in resp.json()["created"]]
+    assert names == ["C-1", "C-2", "C-3"]
+
+    rows = list(await db.scalars(select(Container).where(
+        Container.name.in_(["C-1", "C-2", "C-3"]),
+        Container.archived_at.is_(None))))
+    assert len(rows) == 3
 
 
 async def test_tag_assignment_order(client, db, seeded_user):
@@ -186,6 +243,37 @@ async def test_no_permission_403(client, db, seeded_user):
     db.add(PersonRole(person_id=nobody.id, role="client_viewer", client_id=org.id))
     await db.commit()
     hdrs = await make_login(db, client, nobody, "nobody-bulk@test.example.com")
+    resp = await client.post("/containers/bulk", headers=hdrs, json={
+        "count": 2, "container_type": "pallet",
+    })
+    assert resp.status_code == 403
+
+
+async def test_view_only_cannot_bulk_create(client, db, seeded_user):
+    """A person with containers:view but not containers:add can list
+    containers but must not be able to bulk-create them — distinguishes
+    the route's "add" gate from a weaker "view" gate.
+
+    Containers is an internal-only resource (visible_to = {"global"}), so a
+    client/partner-anchored role like client_viewer is hard-blocked from it
+    regardless of any override (see access/resolver.py — the visible_to
+    check runs before overrides are consulted). To build a genuine
+    view-but-not-add actor we instead take a global-anchored role that is
+    normally FULL on containers ("staff") and override just the "add"
+    action to False — the override mechanism can revoke a granted action,
+    not just grant one (PermissionOverride idiom per
+    test_access_resolver.py's test_override_beats_group_gate)."""
+    viewer = Person(first_name="View", last_name="Only")
+    db.add(viewer)
+    await db.flush()
+    db.add(PersonRole(person_id=viewer.id, role="staff"))
+    db.add(PermissionOverride(person_id=viewer.id, resource="containers",
+                              action="add", allow=False))
+    await db.commit()
+    hdrs = await make_login(db, client, viewer, "view-only-bulk@test.example.com")
+
+    assert (await client.get("/containers", headers=hdrs)).status_code == 200
+
     resp = await client.post("/containers/bulk", headers=hdrs, json={
         "count": 2, "container_type": "pallet",
     })

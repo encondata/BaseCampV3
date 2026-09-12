@@ -1054,10 +1054,10 @@ class ContainerUpdateIn(BaseModel):
 class ContainerBulkNamingIn(BaseModel):
     """Name = prefix + zero-padded(start + i) + suffix, i = 0..count-1."""
 
-    prefix: str = ""
+    prefix: str = Field("", max_length=40)
     start: int = Field(1, ge=0)
     pad: int = Field(0, ge=0, le=6)
-    suffix: str = ""
+    suffix: str = Field("", max_length=40)
     model_config = ConfigDict(extra="forbid")
 
 
@@ -1068,7 +1068,7 @@ class ContainerBulkCreateIn(BaseModel):
     initiative_id: uuid.UUID | None = None
     site_id: uuid.UUID | None = None
     status: str | None = None
-    tags: dict[str, int] = {}
+    tags: dict[str, Annotated[int, Field(ge=0)]] = {}
     model_config = ConfigDict(extra="forbid")
 
 

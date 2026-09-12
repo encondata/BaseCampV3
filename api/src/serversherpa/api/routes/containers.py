@@ -254,8 +254,8 @@ async def create_containers_bulk(
     actor: AuthContext = require_permission("containers", "add"),
 ) -> ContainerBulkCreateOut:
     tags = body.tags
-    for key, value in tags.items():
-        if key not in LABEL_TAG_KEYS or value < 0:
+    for key in tags:
+        if key not in LABEL_TAG_KEYS:
             raise _err(422, "bad_tag_key", allowed=list(LABEL_TAG_KEYS))
     if sum(tags.values()) > body.count:
         raise _err(422, "tags_exceed_count")
@@ -270,8 +270,6 @@ async def create_containers_bulk(
         raise _err(422, "bad_status")
 
     names = _bulk_names(body.naming, body.count)
-    if any(not name for name in names):
-        raise _err(422, "empty_name")
 
     existing = {n.lower() for n in await db.scalars(
         select(Container.name).where(
