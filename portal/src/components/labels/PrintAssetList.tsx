@@ -104,7 +104,7 @@ export default function PrintAssetList({
   const {
     visibleCols, setVisibleCols, sortKey, sortDir, setSort, toggleSort,
     filters, setFilter, clearFilters, colOrder, setColOrder,
-  } = usePersistentListState(PRINT_LIST_PAGE_KEY, { visible: DEFAULT_VISIBLE, sortKey: 'asset_id', sortDir: 1 }, ALL_KEYS);
+  } = usePersistentListState(PRINT_LIST_PAGE_KEY, { visible: DEFAULT_VISIBLE, sortKey: 'source_rack', sortDir: 1 }, ALL_KEYS);
 
   const status = (r: InitiativeAssetRow): LabelStatus | null => (statusOf ? statusOf(r) : null);
   const cellText: CellText<InitiativeAssetRow> = (r, key) => assetCellText(r, status(r), key);

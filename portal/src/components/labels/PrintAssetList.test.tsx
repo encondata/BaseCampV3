@@ -58,7 +58,7 @@ describe('PrintAssetList', () => {
     await userEvent.click(screen.getByText('core-switch'));
     expect(h.onSelectedChange).toHaveBeenLastCalledWith(['a1', 'a3']);
     await userEvent.click(screen.getByLabelText('Select all filtered assets'));
-    expect(h.onSelectedChange).toHaveBeenLastCalledWith(['a1', 'a2', 'a3']);
+    expect(h.onSelectedChange).toHaveBeenLastCalledWith(['a2', 'a1', 'a3']);
   });
 
   it('search narrows rows and select-all then covers only the matches', async () => {
