@@ -1310,6 +1310,10 @@ class DbBackupItem(BaseModel):
     filename: str
     size_bytes: int
     encrypted: bool = True
+    # 'manual' (Dev -> Database -> Backups) or 'testing_snapshot' (taken
+    # automatically at the start of a DB testing session) — the Backups
+    # tab labels the latter with a chip.
+    purpose: str = "manual"
     created_at: datetime
     created_by: uuid.UUID | None = None
     created_by_name: str | None = None
@@ -1326,6 +1330,52 @@ class DbBackupCreateIn(BaseModel):
 
     encrypt: bool = True
     password: str | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+# ── db testing mode ───────────────────────────────────────────────────
+
+
+class DbTestingSessionOut(BaseModel):
+    id: uuid.UUID
+    status: str
+    snapshot_backup_id: uuid.UUID | None = None
+    started_by: uuid.UUID | None = None
+    started_by_name: str | None = None
+    started_at: datetime
+    ended_at: datetime | None = None
+    ended_with: str | None = None
+    error: str | None = None
+
+
+class DbTestingTableChange(BaseModel):
+    table: str
+    before: int
+    after: int
+    delta: int
+
+
+class DbTestingChanges(BaseModel):
+    audit_rows: int
+    tables: list[DbTestingTableChange] = []
+    since: datetime
+
+
+class DbTestingStatusOut(BaseModel):
+    session: DbTestingSessionOut | None = None
+    changes: DbTestingChanges | None = None
+    recent: list[DbTestingSessionOut] = []
+    worker_online: bool
+
+
+class DbTestingStartIn(BaseModel):
+    password: str
+    model_config = ConfigDict(extra="forbid")
+
+
+class DbTestingEndIn(BaseModel):
+    password: str
+    revert: bool
     model_config = ConfigDict(extra="forbid")
 
 

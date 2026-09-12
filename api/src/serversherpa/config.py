@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     god_mode_words: SecretStr = SecretStr("")
     god_mode_nav_color: str = "#00c853"
 
+    # ── DB testing mode ────────────────────────────────────
+    # Password gate above god mode + the devtools permission for the
+    # Testing tab's snapshot/revert sessions. Default "admin" is meant to
+    # be changed for anything but a local dev box.
+    db_testing_password: SecretStr = SecretStr("admin")
+
     # ── CORS / cookies ─────────────────────────────────────
     allowed_origins: str = ""
     cookie_domain: str = ""

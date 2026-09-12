@@ -13,33 +13,46 @@ would be inlined into the portal bundle and readable from devtools.
 import re
 import secrets
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from sqlalchemy import CheckConstraint, String, cast, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.schema import Table
 
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
 from serversherpa.api.schemas import (
-    DbBackupCreateIn, DbBackupItem, GodModeIn, PendingDeleteCreateIn,
-    PendingDeleteFailure, PendingDeleteOut, PendingDeleteReconcileOut,
-    PendingDeleteReference,
+    DbBackupCreateIn, DbBackupItem, DbTestingChanges, DbTestingEndIn,
+    DbTestingSessionOut, DbTestingStartIn, DbTestingStatusOut,
+    DbTestingTableChange, GodModeIn, PendingDeleteCreateIn, PendingDeleteFailure,
+    PendingDeleteOut, PendingDeleteReconcileOut, PendingDeleteReference,
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    Asset, AssetModel, Base, Client, Container, DbBackup, Initiative, Partner,
-    PendingDelete, Person, ProcessedScan, Site,
+    Asset, AssetModel, AuditLog, Base, Client, Container, DbBackup,
+    DbTestingSession, Initiative, Partner, PendingDelete, Person,
+    ProcessedScan, Site, SystemConfig, SystemProcess,
 )
+from serversherpa.devtools.testing.jobs import WORKING_STATUSES
 from serversherpa.security.passwords import verify_password
 from serversherpa.services.audit import audit
 from serversherpa.services.db_backup import (
     PgDumpFailed, PgDumpUnavailable, encrypt_openssl, run_pg_dump,
 )
 from serversherpa.services.storage import delete_object, presign_get, put_object
+from serversherpa.system.config_store import read_section
 
 router = APIRouter(prefix="/devtools", tags=["devtools"])
+
+# Session statuses considered "unfinished" — mirrors the partial unique
+# index from migration 0059 (at most one such row ever exists).
+UNFINISHED_STATUSES = (*WORKING_STATUSES, "active")
+
+DB_TESTING_WORKER_NAME = "db-testing-worker"
+WORKER_STALE_SECONDS = 30
+AUTH_FAIL_WINDOW_MINUTES = 10
+AUTH_FAIL_MAX = 5
 
 # Frozen registry of every entity type god-mode is allowed to hard-delete.
 # Never built from user input — a string that doesn't appear here as a key
@@ -376,7 +389,7 @@ def _backup_out(backup: DbBackup, name: str | None,
                 download_url: str | None = None) -> DbBackupItem:
     return DbBackupItem(
         id=backup.id, filename=backup.filename, size_bytes=backup.size_bytes,
-        encrypted=backup.encrypted,
+        encrypted=backup.encrypted, purpose=backup.purpose,
         created_at=backup.created_at, created_by=backup.created_by,
         created_by_name=name, download_url=download_url)
 
@@ -432,7 +445,7 @@ async def create_db_backup(
 
     backup = DbBackup(filename=filename, storage_key=key,
                       size_bytes=len(blob), encrypted=body.encrypt,
-                      created_by=actor.person.id)
+                      purpose="manual", created_by=actor.person.id)
     db.add(backup)
     await db.flush()
 
@@ -483,3 +496,180 @@ async def delete_db_backup(
           entity_id=str(backup_id), action="backup.delete",
           changes={"filename": backup.filename, "size_bytes": backup.size_bytes})
     await db.commit()
+
+
+# ── db testing mode ───────────────────────────────────────────────────
+
+
+def _session_out(session: DbTestingSession, name: str | None) -> DbTestingSessionOut:
+    return DbTestingSessionOut(
+        id=session.id, status=session.status,
+        snapshot_backup_id=session.snapshot_backup_id,
+        started_by=session.started_by, started_by_name=name,
+        started_at=session.started_at, ended_at=session.ended_at,
+        ended_with=session.ended_with, error=session.error)
+
+
+async def _person_name(db: DbSession, person_id) -> str | None:
+    if person_id is None:
+        return None
+    person = await db.get(Person, person_id)
+    return f"{person.first_name} {person.last_name}" if person is not None else None
+
+
+async def _worker_online(db: DbSession) -> bool:
+    row = await db.get(SystemProcess, DB_TESTING_WORKER_NAME)
+    if row is None or row.heartbeat_at is None:
+        return False
+    age = (datetime.now(UTC) - row.heartbeat_at).total_seconds()
+    return age < WORKER_STALE_SECONDS
+
+
+async def _require_testing_password(
+    actor: AuthContext, password: str, db: DbSession,
+) -> None:
+    """Constant-time compare against SS_DB_TESTING_PASSWORD. A wrong
+    password is audited (never the password itself) and rate-limited: 5
+    failures in 10 minutes for the same person → 429, counted straight off
+    the audit rows rather than a separate counter table."""
+    cutoff = datetime.now(UTC) - timedelta(minutes=AUTH_FAIL_WINDOW_MINUTES)
+    recent_failures = await db.scalar(
+        select(func.count()).select_from(AuditLog).where(
+            AuditLog.actor_person_id == actor.person.id,
+            AuditLog.action == "db_testing.auth_failed",
+            AuditLog.at >= cutoff))
+    if (recent_failures or 0) >= AUTH_FAIL_MAX:
+        raise _err(429, "too_many_attempts")
+
+    expected = get_settings().db_testing_password.get_secret_value()
+    if not secrets.compare_digest(
+            password.encode("utf-8"), expected.encode("utf-8")):
+        audit(db, actor_id=actor.person.id, entity_type="system",
+              entity_id="db_testing", action="db_testing.auth_failed",
+              changes={})
+        await db.commit()
+        raise _err(403, "invalid_testing_password")
+
+
+async def _table_changes(db: DbSession, row_counts: dict) -> list[DbTestingTableChange]:
+    changes: list[DbTestingTableChange] = []
+    for table, before in row_counts.items():
+        try:
+            after = await db.scalar(select(func.count()).select_from(
+                Base.metadata.tables[table])) if table in Base.metadata.tables else None
+        except Exception:
+            after = None
+        if after is None:
+            continue
+        delta = after - before
+        if delta != 0:
+            changes.append(DbTestingTableChange(
+                table=table, before=before, after=after, delta=delta))
+    return changes
+
+
+async def _compute_changes(db: DbSession, session: DbTestingSession) -> DbTestingChanges:
+    tables = await _table_changes(db, session.row_counts or {})
+    audit_rows = await db.scalar(
+        select(func.count()).select_from(AuditLog)
+        .where(AuditLog.at >= session.audit_watermark)) or 0
+    return DbTestingChanges(audit_rows=audit_rows, tables=tables,
+                            since=session.audit_watermark)
+
+
+@router.get("/db-testing/status", response_model=DbTestingStatusOut)
+async def db_testing_status(
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "view"),
+) -> DbTestingStatusOut:
+    session = await db.scalar(
+        select(DbTestingSession).where(
+            DbTestingSession.status.in_(UNFINISHED_STATUSES)))
+    session_out = None
+    changes = None
+    if session is not None:
+        session_out = _session_out(
+            session, await _person_name(db, session.started_by))
+        if session.status == "active":
+            changes = await _compute_changes(db, session)
+
+    recent_rows = (await db.execute(
+        select(DbTestingSession, Person)
+        .outerjoin(Person, Person.id == DbTestingSession.started_by)
+        .where(DbTestingSession.status.in_(("ended", "failed")))
+        .order_by(DbTestingSession.started_at.desc())
+        .limit(10))).all()
+    recent = [_session_out(s, f"{p.first_name} {p.last_name}" if p else None)
+              for s, p in recent_rows]
+
+    return DbTestingStatusOut(
+        session=session_out, changes=changes, recent=recent,
+        worker_online=await _worker_online(db))
+
+
+@router.post("/db-testing/start", response_model=DbTestingSessionOut, status_code=202)
+async def db_testing_start(
+    body: DbTestingStartIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> DbTestingSessionOut:
+    await _require_testing_password(actor, body.password, db)
+
+    existing = await db.scalar(
+        select(DbTestingSession).where(
+            DbTestingSession.status.in_(UNFINISHED_STATUSES)))
+    if existing is not None:
+        raise _err(409, "session_active")
+
+    if not await _worker_online(db):
+        raise _err(503, "worker_offline")
+
+    now = datetime.now(UTC)
+    session = DbTestingSession(
+        status="snapshotting", row_counts={}, audit_watermark=now,
+        started_by=actor.person.id, started_at=now)
+    db.add(session)
+    await db.flush()
+    audit(db, actor_id=actor.person.id, entity_type="system",
+          entity_id=str(session.id), action="db_testing.start", changes={})
+    await db.commit()
+    return _session_out(session, f"{actor.person.first_name} {actor.person.last_name}")
+
+
+@router.post("/db-testing/end", response_model=DbTestingSessionOut)
+async def db_testing_end(
+    body: DbTestingEndIn,
+    db: DbSession,
+    response: Response,
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> DbTestingSessionOut:
+    await _require_testing_password(actor, body.password, db)
+
+    session = await db.scalar(
+        select(DbTestingSession).where(DbTestingSession.status == "active"))
+    if session is None:
+        raise _err(409, "session_not_active")
+
+    audit(db, actor_id=actor.person.id, entity_type="system",
+          entity_id=str(session.id), action="db_testing.end",
+          changes={"revert": body.revert})
+
+    if body.revert:
+        session.status = "reverting"
+        # a fresh phase to claim — clear the snapshot phase's claim so the
+        # worker (which may or may not be the same process) picks it up
+        # immediately rather than waiting out the stale-heartbeat window
+        session.worker_id = None
+        session.heartbeat_at = None
+        response.status_code = 202
+    else:
+        row = await db.get(SystemConfig, "admin")
+        if row is not None and session.previous_banner is not None:
+            row.data = session.previous_banner
+            row.updated_at = datetime.now(UTC)
+        session.status = "ended"
+        session.ended_with = "kept"
+        session.ended_at = datetime.now(UTC)
+
+    await db.commit()
+    return _session_out(session, f"{actor.person.first_name} {actor.person.last_name}")

@@ -53,6 +53,20 @@ class PgDumpFailed(Exception):
         super().__init__(stderr.decode("utf-8", errors="replace"))
 
 
+class PsqlUnavailable(Exception):
+    """No psql binary could be found next to pg_dump on this host."""
+
+
+class PsqlFailed(Exception):
+    """psql ran but exited non-zero (ON_ERROR_STOP aborts the restore on
+    the first bad statement, inside the single transaction, so a failed
+    restore leaves the database exactly as it was before the attempt)."""
+
+    def __init__(self, stderr: bytes):
+        self.stderr = stderr
+        super().__init__(stderr.decode("utf-8", errors="replace"))
+
+
 def _derive_key_iv(password: str, salt: bytes) -> tuple[bytes, bytes]:
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
@@ -163,3 +177,39 @@ async def run_pg_dump(database_url: str) -> bytes:
     if proc.returncode != 0:
         raise PgDumpFailed(stderr)
     return stdout
+
+
+def _resolve_psql() -> str:
+    """psql lives next to pg_dump in every layout this host resolution
+    covers (the same libpq/postgresql-client package installs both) — so
+    resolving pg_dump first and looking beside it is more reliable than a
+    separate PATH/fallback search that could disagree with which pg_dump
+    we're actually restoring against."""
+    pg_dump = _resolve_pg_dump()
+    candidate = os.path.join(os.path.dirname(pg_dump), "psql")
+    if os.path.exists(candidate):
+        return candidate
+    raise PsqlUnavailable()
+
+
+async def run_psql_restore(database_url: str, sql: bytes) -> None:
+    """Feed `sql` (a plain-SQL dump, as produced by run_pg_dump) into
+    `database_url` via psql. `-v ON_ERROR_STOP=1 --single-transaction`
+    means the very first failing statement aborts the whole restore inside
+    one transaction — a bad or partial dump never leaves the database
+    half-restored."""
+    binary = _resolve_psql()
+    url = make_url(database_url.replace("+asyncpg", ""))
+    env = {**os.environ, "PGPASSWORD": url.password or ""}
+    conninfo = _conninfo_without_password(url)
+    argv = [binary, "-v", "ON_ERROR_STOP=1", "--single-transaction", "-d", conninfo]
+
+    proc = await asyncio.create_subprocess_exec(
+        *argv, env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _stdout, stderr = await proc.communicate(input=sql)
+    if proc.returncode != 0:
+        raise PsqlFailed(stderr)

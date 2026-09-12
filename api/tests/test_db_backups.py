@@ -170,6 +170,7 @@ async def test_create_lists_downloads_and_decrypts(client, db, seeded_user,
     assert created["created_by_name"] == "Alice Anderson"
     assert created["download_url"]
     assert created["size_bytes"] > 0
+    assert created["purpose"] == "manual"
 
     # the stored blob is the OpenSSL envelope, decryptable with the
     # password the caller supplied -- never logged, never stored plain
@@ -181,6 +182,7 @@ async def test_create_lists_downloads_and_decrypts(client, db, seeded_user,
     assert len(listing) == 1
     assert listing[0]["id"] == created["id"]
     assert listing[0]["created_by_name"] == "Alice Anderson"
+    assert listing[0]["purpose"] == "manual"
     # list rows don't carry a live download link
     assert listing[0]["download_url"] is None
 

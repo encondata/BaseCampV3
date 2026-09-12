@@ -1245,9 +1245,53 @@ class DbBackup(Base):
     storage_key: Mapped[str]
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     encrypted: Mapped[bool] = mapped_column(server_default=text("true"))
+    # 'manual' (Dev -> Database -> Backups) or 'testing_snapshot' (taken by
+    # the db-testing-worker at the start of a testing session) — the
+    # Backups tab labels the latter with a chip.
+    purpose: Mapped[str] = mapped_column(server_default=text("'manual'"))
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("people.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class DbTestingSession(Base):
+    """One password-gated 'DB testing mode' session (Dev -> Database ->
+    Testing): snapshot the database, let the user make changes, then
+    either revert to the snapshot or keep the changes. Processed by the
+    db-testing-worker, never inline in the API request — a pg_dump/psql
+    restore is too slow (and a revert too disruptive) to run in a request.
+
+    Only one session may be in an unfinished state at a time — enforced by
+    a partial unique index (migration 0059) on status IN ('snapshotting',
+    'active', 'reverting')."""
+
+    __tablename__ = "db_testing_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    # snapshotting -> active -> reverting -> ended (ended_with: reverted|kept)
+    # any state can instead land on 'failed' (see `error`)
+    status: Mapped[str]
+    snapshot_backup_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("db_backups.id", ondelete="SET NULL"))
+    # table -> row count, captured right after the snapshot dump; the
+    # status endpoint diffs this against live counts to report `changes`
+    row_counts: Mapped[dict] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"))
+    # start time; `changes.audit_rows` counts audit_log rows after this
+    audit_watermark: Mapped[datetime]
+    started_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    started_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    ended_at: Mapped[datetime | None]
+    ended_with: Mapped[str | None]           # 'reverted' | 'kept' | null
+    error: Mapped[str | None]
+    worker_id: Mapped[str | None]
+    heartbeat_at: Mapped[datetime | None]
+    # the admin broadcast-banner config as it was before testing turned its
+    # own banner on — restored verbatim when the session ends (revert or
+    # keep) so the maintenance banner never gets stuck on "testing mode"
+    previous_banner: Mapped[dict | None] = mapped_column(JSONB)
 
 
 class LabelVocab(Base):

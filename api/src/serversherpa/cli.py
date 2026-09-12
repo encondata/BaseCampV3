@@ -537,6 +537,59 @@ def label_worker(
     asyncio.run(_run())
 
 
+def _run_db_testing_worker_process(poll_seconds: float) -> None:
+    """Reload-mode child entry point (see _run_worker_process)."""
+
+    async def _run() -> None:
+        from serversherpa.devtools.testing import worker
+
+        await worker.run_forever(poll_seconds)
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass
+
+
+@app.command(name="db-testing-worker")
+def db_testing_worker(
+    poll_seconds: float = typer.Option(2.0, help="Idle sleep between queue polls"),
+    once: bool = typer.Option(False, help="Process at most one session, then exit"),
+    reload: bool = typer.Option(
+        False, help="Dev mode: restart the worker whenever api/src changes"),
+) -> None:
+    """Run the db-testing worker — snapshots the database when a Testing
+    session starts and restores it when a session is reverted. Does not
+    honor the read-only worker pause: it is the process that sets it
+    during a revert."""
+
+    if reload and once:
+        typer.secho("--once cannot be combined with --reload", fg="red")
+        raise typer.Exit(code=1)
+    if reload:
+        import watchfiles
+
+        src_dir = Path(__file__).resolve().parents[1]
+        typer.secho(f"[db-testing-worker] dev reload — watching {src_dir}", fg="cyan")
+        watchfiles.run_process(src_dir, target=_run_db_testing_worker_process,
+                               args=(poll_seconds,))
+        return
+
+    async def _run() -> None:
+        from serversherpa.db.engine import get_sessionmaker
+        from serversherpa.devtools.testing import worker
+
+        if once:
+            worked = await worker.run_once(get_sessionmaker())
+            typer.secho("processed 1 session" if worked else "nothing to do",
+                        fg="green" if worked else "yellow")
+        else:
+            await worker.run_forever(poll_seconds)
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
 def _run_log_service_process(poll_seconds: float) -> None:
     """Reload-mode child entry point (picklable, like the import
     worker's)."""
