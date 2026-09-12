@@ -38,21 +38,24 @@ const NUMERIC_FIELDS: { key: NumericSetting; label: string; hint: string; suffix
   { key: 'batchSize', label: 'Batch size', hint: 'Labels per batch before pausing' },
 ];
 
+const textFrom = (s: PrintSettings): Record<NumericSetting, string> => ({
+  verticalOffset: String(s.verticalOffset),
+  horizontalOffset: String(s.horizontalOffset),
+  copies: String(s.copies),
+  batchSize: String(s.batchSize),
+  blanksBetweenRacks: String(s.blanksBetweenRacks),
+});
+
 export default function PrintSettingsModal({
   settings, onChange, vocab, printerConnected, onPrintAlignmentTest, onClose,
 }: Props) {
   // Free text per numeric field so a value can be emptied/retyped; the
   // clamped number lands in `settings` on blur.
-  const [text, setText] = useState<Record<NumericSetting, string>>({
-    verticalOffset: String(settings.verticalOffset),
-    horizontalOffset: String(settings.horizontalOffset),
-    copies: String(settings.copies),
-    batchSize: String(settings.batchSize),
-    blanksBetweenRacks: String(settings.blanksBetweenRacks),
-  });
+  const [text, setText] = useState<Record<NumericSetting, string>>(textFrom(settings));
   const [sizeKey, setSizeKey] = useState(DEFAULT_SIZE);
   const [dpiKey, setDpiKey] = useState(DEFAULT_DPI);
   const [testing, setTesting] = useState(false);
+  const [testError, setTestError] = useState('');
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -75,22 +78,21 @@ export default function PrintSettingsModal({
   };
 
   const reset = () => {
-    setText({
-      verticalOffset: '0', horizontalOffset: '0', copies: '1',
-      batchSize: String(DEFAULT_PRINT_SETTINGS.batchSize),
-      blanksBetweenRacks: String(DEFAULT_PRINT_SETTINGS.blanksBetweenRacks),
-    });
+    setText(textFrom(DEFAULT_PRINT_SETTINGS));
     onChange({ ...DEFAULT_PRINT_SETTINGS });
   };
 
   const printTest = async () => {
     if (!effectiveSize) return;
+    setTestError('');
     const dots = dpiDots(vocab, effectiveDpi);
     const { width_in, height_in } = sizeMeta(effectiveSize);
     const zpl = alignmentTestZpl(Math.round(width_in * dots), Math.round(height_in * dots), effectiveSize.key, dots);
     setTesting(true);
     try {
       await onPrintAlignmentTest(zpl, effectiveSize.key);
+    } catch (err) {
+      setTestError(err instanceof Error && err.message ? err.message : 'Failed to print alignment test label');
     } finally {
       setTesting(false);
     }
@@ -100,10 +102,11 @@ export default function PrintSettingsModal({
     <div key={f.key}>
       <label htmlFor={`ps-${f.key}`}>{f.label}{f.suffix ? ` (${f.suffix})` : ''}</label>
       <input id={`ps-${f.key}`} type="number" aria-label={f.label} disabled={disabled}
+             aria-describedby={`ps-${f.key}-hint`}
              value={text[f.key]} onChange={(e) => setText((t) => ({ ...t, [f.key]: e.target.value }))}
              onBlur={() => commit(f.key)}
              onKeyDown={(e) => { if (e.key === 'Enter') commit(f.key); }} />
-      <p className="page-hint field-hint">{f.hint}</p>
+      <p id={`ps-${f.key}-hint`} className="page-hint field-hint">{f.hint}</p>
     </div>
   );
 
@@ -170,6 +173,7 @@ export default function PrintSettingsModal({
                     {testing ? 'Sending…' : 'Print test label'}
                   </button>
                   {!printerConnected && <span className="cell-sub">Connect a printer first</span>}
+                  {testError && <span className="pf-error">{testError}</span>}
                 </div>
               </div>
             </section>

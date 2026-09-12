@@ -42,6 +42,10 @@ describe('PrintSettingsModal', () => {
     expect(screen.getByText('Offset in dots (+ moves down)')).toBeTruthy();
     expect(screen.getByText('Offset in dots (+ moves right)')).toBeTruthy();
     expect(screen.getByText('Labels per batch before pausing')).toBeTruthy();
+    const vertical = screen.getByLabelText('Vertical offset');
+    const describedBy = vertical.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent).toBe('Offset in dots (+ moves down)');
   });
 
   it('emits clamped numeric changes on blur and boolean changes immediately', async () => {
@@ -89,6 +93,21 @@ describe('PrintSettingsModal', () => {
     await userEvent.click(screen.getByRole('tab', { name: '203 DPI' }));
     await userEvent.click(screen.getByRole('button', { name: 'Print test label' }));
     expect(onPrintAlignmentTest.mock.calls[1][0]).toContain('^PW812');
+  });
+
+  it('shows a local error and re-enables the button when the alignment test fails', async () => {
+    const onPrintAlignmentTest = vi.fn(async () => {
+      throw new Error('Printer connection lost. Please reconnect.');
+    });
+    const onChange = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <PrintSettingsModal settings={DEFAULT_PRINT_SETTINGS} onChange={onChange} vocab={vocab}
+                          printerConnected onPrintAlignmentTest={onPrintAlignmentTest} onClose={onClose} />);
+    const button = screen.getByRole('button', { name: 'Print test label' }) as HTMLButtonElement;
+    await userEvent.click(button);
+    expect(await screen.findByText('Printer connection lost. Please reconnect.')).toBeTruthy();
+    expect(button.disabled).toBe(false);
   });
 
   it('gates the alignment test on a connected printer', () => {
