@@ -90,6 +90,7 @@ async def test_create_run_202_shape(client, db, seeded_user):
     assert body["requested_by_name"] == "Alice Anderson"
     assert body["cancel_requested"] is False
     assert body["finished_at"] is None
+    assert body["template_overrides"] == {}
 
     run = await db.get(LabelGenerationRun, uuid.UUID(body["id"]))
     assert run is not None and run.status == "queued"
@@ -151,6 +152,67 @@ async def test_create_run_409_when_one_already_active(client, db, seeded_user):
     assert second.status_code == 409
     assert second.json()["detail"]["code"] == "run_active"
     assert second.json()["detail"]["run_id"] == first.json()["id"]
+
+
+# ── create with template overrides ───────────────────────────────────
+
+async def test_create_run_with_template_override_201(client, db, seeded_user):
+    ini = await _initiative(db)
+    tpl = await _template(db, "top")
+    hdrs = await login(client)
+
+    resp = await client.post("/labels/generate/runs", headers=hdrs,
+                             json=_run_payload(ini, ["top"], templates={"top": str(tpl.id)}))
+    assert resp.status_code == 202, resp.text
+    body = resp.json()
+    assert body["template_overrides"] == {"top": str(tpl.id)}
+
+    run = await db.get(LabelGenerationRun, uuid.UUID(body["id"]))
+    assert run.template_overrides == {"top": str(tpl.id)}
+
+
+async def test_create_run_422_invalid_templates_key_not_in_label_types(client, db, seeded_user):
+    ini = await _initiative(db)
+    tpl = await _template(db, "top")
+    hdrs = await login(client)
+
+    resp = await client.post(
+        "/labels/generate/runs", headers=hdrs,
+        json=_run_payload(ini, ["top"], templates={"rail": str(tpl.id)}))
+    assert resp.status_code == 422
+    body = resp.json()["detail"]
+    assert body["code"] == "invalid_templates"
+    assert body["problems"] == ["rail: not one of the run's label types"]
+
+
+async def test_create_run_422_invalid_templates_wrong_type(client, db, seeded_user):
+    ini = await _initiative(db)
+    front_tpl = await _template(db, "front")
+    hdrs = await login(client)
+
+    resp = await client.post(
+        "/labels/generate/runs", headers=hdrs,
+        json=_run_payload(ini, ["top"], templates={"top": str(front_tpl.id)}))
+    assert resp.status_code == 422
+    body = resp.json()["detail"]
+    assert body["code"] == "invalid_templates"
+    assert body["problems"] == ["top: template is a 'front' template"]
+
+
+async def test_create_run_422_invalid_templates_inactive(client, db, seeded_user):
+    ini = await _initiative(db)
+    tpl = await _template(db, "top")
+    tpl.is_active = False
+    await db.commit()
+    hdrs = await login(client)
+
+    resp = await client.post(
+        "/labels/generate/runs", headers=hdrs,
+        json=_run_payload(ini, ["top"], templates={"top": str(tpl.id)}))
+    assert resp.status_code == 422
+    body = resp.json()["detail"]
+    assert body["code"] == "invalid_templates"
+    assert body["problems"] == [f"top: template {tpl.id} is not active"]
 
 
 # ── permission gate ──────────────────────────────────────────────────
@@ -345,11 +407,41 @@ async def test_preview_shape_with_site_and_global_templates(client, db, seeded_u
     assert types["top"]["template"]["scope"] == "site"
     assert types["top"]["current"] == 1
     assert types["top"]["stale"] == 1
+    assert [c["id"] for c in types["top"]["candidates"]] == [str(top_tpl.id)]
+    assert types["top"]["candidates"][0]["scope"] == "site"
+    assert types["top"]["candidates"][0]["site_names"] == []
     assert types["front"]["template"]["id"] == str(front_tpl.id)
     assert types["front"]["template"]["scope"] == "global"
     assert types["front"]["current"] == 0 and types["front"]["stale"] == 0
+    assert [c["id"] for c in types["front"]["candidates"]] == [str(front_tpl.id)]
+    assert types["front"]["candidates"][0]["scope"] == "global"
     assert types["rail"]["template"] is None
     assert types["rail"]["current"] == 0 and types["rail"]["stale"] == 0
+    assert types["rail"]["candidates"] == []
+
+
+async def test_preview_other_only_type_has_candidates_but_no_auto_match(client, db, seeded_user):
+    """A type whose only active template is linked to a site OTHER than
+    the initiative's origin/destination has candidates (so the portal
+    can still offer a picker) but no auto-match — template: null."""
+    destination = Site(name="NAP11")
+    other_site = Site(name="NAP-Other")
+    db.add_all([destination, other_site])
+    await db.flush()
+    ini = await _initiative(db, destination=destination)
+    other_tpl = await _template(db, "rail", site=other_site)
+
+    hdrs = await login(client)
+    resp = await client.get(f"/labels/generate/preview?initiative_id={ini.id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    types = {t["key"]: t for t in resp.json()["types"]}
+
+    assert types["rail"]["template"] is None
+    candidates = types["rail"]["candidates"]
+    assert len(candidates) == 1
+    assert candidates[0]["id"] == str(other_tpl.id)
+    assert candidates[0]["scope"] == "other"
+    assert candidates[0]["site_names"] == ["NAP-Other"]
 
 
 async def test_preview_404_unknown_initiative(client, db, seeded_user):

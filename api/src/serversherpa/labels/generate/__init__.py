@@ -9,8 +9,13 @@ is the `serversherpa label-worker` process loop.
 
 `enqueue_run` is the single entry point any surface (the future API
 route, other packages) uses to queue a run — it owns label-type
-validation and the one-active-run-per-initiative rule so every caller
-gets the same behavior."""
+validation, the one-active-run-per-initiative rule, and (per-type
+template overrides) validating that each override key is one of the
+run's own label types and each value an active template of that same
+type, so every caller gets the same behavior. The runner honors an
+override over `select.select_template`'s auto-match, falling back to
+"no template" if the override was deactivated between enqueue and
+processing."""
 
 import uuid
 from collections.abc import Sequence
@@ -23,7 +28,7 @@ from collections.abc import Sequence
 from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import LabelGenerationRun, LabelVocab
+from serversherpa.db.models import LabelGenerationRun, LabelTemplate, LabelVocab
 
 ACTIVE_STATUSES = ("queued", "running")
 
@@ -40,6 +45,18 @@ class InvalidLabelTypes(ValueError):
         self.problems = problems
 
 
+class InvalidTemplates(ValueError):
+    """One or more `template_overrides` entries are unusable: the key
+    isn't one of the run's own label types, the template id doesn't
+    exist or isn't active, or it exists but is a different type's
+    template. `problems` are human-readable, one per offending entry,
+    e.g. "front: template <id> is not active"."""
+
+    def __init__(self, problems: list[str]):
+        super().__init__(f"invalid template overrides: {', '.join(problems)}")
+        self.problems = problems
+
+
 class RunActive(Exception):
     """The initiative already has a queued/running run — `run_id` is that
     run so the caller can link to it (409 in the future API route)."""
@@ -49,9 +66,55 @@ class RunActive(Exception):
         self.run_id = run_id
 
 
+async def _validated_template_overrides(
+    db: AsyncSession, template_overrides: dict[str, str] | None, requested: list[str],
+) -> dict[str, str]:
+    """Every key must be one of the run's own `requested` label types,
+    and every value a template id that exists, is active, and whose
+    `label_type` matches the key it's filed under. Returns the overrides
+    with values normalized to plain uuid text, ready to store on the
+    run — the runner reads them back with `uuid.UUID(...)`."""
+    if not template_overrides:
+        return {}
+
+    problems: list[str] = []
+    parsed: dict[str, uuid.UUID] = {}
+    for label_type, raw_id in template_overrides.items():
+        if label_type not in requested:
+            problems.append(f"{label_type}: not one of the run's label types")
+            continue
+        try:
+            parsed[label_type] = uuid.UUID(str(raw_id))
+        except (ValueError, AttributeError, TypeError):
+            problems.append(f"{label_type}: template {raw_id} is not active")
+
+    if parsed:
+        rows = (await db.execute(
+            sa_select(LabelTemplate.id, LabelTemplate.label_type, LabelTemplate.is_active)
+            .where(LabelTemplate.id.in_(parsed.values())))).all()
+        by_id = {row_id: (row_type, row_active) for row_id, row_type, row_active in rows}
+    else:
+        by_id = {}
+
+    validated: dict[str, str] = {}
+    for label_type, template_id in parsed.items():
+        found = by_id.get(template_id)
+        if found is None or not found[1]:
+            problems.append(f"{label_type}: template {template_id} is not active")
+        elif found[0] != label_type:
+            problems.append(f"{label_type}: template is a '{found[0]}' template")
+        else:
+            validated[label_type] = str(template_id)
+
+    if problems:
+        raise InvalidTemplates(problems)
+    return validated
+
+
 async def enqueue_run(
     db: AsyncSession, *, initiative_id: uuid.UUID, label_types: Sequence[str],
     regenerate_existing: bool, requested_by: uuid.UUID, notify: bool,
+    template_overrides: dict[str, str] | None = None,
 ) -> LabelGenerationRun:
     requested = list(dict.fromkeys(label_types))          # de-dupe, keep order
     if not requested:
@@ -64,6 +127,9 @@ async def enqueue_run(
     if problems:
         raise InvalidLabelTypes(problems)
 
+    validated_overrides = await _validated_template_overrides(
+        db, template_overrides, requested)
+
     existing = await db.scalar(
         sa_select(LabelGenerationRun).where(
             LabelGenerationRun.initiative_id == initiative_id,
@@ -74,7 +140,7 @@ async def enqueue_run(
     run = LabelGenerationRun(
         initiative_id=initiative_id, label_types=requested,
         regenerate_existing=regenerate_existing, requested_by=requested_by,
-        notify=notify, status="queued")
+        notify=notify, status="queued", template_overrides=validated_overrides)
     db.add(run)
     await db.commit()
     return run

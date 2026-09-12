@@ -22,7 +22,7 @@ from serversherpa.db.models import (
     Asset, AssetModel, GeneratedLabel, Initiative, InitiativeAsset, LabelGenerationRun,
     LabelTemplate, Notification, Person, Site,
 )
-from serversherpa.labels.generate import InvalidLabelTypes, RunActive, enqueue_run
+from serversherpa.labels.generate import InvalidLabelTypes, InvalidTemplates, RunActive, enqueue_run
 from serversherpa.labels.generate.engine import render_label
 from serversherpa.labels.generate.jobs import STALE_MINUTES, claim_next, requeue_stale
 from serversherpa.labels.generate import runner as runner_module
@@ -539,16 +539,155 @@ async def test_enqueue_run_queues_and_rejects_second_active_run(db):
     assert exc.value.run_id == run.id
 
 
+# ── enqueue_run template_overrides ───────────────────────────────────
+
+async def test_enqueue_run_stores_valid_template_override(db):
+    initiative, person, assets, template = await _seed_initiative(db, n_assets=1)
+    run = await enqueue_run(
+        db, initiative_id=initiative.id, label_types=["top"], regenerate_existing=False,
+        requested_by=person.id, notify=False,
+        template_overrides={"top": str(template.id)})
+    assert run.template_overrides == {"top": str(template.id)}
+
+
+async def test_enqueue_run_rejects_override_key_not_in_label_types(db):
+    initiative, person, assets, template = await _seed_initiative(db, n_assets=1)
+    with pytest.raises(InvalidTemplates) as exc:
+        await enqueue_run(
+            db, initiative_id=initiative.id, label_types=["top"], regenerate_existing=False,
+            requested_by=person.id, notify=False,
+            template_overrides={"rail": str(template.id)})
+    assert exc.value.problems == ["rail: not one of the run's label types"]
+
+
+async def test_enqueue_run_rejects_override_wrong_template_type(db):
+    from serversherpa.db.models import LabelTemplate
+
+    initiative, person, assets, template = await _seed_initiative(db, n_assets=1)
+    front_tpl = LabelTemplate(name=f"front-{uuid.uuid4()}", label_type="front", size_key="4x2",
+                              dpi_key="203", language_key="zpl", kind="code", code="{asset_id}")
+    db.add(front_tpl)
+    await db.commit()
+    with pytest.raises(InvalidTemplates) as exc:
+        await enqueue_run(
+            db, initiative_id=initiative.id, label_types=["top"], regenerate_existing=False,
+            requested_by=person.id, notify=False,
+            template_overrides={"top": str(front_tpl.id)})
+    assert exc.value.problems == ["top: template is a 'front' template"]
+
+
+async def test_enqueue_run_rejects_override_inactive_template(db):
+    initiative, person, assets, template = await _seed_initiative(db, n_assets=1)
+    template.is_active = False
+    await db.commit()
+    with pytest.raises(InvalidTemplates) as exc:
+        await enqueue_run(
+            db, initiative_id=initiative.id, label_types=["top"], regenerate_existing=False,
+            requested_by=person.id, notify=False,
+            template_overrides={"top": str(template.id)})
+    assert exc.value.problems == [f"top: template {template.id} is not active"]
+
+
+async def test_enqueue_run_rejects_override_unknown_template_id(db):
+    initiative, person, assets, template = await _seed_initiative(db, n_assets=1)
+    bogus = uuid.uuid4()
+    with pytest.raises(InvalidTemplates) as exc:
+        await enqueue_run(
+            db, initiative_id=initiative.id, label_types=["top"], regenerate_existing=False,
+            requested_by=person.id, notify=False,
+            template_overrides={"top": str(bogus)})
+    assert exc.value.problems == [f"top: template {bogus} is not active"]
+
+
+async def test_enqueue_run_accumulates_multiple_override_problems(db):
+    initiative, person, assets, template = await _seed_initiative(db, n_assets=1)
+    with pytest.raises(InvalidTemplates) as exc:
+        await enqueue_run(
+            db, initiative_id=initiative.id, label_types=["top"], regenerate_existing=False,
+            requested_by=person.id, notify=False,
+            template_overrides={"top": str(uuid.uuid4()), "rail": str(uuid.uuid4())})
+    assert len(exc.value.problems) == 2
+    assert any("rail" in p and "not one of" in p for p in exc.value.problems)
+    assert any(p.startswith("top: template") for p in exc.value.problems)
+
+
+async def test_enqueue_run_no_overrides_defaults_to_empty_dict(db):
+    initiative, person, *_ = await _seed_initiative(db, n_assets=1)
+    run = await enqueue_run(db, initiative_id=initiative.id, label_types=["top"],
+                            regenerate_existing=False, requested_by=person.id, notify=False)
+    assert run.template_overrides == {}
+
+
+# ── runner honors template_overrides ─────────────────────────────────
+
+async def test_runner_override_wins_over_auto_match(db):
+    """A destination-site auto-match exists, but the override points at
+    a DIFFERENT active template of the same type — the override wins."""
+    initiative, person, assets, auto_template = await _seed_initiative(db, n_assets=2)
+    override_template = LabelTemplate(
+        name=f"override-top-{uuid.uuid4()}", label_type="top", size_key="4x2", dpi_key="203",
+        language_key="zpl", kind="code", code="OVERRIDE-{asset_id}")
+    db.add(override_template)
+    await db.commit()
+
+    run = _queued_run(initiative.id, person.id, label_types=["top"])
+    run.template_overrides = {"top": str(override_template.id)}
+    db.add(run)
+    await db.commit()
+
+    status = await process_run(db, run, sessionmaker=get_sessionmaker())
+    assert status == "completed"
+    await db.refresh(run)
+    assert run.generated == 2 and run.errors == 0
+
+    rows = (await db.execute(select(GeneratedLabel).where(
+        GeneratedLabel.label_type == "top"))).scalars().all()
+    assert len(rows) == 2
+    assert all(r.template_id == override_template.id for r in rows)
+    assert sorted(r.code for r in rows) == ["OVERRIDE-9000", "OVERRIDE-9001"]
+
+
+async def test_runner_falls_back_to_no_template_when_override_deactivated(db):
+    """The override was valid at enqueue time but the template was
+    deactivated before the worker processed the run — the type is
+    treated like it has no template at all (no_template:{type} errors),
+    NOT silently reverted to the auto-match."""
+    initiative, person, assets, auto_template = await _seed_initiative(db, n_assets=2)
+    override_template = LabelTemplate(
+        name=f"deactivated-top-{uuid.uuid4()}", label_type="top", size_key="4x2", dpi_key="203",
+        language_key="zpl", kind="code", code="X-{asset_id}")
+    db.add(override_template)
+    await db.commit()
+
+    run = _queued_run(initiative.id, person.id, label_types=["top"])
+    run.template_overrides = {"top": str(override_template.id)}
+    db.add(run)
+    await db.commit()
+
+    override_template.is_active = False
+    await db.commit()
+
+    status = await process_run(db, run, sessionmaker=get_sessionmaker())
+    assert status == "completed"
+    await db.refresh(run)
+    assert run.generated == 0 and run.errors == 2
+    assert run.error_summary.get("no_template:top") == 2
+
+    rows = (await db.execute(select(GeneratedLabel).where(
+        GeneratedLabel.label_type == "top"))).scalars().all()
+    assert rows == []                       # not silently generated with the auto-match
+
+
 # ── migration / head ──────────────────────────────────────────────
 
-async def test_single_alembic_head_is_0055():
+async def test_single_alembic_head_is_0056():
     import subprocess
     from pathlib import Path
 
     api_dir = Path(__file__).resolve().parents[1]
     out = subprocess.run([str(api_dir / ".venv/bin/alembic"), "heads"], cwd=api_dir,
                          capture_output=True, text=True, check=True).stdout
-    assert out.strip().split()[0] == "0055"
+    assert out.strip().split()[0] == "0056"
 
 
 async def test_migration_0055_schema_and_unique_indexes(db):
@@ -564,6 +703,7 @@ async def test_migration_0055_schema_and_unique_indexes(db):
                              requested_by=person_id, status="queued")
     db.add(run)
     await db.commit()
+    assert run.template_overrides == {}          # migration 0056's column default
 
     dup = LabelGenerationRun(initiative_id=initiative_id, label_types=["front"],
                              requested_by=person_id, status="queued")

@@ -1356,6 +1356,12 @@ class LabelGenerationRun(Base):
     finished_at: Mapped[datetime | None]
     worker_id: Mapped[str | None]
     heartbeat_at: Mapped[datetime | None]
+    # type key -> template uuid (text). The operator's per-type override
+    # of select_template's auto-match (migration 0056); enqueue_run
+    # validates it at write time, the runner re-checks at process time
+    # since a template can be deactivated in between.
+    template_overrides: Mapped[dict] = mapped_column(
+        JSONB, server_default=text("'{}'::jsonb"))
 
 
 class GeneratedLabel(Base):

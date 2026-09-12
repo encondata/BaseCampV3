@@ -2220,6 +2220,12 @@ class LabelRunCreateIn(BaseModel):
     label_types: list[str]
     regenerate_existing: bool = False
     notify: bool = False
+    # type key -> template id: the operator's per-type override of
+    # select_template's auto-match. Also reaches enqueue_run() for
+    # validation (unknown key, inactive template, wrong type) rather than
+    # a stock pydantic error, so it 422s as {"code": "invalid_templates",
+    # "problems": [...]}.
+    templates: dict[str, uuid.UUID] = Field(default_factory=dict)
 
 
 class LabelRunOut(BaseModel):
@@ -2249,6 +2255,9 @@ class LabelRunOut(BaseModel):
     worker_id: str | None
     # round(processed/total*100) or 0 when total is 0 (nothing queued yet).
     progress_pct: int
+    # type key -> template id (text) — the operator's per-type override,
+    # as validated and stored by enqueue_run.
+    template_overrides: dict[str, str]
 
 
 class LabelGeneratePreviewInitiativeOut(BaseModel):
@@ -2269,10 +2278,25 @@ class LabelGeneratePreviewTemplateOut(BaseModel):
     scope: Literal["site", "global"]
 
 
+class LabelGeneratePreviewCandidateOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    version: int
+    scope: Literal["site", "global", "other"]
+    # populated only for scope 'other' — which other site(s) it's linked
+    # to, since that's not otherwise visible from a bare candidate row.
+    site_names: list[str]
+
+
 class LabelGeneratePreviewTypeOut(BaseModel):
     key: str
     label: str
+    # the auto-match (candidates[0] when its scope is site/global);
+    # None both when there's no active template at all and when the
+    # only active templates are 'other'-scoped (linked to a different
+    # site) — an operator must pick one explicitly in that case too.
     template: LabelGeneratePreviewTemplateOut | None
+    candidates: list[LabelGeneratePreviewCandidateOut]
     current: int
     stale: int
 

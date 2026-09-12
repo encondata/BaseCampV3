@@ -8,6 +8,13 @@ counted in `error_summary` instead of silently blanking (see
 labels/generate/engine.py); labels land in `generated_labels` instead of
 JSON on the roster row.
 
+Per type, `run.template_overrides` (validated by `enqueue_run`) wins
+over `select.select_template`'s auto-match. If the override template
+was deactivated between enqueue and processing, the type falls back to
+"no template" (same `no_template:{type}` error rows as a type with no
+auto-match at all) rather than silently reverting to the auto-match the
+operator overrode.
+
 Session discipline: everything the loop needs from `run` (initiative_id,
 label_types, regenerate_existing) is read ONCE into plain locals up
 front, and `run`'s ORM attributes are only ever written right before a
@@ -219,6 +226,11 @@ async def process_run(db: AsyncSession, run: LabelGenerationRun, *, sessionmaker
     initiative_id = run.initiative_id
     label_types = list(run.label_types)
     regenerate_existing = run.regenerate_existing
+    # str(uuid) keyed by label type — enqueue_run already validated each
+    # entry (key is one of label_types, value an active template of that
+    # same type); re-checked below since a template can be deactivated
+    # between enqueue and processing.
+    template_overrides = dict(run.template_overrides or {})
 
     try:
         initiative = await db.get(Initiative, initiative_id)
@@ -254,7 +266,17 @@ async def process_run(db: AsyncSession, run: LabelGenerationRun, *, sessionmaker
         for label_type in label_types:
             if canceled:
                 break
-            template = await select_template(db, label_type, template_site_id)
+            override_id = template_overrides.get(label_type)
+            if override_id is not None:
+                # the override wins even when an auto-match exists; if it
+                # was deactivated since enqueue, fall through to
+                # "no template" for this type rather than silently
+                # reverting to the auto-match the operator overrode.
+                template = await db.get(LabelTemplate, uuid.UUID(override_id))
+                if template is not None and not template.is_active:
+                    template = None
+            else:
+                template = await select_template(db, label_type, template_site_id)
             size_meta = dpi_meta = None
             existing_by_asset: dict[uuid.UUID, tuple[uuid.UUID, int, bool]] = {}
             if template is not None:

@@ -23,8 +23,8 @@ from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     GeneratedLabelOut,
     LabelCompileIn, LabelCompileOut,
-    LabelGeneratePreviewInitiativeOut, LabelGeneratePreviewOut,
-    LabelGeneratePreviewTemplateOut, LabelGeneratePreviewTypeOut,
+    LabelGeneratePreviewCandidateOut, LabelGeneratePreviewInitiativeOut,
+    LabelGeneratePreviewOut, LabelGeneratePreviewTemplateOut, LabelGeneratePreviewTypeOut,
     LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
     LabelRunCreateIn, LabelRunOut,
     LabelTemplateCreateIn, LabelTemplateOut, LabelTemplateUpdateIn,
@@ -38,8 +38,8 @@ from serversherpa.db.models import (
 )
 from serversherpa.labels import labelary
 from serversherpa.labels.compile import UnsupportedLanguage, compile_design
-from serversherpa.labels.generate import InvalidLabelTypes, RunActive, enqueue_run
-from serversherpa.labels.generate.select import select_template
+from serversherpa.labels.generate import InvalidLabelTypes, InvalidTemplates, RunActive, enqueue_run
+from serversherpa.labels.generate.select import candidate_templates
 from serversherpa.labels.model import DesignError, parse_design
 from serversherpa.labels.tokens import apply_placeholders
 from serversherpa.services.audit import audit, diff, snapshot
@@ -631,7 +631,7 @@ def _run_out(run: LabelGenerationRun, initiative_name: str, requested_by_name: s
         error_details=run.error_details, error=run.error, requested_by=run.requested_by,
         requested_by_name=requested_by_name, notify=run.notify, created_at=run.created_at,
         started_at=run.started_at, finished_at=run.finished_at, worker_id=run.worker_id,
-        progress_pct=progress_pct)
+        progress_pct=progress_pct, template_overrides=dict(run.template_overrides or {}))
 
 
 def _runs_query(actor: AuthContext):
@@ -669,9 +669,12 @@ async def create_generation_run(
         run = await enqueue_run(
             db, initiative_id=body.initiative_id, label_types=body.label_types,
             regenerate_existing=body.regenerate_existing, requested_by=actor.person.id,
-            notify=body.notify)
+            notify=body.notify,
+            template_overrides={k: str(v) for k, v in body.templates.items()})
     except InvalidLabelTypes as exc:
         raise _err(422, "invalid_label_types", problems=exc.problems) from exc
+    except InvalidTemplates as exc:
+        raise _err(422, "invalid_templates", problems=exc.problems) from exc
     except RunActive as exc:
         raise _err(409, "run_active", run_id=str(exc.run_id)) from exc
     except IntegrityError as exc:
@@ -781,15 +784,20 @@ async def preview_generation(
 
     types: list[LabelGeneratePreviewTypeOut] = []
     for vocab in type_rows:
-        template = await select_template(db, vocab.key, template_site_id)
+        candidates = await candidate_templates(db, vocab.key, template_site_id)
+        template = None
         template_out = None
-        if template is not None:
-            linked_sites = await db.scalar(
-                select(func.count()).select_from(LabelTemplateSite)
-                .where(LabelTemplateSite.template_id == template.id))
+        if candidates and candidates[0].scope in ("site", "global"):
+            auto = candidates[0]
+            template = auto.template
             template_out = LabelGeneratePreviewTemplateOut(
-                id=template.id, name=template.name, version=template.version,
-                scope="site" if linked_sites else "global")
+                id=auto.template.id, name=auto.template.name,
+                version=auto.template.version, scope=auto.scope)
+        candidates_out = [
+            LabelGeneratePreviewCandidateOut(
+                id=c.template.id, name=c.template.name, version=c.template.version,
+                scope=c.scope, site_names=c.site_names)
+            for c in candidates]
 
         current = stale = 0
         existing_rows = (await db.execute(
@@ -807,7 +815,7 @@ async def preview_generation(
 
         types.append(LabelGeneratePreviewTypeOut(
             key=vocab.key, label=vocab.label, template=template_out,
-            current=current, stale=stale))
+            candidates=candidates_out, current=current, stale=stale))
 
     active_run_id = await db.scalar(select(LabelGenerationRun.id).where(
         LabelGenerationRun.initiative_id == ini.id,
