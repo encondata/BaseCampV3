@@ -7,11 +7,11 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { relativeTime } from '../../lib/format';
-import type { CachedBundle } from '../../lib/labelCache';
+import type { CachedBundleSummary } from '../../lib/labelCache';
 import DataTable from '../DataTable';
 
 interface Props {
-  bundles: CachedBundle[];
+  bundles: CachedBundleSummary[];
   selectedInitiative: { id: string; name: string } | null;
   labelTypes: { key: string; label: string }[];
   downloading: boolean;
@@ -57,7 +57,7 @@ export default function OfflineCacheModal({
       cells: [
         <b className="cell-top" key="n">{b.initiative_name}</b>,
         <span className="chip tag" key="t">{typeLabel(b.label_type)}</span>,
-        <span className="mono" key="c">{b.labels.length}</span>,
+        <span className="mono" key="c">{b.label_count}</span>,
         <span className="mono" key="d">{relativeTime(b.cached_at)}</span>,
         <button type="button" className="mini-btn" key="r" disabled={downloading}
                 onClick={() => void onRemove(b.initiative_id, b.label_type)}>Remove</button>,
@@ -73,7 +73,7 @@ export default function OfflineCacheModal({
     });
   };
 
-  const totalLabels = bundles.reduce((n, b) => n + b.labels.length, 0);
+  const totalLabels = bundles.reduce((n, b) => n + b.label_count, 0);
 
   return (
     <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !downloading) onClose(); }}>

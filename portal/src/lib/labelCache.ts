@@ -25,6 +25,17 @@ export interface CachedBundle extends GeneratedLabelBundle {
   cached_at: string;
 }
 
+/** Summary of a cached bundle — counts only, no ZPL `code` strings — for
+ *  UI that only needs to render a count and an age (the header button,
+ *  the Offline cache modal's table). */
+export interface CachedBundleSummary {
+  initiative_id: string;
+  initiative_name: string;
+  label_type: string;
+  cached_at: string;
+  label_count: number;
+}
+
 type StoredInitiative = CachedInitiative & { id: string };
 type StoredBundle = CachedBundle & { key: string };
 
@@ -142,6 +153,22 @@ export function getBundle(initiativeId: string, labelType: string): Promise<Cach
 export function listBundles(): Promise<CachedBundle[]> {
   return withStore([STORE_BUNDLES], 'readonly', [], async (tx) =>
     (await request(tx.objectStore(STORE_BUNDLES).getAll())) as StoredBundle[]);
+}
+
+/** Like `listBundles`, but drops each bundle's `labels` (the ZPL `code`
+ *  strings) down to a count — nothing large stays referenced once the
+ *  returned promise resolves and `all` goes out of scope. */
+export function listBundleSummaries(): Promise<CachedBundleSummary[]> {
+  return withStore([STORE_BUNDLES], 'readonly', [], async (tx) => {
+    const all = (await request(tx.objectStore(STORE_BUNDLES).getAll())) as StoredBundle[];
+    return all.map((b) => ({
+      initiative_id: b.initiative_id,
+      initiative_name: b.initiative_name,
+      label_type: b.label_type,
+      cached_at: b.cached_at,
+      label_count: b.labels.length,
+    }));
+  });
 }
 
 export function deleteBundle(initiativeId: string, labelType: string): Promise<void> {

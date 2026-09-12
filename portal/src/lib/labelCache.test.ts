@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { GeneratedLabelBundle, InitiativeAssetRow, InitiativeItem } from './api';
 import {
   bundleKey, cacheAvailable, clearAll, deleteBundle, deleteInitiative, getBundle, getInitiative,
-  listBundles, listInitiatives, putBundle, putInitiative,
+  listBundles, listBundleSummaries, listInitiatives, putBundle, putInitiative,
 } from './labelCache';
 
 const ini = (id: string, name: string) => ({ id, name, client_name: 'Acme' } as unknown as InitiativeItem);
@@ -53,6 +53,19 @@ describe('labelCache', () => {
     expect(top?.cached_at).toBeTruthy();
     expect((await listBundles()).length).toBe(2);
     expect(await getBundle('i1', 'rail')).toBeNull();
+  });
+
+  it('lists bundle summaries with counts but no label codes', async () => {
+    await putBundle(bundle('i1', 'top', 2), 'NAP11');
+    await putBundle(bundle('i2', 'front', 3), 'NAP22');
+    const summaries = await listBundleSummaries();
+    expect(summaries.length).toBe(2);
+    const top = summaries.find((s) => s.initiative_id === 'i1' && s.label_type === 'top');
+    expect(top?.label_count).toBe(2);
+    expect(top?.initiative_name).toBe('NAP11');
+    const front = summaries.find((s) => s.initiative_id === 'i2' && s.label_type === 'front');
+    expect(front?.label_count).toBe(3);
+    expect((summaries[0] as { labels?: unknown }).labels).toBeUndefined();
   });
 
   it('deletes one bundle, an initiative with its bundles, or everything', async () => {

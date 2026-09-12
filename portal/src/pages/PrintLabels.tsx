@@ -70,9 +70,14 @@ export default function PrintLabels() {
   const [roster, setRoster] = useState<InitiativeAssetRow[] | null>(null);
   const [rosterLoading, setRosterLoading] = useState(false);
   const [bundle, setBundle] = useState<GeneratedLabelBundle | null>(null);
-  const [offlineSince, setOfflineSince] = useState<string | null>(null);   // cached_at of what we're serving
+  const [bundleLoading, setBundleLoading] = useState(false);
+  // cached_at of what we're serving; roster and bundle can fall back to cache independently, so
+  // each gets its own state — the banner shows whichever is set (roster takes priority).
+  const [rosterOffline, setRosterOffline] = useState<string | null>(null);
+  const [bundleOffline, setBundleOffline] = useState<string | null>(null);
+  const offlineSince = rosterOffline ?? bundleOffline;
   const [cacheStamp, setCacheStamp] = useState<{ cached_at: string; count: number } | null>(null);
-  const [cachedBundles, setCachedBundles] = useState<labelCache.CachedBundle[]>([]);
+  const [cachedBundles, setCachedBundles] = useState<labelCache.CachedBundleSummary[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [displayed, setDisplayed] = useState<InitiativeAssetRow[]>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -100,7 +105,7 @@ export default function PrintLabels() {
   }, [printer.notice]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const refreshCachedBundles = useCallback(() => {
-    void labelCache.listBundles().then(setCachedBundles);
+    void labelCache.listBundleSummaries().then(setCachedBundles);
   }, []);
 
   // ── initial loads (initiatives + vocab), with cache fallback ─────────
@@ -110,11 +115,11 @@ export default function PrintLabels() {
       .catch(async () => {
         const cached = await labelCache.listInitiatives();
         setInitiatives(cached.map((c) => c.initiative));
-        setOfflineSince((s) => s ?? (cached[0]?.cached_at ?? null));
+        setRosterOffline((s) => s ?? (cached[0]?.cached_at ?? null));
         if (cached.length === 0) setNotice({ type: 'error', message: "Couldn't load initiatives." });
       });
     listLabelVocab().then(setVocab).catch(async () => {
-      const cached = await labelCache.listBundles();
+      const cached = await labelCache.listBundleSummaries();
       if (cached.length === 0) setNotice({ type: 'error', message: "Couldn't load label types." });
     });
     refreshCachedBundles();
@@ -135,14 +140,17 @@ export default function PrintLabels() {
   const initiative = useMemo(() => initiatives?.find((i) => i.id === initiativeId) ?? null, [initiatives, initiativeId]);
 
   // ── roster load (API → cache), clears selection like V2 ──────────────
-  const loadRoster = useCallback(async (id: string) => {
+  const loadRoster = useCallback(async (id: string, opts: { keepSelection?: boolean } = {}) => {
     setRosterLoading(true);
-    setSelected([]);
+    if (!opts.keepSelection) setSelected([]);
     try {
       const rows = await listInitiativeAssets(id);
       if (initiativeIdRef.current !== id) return;
       setRoster(rows);
-      setOfflineSince(null);
+      if (opts.keepSelection) {
+        setSelected((s) => s.filter((id) => rows.some((r) => r.asset_id === id)));
+      }
+      setRosterOffline(null);
       const item = initiatives?.find((i) => i.id === id);
       if (item) await labelCache.putInitiative({ initiative: item, roster: rows });
     } catch (err) {
@@ -150,7 +158,7 @@ export default function PrintLabels() {
       const cached = isNetworkFailure(err) ? await labelCache.getInitiative(id) : null;
       if (cached) {
         setRoster(cached.roster);
-        setOfflineSince(cached.cached_at);
+        setRosterOffline(cached.cached_at);
       } else {
         setRoster([]);
         setNotice({ type: 'error', message: "Couldn't load the initiative's assets." });
@@ -168,10 +176,12 @@ export default function PrintLabels() {
 
   // ── bundle load for initiative + type (API → cache) ──────────────────
   const loadBundle = useCallback(async (id: string, type: string) => {
+    setBundleLoading(true);
     try {
       const b = await getGeneratedLabelBundle(id, type);
       if (initiativeIdRef.current !== id || labelTypeRef.current !== type) return;
       setBundle(b);
+      setBundleOffline(null);
       const name = initiatives?.find((i) => i.id === id)?.name ?? id;
       await labelCache.putBundle(b, name);
       setCacheStamp({ cached_at: new Date().toISOString(), count: b.labels.length });
@@ -181,19 +191,23 @@ export default function PrintLabels() {
       const cached = isNetworkFailure(err) ? await labelCache.getBundle(id, type) : null;
       if (cached) {
         setBundle(cached);
-        setOfflineSince((s) => s ?? cached.cached_at);
+        setBundleOffline(cached.cached_at);
         setCacheStamp({ cached_at: cached.cached_at, count: cached.labels.length });
       } else {
         setBundle(null);
         setCacheStamp(null);
         setNotice({ type: 'error', message: `Couldn't load ${typeLabel(type)} labels.` });
       }
+    } finally {
+      if (initiativeIdRef.current === id && labelTypeRef.current === type) setBundleLoading(false);
     }
   }, [initiatives, refreshCachedBundles]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setBundle(null);
     setCacheStamp(null);
+    setBundleOffline(null);
+    setBundleLoading(!!initiativeId && !!labelType && labelType !== LABEL_TYPE_CUSTOM);
     if (!initiativeId || !labelType || labelType === LABEL_TYPE_CUSTOM) return;
     void loadBundle(initiativeId, labelType);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -208,7 +222,7 @@ export default function PrintLabels() {
   useEffect(() => {
     const onOnline = () => {
       if (initiativeIdRef.current) {
-        void loadRoster(initiativeIdRef.current);
+        void loadRoster(initiativeIdRef.current, { keepSelection: true });
         if (labelType && labelType !== LABEL_TYPE_CUSTOM) void loadBundle(initiativeIdRef.current, labelType);
       }
     };
@@ -449,6 +463,9 @@ export default function PrintLabels() {
                 {cacheStamp && !isCustom && (
                   <span className="chip tag">Cached for offline · {cacheStamp.count} labels · {relativeTime(cacheStamp.cached_at)}</span>
                 )}
+                {!cacheStamp && labelType && !isCustom && !bundleLoading && (
+                  <span className="chip tag">Not cached</span>
+                )}
               </div>
             </div>
           )}
@@ -515,8 +532,8 @@ export default function PrintLabels() {
         ) : roster ? (
           <PrintAssetList rows={roster} statusOf={isCustom || !labelType ? null : statusOf} selected={selected}
                           onSelectedChange={setSelected} onDisplayedChange={setDisplayed}
-                          onRefresh={() => void loadRoster(initiativeId)} refreshing={rosterLoading}
-                          disabled={printing || !!batch} />
+                          onRefresh={() => void loadRoster(initiativeId, { keepSelection: true })} refreshing={rosterLoading}
+                          disabled={printing || !!batch} resetKey={initiativeId} />
         ) : null}
       </div>
 
@@ -536,6 +553,10 @@ export default function PrintLabels() {
             <span className={`chip ${labelType ? 'c-green' : 'c-slate'}`}>{labelType ? typeLabel(labelType) : 'No label type'}</span>
             <span className={`chip ${printer.connected ? 'c-green' : 'c-slate'}`}>{printer.connected ? 'Printer ready' : 'No printer'}</span>
           </div>
+          <button type="button" className="btn-ghost plabels-gear" aria-label="Print settings" title="Print settings"
+                  onClick={() => setSettingsOpen(true)}>
+            Settings{modified && <span className="plabels-modified" aria-hidden="true" />}
+          </button>
           <button type="button" className="btn-solid" disabled={!canPrint} onClick={() => void handlePrint()}>
             {printing ? 'Printing…' : `Print ${printableIds.length} label${printableIds.length === 1 ? '' : 's'}`}
           </button>
@@ -558,7 +579,11 @@ export default function PrintLabels() {
                            selectedInitiative={initiative ? { id: initiative.id, name: initiative.name } : null}
                            labelTypes={typeChoices} downloading={downloading} downloadStatus={downloadStatus}
                            onDownload={downloadForOffline}
-                           onRemove={async (i, t) => { await labelCache.deleteBundle(i, t); refreshCachedBundles(); }}
+                           onRemove={async (i, t) => {
+                             await labelCache.deleteBundle(i, t);
+                             refreshCachedBundles();
+                             if (i === initiativeId && t === labelType) setCacheStamp(null);
+                           }}
                            onClearAll={async () => { await labelCache.clearAll(); refreshCachedBundles(); setCacheStamp(null); }}
                            onClose={() => { setCacheOpen(false); setDownloadStatus(null); }} />
       )}

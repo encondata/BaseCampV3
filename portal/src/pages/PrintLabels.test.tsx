@@ -41,6 +41,10 @@ const cache = vi.hoisted(() => {
     putBundle: vi.fn(async (b: { initiative_id: string; label_type: string }, name: string) => { bundles.set(`${b.initiative_id}:${b.label_type}`, { ...b, initiative_name: name, cached_at: new Date().toISOString() }); }),
     getBundle: vi.fn(async (i: string, t: string) => bundles.get(`${i}:${t}`) ?? null),
     listBundles: vi.fn(async () => Array.from(bundles.values())),
+    listBundleSummaries: vi.fn(async () => Array.from(bundles.values()).map((b) => {
+      const bb = b as { initiative_id: string; initiative_name: string; label_type: string; cached_at: string; labels: unknown[] };
+      return { initiative_id: bb.initiative_id, initiative_name: bb.initiative_name, label_type: bb.label_type, cached_at: bb.cached_at, label_count: bb.labels.length };
+    })),
     deleteBundle: vi.fn(async (i: string, t: string) => { bundles.delete(`${i}:${t}`); }),
     deleteInitiative: vi.fn(async () => undefined),
     clearAll: vi.fn(async () => { inis.clear(); bundles.clear(); }),
@@ -246,6 +250,32 @@ it('counts only displayed selections', async () => {
   expect(printer.send.mock.calls[0][0]).toBe('^XA^PW812^FDa3^FS^XZ');
 });
 
+it('an online refetch keeps the selection', async () => {
+  printer.connected = true;
+  api.listInitiativeAssets.mockClear();
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByLabelText('Select all filtered assets'));
+  expect(screen.getByRole('button', { name: 'Print 3 labels' })).toBeTruthy();
+  expect(api.listInitiativeAssets).toHaveBeenCalledTimes(1);
+  window.dispatchEvent(new Event('online'));
+  await waitFor(() => expect(api.listInitiativeAssets).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole('button', { name: 'Print 3 labels' })).toBeTruthy();
+});
+
+it('resets the asset list filters when switching to a different initiative', async () => {
+  api.listInitiatives.mockResolvedValueOnce([ini('i1', 'NAP11'), ini('i2', 'Done move', 'completed'), ini('i3', 'NAP22')]);
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('tab', { name: 'Missing' }));
+  expect(screen.getByText('Showing 0 of 3 assets')).toBeTruthy();
+
+  await userEvent.click(screen.getByRole('combobox'));
+  await userEvent.click(await screen.findByText('NAP22'));
+  await screen.findByText('Showing 3 of 3 assets');
+  expect(screen.getByRole('tab', { name: 'Missing' }).getAttribute('aria-selected')).toBe('false');
+});
+
 it('ignores a bundle that arrives after the type changed', async () => {
   printer.connected = true;
   const deferredTop: { resolve?: (b: GeneratedLabelBundle) => void } = {};
@@ -263,13 +293,13 @@ it('ignores a bundle that arrives after the type changed', async () => {
 
 it('settings modal edits persist to localStorage and mark the gear', async () => {
   renderPage();
-  await userEvent.click(screen.getByRole('button', { name: 'Print settings' }));
+  await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
   const copies = screen.getByLabelText('Copies');
   fireEvent.change(copies, { target: { value: '4' } });
   fireEvent.blur(copies);
   await userEvent.click(screen.getByRole('button', { name: 'Done' }));
   expect(JSON.parse(localStorage.getItem('labels.print.settings') ?? '{}').copies).toBe(4);
-  expect(screen.getByRole('button', { name: 'Print settings' }).querySelector('.plabels-modified')).toBeTruthy();
+  expect(screen.getAllByRole('button', { name: 'Print settings' })[0].querySelector('.plabels-modified')).toBeTruthy();
 });
 
 it('falls back to the cache with an offline banner when the API fails', async () => {
@@ -284,6 +314,25 @@ it('falls back to the cache with an offline banner when the API fails', async ()
   await screen.findByText('Showing 3 of 3 assets');
   expect(screen.getByText(/Offline — using labels downloaded/)).toBeTruthy();
   expect(screen.getByText('3 of 3 assets have a Top Label')).toBeTruthy();
+});
+
+it('keeps the offline banner up when the roster comes back online but the bundle is still served from cache', async () => {
+  cache.inis.set('i1', { initiative: ini('i1', 'NAP11'), roster: ROWS, cached_at: new Date().toISOString() });
+  cache.bundles.set('i1:top', { ...bundleFor(['a1', 'a2', 'a3']), initiative_name: 'NAP11', cached_at: new Date().toISOString() });
+  api.listInitiativeAssets.mockClear();
+  api.listInitiativeAssets.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+  api.getGeneratedLabelBundle.mockRejectedValue(new TypeError('Failed to fetch'));
+  renderPage();
+  await userEvent.click(screen.getByPlaceholderText('Choose an initiative…'));
+  await userEvent.click(await screen.findByText('NAP11'));
+  await screen.findByText('Showing 3 of 3 assets');
+  expect(screen.getByText(/Offline — using labels downloaded/)).toBeTruthy();
+
+  // Roster refetches successfully online; the bundle endpoint keeps failing, so its cached
+  // (possibly stale) copy is still on screen — the banner must not disappear.
+  window.dispatchEvent(new Event('online'));
+  await waitFor(() => expect(api.listInitiativeAssets).toHaveBeenCalledTimes(2));
+  expect(screen.getByText(/Offline — using labels downloaded/)).toBeTruthy();
 });
 
 it('offline cache modal lists bundles and downloads the checked types', async () => {

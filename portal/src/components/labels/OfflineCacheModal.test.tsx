@@ -3,19 +3,15 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { CachedBundle } from '../../lib/labelCache';
+import type { CachedBundleSummary } from '../../lib/labelCache';
 import OfflineCacheModal from './OfflineCacheModal';
 
 afterEach(cleanup);
 
-const bundle = (initiative_id: string, initiative_name: string, label_type: string, n: number): CachedBundle => ({
-  initiative_id, initiative_name, label_type, fetched_at: '2026-09-12T00:00:00Z',
+const bundle = (initiative_id: string, initiative_name: string, label_type: string, n: number): CachedBundleSummary => ({
+  initiative_id, initiative_name, label_type,
   cached_at: new Date(Date.now() - 120_000).toISOString(),
-  labels: Array.from({ length: n }, (_, i) => ({
-    id: `${label_type}${i}`, entity_type: 'asset', entity_id: `a${i}`, template_id: 't', template_name: 'T',
-    template_version: 1, language_key: 'zpl', size_key: '4x2', dpi_key: '203', stale: false,
-    generated_at: '2026-09-12T00:00:00Z', code: '^XA^XZ',
-  })),
+  label_count: n,
 });
 
 const TYPES = [{ key: 'top', label: 'Top Label' }, { key: 'front', label: 'Front Label' }];

@@ -99,10 +99,11 @@ interface Props {
   onRefresh: () => void;
   refreshing: boolean;
   disabled?: boolean;
+  resetKey?: string;
 }
 
 export default function PrintAssetList({
-  rows, statusOf, selected, onSelectedChange, onDisplayedChange, onRefresh, refreshing, disabled = false,
+  rows, statusOf, selected, onSelectedChange, onDisplayedChange, onRefresh, refreshing, disabled = false, resetKey,
 }: Props) {
   const [query, setQuery] = useState('');
   const [labelFilter, setLabelFilter] = useState<LabelFilter>('all');
@@ -111,6 +112,19 @@ export default function PrintAssetList({
     visibleCols, setVisibleCols, sortKey, sortDir, setSort, toggleSort,
     filters, setFilter, clearFilters, colOrder, setColOrder,
   } = usePersistentListState(PRINT_LIST_PAGE_KEY, { visible: DEFAULT_VISIBLE, sortKey: 'source_rack', sortDir: 1 }, ALL_KEYS);
+
+  // Clear filters/search/label-filter when the parent swaps in a new
+  // initiative's rows (V2 only reset on a move/initiative change, never on
+  // first load — so the initializer below intentionally skips mount).
+  const prevResetKey = useRef(resetKey);
+  useEffect(() => {
+    if (prevResetKey.current !== resetKey) {
+      prevResetKey.current = resetKey;
+      clearFilters();
+      setLabelFilter('all');
+      setQuery('');
+    }
+  }, [resetKey]);
 
   const status = (r: InitiativeAssetRow): LabelStatus | null => (statusOf ? statusOf(r) : null);
   const cellText: CellText<InitiativeAssetRow> = (r, key) => assetCellText(r, status(r), key);

@@ -165,8 +165,8 @@
 .tag-picker-trigger { display: inline-flex; align-items: center; }
 
 /* ── Print Labels (/labels/print) — layout + color only; typography rides
-   the shared primitives (guardrail: no font-*/line-height/min-height on
-   list-ish selectors here). ─────────────────────────────────────────── */
+   the shared primitives (guardrail: no font-size/font-family/font-weight,
+   line-height or min-height on list-ish selectors here). ──────────────── */
 .plabels-head-actions { display: flex; align-items: center; gap: 8px; }
 .plabels-gear { position: relative; }
 .plabels-gear .plabels-modified {

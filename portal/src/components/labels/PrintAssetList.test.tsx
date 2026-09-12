@@ -111,6 +111,20 @@ describe('PrintAssetList', () => {
     expect(screen.getByText('No assets match your search')).toBeTruthy();
   });
 
+  it('clears search/filters when resetKey changes (new initiative swapped in)', async () => {
+    const h = setup({ resetKey: 'i1' });
+    await userEvent.type(screen.getByPlaceholderText('Search assets…'), 'cisco');
+    expect(screen.getByText('Showing 1 of 3 assets')).toBeTruthy();
+
+    h.view.rerender(
+      <PrintAssetList rows={ROWS} statusOf={statusOf} selected={[]} refreshing={false} resetKey="i2"
+                      onSelectedChange={h.onSelectedChange} onDisplayedChange={h.onDisplayedChange} onRefresh={h.onRefresh} />,
+    );
+
+    expect((screen.getByPlaceholderText('Search assets…') as HTMLInputElement).value).toBe('');
+    expect(screen.getByText('Showing 3 of 3 assets')).toBeTruthy();
+  });
+
   it('does not re-report displayed rows on unrelated re-renders', () => {
     const onDisplayedChange = vi.fn();
     const onSelectedChange = vi.fn();
