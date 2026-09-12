@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import NamedTuple
 
 from serversherpa.db.models import Initiative, Site
-from serversherpa.reports.move_scan_history import report_timezone
+from serversherpa.services.timezone import report_timezone
 
 CONTAINER_KEYS = ("container_name", "container_id")
 

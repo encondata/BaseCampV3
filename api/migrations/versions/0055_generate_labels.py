@@ -72,6 +72,11 @@ def upgrade() -> None:
         sa.Column("started_at", sa.TIMESTAMP(timezone=True)),
         sa.Column("finished_at", sa.TIMESTAMP(timezone=True)),
         sa.Column("worker_id", sa.Text),
+        # bumped by the runner at every batch flush (jobs.claim_next sets
+        # it at claim time too) — requeue_stale sweeps on THIS, not
+        # started_at, so a long-running run that is still actively making
+        # progress is never mistaken for a dead worker's abandoned row.
+        sa.Column("heartbeat_at", sa.TIMESTAMP(timezone=True)),
         sa.CheckConstraint(
             "status IN ('queued','running','completed','failed','canceled')",
             name="label_generation_runs_status_check"),

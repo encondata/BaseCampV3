@@ -7,7 +7,6 @@ docs/superpowers/specs/2026-09-11-move-scan-history-design.md.
 
 import re
 from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +16,16 @@ from serversherpa.reports.move_scan_history.gather import columns_for, gather
 from serversherpa.reports.move_scan_history.pdf import render_html, render_pdf
 from serversherpa.reports.move_scan_history.xlsx import XLSX_MIME, build_workbook
 from serversherpa.reports.registry import OptionsError, ReportResult
+# DEFAULT_TIMEZONE/report_timezone used to live here (this was the first
+# caller) — moved to services/timezone.py so a non-report caller
+# (labels/generate/values.py) isn't pulling in the whole report package
+# for a ZoneInfo. Re-exported here so existing
+# `from serversherpa.reports.move_scan_history import report_timezone`
+# imports (and `move_scan_history.report_timezone()` attribute access)
+# keep working unchanged.
+from serversherpa.services.timezone import (  # noqa: F401
+    DEFAULT_TIMEZONE, report_timezone,
+)
 
 report_type = "move_scan_history"
 
@@ -27,19 +36,6 @@ _FILENAME_UNSAFE_RE = re.compile(r'[\\/:*?"<>|\r\n\t]+')
 
 _FORMAT_VALUES = ("xlsx", "pdf")
 _STATUS_COLUMNS_VALUES = ("pipeline", "all")
-
-# No system-wide timezone config exists yet (grepped
-# serversherpa/notifications/ and serversherpa/system/config_store.py —
-# neither defines a DEFAULT_TIMEZONE constant or a system_config section
-# key for it). This mirrors NotificationGroup.timezone's own
-# server_default (db/models.py) — the closest thing V3 has today to a
-# house-default time zone. Swap this for a real system_config read if one
-# is added later.
-DEFAULT_TIMEZONE = "America/New_York"
-
-
-def report_timezone() -> ZoneInfo:
-    return ZoneInfo(DEFAULT_TIMEZONE)
 
 
 def default_options() -> dict:

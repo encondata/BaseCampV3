@@ -11,12 +11,17 @@ JSON on the roster row.
 Session discipline: everything the loop needs from `run` (initiative_id,
 label_types, regenerate_existing) is read ONCE into plain locals up
 front, and `run`'s ORM attributes are only ever written right before a
-commit (the batch boundary, or the terminal write). A per-asset DB
-failure (caught in `_generate_one`) rolls the session back to recover —
-Session.rollback() expires every ORM object it's tracking, not just the
-one that failed — so it also reloads `template`/`initiative`/the site
-rows the REST of the loop still needs; `run` itself is never touched
-between commits, so it has nothing to lose."""
+commit (the batch boundary, or the terminal write). The one per-asset
+statement that can fail at the DB level — `_upsert_label` — runs inside
+its own SAVEPOINT (`db.begin_nested()`): on failure only that statement
+is rolled back (to the savepoint, not the whole transaction), so the
+rest of the batch's already-executed upserts survive to the next
+commit. An earlier version instead called `Session.rollback()` on the
+whole session and reloaded the long-lived objects it expired — that
+rolled back every OTHER upsert already queued in the same batch too
+while `generated` kept counting them, so the run reported labels that
+were never written. See test_runner_db_failure_on_one_asset_does_not_
+lose_other_writes_in_batch for the regression proof."""
 
 import logging
 import uuid
@@ -39,6 +44,7 @@ logger = logging.getLogger("serversherpa.labels.generate.runner")
 
 BATCH_SIZE = 200
 ERROR_DETAILS_MAX = 50
+ERROR_MESSAGE_MAX = 500
 ERROR_MAX = 2000
 NIL_UUID = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
@@ -47,7 +53,7 @@ def _record_error(details: list[dict], *, item: str, label_type: str, kind: str,
                   message: str) -> None:
     if len(details) < ERROR_DETAILS_MAX:
         details.append({"item": item, "label_type": label_type, "type": kind,
-                        "message": message})
+                        "message": message[:ERROR_MESSAGE_MAX]})
 
 
 def _tag_error(error_summary: dict[str, int], error_details: list[dict], *,
@@ -55,22 +61,6 @@ def _tag_error(error_summary: dict[str, int], error_details: list[dict], *,
     cls = type(exc).__name__
     error_summary[cls] = error_summary.get(cls, 0) + 1
     _record_error(error_details, item=item, label_type=label_type, kind=cls, message=str(exc))
-
-
-async def _recover_session(db: AsyncSession, *, run_id: uuid.UUID, objects: tuple) -> None:
-    """A DB statement failed mid-batch: roll back to clear the aborted
-    transaction, then reload every long-lived ORM object the rest of the
-    loop still needs — rollback expires ALL of the session's objects,
-    not just the one involved, so skipping this would turn one bad
-    statement into a MissingGreenlet on the very next asset."""
-    try:
-        await db.rollback()
-        for obj in objects:
-            if obj is not None:
-                await db.refresh(obj)
-    except Exception:
-        logger.warning("could not recover the session after a DB error in run %s",
-                       run_id, exc_info=True)
 
 
 async def _load_roster(db: AsyncSession, initiative_id: uuid.UUID) -> list[AssetRow]:
@@ -97,11 +87,21 @@ def _item_label(row: AssetRow) -> str:
     return str(row.legacy_id) if row.legacy_id is not None else "unknown"
 
 
-async def _existing_current(db: AsyncSession, initiative_id: uuid.UUID, row: AssetRow,
-                            label_type: str) -> GeneratedLabel | None:
-    return await db.scalar(select(GeneratedLabel).where(
-        GeneratedLabel.entity_type == "asset", GeneratedLabel.entity_id == row.asset_id,
-        GeneratedLabel.initiative_id == initiative_id, GeneratedLabel.label_type == label_type))
+async def _load_existing_for_type(
+    db: AsyncSession, initiative_id: uuid.UUID, label_type: str,
+) -> dict[uuid.UUID, tuple[uuid.UUID, int, bool]]:
+    """One query per label type instead of one SELECT per asset: every
+    current `generated_labels` row for this (initiative, type), keyed by
+    entity_id -> (template_id, template_version, stale) — everything
+    `_generate_one` needs to decide skip vs regenerate."""
+    rows = (await db.execute(select(
+        GeneratedLabel.entity_id, GeneratedLabel.template_id,
+        GeneratedLabel.template_version, GeneratedLabel.stale,
+    ).where(GeneratedLabel.entity_type == "asset",
+           GeneratedLabel.initiative_id == initiative_id,
+           GeneratedLabel.label_type == label_type))).all()
+    return {entity_id: (template_id, version, stale)
+           for entity_id, template_id, version, stale in rows}
 
 
 async def _upsert_label(db: AsyncSession, *, initiative_id: uuid.UUID, run_id: uuid.UUID,
@@ -121,7 +121,8 @@ async def _upsert_label(db: AsyncSession, *, initiative_id: uuid.UUID, run_id: u
                         func.coalesce(GeneratedLabel.initiative_id, NIL_UUID),
                         GeneratedLabel.label_type],
         set_=settable)
-    await db.execute(stmt)
+    async with db.begin_nested():        # SAVEPOINT: a failure here rolls back
+        await db.execute(stmt)            # only this statement, not the batch
 
 
 async def _generate_one(
@@ -130,26 +131,19 @@ async def _generate_one(
     template: LabelTemplate, size_meta: dict, dpi_meta: dict, catalog_keys: list[str],
     initiative: Initiative, sites: Sites, seen_unknown: set[str],
     error_summary: dict[str, int], error_details: list[dict],
+    existing_by_asset: dict[uuid.UUID, tuple[uuid.UUID, int, bool]],
 ) -> str:
     """Generate (or skip) one asset's label for one type. Returns
     'generated', 'skipped', or 'error' — errors are recorded onto
     error_summary/error_details here so the caller stays a flat counter
-    bump. A DB-level failure (the existing-label lookup, or the upsert)
-    recovers the session via `_recover_session`; a pure-Python failure
-    (bad placeholder/render logic) never touches the transaction, so no
-    recovery is needed for it."""
-    try:
-        existing = await _existing_current(db, initiative_id, row, label_type)
-    except Exception as exc:
-        await _recover_session(db, run_id=run_id,
-                               objects=(template, initiative, sites.origin, sites.destination))
-        _tag_error(error_summary, error_details, item=item, label_type=label_type, exc=exc)
-        return "error"
-
+    bump. Only `_upsert_label`'s statement can fail at the DB level (the
+    skip check is now a plain dict lookup, not a query); it runs in its
+    own SAVEPOINT so a failure there can't cost the batch's other
+    already-written rows."""
+    existing = existing_by_asset.get(row.asset_id)
     if (existing is not None and not regenerate_existing
-            and existing.template_id == template.id
-            and existing.template_version == template.version
-            and not existing.stale):
+            and existing[0] == template.id and existing[1] == template.version
+            and not existing[2]):
         return "skipped"
 
     try:
@@ -171,8 +165,6 @@ async def _generate_one(
         await _upsert_label(db, initiative_id=initiative_id, run_id=run_id, row=row,
                             label_type=label_type, template=template, code=code, values=values)
     except Exception as exc:
-        await _recover_session(db, run_id=run_id,
-                               objects=(template, initiative, sites.origin, sites.destination))
         _tag_error(error_summary, error_details, item=item, label_type=label_type, exc=exc)
         return "error"
     return "generated"
@@ -192,6 +184,13 @@ async def _notify(sessionmaker, run_id: uuid.UUID) -> None:
             run = await nb.get(LabelGenerationRun, run_id)
             if run is None or not run.notify:
                 return
+            if run.status == "canceled":
+                # a user-requested cancel is not a failure — sending
+                # `labels_failed` ("Label generation failed" / body
+                # "Canceled") would read as an error report for something
+                # the user themselves stopped. Send nothing, same as V2
+                # gave no completion alert for a cancel.
+                return
             initiative = await nb.get(Initiative, run.initiative_id)
             initiative_name = initiative.name if initiative else "?"
             link = f"/labels/generate?run={run_id}"
@@ -200,9 +199,8 @@ async def _notify(sessionmaker, run_id: uuid.UUID) -> None:
                 await notify(nb, run.requested_by, "labels_ready", "Labels are ready",
                              body=initiative_name, link=link, payload=payload)
             else:
-                body = run.error or ("Canceled" if run.status == "canceled" else "unknown error")
                 await notify(nb, run.requested_by, "labels_failed", "Label generation failed",
-                             body=body, link=link, payload=payload)
+                             body=run.error or "unknown error", link=link, payload=payload)
             await nb.commit()
     except Exception:
         logger.warning("could not write the inbox row for run %s", run_id, exc_info=True)
@@ -239,6 +237,7 @@ async def process_run(db: AsyncSession, run: LabelGenerationRun, *, sessionmaker
 
         run.total = total
         run.processed = 0
+        run.heartbeat_at = datetime.now(UTC)
         await db.commit()
 
         canceled = False
@@ -249,11 +248,13 @@ async def process_run(db: AsyncSession, run: LabelGenerationRun, *, sessionmaker
                 break
             template = await select_template(db, label_type, template_site_id)
             size_meta = dpi_meta = None
+            existing_by_asset: dict[uuid.UUID, tuple[uuid.UUID, int, bool]] = {}
             if template is not None:
                 size_row = await db.get(LabelVocab, ("size", template.size_key))
                 dpi_row = await db.get(LabelVocab, ("dpi", template.dpi_key))
                 size_meta = size_row.meta if size_row else {}
                 dpi_meta = dpi_row.meta if dpi_row else {}
+                existing_by_asset = await _load_existing_for_type(db, initiative_id, label_type)
 
             for row in roster:
                 item = _item_label(row)
@@ -271,7 +272,7 @@ async def process_run(db: AsyncSession, run: LabelGenerationRun, *, sessionmaker
                         label_type=label_type, template=template, size_meta=size_meta,
                         dpi_meta=dpi_meta, catalog_keys=catalog_keys, initiative=initiative,
                         sites=sites, seen_unknown=seen_unknown, error_summary=error_summary,
-                        error_details=error_details)
+                        error_details=error_details, existing_by_asset=existing_by_asset)
                     if outcome == "generated":
                         generated += 1
                     elif outcome == "skipped":
@@ -288,6 +289,7 @@ async def process_run(db: AsyncSession, run: LabelGenerationRun, *, sessionmaker
                     run.skipped, run.errors = skipped, errors
                     run.error_summary = dict(error_summary)
                     run.error_details = list(error_details)
+                    run.heartbeat_at = datetime.now(UTC)
                     await db.commit()
                     batch_count = 0
                     if await _cancel_requested(db, run_id):
@@ -305,6 +307,7 @@ async def process_run(db: AsyncSession, run: LabelGenerationRun, *, sessionmaker
         run.current_label_type = None
         run.current_item = None
         run.finished_at = datetime.now(UTC)
+        run.heartbeat_at = datetime.now(UTC)
         await db.commit()
     except Exception as exc:
         logger.exception("run %s failed: %s", run_id, exc)

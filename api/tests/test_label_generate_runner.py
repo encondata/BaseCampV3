@@ -222,8 +222,77 @@ async def test_runner_per_asset_exception_is_recorded_and_run_continues(db):
     assert len(bad) == 1 and bad[0]["message"] == "boom" and bad[0]["label_type"] == "top"
 
 
+async def test_runner_db_failure_on_one_asset_does_not_lose_other_writes_in_batch(db):
+    """A REAL failing statement (not a pure-Python exception) for one
+    asset must not roll back the OTHER assets' already-executed upserts
+    in the same in-flight batch. `_upsert_label` runs inside its own
+    SAVEPOINT (db.begin_nested()) for exactly this reason — an earlier
+    version called Session.rollback() on the whole session instead, which
+    discarded every upsert already queued in the batch while `generated`
+    kept counting them, so the run reported labels that were never
+    written.
+
+    The failure is injected by making `render_label` return a None code
+    for one asset — `code` is NOT NULL on generated_labels, so the REAL
+    `_upsert_label` (not a stand-in) hits a genuine IntegrityError inside
+    its own db.begin_nested() block. Assert run.generated == the REAL row
+    count, not just that the run finishes 'completed'."""
+    initiative, person, assets, template = await _seed_initiative(db, n_assets=3)
+    real_render = runner_module.render_label
+
+    def flaky_render(template, values, **kwargs):
+        code, unknown = real_render(template, values, **kwargs)
+        if values.get("asset_id") == "9001":            # assets[1]'s legacy_id
+            return None, unknown                         # code NOT NULL -> real DB failure
+        return code, unknown
+
+    run = _queued_run(initiative.id, person.id, label_types=["top"])
+    db.add(run)
+    await db.commit()
+
+    runner_module.render_label = flaky_render
+    try:
+        status = await process_run(db, run, sessionmaker=get_sessionmaker())
+    finally:
+        runner_module.render_label = real_render
+
+    assert status == "completed"
+    await db.refresh(run)
+    assert run.generated == 2 and run.errors == 1
+    rows = (await db.execute(select(GeneratedLabel).where(
+        GeneratedLabel.label_type == "top"))).scalars().all()
+    assert len(rows) == run.generated == 2                 # the load-bearing assertion
+    assert {r.entity_id for r in rows} == {assets[0].id, assets[2].id}
+
+
+async def test_runner_error_message_capped_at_500_chars(db):
+    initiative, person, assets, template = await _seed_initiative(db, n_assets=1)
+    real_render = runner_module.render_label
+
+    def flaky_render(*args, **kwargs):
+        raise ValueError("x" * 1000)
+
+    runner_module.render_label = flaky_render
+    try:
+        run = _queued_run(initiative.id, person.id, label_types=["top"])
+        db.add(run)
+        await db.commit()
+        await process_run(db, run, sessionmaker=get_sessionmaker())
+    finally:
+        runner_module.render_label = real_render
+
+    await db.refresh(run)
+    assert run.errors == 1
+    message = run.error_details[0]["message"]
+    assert len(message) == 500 and message == "x" * 500
+
+
 async def test_runner_reports_unknown_tokens_without_failing_the_label(db):
-    initiative, person, assets, _tpl = await _seed_initiative(db, n_assets=1, top_template=False)
+    """Two assets both hit the SAME unknown token — error_summary must
+    stay at 1 ('counted once per run', spec §Worker), not accumulate one
+    per occurrence. A single-asset version of this test would pass even
+    if the runner incremented per occurrence (1 == 1 either way)."""
+    initiative, person, assets, _tpl = await _seed_initiative(db, n_assets=2, top_template=False)
     template = LabelTemplate(
         name=f"unknown-tok-{uuid.uuid4()}", label_type="top", size_key="4x2", dpi_key="203",
         language_key="zpl", kind="code", code="{asset_id} {totally_made_up}")
@@ -237,13 +306,33 @@ async def test_runner_reports_unknown_tokens_without_failing_the_label(db):
 
     assert status == "completed"
     await db.refresh(run)
-    assert run.generated == 1 and run.errors == 0             # unknown token doesn't fail it
+    assert run.generated == 2 and run.errors == 0              # unknown token doesn't fail it
     assert run.error_summary.get("unknown_token:totally_made_up") == 1
-    row = await db.scalar(select(GeneratedLabel))
-    assert row.code == "9000 "                                 # unresolved token -> ""
+    rows = (await db.execute(select(GeneratedLabel))).scalars().all()
+    assert sorted(r.code for r in rows) == ["9000 ", "9001 "]  # unresolved token -> ""
 
 
-async def test_runner_notifies_ready_and_failed(db):
+async def test_runner_error_details_cap_at_50_but_errors_count_all(db):
+    """> 50 errors in one run: error_details keeps only the first 50
+    (spec §Data), but the `errors` counter and error_summary tally the
+    REAL total. 60 assets, requested type has no template so every one
+    is an error."""
+    initiative, person, assets, _tpl = await _seed_initiative(
+        db, n_assets=60, top_template=False)
+    run = _queued_run(initiative.id, person.id, label_types=["top"])
+    db.add(run)
+    await db.commit()
+
+    status = await process_run(db, run, sessionmaker=get_sessionmaker())
+
+    assert status == "completed"
+    await db.refresh(run)
+    assert run.errors == 60
+    assert run.error_summary.get("no_template:top") == 60
+    assert len(run.error_details) == 50
+
+
+async def test_runner_notifies_labels_ready_kind(db):
     initiative, person, assets, template = await _seed_initiative(db, n_assets=1)
     run = _queued_run(initiative.id, person.id, label_types=["top"], notify=True)
     db.add(run)
@@ -290,8 +379,11 @@ async def test_runner_marks_failed_on_unexpected_error_and_notifies(db):
 
 async def test_runner_cancel_mid_run_via_second_session(db, monkeypatch):
     monkeypatch.setattr(runner_module, "BATCH_SIZE", 1)
-    initiative, person, assets, template = await _seed_initiative(db, n_assets=5)
-    run = _queued_run(initiative.id, person.id, label_types=["top"])
+    # enough assets that the poller reliably wins the race to set
+    # cancel_requested before the runner (now faster: no more per-asset
+    # SELECT, see _load_existing_for_type) finishes all of them on its own.
+    initiative, person, assets, template = await _seed_initiative(db, n_assets=80)
+    run = _queued_run(initiative.id, person.id, label_types=["top"], notify=True)
     db.add(run)
     await db.commit()
     run_id = run.id
@@ -322,7 +414,11 @@ async def test_runner_cancel_mid_run_via_second_session(db, monkeypatch):
     async with get_sessionmaker()() as fresh:
         row = await fresh.get(LabelGenerationRun, run_id)
         assert row.status == "canceled" and row.finished_at is not None
-        assert row.processed < row.total                  # stopped before finishing all 5
+        assert row.processed < row.total                  # stopped before finishing all 80
+        # a user-requested cancel is not a failure — no labels_failed (or
+        # any other) inbox row, even though notify=True was requested.
+        assert await fresh.scalar(select(Notification).where(
+            Notification.person_id == person.id)) is None
 
 
 # ── jobs.claim_next / requeue_stale ─────────────────────────────────
@@ -343,17 +439,43 @@ async def test_claim_next_oldest_first_skip_locked_and_requeue_stale(db):
 
     claimed = await claim_next(db)
     assert claimed.id == r1.id and claimed.status == "running" and claimed.started_at is not None
+    assert claimed.heartbeat_at is not None and claimed.worker_id      # claim stamps both
     assert (await claim_next(db)).id == r2.id
     assert await claim_next(db) is None
 
+    # staleness is judged on heartbeat_at (bumped at every batch flush),
+    # not started_at — a long-running-but-still-progressing run must
+    # never be swept just because it started long ago.
     stale = await db.get(LabelGenerationRun, r1.id)
-    stale.started_at = datetime.now(UTC) - timedelta(minutes=STALE_MINUTES + 1)
+    old = datetime.now(UTC) - timedelta(minutes=STALE_MINUTES + 1)
+    stale.started_at, stale.heartbeat_at = old, old
     await db.commit()
     assert await requeue_stale(db) == 1
     await db.refresh(stale)
     assert stale.status == "queued" and stale.started_at is None
+    assert stale.heartbeat_at is None and stale.worker_id is None
     fresh_r2 = await db.get(LabelGenerationRun, r2.id)
     assert fresh_r2.status == "running"                     # not stale — untouched
+
+    # a run with a fresh heartbeat is never swept even if started_at is
+    # old (a long roster still actively making progress).
+    still_going = await db.get(LabelGenerationRun, r2.id)
+    still_going.started_at = old
+    still_going.heartbeat_at = datetime.now(UTC)
+    await db.commit()
+    assert await requeue_stale(db) == 0
+    await db.refresh(still_going)
+    assert still_going.status == "running"
+
+    # absent a heartbeat entirely (an older worker build that claimed but
+    # never wrote one), staleness falls back to started_at.
+    no_heartbeat = await db.get(LabelGenerationRun, r2.id)
+    no_heartbeat.heartbeat_at = None
+    no_heartbeat.started_at = old
+    await db.commit()
+    assert await requeue_stale(db) == 1
+    await db.refresh(no_heartbeat)
+    assert no_heartbeat.status == "queued"
 
 
 # ── worker.run_once ──────────────────────────────────────────────────

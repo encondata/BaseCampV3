@@ -14,7 +14,7 @@ data) after parsing. The label itself is still produced either way —
 unresolved tokens compile to "" via labels/tokens.py, same as always."""
 
 from serversherpa.db.models import LabelTemplate
-from serversherpa.labels.compile import compile_design
+from serversherpa.labels.compile import compile_parsed_design
 from serversherpa.labels.model import BarcodeEl, QrEl, TextEl, parse_design
 from serversherpa.labels.tokens import TOKEN_RE, apply_placeholders
 
@@ -33,6 +33,8 @@ def render_label(
         return apply_placeholders(code_src, values), _unknown(tokens, values)
 
     design_json = template.design or {}
+    # parsed ONCE — the token scan below and the compile both work off
+    # this same Design object, rather than parsing design_json twice
     design = parse_design({
         **design_json,
         "size": {"w": size_meta["width_in"], "h": size_meta["height_in"]},
@@ -43,7 +45,6 @@ def render_label(
             tokens |= set(TOKEN_RE.findall(el.content))
         elif isinstance(el, (BarcodeEl, QrEl)):
             tokens |= set(TOKEN_RE.findall(el.data))
-    code = compile_design(
-        design_json, width_in=size_meta["width_in"], height_in=size_meta["height_in"],
-        dots=dpi_meta["dots"], language_key=language_key, subs=values)
+    code = compile_parsed_design(design, dots=dpi_meta["dots"], language_key=language_key,
+                                 subs=values)
     return code, _unknown(tokens, values)

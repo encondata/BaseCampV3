@@ -1355,6 +1355,7 @@ class LabelGenerationRun(Base):
     started_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
     worker_id: Mapped[str | None]
+    heartbeat_at: Mapped[datetime | None]
 
 
 class GeneratedLabel(Base):
