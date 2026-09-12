@@ -130,7 +130,7 @@ export function alignmentTestZpl(widthDots: number, heightDots: number, sizeLabe
   const lines = ['^XA', `^PW${widthDots}`, `^LL${heightDots}`, '^LH0,0'];
   const outerInset = 5;
   lines.push(`^FO${outerInset},${outerInset}^GB${widthDots - 2 * outerInset},${heightDots - 2 * outerInset},4^FS`);
-  for (let inset = outerInset + 25; widthDots - 2 * inset > 0 && heightDots - 2 * inset > 0; inset += 25) {
+  for (let inset = outerInset + 25; widthDots - 2 * inset >= 50 && heightDots - 2 * inset >= 50; inset += 25) {
     lines.push(`^FO${inset},${inset}^GB${widthDots - 2 * inset},${heightDots - 2 * inset},2^FS`);
   }
   lines.push(`^FO0,${Math.round(heightDots / 2) - 12}^A0N,24,24^FB${widthDots},1,0,C,0^FDALIGN ${sizeLabel} ${dpi}DPI^FS`);

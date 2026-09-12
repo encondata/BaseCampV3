@@ -62,10 +62,13 @@ describe('blank + alignment ZPL', () => {
     expect(lines[4]).toBe('^FO5,5^GB590,290,4^FS');
     expect(lines[5]).toBe('^FO30,30^GB540,240,2^FS');
     expect(lines[6]).toBe('^FO55,55^GB490,190,2^FS');
+    expect(lines[7]).toBe('^FO80,80^GB440,140,2^FS');
+    expect(lines[8]).toBe('^FO105,105^GB390,90,2^FS');
     expect(lines).toContain('^FO0,138^A0N,24,24^FB600,1,0,C,0^FDALIGN 2x1 300DPI^FS');
     expect(lines[lines.length - 1]).toBe('^XZ');
     // boxes stop once a side would drop below 50 dots
-    expect(lines.filter((l) => l.includes('^GB')).length).toBe(6);
+    expect(lines.filter((l) => l.includes('^GB')).length).toBe(5);
+    expect(zpl).not.toContain('^FO130,130');
   });
 });
 
