@@ -39,6 +39,15 @@ describe('containerCellText', () => {
   });
 });
 
+describe('containerCellText label_tag', () => {
+  it('shows the tag\'s own label, and empty when none is set', () => {
+    expect(containerCellText({ ...row, label_tag: 'priority' }, 'label_tag')).toBe('Priority');
+    expect(containerCellText({ ...row, label_tag: 'ewaste' }, 'label_tag')).toBe('E-Waste');
+    expect(containerCellText(row, 'label_tag')).toBe('');
+    expect(containerCellText({ ...row, label_tag: null }, 'label_tag')).toBe('');
+  });
+});
+
 describe('form round-trip', () => {
   it('builds a payload with nulls for cleared fields', () => {
     const form = formFromContainer(row);

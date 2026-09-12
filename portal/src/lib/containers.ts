@@ -6,11 +6,19 @@ import type { ComboOption } from '../components/ComboBox';
 import type { ContainerItem } from './api';
 import { displayRfid } from './format';
 import type { GodField } from './godEdit';
+import { LABEL_TAG_OPTIONS } from './labelTags';
 
 export function containerSearchText(c: ContainerItem): string {
   return [c.name, c.rfid_tag, c.type_label, c.status_label,
           c.site_name, c.location_detail]
     .filter(Boolean).join(' ').toLowerCase();
+}
+
+/** The Label tag column/facet/chip's own display label, shared by
+ *  `containerCellText` and the page's cell renderer so the two can never
+ *  drift ("Label tag" and its facet must show the exact same string). */
+export function labelTagText(c: Pick<ContainerItem, 'label_tag'>): string {
+  return c.label_tag ? LABEL_TAG_OPTIONS.find((o) => o.key === c.label_tag)?.label ?? '' : '';
 }
 
 /** Column-menu accessor — one row's display text per column key, mirroring
@@ -25,6 +33,7 @@ export function containerCellText(c: ContainerItem, colKey: string): string {
     case 'status': return c.status_label;
     case 'site': return c.site_name ?? '';
     case 'initiative': return c.initiative_name ?? '';
+    case 'label_tag': return labelTagText(c);
     case 'location': return c.location_detail || '—';
     case 'updated': return c.created_at ? new Date(c.created_at).toLocaleDateString() : '—';
     case 'archived': return c.archived_at ? 'Yes' : 'No';

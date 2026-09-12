@@ -13,6 +13,13 @@
  */
 import { jsPDF } from 'jspdf';
 
+// TAG_TYPES/TagKey/TagDefinition moved to `tagTypes.ts` (which this module
+// still fully re-exports) so callers that only need the tag keys/labels/
+// colors don't have to import jsPDF along with them — see that file's
+// header comment.
+export { TAG_TYPES, type TagDefinition, type TagKey } from './tagTypes';
+import { TAG_TYPES, type TagKey } from './tagTypes';
+
 // Avery 5164 specs (inches) - 4" wide x 3-1/3" tall, 2 columns x 3 rows = 6 labels per sheet
 export const AVERY_5164 = {
   pageWidth: 8.5,
@@ -25,25 +32,6 @@ export const AVERY_5164 = {
   gapY: 0,
   cols: 2,
   rows: 3,
-};
-
-export type TagKey = 'none' | 'priority' | 'vendor' | 'accessories' | 'ewaste' | 'warehouse';
-
-export interface TagDefinition {
-  label: string;
-  color: string;
-  qrColor: string;
-  image: string | null;
-}
-
-// Tag type definitions
-export const TAG_TYPES: Record<TagKey, TagDefinition> = {
-  none: { label: 'None', color: '#000000', qrColor: '000000', image: null },
-  priority: { label: 'Priority', color: '#f5222d', qrColor: 'CC0000', image: '/images/priority-tag.png' },
-  vendor: { label: 'Vendor', color: '#1890ff', qrColor: '1890ff', image: '/images/vendor-tag.png' },
-  accessories: { label: 'Accessories', color: '#722ed1', qrColor: '722ed1', image: '/images/accessories-tag.png' },
-  ewaste: { label: 'E-Waste', color: '#fa8c16', qrColor: 'e08200', image: '/images/e-waste-tag.png' },
-  warehouse: { label: 'Warehouse', color: '#d4b106', qrColor: 'b89e00', image: '/images/warehouse-tag.png' },
 };
 
 export interface ContainerLabelMove {

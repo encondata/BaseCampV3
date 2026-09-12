@@ -28,8 +28,9 @@ import {
   type StatusValue,
 } from '../lib/api';
 import {
-  CONTAINER_ERRORS, CONTAINER_GOD_FIELDS, containerCellText, containerSearchText,
+  CONTAINER_ERRORS, CONTAINER_GOD_FIELDS, containerCellText, containerSearchText, labelTagText,
 } from '../lib/containers';
+import { LABEL_TAG_OPTIONS } from '../lib/labelTags';
 import { initialOpenId } from '../lib/auditFormat';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
@@ -66,6 +67,7 @@ const COLUMNS: ColumnDef[] = [
   { key: 'status', label: 'Status', width: '1.1fr', default: true },
   { key: 'site', label: 'Site', width: '1.2fr', default: true },
   { key: 'initiative', label: 'Initiative', width: '1.2fr', default: false },
+  { key: 'label_tag', label: 'Label tag', width: '1.1fr', default: true },
   { key: 'location', label: 'Location', width: '1.4fr', default: false },
   { key: 'updated', label: 'Created', width: '1fr', default: false },
 ];
@@ -84,6 +86,7 @@ function sortValueFor(c: ContainerItem, key: string): string {
     case 'status': return c.status_label.toLowerCase();
     case 'site': return (c.site_name ?? '').toLowerCase();
     case 'initiative': return (c.initiative_name ?? '').toLowerCase();
+    case 'label_tag': return labelTagText(c).toLowerCase();
     case 'location': return c.location_detail.toLowerCase();
     case 'updated': return c.created_at;
     case 'archived': return c.archived_at ? '1' : '0';
@@ -100,6 +103,7 @@ const CSV_COLUMNS: [string, (c: ContainerItem) => string][] = [
   ['Status', (c) => c.status_label],
   ['Site', (c) => c.site_name ?? ''],
   ['Initiative', (c) => c.initiative_name ?? ''],
+  ['Label tag', (c) => labelTagText(c)],
   ['Location', (c) => c.location_detail],
   ['Created', (c) => c.created_at],
 ];
@@ -257,6 +261,16 @@ export default function Containers() {
         return <span className="cell-top">{c.site_name ?? '—'}</span>;
       case 'initiative':
         return <span className="cell-top">{c.initiative_name ?? '—'}</span>;
+      case 'label_tag': {
+        const opt = LABEL_TAG_OPTIONS.find((o) => o.key === c.label_tag);
+        return opt
+          ? (
+            <span className="chip custom" style={{ '--chip': opt.color } as CSSProperties}>
+              <span className="dot" />{opt.label}
+            </span>
+          )
+          : <span className="cell-top">—</span>;
+      }
       case 'location':
         return <span className="cell-top">{c.location_detail || '—'}</span>;
       case 'updated':
@@ -458,6 +472,7 @@ function ContainerRowDetail({
         <dl className="kv">
           <dt>Name</dt><dd>{container.name}</dd>
           <dt>Type</dt><dd>{container.type_label ?? '—'}</dd>
+          <dt>Label tag</dt><dd>{labelTagText(container) || '—'}</dd>
           <dt>RFID tag</dt><dd className="mono" title={container.rfid_tag ?? undefined}>{displayRfid(container.rfid_tag)}</dd>
           <dt>Last audit</dt>
           <dd>{container.last_audit_at

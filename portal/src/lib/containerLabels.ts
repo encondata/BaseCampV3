@@ -112,6 +112,66 @@ export function tagsInUse(selectedIds: string[], tags: Record<string, TagKey>): 
   return [...seen];
 }
 
+/** Seeds the page/options-step `tags` state from each container's own
+ *  stored `label_tag` (the addendum: "the tag chosen per container ...
+ *  should be read from the container"). A container with no `label_tag`
+ *  gets no entry — same "absence, not `'none'`" convention as the rest of
+ *  this file. */
+export function tagsFromContainers(
+  containers: Pick<ContainerItem, 'id' | 'label_tag'>[],
+): Record<string, TagKey> {
+  const out: Record<string, TagKey> = {};
+  for (const c of containers) {
+    if (c.label_tag) out[c.id] = c.label_tag;
+  }
+  return out;
+}
+
+/** Every container id whose tag actually differs between two `tags` maps
+ *  (absence and `undefined` both read as "no tag", so clearing a tag and
+ *  never having had one compare equal) — drives which containers get a
+ *  PATCH when the picker's `tags` state changes, whether from a single
+ *  row's picker or a bulk "Set tag" action over many rows at once. */
+export function changedTagIds(
+  prev: Record<string, TagKey>, next: Record<string, TagKey>,
+): string[] {
+  const ids = new Set([...Object.keys(prev), ...Object.keys(next)]);
+  return [...ids].filter((id) => (prev[id] ?? null) !== (next[id] ?? null));
+}
+
+/** Persists a `tags` state change: PATCHes every changed container (per
+ *  `changedTagIds`) in parallel via the injected `updateFn` (dependency
+ *  injected — rather than importing `updateContainer` here — so this
+ *  stays a plain, jsdom-free unit under test, like the rest of this
+ *  file), and rolls back `next` to `prev`'s value for any container whose
+ *  PATCH rejected. The caller (`ContainerLabels.tsx` /
+ *  `ContainerLabelsOptions.tsx`) applies `next` optimistically before
+ *  calling this, then replaces it with the returned `tags`, and refreshes
+ *  its container list afterward so `label_tag` stays server-current. */
+export async function persistTagChanges(
+  prev: Record<string, TagKey>,
+  next: Record<string, TagKey>,
+  updateFn: (id: string, tag: TagKey | null) => Promise<unknown>,
+): Promise<{ tags: Record<string, TagKey>; failed: boolean }> {
+  const changed = changedTagIds(prev, next);
+  if (changed.length === 0) return { tags: next, failed: false };
+
+  const results = await Promise.allSettled(
+    changed.map((id) => updateFn(id, next[id] ?? null)),
+  );
+
+  const out = { ...next };
+  let failed = false;
+  results.forEach((result, i) => {
+    if (result.status !== 'rejected') return;
+    failed = true;
+    const id = changed[i];
+    if (prev[id]) out[id] = prev[id];
+    else delete out[id];
+  });
+  return { tags: out, failed };
+}
+
 /** Builds `buildContainerLabelPdf`'s input from the picked initiative and
  *  the containers to label, in the order given (the caller already
  *  narrowed `containers` to the selected ids in display order).

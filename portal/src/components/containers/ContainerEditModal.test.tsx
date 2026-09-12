@@ -27,6 +27,7 @@ const CONTAINER: ContainerItem = {
   site_id: null, site_name: null, location_detail: '', asset_count: 0,
   last_audit_at: null, last_validated_at: null, archived_at: null, created_at: '2026-09-01T00:00:00Z',
   initiative_id: 'i1', initiative_name: 'NAP11 Hall Migration',
+  label_tag: 'priority',
 };
 
 const INITIATIVES: InitiativeItem[] = [
@@ -80,6 +81,48 @@ it('renders with no `initiatives` prop at all (Warehouse.tsx-style caller) witho
   render(<ContainerEditModal container={CONTAINER} statuses={[]} types={[]} sites={[]} canChange
                               onClose={() => {}} onSaved={() => {}} />);
   expect(screen.getByDisplayValue('NAP11 Hall Migration')).toBeTruthy(); // still shows the seeded label
+});
+
+it('seeds the Label tag field from the container and submits it unchanged', async () => {
+  const user = userEvent.setup();
+  render(<ContainerEditModal container={CONTAINER} statuses={[]} types={[]} sites={[]}
+                              initiatives={INITIATIVES} canChange
+                              onClose={() => {}} onSaved={() => {}} />);
+  expect(screen.getByDisplayValue('Priority')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateContainer).toHaveBeenCalled());
+  expect(api.updateContainer.mock.calls[0][1]).toMatchObject({ label_tag: 'priority' });
+});
+
+it('picking a different label tag sends its key', async () => {
+  const user = userEvent.setup();
+  render(<ContainerEditModal container={CONTAINER} statuses={[]} types={[]} sites={[]}
+                              initiatives={INITIATIVES} canChange
+                              onClose={() => {}} onSaved={() => {}} />);
+  await user.click(screen.getByDisplayValue('Priority'));
+  await user.click(await screen.findByText('Vendor'));
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateContainer).toHaveBeenCalled());
+  expect(api.updateContainer.mock.calls[0][1]).toMatchObject({ label_tag: 'vendor' });
+});
+
+it('clearing the label tag sends null', async () => {
+  const user = userEvent.setup();
+  render(<ContainerEditModal container={CONTAINER} statuses={[]} types={[]} sites={[]}
+                              initiatives={INITIATIVES} canChange
+                              onClose={() => {}} onSaved={() => {}} />);
+  const wrap = screen.getByDisplayValue('Priority').closest('.combo-wrap') as HTMLElement;
+  await user.click(within(wrap).getByRole('button', { name: 'Clear' }));
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateContainer).toHaveBeenCalled());
+  expect(api.updateContainer.mock.calls[0][1]).toMatchObject({ label_tag: null });
+});
+
+it('create mode starts with no label tag selected', () => {
+  render(<ContainerEditModal container={null} statuses={[]} types={[]} sites={[]}
+                              initiatives={INITIATIVES} canChange
+                              onClose={() => {}} onSaved={() => {}} />);
+  expect(screen.getByPlaceholderText('None')).toBeTruthy();
 });
 
 it('sorts initiative options newest-first without filtering any out', async () => {

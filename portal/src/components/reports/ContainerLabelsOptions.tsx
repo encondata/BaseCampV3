@@ -10,9 +10,11 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import {
-  ApiError, listContainers, type ContainerItem, type InitiativeItem, type ReportDefinition,
+  ApiError, listContainers, updateContainer, type ContainerItem, type InitiativeItem, type ReportDefinition,
 } from '../../lib/api';
-import { buildRunOptions, labeledContainers, tagsInUse } from '../../lib/containerLabels';
+import {
+  buildRunOptions, labeledContainers, persistTagChanges, tagsFromContainers, tagsInUse,
+} from '../../lib/containerLabels';
 import { TAG_TYPES, type TagKey } from '../../labels/containerLabelSheet';
 import ContainerPickList from '../labels/ContainerPickList';
 import { Switch } from '../Switch';
@@ -33,6 +35,7 @@ export default function ContainerLabelsOptions({ initiative, onBack, onGenerate 
   const [loadError, setLoadError] = useState('');
   const [selected, setSelected] = useState<string[]>([]);
   const [tags, setTags] = useState<Record<string, TagKey>>({});
+  const [tagsError, setTagsError] = useState('');
   const [filteredIds, setFilteredIds] = useState<string[]>([]);
   const [notify, setNotify] = useState(false);
 
@@ -43,15 +46,41 @@ export default function ContainerLabelsOptions({ initiative, onBack, onGenerate 
     setLoadError('');
     setSelected([]);
     setTags({});
+    setTagsError('');
     setFilteredIds([]);
     listContainers({ initiative_id: initiative.id })
-      .then((rows) => { if (!cancelled) setContainers(rows); })
+      .then((rows) => {
+        if (cancelled) return;
+        setContainers(rows);
+        setTags(tagsFromContainers(rows));
+      })
       .catch((err) => {
         if (cancelled) return;
         setLoadError(err instanceof ApiError ? err.message : "Couldn't load containers.");
       });
     return () => { cancelled = true; };
   }, [initiative]);
+
+  // Same read/write-through-the-container behavior as the standalone
+  // /labels/containers page (ContainerLabels.tsx) — see its own comment.
+  const applyTagsChange = async (next: Record<string, TagKey>) => {
+    const prev = tags;
+    setTags(next);
+    setTagsError('');
+    const { tags: settled, failed } = await persistTagChanges(
+      prev, next, (id, tag) => updateContainer(id, { label_tag: tag }),
+    );
+    setTags(settled);
+    if (failed) setTagsError("Couldn't save one or more tags — try again.");
+    if (!initiative) return;
+    try {
+      // See ContainerLabels.tsx's own comment: `tags` stays `settled`
+      // rather than being re-derived from this refresh.
+      setContainers(await listContainers({ initiative_id: initiative.id }));
+    } catch {
+      // Keep the currently loaded containers if the refresh itself fails.
+    }
+  };
 
   // V2 parity: only selected ids that are ALSO in the current search
   // filter get labeled — see `labeledContainers`'s own header comment.
@@ -108,9 +137,13 @@ export default function ContainerLabelsOptions({ initiative, onBack, onGenerate 
               <p className="page-hint">No containers on this initiative.</p>
             )}
             {!loadError && initiative && containers !== null && containers.length > 0 && (
-              <ContainerPickList containers={containers} selected={selected} tags={tags}
-                                  onSelectedChange={setSelected} onTagsChange={setTags}
-                                  onFilteredChange={setFilteredIds} />
+              <>
+                {tagsError && <div className="pf-error">{tagsError}</div>}
+                <ContainerPickList containers={containers} selected={selected} tags={tags}
+                                    onSelectedChange={setSelected}
+                                    onTagsChange={(next) => void applyTagsChange(next)}
+                                    onFilteredChange={setFilteredIds} />
+              </>
             )}
           </OptionGroup>
 

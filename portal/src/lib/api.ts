@@ -13,6 +13,7 @@
  *   app, which redirects to login gracefully, preserving location.
  */
 
+import type { TagKey } from '../labels/tagTypes';
 import type { Action, PermMap, ScopeInfo } from './access';
 import type { OrgItem } from './orgs';
 import type { WorkerItem } from './workers';
@@ -1420,6 +1421,10 @@ export interface ContainerItem {
   // elsewhere in the codebase — outside this task's file scope — keep
   // compiling unchanged; the API always returns both (migration 0057).
   initiative_id?: string | null; initiative_name?: string | null;
+  // Same optional-field precedent as initiative_id above (migration
+  // 0058): the API always returns it, but fixtures elsewhere in the
+  // codebase that predate this field shouldn't have to add it to compile.
+  label_tag?: TagKey | null;
 }
 
 export interface ContainerAssetRow {

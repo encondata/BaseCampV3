@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ContainerItem, InitiativeItem } from './api';
 import {
-  applyBulkTag, buildRunOptions, containerDisplayName, filterContainers,
-  initiativeDisplayName, labeledContainers, selectAllFiltered, tagsInUse, toggleSelection, toPdfInput,
+  applyBulkTag, buildRunOptions, changedTagIds, containerDisplayName, filterContainers,
+  initiativeDisplayName, labeledContainers, persistTagChanges, selectAllFiltered, tagsFromContainers,
+  tagsInUse, toggleSelection, toPdfInput,
 } from './containerLabels';
 
 function container(over: Partial<ContainerItem> = {}): ContainerItem {
@@ -165,6 +166,81 @@ describe('toPdfInput', () => {
   it('only carries tags for containers that actually have one', () => {
     const out = toPdfInput(initiative(), [container({ id: 'c1' })], {});
     expect(out.containers[0].tag).toBeNull();
+  });
+});
+
+describe('tagsFromContainers', () => {
+  it('reads each container\'s own label_tag, omitting untagged ones', () => {
+    expect(tagsFromContainers([
+      { id: 'c1', label_tag: 'priority' },
+      { id: 'c2', label_tag: null },
+      { id: 'c3' },
+    ])).toEqual({ c1: 'priority' });
+  });
+  it('empty for an empty list', () => {
+    expect(tagsFromContainers([])).toEqual({});
+  });
+});
+
+describe('changedTagIds', () => {
+  it('detects a single changed row', () => {
+    expect(changedTagIds({ c1: 'priority' }, { c1: 'vendor' })).toEqual(['c1']);
+  });
+  it('detects a clear (present -> absent) and a set (absent -> present)', () => {
+    const ids = changedTagIds({ c1: 'priority' }, { c2: 'vendor' });
+    expect(ids.sort()).toEqual(['c1', 'c2']);
+  });
+  it('treats absence and undefined as equal — no change reported', () => {
+    expect(changedTagIds({}, {})).toEqual([]);
+    expect(changedTagIds({ c1: 'priority' }, { c1: 'priority' })).toEqual([]);
+  });
+  it('a bulk change over several ids reports every one that actually differs', () => {
+    const ids = changedTagIds(
+      { c1: 'priority', c3: 'ewaste' },
+      { c1: 'vendor', c2: 'vendor', c3: 'ewaste' },
+    );
+    expect(ids.sort()).toEqual(['c1', 'c2']);
+  });
+});
+
+describe('persistTagChanges', () => {
+  it('no-ops (no PATCH calls) when nothing changed', async () => {
+    const updateFn = vi.fn();
+    const out = await persistTagChanges({ c1: 'priority' }, { c1: 'priority' }, updateFn);
+    expect(updateFn).not.toHaveBeenCalled();
+    expect(out).toEqual({ tags: { c1: 'priority' }, failed: false });
+  });
+
+  it('PATCHes every changed id with its new tag (or null when cleared)', async () => {
+    const updateFn = vi.fn().mockResolvedValue({});
+    const out = await persistTagChanges({}, { c1: 'priority', c2: 'vendor' }, updateFn);
+    expect(updateFn).toHaveBeenCalledWith('c1', 'priority');
+    expect(updateFn).toHaveBeenCalledWith('c2', 'vendor');
+    expect(updateFn).toHaveBeenCalledTimes(2);
+    expect(out).toEqual({ tags: { c1: 'priority', c2: 'vendor' }, failed: false });
+  });
+
+  it('sends null for a cleared tag', async () => {
+    const updateFn = vi.fn().mockResolvedValue({});
+    await persistTagChanges({ c1: 'priority' }, {}, updateFn);
+    expect(updateFn).toHaveBeenCalledWith('c1', null);
+  });
+
+  it('reverts only the failed id\'s tag and reports failed: true, leaving other successful changes in place', async () => {
+    const updateFn = vi.fn()
+      .mockImplementation((id: string) => (id === 'c1' ? Promise.reject(new Error('boom')) : Promise.resolve({})));
+    const out = await persistTagChanges(
+      { c1: 'priority', c2: 'ewaste' }, { c1: 'vendor', c2: 'warehouse' }, updateFn,
+    );
+    expect(out.failed).toBe(true);
+    expect(out.tags).toEqual({ c1: 'priority', c2: 'warehouse' });
+  });
+
+  it('a failed PATCH for a newly-set tag (no prior value) reverts to absent, not null-ish leftovers', async () => {
+    const updateFn = vi.fn().mockRejectedValue(new Error('boom'));
+    const out = await persistTagChanges({}, { c1: 'priority' }, updateFn);
+    expect(out.failed).toBe(true);
+    expect(out.tags).toEqual({});
   });
 });
 

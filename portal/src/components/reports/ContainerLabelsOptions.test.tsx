@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { ContainerItem, InitiativeItem, ReportDefinition } from '../../lib/api';
 
-const api = vi.hoisted(() => ({ listContainers: vi.fn() }));
+const api = vi.hoisted(() => ({ listContainers: vi.fn(), updateContainer: vi.fn() }));
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()), ...api,
 }));
@@ -33,6 +33,7 @@ const CONTAINERS = [container({ id: 'c1', name: 'Rack Cart 1' }), container({ id
 
 beforeEach(() => {
   api.listContainers.mockResolvedValue(CONTAINERS);
+  api.updateContainer.mockResolvedValue({});
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -85,6 +86,60 @@ it('excludes a selected container currently hidden by the search box (V2 parity)
   await waitFor(() => expect(onGenerate).toHaveBeenCalledWith({
     initiative_id: 'i2', options: { container_ids: ['c1'], tags: {} }, notify: false,
   }));
+});
+
+it('initializes tags from each container\'s stored label_tag', async () => {
+  api.listContainers.mockResolvedValue([
+    container({ id: 'c1', name: 'Rack Cart 1', label_tag: 'vendor' }),
+    container({ id: 'c2', name: 'Server Bin', label_tag: null }),
+  ]);
+  render(<ContainerLabelsOptions definition={DEF} initiative={INITIATIVE}
+                                  onBack={() => {}} onGenerate={() => {}} />);
+  expect((await screen.findByLabelText('Tag for Rack Cart 1')).textContent).toContain('Vendor');
+  expect(screen.getByLabelText('Tag for Server Bin').textContent).toContain('No tag');
+});
+
+it('a row tag change PATCHes that container with {label_tag} and refreshes the list', async () => {
+  const user = userEvent.setup();
+  render(<ContainerLabelsOptions definition={DEF} initiative={INITIATIVE}
+                                  onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByText('Rack Cart 1');
+  api.listContainers.mockClear();
+
+  await user.click(screen.getByLabelText('Tag for Rack Cart 1'));
+  await user.click(await screen.findByRole('menuitem', { name: /Priority/ }));
+
+  await waitFor(() => expect(api.updateContainer).toHaveBeenCalledWith('c1', { label_tag: 'priority' }));
+  await waitFor(() => expect(api.listContainers).toHaveBeenCalledWith({ initiative_id: 'i2' }));
+});
+
+it('bulk Set tag PATCHes every selected container in parallel', async () => {
+  const user = userEvent.setup();
+  render(<ContainerLabelsOptions definition={DEF} initiative={INITIATIVE}
+                                  onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByText('Rack Cart 1');
+  await user.click(screen.getByText('Rack Cart 1'));
+  await user.click(screen.getByText('Server Bin'));
+
+  await user.click(screen.getByRole('button', { name: 'Vendor' }));
+
+  await waitFor(() => expect(api.updateContainer).toHaveBeenCalledWith('c1', { label_tag: 'vendor' }));
+  expect(api.updateContainer).toHaveBeenCalledWith('c2', { label_tag: 'vendor' });
+  expect(api.updateContainer).toHaveBeenCalledTimes(2);
+});
+
+it('reverts a container\'s tag and shows the error strip when its PATCH is rejected', async () => {
+  api.updateContainer.mockRejectedValue(new Error('nope'));
+  const user = userEvent.setup();
+  render(<ContainerLabelsOptions definition={DEF} initiative={INITIATIVE}
+                                  onBack={() => {}} onGenerate={() => {}} />);
+  await screen.findByText('Rack Cart 1');
+
+  await user.click(screen.getByLabelText('Tag for Rack Cart 1'));
+  await user.click(await screen.findByRole('menuitem', { name: /Priority/ }));
+
+  expect(await screen.findByText(/Couldn.t save one or more tags/)).toBeTruthy();
+  await waitFor(() => expect(screen.getByLabelText('Tag for Rack Cart 1').textContent).toContain('No tag'));
 });
 
 it('Back calls onBack', async () => {

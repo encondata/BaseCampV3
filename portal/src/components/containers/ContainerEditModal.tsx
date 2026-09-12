@@ -28,6 +28,7 @@ import {
   CONTAINER_ERRORS, containerPayload, formFromContainer,
   type ContainerFormState,
 } from '../../lib/containers';
+import { LABEL_TAG_OPTIONS } from '../../lib/labelTags';
 import ComboBox from '../ComboBox';
 
 interface Props {
@@ -74,6 +75,10 @@ export default function ContainerEditModal({
   // is out of this task's file scope) — tracked separately and merged
   // into the payload on submit instead.
   const [initiativeId, setInitiativeId] = useState(container?.initiative_id ?? '');
+  // Same out-of-scope-file precedent as initiativeId above: kept out of
+  // `ContainerFormState`/`containerPayload` and merged into the payload
+  // on submit instead.
+  const [labelTag, setLabelTag] = useState(container?.label_tag ?? '');
   const [archived, setArchived] = useState<boolean>(!!container?.archived_at);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -149,12 +154,19 @@ export default function ContainerEditModal({
     return sorted.map((i) => ({ value: i.id, label: i.name, sub: i.client_name ?? undefined }));
   }, [initiatives, container]);
 
+  const labelTagOptions = useMemo(
+    () => LABEL_TAG_OPTIONS.map((o) => ({ value: o.key, label: o.label })), []);
+  const currentLabelTag = LABEL_TAG_OPTIONS.find((o) => o.key === labelTag) ?? null;
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError('');
     try {
-      const payload = { ...containerPayload(form), initiative_id: initiativeId || null };
+      const payload = {
+        ...containerPayload(form), initiative_id: initiativeId || null,
+        label_tag: labelTag || null,
+      };
       if (isCreateMode) {
         await createContainer(payload);
       } else {
@@ -282,6 +294,22 @@ export default function ContainerEditModal({
                   onChange={setInitiativeId}
                   options={initiativeOptions}
                 /></div>
+              <div><label>Label tag</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <ComboBox
+                    placeholder="None"
+                    value={labelTag}
+                    clearable
+                    disabled={locked}
+                    onChange={setLabelTag}
+                    options={labelTagOptions}
+                  />
+                  {currentLabelTag && (
+                    <span className="chip custom" style={{ '--chip': currentLabelTag.color } as CSSProperties}>
+                      <span className="dot" />{currentLabelTag.label}
+                    </span>
+                  )}
+                </div></div>
             </div>
 
             {!isCreateMode && (

@@ -17,9 +17,12 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import {
   ApiError, createReportRun, getReportRun, getReportRunDownloadUrl, listContainers, listInitiatives,
-  listReportDefinitions, type ContainerItem, type InitiativeItem, type ReportDefinition, type ReportRun,
+  listReportDefinitions, updateContainer, type ContainerItem, type InitiativeItem, type ReportDefinition,
+  type ReportRun,
 } from '../lib/api';
-import { buildRunOptions, labeledContainers, tagsInUse, toPdfInput } from '../lib/containerLabels';
+import {
+  buildRunOptions, labeledContainers, persistTagChanges, tagsFromContainers, tagsInUse, toPdfInput,
+} from '../lib/containerLabels';
 import { visibleInitiativesForGenerate } from '../lib/generateLabels';
 import { openPresigned } from '../lib/reports';
 import ComboBox from '../components/ComboBox';
@@ -60,6 +63,7 @@ export default function ContainerLabels() {
 
   const [selected, setSelected] = useState<string[]>([]);
   const [tags, setTags] = useState<Record<string, TagKey>>({});
+  const [tagsError, setTagsError] = useState('');
   // The currently search-filtered id list, reported by ContainerPickList —
   // used (per V2's own `containersToLabel = filteredContainers.filter(
   // selectedSet.has)`) to narrow `selected` down to what's actually
@@ -92,19 +96,54 @@ export default function ContainerLabels() {
     setContainersError('');
     setSelected([]);
     setTags({});
+    setTagsError('');
     setFilteredIds([]);
     setRun(null);
     setRunError('');
     setPdfError('');
     setPdfStatus('');
     listContainers({ initiative_id: initiativeId })
-      .then((rows) => { if (!cancelled) setContainers(rows); })
+      .then((rows) => {
+        if (cancelled) return;
+        setContainers(rows);
+        setTags(tagsFromContainers(rows));
+      })
       .catch((err) => {
         if (cancelled) return;
         setContainersError(err instanceof ApiError ? err.message : "Couldn't load containers.");
       });
     return () => { cancelled = true; };
   }, [initiativeId]);
+
+  // Container Labels reads/writes the tag straight from the container
+  // (addendum 2026-09-12): a row-picker or bulk "Set tag" change applies
+  // optimistically, then PATCHes every actually-changed container in
+  // parallel; a rejected PATCH reverts just that container's tag and
+  // surfaces `tagsError`. Either way we refetch the initiative's
+  // containers afterward so `label_tag` (and anything else) stays
+  // server-current for the next visit / report run.
+  const applyTagsChange = async (next: Record<string, TagKey>) => {
+    const prev = tags;
+    setTags(next);
+    setTagsError('');
+    const { tags: settled, failed } = await persistTagChanges(
+      prev, next, (id, tag) => updateContainer(id, { label_tag: tag }),
+    );
+    setTags(settled);
+    if (failed) setTagsError("Couldn't save one or more tags — try again.");
+    if (!initiativeId) return;
+    try {
+      // Refresh the container list so anything else the PATCH may have
+      // changed (or another operator's concurrent edit) is current — but
+      // `tags` stays exactly `settled` (this session's own optimistic
+      // state, already reverted where a PATCH failed) rather than being
+      // re-derived from this response, which would otherwise race a
+      // save/refresh pair against each other for no benefit.
+      setContainers(await listContainers({ initiative_id: initiativeId }));
+    } catch {
+      // Keep the currently loaded containers if the refresh itself fails.
+    }
+  };
 
   // Poll the queued report run until it settles.
   useEffect(() => {
@@ -235,9 +274,12 @@ export default function ContainerLabels() {
             <p className="page-hint">No containers on this initiative</p>
           )}
           {initiativeId && !containersError && containers !== null && containers.length > 0 && (
-            <ContainerPickList containers={containers} selected={selected} tags={tags}
-                                onSelectedChange={setSelected} onTagsChange={setTags}
-                                onFilteredChange={setFilteredIds} />
+            <>
+              {tagsError && <div className="pf-error">{tagsError}</div>}
+              <ContainerPickList containers={containers} selected={selected} tags={tags}
+                                  onSelectedChange={setSelected} onTagsChange={(next) => void applyTagsChange(next)}
+                                  onFilteredChange={setFilteredIds} />
+            </>
           )}
         </StepCard>
 

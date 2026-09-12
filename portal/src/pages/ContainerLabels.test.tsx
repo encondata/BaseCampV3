@@ -16,6 +16,7 @@ import type { ContainerItem, InitiativeItem, ReportDefinition, ReportRun } from 
 const api = vi.hoisted(() => ({
   listInitiatives: vi.fn(), listContainers: vi.fn(), listReportDefinitions: vi.fn(),
   createReportRun: vi.fn(), getReportRun: vi.fn(), getReportRunDownloadUrl: vi.fn(),
+  updateContainer: vi.fn(),
 }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()), ...api,
@@ -78,6 +79,7 @@ beforeEach(() => {
   api.createReportRun.mockResolvedValue(run());
   api.getReportRun.mockResolvedValue(run());
   api.getReportRunDownloadUrl.mockResolvedValue('https://spaces/x.pdf');
+  api.updateContainer.mockResolvedValue({});
   adapters.loadTagImages.mockResolvedValue({});
   sheet.buildContainerLabelPdf.mockReturnValue({ save: sheet.save });
 });
@@ -194,6 +196,56 @@ it('Generate as report posts {container_ids, tags} against the container_labels 
     definition_id: 'd9', initiative_id: 'i2',
     options: { container_ids: ['c1'], tags: { c1: 'vendor' } }, notify: false,
   }));
+});
+
+it('initializes tags from each container\'s stored label_tag (addendum: the tag lives on the container)', async () => {
+  api.listContainers.mockResolvedValue([
+    container({ id: 'c1', name: 'Rack Cart 1', label_tag: 'priority' }),
+    container({ id: 'c2', name: 'Server Bin', label_tag: null }),
+  ]);
+  const user = userEvent.setup();
+  renderAt();
+  await user.click(screen.getByRole('combobox'));
+  await user.click(await screen.findByText('NAP11 Hall Migration'));
+  await screen.findByText('Rack Cart 1');
+  expect((await screen.findByLabelText('Tag for Rack Cart 1')).textContent).toContain('Priority');
+  expect(screen.getByLabelText('Tag for Server Bin').textContent).toContain('No tag');
+});
+
+it('a row tag change PATCHes that container with {label_tag} and refreshes the list', async () => {
+  const user = userEvent.setup();
+  await pickInitiativeAndContainers(user);
+  api.listContainers.mockClear();
+
+  await user.click(screen.getByLabelText('Tag for Rack Cart 1'));
+  await user.click(await screen.findByRole('menuitem', { name: /Priority/ }));
+
+  await waitFor(() => expect(api.updateContainer).toHaveBeenCalledWith('c1', { label_tag: 'priority' }));
+  await waitFor(() => expect(api.listContainers).toHaveBeenCalledWith({ initiative_id: 'i2' }));
+});
+
+it('bulk Set tag PATCHes every selected container in parallel', async () => {
+  const user = userEvent.setup();
+  await pickInitiativeAndContainers(user);                 // selects c1
+  await user.click(screen.getByText('Server Bin'));        // also select c2
+
+  await user.click(screen.getByRole('button', { name: 'Vendor' }));
+
+  await waitFor(() => expect(api.updateContainer).toHaveBeenCalledWith('c1', { label_tag: 'vendor' }));
+  expect(api.updateContainer).toHaveBeenCalledWith('c2', { label_tag: 'vendor' });
+  expect(api.updateContainer).toHaveBeenCalledTimes(2);
+});
+
+it('reverts a container\'s tag and shows the error strip when its PATCH is rejected', async () => {
+  api.updateContainer.mockRejectedValue(new Error('nope'));
+  const user = userEvent.setup();
+  await pickInitiativeAndContainers(user);
+
+  await user.click(screen.getByLabelText('Tag for Rack Cart 1'));
+  await user.click(await screen.findByRole('menuitem', { name: /Priority/ }));
+
+  expect(await screen.findByText(/Couldn.t save one or more tags/)).toBeTruthy();
+  await waitFor(() => expect(screen.getByLabelText('Tag for Rack Cart 1').textContent).toContain('No tag'));
 });
 
 it('disables Generate as report with a hint when the definition is missing', async () => {
