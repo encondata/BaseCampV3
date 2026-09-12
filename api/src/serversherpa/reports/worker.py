@@ -29,6 +29,7 @@ from serversherpa.db.models import (
     Attachment, Initiative, Partner, ReportDefinition, ReportRun,
 )
 from serversherpa.notifications.inbox import notify
+from serversherpa.reports.container_label_renderer import ContainerLabelRendererUnavailable
 from serversherpa.reports.jobs import claim_next, requeue_stale
 from serversherpa.reports.move_report.gather import InitiativeUnavailable
 from serversherpa.reports.rack_renderer import RackRendererUnavailable
@@ -123,6 +124,8 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
         error = exc.code
     except RackRendererUnavailable as exc:
         error = f"rack renderer unavailable: {exc}"
+    except ContainerLabelRendererUnavailable as exc:
+        error = f"container label renderer unavailable: {exc}"
     except TimeoutError:
         error = f"timed out after {RUN_TIMEOUT_SECONDS:g}s"
     except Exception as exc:                                    # run must terminate

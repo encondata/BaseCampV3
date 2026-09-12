@@ -57,32 +57,47 @@ def _is_uuid_str(value: object) -> bool:
 def validate_run_options(options: dict) -> dict:
     """Run-level options: `container_ids` (a non-empty list of uuid
     strings, required) and `tags` (container id -> one of TAG_KEYS,
-    optional). Returns the normalized dict (both keys present)."""
+    optional — every key must also appear in `container_ids`, else
+    `tag_for_unknown_container:<id>`). Both `container_ids` and `tags`
+    keys are canonicalized (`str(uuid.UUID(v))`) in the returned dict,
+    so `{cid.upper(): "priority"}` and `{cid: "priority"}` compare
+    equal downstream — `build()`'s `tags.get(c.id)` lookup depends on
+    this, since `gather()`'s `c.id` is always the canonical form."""
     known = {"container_ids", "tags"}
     problems = [f"unknown option {k!r}" for k in options if k not in known]
 
     container_ids = options.get("container_ids")
+    canonical_ids: list[str] = []
     if container_ids is None:
         problems.append("option 'container_ids' is required")
     elif not isinstance(container_ids, list) or not container_ids:
         problems.append("option 'container_ids' must be a non-empty list")
     elif bad := [v for v in container_ids if not _is_uuid_str(v)]:
         problems.append(f"option 'container_ids' must contain uuid strings (bad: {bad!r})")
+    else:
+        canonical_ids = [str(uuid.UUID(v)) for v in container_ids]
 
-    tags = options.get("tags", {})
+    raw_tags = options.get("tags", {})
+    canonical_tags: dict = {}
     if "tags" in options and not isinstance(options["tags"], dict):
         problems.append("option 'tags' must be an object")
-    elif isinstance(tags, dict):
-        for cid, tag in tags.items():
+    elif isinstance(raw_tags, dict):
+        for cid, tag in raw_tags.items():
             if not _is_uuid_str(cid):
                 problems.append(f"tag key {cid!r} must be a uuid string")
-            elif tag is not None and tag not in TAG_KEYS:
+                continue
+            if tag is not None and tag not in TAG_KEYS:
                 problems.append(f"tag value {tag!r} must be one of {TAG_KEYS}")
+                continue
+            canonical_tags[str(uuid.UUID(cid))] = tag
+        if canonical_ids:
+            for cid in canonical_tags:
+                if cid not in canonical_ids:
+                    problems.append(f"tag_for_unknown_container:{cid}")
 
     if problems:
         raise OptionsError(problems)
-    return {"container_ids": container_ids,
-            "tags": tags if isinstance(tags, dict) else {}}
+    return {"container_ids": canonical_ids, "tags": canonical_tags}
 
 
 async def build(db: AsyncSession, run: ReportRun) -> ReportResult:

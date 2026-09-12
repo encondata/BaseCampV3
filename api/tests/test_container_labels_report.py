@@ -7,6 +7,7 @@ attachment), not the FakeModule test_report_worker.py otherwise uses."""
 
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import uuid
@@ -155,6 +156,25 @@ def test_validate_run_options_accepts_explicit_null_tag():
     assert container_labels.validate_run_options(
         {"container_ids": [cid], "tags": {cid: None}}
     ) == {"container_ids": [cid], "tags": {cid: None}}
+
+
+def test_validate_run_options_rejects_a_tag_for_a_container_not_in_the_run():
+    cid = str(uuid.uuid4())
+    stray = str(uuid.uuid4())
+    with pytest.raises(OptionsError) as exc_info:
+        container_labels.validate_run_options(
+            {"container_ids": [cid], "tags": {stray: "priority"}})
+    assert exc_info.value.problems == [f"tag_for_unknown_container:{stray}"]
+
+
+def test_validate_run_options_canonicalizes_uppercase_ids_and_tag_keys():
+    cid = uuid.uuid4()
+    # The portal, the DB, and this module all agree on str(uuid.UUID(...))'s
+    # lowercase-hyphenated form — an upper-cased id must still match so
+    # build()'s `tags.get(c.id)` lookup doesn't silently drop the tag.
+    result = container_labels.validate_run_options(
+        {"container_ids": [str(cid).upper()], "tags": {str(cid).upper(): "vendor"}})
+    assert result == {"container_ids": [str(cid)], "tags": {str(cid): "vendor"}}
 
 
 # ── gather() ───────────────────────────────────────────────────────
@@ -403,8 +423,73 @@ async def test_bad_base64_output_is_unavailable(tmp_path, monkeypatch, python_as
         await container_label_renderer.render({})
 
 
+async def test_empty_stdout_is_unavailable(tmp_path, monkeypatch, python_as_node):
+    """An exit-0 script that prints nothing used to decode to b'' (valid,
+    empty base64 under the old `validate=False` decode) and ship as a
+    0-byte 'PDF' the worker would happily store and attach. `render()`
+    must refuse anything that doesn't actually start with %PDF."""
+    monkeypatch.setattr(container_label_renderer, "_script_path",
+                        lambda: _script(tmp_path, "pass"))
+    with pytest.raises(ContainerLabelRendererUnavailable, match="no PDF"):
+        await container_label_renderer.render({})
+
+
+async def test_non_pdf_output_is_unavailable(tmp_path, monkeypatch, python_as_node):
+    monkeypatch.setattr(
+        container_label_renderer, "_script_path",
+        lambda: _script(tmp_path,
+                        "import sys, base64; "
+                        "sys.stdout.write(base64.b64encode(b'hello world').decode())"))
+    with pytest.raises(ContainerLabelRendererUnavailable, match="no PDF"):
+        await container_label_renderer.render({})
+
+
+TZ_PROBE_SCRIPT = (
+    "import sys, os, base64; "
+    "out = ('%PDF-1.4 TZ=' + os.environ.get('TZ', '<unset>')).encode(); "
+    "sys.stdout.write(base64.b64encode(out).decode())"
+)
+
+
+async def test_render_sets_tz_to_the_report_timezone(tmp_path, monkeypatch, python_as_node):
+    """The Node side prints `toLocaleDateString()` in the *process* time
+    zone — without a fixed TZ, a worker in a UTC container prints a
+    different date than a browser in the company zone. This proves the
+    subprocess env carries TZ=America/New_York (services.timezone's
+    report_timezone()), independent of whatever the host's own TZ is."""
+    monkeypatch.setattr(container_label_renderer, "_script_path",
+                        lambda: _script(tmp_path, TZ_PROBE_SCRIPT))
+    out = await container_label_renderer.render({"move": {"name": "x"}})
+    assert out == b"%PDF-1.4 TZ=America/New_York"
+
+
 def test_tag_image_dir_ends_with_portal_public_images():
     assert container_label_renderer.tag_image_dir().endswith("portal/public/images")
+
+
+@pytest.mark.skipif(
+    not Path(container_label_renderer._script_path()).exists(),
+    reason="dist-node bundle not built (run `npm run build:container-labels` in portal/)")
+async def test_real_bundle_renders_two_pages_with_a_tag_image():
+    """Guards against a payload-contract drift between this module and
+    the real portal/dist-node/render-container-labels.js (Task 2) that
+    the python-as-node shim tests above can't catch — skipped when the
+    bundle isn't built (e.g. a fresh checkout without `npm run build`)."""
+    payload = {
+        "move": {"id": "ini-1", "name": "NAP11", "sourceSite": "DC-A",
+                 "destSite": "DC-B", "scheduledStart": "2026-09-20T08:00:00+00:00"},
+        "containers": [
+            {"id": "c1", "name": "Crate A", "tag": "priority"},
+            {"id": "c2", "name": "Crate B", "tag": None},
+        ],
+        "tag_image_dir": container_label_renderer.tag_image_dir(),
+    }
+    content = await container_label_renderer.render(payload)
+    assert content.startswith(b"%PDF")
+    # "/Type /Page" also matches the "/Type /Pages" tree root — excluded
+    # with a negative lookahead so only leaf page objects are counted.
+    pages = re.findall(rb"/Type\s*/Page(?!s)\b", content)
+    assert len(pages) == 2
 
 
 # ── worker: real end-to-end, not FakeModule ───────────────────────────
@@ -461,3 +546,36 @@ async def test_worker_runs_container_labels_end_to_end(db, monkeypatch):
     att = await db.get(Attachment, run.attachment_id)
     assert (att.entity_type, str(att.entity_id), att.kind, att.content_type) == (
         "initiative", str(ini.id), "document", "application/pdf")
+
+
+async def test_worker_maps_renderer_unavailable_to_a_readable_error(db, monkeypatch):
+    """worker.py's bespoke branch for ContainerLabelRendererUnavailable
+    (mirroring its RackRendererUnavailable one) — without it this falls
+    into the generic `except Exception`, which still fails the run but
+    logs a full stack trace for what is an expected, operational
+    condition (missing bundle, timeout, bad output)."""
+    ini = Initiative(name="NAP11", initiative_type="move", status="planned")
+    db.add(ini)
+    await db.flush()
+    c1 = Container(name="Crate A", initiative_id=ini.id)
+    person = Person(first_name="Rae", last_name="Requester")
+    d = ReportDefinition(name="Container Labels", report_type="container_labels",
+                        options={}, is_system=True)
+    db.add_all([c1, person, d])
+    await db.flush()
+    run = ReportRun(definition_id=d.id, report_type="container_labels",
+                    initiative_id=ini.id, options={"container_ids": [str(c1.id)]},
+                    requested_by=person.id, requested_rank=40, notify=False,
+                    status="queued")
+    db.add(run)
+    await db.commit()
+
+    async def failing_render(payload):
+        raise ContainerLabelRendererUnavailable("renderer script not found: x")
+
+    monkeypatch.setattr(container_label_renderer, "render", failing_render)
+
+    assert await worker.run_once(get_sessionmaker()) is True   # a handled failure, not a crash
+    await db.refresh(run)
+    assert run.status == "failed" and run.attachment_id is None
+    assert run.error == "container label renderer unavailable: renderer script not found: x"

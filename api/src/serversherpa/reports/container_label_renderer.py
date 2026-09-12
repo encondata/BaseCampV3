@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 
 from serversherpa.config import get_settings
+from serversherpa.services.timezone import report_timezone
 
 CONTAINER_LABEL_RENDER_TIMEOUT_SECONDS = 30.0
 
@@ -50,10 +51,15 @@ async def render(payload: dict) -> bytes:
     if not os.path.exists(script):
         raise ContainerLabelRendererUnavailable(f"renderer script not found: {script}")
     data = json.dumps(payload).encode()
+    # The Node side prints `toLocaleDateString()` in the *process* time
+    # zone — without this, a worker running in a UTC container prints a
+    # different date than a browser in the company zone (the portal's
+    # own Download PDF path), breaking "exactly what V2 generates".
+    env = {**os.environ, "TZ": report_timezone().key}
     try:
         proc = await asyncio.create_subprocess_exec(
             *_command(script), stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
     except OSError as exc:
         raise ContainerLabelRendererUnavailable(f"cannot start renderer: {exc}") from exc
     try:
@@ -69,6 +75,9 @@ async def render(payload: dict) -> bytes:
             f"renderer exited {proc.returncode}: "
             f"{err.decode(errors='replace').strip()[:500]}")
     try:
-        return base64.b64decode(out.strip())
+        content = base64.b64decode(out.strip(), validate=True)
     except Exception as exc:
         raise ContainerLabelRendererUnavailable(f"invalid renderer output: {exc}") from exc
+    if not content.startswith(b"%PDF"):
+        raise ContainerLabelRendererUnavailable("renderer produced no PDF")
+    return content
