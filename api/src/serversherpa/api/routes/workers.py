@@ -175,37 +175,45 @@ async def get_worker(
                func.count().filter(WorkerCertification.expires_on < today))
         .where(WorkerCertification.person_id == person_id))).one()
 
-    # one query per vocabulary, mirroring initiatives.py::_people_rows
-    vocab_rows = await db.scalars(select(StatusValue).where(
-        StatusValue.record_type.in_(
-            ["initiative", "initiative_type", "initiative_work_type"])))
-    vocabs: dict[str, dict[str, tuple[str, str]]] = {}
-    for s in vocab_rows:
-        vocabs.setdefault(s.record_type, {})[s.key] = (s.label, s.color)
+    # Initiative/site membership history and several Person fields
+    # (rating lives inside `initiatives`, plus notes/badge/RFID/address) are
+    # internal-only: a partner-anchored actor (e.g. vendor_admin, who holds
+    # workers:view over their own supplied workers) must not receive them —
+    # the join below also carries no scope check of its own, so skipping it
+    # entirely for non-global actors is simplest and cheapest.
+    initiatives: list[WorkerInitiativeItem] = []
+    if actor.access.is_global:
+        # one query per vocabulary, mirroring initiatives.py::_people_rows
+        vocab_rows = await db.scalars(select(StatusValue).where(
+            StatusValue.record_type.in_(
+                ["initiative", "initiative_type", "initiative_work_type"])))
+        vocabs: dict[str, dict[str, tuple[str, str]]] = {}
+        for s in vocab_rows:
+            vocabs.setdefault(s.record_type, {})[s.key] = (s.label, s.color)
 
-    memberships = (await db.execute(
-        select(InitiativePerson, Initiative, Site.name)
-        .join(Initiative, Initiative.id == InitiativePerson.initiative_id)
-        .outerjoin(Site, Site.id == InitiativePerson.site_worked_id)
-        .where(InitiativePerson.person_id == person_id)
-        .order_by(InitiativePerson.created_at.desc()))).all()
-    initiatives = []
-    for m, init, site_name in memberships:
-        wt = (vocabs.get("initiative_work_type", {}).get(
-                  m.work_type, (m.work_type, _VOCAB_FALLBACK))
-              if m.work_type is not None else (None, None))
-        t = vocabs.get("initiative_type", {}).get(
-            init.initiative_type, (init.initiative_type, _VOCAB_FALLBACK))
-        s = vocabs.get("initiative", {}).get(
-            init.status, (init.status, _VOCAB_FALLBACK))
-        initiatives.append(WorkerInitiativeItem(
-            initiative_id=init.id, initiative_name=init.name,
-            type_label=t[0], type_color=t[1],
-            status_label=s[0], status_color=s[1],
-            work_type_label=wt[0], work_type_color=wt[1],
-            site_worked_name=site_name, rating=m.rating,
-            added_at=m.created_at))
+        memberships = (await db.execute(
+            select(InitiativePerson, Initiative, Site.name)
+            .join(Initiative, Initiative.id == InitiativePerson.initiative_id)
+            .outerjoin(Site, Site.id == InitiativePerson.site_worked_id)
+            .where(InitiativePerson.person_id == person_id)
+            .order_by(InitiativePerson.created_at.desc()))).all()
+        for m, init, site_name in memberships:
+            wt = (vocabs.get("initiative_work_type", {}).get(
+                      m.work_type, (m.work_type, _VOCAB_FALLBACK))
+                  if m.work_type is not None else (None, None))
+            t = vocabs.get("initiative_type", {}).get(
+                init.initiative_type, (init.initiative_type, _VOCAB_FALLBACK))
+            s = vocabs.get("initiative", {}).get(
+                init.status, (init.status, _VOCAB_FALLBACK))
+            initiatives.append(WorkerInitiativeItem(
+                initiative_id=init.id, initiative_name=init.name,
+                type_label=t[0], type_color=t[1],
+                status_label=s[0], status_color=s[1],
+                work_type_label=wt[0], work_type_color=wt[1],
+                site_worked_name=site_name, rating=m.rating,
+                added_at=m.created_at))
 
+    is_global = actor.access.is_global
     return WorkerDetailOut(
         person_id=person.id,
         display_name=person.display_name,
@@ -225,15 +233,15 @@ async def get_worker(
         certs_expired=cert_expired or 0,
         preferred_name=person.preferred_name,
         job_title=person.job_title,
-        address_line1=person.address_line1,
-        address_line2=person.address_line2,
-        city=person.city,
-        region=person.region,
-        postal_code=person.postal_code,
-        country=person.country,
-        badge_uid=person.badge_uid,
-        rfid_tag=person.rfid_tag,
-        person_notes=person.notes,
+        address_line1=person.address_line1 if is_global else None,
+        address_line2=person.address_line2 if is_global else None,
+        city=person.city if is_global else None,
+        region=person.region if is_global else None,
+        postal_code=person.postal_code if is_global else None,
+        country=person.country if is_global else None,
+        badge_uid=person.badge_uid if is_global else None,
+        rfid_tag=person.rfid_tag if is_global else None,
+        person_notes=person.notes if is_global else None,
         source=person.source,
         source_ref=person.source_ref,
         created_at=person.created_at,
@@ -356,11 +364,12 @@ async def upsert_profile(
     old_status = profile.status or "active"
     new_status = data.get("status", old_status)
 
-    if new_status == "blacklist":
-        note = data.get("status_note", profile.status_note)
-        if not note:
-            raise _err(422, "blacklist_requires_note")
-        # blacklisting someone with elevated roles requires outranking them
+    if new_status != old_status:
+        # entering OR leaving blacklist toggles login access, so both
+        # directions need the same rank/self guard — a worker who also
+        # holds an elevated role must not be un-blacklisted (silently
+        # re-enabling that account) by someone who couldn't have
+        # blacklisted them in the first place.
         target_rank = (await db.scalar(
             select(func.max(Role.rank))
             .join(PersonRole, PersonRole.role == Role.name)
@@ -370,6 +379,11 @@ async def upsert_profile(
             raise _err(403, "rank_too_low")
         if person_id == actor.person.id:
             raise _err(403, "cannot_target_self")
+
+    if new_status == "blacklist":
+        note = data.get("status_note", profile.status_note)
+        if not note:
+            raise _err(422, "blacklist_requires_note")
 
     if "level" in data and data["level"] is not None:
         if await db.get(WorkerLevel, data["level"]) is None:

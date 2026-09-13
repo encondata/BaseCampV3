@@ -383,3 +383,35 @@ async def test_vendor_contact_sees_only_supplied_workers(client, db, seeded_user
                             json={"trade": "racking", "level": "L2",
                                   "status": "active", "partner_id": str(pa.id)})
     assert resp.status_code == 403      # vendor has workers:view only
+
+
+async def test_unblacklist_elevated_target_requires_rank(client, seeded_user, db):
+    """Security-fixes task 5 finding (b): the rank/self checks that guard
+    entering blacklist lived only inside `if new_status == "blacklist"`, so
+    leaving blacklist (re-enabling the account) ran no check at all. A plain
+    staff actor (rank 40) must not be able to un-blacklist a worker who also
+    holds an elevated role (admin, rank 60) — mirrors
+    test_blacklist_elevated_target_requires_rank but for the reverse
+    direction."""
+    worker = await _mk_worker(db, first="Ed", last="Elevated",
+                              email="ed2@test.example.com")
+    db.add(PersonRole(person_id=worker.id, role="admin"))
+    db.add(WorkerProfile(person_id=worker.id, status="blacklist",
+                         status_note="prior investigation"))
+    await db.commit()
+
+    headers = await _headers(client)
+    resp = await client.put(f"/workers/{worker.id}/profile", headers=headers,
+                            json={"status": "active"})
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "rank_too_low"
+
+    # a super_admin (rank 80) outranks the target and may un-blacklist
+    await db.execute(text(
+        "UPDATE person_roles SET role='super_admin' WHERE person_id=:p"),
+        {"p": seeded_user.id})
+    await db.commit()
+    super_headers = await _headers(client)
+    resp = await client.put(f"/workers/{worker.id}/profile", headers=super_headers,
+                            json={"status": "active"})
+    assert resp.status_code == 204

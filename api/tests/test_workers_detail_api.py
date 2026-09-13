@@ -3,8 +3,9 @@
 import uuid
 
 from serversherpa.db.models import (
-    Initiative, InitiativePerson, Person, PersonRole, WorkerProfile,
+    Initiative, InitiativePerson, Partner, Person, PersonRole, WorkerProfile,
 )
+from tests.test_sites_api import make_login
 from tests.test_workers import _headers, _mk_worker  # shared harness
 
 
@@ -177,3 +178,66 @@ async def test_person_notes_scoped_worker_cannot_read_others(client, seeded_user
         f"/notes?entity_type=person&entity_id={worker_a.id}",
         headers=worker_a_headers)
     assert resp.status_code == 403
+
+
+async def test_worker_detail_redacts_internal_fields_for_partner_actor(
+        client, seeded_user, db):
+    """Security-fixes task 5 finding (a): GET /workers/{id} joined
+    initiatives/sites without a scope check and always returned rating,
+    person_notes, badge_uid, rfid_tag and address fields. vendor_admin holds
+    workers:view but is partner-anchored (not global) — it must see the
+    worker (in scope, supplied by their own partner) but not the internal
+    fields or the initiative history."""
+    worker = await _mk_worker(db)
+    worker.job_title = "Rack tech"
+    worker.city = "Las Vegas"
+    worker.address_line1 = "123 Data Dr"
+    worker.rfid_tag = "RF-002"
+    worker.notes = "internal note about Wan"
+
+    partner = Partner(name="Northwind Staffing")
+    db.add(partner)
+    await db.flush()
+    profile = WorkerProfile(person_id=worker.id, trade="Hardware",
+                            status="active", partner_id=partner.id)
+    db.add(profile)
+
+    init = Initiative(name="NAP11 Hall Migration", initiative_type="move",
+                      status="in_progress")
+    db.add(init)
+    await db.flush()
+    db.add(InitiativePerson(initiative_id=init.id, person_id=worker.id,
+                            work_type="lead", rating=4))
+
+    contact = Person(first_name="V", last_name="Contact",
+                     email="vc@partner.example.com")
+    db.add(contact)
+    await db.flush()
+    db.add(PersonRole(person_id=contact.id, role="vendor_admin",
+                      partner_id=partner.id))
+    await db.commit()
+
+    vendor_hdrs = await make_login(db, client, contact, "vc@partner.example.com")
+
+    resp = await client.get(f"/workers/{worker.id}", headers=vendor_hdrs)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["initiatives"] == []
+    assert body["person_notes"] is None
+    assert body["badge_uid"] is None
+    assert body["rfid_tag"] is None
+    assert body["address_line1"] is None
+    assert body["city"] is None
+    assert body["country"] is None
+    # non-internal fields are still fine to send
+    assert body["display_name"] == "Wan Worker"
+    assert body["trade"] == "Hardware"
+
+    # a global actor still sees everything
+    admin_hdrs = await _headers(client)
+    body2 = (await client.get(f"/workers/{worker.id}", headers=admin_hdrs)).json()
+    assert body2["person_notes"] == "internal note about Wan"
+    assert body2["rfid_tag"] == "RF-002"
+    assert body2["badge_uid"]
+    assert body2["city"] == "Las Vegas"
+    assert len(body2["initiatives"]) == 1

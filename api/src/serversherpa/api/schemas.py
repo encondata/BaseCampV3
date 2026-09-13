@@ -590,8 +590,12 @@ class WorkerDetailOut(WorkerItem):
     city: str | None
     region: str | None
     postal_code: str | None
-    country: str
-    badge_uid: uuid.UUID
+    # country and badge_uid are otherwise non-null (Person.country has a
+    # server default, badge_uid is generated) — nullable here because
+    # get_worker() redacts them to None for non-global (partner-anchored)
+    # actors, per security-fixes task 5 finding (a).
+    country: str | None
+    badge_uid: uuid.UUID | None
     rfid_tag: str | None
     person_notes: str | None
     source: str
