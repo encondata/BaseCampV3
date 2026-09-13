@@ -97,6 +97,9 @@ class UiPreferences(BaseModel):
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
+    # "kiosk" adds the kiosk:view gate before a session is minted (the
+    # kiosk app sends it; the portal never does).
+    client: Literal["portal", "kiosk"] = "portal"
 
 
 class ScopeOut(BaseModel):
