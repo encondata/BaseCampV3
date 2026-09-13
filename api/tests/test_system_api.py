@@ -154,22 +154,75 @@ async def test_ws_stream_and_auth(client, db, seeded_user):
                 "logger, message) VALUES ('api', 'INFO', 20, 't', :m)"),
                 {"m": message})
 
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+
     with TestClient(create_app()) as tc:
+        # The token rides the Sec-WebSocket-Protocol header as the second
+        # entry of the subprotocol list ("ss-bearer, <token>"), never the
+        # URL — query strings land in access logs and proxy logs. The
+        # server confirms by accepting the "ss-bearer" subprotocol.
         with tc.websocket_connect(
-                f"/system/processes/api/logs/stream?token={token}") as ws:
+                "/system/processes/api/logs/stream",
+                subprotocols=["ss-bearer", token]) as ws:
+            assert ws.accepted_subprotocol == "ss-bearer"
             insert_row("streamed hello")
             msg = ws.receive_json()          # tail poll is 1 s
             assert msg["entries"][0]["message"] == "streamed hello"
 
         # bad token → closed with 4401 before any data
-        import pytest
-        from starlette.websockets import WebSocketDisconnect
         with pytest.raises(WebSocketDisconnect) as exc:
             with tc.websocket_connect(
-                    "/system/processes/api/logs/stream?token=junk") as ws:
+                    "/system/processes/api/logs/stream",
+                    subprotocols=["ss-bearer", "junk"]) as ws:
+                ws.receive_json()
+        assert exc.value.code == 4401
+
+        # a valid token in the query string only (the old transport) is
+        # refused exactly like a missing token
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with tc.websocket_connect(
+                    f"/system/processes/api/logs/stream?token={token}") as ws:
+                ws.receive_json()
+        assert exc.value.code == 4401
+
+        # the first subprotocol entry must be ss-bearer
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with tc.websocket_connect(
+                    "/system/processes/api/logs/stream",
+                    subprotocols=["other", token]) as ws:
                 ws.receive_json()
         assert exc.value.code == 4401
     sync.dispose()
+
+
+async def test_ws_refuses_forced_password_change(client, db, seeded_user):
+    """A temp-password session (must_change_password=True) is 403'd on
+    every HTTP route by get_current_user; the WS route authenticates
+    directly, so it must apply the same rule and close 4403."""
+    from sqlalchemy import update as sa_update
+
+    from serversherpa.db.models import UserAccount
+
+    dev = await _developer_headers(db, client)
+    token = dev["Authorization"].removeprefix("Bearer ")
+    await db.execute(sa_update(UserAccount).values(must_change_password=True))
+    await db.commit()
+
+    from serversherpa.db.engine import dispose_engine
+    await db.close()
+    await dispose_engine()
+
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+
+    with TestClient(create_app()) as tc:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with tc.websocket_connect(
+                    "/system/processes/api/logs/stream",
+                    subprotocols=["ss-bearer", token]) as ws:
+                ws.receive_json()
+        assert exc.value.code == 4403
 
 
 async def test_ws_closes_when_session_revoked(
@@ -195,8 +248,8 @@ async def test_ws_closes_when_session_revoked(
     with TestClient(create_app()) as tc:
         with pytest.raises(WebSocketDisconnect) as exc:
             with tc.websocket_connect(
-                    f"/system/processes/api/logs/stream?token={token}"
-                    ) as ws:
+                    "/system/processes/api/logs/stream",
+                    subprotocols=["ss-bearer", token]) as ws:
                 with sync.begin() as conn:
                     conn.execute(sql_text(
                         "UPDATE auth_sessions SET revoked_at = now(), "
@@ -225,7 +278,8 @@ async def test_ws_stream_survives_bursts_beyond_batch_cap(
 
     with TestClient(create_app()) as tc:
         with tc.websocket_connect(
-                f"/system/processes/api/logs/stream?token={token}") as ws:
+                "/system/processes/api/logs/stream",
+                subprotocols=["ss-bearer", token]) as ws:
             with sync.begin() as conn:
                 for i in range(5):
                     conn.execute(sql_text(

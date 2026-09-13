@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Jimmy: a Testing tab on Developer › Database, password-protected above the dev permission and god mode (env `SS_DB_TESTING_PASSWORD`, default `admin`). Option 1 "Set DB for Testing": snapshot the database (its own worker process) so every change made while testing mode is on can be tracked and reverted to the snapshot taken before testing started. Option 2: end testing — revert to the snapshot, or keep the changes.
+Jimmy: a Testing tab on Developer › Database, password-protected above the dev permission and god mode (env `SS_DB_TESTING_PASSWORD`; no default — start/end answer 503 `db_testing_password_not_configured` until it is set). Option 1 "Set DB for Testing": snapshot the database (its own worker process) so every change made while testing mode is on can be tracked and reverted to the snapshot taken before testing started. Option 2: end testing — revert to the snapshot, or keep the changes.
 
 ## Security model
 

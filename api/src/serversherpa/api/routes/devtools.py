@@ -542,7 +542,17 @@ async def _require_testing_password(
     """Constant-time compare against SS_DB_TESTING_PASSWORD. A wrong
     password is audited (never the password itself) and rate-limited: 5
     failures in 10 minutes for the same person → 429, counted straight off
-    the audit rows rather than a separate counter table."""
+    the audit rows rather than a separate counter table.
+
+    No password configured (unset or empty) → 503 regardless of what the
+    caller sent: there is nothing to compare against, so this is a
+    deployment problem, not an auth failure — nothing is audited or
+    counted toward the lockout."""
+    configured = get_settings().db_testing_password
+    expected = configured.get_secret_value() if configured is not None else ""
+    if not expected:
+        raise _err(503, "db_testing_password_not_configured")
+
     cutoff = datetime.now(UTC) - timedelta(minutes=AUTH_FAIL_WINDOW_MINUTES)
     recent_failures = await db.scalar(
         select(func.count()).select_from(AuditLog).where(
@@ -552,7 +562,6 @@ async def _require_testing_password(
     if (recent_failures or 0) >= AUTH_FAIL_MAX:
         raise _err(429, "too_many_attempts")
 
-    expected = get_settings().db_testing_password.get_secret_value()
     if not secrets.compare_digest(
             password.encode("utf-8"), expected.encode("utf-8")):
         audit(db, actor_id=actor.person.id, entity_type="system",

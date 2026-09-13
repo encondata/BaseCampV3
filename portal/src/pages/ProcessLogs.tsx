@@ -8,7 +8,7 @@ import { Link, useParams } from 'react-router-dom';
 
 import {
   clearProcessLogs, getAccessTokenForStream, getProcessLogs,
-  logStreamUrl, type SystemLogEntry,
+  logStreamProtocols, logStreamUrl, type SystemLogEntry,
 } from '../lib/api';
 import {
   levelClass, mergeEntries, nextBackoff, splitMessage,
@@ -69,7 +69,8 @@ export default function ProcessLogs() {
 
   /* WS effect keyed on [name, minLevel, debouncedQuery]:
        - close any previous socket
-       - connect logStreamUrl(name, token, {minLevel, q}); token from
+       - connect logStreamUrl(name, {minLevel, q}) with logStreamProtocols(token)
+         as the subprotocol list (token never in the URL); token from
          getAccessTokenForStream(); missing token → error state
        - onmessage: parse; ignore {ping}; merge entries via mergeEntries
        - onclose/onerror: schedule reconnect via nextBackoff(backoffRef),
@@ -101,10 +102,11 @@ export default function ProcessLogs() {
         return;
       }
       setWsState('connecting');
-      const url = logStreamUrl(name, token, {
+      const url = logStreamUrl(name, {
         minLevel, q: debouncedQuery || undefined,
       });
-      const ws = new WebSocket(url);
+      // token rides the subprotocol list, never the URL
+      const ws = new WebSocket(url, logStreamProtocols(token));
       wsRef.current = ws;
       let settled = false;
 
