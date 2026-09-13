@@ -11,7 +11,16 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const auth = vi.hoisted(() => ({ login: vi.fn(), completePair: vi.fn() }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 vi.mock('@portal/lib/brandScene', () => ({ buildBrandScene: () => () => {} }));
-vi.mock('../components/PairPanel', () => ({ default: () => <div>PAIR PANEL</div> }));
+// Records the `onApproved` prop identity on every render, so a test can
+// confirm Login hands PairPanel the SAME callback across re-renders
+// (an unstable one would tear down and restart PairPanel's poll/clock).
+const seenOnApproved = vi.hoisted(() => [] as unknown[]);
+vi.mock('../components/PairPanel', () => ({
+  default: ({ onApproved }: { onApproved: unknown }) => {
+    seenOnApproved.push(onApproved);
+    return <div>PAIR PANEL</div>;
+  },
+}));
 const api = vi.hoisted(() => ({ getSystemStatus: vi.fn() }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()),
@@ -35,6 +44,7 @@ function renderLogin() {
 
 beforeEach(() => {
   localStorage.clear();
+  seenOnApproved.length = 0;
   api.getSystemStatus.mockResolvedValue({ read_only: false, read_only_message: '', workers_paused: false, banner: null });
   auth.login.mockResolvedValue({});
 });
@@ -93,4 +103,25 @@ it('shows system banners and the settings gear', async () => {
   expect(screen.getByText('Hello all')).toBeTruthy();
   await userEvent.click(screen.getByRole('button', { name: 'Kiosk settings' }));
   expect(await screen.findByText('SETTINGS')).toBeTruthy();
+});
+
+it('hands PairPanel a stable onApproved across Login re-renders', async () => {
+  const { rerender } = renderLogin();
+  expect(seenOnApproved).toHaveLength(1);
+  // A re-render of the same route tree (e.g. Login re-rendering because
+  // its auth context settled) must not mint a new onApproved — PairPanel
+  // lists it as a poll/clock effect dependency, so a fresh identity would
+  // tear down and restart the 2s poll and 1s countdown on every Login
+  // re-render.
+  rerender(
+    <MemoryRouter initialEntries={['/login']}>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/" element={<div>HOME</div>} />
+        <Route path="/settings" element={<div>SETTINGS</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  expect(seenOnApproved).toHaveLength(2);
+  expect(seenOnApproved[1]).toBe(seenOnApproved[0]);
 });

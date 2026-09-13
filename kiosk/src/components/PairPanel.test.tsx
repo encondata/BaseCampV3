@@ -3,6 +3,7 @@
  *  polls every 2 s, hands an approved session up, and recovers from
  *  denied/expired/error with a new code. Fake timers throughout. */
 import { act, cleanup, render, screen } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
@@ -76,6 +77,17 @@ it('expires locally when the clock runs out', async () => {
   await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   await act(async () => { await vi.advanceTimersByTimeAsync(POLL_MS * 2); });
   expect(screen.getByText('This code expired.')).toBeTruthy();
+});
+
+it('requests only one code under StrictMode\'s double-invoked mount effect', async () => {
+  render(
+    <StrictMode>
+      <PairPanel onApproved={vi.fn()} />
+    </StrictMode>,
+  );
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(screen.getByLabelText('Link code').textContent).toBe('ABCD-2345');
+  expect(api.createPairRequest).toHaveBeenCalledTimes(1);
 });
 
 it('reports a failed code request with a retry', async () => {

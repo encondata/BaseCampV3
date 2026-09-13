@@ -89,12 +89,12 @@
   font-family: var(--font-mono);
   font-size: 34px;
   letter-spacing: .18em;
-  color: var(--snow);
+  color: var(--text-dark);
   padding-left: .18em; /* optical centering against the trailing tracking */
 }
-.pair-countdown { font-family: var(--font-mono); font-size: 12px; color: var(--amber-soft); margin: 0; }
+.pair-countdown { font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); margin: 0; }
 .pair-panel .form-hint { margin: 0; }
-.pair-panel .form-error { color: #ff8a8a; }
+.pair-panel .form-error { color: #c03540; }
 .btn-link {
   border: 0;
   background: transparent;
@@ -115,9 +115,9 @@
   width: 36px;
   height: 36px;
   border-radius: 10px;
-  border: 1px solid var(--ink-line);
+  border: 1px solid var(--paper-line);
   background: transparent;
-  color: var(--snow);
+  color: var(--text-dark);
   opacity: .7;
   cursor: pointer;
   display: grid;
@@ -133,17 +133,20 @@
   color: var(--text-mute);
   white-space: nowrap;
 }
-/* .segmented reads shell tokens that the dark login pane does not define */
+/* .segmented reads --surface/--surface-2, which the login pane (unlike
+   .portal-shell) does not define — point them at the pane's own light
+   surfaces so the unselected pills sit on paper, not on the dark tokens
+   the rest of the app uses. --paper-line/--text-dark/--text-mute are
+   already correct on .login-shell (auth-theme.css), so they are not
+   overridden here. */
 .login-shell .method-switch {
-  --surface: var(--ink-2);
-  --surface-2: rgba(255, 255, 255, 0.04);
-  --paper-line: var(--ink-line);
-  --text-dark: var(--snow);
-  --text-mute: rgba(232, 237, 244, 0.62);
+  --surface: var(--paper);
+  --surface-2: var(--paper-2);
   display: flex;
   width: 100%;
   margin: 0 0 18px;
 }
 .login-shell .method-switch button { flex: 1 1 0; justify-content: center; }
+.login-shell .method-switch button.on { background: var(--ink); color: var(--snow); }
 .login-shell .form-notice { color: var(--text-mute); font-size: 13px; margin: 0 0 14px; }
 .login-shell .form-error { font-size: 13px; margin: 0; }

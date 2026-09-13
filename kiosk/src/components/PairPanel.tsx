@@ -43,23 +43,36 @@ export default function PairPanel({ onApproved }: { onApproved: (session: Sessio
   const [error, setError] = useState('');
   const [now, setNow] = useState(() => Date.now());
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Bumped on every request() call. The actual network call and any state
+  // update are deferred to a microtask that re-checks this generation —
+  // so a call superseded before that microtask runs (React 18 StrictMode's
+  // synthetic mount→cleanup→mount invokes the mount effect twice, back to
+  // back, in the same synchronous pass) never hits the API or touches
+  // state at all. The later call always wins.
+  const generationRef = useRef(0);
 
-  const request = useCallback(async () => {
+  const request = useCallback(() => {
+    const generation = ++generationRef.current;
     setPhase('requesting');
     setError('');
-    try {
-      const { serial, name } = getIdentity();
-      const created = await createPairRequest({ serial, name });
-      setPair(created);
-      setNow(Date.now());
-      setPhase('showing');
-    } catch (err) {
-      setError(describe(err));
-      setPhase('error');
-    }
+    queueMicrotask(async () => {
+      if (generationRef.current !== generation) return;
+      try {
+        const { serial, name } = getIdentity();
+        const created = await createPairRequest({ serial, name });
+        if (generationRef.current !== generation) return;
+        setPair(created);
+        setNow(Date.now());
+        setPhase('showing');
+      } catch (err) {
+        if (generationRef.current !== generation) return;
+        setError(describe(err));
+        setPhase('error');
+      }
+    });
   }, []);
 
-  useEffect(() => { void request(); }, [request]);
+  useEffect(() => { request(); }, [request]);
 
   // QR of the link URL, drawn once per code.
   useEffect(() => {

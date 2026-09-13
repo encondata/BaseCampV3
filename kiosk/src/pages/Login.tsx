@@ -6,7 +6,7 @@
  */
 
 import { gsap } from 'gsap';
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { buildBrandScene } from '@portal/lib/brandScene';
@@ -109,10 +109,10 @@ export default function Login() {
     setMoveNotice(true);
   };
 
-  const onApproved = (session: SessionData) => {
+  const onApproved = useCallback((session: SessionData) => {
     completePair(session);
     navigate(from, { replace: true });
-  };
+  }, [completePair, navigate, from]);
 
   const identity = getIdentity();
 
