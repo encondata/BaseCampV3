@@ -130,6 +130,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
         case 'not_a_truetype_font': return 'That file is not a TrueType font.';
         case 'file_too_large': return 'Fonts must be 2 MB or smaller.';
         case 'invalid_font_name': return NAME_HINT;
+        case 'empty_file': return 'That file is empty.';
         default: return err.message;
       }
     }

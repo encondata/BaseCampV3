@@ -203,7 +203,7 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
         </div>
         <div className="modal-section">Label size</div>
         <ComboBox options={sizes.map((s) => ({ value: s.key, label: s.label }))} value={sizeKey} onChange={setSizeKey} placeholder="Keep the printer's current size…" clearable />
-        {media.tracking !== 'N' && (
+        {(media.tracking === 'W' || media.tracking === 'M') && (
           <p className="page-hint">On gap or mark media the printer measures the label length itself; only the width is set.</p>
         )}
         <p className="page-hint">{sizeKey ? `Sets ^PW/^LL for ${sizes.find((s) => s.key === sizeKey)?.label} at ${dpi} DPI.` : `Current: ${media.widthDots ?? '—'} × ${media.lengthDots ?? '—'} dots.`}</p>
