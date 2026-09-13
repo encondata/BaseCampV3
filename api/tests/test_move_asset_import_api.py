@@ -117,6 +117,29 @@ async def test_job_not_found(client, seeded_user):
     assert resp.json()["detail"]["code"] == "import_job_not_found"
 
 
+async def test_storage_key_never_embeds_the_uploaded_filename(
+        client, db, seeded_user):
+    """The object key is derived from the job id plus the (validated)
+    extension — an attacker-chosen filename must not steer where the
+    bytes land. The original name is kept on the job row for the worker
+    and the UI."""
+    headers = await login(client)
+    iid = await _move(client, headers)
+    resp = await _upload(client, headers, iid, filename="../../x.csv")
+    assert resp.status_code == 201, resp.text
+    job = await db.get(ImportJob, uuid.UUID(resp.json()["id"]))
+    assert ".." not in job.file_key
+    assert "x.csv" not in job.file_key
+    assert job.file_key == f"import-jobs/{iid}/{job.id}/{job.id}.csv"
+    assert job.filename == "../../x.csv"
+    assert await get_object(job.file_key) == CSV
+
+    resp = await _upload(client, headers, iid, filename="Roster.XLSX",
+                         content=b"not really xlsx")
+    job = await db.get(ImportJob, uuid.UUID(resp.json()["id"]))
+    assert job.file_key.endswith(".xlsx")
+
+
 async def test_template_downloads(client, seeded_user):
     headers = await login(client)
     resp = await client.get(
