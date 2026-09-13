@@ -109,20 +109,34 @@ async def test_patch_validates_options_and_rejects_duplicate_name(client, db, se
 
 
 async def test_patch_refuses_system_definitions(client, db, seeded_user):
-    """Mirror of the delete guard (409 system_definition) — system report
-    definitions must be immutable via PATCH, not just DELETE."""
+    """System report definitions keep their identity — a *renaming* PATCH
+    409s (mirroring the delete guard) — but stay editable for options and
+    description, since system definitions (Site & Move Survey, Move
+    Report, Move Scan History) legitimately take option edits from the
+    portal (e.g. company_name, template attachments). A no-op resubmit of
+    the same name is not a rename, so it stays a 200; a non-system row's
+    name is never guarded at all."""
     system = await _definition(db)
     custom = await _definition(db, name="Custom", is_system=False)
     admin = await _make(db, client, "admin", "a@test.example.com")
 
     resp = await client.patch(f"/reports/definitions/{system.id}", headers=admin,
-                              json={"description": "sneaky"})
+                              json={"name": "Renamed"})
     assert resp.status_code == 409 and resp.json()["detail"]["code"] == "system_definition"
 
-    resp = await client.patch(f"/reports/definitions/{custom.id}", headers=admin,
-                              json={"description": "fine"})
+    resp = await client.patch(f"/reports/definitions/{system.id}", headers=admin,
+                              json={"name": system.name})
     assert resp.status_code == 200, resp.text
-    assert resp.json()["description"] == "fine"
+
+    resp = await client.patch(f"/reports/definitions/{system.id}", headers=admin,
+                              json={"options": {"summary": False}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["options"]["summary"] is False
+
+    resp = await client.patch(f"/reports/definitions/{custom.id}", headers=admin,
+                              json={"name": "Renamed"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "Renamed"
 
 
 async def test_delete_is_soft_and_refuses_system_rows(client, db, seeded_user):
@@ -372,18 +386,13 @@ async def test_create_run_for_survey_without_partner_id_is_invalid_options(clien
     assert any("partner_id" in p for p in resp.json()["detail"]["problems"])
 
 
-async def test_definition_patch_refuses_company_name_on_system_row(client, db, seeded_user):
-    """Site & Move Survey is seeded is_system=True (migration 0052) — PATCH
-    is now unconditionally blocked on system rows (Task 8), so even an
-    options-only edit like company_name is refused. NOTE: this was
-    previously a supported edit (see EditDefinitionModal / the portal's
-    "Edit" action, which is still offered for system rows) — flagged as a
-    product-behavior change for the plan owner, not merely a test update."""
+async def test_definition_patch_accepts_company_name_string(client, db, seeded_user):
     survey_def = await _survey_definition(db)
     admin = await _make(db, client, "admin", "a@test.example.com")
     resp = await client.patch(f"/reports/definitions/{survey_def.id}", headers=admin,
                               json={"options": {"company_name": "New Customer Name"}})
-    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "system_definition"
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["options"]["company_name"] == "New Customer Name"
 
 
 async def test_history_shows_standalone_run_with_dash_initiative(client, db, seeded_user):

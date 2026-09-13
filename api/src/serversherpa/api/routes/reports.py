@@ -106,14 +106,20 @@ async def update_definition(
     actor: AuthContext = require_permission("reports", "change"),
 ) -> ReportDefinitionOut:
     d = await _definition(db, definition_id)
-    if d.is_system:
-        raise _err(409, "system_definition")
     before = snapshot(d, DEFINITION_FIELDS)
     patch = body.model_dump(exclude_unset=True)
     if "name" in patch:
         patch["name"] = patch["name"].strip()
         if not patch["name"]:            # min_length=1 passes "   "; strip must not
             raise _err(422, "invalid_options", problems=["name is required"])
+        # System definitions (Site & Move Survey, Move Report, Move Scan
+        # History) legitimately take option/description edits from the
+        # portal — the security concern is renaming/repointing one, not
+        # editing its options. So the identity check is narrow: only a
+        # *changed* name on a system row 409s; the same name (a no-op
+        # resubmit) and options/description edits stay allowed.
+        if d.is_system and patch["name"] != d.name:
+            raise _err(409, "system_definition")
         if await _name_taken(db, patch["name"], exclude=d.id):
             raise _err(409, "name_in_use")
     if "options" in patch:
