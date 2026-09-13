@@ -72,20 +72,19 @@ def effective_status(row: KioskPairRequest, now: datetime) -> PairStatus:
 
 
 async def create_request(
-    db: AsyncSession, *, serial: str, name: str, ip: str | None,
+    db: AsyncSession, *, serial: str, name: str, ip: str,
 ) -> tuple[KioskPairRequest, str]:
     """Insert a pending request; returns (row, plaintext poll token).
     Raises PairError("pair_rate_limited") past the per-IP cap."""
     now = datetime.now(UTC)
     await db.execute(delete(KioskPairRequest).where(
         KioskPairRequest.created_at < now - timedelta(seconds=CLEANUP_AGE_SECONDS)))
-    if ip is not None:
-        recent = await db.scalar(
-            select(func.count()).select_from(KioskPairRequest).where(
-                KioskPairRequest.ip_address == ip,
-                KioskPairRequest.created_at >= now - timedelta(seconds=PAIR_IP_WINDOW_SECONDS)))
-        if (recent or 0) >= PAIR_IP_LIMIT:
-            raise PairError("pair_rate_limited")
+    recent = await db.scalar(
+        select(func.count()).select_from(KioskPairRequest).where(
+            KioskPairRequest.ip_address == ip,
+            KioskPairRequest.created_at >= now - timedelta(seconds=PAIR_IP_WINDOW_SECONDS)))
+    if (recent or 0) >= PAIR_IP_LIMIT:
+        raise PairError("pair_rate_limited")
     # one live code per kiosk: a new request retires the previous one
     await db.execute(update(KioskPairRequest).where(
         KioskPairRequest.serial == serial, KioskPairRequest.status == "pending",

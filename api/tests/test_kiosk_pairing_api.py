@@ -2,13 +2,14 @@
 kiosk side, kiosk:view-gated info/approve/deny on the phone side, a
 fresh session family minted for the approver at claim time."""
 
+import asyncio
 import re
 
 from sqlalchemy import select, text
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import AuditLog, AuthSession, KioskPairRequest
-from serversherpa.services.kiosk_pairing import CODE_ALPHABET
+from serversherpa.services.kiosk_pairing import CODE_ALPHABET, hash_poll_token
 from tests.test_auth_kiosk_login import _client_viewer
 from tests.test_sites_api import login
 from tests.test_status_values_write import _make
@@ -37,7 +38,7 @@ async def test_create_returns_code_token_and_link(client, db):
     row = await db.scalar(select(KioskPairRequest).where(KioskPairRequest.code == d["code"]))
     assert row.status == "pending"
     assert row.kiosk_name == "Dock 3"
-    assert row.poll_token_hash != d["poll_token"]      # only the hash is stored
+    assert row.poll_token_hash == hash_poll_token(d["poll_token"])  # only the hash is stored
     assert row.ip_address                               # creator IP recorded
 
 
@@ -54,6 +55,50 @@ async def test_ip_rate_limit(client, db):
     resp = await client.post("/kiosk/pair", json=KIOSK)
     assert resp.status_code == 429
     assert resp.json()["detail"]["code"] == "pair_rate_limited"
+
+
+async def test_rate_limit_ignores_forged_forwarded_for(client, db):
+    """The test transport's peer is loopback, so a caller-supplied
+    X-Forwarded-For is honored — but only its rightmost (proxy-appended)
+    entry, never the attacker-controlled leftmost one."""
+    for i in range(30):
+        resp = await client.post(
+            "/kiosk/pair", json={**KIOSK, "serial": f"kiosk-forge-{i:04d}"},
+            headers={"X-Forwarded-For": f"1.2.3.{i}, 203.0.113.9"})
+        assert resp.status_code == 201, resp.text
+    resp = await client.post(
+        "/kiosk/pair", json={**KIOSK, "serial": "kiosk-forge-final"},
+        headers={"X-Forwarded-For": "1.2.3.999, 203.0.113.9"})
+    assert resp.status_code == 429
+    assert resp.json()["detail"]["code"] == "pair_rate_limited"
+
+
+async def test_rate_limit_keys_on_rightmost_forwarded_entry(client, db):
+    for i in range(15):
+        r1 = await client.post(
+            "/kiosk/pair", json={**KIOSK, "serial": f"kiosk-a-{i:04d}"},
+            headers={"X-Forwarded-For": "9.9.9.9, 203.0.113.1"})
+        assert r1.status_code == 201, r1.text
+        r2 = await client.post(
+            "/kiosk/pair", json={**KIOSK, "serial": f"kiosk-b-{i:04d}"},
+            headers={"X-Forwarded-For": "9.9.9.9, 203.0.113.2"})
+        assert r2.status_code == 201, r2.text
+    # a 16th from each bucket is still under the 30 cap — two buckets, not one
+    r1 = await client.post(
+        "/kiosk/pair", json={**KIOSK, "serial": "kiosk-a-extra"},
+        headers={"X-Forwarded-For": "9.9.9.9, 203.0.113.1"})
+    assert r1.status_code == 201, r1.text
+    r2 = await client.post(
+        "/kiosk/pair", json={**KIOSK, "serial": "kiosk-b-extra"},
+        headers={"X-Forwarded-For": "9.9.9.9, 203.0.113.2"})
+    assert r2.status_code == 201, r2.text
+
+    row1 = await db.scalar(select(KioskPairRequest).where(
+        KioskPairRequest.serial == "kiosk-a-extra"))
+    row2 = await db.scalar(select(KioskPairRequest).where(
+        KioskPairRequest.serial == "kiosk-b-extra"))
+    assert row1.ip_address == "203.0.113.1"
+    assert row2.ip_address == "203.0.113.2"
 
 
 async def test_poll_wrong_token_and_unknown_code(client, db):
@@ -118,6 +163,20 @@ async def test_approve_then_poll_mints_a_fresh_session_for_the_approver(client, 
     assert actions == {"kiosk_pair_approved", "login_pair"}
 
 
+async def test_concurrent_polls_claim_once(client, db, seeded_user):
+    d = await _create(client)
+    hdrs = await login(client)
+    assert (await client.post(f"/kiosk/pair/{d['code']}/approve", headers=hdrs)).status_code == 204
+
+    results = await asyncio.gather(_poll(client, d), _poll(client, d))
+    statuses = [r.json()["status"] for r in results]
+    assert statuses.count("approved") == 1, statuses
+    assert statuses.count("expired") == 1, statuses   # "pending" is NOT acceptable
+
+    sessions = (await db.scalars(select(AuthSession))).all()
+    assert len(sessions) == 2                          # phone + exactly one kiosk claim
+
+
 async def test_deny_then_approve_is_409(client, db, seeded_user):
     d = await _create(client)
     hdrs = await login(client)
@@ -151,6 +210,11 @@ async def test_approver_disabled_before_claim_is_denied(client, db, seeded_user)
     assert resp.json()["status"] == "denied"
     assert "ss_refresh" not in resp.cookies
     assert len((await db.scalars(select(AuthSession))).all()) == 1
+
+    audit_row = await db.scalar(select(AuditLog).where(
+        AuditLog.action == "kiosk_pair_claim_denied"))
+    assert audit_row is not None
+    assert audit_row.entity_id == d["code"]
 
 
 async def test_pairing_survives_read_only_mode(client, db, seeded_user):

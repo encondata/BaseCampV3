@@ -7,11 +7,14 @@ docs/superpowers/specs/2026-09-13-kiosk-web-design.md"""
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from serversherpa.access.resolver import resolve_access
-from serversherpa.api.deps import AuthContext, DbSession, client_ip, require_permission
+from serversherpa.api.deps import (
+    AuthContext, DbSession, client_ip, rate_limit_ip, require_permission,
+)
 from serversherpa.api.routes.auth import session_response
 from serversherpa.api.schemas import (
     PairCreateIn, PairCreateOut, PairInfoOut, PairPollIn, PairPollOut,
@@ -34,7 +37,7 @@ def _err(status: int, code: str) -> HTTPException:
 async def create_pair(body: PairCreateIn, request: Request, db: DbSession) -> PairCreateOut:
     try:
         row, token = await pairing.create_request(
-            db, serial=body.serial, name=body.name, ip=client_ip(request))
+            db, serial=body.serial, name=body.name, ip=rate_limit_ip(request))
     except pairing.PairError as exc:
         raise _err(429, exc.code) from None
     return PairCreateOut(code=row.code, poll_token=token,
@@ -65,11 +68,21 @@ async def poll_pair(
     if not usable:
         row.status = "denied"
         row.updated_at = now
+        audit(db, actor_id=None, entity_type="kiosk_pair", entity_id=row.code,
+              action="kiosk_pair_claim_denied",
+              changes={"serial": row.serial, "approved_by": str(row.approved_by)},
+              ip=client_ip(request))
         await db.commit()
         return PairPollOut(status="denied")
 
-    row.status = "claimed"          # committed inside start_session
-    row.updated_at = now
+    claimed = await db.execute(
+        update(KioskPairRequest)
+        .where(KioskPairRequest.id == row.id, KioskPairRequest.status == "approved")
+        .values(status="claimed", updated_at=now))
+    if claimed.rowcount != 1:
+        await db.rollback()
+        return PairPollOut(status="expired")   # someone else already claimed it
+
     result = await auth_service.start_session(
         db, account, ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
@@ -92,17 +105,25 @@ async def pair_info(
                        expires_at=row.expires_at)
 
 
-async def _decide(db, code: str, actor: AuthContext, *, new_status: str, action: str) -> None:
+async def _decide(
+    db: AsyncSession, code: str, actor: AuthContext, *, new_status: str, action: str,
+) -> None:
     row = await pairing.get_by_code(db, code)
     if row is None:
         raise _err(404, "pair_not_found")
     now = datetime.now(UTC)
     if pairing.effective_status(row, now) != "pending":
         raise _err(409, "pair_not_pending")
-    row.status = new_status
-    row.updated_at = now
+    values: dict = {"status": new_status, "updated_at": now}
     if new_status == "approved":
-        row.approved_by = actor.person.id
+        values["approved_by"] = actor.person.id
+    decided = await db.execute(
+        update(KioskPairRequest)
+        .where(KioskPairRequest.id == row.id, KioskPairRequest.status == "pending")
+        .values(**values))
+    if decided.rowcount != 1:
+        await db.rollback()
+        raise _err(409, "pair_not_pending")
     audit(db, actor_id=actor.person.id, entity_type="kiosk_pair",
           entity_id=row.code, action=action,
           changes={"serial": row.serial, "kiosk_name": row.kiosk_name})
