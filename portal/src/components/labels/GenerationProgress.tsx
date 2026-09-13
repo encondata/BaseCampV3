@@ -14,12 +14,15 @@ const STATUS_CHIP: Record<LabelRunStatus, string> = {
   queued: 'c-slate', running: 'c-violet', completed: 'c-green', failed: 'c-red', canceled: 'c-slate',
 };
 
-export default function GenerationProgress({ run, typeLabel, paused, onCancel }: {
+export default function GenerationProgress({ run, typeLabel, paused, onCancel, cancelDisabledReason }: {
   run: LabelRun;
   /** Maps a vocab `type` key (e.g. `run.current_label_type`) to its label. */
   typeLabel: (key: string) => string;
   paused?: boolean;
   onCancel?: () => void;
+  /** When set, Cancel renders disabled with this as its tooltip (the
+   *  page passes it when the user lacks labels:change). */
+  cancelDisabledReason?: string;
 }) {
   const pct = progressPct(run);
   const active = run.status === 'queued' || run.status === 'running';
@@ -72,7 +75,9 @@ export default function GenerationProgress({ run, typeLabel, paused, onCancel }:
 
       {active && onCancel && (
         <div className="glabels-progress-actions">
-          <button type="button" className="btn-ghost" disabled={run.cancel_requested} onClick={onCancel}>
+          <button type="button" className="btn-ghost"
+                  disabled={run.cancel_requested || !!cancelDisabledReason}
+                  title={cancelDisabledReason} onClick={onCancel}>
             {run.cancel_requested ? 'Canceling…' : 'Cancel'}
           </button>
         </div>

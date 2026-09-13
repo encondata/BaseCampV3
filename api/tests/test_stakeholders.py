@@ -1,7 +1,7 @@
 """Stakeholders: client/partner CRUD, contacts as scoped role grants."""
 
 from serversherpa.config import get_settings
-from serversherpa.db.models import Person, PersonRole, UserAccount
+from serversherpa.db.models import PermissionOverride, Person, PersonRole, UserAccount
 from serversherpa.security.passwords import hash_password
 from tests.test_sites_api import make_login
 
@@ -1066,3 +1066,124 @@ async def test_website_no_netloc_rejected(client, seeded_user):
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"]
     assert any("invalid_website" in d.get("msg", "") for d in detail)
+
+
+# ── archive/unarchive require `delete`; org notes are internal-only ──────────
+
+async def _anchored_login(db, client, role, email, **anchor):
+    """A client_/vendor_ tier persona anchored to one org (client_id= or
+    partner_id=) — the shape `test_notes_api.py` builds for its own-org
+    checks."""
+    person = Person(first_name="O", last_name="Wner")
+    db.add(person)
+    await db.flush()
+    db.add(PersonRole(person_id=person.id, role=role, **anchor))
+    await db.commit()
+    return await make_login(db, client, person, email)
+
+
+async def _staff_without(db, client, resource, action, email):
+    """A global staff persona with every seeded `staff` permission except
+    `resource`/`action`, revoked via a PermissionOverride (same helper shape
+    as `test_trucks_api.py`)."""
+    person = Person(first_name="Ch", last_name="Anger")
+    db.add(person)
+    await db.flush()
+    db.add(PersonRole(person_id=person.id, role="staff"))
+    db.add(PermissionOverride(person_id=person.id, resource=resource,
+                              action=action, allow=False))
+    await db.commit()
+    return await make_login(db, client, person, email)
+
+
+async def test_client_owner_cannot_archive_own_org(client, db, seeded_user):
+    """`client_owner` holds `clients: (view, change)` but not `delete`, so
+    archive/unarchive (soft delete) of its OWN org must be refused —
+    previously both routes gated on `change`."""
+    staff = await _headers(client)
+    org = (await client.post("/clients", headers=staff,
+                             json={"name": "Owned Co"})).json()
+    owner = await _anchored_login(db, client, "client_owner",
+                                  "owner-arch@test.example.com",
+                                  client_id=org["id"])
+
+    assert (await client.post(f"/clients/{org['id']}/archive",
+                              headers=owner)).status_code == 403
+    assert (await client.post(f"/clients/{org['id']}/unarchive",
+                              headers=owner)).status_code == 403
+    # not archived by the refused call; staff (holds delete) still can
+    assert (await client.get(f"/clients/{org['id']}",
+                             headers=staff)).json()["archived_at"] is None
+    assert (await client.post(f"/clients/{org['id']}/archive",
+                              headers=staff)).status_code == 204
+
+
+async def test_vendor_owner_cannot_archive_own_partner(client, db, seeded_user):
+    staff = await _headers(client)
+    org = (await client.post("/partners", headers=staff,
+                             json={"name": "Owned Logistics"})).json()
+    vendor = await _anchored_login(db, client, "vendor_owner",
+                                   "vendor-arch@test.example.com",
+                                   partner_id=org["id"])
+
+    assert (await client.post(f"/partners/{org['id']}/archive",
+                              headers=vendor)).status_code == 403
+    assert (await client.post(f"/partners/{org['id']}/unarchive",
+                              headers=vendor)).status_code == 403
+    assert (await client.post(f"/partners/{org['id']}/archive",
+                              headers=staff)).status_code == 204
+
+
+async def test_org_archive_requires_delete_not_just_change(client, db, seeded_user):
+    """Both org routers: a global persona holding `change` but with `delete`
+    revoked gets 403 on archive and unarchive; the default staff persona
+    (holds delete) gets 204."""
+    staff = await _headers(client)
+    for prefix, resource in (("/clients", "clients"), ("/partners", "partners")):
+        org = (await client.post(prefix, headers=staff,
+                                 json={"name": f"Gated {resource}"})).json()
+        changer = await _staff_without(db, client, resource, "delete",
+                                       f"changer-{resource}@test.example.com")
+        assert (await client.post(f"{prefix}/{org['id']}/archive",
+                                  headers=changer)).status_code == 403
+        assert (await client.post(f"{prefix}/{org['id']}/unarchive",
+                                  headers=changer)).status_code == 403
+        # `change` itself is intact for that persona
+        assert (await client.patch(f"{prefix}/{org['id']}", headers=changer,
+                                   json={"city": "Reno"})).status_code == 200
+        assert (await client.post(f"{prefix}/{org['id']}/archive",
+                                  headers=staff)).status_code == 204
+        assert (await client.post(f"{prefix}/{org['id']}/unarchive",
+                                  headers=staff)).status_code == 204
+
+
+async def test_org_notes_redacted_for_scoped_actors(client, db, seeded_user):
+    """`Organization.notes` is staff free text about the org; the org's own
+    client/vendor contacts must not read it through the list or detail
+    routes (the /notes host was already internal-only — task 2)."""
+    staff = await _headers(client)
+    cases = (
+        ("/clients", "client_owner", "client_id", "owner-notes2@test.example.com"),
+        ("/partners", "vendor_admin", "partner_id", "vendor-notes2@test.example.com"),
+    )
+    for prefix, role, anchor_col, email in cases:
+        org = (await client.post(prefix, headers=staff, json={
+            "name": f"Noted {role}", "notes": "late payer — escalate to AM"})).json()
+        assert org["notes"] == "late payer — escalate to AM"
+        scoped = await _anchored_login(db, client, role, email,
+                                       **{anchor_col: org["id"]})
+
+        listing = (await client.get(prefix, headers=scoped)).json()
+        assert [o["id"] for o in listing] == [org["id"]]
+        assert listing[0]["notes"] is None
+
+        detail = await client.get(f"{prefix}/{org['id']}", headers=scoped)
+        assert detail.status_code == 200
+        assert detail.json()["notes"] is None
+        assert detail.json()["name"] == f"Noted {role}"   # the rest still renders
+
+        # global staff still sees the notes on both routes
+        assert (await client.get(f"{prefix}/{org['id']}",
+                                 headers=staff)).json()["notes"] == "late payer — escalate to AM"
+        assert [o["notes"] for o in (await client.get(prefix, headers=staff)).json()
+                if o["id"] == org["id"]] == ["late payer — escalate to AM"]

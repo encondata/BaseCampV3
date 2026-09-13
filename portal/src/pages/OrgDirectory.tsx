@@ -378,7 +378,11 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
     gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px`,
   };
 
-  const canManage = can(cfg.kind === 'client' ? 'clients' : 'partners', 'change');
+  const orgResource = cfg.kind === 'client' ? 'clients' : 'partners';
+  const canManage = can(orgResource, 'change');
+  // Archive/unarchive is a soft delete — the server gates it on `delete`
+  // (client_owner / vendor_owner hold `change` on their own org but not this).
+  const canArchive = can(orgResource, 'delete');
   const canViewUsers = can('users', 'view');
 
   const godFields = useMemo(() => ORG_GOD_FIELDS(), []);
@@ -622,11 +626,12 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                           <Link className="mini-btn" to={`/stakeholders/${cfg.kind}s/${o.id}`}>
                             Full Details ↗
                           </Link>
-                          {canManage && (<>
+                          {canManage && (
                           <button className="mini-btn accent" onClick={() => setEditing(o)}>
                             Edit {cfg.kind}
                           </button>
-                          {o.archived_at ? (
+                          )}
+                          {canArchive && (o.archived_at ? (
                             <button className="mini-btn" onClick={() => void setArchived(o, false)}>
                               Unarchive
                             </button>
@@ -634,8 +639,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                             <button className="mini-btn danger" onClick={() => void setArchived(o, true)}>
                               Archive
                             </button>
-                          )}
-                          </>)}
+                          ))}
                           <GodDeleteButton visible={godMode} entityType={cfg.kind} entityId={o.id}
                                            label={o.name} pending={pd.pendingIds.has(o.id)}
                                            onChange={pd.pendingIds.has(o.id)

@@ -167,3 +167,47 @@ async def test_forced_change_does_not_affect_other_users(client, db, seeded_user
                              email="bob@test.example.com")
     headers = await _headers_from(await _login(client, "bob@test.example.com"))
     assert (await client.get("/initiatives", headers=headers)).status_code == 200
+
+
+async def test_forced_change_blocks_system_admin_even_for_admins(client, db, seeded_user):
+    """`/system/admin` is exempt from READ-ONLY mode (whoever can turn it on
+    can turn it off) but must NOT inherit that exemption for the forced
+    password-change guard: a temp-password super_admin session cannot flip
+    read-only / pause workers / set the banner until the password is
+    changed. After the change, the same call goes through."""
+    await _make_user(db, first="Sue", last="Admin", email="sue@test.example.com",
+                     role="super_admin")
+    await db.execute(sa_update(UserAccount)
+                     .where(UserAccount.email == "sue@test.example.com")
+                     .values(must_change_password=True))
+    await db.commit()
+
+    headers = await _headers_from(await _login(client, "sue@test.example.com"))
+    resp = await client.put("/system/admin", headers=headers,
+                            json={"read_only": True})
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["code"] == "password_change_required"
+
+    resp = await client.post("/auth/me/password", headers=headers, json={
+        "current_password": PW, "new_password": NEW_PW})
+    assert resp.status_code == 204, resp.text
+
+    headers = await _headers_from(await _login(client, "sue@test.example.com", NEW_PW))
+    resp = await client.put("/system/admin", headers=headers,
+                            json={"read_only": True})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["read_only"] is True
+
+
+async def test_forced_change_allows_listing_own_sessions(client, db, seeded_user):
+    """GET /auth/me/sessions (no trailing slash) is self-scoped and gains no
+    privilege — a temp-password user may list what they are allowed to
+    revoke (DELETE /auth/me/sessions/{family_id} was already exempt via the
+    read-only prefix)."""
+    await db.execute(sa_update(UserAccount).values(must_change_password=True))
+    await db.commit()
+
+    headers = await _headers_from(await _login(client, "alice@test.example.com"))
+    resp = await client.get("/auth/me/sessions", headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert isinstance(resp.json(), list) and len(resp.json()) >= 1

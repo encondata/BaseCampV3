@@ -113,9 +113,16 @@ async def enforce_read_only(db: AsyncSession, request: Request,
 # A temp-password session must be able to finish the auth lifecycle and
 # change its own password, and nothing else — same auth-lifecycle set
 # read-only mode exempts, plus GET /auth/me (so the portal can render the
-# "you must change your password" screen) since it's not a mutating route
-# and so isn't already covered by READ_ONLY_EXEMPT_PATHS.
-FORCED_CHANGE_EXEMPT_PATHS = READ_ONLY_EXEMPT_PATHS | {"/auth/me"}
+# "you must change your password" screen) and GET /auth/me/sessions (self-
+# scoped list of what DELETE /auth/me/sessions/{id} lets it revoke) since
+# neither is a mutating route and so isn't already covered by
+# READ_ONLY_EXEMPT_PATHS. `/system/admin` is deliberately NOT inherited:
+# read-only exempts it because whoever can turn read-only on can turn it
+# off, which says nothing about a temp-password admin session.
+FORCED_CHANGE_EXEMPT_PATHS = (
+    (READ_ONLY_EXEMPT_PATHS - {"/system/admin"})
+    | {"/auth/me", "/auth/me/sessions"}
+)
 FORCED_CHANGE_EXEMPT_PREFIXES = READ_ONLY_EXEMPT_PREFIXES
 
 
