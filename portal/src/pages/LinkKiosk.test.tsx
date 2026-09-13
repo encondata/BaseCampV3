@@ -95,6 +95,24 @@ it('a race with another approver lands on the expired copy', async () => {
   expect(await screen.findByText(/expired or was already used/)).toBeTruthy();
 });
 
+it('shows a retry-able error for a transient load failure, not the expired copy', async () => {
+  api.getPairInfo.mockRejectedValueOnce(new ApiError(500, 'unknown_error'));
+  renderAt('/link/ABCD2345');
+  expect(await screen.findByText('Something went wrong. Try again.')).toBeTruthy();
+  expect(screen.queryByText(/expired or was already used/)).toBeNull();
+
+  api.getPairInfo.mockResolvedValueOnce(INFO);
+  await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  expect(await screen.findByText('Dock 3')).toBeTruthy();
+  expect(api.getPairInfo).toHaveBeenCalledTimes(2);
+});
+
+it('shows the expired copy when the initial load reports the pair is no longer pending', async () => {
+  api.getPairInfo.mockRejectedValue(new ApiError(409, 'pair_not_pending'));
+  renderAt('/link/ABCD2345');
+  expect(await screen.findByText(/expired or was already used/)).toBeTruthy();
+});
+
 it('refuses accounts without kiosk access', async () => {
   auth.can.mockReturnValue(false);
   renderAt('/link/ABCD2345');

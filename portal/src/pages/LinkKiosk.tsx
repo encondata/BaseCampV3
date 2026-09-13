@@ -6,7 +6,7 @@
  * anonymous phone bounces through /login and comes straight back.
  */
 
-import { useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -70,7 +70,7 @@ function CodeEntry() {
   );
 }
 
-type Phase = 'loading' | 'pending' | 'busy' | 'approved' | 'denied' | 'gone';
+type Phase = 'loading' | 'pending' | 'busy' | 'approved' | 'denied' | 'gone' | 'error';
 
 function phaseFor(status: PairInfo['status']): Phase {
   if (status === 'pending') return 'pending';
@@ -83,14 +83,29 @@ function PairDecision({ code, displayName }: { code: string; displayName: string
   const [info, setInfo] = useState<PairInfo | null>(null);
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const load = useCallback((cancelledRef: { cancelled: boolean }) => {
+    setPhase('loading');
+    getPairInfo(code)
+      .then((i) => { if (!cancelledRef.cancelled) { setInfo(i); setPhase(phaseFor(i.status)); } })
+      .catch((err) => {
+        if (cancelledRef.cancelled) return;
+        if (err instanceof ApiError && (err.status === 404 || err.code === 'pair_not_found' || err.code === 'pair_not_pending')) {
+          setPhase('gone');
+        } else {
+          setPhase('error');
+        }
+      });
+  }, [code]);
 
   useEffect(() => {
-    let cancelled = false;
-    getPairInfo(code)
-      .then((i) => { if (!cancelled) { setInfo(i); setPhase(phaseFor(i.status)); } })
-      .catch(() => { if (!cancelled) setPhase('gone'); });
-    return () => { cancelled = true; };
-  }, [code]);
+    const cancelledRef = { cancelled: false };
+    load(cancelledRef);
+    return () => { cancelledRef.cancelled = true; };
+  }, [load, reloadKey]);
+
+  const retry = () => setReloadKey((k) => k + 1);
 
   const decide = async (fn: (c: string) => Promise<void>, next: Phase) => {
     setPhase('busy');
@@ -118,6 +133,12 @@ function PairDecision({ code, displayName }: { code: string; displayName: string
         <>
           <p className="page-hint">This code has expired or was already used. Ask the kiosk for a new one.</p>
           <Link to="/link">Enter a different code</Link>
+        </>
+      )}
+      {phase === 'error' && (
+        <>
+          <p className="link-error" role="alert">Something went wrong. Try again.</p>
+          <button type="button" className="mini-btn" onClick={retry}>Retry</button>
         </>
       )}
       {phase === 'approved' && (
