@@ -93,6 +93,8 @@ describe('PrinterSetupModal', () => {
     )).toBeTruthy();
     const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
     expect(apply.disabled).toBe(false);
+    expect(screen.queryByText(/confirmed$/)).toBeNull();
+    expect(screen.queryByText(/printer reports/)).toBeNull();
   });
   it('Calibrate sends ~JC', async () => {
     const { printer } = setup();

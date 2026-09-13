@@ -95,11 +95,11 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
   useEffect(() => { void readAll(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const reread = async () => {
+  const reread = async (): Promise<PrinterConfiguration | null> => {
     const cfg = parseConfiguration(await printerRef.current.query(configurationQuery()));
     if (!cfg) {
       setError("Commands were sent, but the printer's configuration couldn't be read back (^HH). Refresh on the Identify step to retry.");
-      return config;
+      return null;
     }
     setConfig(cfg);
     return cfg;
@@ -115,8 +115,9 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
       for (const cmd of commandsForMedia(mediaChoicesFromConfig(config), target)) await printerRef.current.send(cmd);
       await sleep(SETTLE_MS);
       const cfg = await reread();
-      setMediaResult(confirmMedia(cfg, target));
       setMedia(target);
+      if (cfg === null) { setMediaResult(null); return; }
+      setMediaResult(confirmMedia(cfg, target));
     } catch (err) { setError(err instanceof Error ? err.message : 'Apply failed'); } finally { setBusy(false); }
   };
 
@@ -125,7 +126,9 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
     try {
       for (const cmd of commandsForQuality(qualityFromConfig(config), quality)) await printerRef.current.send(cmd);
       await sleep(SETTLE_MS);
-      setQualityResult(confirmQuality(await reread(), quality));
+      const cfg = await reread();
+      if (cfg === null) { setQualityResult(null); return; }
+      setQualityResult(confirmQuality(cfg, quality));
     } catch (err) { setError(err instanceof Error ? err.message : 'Apply failed'); } finally { setBusy(false); }
   };
 
