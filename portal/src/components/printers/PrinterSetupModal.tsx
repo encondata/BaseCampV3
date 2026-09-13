@@ -186,19 +186,19 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
         <div className="modal-section">Media tracking</div>
         <div className="zp-choices" role="radiogroup" aria-label="Media tracking">
           {([['W', 'Gap / notch', 'Die-cut labels with a gap or notch between them'], ['M', 'Black mark', 'Labels with a black mark on the back'], ['N', 'Continuous', 'Continuous stock, no gaps']] as const).map(([v, t, d]) => (
-            <ChoiceCard key={v} title={t} description={d} selected={media.tracking === v} onSelect={() => setMedia({ ...media, tracking: v })} />
+            <ChoiceCard key={v} title={t} description={d} selected={media.tracking === v} onSelect={() => setMedia((m) => ({ ...m, tracking: v }))} />
           ))}
         </div>
         <div className="modal-section">Print method</div>
         <div className="zp-choices" role="radiogroup" aria-label="Print method">
           {([['D', 'Direct thermal', 'Heat-sensitive labels, no ribbon'], ['T', 'Thermal transfer', 'Ribbon required']] as const).map(([v, t, d]) => (
-            <ChoiceCard key={v} title={t} description={d} selected={media.method === v} onSelect={() => setMedia({ ...media, method: v })} />
+            <ChoiceCard key={v} title={t} description={d} selected={media.method === v} onSelect={() => setMedia((m) => ({ ...m, method: v }))} />
           ))}
         </div>
         <div className="modal-section">Print mode</div>
         <div className="zp-choices" role="radiogroup" aria-label="Print mode">
           {([['T', 'Tear-off', 'Labels stop at the tear bar'], ['P', 'Peel', 'Backing peels away after each label'], ['C', 'Cutter', 'Each label is cut']] as const).map(([v, t, d]) => (
-            <ChoiceCard key={v} title={t} description={d} selected={media.mode === v} onSelect={() => setMedia({ ...media, mode: v })} />
+            <ChoiceCard key={v} title={t} description={d} selected={media.mode === v} onSelect={() => setMedia((m) => ({ ...m, mode: v }))} />
           ))}
         </div>
         <div className="modal-section">Label size</div>
@@ -226,13 +226,13 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
       <>
         <div className="modal-section">Darkness</div>
         <div className="zp-range">
-          <input type="range" min={0} max={30} step={1} aria-label="Darkness" value={quality.darkness ?? 10} onChange={(e) => setQuality({ ...quality, darkness: Number(e.target.value) })} />
+          <input type="range" min={0} max={30} step={1} aria-label="Darkness" value={quality.darkness ?? 10} onChange={(e) => setQuality((q) => ({ ...q, darkness: Number(e.target.value) }))} />
           <span className="mono">{quality.darkness ?? '—'}</span>
         </div>
         <p className="page-hint">0–30. Higher prints darker and wears the head faster.</p>
         <div className="modal-section">Print speed</div>
         <div className="zp-range">
-          <input type="range" min={2} max={14} step={1} aria-label="Print speed" value={quality.speed ?? 6} onChange={(e) => setQuality({ ...quality, speed: Number(e.target.value) })} />
+          <input type="range" min={2} max={14} step={1} aria-label="Print speed" value={quality.speed ?? 6} onChange={(e) => setQuality((q) => ({ ...q, speed: Number(e.target.value) }))} />
           <span className="mono">{quality.speed ?? '—'} ips</span>
         </div>
         <p className="page-hint">2–14 inches per second. Slower is crisper on barcodes.</p>
