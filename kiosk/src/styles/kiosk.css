@@ -1,0 +1,3 @@
+/* kiosk.css — rules specific to the kiosk app. Every token and shared
+   primitive comes from the portal sheets imported in main.tsx; this file
+   never redefines a -- token. */
