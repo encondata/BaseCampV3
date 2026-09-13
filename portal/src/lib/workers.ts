@@ -190,8 +190,12 @@ export interface WorkerDetailItem extends WorkerItem {
   city: string | null;
   region: string | null;
   postal_code: string | null;
-  country: string;
-  badge_uid: string;
+  // country and badge_uid are otherwise non-null (Person.country has a
+  // server default, badge_uid is generated) — nullable here because the
+  // API redacts them to null for non-global (partner-anchored) actors,
+  // per security-fixes task 5 finding (a).
+  country: string | null;
+  badge_uid: string | null;
   rfid_tag: string | null;
   person_notes: string | null;
   source: string;

@@ -1000,3 +1000,69 @@ async def test_partner_service_region_change_is_audited(client, seeded_user, db)
         AuditLog.entity_type == "partner", AuditLog.entity_id == org["id"],
         AuditLog.action == "update"))).one()
     assert row.changes["service_region"] == {"from": None, "to": "New England"}
+
+
+# ── website URLs (XSS guard) ─────────────────────────────────────────
+
+async def test_website_normalized_scheme_added_when_missing(client, seeded_user):
+    headers = await _headers(client)
+
+    resp = await client.post("/clients", headers=headers,
+                             json={"name": "Bare Domain Co", "website": "example.com"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["website"] == "https://example.com"
+
+
+async def test_website_unchanged_when_scheme_present(client, seeded_user):
+    headers = await _headers(client)
+
+    resp = await client.post("/clients", headers=headers,
+                             json={"name": "Full Url Co", "website": "https://example.com/x"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["website"] == "https://example.com/x"
+
+
+async def test_website_empty_string_and_null_cleared_to_null(client, seeded_user):
+    headers = await _headers(client)
+
+    org = (await client.post("/clients", headers=headers,
+                             json={"name": "Clearable Co", "website": "https://a.example"})).json()
+    resp = await client.patch(f"/clients/{org['id']}", headers=headers, json={"website": ""})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["website"] is None
+
+    resp = await client.patch(f"/clients/{org['id']}", headers=headers, json={"website": None})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["website"] is None
+
+
+async def test_website_javascript_scheme_rejected_422(client, seeded_user):
+    headers = await _headers(client)
+
+    resp = await client.post("/clients", headers=headers,
+                             json={"name": "Evil Co", "website": "javascript:alert(1)"})
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert any("invalid_website" in d.get("msg", "") for d in detail)
+
+
+async def test_website_javascript_scheme_rejected_on_patch(client, seeded_user):
+    headers = await _headers(client)
+    org = (await client.post("/clients", headers=headers,
+                             json={"name": "Patchable Co"})).json()
+
+    resp = await client.patch(f"/clients/{org['id']}", headers=headers,
+                              json={"website": "javascript:alert(1)"})
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert any("invalid_website" in d.get("msg", "") for d in detail)
+
+
+async def test_website_no_netloc_rejected(client, seeded_user):
+    headers = await _headers(client)
+
+    resp = await client.post("/partners", headers=headers,
+                             json={"name": "No Host Co", "website": "https://"})
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert any("invalid_website" in d.get("msg", "") for d in detail)

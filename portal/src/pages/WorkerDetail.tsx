@@ -279,7 +279,7 @@ export default function WorkerDetailPage() {
                       .filter((part) => part && String(part).length > 0)
                       .join(' · ') || '—'}
                   </dd>
-                  <dt>Badge ID</dt><dd className="mono">{worker.badge_uid}</dd>
+                  <dt>Badge ID</dt><dd className="mono">{worker.badge_uid ?? '—'}</dd>
                   <dt>RFID tag</dt><dd className="mono" title={worker.rfid_tag ?? undefined}>{displayRfid(worker.rfid_tag)}</dd>
                   <dt>Added</dt><dd className="mono">{longDate(worker.created_at)}</dd>
                 </dl>

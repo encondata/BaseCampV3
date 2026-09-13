@@ -6,7 +6,8 @@
  */
 
 import {
-  useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent,
+  useCallback, useEffect, useMemo, useRef, useState,
+  type CSSProperties, type FormEvent, type ReactNode,
 } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -31,6 +32,7 @@ import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate } from '../lib/format';
+import { safeHref } from '../lib/safeHref';
 import {
   applyColumnOrder,
   ColumnsButton,
@@ -145,6 +147,18 @@ const ALL_COLUMNS: (ColumnDef & { partnerOnly?: boolean; clientOnly?: boolean })
 // already lives inside 'status' via effectiveStatus.
 const ALL_COLUMN_KEYS = new Set<string>([...ALL_COLUMNS.map((c) => c.key), 'primary']);
 const DEFAULT_VISIBLE = new Set<string>(ALL_COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/** The org detail panel's Website row: a link when it's a safe http(s)
+ *  URL, otherwise the raw text (a stored value can predate server-side
+ *  normalization, or a bad value could reach here some other way — never
+ *  trust it into an anchor untested; security-fixes task 7). */
+function renderWebsite(website: string | null): ReactNode {
+  if (!website) return '—';
+  const href = safeHref(website);
+  return href
+    ? <a href={href} target="_blank" rel="noreferrer">{website}</a>
+    : <span className="cell-sub">{website}</span>;
+}
 
 /** Sort value per column key — deliberately separate from `orgCellText`:
  *  that accessor's job is display/filter text (the STATUS_META label, the
@@ -593,9 +607,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                           <dl className="kv" style={{ flex: 1 }}>
                             <dt>Code</dt><dd className="mono">{o.code ?? '—'}</dd>
                             <dt>Website</dt>
-                            <dd className="mono">{o.website
-                              ? <a href={o.website} target="_blank" rel="noreferrer">{o.website}</a>
-                              : '—'}</dd>
+                            <dd className="mono">{renderWebsite(o.website)}</dd>
                             <dt>Phone</dt><dd className="mono">{o.phone ?? '—'}</dd>
                             <dt>Address</dt>
                             <dd>{[o.address_line1, o.address_line2,

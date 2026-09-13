@@ -1,6 +1,7 @@
 """API response/request models (Pydantic)."""
 
 import re
+import urllib.parse
 import uuid
 from datetime import date, datetime, time
 from typing import Annotated, Any, Literal
@@ -332,6 +333,29 @@ ORG_STATUSES = {"prospect", "active", "inactive"}
 ORG_TIERS = {"standard", "preferred", "strategic"}
 
 
+def _normalize_website(v: str | None) -> str | None:
+    """Client/partner website: strip; empty -> None; a bare domain gets
+    `https://` prepended; then it must parse as an http(s) URL with a
+    host, or it's rejected. Blocks a `javascript:`/`data:` URL from ever
+    reaching the portal's anchor tags (security-fixes task 7) — the
+    portal's safeHref() is the second, independent guard at render time."""
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        return None
+    parsed = urllib.parse.urlsplit(v)
+    if not parsed.scheme:
+        # no scheme at all (e.g. "example.com") -- assume https and
+        # reparse, rather than trusting a scheme-like prefix such as
+        # "javascript:" or "data:" that urlsplit already recognized
+        v = f"https://{v}"
+        parsed = urllib.parse.urlsplit(v)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("invalid_website")
+    return v
+
+
 class ManagerRef(BaseModel):
     id: uuid.UUID
     display_name: str
@@ -384,6 +408,11 @@ class OrgCreateIn(BaseModel):
     notes: str | None = None
     account_manager_id: uuid.UUID | None = None
 
+    @field_validator("website")
+    @classmethod
+    def _website_normalized(cls, v: str | None) -> str | None:
+        return _normalize_website(v)
+
 
 class OrgUpdateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -404,6 +433,11 @@ class OrgUpdateIn(BaseModel):
     country: str | None = Field(None, min_length=2, max_length=2)
     notes: str | None = None
     account_manager_id: uuid.UUID | None = None
+
+    @field_validator("website")
+    @classmethod
+    def _website_normalized(cls, v: str | None) -> str | None:
+        return _normalize_website(v)
 
 
 class ContactItem(BaseModel):
