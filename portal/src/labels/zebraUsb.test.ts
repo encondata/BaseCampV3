@@ -2,9 +2,11 @@
  *  ~HS-poll semantics (PrintLabels.jsx) without a printer. */
 import { describe, expect, it, vi } from 'vitest';
 
+import { dpiFromDotsPerMm } from './zebraCommands';
 import {
-  ZEBRA_VENDOR_ID, closePrinter, ensureOpen, findBulkEndpoints, openPrinter, parseHostStatusQueued,
-  queryQueuedFormats, requestZebraDevice, sendRaw, waitForPrinterIdle, type Clock, type UsbDeviceLike,
+  ZEBRA_VENDOR_ID, closePrinter, ensureOpen, findBulkEndpoints, openPrinter, parseConfiguration, parseDirectory,
+  parseHostIdentification, parseHostStatus, parseHostStatusQueued, query, queryQueuedFormats, readText,
+  requestZebraDevice, sendBytes, sendRaw, waitForPrinterIdle, type Clock, type UsbDeviceLike,
 } from './zebraUsb';
 
 class FakeDevice implements UsbDeviceLike {
@@ -13,6 +15,7 @@ class FakeDevice implements UsbDeviceLike {
   configuration: UsbDeviceLike['configuration'] = null;
   log: string[] = [];
   sent: string[] = [];
+  sentBytes: Uint8Array[] = [];
   /** One entry per `~HS` query: the packets transferIn hands out for that
    *  query, in order. transferIn hangs once the current query's packets are
    *  exhausted (→ the transport's timeout path), so a later poll never sees
@@ -36,7 +39,8 @@ class FakeDevice implements UsbDeviceLike {
     this.log.push(`out:${endpoint}`);
     const text = new TextDecoder().decode(data as ArrayBuffer | ArrayBufferView);
     this.sent.push(text);
-    if (text === '~HS') this.pending = [...(this.responses.shift() ?? [])];
+    this.sentBytes.push(new Uint8Array(data as Uint8Array));
+    if (/^(~H|\^XA\^H)/.test(text)) this.pending = [...(this.responses.shift() ?? [])];
   }
   async transferIn(endpoint: number, _length: number) {
     this.log.push(`in:${endpoint}`);
@@ -169,5 +173,88 @@ describe('waitForPrinterIdle', () => {
     // sleep, so ~10 polls reach the 30 s deadline
     expect(clock.now()).toBeGreaterThanOrEqual(30000);
     expect(clock.now()).toBeLessThan(40000);
+  });
+});
+
+const HI = '\x02ZD421-203dpi ZPL,V92.21.16Z,8,8192KB,X\x03';
+const HS = '\x02030,1,0,1245,003,0,0,0,000,0,0,1\x03\r\n\x02000,0,1,0,0,2,4,0,00000012,1,000\x03\r\n\x021234,0\x03';
+const HW = '\x02- DIR E:*.*\r\n* 85620388.TTF       124336\r\n* TT0003M_.TTF      169188\r\n-1928576 bytes free E: ONBOARD FLASH\r\n\x03';
+// Real `^HW` listings print a drive prefix on each row (`*E:NAME.EXT bytes`);
+// the ZPL manual's own example (`*R:ARIALN1.FNT 49140`) carries one too.
+const HW_DRIVE_PREFIXED = '\x02- DIR E:*.*\r\n*E:85620388.TTF  124336\r\n*E:TT0003M_.TTF 169188\r\n-1928576 bytes free E: ONBOARD FLASH\r\n\x03';
+const HH = [
+  '\x02', '+10.0               DARKNESS', '6.0 IPS             PRINT SPEED', '+000                TEAR OFF',
+  'TEAR OFF            PRINT MODE', 'GAP/NOTCH           MEDIA TYPE', 'DIRECT-THERMAL      PRINT METHOD',
+  '812                 PRINT WIDTH', '1218                LABEL LENGTH', 'V72.19.15Z <-       FIRMWARE',
+  'NORMAL MODE         PRINT MODE FLAG', '\x03',
+].join('\r\n');
+
+describe('readText / query / sendBytes', () => {
+  it('reads the first packet and drains the rest, returning everything', async () => {
+    const dev = new FakeDevice(); dev.opened = true;
+    dev.responses = [['\x02abc', 'def\x03']];
+    expect(await query(dev, '~HI', {}, instantClock())).toBe('\x02abcdef\x03');
+    expect(dev.sent).toEqual(['~HI']);
+  });
+  it('returns an empty string when nothing arrives or there is no bulk IN', async () => {
+    const silent = new FakeDevice(); silent.opened = true;
+    expect(await readText(silent, {}, instantClock())).toBe('');
+    const noIn = new FakeDevice([{ direction: 'out', type: 'bulk' }]); noIn.opened = true;
+    expect(await readText(noIn, {}, instantClock())).toBe('');
+  });
+  it('sends bytes in chunks and reports progress', async () => {
+    const dev = new FakeDevice(); dev.opened = true;
+    const bytes = new Uint8Array(150_000).map((_, i) => i % 251);
+    const progress: [number, number][] = [];
+    await sendBytes(dev, bytes, { chunkSize: 65536, onProgress: (s, t) => progress.push([s, t]) });
+    expect(dev.sentBytes.map((b) => b.length)).toEqual([65536, 65536, 18928]);
+    expect(progress).toEqual([[65536, 150000], [131072, 150000], [150000, 150000]]);
+    expect(Buffer.concat(dev.sentBytes.map((b) => Buffer.from(b)))).toEqual(Buffer.from(bytes));
+  });
+});
+
+describe('parsers', () => {
+  it('parses ~HI', () => {
+    expect(parseHostIdentification(HI)).toEqual({ model: 'ZD421-203dpi ZPL', firmware: 'V92.21.16Z', dotsPerMm: 8, memory: '8192KB', dpi: dpiFromDotsPerMm(8) });
+    expect(parseHostIdentification('garbage')).toBeNull();
+    expect(parseHostIdentification('')).toBeNull();
+  });
+  it('parses the LAST <STX>…<ETX> frame when a leftover frame precedes the real response', () => {
+    expect(parseHostIdentification('\x02junk,1\x03\x02ZD421-203dpi ZPL,V92.21.16Z,8,8192KB,X\x03'))
+      .toEqual({ model: 'ZD421-203dpi ZPL', firmware: 'V92.21.16Z', dotsPerMm: 8, memory: '8192KB', dpi: dpiFromDotsPerMm(8) });
+  });
+  it('parses the three ~HS strings', () => {
+    const s = parseHostStatus(HS)!;
+    expect(s.paperOut).toBe(true); expect(s.paused).toBe(false); expect(s.labelLength).toBe(1245);
+    expect(s.formatsQueued).toBe(3); expect(s.bufferFull).toBe(false); expect(s.overTemp).toBe(true);
+    expect(s.underTemp).toBe(false); expect(s.headOpen).toBe(true); expect(s.ribbonOut).toBe(false);
+    expect(s.thermalTransfer).toBe(false); expect(s.printMode).toBe('2'); expect(s.labelsRemaining).toBe(12);
+    expect(parseHostStatus('\x02030,0\x03')).toBeNull();
+    expect(parseHostStatus('')).toBeNull();
+  });
+  it('requires string 2 (a partial read is not a confident Ready), and skips leftover junk frames', () => {
+    // String 1 alone, however well-formed, must not report a confident status.
+    expect(parseHostStatus('\x02030,1,0,1245,003,0,0,0,000,0,0,1\x03')).toBeNull();
+    // Leftover frames from an earlier, unrelated read precede the real
+    // response; the last full string1+string2 pair still parses.
+    const withLeftover = '\x02garbage\x03\x02x,y\x03' + HS;
+    expect(parseHostStatus(withLeftover)).toEqual(parseHostStatus(HS));
+  });
+  it('parses an E: directory listing', () => {
+    expect(parseDirectory(HW)).toEqual({ objects: [{ name: '85620388.TTF', bytes: 124336 }, { name: 'TT0003M_.TTF', bytes: 169188 }], bytesFree: 1928576 });
+    expect(parseDirectory('\x02- DIR E:*.*\r\n-2000000 bytes free E:\x03')).toEqual({ objects: [], bytesFree: 2000000 });
+    expect(parseDirectory('')).toBeNull();
+  });
+  it('parses rows that carry the drive prefix real ^HW listings print (e.g. `*E:NAME.EXT bytes`)', () => {
+    expect(parseDirectory(HW_DRIVE_PREFIXED)).toEqual(parseDirectory(HW));
+  });
+  it('parses ^HH configuration', () => {
+    const c = parseConfiguration(HH)!;
+    expect(c.darkness).toBe(10); expect(c.printSpeed).toBe(6); expect(c.tearOff).toBe(0);
+    expect(c.printMode).toBe('TEAR OFF'); expect(c.mediaType).toBe('GAP/NOTCH'); expect(c.printMethod).toBe('DIRECT-THERMAL');
+    expect(c.printWidth).toBe(812); expect(c.labelLength).toBe(1218); expect(c.firmware).toBe('V72.19.15Z');
+    expect(c.raw['PRINT MODE FLAG']).toBe('NORMAL MODE');
+    expect(parseConfiguration('')).toBeNull();
+    expect(parseConfiguration('no labels here')).toBeNull();
   });
 });

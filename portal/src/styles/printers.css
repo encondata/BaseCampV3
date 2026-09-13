@@ -1,0 +1,70 @@
+/* Labels → Printers (Zebra tools) — layout + color only. Typography rides
+   the shared primitives (eyebrow / modal-section / page-hint / chip /
+   cell-top / cell-sub / mono); nothing here sets font or line-height
+   on list-ish selectors (guardrail). */
+.zp-card {
+  display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px;
+  padding: 18px 22px; border: 1px solid var(--paper-line); border-radius: 12px;
+  background: var(--surface-2, #f5f7fa);
+}
+.zp-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.zp-card-head .modal-section { margin: 0; }
+.zp-printer-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.zp-printer-status .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.zp-printer-status .dot.on { background: var(--c-green); }
+.zp-printer-status .dot.off { background: var(--c-red); }
+.zp-printer-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.zp-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.zp-known { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.zp-known .mini-btn { display: inline-flex; align-items: center; gap: 6px; }
+
+/* tool rows: title/description on the left, the action on the right */
+.zp-tool-row { grid-template-columns: minmax(0, 1fr) auto; cursor: default; }
+.zp-tool-action { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
+
+/* notice strip (same look as Print Labels) */
+.zp-notice {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
+  padding: 10px 14px; border: 1px solid var(--paper-line); border-radius: 10px; background: var(--surface-2, #f5f7fa);
+}
+.zp-notice .page-hint { margin: 0; flex: 1; }
+.zp-notice.info { border-color: var(--c-blue-bd, #bcd4f5); background: var(--c-blue-bg, #eef4fd); }
+.zp-notice.success { border-color: var(--c-green-bd, #b7e0c1); background: var(--c-green-bg, #edf8ef); }
+.zp-notice.warning { border-color: var(--c-amber-bd, #efd39a); background: var(--c-amber-bg, #fff7e6); }
+.zp-notice.error { border-color: var(--c-red-bd, #f0b4b4); background: var(--c-red-bg, #fdecec); }
+
+/* modals */
+.modal-card.reports-modal-card.rgm-card.zp-align-card { width: min(760px, 96vw); max-width: 96vw; overflow: visible; max-height: none; }
+.modal-card.reports-modal-card.rgm-card.zp-fonts-card { width: min(1100px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.zp-setup-card { width: min(980px, 96vw); max-width: 96vw; overflow: visible; max-height: none; }
+.zp-two-col { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr); gap: 12px 32px; align-items: start; }
+@media (max-width: 800px) { .zp-two-col { grid-template-columns: 1fr; } }
+.zp-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.zp-col .modal-section { margin: 0; }
+.zp-col .page-hint { margin: 0; }
+.zp-form { grid-template-columns: 1fr 1fr; gap: 12px 18px; }
+.zp-form .field-hint { margin: 4px 0 0; }
+.zp-preview { display: flex; align-items: center; justify-content: center; padding: 12px; border: 1px solid var(--paper-line); border-radius: 10px; background: var(--surface, #fff); }
+.zp-preview svg { width: 100%; height: auto; max-width: 320px; }
+.zp-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* fonts */
+.zp-upload { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--paper-line); border-radius: 10px; background: var(--surface, #fff); }
+.zp-upload-row { display: grid; grid-template-columns: minmax(0, 1fr) 160px auto; gap: 10px; align-items: end; }
+@media (max-width: 800px) { .zp-upload-row { grid-template-columns: 1fr; } }
+.zp-font-progress { height: 6px; border-radius: 3px; background: var(--c-blue-bg, #eef4fd); overflow: hidden; margin-top: 4px; }
+.zp-font-progress-fill { height: 100%; background: var(--accent); border-radius: inherit; transition: width 150ms ease; }
+.zp-inline-actions { display: inline-flex; gap: 6px; }
+
+/* setup wizard */
+.zp-config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.zp-config-item { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--paper-line); border-radius: 10px; background: var(--surface, #fff); }
+.zp-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.zp-range { display: grid; grid-template-columns: minmax(0, 1fr) 64px; gap: 10px; align-items: center; }
+.zp-range input[type="range"] { width: 100%; }
+.zp-confirm { display: flex; flex-direction: column; gap: 4px; }
+.zp-log { margin-top: 12px; }
+.zp-log summary { cursor: pointer; }
+.zp-log pre { max-height: 220px; overflow: auto; margin: 8px 0 0; padding: 10px 12px; border: 1px solid var(--paper-line); border-radius: 10px; background: var(--surface, #fff); white-space: pre-wrap; overflow-wrap: anywhere; }
+.zp-guard { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.zp-guard input { width: 120px; }
