@@ -140,6 +140,71 @@ class ErrorOut(BaseModel):
     code: str
 
 
+# ── kiosk: pairing + heartbeat ─────────────────────────────────────
+
+PairStatus = Literal["pending", "approved", "denied", "expired"]
+
+
+class PairCreateIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=80)
+
+    @field_validator("serial", "name")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("blank")
+        return v
+
+
+class PairCreateOut(BaseModel):
+    code: str
+    poll_token: str          # returned exactly once; only its hash is stored
+    link_url: str
+    expires_at: datetime
+
+
+class PairPollIn(BaseModel):
+    poll_token: str = Field(min_length=1, max_length=200)
+
+
+class PairPollOut(BaseModel):
+    status: PairStatus
+    session: SessionOut | None = None   # present only when status == "approved"
+
+
+class PairInfoOut(BaseModel):
+    code: str
+    kiosk_name: str
+    serial: str
+    status: PairStatus
+    expires_at: datetime
+
+
+class HeartbeatIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=80)
+    mode: Literal["web", "laptop", "pi", "android", "ios"]
+    version: str | None = Field(default=None, max_length=40)
+    raw_info: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("serial", "name")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("blank")
+        return v
+
+
+class HeartbeatOut(BaseModel):
+    device_id: uuid.UUID
+    name: str
+    registration: Literal["ok", "soon", "expired", "none"]
+    token_expires_at: datetime | None
+
+
 class PersonDetail(BaseModel):
     """Full person record for the profile page."""
 

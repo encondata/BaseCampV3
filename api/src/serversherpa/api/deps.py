@@ -80,12 +80,13 @@ MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Never frozen: sign-in/out/refresh/password/preferences/session revocation,
 # and the admin toggle itself — whoever could turn read-only on can always
 # turn it off. Everything else under /auth/me (profile edits) freezes like
-# any other write.
+# any other write. /kiosk/pair* is a sign-in (approve/deny on the phone) —
+# never frozen. /kiosk/heartbeat is NOT exempt.
 READ_ONLY_EXEMPT_PATHS = frozenset({
     "/auth/login", "/auth/refresh", "/auth/logout",
     "/auth/me/preferences", "/auth/me/password", "/system/admin",
 })
-READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/",)
+READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/kiosk/pair")
 
 
 def _read_only_exempt(path: str) -> bool:
