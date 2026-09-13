@@ -263,6 +263,13 @@ describe('parsers', () => {
     expect(parseDirectory('\x02- DIR E:*.*\r\n-2000000 bytes free E:\x03')).toEqual({ objects: [], bytesFree: 2000000 });
     expect(parseDirectory('')).toBeNull();
   });
+  it('keeps only the last DIR block and collapses repeated names (a straggling earlier listing)', () => {
+    const twice = '\x02- DIR E:*.*\r\n*E:85620388.TTF  1035\r\n*E:IN001.DMP  900\r\n-2000 bytes free E:\x03'
+      + '\x02- DIR E:*.*\r\n*E:85620388.TTF  1036\r\n*E:IN001.DMP  901\r\n-1999 bytes free E:\x03';
+    expect(parseDirectory(twice)).toEqual({ objects: [{ name: '85620388.TTF', bytes: 1036 }, { name: 'IN001.DMP', bytes: 901 }], bytesFree: 1999 });
+    const dup = '\x02- DIR E:*.*\r\n*E:A.TTF  1\r\n*E:A.TTF  2\r\n-5 bytes free E:\x03';
+    expect(parseDirectory(dup)).toEqual({ objects: [{ name: 'A.TTF', bytes: 2 }], bytesFree: 5 });
+  });
   it('parses rows that carry the drive prefix real ^HW listings print (e.g. `*E:NAME.EXT bytes`)', () => {
     expect(parseDirectory(HW_DRIVE_PREFIXED)).toEqual(parseDirectory(HW));
   });

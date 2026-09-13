@@ -168,18 +168,17 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
     return {
       key: f.id,
       cells: [
-        <span className="mono" key="n">{f.name}</span>,
-        <span className="cell-sub" key="d">{f.display_name}</span>,
+        <div className="pn" key="n"><b>{f.name}</b><span>{f.display_name}</span></div>,
         <span className="mono" key="s">{kb(f.size_bytes)}</span>,
         <span className="zp-chips" key="u">{f.used_by.length === 0 ? <span className="cell-sub">—</span> : f.used_by.map((u) => <span key={u.template_id} className="chip tag">{u.template_name}</span>)}</span>,
         <span className="mono" key="t">{relativeTime(f.created_at)}</span>,
+        <span key="p">{state && !progress[f.id] ? <span className={`chip ${state === 'installed' ? 'c-green' : 'c-amber'}`}>{state === 'installed' ? 'Installed' : 'Missing'}</span> : progressCell(f)}</span>,
         <span className="zp-inline-actions" key="a">
           {printer.connected && state && (
             <button type="button" className="mini-btn" disabled={busy || batching} onClick={() => void install(f)}>{state === 'installed' ? 'Reinstall' : 'Install'}</button>
           )}
           {canDelete && <button type="button" className="mini-btn danger" disabled={busy || batching} onClick={() => setConfirmDelete(f)}>Remove</button>}
         </span>,
-        <span key="p">{state && !progress[f.id] ? <span className={`chip ${state === 'installed' ? 'c-green' : 'c-amber'}`}>{state === 'installed' ? 'Installed' : 'Missing'}</span> : progressCell(f)}</span>,
       ],
     };
   });
@@ -210,7 +209,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
           </button>
         </div>
         <div className="modal-body">
-          <div className="zp-two-col">
+          <div className="zp-stack">
             <section className="zp-col" aria-label="Font library">
               <div className="modal-section">Font library</div>
               {canAdd && (
@@ -233,12 +232,14 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
                 </div>
               )}
               {fonts === null ? <p className="page-hint">Loading fonts…</p> : fonts.length === 0 ? <div className="dir-empty">No fonts uploaded yet.</div> : (
-                <DataTable ariaLabel="Font library" rows={libraryRows} columns={[
-                  { key: 'name', label: 'Name', width: '1.2fr', mono: true }, { key: 'display', label: 'File', width: '1fr' },
-                  { key: 'size', label: 'Size', width: '0.6fr', mono: true, align: 'right' }, { key: 'used', label: 'Used by', width: '1.2fr' },
-                  { key: 'when', label: 'Uploaded', width: '0.7fr', mono: true }, { key: 'actions', label: '', width: '1fr', align: 'right' },
-                  { key: 'state', label: 'On printer', width: '0.9fr' },
-                ]} />
+                <div className="zp-table-scroll"><DataTable ariaLabel="Font library" rows={libraryRows} columns={[
+                  { key: 'name', label: 'Name', width: 'minmax(220px, 1.6fr)' },
+                  { key: 'size', label: 'Size', width: '90px', mono: true, align: 'right' },
+                  { key: 'used', label: 'Used by', width: 'minmax(160px, 1.2fr)' },
+                  { key: 'when', label: 'Uploaded', width: '110px', mono: true },
+                  { key: 'state', label: 'On printer', width: '150px' },
+                  { key: 'actions', label: '', width: '190px', align: 'right' },
+                ]} /></div>
               )}
               {confirmDelete && (
                 <div className="zp-guard">
@@ -266,10 +267,12 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
                   <>
                     <p className="page-hint">Library fonts show their state in the table on the left. Objects only on the printer:</p>
                     {printerRows.length === 0 ? <div className="dir-empty">No other objects on E:.</div> : (
-                      <DataTable ariaLabel="Printer objects" rows={printerRows} columns={[
-                        { key: 'name', label: 'Name', width: '1.4fr', mono: true }, { key: 'size', label: 'Size', width: '0.6fr', mono: true, align: 'right' },
-                        { key: 'state', label: 'State', width: '0.8fr' }, { key: 'remove', label: '', width: '1fr', align: 'right' },
-                      ]} />
+                      <div className="zp-table-scroll"><DataTable ariaLabel="Printer objects" rows={printerRows} columns={[
+                        { key: 'name', label: 'Name', width: 'minmax(200px, 1.4fr)', mono: true },
+                        { key: 'size', label: 'Size', width: '90px', mono: true, align: 'right' },
+                        { key: 'state', label: 'State', width: '130px' },
+                        { key: 'remove', label: '', width: '190px', align: 'right' },
+                      ]} /></div>
                     )}
                   </>
                 )}

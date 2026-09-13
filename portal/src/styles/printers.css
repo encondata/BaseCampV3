@@ -48,6 +48,10 @@
 .zp-preview svg { width: 100%; height: auto; max-width: 320px; }
 .zp-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
+/* fonts — the two tables stack full width (seven columns never fit half a card) */
+.zp-stack { display: flex; flex-direction: column; gap: 18px; }
+.zp-table-scroll { overflow-x: auto; }
+.zp-table-scroll .data-table { min-width: 720px; }
 /* fonts */
 .zp-upload { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--paper-line); border-radius: 10px; background: var(--surface, #fff); }
 .zp-upload-row { display: grid; grid-template-columns: minmax(0, 1fr) 160px auto; gap: 10px; align-items: end; }

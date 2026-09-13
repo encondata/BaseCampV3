@@ -231,17 +231,20 @@ export interface DirectoryListing { objects: { name: string; bytes: number }[]; 
 
 /** `^HW` → `- DIR E:*.*` header, `* NAME.EXT <bytes>` rows, `-<n> bytes free` trailer. */
 export function parseDirectory(text: string): DirectoryListing | null {
-  const body = strip(text);
-  if (!/DIR\s+\w:/i.test(body)) return null;
-  const objects: { name: string; bytes: number }[] = [];
+  const full = strip(text);
+  if (!/DIR\s+\w:/i.test(full)) return null;
+  // A straggling earlier listing can precede the fresh one: keep only the
+  // last `DIR x:` block, and let a repeated name collapse to its last row.
+  const body = full.slice(full.search(/DIR\s+\w:(?![\s\S]*DIR\s+\w:)/i));
+  const byName = new Map<string, { name: string; bytes: number }>();
   let bytesFree: number | null = null;
   for (const line of body.split(/\r?\n/)) {
     const obj = line.match(/^\s*\*?\s*(?:[A-Z]:)?([A-Z0-9_]{1,8}\.[A-Z0-9]{1,3})\s+(\d+)\s*$/i);
-    if (obj) { objects.push({ name: obj[1].toUpperCase(), bytes: parseInt(obj[2], 10) }); continue; }
+    if (obj) { const name = obj[1].toUpperCase(); byName.delete(name); byName.set(name, { name, bytes: parseInt(obj[2], 10) }); continue; }
     const free = line.match(/(\d+)\s+bytes free/i);
     if (free) bytesFree = parseInt(free[1], 10);
   }
-  return { objects, bytesFree };
+  return { objects: Array.from(byName.values()), bytesFree };
 }
 
 export interface PrinterConfiguration {
