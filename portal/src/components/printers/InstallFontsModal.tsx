@@ -5,7 +5,7 @@
  * re-reads the directory to confirm. Presentational for the API side
  * (callbacks); talks to the printer through the hook's query/send.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { LabelFont } from '../../lib/api';
 import { relativeTime } from '../../lib/format';
@@ -45,28 +45,32 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
   const [listError, setListError] = useState('');
   const [progress, setProgress] = useState<Record<string, Progress>>({});
   const [busy, setBusy] = useState(false);
+  const [batching, setBatching] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [name, setName] = useState('');
   const [uploadError, setUploadError] = useState('');
   const [uploading, setUploading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<LabelFont | null>(null);
 
+  const printerRef = useRef(printer);
+  printerRef.current = printer;
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.defaultPrevented && !busy && !uploading) onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.defaultPrevented && !busy && !uploading && !batching) onClose(); };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [onClose, busy, uploading]);
+  }, [onClose, busy, uploading, batching]);
 
   const readDirectory = useCallback(async () => {
-    if (!printer.connected) { setListing(null); return; }
+    if (!printerRef.current.connected) { setListing(null); return; }
     try {
-      const parsed = parseDirectory(await printer.query(directoryQuery()));
+      const parsed = parseDirectory(await printerRef.current.query(directoryQuery()));
       setListing(parsed);
       setListError(parsed ? '' : "Couldn't read the printer's E: drive.");
     } catch (err) {
       setListError(err instanceof Error ? err.message : "Couldn't read the printer's E: drive.");
     }
-  }, [printer]);
+  }, [printer.connected]);
 
   useEffect(() => { void readDirectory(); }, [readDirectory]);
 
@@ -77,8 +81,8 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
     setProgress((p) => ({ ...p, [f.id]: { sent: 0, total: f.size_bytes } }));
     try {
       const bytes = await onFetchBytes(f.id);
-      await printer.send(downloadFontHeader('E', f.name, bytes.length));
-      await printer.sendBytes(bytes, (sent, total) => setProgress((p) => ({ ...p, [f.id]: { sent, total } })));
+      await printerRef.current.send(downloadFontHeader('E', f.name, bytes.length));
+      await printerRef.current.sendBytes(bytes, (sent, total) => setProgress((p) => ({ ...p, [f.id]: { sent, total } })));
       await new Promise((r) => setTimeout(r, 500));
       await readDirectory();
       setProgress((p) => ({ ...p, [f.id]: 'done' }));
@@ -90,13 +94,18 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
   };
 
   const installAllMissing = async () => {
-    for (const f of fonts ?? []) if (states.library[f.name.toUpperCase()] === 'missing') await install(f);
+    setBatching(true);
+    try {
+      for (const f of fonts ?? []) if (states.library[f.name.toUpperCase()] === 'missing') await install(f);
+    } finally {
+      setBatching(false);
+    }
   };
 
   const removeFromPrinter = async (objectName: string) => {
     setBusy(true);
     try {
-      await printer.send(deleteObject('E', objectName));
+      await printerRef.current.send(deleteObject('E', objectName));
       await new Promise((r) => setTimeout(r, 300));
       await readDirectory();
     } catch (err) {
@@ -135,7 +144,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
     if (p === 'done') return <span className="chip c-green">Installed ✓</span>;
     if ('error' in p) return <span className="pf-error">{p.error}</span>;
     const pct = p.total ? Math.round((p.sent / p.total) * 100) : 0;
-    return <div className="zp-font-progress" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}><div className="zp-font-progress-fill" style={{ width: `${pct}%` }} /></div>;
+    return <div className="zp-font-progress" role="progressbar" aria-label={`Installing ${f.name}`} aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}><div className="zp-font-progress-fill" style={{ width: `${pct}%` }} /></div>;
   };
 
   const libraryRows = (fonts ?? []).map((f) => {
@@ -150,9 +159,9 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
         <span className="mono" key="t">{relativeTime(f.created_at)}</span>,
         <span className="zp-inline-actions" key="a">
           {printer.connected && state && (
-            <button type="button" className="mini-btn" disabled={busy} onClick={() => void install(f)}>{state === 'installed' ? 'Reinstall' : 'Install'}</button>
+            <button type="button" className="mini-btn" disabled={busy || batching} onClick={() => void install(f)}>{state === 'installed' ? 'Reinstall' : 'Install'}</button>
           )}
-          {canDelete && <button type="button" className="mini-btn danger" disabled={busy} onClick={() => setConfirmDelete(f)}>Remove</button>}
+          {canDelete && <button type="button" className="mini-btn danger" disabled={busy || batching} onClick={() => setConfirmDelete(f)}>Remove</button>}
         </span>,
         <span key="p">{state && !progress[f.id] ? <span className={`chip ${state === 'installed' ? 'c-green' : 'c-amber'}`}>{state === 'installed' ? 'Installed' : 'Missing'}</span> : progressCell(f)}</span>,
       ],
@@ -165,14 +174,14 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
       <span className="mono" key="n">{o.name}</span>,
       <span className="mono" key="s">{kb(o.bytes)}</span>,
       <span className="chip c-slate" key="c">Printer only</span>,
-      <button type="button" className="mini-btn danger" key="r" disabled={busy} onClick={() => void removeFromPrinter(o.name)}>Remove from printer</button>,
+      <button type="button" className="mini-btn danger" key="r" disabled={busy || batching} onClick={() => void removeFromPrinter(o.name)}>Remove from printer</button>,
     ],
   }));
 
   const missingCount = Object.values(states.library).filter((s) => s === 'missing').length;
 
   return (
-    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy && !uploading) onClose(); }}>
+    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy && !uploading && !batching) onClose(); }}>
       <div className="modal-card reports-modal-card rgm-card zp-fonts-card" role="dialog" aria-label="Install fonts">
         <div className="modal-head">
           <div className="rgm-head-text">
@@ -180,7 +189,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
             <h3>Install fonts</h3>
             <p className="page-hint">Fonts referenced by label templates must live on the printer's E: drive. Upload TrueType fonts here once, then install them on each printer.</p>
           </div>
-          <button type="button" className="modal-close" aria-label="Close" onClick={onClose} disabled={busy || uploading}>
+          <button type="button" className="modal-close" aria-label="Close" onClick={onClose} disabled={busy || uploading || batching}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
           </button>
         </div>
@@ -229,8 +238,8 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
                 {printer.connected && listing && (
                   <div className="zp-actions">
                     <span className="cell-sub">{listing.bytesFree !== null ? `${kb(listing.bytesFree)} free` : ''}</span>
-                    <button type="button" className="mini-btn" disabled={busy} onClick={() => void readDirectory()}>Refresh</button>
-                    <button type="button" className="mini-btn" disabled={busy || missingCount === 0} onClick={() => void installAllMissing()}>Install all missing</button>
+                    <button type="button" className="mini-btn" disabled={busy || batching} onClick={() => void readDirectory()}>Refresh</button>
+                    <button type="button" className="mini-btn" disabled={busy || batching || missingCount === 0} onClick={() => void installAllMissing()}>Install all missing</button>
                   </div>
                 )}
               </div>
@@ -252,7 +261,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
           </div>
         </div>
         <div className="modal-foot">
-          <button type="button" className="btn-solid" onClick={onClose} disabled={busy || uploading}>Done</button>
+          <button type="button" className="btn-solid" onClick={onClose} disabled={busy || uploading || batching}>Done</button>
         </div>
       </div>
     </div>

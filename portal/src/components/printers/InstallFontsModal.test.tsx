@@ -114,4 +114,27 @@ describe('InstallFontsModal', () => {
     expect(screen.queryByLabelText('TrueType font file')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
   });
+  it('reads the printer directory once on mount and only re-reads on connect/disconnect, not on every parent re-render', async () => {
+    const printer = fakePrinter();
+    const h = {
+      onUpload: vi.fn(async (_f: File, _n: string) => undefined), onDeleteFont: vi.fn(async (_id: string) => undefined),
+      onFetchBytes: vi.fn(async (_id: string) => new Uint8Array([0, 1, 0, 0, 7, 7])), onClose: vi.fn(),
+    };
+    const { rerender } = render(<InstallFontsModal printer={printer} fonts={LIB} canAdd canDelete {...h} />);
+    await waitFor(() => expect(printer.query).toHaveBeenCalledWith('^XA^HWE:*.*^XZ'));
+    const dirCalls = () => printer.query.mock.calls.filter((c) => c[0] === '^XA^HWE:*.*^XZ').length;
+    expect(dirCalls()).toBe(1);
+
+    // Parent re-renders with a brand-new printer object each time (same fns, new identity,
+    // same connected) must not re-trigger the directory read.
+    for (let i = 0; i < 3; i++) {
+      rerender(<InstallFontsModal printer={{ ...printer }} fonts={LIB} canAdd canDelete {...h} />);
+    }
+    expect(dirCalls()).toBe(1);
+
+    // A connect/disconnect transition should re-trigger exactly one more read.
+    rerender(<InstallFontsModal printer={{ ...printer, connected: false }} fonts={LIB} canAdd canDelete {...h} />);
+    rerender(<InstallFontsModal printer={{ ...printer, connected: true }} fonts={LIB} canAdd canDelete {...h} />);
+    await waitFor(() => expect(dirCalls()).toBe(2));
+  });
 });
