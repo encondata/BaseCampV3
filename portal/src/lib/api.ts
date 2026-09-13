@@ -3537,6 +3537,45 @@ export async function convertLabelTemplate(id: string): Promise<LabelTemplate> {
   return resp.json();
 }
 
+// ── Label font library (Labels → Printers › Install Fonts) ───────────
+
+export interface LabelFontUsedBy { template_id: string; template_name: string }
+
+/** A TrueType font admins uploaded once; `name` is the Zebra object name
+ *  it installs under on the printer's E: drive. */
+export interface LabelFont {
+  id: string; name: string; display_name: string; size_bytes: number; content_type: string;
+  uploaded_by: string | null; uploaded_by_name: string | null; created_at: string;
+  used_by: LabelFontUsedBy[];
+}
+
+export async function listLabelFonts(): Promise<LabelFont[]> {
+  const resp = await apiFetch('/labels/fonts');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function uploadLabelFont(file: File, name?: string): Promise<LabelFont> {
+  const form = new FormData();
+  form.set('file', file);
+  if (name) form.set('name', name);
+  const resp = await apiFetch('/labels/fonts', { method: 'POST', body: form });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function deleteLabelFont(id: string): Promise<void> {
+  const resp = await apiFetch(`/labels/fonts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+/** The TTF bytes, for pushing to a printer over WebUSB. */
+export async function getLabelFontBytes(id: string): Promise<Uint8Array> {
+  const resp = await apiFetch(`/labels/fonts/${encodeURIComponent(id)}/content`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return new Uint8Array(await resp.arrayBuffer());
+}
+
 export async function compileLabel(body: {
   kind: 'design' | 'code';
   design?: Record<string, unknown> | null;
