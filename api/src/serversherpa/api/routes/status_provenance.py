@@ -68,6 +68,17 @@ def _err(status: int, code: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code})
 
 
+def _redact(out: StatusProvenanceOut, user) -> StatusProvenanceOut:
+    """site_name/device_id/actor_name identify an internal warehouse
+    location or a staff/operator's name — never surfaced to a non-global
+    actor, even for a row they can otherwise see via row-scope."""
+    if not user.access.is_global:
+        out.site_name = None
+        out.device_id = None
+        out.actor_name = None
+    return out
+
+
 @router.get("/provenance", response_model=StatusProvenanceOut)
 async def status_provenance(
     user: CurrentUser,
@@ -168,13 +179,14 @@ async def status_provenance(
             actor_name = await db.scalar(
                 select(Person.first_name + " " + Person.last_name)
                 .where(Person.id == scan.operator_id))
-        return StatusProvenanceOut(
+        out = StatusProvenanceOut(
             status=status, changed_at=scan.scanned_at, source="scan",
             scan_type=scan.scan_type,
             scan_type_label=st.label if st else scan.scan_type,
             scan_type_color=st.color if st else None,
             device_id=scan.device_id or None, site_name=site_name,
             actor_name=actor_name)
+        return _redact(out, user)
 
     if edit_at is not None:
         actor_name = None
@@ -182,8 +194,9 @@ async def status_provenance(
             actor_name = await db.scalar(
                 select(Person.first_name + " " + Person.last_name)
                 .where(Person.id == edit_actor_id))
-        return StatusProvenanceOut(
+        out = StatusProvenanceOut(
             status=status, changed_at=edit_at, source="edit",
             actor_name=actor_name)
+        return _redact(out, user)
 
     return StatusProvenanceOut(status=status)
