@@ -105,3 +105,45 @@
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+
+/* ── login pane additions ──────────────────────────────────────── */
+.login-shell .pane { position: relative; }
+.login-shell .pane-gear {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  border: 1px solid var(--ink-line);
+  background: transparent;
+  color: var(--snow);
+  opacity: .7;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+.login-shell .pane-gear:hover { opacity: 1; border-color: var(--amber); }
+.login-shell .pane-gear svg { width: 18px; height: 18px; }
+.login-shell .eyebrow-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.login-shell .eyebrow-kiosk {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: .08em;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+/* .segmented reads shell tokens that the dark login pane does not define */
+.login-shell .method-switch {
+  --surface: var(--ink-2);
+  --surface-2: rgba(255, 255, 255, 0.04);
+  --paper-line: var(--ink-line);
+  --text-dark: var(--snow);
+  --text-mute: rgba(232, 237, 244, 0.62);
+  display: flex;
+  width: 100%;
+  margin: 0 0 18px;
+}
+.login-shell .method-switch button { flex: 1 1 0; justify-content: center; }
+.login-shell .form-notice { color: var(--text-mute); font-size: 13px; margin: 0 0 14px; }
+.login-shell .form-error { font-size: 13px; margin: 0; }
