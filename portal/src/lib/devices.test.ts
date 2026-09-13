@@ -174,4 +174,8 @@ describe('kiosk accessors', () => {
     expect(hay).toContain('pi');
     expect(hay).toContain('nap11 hall migration (demo)');
   });
+
+  it('labels the web kiosk sub-type', () => {
+    expect(subTypeLabel('web')).toBe('Web');
+  });
 });

@@ -41,7 +41,7 @@ export function tokenExpiryState(
 }
 
 const SUB_TYPE_LABELS: Record<string, string> = {
-  laptop: 'Laptop', pi: 'Pi', android: 'Android', ios: 'iOS', zebra: 'Zebra',
+  laptop: 'Laptop', pi: 'Pi', web: 'Web', android: 'Android', ios: 'iOS', zebra: 'Zebra',
 };
 
 export function subTypeLabel(type: string | null): string {
