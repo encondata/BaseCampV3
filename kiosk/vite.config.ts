@@ -27,5 +27,10 @@ export default defineConfig({
   test: {
     environment: 'node',
     exclude: ['**/node_modules/**', '**/dist/**', '**/._*'],
+    // react-router-dom logs its "future flag" deprecation notices the
+    // moment a <MemoryRouter> mounts without opting in; they're aimed at
+    // app wiring (Task 11), not at these component tests, so they're
+    // filtered here to keep the run's output pristine.
+    onConsoleLog: (log) => !log.includes('React Router Future Flag Warning'),
   },
 });

@@ -1,3 +1,83 @@
 /* kiosk.css — rules specific to the kiosk app. Every token and shared
    primitive comes from the portal sheets imported in main.tsx; this file
    never redefines a -- token. */
+
+/* ── shell ─────────────────────────────────────────────────────── */
+.kiosk-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: var(--paper-2);
+  color: var(--text-dark);
+  font-family: var(--font-display);
+}
+.kiosk-top {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
+  height: 56px;
+  padding: 0 18px;
+  background: var(--ink);
+  color: var(--snow);
+  border-bottom: 1px solid var(--ink-line);
+}
+.kiosk-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.kiosk-logo { width: 26px; height: 26px; object-fit: contain; }
+.kiosk-wordmark { font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
+.kiosk-wordmark em { font-style: normal; color: var(--accent); }
+.kiosk-mode {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--accent-soft);
+  border: 1px solid var(--ink-line);
+  border-radius: 999px;
+  padding: 3px 9px;
+  white-space: nowrap;
+}
+.kiosk-name {
+  border: 0;
+  background: transparent;
+  color: var(--snow);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: .06em;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 8px;
+}
+.kiosk-name:hover { background: var(--ink-2); }
+.kiosk-user { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-width: 0; }
+.kiosk-person { font-size: 13px; color: var(--snow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kiosk-top .mini-btn { color: var(--snow); border-color: var(--ink-line); background: transparent; }
+.kiosk-main { min-width: 0; }
+
+/* ── pages ─────────────────────────────────────────────────────── */
+.kiosk-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  max-width: 900px;
+  margin: 18px 0 0;
+}
+.kiosk-facts > div {
+  background: var(--paper);
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.kiosk-facts dt {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.kiosk-facts dd { margin: 6px 0 0; font-size: 18px; font-weight: 500; }
+.kiosk-settings { max-width: 720px; }
+.kiosk-settings input.mono { font-family: var(--font-mono); font-size: 12.5px; }
+.form-error { color: var(--c-red); font-size: 13px; margin: 4px 0 0; }
+.form-notice { color: var(--text-mute); font-size: 13px; margin: 4px 0 0; }
