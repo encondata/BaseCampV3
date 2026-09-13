@@ -6,6 +6,10 @@ import type { UsbDeviceLike } from '../labels/zebraUsb';
 import { useZebraPrinter, type UsbApi } from './useZebraPrinter';
 
 function fakeDevice(name = 'ZD421'): UsbDeviceLike & { log: string[]; reply: string | null } {
+  // Nothing is available to read until a command has actually gone out —
+  // matching a real printer (and query()'s pre-drain, which reads before
+  // sending and must find nothing here to consume).
+  let armed = false;
   const dev = {
     opened: false, productName: name, log: [] as string[], reply: null as string | null,
     configuration: { interfaces: [{ alternate: { endpoints: [{ direction: 'out' as const, type: 'bulk' as const, endpointNumber: 1 }, { direction: 'in' as const, type: 'bulk' as const, endpointNumber: 2 }] } }] },
@@ -14,11 +18,12 @@ function fakeDevice(name = 'ZD421'): UsbDeviceLike & { log: string[]; reply: str
     async selectConfiguration() { dev.log.push('select'); },
     async claimInterface() { dev.log.push('claim'); },
     async releaseInterface() { dev.log.push('release'); },
-    async transferOut(_e: number, data: BufferSource) { dev.log.push(`out:${new TextDecoder().decode(data as ArrayBuffer)}`); },
+    async transferOut(_e: number, data: BufferSource) { dev.log.push(`out:${new TextDecoder().decode(data as ArrayBuffer)}`); armed = true; },
     async transferIn() {
-      if (dev.reply !== null) {
+      if (armed && dev.reply !== null) {
         const text = dev.reply;
         dev.reply = null;
+        armed = false;
         return { data: new DataView(new TextEncoder().encode(text).buffer) };
       }
       return new Promise<{ data?: DataView }>(() => undefined);

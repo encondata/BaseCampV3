@@ -26,6 +26,11 @@ describe('media', () => {
     expect(confirmMedia(cfg, { tracking: 'M', method: null, mode: 'C', widthDots: 609, lengthDots: 1218 })).toEqual({ tracking: false, method: null, mode: false, size: false });
     expect(confirmMedia(null, { tracking: 'W', method: 'D', mode: 'T', widthDots: 812, lengthDots: 1218 })).toEqual({ tracking: null, method: null, mode: null, size: null });
   });
+  it('on gap/mark media, ^LL is never sent and confirm ignores label length', () => {
+    const cur = mediaChoicesFromConfig(cfg); // tracking: 'W' (gap/notch)
+    expect(commandsForMedia(cur, { ...cur, widthDots: 609 })).toEqual(['^XA^PW609^XZ']);
+    expect(confirmMedia({ ...cfg, printWidth: 609, labelLength: 999 }, { ...cur, widthDots: 609 })).toMatchObject({ size: true });
+  });
 });
 
 describe('quality', () => {

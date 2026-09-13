@@ -62,6 +62,9 @@ async def test_upload_validation(client, db, seeded_user):
     assert (await _upload(client, admin, "longername.ttf")).json()["detail"]["code"] == "invalid_font_name"
     assert (await _upload(client, admin, "swiss.otf")).json()["detail"]["code"] == "invalid_font_name"
     assert (await _upload(client, admin, "x.ttf", name="bad name.ttf")).json()["detail"]["code"] == "invalid_font_name"
+    # Python's `$` matches just before a trailing newline under `re.match`;
+    # `fullmatch` must reject a name smuggling one in.
+    assert (await _upload(client, admin, "x.ttf", name="AB.TTF\n")).json()["detail"]["code"] == "invalid_font_name"
     assert (await _upload(client, admin, "logo.ttf", data=PNG)).json()["detail"]["code"] == "not_a_truetype_font"
     assert (await _upload(client, admin, "empty.ttf", data=b"")).json()["detail"]["code"] == "empty_file"
     big = b"\x00\x01\x00\x00" + b"\x00" * (2 * 1024 * 1024)

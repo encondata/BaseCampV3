@@ -33,8 +33,13 @@ export type PrintMethod = 'D' | 'T';
 export const setMediaTracking = (m: MediaTracking): string => `^XA^MN${m}^XZ`;
 export const setPrintMode = (m: PrintMode): string => `^XA^MM${m}^XZ`;
 export const setPrintMethod = (m: PrintMethod): string => `^XA^MT${m}^XZ`;
-export const setLabelSize = (widthDots: number, lengthDots: number): string =>
-  `^XA^PW${Math.round(widthDots)}^LL${Math.round(lengthDots)}^XZ`;
+/** `^LL` only makes sense on continuous media, where the printer can't
+ *  measure the label length itself; pass `null` on gap/mark media to emit
+ *  `^PW` alone. */
+export const setLabelSize = (widthDots: number, lengthDots: number | null): string =>
+  lengthDots === null
+    ? `^XA^PW${Math.round(widthDots)}^XZ`
+    : `^XA^PW${Math.round(widthDots)}^LL${Math.round(lengthDots)}^XZ`;
 
 const FONT_NAME_RE = /^[A-Z0-9_]{1,8}\.TTF$/;
 

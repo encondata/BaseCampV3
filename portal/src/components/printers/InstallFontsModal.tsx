@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { LabelFont } from '../../lib/api';
+import { ApiError, type LabelFont } from '../../lib/api';
 import { relativeTime } from '../../lib/format';
 import type { ZebraPrinter } from '../../lib/useZebraPrinter';
 import { deleteObject, directoryQuery, downloadFontHeader, fontObjectName, isTrueType } from '../../labels/zebraCommands';
@@ -54,6 +54,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
 
   const printerRef = useRef(printer);
   printerRef.current = printer;
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.defaultPrevented && !busy && !uploading && !batching) onClose(); };
@@ -122,6 +123,19 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
   };
   const nameValid = fontObjectName(name) !== null;
 
+  const uploadErrorMessage = (err: unknown): string => {
+    if (err instanceof ApiError) {
+      switch (err.code) {
+        case 'font_name_taken': return 'A font with that printer name already exists.';
+        case 'not_a_truetype_font': return 'That file is not a TrueType font.';
+        case 'file_too_large': return 'Fonts must be 2 MB or smaller.';
+        case 'invalid_font_name': return NAME_HINT;
+        default: return err.message;
+      }
+    }
+    return err instanceof Error ? err.message : 'Upload failed';
+  };
+
   const upload = async () => {
     if (!file || !nameValid) return;
     setUploading(true);
@@ -131,8 +145,9 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
       if (!isTrueType(bytes)) throw new Error('That file is not a TrueType font.');
       await onUpload(file, fontObjectName(name) as string);
       pickFile(null);
+      if (inputRef.current) inputRef.current.value = '';
     } catch (err) {
-      setUploadError(err instanceof Error ? err.message : 'Upload failed');
+      setUploadError(uploadErrorMessage(err));
     } finally {
       setUploading(false);
     }
@@ -202,7 +217,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
                   <div className="pf-form zp-upload-row">
                     <div>
                       <label htmlFor="zp-font-file">TrueType font file</label>
-                      <input id="zp-font-file" type="file" accept=".ttf" aria-label="TrueType font file" disabled={uploading}
+                      <input id="zp-font-file" ref={inputRef} type="file" accept=".ttf" aria-label="TrueType font file" disabled={uploading}
                              onChange={(e) => pickFile(e.target.files?.[0] ?? null)} />
                     </div>
                     <div>

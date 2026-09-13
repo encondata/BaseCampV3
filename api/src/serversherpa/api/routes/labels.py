@@ -920,9 +920,12 @@ TRUETYPE_MAGICS = (b"\x00\x01\x00\x00", b"true")
 
 def font_object_name(filename: str | None) -> str | None:
     """Zebra object name for a font file: the bare filename, upper-cased,
-    valid only as 8.3 `NAME.TTF` (letters, digits, underscore)."""
+    valid only as 8.3 `NAME.TTF` (letters, digits, underscore).
+
+    `fullmatch`, not `match` — Python's `$` matches just before a trailing
+    newline, so `match()` would let a name like "AB.TTF\\n" through."""
     name = PurePosixPath(filename or "").name.upper()
-    return name if FONT_NAME_RE.match(name) else None
+    return name if FONT_NAME_RE.fullmatch(name) else None
 
 
 def _person_display(preferred: str | None, first: str | None, last: str | None) -> str | None:

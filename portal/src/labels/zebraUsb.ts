@@ -135,6 +135,9 @@ export async function readText(
 export async function query(
   device: UsbDeviceLike, command: string, opts: ReadOptions = {}, clock: Clock = realClock,
 ): Promise<string> {
+  // Discard anything already pending (a straggler from a prior query) so it
+  // can't get prepended to this query's response.
+  await readText(device, { firstTimeoutMs: 40, drainTimeoutMs: 40, maxReads: 4 }, clock);
   await sendRaw(device, command);
   return readText(device, opts, clock);
 }
@@ -158,9 +161,15 @@ const strip = (text: string) => text.replace(/[\x02\x03]/g, '');
 
 export interface HostIdentification { model: string; firmware: string; dotsPerMm: number; memory: string; dpi: number }
 
-/** `~HI` → `<STX>model,firmware,dotsPerMm,memory[,x]<ETX>`. */
+/** `~HI` → `<STX>model,firmware,dotsPerMm,memory[,x]<ETX>`. A leftover frame
+ *  from a prior query can precede the real response, so when the text
+ *  contains STX, parse the LAST `<STX>…<ETX>` frame rather than the whole
+ *  string; otherwise fall back to the whole stripped text. */
 export function parseHostIdentification(text: string): HostIdentification | null {
-  const body = strip(text).trim();
+  const stxFrames = text.split('\x02').slice(1);
+  const body = stxFrames.length > 0
+    ? stxFrames[stxFrames.length - 1].split('\x03')[0].trim()
+    : strip(text).trim();
   const parts = body.split(',').map((p) => p.trim());
   if (parts.length < 4) return null;
   const dotsPerMm = parseInt(parts[2], 10);
@@ -178,10 +187,14 @@ export interface HostStatus {
 /** `~HS` string 1 `aaa,b,c,dddd,eee,f,g,h,iii,j,k,l` and string 2
  *  `mmm,n,o,p,q,r,s,t,uuuuuuuu,v,www` (ZPL manual field order). */
 export function parseHostStatus(text: string): HostStatus | null {
-  const strings = text.split('\x02').slice(1).map((s) => s.split('\x03')[0].split(','));
-  const s1 = strings[0];
-  const s2 = strings[1] ?? [];
-  if (!s1 || s1.length < 12) return null;
+  const frames = text.split('\x02').slice(1).map((f) => f.split('\x03')[0].split(','));
+  let i = -1;
+  for (let k = frames.length - 1; k >= 0; k--) {
+    if (frames[k].length >= 12 && (frames[k + 1]?.length ?? 0) >= 9) { i = k; break; }
+  }
+  if (i === -1) return null;
+  const s1 = frames[i];
+  const s2 = frames[i + 1];
   const flag = (v: string | undefined) => v?.trim() === '1';
   const int = (v: string | undefined) => { const n = parseInt(v ?? '', 10); return Number.isNaN(n) ? 0 : n; };
   return {
@@ -202,7 +215,7 @@ export function parseDirectory(text: string): DirectoryListing | null {
   const objects: { name: string; bytes: number }[] = [];
   let bytesFree: number | null = null;
   for (const line of body.split(/\r?\n/)) {
-    const obj = line.match(/^\s*\*?\s*([A-Z0-9_]{1,8}\.[A-Z0-9]{1,3})\s+(\d+)\s*$/i);
+    const obj = line.match(/^\s*\*?\s*(?:[A-Z]:)?([A-Z0-9_]{1,8}\.[A-Z0-9]{1,3})\s+(\d+)\s*$/i);
     if (obj) { objects.push({ name: obj[1].toUpperCase(), bytes: parseInt(obj[2], 10) }); continue; }
     const free = line.match(/(\d+)\s+bytes free/i);
     if (free) bytesFree = parseInt(free[1], 10);

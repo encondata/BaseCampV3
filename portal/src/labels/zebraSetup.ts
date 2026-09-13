@@ -41,14 +41,16 @@ export function mediaChoicesFromConfig(c: PrinterConfiguration | null): MediaCho
   };
 }
 
+/** `^LL` (label length) only means anything on continuous media — on gap
+ *  or mark media the printer measures the label length itself, so only the
+ *  width (`^PW`) is ever sent for those. */
 export function commandsForMedia(current: MediaChoices, next: MediaChoices): string[] {
   const out: string[] = [];
   if (next.tracking && next.tracking !== current.tracking) out.push(setMediaTracking(next.tracking));
   if (next.method && next.method !== current.method) out.push(setPrintMethod(next.method));
   if (next.mode && next.mode !== current.mode) out.push(setPrintMode(next.mode));
-  if (next.widthDots !== null && next.lengthDots !== null
-      && (next.widthDots !== current.widthDots || next.lengthDots !== current.lengthDots)) {
-    out.push(setLabelSize(next.widthDots, next.lengthDots));
+  if (next.widthDots !== null && (next.widthDots !== current.widthDots || next.lengthDots !== current.lengthDots)) {
+    out.push(setLabelSize(next.widthDots, next.tracking === 'N' ? next.lengthDots : null));
   }
   return out;
 }
@@ -59,7 +61,7 @@ export function confirmMedia(c: PrinterConfiguration | null, next: MediaChoices)
     tracking: next.tracking === null ? null : trackingFromMediaType(c.mediaType) === next.tracking,
     method: next.method === null ? null : methodFromPrintMethod(c.printMethod) === next.method,
     mode: next.mode === null ? null : modeFromPrintMode(c.printMode) === next.mode,
-    size: next.widthDots === null || next.lengthDots === null ? null : c.printWidth === next.widthDots && c.labelLength === next.lengthDots,
+    size: next.widthDots === null ? null : c.printWidth === next.widthDots && (next.tracking !== 'N' || c.labelLength === next.lengthDots),
   };
 }
 

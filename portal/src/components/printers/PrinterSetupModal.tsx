@@ -60,15 +60,19 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
   const [saveNotice, setSaveNotice] = useState('');
   const dpi = identity?.dpi ?? 203;
   const sizes = useMemo(() => vocabOfKind(vocab, 'size'), [vocab]);
+  const logText = useMemo(
+    () => printer.log.map((e) => `${e.at.slice(11, 19)}  ${e.command}${e.response ? `\n          ← ${e.response.replace(/[\x02\x03]/g, '')}` : ''}`).join('\n'),
+    [printer.log],
+  );
 
   const printerRef = useRef(printer);
   printerRef.current = printer;
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.defaultPrevented && !busy) onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.defaultPrevented && !busy && !reading) onClose(); };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [onClose, busy]);
+  }, [onClose, busy, reading]);
 
   const readAll = async () => {
     setReading(true);
@@ -199,6 +203,9 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
         </div>
         <div className="modal-section">Label size</div>
         <ComboBox options={sizes.map((s) => ({ value: s.key, label: s.label }))} value={sizeKey} onChange={setSizeKey} placeholder="Keep the printer's current size…" clearable />
+        {media.tracking !== 'N' && (
+          <p className="page-hint">On gap or mark media the printer measures the label length itself; only the width is set.</p>
+        )}
         <p className="page-hint">{sizeKey ? `Sets ^PW/^LL for ${sizes.find((s) => s.key === sizeKey)?.label} at ${dpi} DPI.` : `Current: ${media.widthDots ?? '—'} × ${media.lengthDots ?? '—'} dots.`}</p>
         <div className="zp-actions">
           <button type="button" className="mini-btn" disabled={busy} onClick={() => void sendOne(CALIBRATE, 'Calibration started — the printer feeds a few labels.')}>Calibrate media</button>
@@ -259,7 +266,7 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
   }
 
   return (
-    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy && !reading) onClose(); }}>
       <div className="modal-card reports-modal-card rgm-card zp-setup-card" role="dialog" aria-label="Full printer setup">
         <div className="modal-head">
           <div className="rgm-head-text">
@@ -286,7 +293,11 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
           {error && <div className="zp-notice error" role="alert"><p className="page-hint">{error}</p></div>}
           <details className="zp-log">
             <summary className="cell-sub">Command log ({printer.log.length})</summary>
-            <pre className="mono">{printer.log.map((e) => `${e.at.slice(11, 19)}  ${e.command}${e.response ? `\n          ← ${e.response.replace(/[\x02\x03]/g, '')}` : ''}`).join('\n')}</pre>
+            <div className="zp-actions">
+              <button type="button" className="mini-btn" onClick={() => { void navigator.clipboard?.writeText(logText); }}>Copy</button>
+              <button type="button" className="mini-btn" onClick={() => printer.clearLog()}>Clear</button>
+            </div>
+            <pre className="mono">{logText}</pre>
           </details>
         </div>
         <div className="modal-foot">

@@ -37,6 +37,8 @@ describe('command strings', () => {
     expect(setPrintMode('P')).toBe('^XA^MMP^XZ');
     expect(setPrintMethod('D')).toBe('^XA^MTD^XZ');
     expect(setLabelSize(812, 406)).toBe('^XA^PW812^LL406^XZ');
+    // ^LL only applies to continuous media; gap/mark media omits it.
+    expect(setLabelSize(812, null)).toBe('^XA^PW812^XZ');
   });
 });
 
