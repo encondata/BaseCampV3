@@ -4,7 +4,7 @@ phone side) and, in Task 4, the signed-in heartbeat that upserts the
 kiosk's Device row. Design:
 docs/superpowers/specs/2026-09-13-kiosk-web-design.md"""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select, update
@@ -17,9 +17,9 @@ from serversherpa.api.deps import (
 )
 from serversherpa.api.routes.auth import session_response
 from serversherpa.api.schemas import (
-    PairCreateIn, PairCreateOut, PairInfoOut, PairPollIn, PairPollOut,
+    HeartbeatIn, HeartbeatOut, PairCreateIn, PairCreateOut, PairInfoOut, PairPollIn, PairPollOut,
 )
-from serversherpa.db.models import KioskPairRequest, UserAccount
+from serversherpa.db.models import Device, KioskPairRequest, UserAccount
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_pairing as pairing
 from serversherpa.services.audit import audit
@@ -144,3 +144,50 @@ async def deny_pair(
     actor: AuthContext = require_permission("kiosk", "view"),
 ) -> None:
     await _decide(db, code, actor, new_status="denied", action="kiosk_pair_denied")
+
+
+# ── heartbeat (kiosk:view) ──────────────────────────────────────────
+
+REGISTRATION_SOON = timedelta(days=7)   # same threshold as the Kiosk Devices page
+
+
+def registration_state(token_expires_at: datetime | None, now: datetime) -> str:
+    if token_expires_at is None:
+        return "none"
+    if token_expires_at <= now:
+        return "expired"
+    return "soon" if token_expires_at - now <= REGISTRATION_SOON else "ok"
+
+
+@router.post("/heartbeat", response_model=HeartbeatOut)
+async def heartbeat(
+    body: HeartbeatIn, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> HeartbeatOut:
+    """Upsert this kiosk's Device row by serial and stamp last_seen_at.
+    Creation is audited once (self_register); later beats are telemetry.
+    Register/Renew (token_expires_at) stays a portal admin action."""
+    now = datetime.now(UTC)
+    device = await db.scalar(select(Device).where(Device.serial == body.serial))
+    if device is None:
+        device = Device(device_type="kiosk", name=body.name, serial=body.serial,
+                        sub_type=body.mode, version=body.version,
+                        raw_info=dict(body.raw_info), last_seen_at=now)
+        db.add(device)
+        await db.flush()
+        audit(db, actor_id=actor.person.id, entity_type="device",
+              entity_id=str(device.id), action="self_register",
+              changes={"serial": body.serial, "name": body.name, "sub_type": body.mode})
+    elif device.device_type != "kiosk":
+        raise _err(409, "serial_conflict")
+    else:
+        device.name = body.name
+        device.sub_type = body.mode
+        device.version = body.version
+        device.raw_info = {**(device.raw_info or {}), **body.raw_info}
+        device.last_seen_at = now
+        device.updated_at = now
+    await db.commit()
+    return HeartbeatOut(device_id=device.id, name=device.name,
+                        registration=registration_state(device.token_expires_at, now),
+                        token_expires_at=device.token_expires_at)
