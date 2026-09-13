@@ -21,7 +21,7 @@ export const deleteObject = (drive: string, name: string): string => `^XA^ID${dr
 export const downloadFontHeader = (drive: string, name: string, totalBytes: number): string =>
   `~DY${drive}:${name},B,T,${totalBytes},,`;
 
-const clampInt = (n: number, min: number, max: number) => Math.max(min, Math.min(max, Math.round(n)));
+const clampInt = (n: number, min: number, max: number) => (Number.isFinite(n) ? Math.max(min, Math.min(max, Math.round(n))) : min);
 
 export const setDarkness = (n: number): string => `~SD${String(clampInt(n, 0, 30)).padStart(2, '0')}`;
 export const setPrintSpeed = (ips: number): string => `^XA^PR${clampInt(ips, 2, 14)}^XZ`;

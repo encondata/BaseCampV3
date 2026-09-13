@@ -28,9 +28,11 @@ describe('command strings', () => {
     expect(setDarkness(45)).toBe('~SD30');
     expect(setDarkness(-2)).toBe('~SD00');
     expect(setDarkness(12.6)).toBe('~SD13');
+    expect(setDarkness(NaN)).toBe('~SD00');
     expect(setPrintSpeed(6)).toBe('^XA^PR6^XZ');
     expect(setPrintSpeed(1)).toBe('^XA^PR2^XZ');
     expect(setPrintSpeed(99)).toBe('^XA^PR14^XZ');
+    expect(setPrintSpeed(NaN)).toBe('^XA^PR2^XZ');
     expect(setMediaTracking('W')).toBe('^XA^MNW^XZ');
     expect(setPrintMode('P')).toBe('^XA^MMP^XZ');
     expect(setPrintMethod('D')).toBe('^XA^MTD^XZ');
