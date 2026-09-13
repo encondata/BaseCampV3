@@ -62,6 +62,7 @@ export async function openPrinter(device: UsbDeviceLike): Promise<void> {
 /** Release interface 0 then close, each tolerant — V2 deliberately never
  *  calls forget(), which would make the device object stale. */
 export async function closePrinter(device: UsbDeviceLike): Promise<void> {
+  pendingReads.delete(device);
   try { await device.releaseInterface(0); } catch { /* ignore */ }
   try { await device.close(); } catch { /* ignore */ }
 }
@@ -69,6 +70,7 @@ export async function closePrinter(device: UsbDeviceLike): Promise<void> {
 /** V2's reopen-on-stale path at the top of sendZplToPrinter. */
 export async function ensureOpen(device: UsbDeviceLike): Promise<void> {
   if (device.opened) return;
+  pendingReads.delete(device);
   try {
     await device.open();
     if (device.configuration === null) await device.selectConfiguration(1);
@@ -106,19 +108,38 @@ export function parseHostStatusQueued(text: string): number | null {
 
 export interface ReadOptions { firstTimeoutMs?: number; drainTimeoutMs?: number; maxReads?: number }
 
+/** WebUSB never cancels a `transferIn`: a read the transport gave up waiting
+ *  on stays queued in the browser and receives the printer's NEXT packet —
+ *  which is the reply to the next command. So at most one read is ever
+ *  outstanding per device, kept here across calls, and a later `readText`
+ *  resumes waiting on it instead of queuing a second one behind it. */
+const pendingReads = new WeakMap<UsbDeviceLike, Promise<{ data?: DataView }>>();
+
 /** Read whatever the printer sends back: one read with a longer timeout,
  *  then short drain reads until one times out or `maxReads` is reached.
- *  '' when there is no bulk IN endpoint or nothing arrives. */
+ *  '' when there is no bulk IN endpoint or nothing arrives. A timed-out
+ *  read is left outstanding (see `pendingReads`), never abandoned. */
 export async function readText(
   device: UsbDeviceLike, { firstTimeoutMs = 2000, drainTimeoutMs = 250, maxReads = 8 }: ReadOptions = {},
   clock: Clock = realClock,
 ): Promise<string> {
   const { in: inEp } = findBulkEndpoints(device);
   if (!inEp) return '';
-  const readWithTimeout = (ms: number) => Promise.race([
-    device.transferIn(inEp.endpointNumber, 4096),
-    clock.sleep(ms).then(() => { throw new Error('read timeout'); }),
-  ]);
+  type Outcome = { kind: 'ok'; r: { data?: DataView } } | { kind: 'err'; e: unknown } | { kind: 'timeout' };
+  const readWithTimeout = async (ms: number) => {
+    let read = pendingReads.get(device);
+    if (!read) {
+      read = device.transferIn(inEp.endpointNumber, 4096);
+      pendingReads.set(device, read);
+    }
+    const settled: Promise<Outcome> = read.then((r) => ({ kind: 'ok', r }), (e: unknown) => ({ kind: 'err', e }));
+    const timeout: Promise<Outcome> = clock.sleep(ms).then(() => ({ kind: 'timeout' }));
+    const outcome = await Promise.race([settled, timeout]);
+    if (outcome.kind === 'timeout') throw new Error('read timeout');   // the read stays outstanding for the next call
+    if (pendingReads.get(device) === read) pendingReads.delete(device);
+    if (outcome.kind === 'err') throw outcome.e;
+    return outcome.r;
+  };
   const decoder = new TextDecoder();
   let text = '';
   for (let i = 0; i < maxReads; i++) {

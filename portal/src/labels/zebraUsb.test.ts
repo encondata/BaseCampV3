@@ -22,6 +22,9 @@ class FakeDevice implements UsbDeviceLike {
    *  an earlier poll's leftovers. */
   responses: string[][] = [];
   private pending: string[] = [];
+  /** A read that found no packet waits here; the next loaded packet
+   *  resolves it (real WebUSB delivers to the oldest outstanding read). */
+  private waiting: ((r: { data?: DataView }) => void) | null = null;
   failOpen = false;
   constructor(endpoints: Array<{ direction: 'in' | 'out'; type: 'bulk' | 'interrupt' }> = [
     { direction: 'out', type: 'bulk' }, { direction: 'in', type: 'bulk' },
@@ -40,21 +43,36 @@ class FakeDevice implements UsbDeviceLike {
     const text = new TextDecoder().decode(data as ArrayBuffer | ArrayBufferView);
     this.sent.push(text);
     this.sentBytes.push(new Uint8Array(data as Uint8Array));
-    if (/^(~H|\^XA\^H)/.test(text)) this.pending = [...(this.responses.shift() ?? [])];
+    if (/^(~H|\^XA\^H)/.test(text)) {
+      this.pending = [...(this.responses.shift() ?? [])];
+      const next = this.pending.shift();
+      if (this.waiting && next !== undefined) {
+        const resolve = this.waiting; this.waiting = null;
+        resolve({ data: new DataView(new TextEncoder().encode(next).buffer) });
+      } else if (next !== undefined) {
+        this.pending.unshift(next);
+      }
+    }
   }
   async transferIn(endpoint: number, _length: number) {
     this.log.push(`in:${endpoint}`);
     const next = this.pending.shift();
-    if (next === undefined) return new Promise<{ data?: DataView }>(() => undefined); // hangs → timeout path
+    if (next === undefined) return new Promise<{ data?: DataView }>((resolve) => { this.waiting = resolve; }); // waits for the next packet
     const bytes = new TextEncoder().encode(next);
     return { data: new DataView(bytes.buffer) };
   }
 }
 
+/** Virtual time: every sleep advances `t` by its argument and yields a few
+ *  microtasks first, so an already-settled read always wins a race against a
+ *  timeout — as it would against a real timer. */
 const instantClock = (): Clock & { slept: number[] } => {
   let t = 0;
   const slept: number[] = [];
-  return { slept, now: () => t, sleep: async (ms) => { slept.push(ms); t += ms; } };
+  return {
+    slept, now: () => t,
+    sleep: async (ms) => { slept.push(ms); t += ms; for (let i = 0; i < 4; i++) await Promise.resolve(); },
+  };
 };
 
 describe('connect / disconnect', () => {
@@ -256,5 +274,64 @@ describe('parsers', () => {
     expect(c.raw['PRINT MODE FLAG']).toBe('NORMAL MODE');
     expect(parseConfiguration('')).toBeNull();
     expect(parseConfiguration('no labels here')).toBeNull();
+  });
+});
+
+/** A device with real WebUSB delivery semantics: every `transferIn` is a
+ *  queued read, and an incoming packet is handed to the OLDEST outstanding
+ *  read — including one the transport gave up waiting on. The other fake
+ *  above hangs forever, which hides exactly that behavior. */
+class FifoDevice extends FakeDevice {
+  private readers: Array<(r: { data?: DataView }) => void> = [];
+  transferInCalls = 0;
+  get pendingReads() { return this.readers.length; }
+  async transferOut(endpoint: number, data: BufferSource) {
+    this.log.push(`out:${endpoint}`);
+    this.sent.push(new TextDecoder().decode(data as ArrayBuffer | ArrayBufferView));
+  }
+  async transferIn(endpoint: number, _length: number) {
+    this.log.push(`in:${endpoint}`);
+    this.transferInCalls += 1;
+    return new Promise<{ data?: DataView }>((resolve) => { this.readers.push(resolve); });
+  }
+  /** The printer sends a packet: the oldest outstanding read receives it. */
+  deliver(text: string) {
+    const bytes = new TextEncoder().encode(text);
+    this.readers.shift()?.({ data: new DataView(bytes.buffer) });
+  }
+}
+
+describe('WebUSB read queue (a timed-out transferIn still receives the next packet)', () => {
+  it('reuses the outstanding read instead of issuing another, so the next reply is not swallowed', async () => {
+    const dev = new FifoDevice(); dev.opened = true;
+    const clock = instantClock();
+    expect(await readText(dev, { firstTimeoutMs: 40, maxReads: 1 }, clock)).toBe('');
+    expect(dev.pendingReads).toBe(1);
+    await sendRaw(dev, '~HI');
+    dev.deliver('\x02ZD421-203dpi ZPL,V92.21.16Z,8,8192KB,X\x03');   // lands in the timed-out read
+    expect(await readText(dev, { firstTimeoutMs: 2000, drainTimeoutMs: 40, maxReads: 4 }, clock))
+      .toBe('\x02ZD421-203dpi ZPL,V92.21.16Z,8,8192KB,X\x03');
+    expect(dev.transferInCalls).toBe(2);   // the first read was reused; one more for the drain
+  });
+  it('query() after a straggler returns only the fresh reply', async () => {
+    const dev = new FifoDevice(); dev.opened = true;
+    const clock = instantClock();
+    const q = query(dev, '^XA^HH^XZ', { firstTimeoutMs: 2000, drainTimeoutMs: 40, maxReads: 4 }, clock);
+    // the pre-drain's read times out and stays outstanding; once the command
+    // has gone out, the printer's reply lands in that same read
+    while (!dev.sent.includes('^XA^HH^XZ')) await Promise.resolve();
+    expect(dev.pendingReads).toBe(1);
+    dev.deliver('\x02+10.0               DARKNESS\r\n\x03');
+    expect(await q).toContain('DARKNESS');
+  });
+  it('closePrinter forgets the outstanding read so a reopened device starts clean', async () => {
+    const dev = new FifoDevice(); dev.opened = true;
+    const clock = instantClock();
+    expect(await readText(dev, { firstTimeoutMs: 40, maxReads: 1 }, clock)).toBe('');
+    await closePrinter(dev);
+    dev.opened = true;
+    void readText(dev, { firstTimeoutMs: 40, maxReads: 1 }, clock);
+    await Promise.resolve();
+    expect(dev.transferInCalls).toBe(2);   // a fresh read was issued after close
   });
 });

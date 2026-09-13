@@ -10,6 +10,16 @@ function fakeDevice(name = 'ZD421'): UsbDeviceLike & { log: string[]; reply: str
   // matching a real printer (and query()'s pre-drain, which reads before
   // sending and must find nothing here to consume).
   let armed = false;
+  // A read that found nothing waits here and receives the next armed reply —
+  // real WebUSB hands a packet to the oldest outstanding transferIn.
+  let waiting: ((r: { data?: DataView }) => void) | null = null;
+  const serve = () => {
+    if (waiting && armed && dev.reply !== null) {
+      const text = dev.reply; dev.reply = null; armed = false;
+      const resolve = waiting; waiting = null;
+      resolve({ data: new DataView(new TextEncoder().encode(text).buffer) });
+    }
+  };
   const dev = {
     opened: false, productName: name, log: [] as string[], reply: null as string | null,
     configuration: { interfaces: [{ alternate: { endpoints: [{ direction: 'out' as const, type: 'bulk' as const, endpointNumber: 1 }, { direction: 'in' as const, type: 'bulk' as const, endpointNumber: 2 }] } }] },
@@ -18,7 +28,7 @@ function fakeDevice(name = 'ZD421'): UsbDeviceLike & { log: string[]; reply: str
     async selectConfiguration() { dev.log.push('select'); },
     async claimInterface() { dev.log.push('claim'); },
     async releaseInterface() { dev.log.push('release'); },
-    async transferOut(_e: number, data: BufferSource) { dev.log.push(`out:${new TextDecoder().decode(data as ArrayBuffer)}`); armed = true; },
+    async transferOut(_e: number, data: BufferSource) { dev.log.push(`out:${new TextDecoder().decode(data as ArrayBuffer)}`); armed = true; serve(); },
     async transferIn() {
       if (armed && dev.reply !== null) {
         const text = dev.reply;
@@ -26,7 +36,7 @@ function fakeDevice(name = 'ZD421'): UsbDeviceLike & { log: string[]; reply: str
         armed = false;
         return { data: new DataView(new TextEncoder().encode(text).buffer) };
       }
-      return new Promise<{ data?: DataView }>(() => undefined);
+      return new Promise<{ data?: DataView }>((resolve) => { waiting = resolve; });
     },
   };
   return dev;
