@@ -216,7 +216,7 @@ async def update_asset(
 async def archive_asset(
     asset_id: uuid.UUID,
     db: DbSession,
-    actor: AuthContext = require_permission("assets", "change"),
+    actor: AuthContext = require_permission("assets", "delete"),
 ) -> None:
     _require_global(actor)
     asset = await _get_asset(db, asset_id, actor)
@@ -231,7 +231,7 @@ async def archive_asset(
 async def unarchive_asset(
     asset_id: uuid.UUID,
     db: DbSession,
-    actor: AuthContext = require_permission("assets", "change"),
+    actor: AuthContext = require_permission("assets", "delete"),
 ) -> None:
     _require_global(actor)
     asset = await _get_asset(db, asset_id, actor)

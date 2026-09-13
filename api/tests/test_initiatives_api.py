@@ -3,7 +3,7 @@ archive, permission gates."""
 
 import uuid
 
-from serversherpa.db.models import Person, PersonRole, Site
+from serversherpa.db.models import PermissionOverride, Person, PersonRole, Site
 
 from .test_assets_api import login, make_login
 
@@ -128,6 +128,32 @@ async def test_archive_unarchive(client, db, seeded_user):
     assert resp.json()["archived_at"] is not None
     assert (await client.post(f"/initiatives/{iid}/unarchive",
                               headers=headers)).status_code == 204
+
+
+async def test_archive_requires_delete_not_just_change(client, db, seeded_user):
+    admin = await login(client)
+    iid = (await client.post("/initiatives", headers=admin,
+                             json={"name": "Gated", "initiative_type": "event"})
+          ).json()["id"]
+
+    changer = Person(first_name="Ch", last_name="Anger")
+    db.add(changer)
+    await db.flush()
+    db.add(PersonRole(person_id=changer.id, role="staff"))
+    db.add(PermissionOverride(person_id=changer.id, resource="initiatives",
+                              action="delete", allow=False))
+    await db.commit()
+    hdrs = await make_login(db, client, changer, "changer@test.example.com")
+
+    assert (await client.post(f"/initiatives/{iid}/archive",
+                              headers=hdrs)).status_code == 403
+    assert (await client.post(f"/initiatives/{iid}/unarchive",
+                              headers=hdrs)).status_code == 403
+
+    assert (await client.post(f"/initiatives/{iid}/archive",
+                              headers=admin)).status_code == 204
+    assert (await client.post(f"/initiatives/{iid}/unarchive",
+                              headers=admin)).status_code == 204
 
 
 async def test_worker_role_forbidden(client, db, seeded_user):

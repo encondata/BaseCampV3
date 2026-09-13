@@ -53,6 +53,7 @@ import {
 import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
 import { longDate } from '../lib/format';
+import { safeHref } from '../lib/safeHref';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/initiatives.css';
@@ -476,6 +477,8 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
     );
   }
 
+  const websiteHref = safeHref(org.website);
+
   return (
     <div className="portal-page">
       <Link to={backTo} className="idet-back">← {listLabel}</Link>
@@ -520,7 +523,9 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
               <span>Manager: {org.account_manager?.display_name ?? '—'}</span>
               {org.website && (
                 <span>
-                  <a href={org.website} target="_blank" rel="noreferrer">{org.website}</a>
+                  {websiteHref
+                    ? <a href={websiteHref} target="_blank" rel="noreferrer">{org.website}</a>
+                    : <span className="cell-sub">{org.website}</span>}
                 </span>
               )}
               {org.phone && <span>☏ {org.phone}</span>}
@@ -543,7 +548,9 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
             <dt>Phone</dt><dd className="mono">{org.phone ?? '—'}</dd>
             <dt>Website</dt>
             <dd className="mono">{org.website
-              ? <a href={org.website} target="_blank" rel="noreferrer">{org.website}</a>
+              ? (websiteHref
+                  ? <a href={websiteHref} target="_blank" rel="noreferrer">{org.website}</a>
+                  : <span className="cell-sub">{org.website}</span>)
               : '—'}</dd>
             <dt>Account manager</dt><dd>{org.account_manager?.display_name ?? '—'}</dd>
             <dt>{kind === 'client' ? 'Tier' : 'Region'}</dt>

@@ -84,14 +84,19 @@ def _err(status: int, code: str) -> HTTPException:
 
 async def _authorize(
     db: DbSession, actor: AuthContext, entity_type: str, entity_id: uuid.UUID,
-    action: str,
+    action: str, kind: str | None = None,
 ) -> None:
     entity = await db.get(ENTITY_MODEL[entity_type], entity_id)
     if entity is None:
         raise _err(404, "entity_not_found")
-    if entity_type == "person" and entity_id == actor.person.id:
+    if entity_type == "person" and entity_id == actor.person.id and kind == "avatar":
         # self-service: managing your OWN avatar is always allowed,
-        # regardless of role/permission grants.
+        # regardless of role/permission grants. This is avatars ONLY —
+        # a document (or any other kind) on your own person record still
+        # needs the normal `attachments` grant; entity_id == actor.person.id
+        # is never on its own a bypass. A list request with no `kind`
+        # filter can't prove every row would be an avatar, so it falls
+        # through to the normal checks below too.
         return
     if entity_type == "report_definition":
         # the survey_template xlsx and the standards docx/pdf both live on
@@ -145,7 +150,7 @@ async def upload_attachment(
     kind: Annotated[Kind, Form()],
     file: Annotated[UploadFile, File()],
 ) -> AttachmentOut:
-    await _authorize(db, user, entity_type, entity_id, "add")
+    await _authorize(db, user, entity_type, entity_id, "add", kind)
 
     if kind == "avatar" and entity_type not in AVATAR_KEY_FIELD:
         raise _err(422, "avatar_not_supported")
@@ -225,7 +230,7 @@ async def list_attachments(
     entity_id: uuid.UUID,
     kind: Kind | None = None,
 ) -> list[AttachmentOut]:
-    await _authorize(db, user, entity_type, entity_id, "view")
+    await _authorize(db, user, entity_type, entity_id, "view", kind)
     stmt = select(Attachment).where(
         Attachment.entity_type == entity_type,
         Attachment.entity_id == entity_id,
@@ -244,7 +249,7 @@ async def delete_attachment(
     att = await db.get(Attachment, attachment_id)
     if att is None or att.deleted_at is not None:
         raise _err(404, "attachment_not_found")
-    await _authorize(db, user, att.entity_type, att.entity_id, "delete")
+    await _authorize(db, user, att.entity_type, att.entity_id, "delete", att.kind)
 
     att.deleted_at = datetime.now(UTC)
     if att.kind == "avatar":

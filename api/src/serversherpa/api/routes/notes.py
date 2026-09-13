@@ -4,10 +4,12 @@ the host row (scope included); writing requires change on the host resource
 and a global anchor. Only 'asset' is registered in V1; new hosts are one
 NOTE_HOSTS entry (plus grants) away.
 
-Exception: 'initiative' notes are global-only for BOTH read and write —
-client read access to initiative notes is deferred to a future product
-decision, so the generic "view = host view + scope" rule is overridden for
-this one host in _authorize_host."""
+Exception: 'initiative', 'person', 'client', and 'partner' notes are
+global-only for BOTH read and write — non-global read access to notes on
+these non-physical hosts is deferred to a future product decision, so the
+generic "view = host view + scope" rule is overridden for them in
+_authorize_host. Only the physical/operational hosts (asset, container,
+truck, site) follow the generic rule."""
 
 import uuid
 from datetime import UTC, datetime
@@ -67,11 +69,14 @@ async def _authorize_host(
         raise _err(403, "forbidden")
     if action != "view" and not actor.access.is_global:
         raise _err(403, "forbidden")
-    # Initiative notes stay internal-only for now, including reads — whether
-    # clients should ever see notes on their own initiatives is a future
-    # product decision, not something to fall out of the generic host rule.
-    if entity_type == "initiative" and action == "view" \
-            and not actor.access.is_global:
+    # Notes on these hosts stay internal-only, including reads — whether
+    # clients/workers/vendors should ever see notes on their own initiative,
+    # person, client, or partner record is a future product decision, not
+    # something to fall out of the generic "host view + scope" rule. (Only
+    # the physical/operational hosts — asset, container, truck, site — are
+    # covered by that generic rule.)
+    if action == "view" and not actor.access.is_global \
+            and entity_type in ("initiative", "person", "client", "partner"):
         raise _err(403, "forbidden")
     row = await db.get(model, entity_id)
     if row is None:

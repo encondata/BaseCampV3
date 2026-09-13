@@ -82,7 +82,11 @@ async def test_clone_copies_options_and_audits(client, db, seeded_user):
 
 
 async def test_patch_validates_options_and_rejects_duplicate_name(client, db, seeded_user):
-    d = await _definition(db)
+    # Non-system rows — PATCH on a system definition is covered separately
+    # by test_patch_refuses_system_definitions below (409, mirroring delete).
+    # Keep the default name "Move Report" — the citext-clash assertion below
+    # depends on it.
+    d = await _definition(db, is_system=False)
     other = await _definition(db, name="Other", is_system=False)
     admin = await _make(db, client, "admin", "a@test.example.com")
     resp = await client.patch(f"/reports/definitions/{d.id}", headers=admin,
@@ -102,6 +106,37 @@ async def test_patch_validates_options_and_rejects_duplicate_name(client, db, se
     staff = await login(client)                                        # no reports:change
     assert (await client.patch(f"/reports/definitions/{d.id}", headers=staff,
                                json={"name": "x"})).status_code == 403
+
+
+async def test_patch_refuses_system_definitions(client, db, seeded_user):
+    """System report definitions keep their identity — a *renaming* PATCH
+    409s (mirroring the delete guard) — but stay editable for options and
+    description, since system definitions (Site & Move Survey, Move
+    Report, Move Scan History) legitimately take option edits from the
+    portal (e.g. company_name, template attachments). A no-op resubmit of
+    the same name is not a rename, so it stays a 200; a non-system row's
+    name is never guarded at all."""
+    system = await _definition(db)
+    custom = await _definition(db, name="Custom", is_system=False)
+    admin = await _make(db, client, "admin", "a@test.example.com")
+
+    resp = await client.patch(f"/reports/definitions/{system.id}", headers=admin,
+                              json={"name": "Renamed"})
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "system_definition"
+
+    resp = await client.patch(f"/reports/definitions/{system.id}", headers=admin,
+                              json={"name": system.name})
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.patch(f"/reports/definitions/{system.id}", headers=admin,
+                              json={"options": {"summary": False}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["options"]["summary"] is False
+
+    resp = await client.patch(f"/reports/definitions/{custom.id}", headers=admin,
+                              json={"name": "Renamed"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "Renamed"
 
 
 async def test_delete_is_soft_and_refuses_system_rows(client, db, seeded_user):

@@ -270,14 +270,48 @@ async def clear_process_logs(
     return {"deleted": deleted}
 
 
+# The live tail's auth subprotocol. The browser opens the socket with the
+# subprotocol list ["ss-bearer", "<access token>"], which the handshake
+# carries as `Sec-WebSocket-Protocol: ss-bearer, <token>`; the server
+# accepts "ss-bearer" so the browser completes the handshake.
+WS_AUTH_SUBPROTOCOL = "ss-bearer"
+
+
+def _token_from_subprotocols(header: str | None) -> str | None:
+    """Pull the access token out of a `Sec-WebSocket-Protocol` header of
+    the form `ss-bearer, <token>`. None when the header is missing, the
+    first entry is not ss-bearer, or there is no second entry."""
+    if not header:
+        return None
+    parts = [p.strip() for p in header.split(",")]
+    if len(parts) < 2 or parts[0] != WS_AUTH_SUBPROTOCOL or not parts[1]:
+        return None
+    return parts[1]
+
+
 @router.websocket("/processes/{name}/logs/stream")
 async def stream_process_logs(ws: WebSocket, name: str) -> None:
-    """Live tail. Browsers cannot set Authorization on WebSockets, so
-    the access token rides the `token` query param; it is validated
-    with the same machinery as HTTP before accept."""
-    token = ws.query_params.get("token", "")
+    """Live tail. Browsers cannot set Authorization on WebSockets, so the
+    access token rides the Sec-WebSocket-Protocol header as the second
+    entry of the subprotocol list (`ss-bearer, <token>`) — never the URL,
+    because query strings land in access logs and proxy logs. It is
+    validated with the same machinery as HTTP before accept.
+
+    Close codes: 4400 bad filter; 4401 unauthenticated (token missing,
+    malformed, invalid, or the session ends mid-stream); 4403 forbidden
+    (no devtools:change, or a temp password that must be changed first);
+    4404 no such tailable process.
+
+    Read-only maintenance mode is deliberately NOT applied here: a tail is
+    a read, and enforce_read_only only gates mutating HTTP methods."""
+    token = _token_from_subprotocols(ws.headers.get("sec-websocket-protocol"))
     min_level = ws.query_params.get("min_level")
     q = ws.query_params.get("q")
+
+    if token is None:
+        # no header, or the token offered some other way (e.g. `?token=`)
+        await ws.close(code=4401)
+        return
 
     maker = get_sessionmaker()
     async with maker() as db:
@@ -285,6 +319,12 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
             actor = await authenticate_token(db, token)
         except HTTPException:
             await ws.close(code=4401)
+            return
+        # Mirror of get_current_user's forced-password-change guard (403
+        # password_change_required on HTTP): a temp-password session may
+        # only finish the auth lifecycle, so it may not open a tail either.
+        if actor.account.must_change_password:
+            await ws.close(code=4403)
             return
         if not actor.access.can("devtools", "change"):
             await ws.close(code=4403)
@@ -302,7 +342,7 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
             select(func.max(LogEntry.id)).where(
                 LogEntry.process == name)) or 0
 
-    await ws.accept()
+    await ws.accept(subprotocol=WS_AUTH_SUBPROTOCOL)
     idle = 0.0
     poll_count = 0
     try:

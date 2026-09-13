@@ -2769,16 +2769,27 @@ export async function clearProcessLogs(
   return resp.json();
 }
 
-/** The live-tail WebSocket URL. Browsers cannot set Authorization on
- *  WebSockets, so the current access token rides a query param. */
+/** The live-tail WebSocket URL. The access token is deliberately NOT in
+ *  it: query strings land in access logs and proxy logs. Browsers cannot
+ *  set Authorization on WebSockets, so the token rides the subprotocol
+ *  list instead — see logStreamProtocols. */
 export function logStreamUrl(
-  name: string, token: string,
+  name: string,
   opts: { minLevel?: string; q?: string } = {},
 ): string {
-  const params = new URLSearchParams({ token });
+  const params = new URLSearchParams();
   if (opts.minLevel) params.set('min_level', opts.minLevel);
   if (opts.q) params.set('q', opts.q);
-  return `${apiUrl().replace(/^http/, 'ws')}/system/processes/${name}/logs/stream?${params}`;
+  const qs = params.toString();
+  return `${apiUrl().replace(/^http/, 'ws')}/system/processes/${name}/logs/stream${qs ? `?${qs}` : ''}`;
+}
+
+/** The subprotocol list that authenticates the live tail — pass it as
+ *  the second argument of `new WebSocket(url, protocols)`. The handshake
+ *  sends it as `Sec-WebSocket-Protocol: ss-bearer, <token>`; the server
+ *  accepts "ss-bearer" on success and closes 4401 otherwise. */
+export function logStreamProtocols(token: string): string[] {
+  return ['ss-bearer', token];
 }
 
 export function getAccessTokenForStream(): string | null {

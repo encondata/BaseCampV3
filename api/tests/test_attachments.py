@@ -224,12 +224,17 @@ async def test_client_anchored_override_denied_without_scope_map(client, seeded_
     assert resp.status_code == 403
     assert resp.json()["detail"]["code"] == "forbidden"
 
-    # unaffected: self-service still works for her own avatar
+    # unaffected: self-service still works for her own avatar — but the
+    # list route only recognizes the bypass with an explicit kind=avatar
+    # filter (security-fixes task 2 finding (a): the self-service bypass
+    # is avatars-only, and a list request with no kind filter can't prove
+    # every row would be one, so it falls through to the same denied
+    # `attachments` gate as everything else on this account)
     assert (await _upload(client, headers, alice_id)).status_code == 201
     resp = await client.get(
         "/attachments",
         headers=headers,
-        params={"entity_type": "person", "entity_id": alice_id},
+        params={"entity_type": "person", "entity_id": alice_id, "kind": "avatar"},
     )
     assert resp.status_code == 200
 
@@ -419,3 +424,49 @@ async def test_report_definition_attachments_view_requires_reports_view(client, 
     )
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+# ── self-service bypass is avatars-only (security-fixes task 2) ─────
+
+async def test_worker_document_upload_and_list_denied_on_own_person(client, seeded_user, db):
+    """The self-service bypass in `_authorize` is for AVATARS only. A
+    worker uploading `kind=document` on their own person record, or
+    listing without an explicit `kind=avatar` filter, must fall through
+    to the normal `attachments` permission check (which a plain worker
+    lacks) — entity_id == actor.person.id is never on its own enough."""
+    wes = Person(first_name="Wes", last_name="Worker", email="wes@test.example.com")
+    db.add(wes)
+    await db.flush()
+    db.add(UserAccount(
+        person_id=wes.id, email="wes@test.example.com",
+        password_hash=hash_password(
+            LOGIN["password"], pepper=get_settings().password_pepper.get_secret_value())))
+    db.add(PersonRole(person_id=wes.id, role="worker"))
+    await db.commit()
+
+    staff_headers, _ = await _login(client)
+    wes_headers, wes_id = await _login(client, email="wes@test.example.com")
+
+    # a staff member attaches a document to Wes's own person record
+    doc = await _upload_entity(client, staff_headers, "person", wes_id,
+                               "document", b"%PDF-1.4 fake", "resume.pdf")
+    assert doc.status_code == 201, doc.text
+
+    # Wes uploading a document on himself: denied — not his avatar
+    resp = await _upload_entity(client, wes_headers, "person", wes_id,
+                                "document", b"%PDF-1.4 fake", "another.pdf")
+    assert resp.status_code == 403
+
+    # Wes listing WITHOUT a kind filter: falls through to the normal
+    # attachments gate, which he doesn't hold — denied, not a leaked list
+    resp = await client.get(
+        "/attachments", headers=wes_headers,
+        params={"entity_type": "person", "entity_id": wes_id})
+    assert resp.status_code == 403
+
+    # ...but his OWN avatar kind is still self-service
+    assert (await _upload(client, wes_headers, wes_id)).status_code == 201
+    resp = await client.get(
+        "/attachments", headers=wes_headers,
+        params={"entity_type": "person", "entity_id": wes_id, "kind": "avatar"})
+    assert resp.status_code == 200

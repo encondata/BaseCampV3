@@ -345,7 +345,7 @@ async def update_container(
 async def archive_container(
     container_id: uuid.UUID,
     db: DbSession,
-    actor: AuthContext = require_permission("containers", "change"),
+    actor: AuthContext = require_permission("containers", "delete"),
 ) -> None:
     container = await _get_container(db, container_id)
     container.archived_at = datetime.now(UTC)
@@ -359,7 +359,7 @@ async def archive_container(
 async def unarchive_container(
     container_id: uuid.UUID,
     db: DbSession,
-    actor: AuthContext = require_permission("containers", "change"),
+    actor: AuthContext = require_permission("containers", "delete"),
 ) -> None:
     container = await _get_container(db, container_id)
     container.archived_at = None

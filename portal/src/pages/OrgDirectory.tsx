@@ -6,7 +6,8 @@
  */
 
 import {
-  useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent,
+  useCallback, useEffect, useMemo, useRef, useState,
+  type CSSProperties, type FormEvent, type ReactNode,
 } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -31,6 +32,7 @@ import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials, longDate } from '../lib/format';
+import { safeHref } from '../lib/safeHref';
 import {
   applyColumnOrder,
   ColumnsButton,
@@ -145,6 +147,18 @@ const ALL_COLUMNS: (ColumnDef & { partnerOnly?: boolean; clientOnly?: boolean })
 // already lives inside 'status' via effectiveStatus.
 const ALL_COLUMN_KEYS = new Set<string>([...ALL_COLUMNS.map((c) => c.key), 'primary']);
 const DEFAULT_VISIBLE = new Set<string>(ALL_COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/** The org detail panel's Website row: a link when it's a safe http(s)
+ *  URL, otherwise the raw text (a stored value can predate server-side
+ *  normalization, or a bad value could reach here some other way — never
+ *  trust it into an anchor untested; security-fixes task 7). */
+function renderWebsite(website: string | null): ReactNode {
+  if (!website) return '—';
+  const href = safeHref(website);
+  return href
+    ? <a href={href} target="_blank" rel="noreferrer">{website}</a>
+    : <span className="cell-sub">{website}</span>;
+}
 
 /** Sort value per column key — deliberately separate from `orgCellText`:
  *  that accessor's job is display/filter text (the STATUS_META label, the
@@ -364,7 +378,11 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
     gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px`,
   };
 
-  const canManage = can(cfg.kind === 'client' ? 'clients' : 'partners', 'change');
+  const orgResource = cfg.kind === 'client' ? 'clients' : 'partners';
+  const canManage = can(orgResource, 'change');
+  // Archive/unarchive is a soft delete — the server gates it on `delete`
+  // (client_owner / vendor_owner hold `change` on their own org but not this).
+  const canArchive = can(orgResource, 'delete');
   const canViewUsers = can('users', 'view');
 
   const godFields = useMemo(() => ORG_GOD_FIELDS(), []);
@@ -593,9 +611,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                           <dl className="kv" style={{ flex: 1 }}>
                             <dt>Code</dt><dd className="mono">{o.code ?? '—'}</dd>
                             <dt>Website</dt>
-                            <dd className="mono">{o.website
-                              ? <a href={o.website} target="_blank" rel="noreferrer">{o.website}</a>
-                              : '—'}</dd>
+                            <dd className="mono">{renderWebsite(o.website)}</dd>
                             <dt>Phone</dt><dd className="mono">{o.phone ?? '—'}</dd>
                             <dt>Address</dt>
                             <dd>{[o.address_line1, o.address_line2,
@@ -610,11 +626,12 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                           <Link className="mini-btn" to={`/stakeholders/${cfg.kind}s/${o.id}`}>
                             Full Details ↗
                           </Link>
-                          {canManage && (<>
+                          {canManage && (
                           <button className="mini-btn accent" onClick={() => setEditing(o)}>
                             Edit {cfg.kind}
                           </button>
-                          {o.archived_at ? (
+                          )}
+                          {canArchive && (o.archived_at ? (
                             <button className="mini-btn" onClick={() => void setArchived(o, false)}>
                               Unarchive
                             </button>
@@ -622,8 +639,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                             <button className="mini-btn danger" onClick={() => void setArchived(o, true)}>
                               Archive
                             </button>
-                          )}
-                          </>)}
+                          ))}
                           <GodDeleteButton visible={godMode} entityType={cfg.kind} entityId={o.id}
                                            label={o.name} pending={pd.pendingIds.has(o.id)}
                                            onChange={pd.pendingIds.has(o.id)
@@ -1131,6 +1147,12 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
   onClose: () => void;
   onSaved: (id: string) => void;
 }) {
+  // `Organization.notes` is staff-internal: the API redacts it on read and
+  // refuses (403 notes_internal) any PATCH that names it from a non-global
+  // actor, so a scoped client/vendor contact editing its own org neither
+  // sees the field nor sends it.
+  const { scope } = useAuth();
+  const isGlobal = scope?.global ?? true;
   const [types, setTypes] = useState<Set<string>>(new Set(org?.partner_types ?? []));
   const [form, setForm] = useState({
     name: org?.name ?? '',
@@ -1171,9 +1193,9 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
       website: form.website.trim() || null,
       city: form.city.trim() || null,
       region: form.region.trim() || null,
-      notes: form.notes.trim() || null,
       account_manager_id: form.account_manager_id || null,
     };
+    if (isGlobal) payload.notes = form.notes.trim() || null;
     // tier is client-only, service_region is partner-only — the API
     // rejects (422) the other kind's field outright, so never send it.
     if (cfg.kind === 'client') payload.tier = form.tier;
@@ -1263,8 +1285,10 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
                 <input value={form.city} onChange={set('city')} /></div>
               <div><label>State / region</label>
                 <input value={form.region} onChange={set('region')} /></div>
-              <div className="full"><label>Notes</label>
-                <input value={form.notes} onChange={set('notes')} /></div>
+              {isGlobal && (
+                <div className="full"><label>Notes</label>
+                  <input value={form.notes} onChange={set('notes')} /></div>
+              )}
             </div>
           </div>
           <div className="modal-foot">

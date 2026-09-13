@@ -241,7 +241,7 @@ async def _check_refs(db: DbSession, data: dict) -> None:
 async def create_truck(
     body: TruckCreateIn,
     db: DbSession,
-    actor: AuthContext = require_permission("trucks", "change"),
+    actor: AuthContext = require_permission("trucks", "add"),
 ) -> TruckDetail:
     data = body.model_dump(exclude={"container_ids"})
     data["name"] = (data.get("name") or "").strip()
@@ -316,7 +316,7 @@ async def update_truck(
 async def archive_truck(
     truck_id: uuid.UUID,
     db: DbSession,
-    actor: AuthContext = require_permission("trucks", "change"),
+    actor: AuthContext = require_permission("trucks", "delete"),
 ) -> None:
     truck = await _get_truck(db, truck_id)
     truck.archived_at = datetime.now(UTC)
@@ -330,7 +330,7 @@ async def archive_truck(
 async def unarchive_truck(
     truck_id: uuid.UUID,
     db: DbSession,
-    actor: AuthContext = require_permission("trucks", "change"),
+    actor: AuthContext = require_permission("trucks", "delete"),
 ) -> None:
     truck = await _get_truck(db, truck_id)
     truck.archived_at = None
@@ -392,7 +392,7 @@ async def create_truck_update(
 async def clear_truck_updates(
     truck_id: uuid.UUID,
     db: DbSession,
-    actor: AuthContext = require_permission("trucks", "change"),
+    actor: AuthContext = require_permission("trucks", "delete"),
 ) -> None:
     await _get_truck(db, truck_id)
     await db.execute(delete(TruckUpdate).where(TruckUpdate.truck_id == truck_id))

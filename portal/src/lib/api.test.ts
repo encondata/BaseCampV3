@@ -33,3 +33,18 @@ it('falls back to the serving host on port 8000 so LAN devices reach the API', a
 
   expect(apiUrl()).toBe('http://192.168.1.42:8000');
 });
+
+it('live-tail WebSocket URL carries no token; the token rides the subprotocol list', async () => {
+  vi.stubEnv('VITE_API_URL', 'https://api.example.com');
+  const { logStreamUrl, logStreamProtocols } = await import('./api');
+
+  const url = logStreamUrl('api', { minLevel: 'WARNING', q: 'boom' });
+  expect(url).toBe(
+    'wss://api.example.com/system/processes/api/logs/stream?min_level=WARNING&q=boom');
+  expect(url).not.toContain('token');
+  expect(logStreamUrl('api')).toBe(
+    'wss://api.example.com/system/processes/api/logs/stream');
+
+  // Sec-WebSocket-Protocol: "ss-bearer, <token>" — the server accepts ss-bearer
+  expect(logStreamProtocols('tok.en')).toEqual(['ss-bearer', 'tok.en']);
+});

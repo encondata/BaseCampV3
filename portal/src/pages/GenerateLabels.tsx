@@ -27,6 +27,7 @@ import {
 } from '../lib/generateLabels';
 import { vocabLabel, vocabOfKind } from '../lib/labels';
 import { useSystemStatus } from '../lib/systemStatusContext';
+import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
 import GenerationProgress from '../components/labels/GenerationProgress';
 import LabelRunErrorsModal from '../components/labels/LabelRunErrorsModal';
@@ -62,6 +63,12 @@ function StepCard({ step, title, hint, children }: {
 
 export default function GenerateLabels() {
   const { status: sys } = useSystemStatus();
+  const { can } = useAuth();
+  // Mirrors the server: labels:add starts a run; labels:change cancels one
+  // and may regenerate labels that already exist. Affordances are disabled
+  // with a hint rather than hidden, so a view-only user still sees the flow.
+  const canAdd = can('labels', 'add');
+  const canChange = can('labels', 'change');
   const [params, setParams] = useSearchParams();
 
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);
@@ -198,7 +205,7 @@ export default function GenerateLabels() {
 
   const activeBlockingId = activeRun && isRunActive(activeRun) ? activeRun.id : null;
   const unresolvedType = firstUnresolvedType(preview?.types ?? null, selectedTypes, templateOverrides);
-  const canGo = canGenerate({
+  const canGo = canAdd && canGenerate({
     initiativeId: initiativeId || null, labelTypes: selectedTypes, activeRunId: activeBlockingId, unresolvedType,
   });
 
@@ -230,7 +237,7 @@ export default function GenerateLabels() {
   };
 
   const cancel = async () => {
-    if (!activeRun) return;
+    if (!activeRun || !canChange) return;
     try {
       setActiveRun(await cancelLabelRun(activeRun.id));
     } catch (err) {
@@ -255,9 +262,13 @@ export default function GenerateLabels() {
   const runSummary = initiativeId && preview && selectedTypes.length > 0
     ? `${pickedTypeLabels.join(' + ')} for ${preview.initiative.asset_count.toLocaleString()} asset${preview.initiative.asset_count === 1 ? '' : 's'} on ${preview.initiative.name}`
     : null;
-  const generateHint = unresolvedType
-    ? `Choose a template for ${typeLabelFor(unresolvedType)} to continue.`
-    : runSummary ?? 'Choose an initiative and at least one label type.';
+  const NO_ADD_HINT = "You don't have permission to generate labels.";
+  const NO_CHANGE_HINT = "You don't have permission to change labels.";
+  const generateHint = !canAdd
+    ? NO_ADD_HINT
+    : unresolvedType
+      ? `Choose a template for ${typeLabelFor(unresolvedType)} to continue.`
+      : runSummary ?? 'Choose an initiative and at least one label type.';
 
   const autoCount = preview
     ? selectedTypes.filter((k) => !templateOverrides[k] && preview.types.find((t) => t.key === k)?.template).length
@@ -337,11 +348,15 @@ export default function GenerateLabels() {
                   hint="Review the run, then queue it for the label worker.">
           <div className="glabels-generate">
           <div className="mini-list report-sections">
-            <label className="mini-row report-section-row">
-              <Switch checked={regenerateExisting} onChange={setRegenerateExisting} />
+            <label className="mini-row report-section-row" title={canChange ? undefined : NO_CHANGE_HINT}>
+              <Switch checked={regenerateExisting} onChange={setRegenerateExisting} disabled={!canChange} />
               <span className="report-section-text">
                 <span className="cell-top">Regenerate existing labels</span>
-                <span className="cell-sub">Off skips assets that already have a current label for the type.</span>
+                <span className="cell-sub">
+                  {canChange
+                    ? 'Off skips assets that already have a current label for the type.'
+                    : `${NO_CHANGE_HINT} Runs skip assets that already have a current label.`}
+                </span>
               </span>
             </label>
             <label className="mini-row report-section-row">
@@ -377,7 +392,8 @@ export default function GenerateLabels() {
               it rather than disappearing the instant it's done. */}
           {!activeBlockingId && (
             <div className="glabels-step-actions">
-              <button type="button" className="btn-solid" disabled={!canGo} onClick={() => void generate()}>
+              <button type="button" className="btn-solid" disabled={!canGo}
+                      title={canAdd ? undefined : NO_ADD_HINT} onClick={() => void generate()}>
                 Generate labels
               </button>
               <p className="page-hint">{generateHint}</p>
@@ -386,7 +402,8 @@ export default function GenerateLabels() {
           </div>
           {activeRun && (
             <GenerationProgress run={activeRun} typeLabel={typeLabelFor}
-                                 paused={sys.workers_paused} onCancel={() => void cancel()} />
+                                 paused={sys.workers_paused} onCancel={() => void cancel()}
+                                 cancelDisabledReason={canChange ? undefined : 'You don\'t have permission to cancel runs.'} />
           )}
           </div>
         </StepCard>

@@ -109,8 +109,23 @@ async def _open_entry_for(db: DbSession, person_id: uuid.UUID) -> TimeEntry | No
         TimeEntry.person_id == person_id, TimeEntry.clock_out_at.is_(None)))
 
 
+def _can_clock(actor: AuthContext) -> bool:
+    """Punch-clock gate for clock-in/clock-out. Rule: the actor may hold
+    `time:view` (staff, admin, super_admin, founder, developer all do), OR
+    hold the `worker` role itself — workers are the primary punch-clock
+    users but the seeded `worker` role deliberately carries no `time`
+    grant (it only needs to see its own records, which self-service
+    already allows). Checking the role name (not the `self` scope_anchor,
+    which `worker` shares with `external`) is what keeps `external` and
+    every client/partner-anchored role out while every seeded
+    worker/staff/admin-tier role stays in."""
+    return actor.access.can("time", "view") or "worker" in actor.roles
+
+
 @router.post("/clock-in", response_model=TimeEntryItem)
 async def clock_in(body: ClockInIn, db: DbSession, user: CurrentUser) -> TimeEntryItem:
+    if not _can_clock(user):
+        raise _err(403, "forbidden")
     existing = await _open_entry_for(db, user.person.id)
     if existing is not None:
         raise _err(409, "already_clocked_in")
@@ -144,6 +159,8 @@ async def clock_in(body: ClockInIn, db: DbSession, user: CurrentUser) -> TimeEnt
 
 @router.post("/clock-out", response_model=TimeEntryItem)
 async def clock_out(body: ClockOutIn, db: DbSession, user: CurrentUser) -> TimeEntryItem:
+    if not _can_clock(user):
+        raise _err(403, "forbidden")
     entry = await db.scalar(select(TimeEntry).where(
         TimeEntry.person_id == user.person.id, TimeEntry.clock_out_at.is_(None)))
     if entry is None:
@@ -359,6 +376,8 @@ async def approve_time_entry(
     entry = await db.get(TimeEntry, entry_id)
     if entry is None:
         raise _err(404, "time_entry_not_found")
+    if entry.person_id == actor.person.id:
+        raise _err(403, "cannot_target_self")
     if entry.status != "pending":
         raise _err(409, "not_pending")
 
@@ -383,6 +402,8 @@ async def reject_time_entry(
     entry = await db.get(TimeEntry, entry_id)
     if entry is None:
         raise _err(404, "time_entry_not_found")
+    if entry.person_id == actor.person.id:
+        raise _err(403, "cannot_target_self")
     if entry.status != "pending":
         raise _err(409, "not_pending")
 
@@ -411,7 +432,7 @@ async def active_time_entries(
 @router.get("/summary", response_model=TimeSummaryOut)
 async def time_summary(
     db: DbSession, initiative_id: uuid.UUID,
-    actor: AuthContext = require_permission("initiatives", "view"),
+    actor: AuthContext = require_permission("time", "view"),
 ) -> TimeSummaryOut:
     query = select(Initiative).where(Initiative.id == initiative_id)
     cond = scope_conditions("initiatives", actor.access, actor.person.id)

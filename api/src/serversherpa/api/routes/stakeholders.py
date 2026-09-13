@@ -147,7 +147,12 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         rows = (await db.scalars(select(Person).where(Person.id.in_(ids)))).all()
         return {p.id: ManagerRef(id=p.id, display_name=p.display_name) for p in rows}
 
-    def _item(org, counts: dict, managers: dict) -> OrgItem:
+    def _item(org, counts: dict, managers: dict, actor: AuthContext) -> OrgItem:
+        # `notes` is staff free text ABOUT the org — internal-only, so the
+        # org's own client/vendor contacts (non-global anchors) never see it
+        # through list/detail (same rule as person_notes in workers.py and
+        # the /notes host for these entity types).
+        is_global = actor.access.is_global
         return OrgItem(
             id=org.id,
             name=org.name,
@@ -164,7 +169,7 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             region=org.region,
             postal_code=org.postal_code,
             country=org.country,
-            notes=org.notes,
+            notes=org.notes if is_global else None,
             account_manager=managers.get(org.account_manager),
             contact_count=counts.get(org.id, 0),
             logo_url=presign_get(org.logo_key),
@@ -172,11 +177,11 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             created_at=org.created_at,
         )
 
-    async def _item_for(db: AsyncSession, org) -> OrgItem:
+    async def _item_for(db: AsyncSession, org, actor: AuthContext) -> OrgItem:
         counts = await _contact_counts(db, [org.id])
         managers = await _managers(
             db, {org.account_manager} if org.account_manager else set())
-        return _item(org, counts, managers)
+        return _item(org, counts, managers, actor)
 
     @router.get("", response_model=list[OrgItem])
     async def list_orgs(
@@ -191,7 +196,7 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         counts = await _contact_counts(db, [o.id for o in orgs])
         managers = await _managers(
             db, {o.account_manager for o in orgs if o.account_manager})
-        return [_item(o, counts, managers) for o in orgs]
+        return [_item(o, counts, managers, actor) for o in orgs]
 
     @router.get("/{org_id}", response_model=OrgItem)
     async def get_org(
@@ -200,7 +205,7 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         actor: AuthContext = require_permission(resource, "view"),
     ) -> OrgItem:
         org = await _get_org(db, org_id, actor)
-        return await _item_for(db, org)
+        return await _item_for(db, org, actor)
 
     async def _apply(db: AsyncSession, org, data: dict, actor: AuthContext):
         """Apply field updates only — the CALLER commits, so audit rows added
@@ -261,7 +266,7 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
               entity_id=str(org.id), action="create",
               changes={"name": {"from": None, "to": org.name}})
         await _commit_or_409(db)
-        return await _item_for(db, org)
+        return await _item_for(db, org, actor)
 
     @router.patch("/{org_id}", response_model=OrgItem)
     async def update_org(
@@ -272,6 +277,13 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
     ) -> OrgItem:
         org = await _get_org(db, org_id, actor)
         data = body.model_dump(exclude_unset=True)
+        # `notes` is staff-internal (redacted to None in _item for non-global
+        # actors), so a scoped client/vendor contact holding `change` on its
+        # own org must not blind-overwrite it. Refuse explicitly — even an
+        # explicit null — rather than silently dropping the field, so the
+        # caller learns the field is off-limits (mirrors the read side).
+        if "notes" in data and not actor.access.is_global:
+            raise _err(403, "notes_internal")
         required_fields = ("name", "status", "country") + (() if is_partner else ("tier",))
         for required in required_fields:
             if required in data and data[required] is None:
@@ -300,13 +312,17 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
                   entity_id=str(org.id), action="update",
                   changes=changes)
         await _commit_or_409(db)
-        return await _item_for(db, org)
+        return await _item_for(db, org, actor)
 
+    # Archive/unarchive are a soft delete and its reversal, so they gate on
+    # `delete` like assets/initiatives/containers/trucks do — client_owner /
+    # vendor_owner hold `change` on their own org but must not be able to
+    # retire it.
     @router.post("/{org_id}/archive", status_code=204)
     async def archive_org(
         org_id: uuid.UUID,
         db: DbSession,
-        actor: AuthContext = require_permission(resource, "change"),
+        actor: AuthContext = require_permission(resource, "delete"),
     ) -> None:
         org = await _get_org(db, org_id, actor)
         org.archived_at = datetime.now(UTC)
@@ -318,7 +334,7 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
     async def unarchive_org(
         org_id: uuid.UUID,
         db: DbSession,
-        actor: AuthContext = require_permission(resource, "change"),
+        actor: AuthContext = require_permission(resource, "delete"),
     ) -> None:
         org = await _get_org(db, org_id, actor)
         org.archived_at = None

@@ -11,9 +11,11 @@ from sqlalchemy import select
 
 from serversherpa.db.models import (
     Asset, AuditLog, Client, GeneratedLabel, Initiative, InitiativeAsset,
-    LabelGenerationRun, LabelTemplate, LabelTemplateSite, LabelVocab, Site,
+    LabelGenerationRun, LabelTemplate, LabelTemplateSite, LabelVocab, PermissionOverride,
+    Person, Site,
 )
 
+from tests.test_initiatives_client_scope import client_login
 from tests.test_sites_api import login
 from tests.test_status_values_write import _make
 
@@ -73,7 +75,10 @@ async def test_create_run_202_shape(client, db, seeded_user):
     ini = await _initiative(db)
     await _asset_on(db, ini, legacy_id=1001)
     await _asset_on(db, ini, legacy_id=1002)
-    hdrs = await login(client)
+    # alice (the default `login(client)` persona) is `staff` — labels:view
+    # only, no longer enough to create a run — so this and every other
+    # create/cancel test below uses an `admin` persona instead.
+    hdrs = await _make(db, client, "admin", "adm-shape@test.example.com")
 
     resp = await client.post("/labels/generate/runs", headers=hdrs,
                              json=_run_payload(ini, ["top"], notify=True))
@@ -87,7 +92,7 @@ async def test_create_run_202_shape(client, db, seeded_user):
     assert body["regenerate_existing"] is False
     assert body["progress_pct"] == 0
     assert body["total"] == 0 and body["processed"] == 0
-    assert body["requested_by_name"] == "Alice Anderson"
+    assert body["requested_by_name"] == "R X"
     assert body["cancel_requested"] is False
     assert body["finished_at"] is None
     assert body["template_overrides"] == {}
@@ -104,7 +109,7 @@ async def test_create_run_202_shape(client, db, seeded_user):
 
 async def test_create_run_422_empty_label_types(client, db, seeded_user):
     ini = await _initiative(db)
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-empty@test.example.com")
 
     resp = await client.post("/labels/generate/runs", headers=hdrs,
                              json=_run_payload(ini, []))
@@ -114,7 +119,7 @@ async def test_create_run_422_empty_label_types(client, db, seeded_user):
 
 
 async def test_create_run_404_unknown_or_archived_initiative(client, db, seeded_user):
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-404.ini@test.example.com")
 
     resp = await client.post("/labels/generate/runs", headers=hdrs,
                              json={"initiative_id": str(uuid.uuid4()), "label_types": ["top"]})
@@ -130,7 +135,7 @@ async def test_create_run_404_unknown_or_archived_initiative(client, db, seeded_
 
 async def test_create_run_422_unknown_label_types(client, db, seeded_user):
     ini = await _initiative(db)
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-unknown-type@test.example.com")
 
     resp = await client.post("/labels/generate/runs", headers=hdrs,
                              json=_run_payload(ini, ["not_a_type"]))
@@ -141,7 +146,7 @@ async def test_create_run_422_unknown_label_types(client, db, seeded_user):
 
 async def test_create_run_409_when_one_already_active(client, db, seeded_user):
     ini = await _initiative(db)
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-active@test.example.com")
 
     first = await client.post("/labels/generate/runs", headers=hdrs,
                               json=_run_payload(ini, ["top"]))
@@ -159,7 +164,7 @@ async def test_create_run_409_when_one_already_active(client, db, seeded_user):
 async def test_create_run_with_template_override_201(client, db, seeded_user):
     ini = await _initiative(db)
     tpl = await _template(db, "top")
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-tpl-override@test.example.com")
 
     resp = await client.post("/labels/generate/runs", headers=hdrs,
                              json=_run_payload(ini, ["top"], templates={"top": str(tpl.id)}))
@@ -174,7 +179,7 @@ async def test_create_run_with_template_override_201(client, db, seeded_user):
 async def test_create_run_422_invalid_templates_key_not_in_label_types(client, db, seeded_user):
     ini = await _initiative(db)
     tpl = await _template(db, "top")
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-tpl-key@test.example.com")
 
     resp = await client.post(
         "/labels/generate/runs", headers=hdrs,
@@ -188,7 +193,7 @@ async def test_create_run_422_invalid_templates_key_not_in_label_types(client, d
 async def test_create_run_422_invalid_templates_wrong_type(client, db, seeded_user):
     ini = await _initiative(db)
     front_tpl = await _template(db, "front")
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-tpl-wrong-type@test.example.com")
 
     resp = await client.post(
         "/labels/generate/runs", headers=hdrs,
@@ -204,7 +209,7 @@ async def test_create_run_422_invalid_templates_inactive(client, db, seeded_user
     tpl = await _template(db, "top")
     tpl.is_active = False
     await db.commit()
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-tpl-inactive@test.example.com")
 
     resp = await client.post(
         "/labels/generate/runs", headers=hdrs,
@@ -217,9 +222,12 @@ async def test_create_run_422_invalid_templates_inactive(client, db, seeded_user
 
 # ── permission gate ──────────────────────────────────────────────────
 
-async def test_generate_routes_require_labels_view(client, db, seeded_user):
+async def test_generate_routes_require_labels_permissions(client, db, seeded_user):
+    """`worker` holds no `labels` grant at all, so every generate-labels
+    route (view-gated list/get/preview/generated, and the stricter
+    add/change-gated create/cancel) is 403 for them."""
     ini = await _initiative(db)
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-gl-setup@test.example.com")
     created = (await client.post("/labels/generate/runs", headers=hdrs,
                                  json=_run_payload(ini, ["top"]))).json()
 
@@ -236,12 +244,109 @@ async def test_generate_routes_require_labels_view(client, db, seeded_user):
     assert (await client.get("/labels/generated", headers=worker)).status_code == 403
 
 
+async def test_create_run_403_for_labels_view_only(client, db, seeded_user):
+    """`staff` holds `labels:view` only (defaults.py) — that used to be
+    enough to create a run; it must now 403."""
+    ini = await _initiative(db)
+    staff = await _make(db, client, "staff", "staff-cr@test.example.com")
+    resp = await client.post("/labels/generate/runs", headers=staff,
+                             json=_run_payload(ini, ["top"]))
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "forbidden"
+
+
+async def test_create_run_202_for_labels_add(client, db, seeded_user):
+    ini = await _initiative(db)
+    admin = await _make(db, client, "admin", "adm-cr@test.example.com")
+    resp = await client.post("/labels/generate/runs", headers=admin,
+                             json=_run_payload(ini, ["top"]))
+    assert resp.status_code == 202, resp.text
+
+
+async def test_create_run_regenerate_existing_403_without_change(client, db, seeded_user):
+    """A persona with `labels:add` but not `labels:change` — no seeded
+    role combines the two that way, so build one from `staff` (view
+    only) plus a permission override — may create a plain run but not
+    one with `regenerate_existing`, which needs `labels:change`."""
+    ini = await _initiative(db)
+    add_only = await _make(db, client, "staff", "staff-add-only@test.example.com")
+    person = await db.scalar(
+        select(Person).where(Person.email == "staff-add-only@test.example.com"))
+    db.add(PermissionOverride(person_id=person.id, resource="labels", action="add",
+                              allow=True))
+    await db.commit()
+
+    resp = await client.post("/labels/generate/runs", headers=add_only,
+                             json=_run_payload(ini, ["top"], regenerate_existing=True))
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "forbidden"
+
+    resp = await client.post("/labels/generate/runs", headers=add_only,
+                             json=_run_payload(ini, ["top"]))
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["regenerate_existing"] is False
+
+
+async def test_cancel_run_403_for_labels_view_only(client, db, seeded_user):
+    ini = await _initiative(db)
+    admin = await _make(db, client, "admin", "adm-cancel-view@test.example.com")
+    created = (await client.post("/labels/generate/runs", headers=admin,
+                                 json=_run_payload(ini, ["top"]))).json()
+
+    staff = await _make(db, client, "staff", "staff-cancel@test.example.com")
+    resp = await client.post(f"/labels/generate/runs/{created['id']}/cancel", headers=staff)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "forbidden"
+
+
+async def test_cancel_run_200_for_labels_change(client, db, seeded_user):
+    ini = await _initiative(db)
+    admin = await _make(db, client, "admin", "adm-cancel-change@test.example.com")
+    created = (await client.post("/labels/generate/runs", headers=admin,
+                                 json=_run_payload(ini, ["top"]))).json()
+    resp = await client.post(f"/labels/generate/runs/{created['id']}/cancel", headers=admin)
+    assert resp.status_code == 200, resp.text
+
+
+async def test_cancel_labels_change_is_unreachable_for_a_scoped_actor(client, db, seeded_user):
+    """`_runs_query`'s scope leg (used by cancel and by list/get) only
+    narrows for a non-global actor — but `labels` is hard-gated
+    `visible_to={"global"}` (access/resources.py), a check the resolver
+    applies BEFORE per-person overrides. So even a client-anchored actor
+    handed a `labels:change` override stays 403, never reaching the
+    scope-narrowed 404: no seeded or overridden role can produce the
+    "same 404 for out-of-scope as for unknown" case the query defends
+    against today. This pins that invariant — see the report for why a
+    genuine out-of-scope 404 test isn't constructible with the current
+    access model, matching `_runs_query`'s own "unreachable" comment."""
+    client_row = Client(name="Own Co")
+    db.add(client_row)
+    await db.flush()
+    ini = await _initiative(db, client=client_row)
+
+    admin = await _make(db, client, "admin", "adm-cancel-hardgate@test.example.com")
+    run = (await client.post("/labels/generate/runs", headers=admin,
+                             json=_run_payload(ini, ["top"]))).json()
+
+    hdrs = await client_login(db, client, client_row.id, role="client_owner",
+                              email="co-cancel-hardgate@test.example.com")
+    person = await db.scalar(
+        select(Person).where(Person.email == "co-cancel-hardgate@test.example.com"))
+    db.add(PermissionOverride(person_id=person.id, resource="labels", action="change",
+                              allow=True))
+    await db.commit()
+
+    resp = await client.post(f"/labels/generate/runs/{run['id']}/cancel", headers=hdrs)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "forbidden"
+
+
 # ── list / get ───────────────────────────────────────────────────────
 
 async def test_list_and_get_run(client, db, seeded_user):
     ini = await _initiative(db)
     other = await _initiative(db)
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-list-get@test.example.com")
 
     first = (await client.post("/labels/generate/runs", headers=hdrs,
                                json=_run_payload(ini, ["top"]))).json()
@@ -272,7 +377,7 @@ async def test_list_and_get_run(client, db, seeded_user):
 
 async def test_cancel_queued_run_is_immediate(client, db, seeded_user):
     ini = await _initiative(db)
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-cancel-queued@test.example.com")
     run = (await client.post("/labels/generate/runs", headers=hdrs,
                              json=_run_payload(ini, ["top"]))).json()
 
@@ -292,7 +397,7 @@ async def test_cancel_queued_run_is_immediate(client, db, seeded_user):
 
 async def test_cancel_running_run_sets_cancel_requested(client, db, seeded_user):
     ini = await _initiative(db)
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-cancel-running@test.example.com")
     created = (await client.post("/labels/generate/runs", headers=hdrs,
                                  json=_run_payload(ini, ["top"]))).json()
     run = await db.get(LabelGenerationRun, uuid.UUID(created["id"]))
@@ -316,7 +421,7 @@ async def test_cancel_running_run_sets_cancel_requested(client, db, seeded_user)
 
 async def test_cancel_running_run_already_requested_is_a_no_op(client, db, seeded_user):
     ini = await _initiative(db)
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-cancel-noop@test.example.com")
     created = (await client.post("/labels/generate/runs", headers=hdrs,
                                  json=_run_payload(ini, ["top"]))).json()
     run = await db.get(LabelGenerationRun, uuid.UUID(created["id"]))
@@ -343,7 +448,7 @@ async def test_cancel_running_run_already_requested_is_a_no_op(client, db, seede
 
 async def test_cancel_finished_run_is_409(client, db, seeded_user):
     ini = await _initiative(db)
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-cancel-409@test.example.com")
     created = (await client.post("/labels/generate/runs", headers=hdrs,
                                  json=_run_payload(ini, ["top"]))).json()
     run = await db.get(LabelGenerationRun, uuid.UUID(created["id"]))
@@ -466,7 +571,7 @@ async def test_preview_404_unknown_initiative(client, db, seeded_user):
 
 async def test_preview_reports_active_run_id(client, db, seeded_user):
     ini = await _initiative(db)
-    hdrs = await login(client)
+    hdrs = await _make(db, client, "admin", "adm-preview-active@test.example.com")
     created = (await client.post("/labels/generate/runs", headers=hdrs,
                                  json=_run_payload(ini, ["top"]))).json()
 

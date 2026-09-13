@@ -65,9 +65,10 @@ class Settings(BaseSettings):
 
     # ── DB testing mode ────────────────────────────────────
     # Password gate above god mode + the devtools permission for the
-    # Testing tab's snapshot/revert sessions. Default "admin" is meant to
-    # be changed for anything but a local dev box.
-    db_testing_password: SecretStr = SecretStr("admin")
+    # Testing tab's snapshot/revert sessions. No default: until it is set
+    # to a non-empty value, start/end refuse with 503
+    # db_testing_password_not_configured (the tab is effectively disabled).
+    db_testing_password: SecretStr | None = None
 
     # ── CORS / cookies ─────────────────────────────────────
     allowed_origins: str = ""

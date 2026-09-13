@@ -62,6 +62,27 @@ async def test_devtools_and_access_view_locked(client, db, seeded_user):
     assert resp.json()["detail"]["code"] == "access_view_locked"
 
 
+async def test_admin_cannot_edit_a_role_they_hold(client, db, seeded_user):
+    """Security-fixes task 5 finding (c): an actor could edit the matrix of
+    a role they themselves hold, as long as they outranked it — silently
+    widening their own effective permissions. Give the actor a second role
+    (staff, rank 40) alongside admin (rank 60): rank alone would allow
+    editing staff's matrix (40 < 60), but holding the role must block it."""
+    hdrs = await login_admin(client, db, seeded_user)
+    db.add(PersonRole(person_id=seeded_user.id, role="staff"))
+    await db.commit()
+
+    resp = await client.put("/access/roles/staff/matrix", headers=hdrs,
+                            json={"matrix": full_matrix()})
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "cannot_edit_own_role"
+
+    # a role the actor does not hold, and outranks, is still editable
+    resp = await client.put("/access/roles/worker/matrix", headers=hdrs,
+                            json={"matrix": full_matrix()})
+    assert resp.status_code == 200, resp.text
+
+
 async def test_clone_and_delete_custom_role(client, db, seeded_user):
     hdrs = await login_admin(client, db, seeded_user)
     resp = await client.post("/access/roles", headers=hdrs, json={

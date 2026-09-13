@@ -110,6 +110,40 @@ async def enforce_read_only(db: AsyncSession, request: Request,
                     "message": cfg["read_only_message"]})
 
 
+# A temp-password session must be able to finish the auth lifecycle and
+# change its own password, and nothing else — same auth-lifecycle set
+# read-only mode exempts, plus GET /auth/me (so the portal can render the
+# "you must change your password" screen) and GET /auth/me/sessions (self-
+# scoped list of what DELETE /auth/me/sessions/{id} lets it revoke) since
+# neither is a mutating route and so isn't already covered by
+# READ_ONLY_EXEMPT_PATHS. `/system/admin` is deliberately NOT inherited:
+# read-only exempts it because whoever can turn read-only on can turn it
+# off, which says nothing about a temp-password admin session.
+FORCED_CHANGE_EXEMPT_PATHS = (
+    (READ_ONLY_EXEMPT_PATHS - {"/system/admin"})
+    | {"/auth/me", "/auth/me/sessions"}
+)
+FORCED_CHANGE_EXEMPT_PREFIXES = READ_ONLY_EXEMPT_PREFIXES
+
+
+def _forced_change_exempt(path: str) -> bool:
+    return (path in FORCED_CHANGE_EXEMPT_PATHS
+            or path.startswith(FORCED_CHANGE_EXEMPT_PREFIXES))
+
+
+def enforce_forced_password_change(request: Request, user: AuthContext) -> None:
+    """Server-side mirror of the portal's forced-change screen: a temp
+    password (must_change_password=True) can reach only the auth-lifecycle
+    routes and the self password-change route — every other route 403s
+    until the password is changed. Previously this was enforced only in
+    the portal UI, so a temp-password session could drive the API directly
+    and never be forced to change it."""
+    if not user.account.must_change_password or _forced_change_exempt(request.url.path):
+        return
+    raise HTTPException(status_code=403,
+                        detail={"code": "password_change_required"})
+
+
 async def get_current_user(
     request: Request,
     db: DbSession,
@@ -118,6 +152,7 @@ async def get_current_user(
     if credentials is None:
         raise _unauthorized("missing_token")
     user = await authenticate_token(db, credentials.credentials)
+    enforce_forced_password_change(request, user)
     await enforce_read_only(db, request, user)
     return user
 

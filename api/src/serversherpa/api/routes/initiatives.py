@@ -9,6 +9,7 @@ import logging
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from pathlib import PurePosixPath
 
 from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy import func, select
@@ -64,6 +65,30 @@ def _err(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
+async def _require_parent_in_scope(db: DbSession, initiative_id: uuid.UUID,
+                                   actor: AuthContext, code: str) -> None:
+    """A child row (assignment, link, roster row, import job) is reachable
+    only through its parent initiative's scope. Re-raise as the CHILD's own
+    404 code so a foreign id is indistinguishable from a nonexistent one."""
+    try:
+        await _get_initiative(db, initiative_id, actor)
+    except HTTPException:
+        raise _err(404, code) from None
+
+
+def _require_global(actor: AuthContext) -> None:
+    """Initiative writes are globally anchored (same posture as assets and
+    sites): a client-anchored role handed `initiatives:change` through an
+    Access-control override still may not author or edit initiatives.
+
+    Ordering rule for every mutating route below: resolve the target row
+    through `_get_initiative` FIRST (an out-of-scope id must read as 404 —
+    an actor never learns an id exists), then call this. Routes with no
+    target row to resolve (create) call it straight away."""
+    if not actor.access.is_global:
+        raise _err(403, "forbidden")
+
+
 async def _get_initiative(db: DbSession, initiative_id: uuid.UUID,
                           actor: AuthContext) -> Initiative:
     initiative = await db.get(Initiative, initiative_id)
@@ -90,7 +115,8 @@ async def _vocab(db: DbSession) -> dict[str, dict]:
     return out
 
 
-async def _context(db: DbSession, initiatives: list[Initiative]) -> tuple:
+async def _context(db: DbSession, initiatives: list[Initiative],
+                   actor: AuthContext) -> tuple:
     vocab = await _vocab(db)
     site_ids = {getattr(i, f) for i in initiatives for f in SITE_FIELDS
                 if getattr(i, f)}
@@ -112,16 +138,23 @@ async def _context(db: DbSession, initiatives: list[Initiative]) -> tuple:
         .where(InitiativePerson.initiative_id.in_(ids))
         .group_by(InitiativePerson.initiative_id)
     )).all()) if ids else {}
-    child_counts = dict((await db.execute(
-        select(InitiativeLink.parent_id, func.count())
-        .where(InitiativeLink.parent_id.in_(ids))
-        .group_by(InitiativeLink.parent_id)
-    )).all()) if ids else {}
-    parent_counts = dict((await db.execute(
-        select(InitiativeLink.child_id, func.count())
-        .where(InitiativeLink.child_id.in_(ids))
-        .group_by(InitiativeLink.child_id)
-    )).all()) if ids else {}
+    # `links_count` must count exactly the rows `_link_rows` would show:
+    # counting unfiltered leaked the cardinality of another client's link
+    # graph ("you are linked to 3 things you may not see").
+    cond = scope_conditions("initiatives", actor.access, actor.person.id)
+    children_q = (select(InitiativeLink.parent_id, func.count())
+                  .join(Initiative, Initiative.id == InitiativeLink.child_id)
+                  .where(InitiativeLink.parent_id.in_(ids))
+                  .group_by(InitiativeLink.parent_id))
+    parents_q = (select(InitiativeLink.child_id, func.count())
+                 .join(Initiative, Initiative.id == InitiativeLink.parent_id)
+                 .where(InitiativeLink.child_id.in_(ids))
+                 .group_by(InitiativeLink.child_id))
+    if cond is not None:
+        children_q = children_q.where(cond)
+        parents_q = parents_q.where(cond)
+    child_counts = dict((await db.execute(children_q)).all()) if ids else {}
+    parent_counts = dict((await db.execute(parents_q)).all()) if ids else {}
     link_counts = {i: child_counts.get(i, 0) + parent_counts.get(i, 0)
                    for i in ids}
     return vocab, sites, clients, partners, people_counts, link_counts
@@ -246,7 +279,7 @@ async def _link_rows(
 
 async def _detail(db: DbSession, initiative: Initiative,
                   actor: AuthContext) -> InitiativeDetailOut:
-    ctx = await _context(db, [initiative])
+    ctx = await _context(db, [initiative], actor)
     children, parents = await _link_rows(db, initiative.id, actor)
     return InitiativeDetailOut(
         **_item(initiative, *ctx),
@@ -264,7 +297,7 @@ async def list_initiatives(
     if cond is not None:
         query = query.where(cond)
     initiatives = list(await db.scalars(query))
-    ctx = await _context(db, initiatives)
+    ctx = await _context(db, initiatives, actor)
     return [InitiativeItem(**_item(i, *ctx)) for i in initiatives]
 
 
@@ -313,6 +346,7 @@ async def create_initiative(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "add"),
 ) -> InitiativeDetailOut:
+    _require_global(actor)
     data = body.model_dump(exclude_none=True)
     if not data.get("name"):
         raise _err(422, "name_required")
@@ -338,6 +372,7 @@ async def update_initiative(
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> InitiativeDetailOut:
     initiative = await _get_initiative(db, initiative_id, actor)
+    _require_global(actor)
     data = body.model_dump(exclude_unset=True)
     for field in NON_NULLABLE_FIELDS:
         if field in data and not data[field]:
@@ -365,9 +400,10 @@ async def update_initiative(
 async def archive_initiative(
     initiative_id: uuid.UUID,
     db: DbSession,
-    actor: AuthContext = require_permission("initiatives", "change"),
+    actor: AuthContext = require_permission("initiatives", "delete"),
 ) -> None:
     initiative = await _get_initiative(db, initiative_id, actor)
+    _require_global(actor)
     initiative.archived_at = datetime.now(UTC)
     initiative.updated_at = initiative.archived_at
     audit(db, actor_id=actor.person.id, entity_type="initiative",
@@ -379,9 +415,10 @@ async def archive_initiative(
 async def unarchive_initiative(
     initiative_id: uuid.UUID,
     db: DbSession,
-    actor: AuthContext = require_permission("initiatives", "change"),
+    actor: AuthContext = require_permission("initiatives", "delete"),
 ) -> None:
     initiative = await _get_initiative(db, initiative_id, actor)
+    _require_global(actor)
     initiative.archived_at = None
     initiative.updated_at = datetime.now(UTC)
     audit(db, actor_id=actor.person.id, entity_type="initiative",
@@ -429,6 +466,7 @@ async def add_initiative_person(
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> list[InitiativePersonRow]:
     initiative = await _get_initiative(db, initiative_id, actor)
+    _require_global(actor)
     data = body.model_dump(exclude_none=True)
     if await db.get(Person, data["person_id"]) is None:
         raise _err(422, "person_not_found")
@@ -451,11 +489,16 @@ async def add_initiative_person(
     return await _people_rows(db, initiative_id, actor)
 
 
-async def _get_assignment(db: DbSession,
-                          assoc_id: uuid.UUID) -> InitiativePerson:
+async def _get_assignment(db: DbSession, assoc_id: uuid.UUID,
+                          actor: AuthContext) -> InitiativePerson:
+    """The child id alone says nothing about who may touch it — resolve
+    the PARENT through the scoping loader so a row on an out-of-scope
+    initiative reads as 404, exactly like the initiative itself."""
     assoc = await db.get(InitiativePerson, assoc_id)
     if assoc is None:
         raise _err(404, "assignment_not_found")
+    await _require_parent_in_scope(db, assoc.initiative_id, actor,
+                                   "assignment_not_found")
     return assoc
 
 
@@ -466,7 +509,8 @@ async def update_initiative_person(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> InitiativePersonRow:
-    assoc = await _get_assignment(db, assoc_id)
+    assoc = await _get_assignment(db, assoc_id, actor)
+    _require_global(actor)
     data = body.model_dump(exclude_unset=True)
     await _check_person_refs(db, data)
 
@@ -491,7 +535,8 @@ async def remove_initiative_person(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> None:
-    assoc = await _get_assignment(db, assoc_id)
+    assoc = await _get_assignment(db, assoc_id, actor)
+    _require_global(actor)
     initiative_id = assoc.initiative_id
     person_id = assoc.person_id
     await db.delete(assoc)
@@ -549,8 +594,15 @@ async def add_initiative_link(
     initiative = await _get_initiative(db, initiative_id, actor)
     if body.child_id == initiative_id:
         raise _err(422, "self_link")
-    if await db.get(Initiative, body.child_id) is None:
-        raise _err(422, "initiative_not_found")
+    # the child is resolved through the SAME scoping loader as the parent —
+    # an out-of-scope child must not be confirmed to exist, let alone
+    # linked. It keeps the route's existing 422 `initiative_not_found`
+    # shape, so a foreign child looks exactly like a nonexistent one.
+    try:
+        await _get_initiative(db, body.child_id, actor)
+    except HTTPException:
+        raise _err(422, "initiative_not_found") from None
+    _require_global(actor)
     # serialize check+insert against concurrent link adds — two in-flight
     # inserts can each pass the cycle check below and jointly close a cycle;
     # the xact lock releases on commit/rollback (get_db rolls back on error)
@@ -576,10 +628,14 @@ async def add_initiative_link(
     return await _detail(db, initiative, actor)
 
 
-async def _get_link(db: DbSession, link_id: uuid.UUID) -> InitiativeLink:
+async def _get_link(db: DbSession, link_id: uuid.UUID,
+                    actor: AuthContext) -> InitiativeLink:
+    """Scope-checked on the PARENT side (the edge belongs to the parent —
+    that is the initiative every link audit row is filed against)."""
     link = await db.get(InitiativeLink, link_id)
     if link is None:
         raise _err(404, "link_not_found")
+    await _require_parent_in_scope(db, link.parent_id, actor, "link_not_found")
     return link
 
 
@@ -590,7 +646,8 @@ async def update_initiative_link(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> InitiativeLinkRow:
-    link = await _get_link(db, link_id)
+    link = await _get_link(db, link_id, actor)
+    _require_global(actor)
     data = body.model_dump(exclude_unset=True)
     fields = list(data.keys())
     before = snapshot(link, fields)
@@ -612,7 +669,8 @@ async def remove_initiative_link(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> None:
-    link = await _get_link(db, link_id)
+    link = await _get_link(db, link_id, actor)
+    _require_global(actor)
     parent_id, child_id = link.parent_id, link.child_id
     await db.delete(link)
     audit(db, actor_id=actor.person.id, entity_type="initiative",
@@ -724,6 +782,7 @@ async def add_initiative_assets(
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> list[InitiativeAssetOut]:
     initiative = await _get_initiative(db, initiative_id, actor)
+    _require_global(actor)
     if initiative.initiative_type != "move":
         raise _err(422, "not_a_move")
     ids = list(dict.fromkeys(body.asset_ids))  # dedupe, keep order
@@ -757,11 +816,13 @@ async def add_initiative_assets(
     return await _initiative_asset_rows(db, initiative_id)
 
 
-async def _get_initiative_asset(db: DbSession,
-                                assoc_id: uuid.UUID) -> InitiativeAsset:
+async def _get_initiative_asset(db: DbSession, assoc_id: uuid.UUID,
+                                actor: AuthContext) -> InitiativeAsset:
     assoc = await db.get(InitiativeAsset, assoc_id)
     if assoc is None:
         raise _err(404, "asset_assignment_not_found")
+    await _require_parent_in_scope(db, assoc.initiative_id, actor,
+                                   "asset_assignment_not_found")
     return assoc
 
 
@@ -813,7 +874,8 @@ async def update_initiative_asset(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> InitiativeAssetOut:
-    assoc = await _get_initiative_asset(db, assoc_id)
+    assoc = await _get_initiative_asset(db, assoc_id, actor)
+    _require_global(actor)
     data = body.model_dump(exclude_unset=True)
     for field in ("source_ru", "destination_ru"):
         if field in data:
@@ -862,7 +924,8 @@ async def remove_initiative_asset(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> None:
-    assoc = await _get_initiative_asset(db, assoc_id)
+    assoc = await _get_initiative_asset(db, assoc_id, actor)
+    _require_global(actor)
     initiative_id = assoc.initiative_id
     asset_id = assoc.asset_id
     await db.delete(assoc)
@@ -881,10 +944,13 @@ IMPORT_EXTENSIONS = (".csv", ".xlsx", ".xls")
 MAKE_MODEL_MODES = ("fuzzy", "force", "hybrid")
 
 
-async def _get_import_job(db: DbSession, job_id: uuid.UUID) -> ImportJob:
+async def _get_import_job(db: DbSession, job_id: uuid.UUID,
+                          actor: AuthContext) -> ImportJob:
     job = await db.get(ImportJob, job_id)
     if job is None or job.kind != "move_assets":
         raise _err(404, "import_job_not_found")
+    await _require_parent_in_scope(db, job.initiative_id, actor,
+                                   "import_job_not_found")
     return job
 
 
@@ -899,6 +965,7 @@ async def create_move_asset_import_job(
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> ImportJob:
     initiative = await _get_initiative(db, initiative_id, actor)
+    _require_global(actor)
     if initiative.initiative_type != "move":
         raise _err(422, "not_a_move")
     if make_model_mode not in MAKE_MODEL_MODES:
@@ -919,7 +986,13 @@ async def create_move_asset_import_job(
                  "generate_serials": generate_serials})
     db.add(job)
     await db.flush()
-    key = f"import-jobs/{initiative_id}/{job.id}/{filename}"
+    # the key is ours, never the uploader's: a name like "../../x.csv"
+    # would otherwise steer where the bytes land in object storage. The
+    # extension is one of IMPORT_EXTENSIONS (validated above) and the
+    # original name survives on job.filename, which is what the worker
+    # and the UI actually read.
+    key = (f"import-jobs/{initiative_id}/{job.id}/"
+           f"{job.id}{PurePosixPath(filename).suffix.lower()}")
     await put_object(key, content,
                      file.content_type or "application/octet-stream")
     job.file_key = key
@@ -937,7 +1010,8 @@ async def get_move_asset_import_job(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> ImportJob:
-    return await _get_import_job(db, job_id)
+    # read-only status poll: scope-checked, but not globally anchored
+    return await _get_import_job(db, job_id, actor)
 
 
 @router.post("/assets/import-jobs/{job_id}/commit",
@@ -947,7 +1021,8 @@ async def commit_move_asset_import_job(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> ImportJob:
-    job = await _get_import_job(db, job_id)
+    job = await _get_import_job(db, job_id, actor)
+    _require_global(actor)
     if job.phase != "validate" or job.status != "completed":
         raise _err(409, "job_not_ready")
     job.phase = "commit"
@@ -974,7 +1049,8 @@ async def cancel_move_asset_import_job(
     db: DbSession,
     actor: AuthContext = require_permission("initiatives", "change"),
 ) -> ImportJob:
-    job = await _get_import_job(db, job_id)
+    job = await _get_import_job(db, job_id, actor)
+    _require_global(actor)
     if job.status in ("completed", "failed", "cancelled"):
         raise _err(409, "job_already_finished")
     job.cancel_requested = True
@@ -995,7 +1071,8 @@ async def reprocess_move_asset_import_job(
     """Re-run ONLY the rows the parent flagged for review, as a fresh
     child job over the same stored file — full validate -> commit loop.
     The parent is never mutated; reprocessing twice makes two children."""
-    parent = await _get_import_job(db, job_id)
+    parent = await _get_import_job(db, job_id, actor)
+    _require_global(actor)
     if parent.status != "completed":
         raise _err(409, "job_not_ready")
     details = (parent.results or {}).get("details") or []
@@ -1027,6 +1104,9 @@ async def move_asset_import_template(
     format: str = "csv",
     actor: AuthContext = require_permission("initiatives", "change"),
 ):
+    # not a write, but it exists only to feed the (now global-only) import
+    # flow — keep the same anchor so the whole surface moves together
+    _require_global(actor)
     if format == "csv":
         return Response(
             build_template_csv(), media_type="text/csv",

@@ -7,7 +7,7 @@ from serversherpa.db.models import (
     ProcessedScan, Site, TimeEntry, Truck,
 )
 
-from .test_assets_api import login, make_login
+from .test_assets_api import _client_contact, login, make_login
 
 T0 = datetime(2026, 8, 27, 9, 0, tzinfo=UTC)
 
@@ -189,3 +189,38 @@ async def test_truck_edit_provenance_from_audit(client, db, seeded_user):
     body = resp.json()
     assert body["source"] == "edit"
     assert body["actor_name"] == "Tina Trucker"
+
+
+async def test_scan_provenance_redacted_for_non_global_actor(client, db, seeded_user):
+    """A client-scoped viewer must never learn the internal `site_name`,
+    `device_id`, or `actor_name` behind a status change — those identify
+    a warehouse location and a staff/operator's name — even when they can
+    otherwise see the row via row-scope. Global staff still get them."""
+    org, hdrs = await _client_contact(db, client, "Acme Prov", "prov@acme.example.com")
+    staff_hdrs = await login(client)
+    asset = Asset(name="srv-prov-redact", client_id=org.id, status="racked")
+    site = Site(name="DC-Redact")
+    operator = Person(first_name="Opie", last_name="Operator")
+    db.add_all([asset, site, operator])
+    await db.flush()
+    db.add(_scan(asset.id, "racked", minutes=30, site_id=site.id,
+                device_id="dock-9", operator_id=operator.id))
+    await db.commit()
+
+    resp = await _get(client, hdrs, entity_type="asset",
+                      entity_id=str(asset.id), status="racked")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["source"] == "scan"
+    assert body["site_name"] is None
+    assert body["device_id"] is None
+    assert body["actor_name"] is None
+
+    # global staff still sees the internal detail on the same row
+    resp = await _get(client, staff_hdrs, entity_type="asset",
+                      entity_id=str(asset.id), status="racked")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["site_name"] == "DC-Redact"
+    assert body["device_id"] == "dock-9"
+    assert body["actor_name"] == "Opie Operator"

@@ -30,6 +30,17 @@ vi.mock('../lib/systemStatusContext', () => ({
   }),
 }));
 
+// Permission gate: the server needs labels:add to start a run and
+// labels:change to cancel one / regenerate existing labels. Default is
+// all-allowed; the gating tests below narrow it.
+const auth = vi.hoisted(() => {
+  const state: { can: (resource: string, action: string) => boolean } = { can: () => true };
+  return state;
+});
+vi.mock('../auth/AuthContext', () => ({
+  useAuth: () => ({ can: auth.can, godMode: false }),
+}));
+
 const api = vi.hoisted(() => ({
   listInitiatives: vi.fn(), listLabelVocab: vi.fn(), listLabelRuns: vi.fn(),
   getLabelRun: vi.fn(), getLabelGeneratePreview: vi.fn(), startLabelRun: vi.fn(), cancelLabelRun: vi.fn(),
@@ -88,6 +99,7 @@ const run = (over: Partial<LabelRun> = {}): LabelRun => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  auth.can = () => true;
   api.listInitiatives.mockResolvedValue(INIS);
   api.listLabelVocab.mockResolvedValue(VOCAB);
   api.listLabelRuns.mockResolvedValue([]);
@@ -322,6 +334,44 @@ it('Cancel posts a cancel for the active run', async () => {
   await user.click(await screen.findByRole('button', { name: 'Cancel' }));
   await waitFor(() => expect(api.cancelLabelRun).toHaveBeenCalledWith('r1'));
   await screen.findByText('Canceled');
+});
+
+it('labels:view only — Generate stays disabled with a permission hint and the regenerate switch is disabled', async () => {
+  auth.can = (_resource, action) => action === 'view';
+  const user = userEvent.setup();
+  renderAt();
+  await pickNap11(user);
+  await user.click(screen.getByRole('checkbox', { name: /Top/ }));
+  const generate = screen.getByRole('button', { name: 'Generate labels' }) as HTMLButtonElement;
+  expect(generate.disabled).toBe(true);
+  expect(generate.title).toMatch(/permission/i);
+  expect(screen.getByText("You don't have permission to generate labels.")).toBeTruthy();
+  expect((screen.getByRole('checkbox', { name: /Regenerate existing/ }) as HTMLInputElement).disabled).toBe(true);
+  // Notify is a per-user preference, not a permissioned action
+  expect((screen.getByRole('checkbox', { name: /Notify me/ }) as HTMLInputElement).disabled).toBe(false);
+  await user.click(generate);
+  expect(api.startLabelRun).not.toHaveBeenCalled();
+});
+
+it('labels:add without labels:change — Generate works, regenerate and Cancel are disabled with hints', async () => {
+  auth.can = (_resource, action) => action === 'view' || action === 'add';
+  const user = userEvent.setup();
+  api.startLabelRun.mockResolvedValue(run({ status: 'running', processed: 1, total: 10 }));
+  renderAt();
+  await pickNap11(user);
+  await user.click(screen.getByRole('checkbox', { name: /Top/ }));
+  const generate = screen.getByRole('button', { name: 'Generate labels' }) as HTMLButtonElement;
+  expect(generate.disabled).toBe(false);
+  expect(generate.title).toBe('');
+  expect((screen.getByRole('checkbox', { name: /Regenerate existing/ }) as HTMLInputElement).disabled).toBe(true);
+  expect(screen.getByText(/permission to change labels/i)).toBeTruthy();
+
+  await user.click(generate);
+  const cancel = await screen.findByRole('button', { name: 'Cancel' }) as HTMLButtonElement;
+  expect(cancel.disabled).toBe(true);
+  expect(cancel.title).toMatch(/permission/i);
+  await user.click(cancel);
+  expect(api.cancelLabelRun).not.toHaveBeenCalled();
 });
 
 it('the errors modal shows summary chips, sample rows, and the hidden-count note; "View errors" opens it', async () => {

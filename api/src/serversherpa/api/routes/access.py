@@ -205,6 +205,13 @@ async def put_matrix(
     actor: AuthContext = require_permission("access", "change"),
 ) -> dict:
     role = await _load_role_for_edit(db, actor, name)
+    if role.name in actor.roles:
+        # rank alone doesn't catch this: an actor can outrank a role they
+        # also hold (e.g. an admin who was also granted staff), and editing
+        # its matrix would self-servingly widen their own effective grants.
+        # Scoped to matrix edits only — deleting a role you hold is a
+        # different (and already-guarded) operation, see delete_role.
+        raise _err(403, "cannot_edit_own_role")
     for res, actions in body.matrix.items():
         if res not in REGISTRY:
             raise _err(422, "unknown_resource")
@@ -422,8 +429,12 @@ class OverridesIn(BaseModel):
 async def get_overrides(
     person_id: uuid.UUID,
     db: DbSession,
-    _actor: AuthContext = require_permission("access", "view"),
+    actor: AuthContext = require_permission("access", "view"),
 ) -> dict:
+    # same guard as GET /access/effective/{person_id}: access:view alone
+    # doesn't gate WHOSE overrides you can read.
+    if actor.access.max_rank < GATE_BYPASS_RANK and person_id != actor.person.id:
+        raise _err(403, "not_your_record")
     out: dict = {}
     for o in await db.scalars(select(PermissionOverride).where(
             PermissionOverride.person_id == person_id)):

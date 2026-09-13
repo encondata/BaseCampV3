@@ -284,10 +284,14 @@ async def test_role_with_no_clients_grant_gets_403(client, db, seeded_user):
     assert resp.json()["detail"]["code"] == "forbidden"
 
 
-async def test_client_owner_notes_scoped_to_own_org(client, db, seeded_user):
-    """client_owner anchored to org A: can view org A's notes, gets 404 on
-    org B (out-of-scope, matching the asset-scoping contract), and cannot
-    write anywhere (client tiers are read-only per _authorize_host)."""
+async def test_client_owner_cannot_read_own_org_notes(client, db, seeded_user):
+    """Notes are internal-only for reads by non-global actors across every
+    non-physical host (initiative/person/client/partner) — a client_owner
+    anchored to org A gets 403 on org A's OWN notes, not a scoped 200, and
+    still 403 on org B. (Security-fixes task 2 finding (b): this role
+    previously read notes on its own org; the generic "view = host view +
+    scope" rule is overridden for these hosts exactly like initiative
+    notes always were.)"""
     staff_hdrs = await login(client)
     org_a = Client(name="Org A")
     org_b = Client(name="Org B")
@@ -307,12 +311,67 @@ async def test_client_owner_notes_scoped_to_own_org(client, db, seeded_user):
 
     resp = await client.get(
         f"/notes?entity_type=client&entity_id={org_a.id}", headers=owner_hdrs)
-    assert resp.status_code == 200 and len(resp.json()) == 1
+    assert resp.status_code == 403
 
     resp = await client.get(
         f"/notes?entity_type=client&entity_id={org_b.id}", headers=owner_hdrs)
-    assert resp.status_code == 404
+    assert resp.status_code == 403
 
     resp = await client.post("/notes", headers=owner_hdrs, json={
         "entity_type": "client", "entity_id": str(org_a.id), "body": "hi"})
+    assert resp.status_code == 403
+
+    # global staff still reads org A's notes fine
+    resp = await client.get(
+        f"/notes?entity_type=client&entity_id={org_a.id}", headers=staff_hdrs)
+    assert resp.status_code == 200 and len(resp.json()) == 1
+
+
+async def test_worker_cannot_read_notes_on_own_person(client, db, seeded_user):
+    """Notes are internal-only for non-global reads — a worker reading
+    notes on their OWN person record (entity_type='person') is denied,
+    same as the initiative/client/partner hosts, even though `worker`
+    holds workers:view and the row is in their own scope."""
+    staff_hdrs = await login(client)
+    worker = Person(first_name="W", last_name="Orker2")
+    db.add(worker)
+    await db.flush()
+    db.add(PersonRole(person_id=worker.id, role="worker"))
+    await db.commit()
+    worker_hdrs = await make_login(db, client, worker, "worker-selfnotes@test.example.com")
+
+    resp = await client.post("/notes", headers=staff_hdrs, json={
+        "entity_type": "person", "entity_id": str(worker.id), "body": "punctual"})
+    assert resp.status_code == 201, resp.text
+
+    resp = await client.get(
+        f"/notes?entity_type=person&entity_id={worker.id}", headers=worker_hdrs)
+    assert resp.status_code == 403
+
+    # global staff still reads it fine
+    resp = await client.get(
+        f"/notes?entity_type=person&entity_id={worker.id}", headers=staff_hdrs)
+    assert resp.status_code == 200 and len(resp.json()) == 1
+
+
+async def test_vendor_admin_cannot_read_own_partner_notes(client, db, seeded_user):
+    """Same internal-only rule for the partner host — a vendor_admin
+    anchored to their own partner org gets 403 reading its notes."""
+    staff_hdrs = await login(client)
+    partner = Partner(name="Champagne Logistics")
+    db.add(partner)
+    await db.commit()
+    vendor = Person(first_name="V", last_name="Endor")
+    db.add(vendor)
+    await db.flush()
+    db.add(PersonRole(person_id=vendor.id, role="vendor_admin", partner_id=partner.id))
+    await db.commit()
+    vendor_hdrs = await make_login(db, client, vendor, "vendor-notes@test.example.com")
+
+    resp = await client.post("/notes", headers=staff_hdrs, json={
+        "entity_type": "partner", "entity_id": str(partner.id), "body": "insured"})
+    assert resp.status_code == 201, resp.text
+
+    resp = await client.get(
+        f"/notes?entity_type=partner&entity_id={partner.id}", headers=vendor_hdrs)
     assert resp.status_code == 403
