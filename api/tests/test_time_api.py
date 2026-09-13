@@ -5,11 +5,17 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
+from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    AuditLog, Initiative, Person, PersonRole, Site, TimeEntry,
+    AuditLog, Client, Initiative, Person, PersonRole, Site, TimeEntry,
+    UserAccount,
 )
+from serversherpa.security.passwords import hash_password
 
 from .test_assets_api import _client_contact, login, make_login
+from .test_status_values_write import _make
+
+PW = "CorrectHorse9!"
 
 T0 = datetime(2026, 8, 27, 9, 0, tzinfo=UTC)
 ZERO_UUID = "00000000-0000-0000-0000-000000000000"
@@ -310,7 +316,13 @@ async def test_patch_closes_open_entry_to_pending(client, db, seeded_user):
     stuck open forever."""
     await _bump_admin(db, seeded_user)
     hdrs = await login(client)
-    entry = TimeEntry(person_id=seeded_user.id, clock_in_at=T0, status="open")
+    # entry belongs to someone other than the approving admin — approving
+    # one's own entry is a separate, disallowed path (see
+    # test_approve_rejects_self_approval below).
+    other = Person(first_name="Ot", last_name="Her")
+    db.add(other)
+    await db.flush()
+    entry = TimeEntry(person_id=other.id, clock_in_at=T0, status="open")
     db.add(entry)
     await db.commit()
 
@@ -430,7 +442,12 @@ async def test_patch_approved_entry_drops_to_pending(client, db, seeded_user):
 async def test_approve_reject_transitions_and_conflicts(client, db, seeded_user):
     await _bump_admin(db, seeded_user)
     hdrs = await login(client)
-    pending = TimeEntry(person_id=seeded_user.id, clock_in_at=T0,
+    # entries belong to someone other than the approving admin — self
+    # approval is covered separately by test_approve_rejects_self_approval.
+    owner = Person(first_name="Ow", last_name="Ner")
+    db.add(owner)
+    await db.flush()
+    pending = TimeEntry(person_id=owner.id, clock_in_at=T0,
                         clock_out_at=T0 + timedelta(hours=8), status="pending")
     db.add(pending)
     await db.commit()
@@ -446,7 +463,7 @@ async def test_approve_reject_transitions_and_conflicts(client, db, seeded_user)
     assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "not_pending"
 
-    other = TimeEntry(person_id=seeded_user.id, clock_in_at=T0,
+    other = TimeEntry(person_id=owner.id, clock_in_at=T0,
                       clock_out_at=T0 + timedelta(hours=4), status="pending")
     db.add(other)
     await db.commit()
@@ -626,7 +643,12 @@ async def test_time_gates_worker_and_staff(client, db, seeded_user):
 async def test_provenance_after_approve(client, db, seeded_user):
     await _bump_admin(db, seeded_user)
     hdrs = await login(client)
-    entry = TimeEntry(person_id=seeded_user.id, clock_in_at=T0,
+    # entry belongs to someone other than the approving admin — approving
+    # one's own entry is disallowed (test_approve_rejects_self_approval).
+    other = Person(first_name="Ot", last_name="Her")
+    db.add(other)
+    await db.flush()
+    entry = TimeEntry(person_id=other.id, clock_in_at=T0,
                       clock_out_at=T0 + timedelta(hours=8), status="pending")
     db.add(entry)
     await db.commit()
@@ -641,3 +663,107 @@ async def test_provenance_after_approve(client, db, seeded_user):
     body = resp.json()
     assert body["source"] == "edit"
     assert body["actor_name"] == "Alice Anderson"
+
+
+async def test_summary_requires_time_view_not_initiatives_view(client, db, seeded_user):
+    """GET /time/summary must gate on time:view — a client_viewer holds
+    initiatives:view (and can see the initiative itself) but has no time
+    grant at all, so this must 403, not fall through to the initiative
+    scope check."""
+    org = Client(name="Acme")
+    db.add(org)
+    await db.flush()
+    initiative = Initiative(name="Acme move", initiative_type="move",
+                            sub_type="migration", client_id=org.id)
+    db.add(initiative)
+    await db.flush()
+
+    viewer = Person(first_name="Cl", last_name="Viewer", email="clv@test.example.com")
+    db.add(viewer)
+    await db.flush()
+    db.add(UserAccount(
+        person_id=viewer.id, email="clv@test.example.com",
+        password_hash=hash_password(
+            PW, pepper=get_settings().password_pepper.get_secret_value())))
+    db.add(PersonRole(person_id=viewer.id, role="client_viewer", client_id=org.id))
+    await db.commit()
+    hdrs = await login(client, email="clv@test.example.com")
+
+    # sanity: the client_viewer really can see the initiative itself.
+    resp = await client.get(f"/initiatives/{initiative.id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.get("/time/summary", headers=hdrs,
+                            params={"initiative_id": str(initiative.id)})
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "forbidden"
+
+    # a global user with time:view still gets the summary.
+    await _bump_admin(db, seeded_user)
+    ahdrs = await login(client)
+    resp = await client.get("/time/summary", headers=ahdrs,
+                            params={"initiative_id": str(initiative.id)})
+    assert resp.status_code == 200, resp.text
+
+
+async def test_clock_in_requires_a_time_tracked_role(client, db, seeded_user):
+    """clock-in/out must not accept a bare authenticated account: `external`
+    (no grants at all) is refused, while a `worker` (the primary punch-clock
+    persona, but without an explicit time:view grant) still works."""
+    ext_hdrs = await _make(db, client, "external", "ext-punch@test.example.com")
+    resp = await client.post("/time/clock-in", headers=ext_hdrs, json={})
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "forbidden"
+
+    worker = Person(first_name="Wk", last_name="Two")
+    db.add(worker)
+    await db.flush()
+    db.add(PersonRole(person_id=worker.id, role="worker"))
+    await db.commit()
+    whdrs = await make_login(db, client, worker, "wk-two@test.example.com")
+    resp = await client.post("/time/clock-in", headers=whdrs, json={})
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.post("/time/clock-out", headers=whdrs, json={})
+    assert resp.status_code == 200, resp.text
+
+
+async def test_clock_out_also_requires_a_time_tracked_role(client, db, seeded_user):
+    """The clock-out gate is checked independently of clock-in — an
+    external account can't fake around it by having an open entry inserted
+    directly (e.g. by another path)."""
+    ext_hdrs = await _make(db, client, "external", "ext-punchout@test.example.com")
+    resp = await client.post("/time/clock-out", headers=ext_hdrs, json={})
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "forbidden"
+
+
+async def test_approve_rejects_self_approval(client, db, seeded_user):
+    """A time:change holder must not approve or reject their own entry —
+    otherwise a staff/admin who also punches the clock could self-approve
+    their own timesheet."""
+    await _bump_admin(db, seeded_user)
+    hdrs = await login(client)
+
+    own_entry = TimeEntry(person_id=seeded_user.id, clock_in_at=T0,
+                          clock_out_at=T0 + timedelta(hours=8), status="pending")
+    other = Person(first_name="Ot", last_name="Her2")
+    db.add(other)
+    await db.flush()
+    others_entry = TimeEntry(person_id=other.id, clock_in_at=T0,
+                             clock_out_at=T0 + timedelta(hours=8), status="pending")
+    db.add_all([own_entry, others_entry])
+    await db.commit()
+
+    resp = await client.post(f"/time/entries/{own_entry.id}/approve", headers=hdrs)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "cannot_target_self"
+
+    resp = await client.post(f"/time/entries/{own_entry.id}/reject", headers=hdrs,
+                             json={"reason": "n/a"})
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "cannot_target_self"
+
+    resp = await client.post(f"/time/entries/{others_entry.id}/approve", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "approved"

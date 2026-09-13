@@ -122,17 +122,21 @@ async def test_global_actor_unchanged(client, db, seeded_user):
 
 
 async def test_time_summary_scope_probe(client, db, seeded_user):
+    """`time` is visible_to={"global"} in the resource registry (a hard
+    gate an override can't bypass — see the `sites`/`time` comments in
+    access/resources.py), so no client-anchored role can ever reach
+    time_summary's initiative-scope check at all: it now 403s outright.
+    (Previously this route gated on initiatives:view, which client_viewer
+    does hold, so this test used to assert 200/404/404 through the scope
+    check — that was the bug; see
+    test_summary_requires_time_view_not_initiatives_view in
+    test_time_api.py for the full before/after coverage, including a
+    global actor still getting a 200.)"""
     a, _b, ia, ib, _n = await _two_clients_with_initiatives(db)
     hdrs = await client_login(db, client, a.id)
-    ok = await client.get(f"/time/summary?initiative_id={ia.id}",
-                          headers=hdrs)
-    assert ok.status_code == 200
-    foreign = await client.get(f"/time/summary?initiative_id={ib.id}",
-                               headers=hdrs)
-    assert foreign.status_code == 404
-    ghost = await client.get(f"/time/summary?initiative_id={uuid.uuid4()}",
-                             headers=hdrs)
-    assert ghost.status_code == 404
+    resp = await client.get(f"/time/summary?initiative_id={ia.id}",
+                            headers=hdrs)
+    assert resp.status_code == 403
 
 
 async def test_search_is_client_scoped(client, db, seeded_user):
