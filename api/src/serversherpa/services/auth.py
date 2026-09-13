@@ -72,14 +72,6 @@ async def login(
         await db.commit()
         raise AuthError("invalid_credentials")
 
-    _check_account_usable(account)
-
-    if account.locked_until is not None and account.locked_until > now:
-        audit(db, actor_id=None, entity_type="auth", entity_id=email,
-              action="login_failed", ip=ip)
-        await db.commit()
-        raise AuthError("account_locked")
-
     if not verify_password(account.password_hash, password, pepper=pepper):
         account.failed_login_count += 1
         account.updated_at = now
@@ -90,6 +82,20 @@ async def login(
               action="login_failed", ip=ip)
         await db.commit()
         raise AuthError("invalid_credentials")
+
+    # Password is correct from here on — safe to reveal account-specific
+    # status codes. Checking disabled/locked before verify_password would
+    # let an attacker sort an email list into real-disabled/real-locked/
+    # other without ever knowing the password (an enumeration oracle), so
+    # these checks stay gated behind a successful verification: only the
+    # account's own owner, who has the right password, learns its status.
+    _check_account_usable(account)
+
+    if account.locked_until is not None and account.locked_until > now:
+        audit(db, actor_id=None, entity_type="auth", entity_id=email,
+              action="login_failed", ip=ip)
+        await db.commit()
+        raise AuthError("account_locked")
 
     if account.totp_confirmed_at is not None:
         # TOTP verification lands with the enrollment feature; no account can
