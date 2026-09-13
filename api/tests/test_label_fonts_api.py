@@ -5,6 +5,7 @@ like test_attachments.py."""
 
 import uuid
 
+from serversherpa.api.routes import labels as labels_module
 from serversherpa.db.models import AuditLog, LabelFont
 from sqlalchemy import select
 
@@ -73,6 +74,31 @@ async def test_upload_validation(client, db, seeded_user):
     # after deleting, the name is free again
     await client.delete(f"/labels/fonts/{ok.json()['id']}", headers=admin)
     assert (await _upload(client, admin, "TT0003M_.TTF")).status_code == 201
+
+
+async def test_upload_race_reports_font_name_taken(client, db, seeded_user, monkeypatch):
+    """Simulate the duplicate-name race deterministically: force the
+    pre-check to see nothing (as if a concurrent upload hadn't committed
+    yet when this request checked), so the second upload reaches the
+    INSERT and trips label_fonts_name_active_idx. That must map to the
+    same clean 409 as the pre-check, and must leave exactly one
+    non-deleted row for the name — not a 500, and not a duplicate row."""
+    admin = await _make(db, client, "admin", "adm-fonts4@test.example.com")
+    first = await _upload(client, admin, "RACE.TTF")
+    assert first.status_code == 201, first.text
+
+    async def _sees_nothing(db, name):
+        return None
+
+    monkeypatch.setattr(labels_module, "_active_font_id", _sees_nothing)
+
+    second = await _upload(client, admin, "RACE.TTF")
+    assert second.status_code == 409, second.text
+    assert second.json()["detail"]["code"] == "font_name_taken"
+
+    rows = (await db.execute(select(LabelFont).where(
+        LabelFont.name == "RACE.TTF", LabelFont.deleted_at.is_(None)))).scalars().all()
+    assert len(rows) == 1
 
 
 async def test_font_permissions(client, db, seeded_user):

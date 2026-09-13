@@ -47,11 +47,13 @@ from serversherpa.labels.generate.select import candidate_templates
 from serversherpa.labels.model import DesignError, parse_design
 from serversherpa.labels.tokens import apply_placeholders
 from serversherpa.services.audit import audit, diff, snapshot
-from serversherpa.services.storage import get_object, put_object
+from serversherpa.services.storage import delete_object, get_object, put_object
 
 router = APIRouter(prefix="/labels", tags=["labels"])
 
 VOCAB_FIELDS = ["label", "description", "meta", "sort_order", "is_active"]
+FONT_FIELDS = ["name", "display_name", "storage_key", "size_bytes",
+              "content_type", "uploaded_by"]
 
 
 def _err(status: int, code: str, **extra) -> HTTPException:
@@ -969,6 +971,14 @@ async def list_label_fonts(
             for f, p, fn, ln in rows]
 
 
+async def _active_font_id(db: DbSession, name: str) -> uuid.UUID | None:
+    """The id of a non-deleted LabelFont named `name`, or None. Pulled out
+    of upload_label_font so a test can monkeypatch it to force the
+    duplicate-name race (see test_upload_race_reports_font_name_taken)."""
+    return await db.scalar(select(LabelFont.id).where(
+        LabelFont.name == name, LabelFont.deleted_at.is_(None)))
+
+
 @router.post("/fonts", response_model=LabelFontOut, status_code=201)
 async def upload_label_font(
     db: DbSession,
@@ -986,9 +996,7 @@ async def upload_label_font(
         raise _err(413, "file_too_large")
     if not data.startswith(TRUETYPE_MAGICS):
         raise _err(422, "not_a_truetype_font")
-    taken = await db.scalar(select(LabelFont.id).where(
-        LabelFont.name == object_name, LabelFont.deleted_at.is_(None)))
-    if taken is not None:
+    if await _active_font_id(db, object_name) is not None:
         raise _err(409, "font_name_taken")
 
     key = f"label-fonts/{uuid.uuid4()}.ttf"
@@ -996,12 +1004,25 @@ async def upload_label_font(
     font = LabelFont(name=object_name, display_name=file.filename or object_name,
                      storage_key=key, size_bytes=len(data), content_type="font/ttf",
                      uploaded_by=actor.person.id)
-    db.add(font)
-    await db.flush()
-    audit(db, actor_id=actor.person.id, entity_type="label_font", entity_id=str(font.id),
-          action="create", changes={"name": {"from": None, "to": object_name},
-                                    "size_bytes": {"from": None, "to": len(data)}})
-    await db.commit()
+    try:
+        db.add(font)
+        await db.flush()
+        audit(db, actor_id=actor.person.id, entity_type="label_font", entity_id=str(font.id),
+              action="create", changes=diff({}, snapshot(font, FONT_FIELDS)))
+        await db.commit()
+    except IntegrityError as exc:
+        # Defense in depth against the label_fonts_name_active_idx unique
+        # index: the pre-check above and this INSERT aren't atomic, so two
+        # concurrent uploads of the same name can both pass the check and
+        # race here. Roll back, best-effort clean up the blob we already
+        # wrote (its key was never persisted, so nothing else can reach
+        # it), and report the same clean 409 as the pre-check.
+        await db.rollback()
+        try:
+            await delete_object(key)
+        except Exception:
+            pass
+        raise _err(409, "font_name_taken") from exc
     await db.refresh(font)
     used = await _fonts_used_by(db)
     uploader = _person_display(actor.person.preferred_name, actor.person.first_name,
