@@ -12,8 +12,10 @@ the caller's txn.
 import re
 import uuid
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -24,6 +26,7 @@ from serversherpa.api.schemas import (
     GeneratedLabelOut,
     GeneratedLabelBundleItemOut, GeneratedLabelBundleOut,
     LabelCompileIn, LabelCompileOut,
+    LabelFontOut, LabelFontUsedByOut,
     LabelGeneratePreviewCandidateOut, LabelGeneratePreviewInitiativeOut,
     LabelGeneratePreviewOut, LabelGeneratePreviewTemplateOut, LabelGeneratePreviewTypeOut,
     LabelPlaceholderCreateIn, LabelPlaceholderOut, LabelPlaceholderUpdateIn,
@@ -34,7 +37,7 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.db.models import (
     Asset, Client, GeneratedLabel, Initiative, InitiativeAsset,
-    LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelTemplateSite,
+    LabelFont, LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelTemplateSite,
     LabelVocab, Person, Site,
 )
 from serversherpa.labels import labelary
@@ -44,6 +47,7 @@ from serversherpa.labels.generate.select import candidate_templates
 from serversherpa.labels.model import DesignError, parse_design
 from serversherpa.labels.tokens import apply_placeholders
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.storage import get_object, put_object
 
 router = APIRouter(prefix="/labels", tags=["labels"])
 
@@ -903,3 +907,128 @@ async def get_generated_label_bundle(
                 size_key=gl.size_key, dpi_key=gl.dpi_key, stale=gl.stale,
                 generated_at=gl.generated_at, code=gl.code)
             for gl, template_name in rows])
+
+
+# ── font library (Labels → Printers › Install Fonts) ─────────────────
+
+FONT_NAME_RE = re.compile(r"^[A-Z0-9_]{1,8}\.TTF$")
+MAX_FONT_BYTES = 2 * 1024 * 1024
+TRUETYPE_MAGICS = (b"\x00\x01\x00\x00", b"true")
+
+
+def font_object_name(filename: str | None) -> str | None:
+    """Zebra object name for a font file: the bare filename, upper-cased,
+    valid only as 8.3 `NAME.TTF` (letters, digits, underscore)."""
+    name = PurePosixPath(filename or "").name.upper()
+    return name if FONT_NAME_RE.match(name) else None
+
+
+def _person_display(preferred: str | None, first: str | None, last: str | None) -> str | None:
+    full = " ".join(p for p in (first, last) if p).strip()
+    return preferred or full or None
+
+
+async def _fonts_used_by(db: DbSession) -> dict[str, list[LabelFontUsedByOut]]:
+    """Map upper-cased `E:<NAME>` references found in active code templates
+    → the templates that carry them (templates are few; a scan is fine)."""
+    rows = (await db.execute(
+        select(LabelTemplate.id, LabelTemplate.name, LabelTemplate.code)
+        .where(LabelTemplate.is_active == True, LabelTemplate.code.isnot(None)))).all()  # noqa: E712
+    out: dict[str, list[LabelFontUsedByOut]] = {}
+    for tpl_id, tpl_name, code in rows:
+        for ref in re.findall(r"E:([A-Z0-9_]{1,8}\.TTF)", (code or "").upper()):
+            out.setdefault(ref, []).append(LabelFontUsedByOut(template_id=tpl_id, template_name=tpl_name))
+    return out
+
+
+def _font_out(font: LabelFont, uploader: str | None, used_by: list[LabelFontUsedByOut]) -> LabelFontOut:
+    return LabelFontOut(
+        id=font.id, name=font.name, display_name=font.display_name, size_bytes=font.size_bytes,
+        content_type=font.content_type, uploaded_by=font.uploaded_by, uploaded_by_name=uploader,
+        created_at=font.created_at, used_by=used_by)
+
+
+async def _font_or_404(db: DbSession, font_id: uuid.UUID) -> LabelFont:
+    font = await db.get(LabelFont, font_id)
+    if font is None or font.deleted_at is not None:
+        raise _err(404, "font_not_found")
+    return font
+
+
+@router.get("/fonts", response_model=list[LabelFontOut])
+async def list_label_fonts(
+    db: DbSession, _actor: AuthContext = require_permission("labels", "view"),
+) -> list[LabelFontOut]:
+    rows = (await db.execute(
+        select(LabelFont, Person.preferred_name, Person.first_name, Person.last_name)
+        .outerjoin(Person, Person.id == LabelFont.uploaded_by)
+        .where(LabelFont.deleted_at.is_(None))
+        .order_by(LabelFont.name))).all()
+    used = await _fonts_used_by(db)
+    return [_font_out(f, _person_display(p, fn, ln), used.get(f.name.upper(), []))
+            for f, p, fn, ln in rows]
+
+
+@router.post("/fonts", response_model=LabelFontOut, status_code=201)
+async def upload_label_font(
+    db: DbSession,
+    file: Annotated[UploadFile, File()],
+    name: Annotated[str | None, Form()] = None,
+    actor: AuthContext = require_permission("labels", "add"),
+) -> LabelFontOut:
+    object_name = font_object_name(name) if name else font_object_name(file.filename)
+    if object_name is None:
+        raise _err(422, "invalid_font_name")
+    data = await file.read()
+    if len(data) == 0:
+        raise _err(422, "empty_file")
+    if len(data) > MAX_FONT_BYTES:
+        raise _err(413, "file_too_large")
+    if not data.startswith(TRUETYPE_MAGICS):
+        raise _err(422, "not_a_truetype_font")
+    taken = await db.scalar(select(LabelFont.id).where(
+        LabelFont.name == object_name, LabelFont.deleted_at.is_(None)))
+    if taken is not None:
+        raise _err(409, "font_name_taken")
+
+    key = f"label-fonts/{uuid.uuid4()}.ttf"
+    await put_object(key, data, "font/ttf")
+    font = LabelFont(name=object_name, display_name=file.filename or object_name,
+                     storage_key=key, size_bytes=len(data), content_type="font/ttf",
+                     uploaded_by=actor.person.id)
+    db.add(font)
+    await db.flush()
+    audit(db, actor_id=actor.person.id, entity_type="label_font", entity_id=str(font.id),
+          action="create", changes={"name": {"from": None, "to": object_name},
+                                    "size_bytes": {"from": None, "to": len(data)}})
+    await db.commit()
+    await db.refresh(font)
+    used = await _fonts_used_by(db)
+    uploader = _person_display(actor.person.preferred_name, actor.person.first_name,
+                               actor.person.last_name)
+    return _font_out(font, uploader, used.get(object_name, []))
+
+
+@router.delete("/fonts/{font_id}", status_code=204)
+async def delete_label_font(
+    font_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("labels", "delete"),
+) -> None:
+    font = await _font_or_404(db, font_id)
+    font.deleted_at = datetime.now(UTC)
+    audit(db, actor_id=actor.person.id, entity_type="label_font", entity_id=str(font.id),
+          action="delete", changes={"name": {"from": font.name, "to": None}})
+    await db.commit()
+
+
+@router.get("/fonts/{font_id}/content")
+async def label_font_content(
+    font_id: uuid.UUID, db: DbSession,
+    _actor: AuthContext = require_permission("labels", "view"),
+) -> Response:
+    """The raw TTF bytes — the browser pushes them to the printer over
+    WebUSB (`~DY`), so it needs the bytes, not a presigned URL."""
+    font = await _font_or_404(db, font_id)
+    data = await get_object(font.storage_key)
+    return Response(content=data, media_type=font.content_type,
+                    headers={"Content-Disposition": f'attachment; filename="{font.name}"'})

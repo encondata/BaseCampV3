@@ -1363,6 +1363,25 @@ class LabelTemplate(Base):
         cascade="all, delete-orphan")
 
 
+class LabelFont(Base):
+    """A TrueType font in the label font library: `name` is the Zebra
+    object name it is installed under on the printer's E: drive
+    (Install Fonts on Labels → Printers). Soft-deleted; the partial
+    unique index on (name) WHERE deleted_at IS NULL lives in 0060."""
+    __tablename__ = "label_fonts"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    name: Mapped[str] = mapped_column(CITEXT)
+    display_name: Mapped[str] = mapped_column(server_default="")
+    storage_key: Mapped[str]
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    content_type: Mapped[str] = mapped_column(server_default="font/ttf")
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    deleted_at: Mapped[datetime | None]
+
+
 class LabelTemplateSite(Base):
     """One row per template-site assignment; no rows = global template."""
     __tablename__ = "label_template_sites"

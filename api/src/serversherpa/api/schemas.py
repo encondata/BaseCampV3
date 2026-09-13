@@ -2236,6 +2236,23 @@ class LabelTemplateOut(BaseModel):
     updated_at: datetime
 
 
+class LabelFontUsedByOut(BaseModel):
+    template_id: uuid.UUID
+    template_name: str
+
+
+class LabelFontOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    display_name: str
+    size_bytes: int
+    content_type: str
+    uploaded_by: uuid.UUID | None
+    uploaded_by_name: str | None
+    created_at: datetime
+    used_by: list[LabelFontUsedByOut]
+
+
 class LabelTemplateCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
