@@ -217,6 +217,30 @@ class AuthSession(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
+class KioskPairRequest(Base):
+    """One 'link with phone' attempt from a kiosk. The kiosk keeps the
+    poll token (only its sha256 is stored); a portal user approves the
+    code on their phone; the kiosk's next poll claims a fresh session
+    and the row becomes `claimed` (one-shot). Expiry is derived from
+    expires_at, never stored as a status. Rows older than a day are
+    deleted opportunistically on the next create."""
+
+    __tablename__ = "kiosk_pair_requests"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    code: Mapped[str] = mapped_column(unique=True)
+    poll_token_hash: Mapped[str]
+    serial: Mapped[str] = mapped_column(CITEXT)
+    kiosk_name: Mapped[str]
+    status: Mapped[str] = mapped_column(server_default=text("'pending'"))
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    ip_address: Mapped[str | None]
+    expires_at: Mapped[datetime]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
 class Attachment(Base):
     __tablename__ = "attachments"
 
