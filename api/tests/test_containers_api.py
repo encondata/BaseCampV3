@@ -2,7 +2,9 @@
 
 from datetime import UTC, datetime
 
-from serversherpa.db.models import Client, Initiative, Person, PersonRole, Site
+from serversherpa.db.models import (
+    Client, Initiative, PermissionOverride, Person, PersonRole, Site,
+)
 
 from .test_assets_api import login, make_login
 
@@ -103,6 +105,31 @@ async def test_archive_roundtrip(client, db, seeded_user):
     assert resp.json()["archived_at"] is not None
     assert (await client.post(f"/containers/{cid}/unarchive",
                               headers=hdrs)).status_code == 204
+
+
+async def test_archive_requires_delete_not_just_change(client, db, seeded_user):
+    admin = await login(client)
+    cid = (await client.post("/containers", headers=admin,
+                             json={"name": "Gated"})).json()["id"]
+
+    changer = Person(first_name="Ch", last_name="Anger")
+    db.add(changer)
+    await db.flush()
+    db.add(PersonRole(person_id=changer.id, role="staff"))
+    db.add(PermissionOverride(person_id=changer.id, resource="containers",
+                              action="delete", allow=False))
+    await db.commit()
+    hdrs = await make_login(db, client, changer, "changer@test.example.com")
+
+    assert (await client.post(f"/containers/{cid}/archive",
+                              headers=hdrs)).status_code == 403
+    assert (await client.post(f"/containers/{cid}/unarchive",
+                              headers=hdrs)).status_code == 403
+
+    assert (await client.post(f"/containers/{cid}/archive",
+                              headers=admin)).status_code == 204
+    assert (await client.post(f"/containers/{cid}/unarchive",
+                              headers=admin)).status_code == 204
 
 
 async def test_initiative_id_round_trip_and_filter(client, db, seeded_user):

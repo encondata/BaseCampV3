@@ -106,6 +106,8 @@ async def update_definition(
     actor: AuthContext = require_permission("reports", "change"),
 ) -> ReportDefinitionOut:
     d = await _definition(db, definition_id)
+    if d.is_system:
+        raise _err(409, "system_definition")
     before = snapshot(d, DEFINITION_FIELDS)
     patch = body.model_dump(exclude_unset=True)
     if "name" in patch:

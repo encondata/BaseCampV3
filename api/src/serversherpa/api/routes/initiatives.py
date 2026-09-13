@@ -400,7 +400,7 @@ async def update_initiative(
 async def archive_initiative(
     initiative_id: uuid.UUID,
     db: DbSession,
-    actor: AuthContext = require_permission("initiatives", "change"),
+    actor: AuthContext = require_permission("initiatives", "delete"),
 ) -> None:
     initiative = await _get_initiative(db, initiative_id, actor)
     _require_global(actor)
@@ -415,7 +415,7 @@ async def archive_initiative(
 async def unarchive_initiative(
     initiative_id: uuid.UUID,
     db: DbSession,
-    actor: AuthContext = require_permission("initiatives", "change"),
+    actor: AuthContext = require_permission("initiatives", "delete"),
 ) -> None:
     initiative = await _get_initiative(db, initiative_id, actor)
     _require_global(actor)

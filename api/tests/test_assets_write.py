@@ -2,7 +2,9 @@
 
 from sqlalchemy import select
 
-from serversherpa.db.models import Asset, AuditLog, Client, Person, PersonRole
+from serversherpa.db.models import (
+    Asset, AuditLog, Client, PermissionOverride, Person, PersonRole,
+)
 from tests.test_assets_api import login, make_login
 
 
@@ -128,3 +130,30 @@ async def test_client_contact_cannot_write(client, db, seeded_user):
     assert resp.status_code == 403
     resp = await client.post(f"/assets/{mine.id}/unarchive", headers=hdrs)
     assert resp.status_code == 403
+
+
+async def test_archive_requires_delete_not_just_change(client, db, seeded_user):
+    """Archive is the only delete affordance assets have — it must be gated
+    on `delete`, not `change`, even for a global (staff-anchored) actor."""
+    admin = await login(client)
+    asset_id = (await client.post("/assets", headers=admin,
+                                  json={"name": "gated"})).json()["id"]
+
+    changer = Person(first_name="Ch", last_name="Anger")
+    db.add(changer)
+    await db.flush()
+    db.add(PersonRole(person_id=changer.id, role="staff"))
+    db.add(PermissionOverride(person_id=changer.id, resource="assets",
+                              action="delete", allow=False))
+    await db.commit()
+    hdrs = await make_login(db, client, changer, "changer@test.example.com")
+
+    assert (await client.post(f"/assets/{asset_id}/archive",
+                              headers=hdrs)).status_code == 403
+    assert (await client.post(f"/assets/{asset_id}/unarchive",
+                              headers=hdrs)).status_code == 403
+
+    assert (await client.post(f"/assets/{asset_id}/archive",
+                              headers=admin)).status_code == 204
+    assert (await client.post(f"/assets/{asset_id}/unarchive",
+                              headers=admin)).status_code == 204

@@ -4,11 +4,13 @@ import uuid
 
 from sqlalchemy import select
 
-from serversherpa.db.models import AuditLog, Client, Container, Site
+from serversherpa.db.models import (
+    AuditLog, Client, Container, PermissionOverride, Person, PersonRole, Site,
+)
 
 from tests.test_initiative_assets_api import _move
 from tests.test_initiatives_client_scope import client_login
-from tests.test_sites_api import login
+from tests.test_sites_api import login, make_login
 
 
 async def test_crud_roundtrip_with_labels_and_audit(client, db, seeded_user):
@@ -217,3 +219,54 @@ async def test_patch_rejects_null_for_required_fields(client, db, seeded_user):
                               json={"driver_name": None})
     assert resp.status_code == 200, resp.text
     assert resp.json()["driver_name"] is None
+
+
+async def _staff_without(db, client, resource, action, email):
+    """A global staff persona with every permission the seeded `staff` role
+    holds, except `resource`/`action`, revoked via a PermissionOverride."""
+    person = Person(first_name="Ch", last_name="Anger")
+    db.add(person)
+    await db.flush()
+    db.add(PersonRole(person_id=person.id, role="staff"))
+    db.add(PermissionOverride(person_id=person.id, resource=resource,
+                              action=action, allow=False))
+    await db.commit()
+    return await make_login(db, client, person, email)
+
+
+async def test_create_requires_add_not_just_change(client, db, seeded_user):
+    admin = await login(client)
+    changer = await _staff_without(db, client, "trucks", "add",
+                                   "changer@test.example.com")
+
+    resp = await client.post("/trucks", headers=changer, json={"name": "Sneaky"})
+    assert resp.status_code == 403
+
+    resp = await client.post("/trucks", headers=admin, json={"name": "Legit"})
+    assert resp.status_code == 201, resp.text
+
+
+async def test_archive_and_clear_updates_require_delete_not_just_change(
+        client, db, seeded_user):
+    admin = await login(client)
+    truck_id = (await client.post("/trucks", headers=admin,
+                                  json={"name": "Gated"})).json()["id"]
+    await client.post(f"/trucks/{truck_id}/updates", headers=admin,
+                      json={"location": "39.0, -77.4"})
+
+    changer = await _staff_without(db, client, "trucks", "delete",
+                                   "changer2@test.example.com")
+
+    assert (await client.post(f"/trucks/{truck_id}/archive",
+                              headers=changer)).status_code == 403
+    assert (await client.post(f"/trucks/{truck_id}/unarchive",
+                              headers=changer)).status_code == 403
+    assert (await client.delete(f"/trucks/{truck_id}/updates",
+                                headers=changer)).status_code == 403
+
+    assert (await client.post(f"/trucks/{truck_id}/archive",
+                              headers=admin)).status_code == 204
+    assert (await client.post(f"/trucks/{truck_id}/unarchive",
+                              headers=admin)).status_code == 204
+    assert (await client.delete(f"/trucks/{truck_id}/updates",
+                                headers=admin)).status_code == 204
