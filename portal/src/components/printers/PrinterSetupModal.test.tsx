@@ -79,6 +79,21 @@ describe('PrinterSetupModal', () => {
     await waitFor(() => expect(printer.send).toHaveBeenCalledWith('^XA^MNM^XZ'));
     expect(await screen.findByText('Media tracking: printer reports GAP/NOTCH', {}, { timeout: 3000 })).toBeTruthy();
   });
+  it('Media: an unreadable re-read after Apply keeps the previous config and Apply enabled', async () => {
+    const { printer, state } = setup();
+    await screen.findByText('GAP/NOTCH');
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await userEvent.click(screen.getByRole('radio', { name: /Continuous/ }));
+    state.config = '';
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await waitFor(() => expect(printer.send).toHaveBeenCalledWith('^XA^MNN^XZ'));
+    expect(await screen.findByText(
+      "Commands were sent, but the printer's configuration couldn't be read back (^HH). Refresh on the Identify step to retry.",
+      {}, { timeout: 3000 },
+    )).toBeTruthy();
+    const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement;
+    expect(apply.disabled).toBe(false);
+  });
   it('Calibrate sends ~JC', async () => {
     const { printer } = setup();
     await screen.findByText('GAP/NOTCH');
@@ -108,7 +123,9 @@ describe('PrinterSetupModal', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Print configuration label' }));
     await waitFor(() => expect(printer.send).toHaveBeenCalledWith('~WC'));
     await userEvent.click(screen.getByRole('button', { name: 'Print alignment test' }));
-    await waitFor(() => expect(printer.send.mock.calls.some((c) => String(c[0]).includes('ALIGN 4x2 203DPI'))).toBe(true));
+    await waitFor(() => expect(printer.send.mock.calls.some((c) => String(c[0]).includes('^PW812'))).toBe(true));
+    expect(printer.send.mock.calls.some((c) => String(c[0]).includes('^LL1218'))).toBe(true);
+    expect(printer.send.mock.calls.some((c) => String(c[0]).includes('ALIGN 812x1218 203DPI'))).toBe(true);
     const reset = screen.getByRole('button', { name: 'Restore factory defaults' }) as HTMLButtonElement;
     expect(reset.disabled).toBe(true);
     await userEvent.type(screen.getByLabelText('Type RESET to confirm'), 'RESET');
@@ -119,7 +136,7 @@ describe('PrinterSetupModal', () => {
   it('shows the command log', async () => {
     setup();
     await screen.findByText('GAP/NOTCH');
-    await userEvent.click(screen.getByText(/Command log/));
+    await userEvent.click(screen.getByText(/Command log \(1\)/));
     expect(screen.getByText(/~HI/)).toBeTruthy();
   });
 });

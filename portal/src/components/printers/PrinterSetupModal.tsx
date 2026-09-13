@@ -5,7 +5,7 @@
  * value confirmed or "printer reports X". A Command log disclosure shows
  * the hook's log so support can see exactly what was sent.
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import type { LabelVocab } from '../../lib/api';
 import { sizeMeta, vocabOfKind } from '../../lib/labels';
@@ -73,6 +73,9 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
   const readAll = async () => {
     setReading(true);
     setError('');
+    setMediaResult(null);
+    setQualityResult(null);
+    setSizeKey('');
     try {
       const [id, st, cfgText] = [await printerRef.current.identify(), await printerRef.current.status(), await printerRef.current.query(configurationQuery())];
       if (id) setIdentity(id);
@@ -94,6 +97,10 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const reread = async () => {
     const cfg = parseConfiguration(await printerRef.current.query(configurationQuery()));
+    if (!cfg) {
+      setError("Commands were sent, but the printer's configuration couldn't be read back (^HH). Refresh on the Identify step to retry.");
+      return config;
+    }
     setConfig(cfg);
     return cfg;
   };
@@ -102,14 +109,14 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
     setBusy(true); setError(''); setMediaResult(null);
     try {
       const size = sizes.find((s) => s.key === sizeKey);
-      const next: MediaChoices = size
+      const target: MediaChoices = size
         ? { ...media, widthDots: Math.round(sizeMeta(size).width_in * dpi), lengthDots: Math.round(sizeMeta(size).height_in * dpi) }
         : media;
-      for (const cmd of commandsForMedia(mediaChoicesFromConfig(config), next)) await printerRef.current.send(cmd);
+      for (const cmd of commandsForMedia(mediaChoicesFromConfig(config), target)) await printerRef.current.send(cmd);
       await sleep(SETTLE_MS);
       const cfg = await reread();
-      setMediaResult(confirmMedia(cfg, next));
-      setMedia(next);
+      setMediaResult(confirmMedia(cfg, target));
+      setMedia(target);
     } catch (err) { setError(err instanceof Error ? err.message : 'Apply failed'); } finally { setBusy(false); }
   };
 
@@ -128,8 +135,14 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
   };
 
   const printAlignment = async () => {
+    if (!sizeKey && typeof config?.printWidth === 'number' && typeof config?.labelLength === 'number') {
+      const label = `${config.printWidth}x${config.labelLength}`;
+      const zpl = applyPrintSettings(alignmentTestZpl(config.printWidth, config.labelLength, label, dpi), readPrintSettings(), { singleCopy: true });
+      await sendOne(zpl, `Alignment test label (${label}) sent to printer`);
+      return;
+    }
     const size = sizes.find((s) => s.key === (sizeKey || '4x2')) ?? sizes[0];
-    if (!size) return;
+    if (!size) { setSaveNotice('Pick a label size on the Media step first.'); return; }
     const { width_in, height_in } = sizeMeta(size);
     const zpl = applyPrintSettings(alignmentTestZpl(Math.round(width_in * dpi), Math.round(height_in * dpi), size.key, dpi), readPrintSettings(), { singleCopy: true });
     await sendOne(zpl, `Alignment test label (${size.key}) sent to printer`);
@@ -257,12 +270,12 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
         </div>
         <div className="rgm-steps">
           {STEPS.map((s, i) => (
-            <span key={s.id} style={{ display: 'contents' }}>
+            <Fragment key={s.id}>
               {i > 0 && <span className="rgm-step-sep" />}
               <span className={`rgm-step ${step === s.id ? 'on' : ''} ${i < stepIndex ? 'done' : ''}`}>
                 <span className="rgm-step-num">{i + 1}</span><span className="rgm-step-label">{s.label}</span>
               </span>
-            </span>
+            </Fragment>
           ))}
         </div>
         <div className="modal-body">
