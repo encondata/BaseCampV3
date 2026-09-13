@@ -168,7 +168,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
     return {
       key: f.id,
       cells: [
-        <div className="pn" key="n"><b>{f.name}</b><span>{f.display_name}</span></div>,
+        <div className="cell-primary" key="n"><div className="pn"><b>{f.name}</b><span>{f.display_name}</span></div></div>,
         <span className="mono" key="s">{kb(f.size_bytes)}</span>,
         <span className="zp-chips" key="u">{f.used_by.length === 0 ? <span className="cell-sub">—</span> : f.used_by.map((u) => <span key={u.template_id} className="chip tag">{u.template_name}</span>)}</span>,
         <span className="mono" key="t">{relativeTime(f.created_at)}</span>,
