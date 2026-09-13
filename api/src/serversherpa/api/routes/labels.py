@@ -3,10 +3,14 @@ and the label-generation queue (runs, preview, generated labels).
 
 Reads gate on labels:view; template mutations on labels:add/change/delete;
 vocab + placeholder mutations are devtools-gated (god-only), matching the
-rest of the Variables surface. The generate-labels routes (runs, preview,
-generated) all gate on labels:view uniformly, per the design spec — V2
-required only portal access to run this job. All mutations audit into
-the caller's txn.
+rest of the Variables surface. Of the generate-labels routes, list/get/
+preview/generated stay view-gated, but creating a run is a mutation — it
+enqueues work and (with `regenerate_existing`) can redo prior output — so
+it gates on labels:add (labels:change for the regenerate flavor), and
+canceling one gates on labels:change and loads through the same
+scope-aware `_runs_query` the list/get routes use rather than a bare
+`db.get`, so a run outside the actor's scope 404s exactly like an unknown
+one. All mutations audit into the caller's txn.
 """
 
 import re
@@ -669,8 +673,10 @@ async def _run_out_for_id(db: DbSession, run_id: uuid.UUID, actor: AuthContext) 
 @router.post("/generate/runs", response_model=LabelRunOut, status_code=202)
 async def create_generation_run(
     body: LabelRunCreateIn, db: DbSession,
-    actor: AuthContext = require_permission("labels", "view"),
+    actor: AuthContext = require_permission("labels", "add"),
 ) -> LabelRunOut:
+    if body.regenerate_existing and not actor.access.can("labels", "change"):
+        raise _err(403, "forbidden")
     await _scoped_initiative(db, actor, body.initiative_id)
     try:
         run = await enqueue_run(
@@ -732,11 +738,13 @@ async def get_generation_run(
 @router.post("/generate/runs/{run_id}/cancel", response_model=LabelRunOut)
 async def cancel_generation_run(
     run_id: uuid.UUID, db: DbSession,
-    actor: AuthContext = require_permission("labels", "view"),
+    actor: AuthContext = require_permission("labels", "change"),
 ) -> LabelRunOut:
-    run = await db.get(LabelGenerationRun, run_id)
-    if run is None:
+    row = (await db.execute(
+        _runs_query(actor).where(LabelGenerationRun.id == run_id))).first()
+    if row is None:
         raise _err(404, "run_not_found")
+    run = row[0]
     before_status = run.status
     before_cancel_requested = run.cancel_requested
     if run.status == "queued":
