@@ -25,6 +25,7 @@ export default defineConfig({
     fs: { allow: [repoRoot] },
   },
   test: {
+    // node by default (the portal-import guardrail needs a file URL); DOM tests carry their own @vitest-environment jsdom pragma
     environment: 'node',
     exclude: ['**/node_modules/**', '**/dist/**', '**/._*'],
     // react-router-dom logs its "future flag" deprecation notices the

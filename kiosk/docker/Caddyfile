@@ -1,0 +1,9 @@
+# Static SPA: every unknown path falls back to index.html; config.js is
+# rewritten at container start so it must never be cached.
+:8080 {
+	root * /srv
+	encode gzip
+	header /config.js Cache-Control "no-store"
+	try_files {path} /index.html
+	file_server
+}
