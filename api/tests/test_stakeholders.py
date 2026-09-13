@@ -1187,3 +1187,45 @@ async def test_org_notes_redacted_for_scoped_actors(client, db, seeded_user):
                                  headers=staff)).json()["notes"] == "late payer — escalate to AM"
         assert [o["notes"] for o in (await client.get(prefix, headers=staff)).json()
                 if o["id"] == org["id"]] == ["late payer — escalate to AM"]
+
+
+async def test_scoped_org_contact_cannot_write_internal_notes(client, db, seeded_user):
+    """The write-side twin of the redaction above: `client_owner` /
+    `vendor_owner` hold `change` on their own org, but `Organization.notes`
+    is staff-internal text they cannot read, so a PATCH that names `notes`
+    (even as null) is refused outright with 403 `notes_internal` rather
+    than blind-overwriting it. Other fields still save; staff still writes
+    notes."""
+    staff = await _headers(client)
+    cases = (
+        ("/clients", "client_owner", "client_id", "owner-notes3@test.example.com"),
+        ("/partners", "vendor_owner", "partner_id", "vendor-notes3@test.example.com"),
+    )
+    for prefix, role, anchor_col, email in cases:
+        org = (await client.post(prefix, headers=staff, json={
+            "name": f"Noted write {role}", "notes": "staff only"})).json()
+        scoped = await _anchored_login(db, client, role, email,
+                                       **{anchor_col: org["id"]})
+
+        for body in ({"notes": "x"}, {"notes": None}, {"phone": "555-0100", "notes": "x"}):
+            resp = await client.patch(f"{prefix}/{org['id']}", headers=scoped, json=body)
+            assert resp.status_code == 403, (role, body, resp.json())
+            assert resp.json()["detail"]["code"] == "notes_internal"
+
+        # nothing leaked through the refused writes — staff still reads the original
+        staff_view = (await client.get(f"{prefix}/{org['id']}", headers=staff)).json()
+        assert staff_view["notes"] == "staff only"
+        assert staff_view["phone"] is None
+
+        # a non-notes edit by the same scoped persona still saves (change intact)
+        ok = await client.patch(f"{prefix}/{org['id']}", headers=scoped,
+                                json={"phone": "555-0199"})
+        assert ok.status_code == 200, ok.json()
+        assert ok.json()["phone"] == "555-0199"
+        assert ok.json()["notes"] is None   # and the response stays redacted
+
+        # global staff still writes notes
+        upd = await client.patch(f"{prefix}/{org['id']}", headers=staff,
+                                 json={"notes": "updated by staff"})
+        assert upd.status_code == 200
+        assert upd.json()["notes"] == "updated by staff"

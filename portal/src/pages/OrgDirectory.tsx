@@ -1147,6 +1147,12 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
   onClose: () => void;
   onSaved: (id: string) => void;
 }) {
+  // `Organization.notes` is staff-internal: the API redacts it on read and
+  // refuses (403 notes_internal) any PATCH that names it from a non-global
+  // actor, so a scoped client/vendor contact editing its own org neither
+  // sees the field nor sends it.
+  const { scope } = useAuth();
+  const isGlobal = scope?.global ?? true;
   const [types, setTypes] = useState<Set<string>>(new Set(org?.partner_types ?? []));
   const [form, setForm] = useState({
     name: org?.name ?? '',
@@ -1187,9 +1193,9 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
       website: form.website.trim() || null,
       city: form.city.trim() || null,
       region: form.region.trim() || null,
-      notes: form.notes.trim() || null,
       account_manager_id: form.account_manager_id || null,
     };
+    if (isGlobal) payload.notes = form.notes.trim() || null;
     // tier is client-only, service_region is partner-only — the API
     // rejects (422) the other kind's field outright, so never send it.
     if (cfg.kind === 'client') payload.tier = form.tier;
@@ -1279,8 +1285,10 @@ function OrgFormModal({ cfg, org, partnerTypes, onClose, onSaved }: {
                 <input value={form.city} onChange={set('city')} /></div>
               <div><label>State / region</label>
                 <input value={form.region} onChange={set('region')} /></div>
-              <div className="full"><label>Notes</label>
-                <input value={form.notes} onChange={set('notes')} /></div>
+              {isGlobal && (
+                <div className="full"><label>Notes</label>
+                  <input value={form.notes} onChange={set('notes')} /></div>
+              )}
             </div>
           </div>
           <div className="modal-foot">

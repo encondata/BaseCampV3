@@ -277,6 +277,13 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
     ) -> OrgItem:
         org = await _get_org(db, org_id, actor)
         data = body.model_dump(exclude_unset=True)
+        # `notes` is staff-internal (redacted to None in _item for non-global
+        # actors), so a scoped client/vendor contact holding `change` on its
+        # own org must not blind-overwrite it. Refuse explicitly — even an
+        # explicit null — rather than silently dropping the field, so the
+        # caller learns the field is off-limits (mirrors the read side).
+        if "notes" in data and not actor.access.is_global:
+            raise _err(403, "notes_internal")
         required_fields = ("name", "status", "country") + (() if is_partner else ("tier",))
         for required in required_fields:
             if required in data and data[required] is None:
