@@ -29,6 +29,7 @@ import InitiativeTimeline from './pages/InitiativeTimeline';
 import KioskDevices from './pages/KioskDevices';
 import LabelTemplateEditor from './pages/LabelTemplateEditor';
 import LabelTemplates from './pages/LabelTemplates';
+import LinkKiosk from './pages/LinkKiosk';
 import MoveAssetDetail from './pages/MoveAssetDetail';
 import Notifications from './pages/Notifications';
 import NotificationGroupDetailPage from './pages/NotificationGroupDetail';
@@ -89,6 +90,8 @@ export default function App() {
                 <Route path="/dashboards/people" element={
                   <ProtectedRoute resource="dashboard"><PeopleDashboard /></ProtectedRoute>
                 } />
+                <Route path="/link" element={<LinkKiosk />} />
+                <Route path="/link/:code" element={<LinkKiosk />} />
                 <Route path="/dashboards/clients" element={
                   <ProtectedRoute resource="dashboard"><ClientDashboard /></ProtectedRoute>
                 } />
