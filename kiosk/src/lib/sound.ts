@@ -1,6 +1,8 @@
 /**
- * Scan sounds — what this kiosk plays when a scan matches and when it
- * matches nothing, alongside the Appearance tab's flash.
+ * Scan sounds — what this kiosk plays when a scan matches, when it
+ * matches nothing, and when it changed nothing (an asset already in this
+ * container, a container already on this truck), alongside the
+ * Appearance tab's three flashes.
  *
  * Like the flash colors, the choice is kiosk-local (localStorage
  * `ss.kiosk.sound`, the same store/hook idiom as `devMode.ts` and
@@ -45,6 +47,8 @@ export type SoundChoice =
 export interface SoundSettings {
   good: SoundChoice;
   not_found: SoundChoice;
+  /** A scan that changed nothing — a repeat. */
+  duplicate: SoundChoice;
   /** 0–1, applied to built-ins (gain) and uploads (`audio.volume`) alike. */
   volume: number;
 }
@@ -60,6 +64,10 @@ export const BUILTIN_SOUNDS: { id: BuiltinSoundId; label: string }[] = [
 export const DEFAULT_SOUND_SETTINGS: SoundSettings = {
   good: { kind: 'builtin', id: 'chime' },
   not_found: { kind: 'builtin', id: 'buzz' },
+  // The double beep, of the five built-ins: two flat notes on one pitch
+  // are neither the chime's rising pair nor the buzz, and "that came
+  // through twice" is exactly what a repeat scan means.
+  duplicate: { kind: 'builtin', id: 'double_beep' },
   volume: 0.8,
 };
 
@@ -112,6 +120,8 @@ function read(): SoundSettings {
         good: isChoice(parsed?.good) ? parsed.good : DEFAULT_SOUND_SETTINGS.good,
         not_found: isChoice(parsed?.not_found)
           ? parsed.not_found : DEFAULT_SOUND_SETTINGS.not_found,
+        duplicate: isChoice(parsed?.duplicate)
+          ? parsed.duplicate : DEFAULT_SOUND_SETTINGS.duplicate,
         volume: clampVolume(parsed?.volume),
       };
     } catch {
@@ -204,7 +214,10 @@ export async function removeUploadedSound(id: string): Promise<void> {
   if (settings.not_found.kind === 'upload' && settings.not_found.id === id) {
     patch.not_found = { kind: 'none' };
   }
-  if (patch.good || patch.not_found) writeSoundSettings(patch);
+  if (settings.duplicate.kind === 'upload' && settings.duplicate.id === id) {
+    patch.duplicate = { kind: 'none' };
+  }
+  if (patch.good || patch.not_found || patch.duplicate) writeSoundSettings(patch);
 }
 
 /* ── Playback ──────────────────────────────────────────────────────── */
@@ -324,11 +337,13 @@ export function playSoundChoice(choice: SoundChoice, volume?: number): void {
   }
 }
 
-/** What the Scanning page calls beside `flash()`. */
-export function playScanSound(which: 'good' | 'not_found'): void {
+/** What the Scanning, Containers, and Trucks pages call beside
+ *  `flash()` — one case per scan outcome, `duplicate` included: a repeat
+ *  scan must not sound like the pack it is not. */
+export function playScanSound(which: 'good' | 'not_found' | 'duplicate'): void {
   try {
     const settings = read();
-    playSoundChoice(which === 'good' ? settings.good : settings.not_found, settings.volume);
+    playSoundChoice(settings[which], settings.volume);
   } catch {
     /* audio must never break scanning */
   }

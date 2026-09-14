@@ -269,20 +269,31 @@ it('a developer sees the local data inspector on the Developer tab', () => {
   expect(screen.getByTestId('local-data-inspector')).toBeTruthy();
 });
 
-it('the Appearance tab shows both scan-flash pickers and persists a change', async () => {
+it('the Appearance tab shows all three scan-flash pickers and persists a change', async () => {
   renderAt('/settings?tab=appearance');
   expect(screen.getByText('Good scan flash')).toBeTruthy();
   expect(screen.getByText('Not-found scan flash')).toBeTruthy();
+  expect(screen.getByText('Duplicate scan flash')).toBeTruthy();
   expect(screen.getByLabelText('Good scan flash hue')).toBeTruthy();
   expect(screen.getByLabelText('Not-found scan flash lightness')).toBeTruthy();
+  expect(screen.getByLabelText('Duplicate scan flash saturation')).toBeTruthy();
   expect(screen.getByText('hsl(150 60% 45%)')).toBeTruthy();
   expect(screen.getByText('hsl(0 70% 50%)')).toBeTruthy();
+  expect(screen.getByText('hsl(38 92% 50%)')).toBeTruthy();
+  expect(screen.getByText(
+    'Shown when a scan changes nothing — an asset already in this container,'
+    + ' or a container already on this truck.')).toBeTruthy();
   expect(screen.queryByText('This section is not available yet.')).toBeNull();
 
   fireEvent.change(screen.getByLabelText('Good scan flash hue'), { target: { value: '210' } });
   expect(screen.getByText('hsl(210 60% 45%)')).toBeTruthy();
   expect(JSON.parse(localStorage.getItem('ss.kiosk.appearance')!).good_scan)
     .toEqual({ h: 210, s: 60, l: 45 });
+
+  fireEvent.change(screen.getByLabelText('Duplicate scan flash hue'), { target: { value: '45' } });
+  expect(screen.getByText('hsl(45 92% 50%)')).toBeTruthy();
+  expect(JSON.parse(localStorage.getItem('ss.kiosk.appearance')!).duplicate_scan)
+    .toEqual({ h: 45, s: 92, l: 50 });
 });
 
 it('the Appearance tab sets how long the flash lasts, and persists it', () => {
@@ -299,15 +310,23 @@ it('the Sound tab picks a sound per scan outcome, previews it, and persists the 
   renderAt('/settings?tab=sound');
   const good = screen.getByLabelText('Good scan sound') as HTMLSelectElement;
   const notFound = screen.getByLabelText('Not-found scan sound') as HTMLSelectElement;
+  const duplicate = screen.getByLabelText('Duplicate scan sound') as HTMLSelectElement;
   expect(good.value).toBe('builtin:chime');
   expect(notFound.value).toBe('builtin:buzz');
-  expect([...good.options].map((o) => o.textContent))
-    .toEqual(['None', 'Chime', 'Beep', 'Double beep', 'Buzz', 'Bonk']);
+  expect(duplicate.value).toBe('builtin:double_beep');
+  for (const select of [good, notFound, duplicate]) {
+    expect([...select.options].map((o) => o.textContent))
+      .toEqual(['None', 'Chime', 'Beep', 'Double beep', 'Buzz', 'Bonk']);
+  }
   expect(screen.queryByText('This section is not available yet.')).toBeNull();
 
   fireEvent.change(good, { target: { value: 'builtin:double_beep' } });
   expect(JSON.parse(localStorage.getItem('ss.kiosk.sound')!).good)
     .toEqual({ kind: 'builtin', id: 'double_beep' });
+
+  fireEvent.change(duplicate, { target: { value: 'builtin:bonk' } });
+  expect(JSON.parse(localStorage.getItem('ss.kiosk.sound')!).duplicate)
+    .toEqual({ kind: 'builtin', id: 'bonk' });
 
   fireEvent.change(screen.getByLabelText('Volume'), { target: { value: '40' } });
   expect(screen.getByText('40%')).toBeTruthy();

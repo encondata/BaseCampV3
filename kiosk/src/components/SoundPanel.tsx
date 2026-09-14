@@ -1,6 +1,6 @@
 /** The Settings page's Sound tab body: which sound this kiosk plays on
- *  a good scan and on a not-found one, how loud, and the sound files
- *  uploaded to this kiosk.
+ *  a good scan, on a not-found one, and on a repeat that changed
+ *  nothing, how loud, and the sound files uploaded to this kiosk.
  *
  *  Each choice is a native `<select>` — the kiosk cannot import the
  *  portal's `ComboBox` (a `.tsx` across the two-Reacts boundary), and a
@@ -16,7 +16,7 @@ import { useEffect, useState, type ChangeEvent } from 'react';
 import {
   BUILTIN_SOUNDS, MAX_SOUND_BYTES, addUploadedSound, listUploadedSounds, playSoundChoice,
   removeUploadedSound, useSoundSettings, type BuiltinSoundId, type SoundChoice,
-  type UploadedSound,
+  type SoundSettings, type UploadedSound,
 } from '../lib/sound';
 
 /** `none` / `builtin:chime` / `upload:{uuid}` — one `<option>` value per
@@ -73,7 +73,7 @@ export default function SoundPanel() {
     removeUploadedSound(id).then(refresh, () => setError("Couldn't remove that sound."));
   };
 
-  const choiceRow = (which: 'good' | 'not_found', label: string, hint: string) => {
+  const choiceRow = (which: keyof Omit<SoundSettings, 'volume'>, label: string, hint: string) => {
     const choice = settings[which];
     return (
       <div className="settings-row">
@@ -85,10 +85,9 @@ export default function SoundPanel() {
           <select
             aria-label={label}
             value={choiceValue(choice)}
-            onChange={(e) => {
-              const next = parseChoice(e.target.value);
-              setSettings(which === 'good' ? { good: next } : { not_found: next });
-            }}
+            onChange={(e) => setSettings(
+              { [which]: parseChoice(e.target.value) } as Partial<SoundSettings>,
+            )}
           >
             <option value="none">None</option>
             {BUILTIN_SOUNDS.map((s) => (
@@ -121,6 +120,11 @@ export default function SoundPanel() {
       {choiceRow(
         'not_found', 'Not-found scan sound',
         'Played when a scan matches nothing. Stored on this kiosk only.',
+      )}
+      {choiceRow(
+        'duplicate', 'Duplicate scan sound',
+        'Played when a scan changes nothing — an asset already in this container,'
+        + ' or a container already on this truck. Stored on this kiosk only.',
       )}
       <div className="settings-row">
         <div>

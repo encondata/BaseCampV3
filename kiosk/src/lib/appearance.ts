@@ -1,8 +1,13 @@
 /**
- * Kiosk appearance colors — today, the two scan flashes. A good scan
+ * Kiosk appearance colors — today, the three scan flashes. A good scan
  * flashes the whole screen `good_scan`; a scan that matched nothing in
- * the kiosk's local copy of the move flashes `not_found_scan`. Both are
- * kiosk-local (localStorage, same store/hook idiom as `devMode.ts` and
+ * the kiosk's local copy of the move flashes `not_found_scan`; a scan
+ * that changed nothing — an asset already in this container, a container
+ * already on this truck — flashes `duplicate_scan`. Two colors cannot
+ * express three outcomes, and a repeat scan is neither a success nor a
+ * miss: it is a nothing-happened event, and an operator sweeping a crate
+ * has to be able to tell it from a real pack at arm's length. All three
+ * are kiosk-local (localStorage, same store/hook idiom as `devMode.ts` and
  * `kioskSetup.ts`): the flash is about the person standing in front of
  * this screen, not about the signed-in account, and a kiosk in a dark
  * cage may need a very different color from one under office lights.
@@ -25,6 +30,9 @@ export interface Hsl { h: number; s: number; l: number }
 export interface Appearance {
   good_scan: Hsl;
   not_found_scan: Hsl;
+  /** A scan that changed nothing: the asset is already in this crate, or
+   *  the crate is already on this truck. */
+  duplicate_scan: Hsl;
   /** Flash duration in milliseconds, clamped to `FLASH_MS_RANGE`. */
   flash_ms: number;
 }
@@ -34,6 +42,8 @@ export const FLASH_MS_RANGE = { min: 100, max: 2000, step: 50 } as const;
 export const DEFAULT_APPEARANCE: Appearance = {
   good_scan: { h: 150, s: 60, l: 45 },
   not_found_scan: { h: 0, s: 70, l: 50 },
+  // Amber, well clear of both the green and the red under dock lighting.
+  duplicate_scan: { h: 38, s: 92, l: 50 },
   flash_ms: 350,
 };
 
@@ -78,11 +88,15 @@ function read(): Appearance {
       const parsed = JSON.parse(stored) as Record<string, unknown>;
       // Each channel falls back on its own: a stored file that only
       // carries one color (or one that someone hand-edited out of range)
-      // still yields a usable pair rather than nothing.
+      // still yields a usable set rather than nothing — which is also how
+      // a kiosk stored before `duplicate_scan` existed reads it as its
+      // default rather than as undefined.
       cached = {
         good_scan: isHsl(parsed?.good_scan) ? parsed.good_scan : DEFAULT_APPEARANCE.good_scan,
         not_found_scan: isHsl(parsed?.not_found_scan)
           ? parsed.not_found_scan : DEFAULT_APPEARANCE.not_found_scan,
+        duplicate_scan: isHsl(parsed?.duplicate_scan)
+          ? parsed.duplicate_scan : DEFAULT_APPEARANCE.duplicate_scan,
         flash_ms: clampFlashMs(parsed?.flash_ms),
       };
     } catch {

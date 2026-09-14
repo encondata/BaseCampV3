@@ -7,11 +7,42 @@ import {
 
 afterEach(() => localStorage.clear());
 
-it('defaults to the good/not-found colors when nothing is stored', () => {
+it('defaults to the good / not-found / duplicate colors when nothing is stored', () => {
   expect(readAppearance()).toEqual(DEFAULT_APPEARANCE);
   expect(DEFAULT_APPEARANCE.good_scan).toEqual({ h: 150, s: 60, l: 45 });
   expect(DEFAULT_APPEARANCE.not_found_scan).toEqual({ h: 0, s: 70, l: 50 });
+  // Amber: three outcomes need three colors, and a repeat scan is
+  // neither the green "done" nor the red "nothing matched".
+  expect(DEFAULT_APPEARANCE.duplicate_scan).toEqual({ h: 38, s: 92, l: 50 });
   expect(DEFAULT_APPEARANCE.flash_ms).toBe(350);
+});
+
+it('a stored file written before the duplicate color reads back with the default', () => {
+  // The kiosks in the field already have an `ss.kiosk.appearance` with
+  // two colors in it; the third must arrive as its default rather than
+  // as undefined, or the duplicate flash paints `hsl(NaN ...)`.
+  localStorage.setItem('ss.kiosk.appearance', JSON.stringify({
+    good_scan: { h: 200, s: 80, l: 40 }, not_found_scan: { h: 0, s: 70, l: 50 },
+    flash_ms: 400,
+  }));
+  expect(readAppearance()).toEqual({
+    good_scan: { h: 200, s: 80, l: 40 },
+    not_found_scan: { h: 0, s: 70, l: 50 },
+    duplicate_scan: DEFAULT_APPEARANCE.duplicate_scan,
+    flash_ms: 400,
+  });
+
+  // And writing one of the others forward persists the new key, so the
+  // next read is not a migration at all.
+  writeAppearance({ flash_ms: 500 });
+  expect(JSON.parse(localStorage.getItem('ss.kiosk.appearance')!).duplicate_scan)
+    .toEqual(DEFAULT_APPEARANCE.duplicate_scan);
+});
+
+it('persists the duplicate color like any other', () => {
+  expect(writeAppearance({ duplicate_scan: { h: 45, s: 100, l: 50 } })).toBe(true);
+  expect(readAppearance().duplicate_scan).toEqual({ h: 45, s: 100, l: 50 });
+  expect(readAppearance().good_scan).toEqual(DEFAULT_APPEARANCE.good_scan);
 });
 
 it('writes a patch, keeps the other color, and notifies subscribers', () => {
@@ -22,6 +53,7 @@ it('writes a patch, keeps the other color, and notifies subscribers', () => {
   expect(readAppearance()).toEqual({
     good_scan: { h: 200, s: 80, l: 40 },
     not_found_scan: DEFAULT_APPEARANCE.not_found_scan,
+    duplicate_scan: DEFAULT_APPEARANCE.duplicate_scan,
     flash_ms: DEFAULT_APPEARANCE.flash_ms,
   });
   off();

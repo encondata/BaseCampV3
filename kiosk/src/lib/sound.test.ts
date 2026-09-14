@@ -73,15 +73,33 @@ afterEach(() => {
   delete (window as unknown as { AudioContext?: unknown }).AudioContext;
 });
 
-it('defaults to a chime on a good scan and a buzz on a not-found one', () => {
+it('defaults to a chime, a buzz, and a double beep for a repeat scan', () => {
   expect(readSoundSettings()).toEqual(DEFAULT_SOUND_SETTINGS);
   expect(DEFAULT_SOUND_SETTINGS).toEqual({
     good: { kind: 'builtin', id: 'chime' },
     not_found: { kind: 'builtin', id: 'buzz' },
+    duplicate: { kind: 'builtin', id: 'double_beep' },
     volume: 0.8,
   });
   expect(BUILTIN_SOUNDS.map((s) => s.id))
     .toEqual(['chime', 'beep', 'double_beep', 'buzz', 'bonk']);
+});
+
+it('a stored file written before the duplicate sound reads back with the default', () => {
+  localStorage.setItem('ss.kiosk.sound', JSON.stringify({
+    good: { kind: 'builtin', id: 'beep' }, not_found: { kind: 'none' }, volume: 0.5,
+  }));
+  expect(readSoundSettings()).toEqual({
+    good: { kind: 'builtin', id: 'beep' },
+    not_found: { kind: 'none' },
+    duplicate: DEFAULT_SOUND_SETTINGS.duplicate,
+    volume: 0.5,
+  });
+
+  // Writing anything forward persists the new key too.
+  writeSoundSettings({ volume: 0.6 });
+  expect(JSON.parse(localStorage.getItem('ss.kiosk.sound')!).duplicate)
+    .toEqual(DEFAULT_SOUND_SETTINGS.duplicate);
 });
 
 it('persists a choice and notifies subscribers', () => {
@@ -122,12 +140,23 @@ it('plays the chosen built-in tone on each scan outcome', () => {
   playScanSound('not_found');
   expect(started).toEqual([{ type: 'sawtooth', freq: 150 }]);   // buzz
   expect(contexts).toBe(1);                                     // one shared context
+
+  // A repeat scan is its own outcome, and sounds like neither.
+  started.length = 0;
+  playScanSound('duplicate');
+  expect(started).toEqual([                                     // double beep
+    { type: 'square', freq: 880 }, { type: 'square', freq: 880 },
+  ]);
+  expect(contexts).toBe(1);
 });
 
 it('plays nothing when the choice is None', () => {
-  writeSoundSettings({ good: { kind: 'none' }, not_found: { kind: 'none' } });
+  writeSoundSettings({
+    good: { kind: 'none' }, not_found: { kind: 'none' }, duplicate: { kind: 'none' },
+  });
   playScanSound('good');
   playScanSound('not_found');
+  playScanSound('duplicate');
   expect(started).toEqual([]);
 });
 
@@ -160,12 +189,17 @@ it('rejects a file that is too large or is not audio', async () => {
 
 it('removing an upload drops the row and resets any choice that used it', async () => {
   const { id } = await addUploadedSound(wav());
-  writeSoundSettings({ good: { kind: 'upload', id }, not_found: { kind: 'builtin', id: 'bonk' } });
+  writeSoundSettings({
+    good: { kind: 'upload', id },
+    not_found: { kind: 'builtin', id: 'bonk' },
+    duplicate: { kind: 'upload', id },
+  });
 
   await removeUploadedSound(id);
 
   expect(await listUploadedSounds()).toEqual([]);
   expect(readSoundSettings().good).toEqual({ kind: 'none' });
+  expect(readSoundSettings().duplicate).toEqual({ kind: 'none' });
   expect(readSoundSettings().not_found).toEqual({ kind: 'builtin', id: 'bonk' });
 });
 

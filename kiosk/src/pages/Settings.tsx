@@ -3,13 +3,14 @@
  *  is on, also shows a read-only "Local data" row (the downloaded move's
  *  counts) with a "Clear local data" button. Admin and Developer are hidden (not
  *  disabled) unless the signed-in person holds the level; signed out,
- *  only This Kiosk is visible (see `visibleTabs`). Appearance owns the two
- *  scan-flash colors (kiosk-local HSL); Admin owns the three scan
- *  checkpoints (RFID Enroll, Container pack, Container unpack) —
- *  admin-gated on purpose, because each decides what every scan of its
- *  kind on this kiosk records and a worker should not be able to change
- *  what the move's data says. The remaining tab bodies are
- *  placeholders for now. The active tab lives in the `tab` search
+ *  only This Kiosk is visible (see `visibleTabs`). Appearance owns the
+ *  three scan-flash colors (kiosk-local HSL) — good, not-found, and the
+ *  duplicate flash a repeat scan gets, because two colors cannot express
+ *  three outcomes; Admin owns the scan checkpoints (RFID Enroll,
+ *  Container pack / unpack, Truck load / unload) — admin-gated on
+ *  purpose, because each decides what every scan of its kind on this
+ *  kiosk records and a worker should not be able to change what the
+ *  move's data says. The remaining tab bodies are placeholders for now. The active tab lives in the `tab` search
  *  param, so a link can deep-link straight to a section. */
 
 import { useEffect, useState } from 'react';
@@ -201,6 +202,21 @@ export default function Settings() {
                 name="Not-found scan flash"
                 value={appearance.not_found_scan}
                 onChange={(not_found_scan) => setAppearance({ not_found_scan })}
+                flashMs={appearance.flash_ms}
+              />
+            </div>
+            <div className="settings-row">
+              <div>
+                <span className="settings-row-label">Duplicate scan flash</span>
+                <p className="settings-row-hint">
+                  Shown when a scan changes nothing — an asset already in this container,
+                  or a container already on this truck.
+                </p>
+              </div>
+              <HslPicker
+                name="Duplicate scan flash"
+                value={appearance.duplicate_scan}
+                onChange={(duplicate_scan) => setAppearance({ duplicate_scan })}
                 flashMs={appearance.flash_ms}
               />
             </div>
