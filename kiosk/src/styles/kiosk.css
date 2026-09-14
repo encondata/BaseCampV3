@@ -161,7 +161,9 @@
 }
 
 /* ── home launcher & feature placeholders ─────────────────────────── */
-.kiosk-launcher { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; max-width: 1100px; margin: 22px 0 0; }
+/* Fill the row: as many tiles as fit at >= 200px each, no width cap, so a
+   fifth tile joins the first row whenever the screen has room for it. */
+.kiosk-launcher { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 18px; margin: 22px 0 0; }
 .kiosk-tile { display: grid; gap: 10px; align-content: start; min-height: 190px; padding: 22px 22px 20px; background: var(--paper); border: 1px solid var(--paper-line); border-radius: 16px; color: var(--text-dark); text-decoration: none; transition: border-color .15s, transform .15s, box-shadow .15s; }
 .kiosk-tile:hover, .kiosk-tile:focus-visible { border-color: var(--accent); box-shadow: 0 6px 24px rgba(var(--accent-rgb), .18); transform: translateY(-2px); outline: none; }
 .kiosk-tile:active { transform: translateY(0); }
