@@ -217,6 +217,36 @@ async def test_bad_scan_type_is_422(client, db, seeded_user):
     assert resp.status_code == 422, resp.text
 
 
+async def test_scan_type_missing_from_vocabulary_rejects_only_that_scan(
+        client, db, seeded_user):
+    """`scan_type` is a Literal the schema always accepts ("rfid" /
+    "barcode"), but the row it names in the `scan` vocabulary can still
+    go missing (renamed or deleted) — that must reject the one scan, not
+    500 the whole batch."""
+    hdrs = await login(client)
+    site, initiative, checkpoint = await _seed_context(db)
+    await _seed_device(db, site=site, initiative=initiative,
+                       scan_status=checkpoint.key)
+    await db.execute(
+        StatusValue.__table__.delete().where(
+            StatusValue.record_type == "scan", StatusValue.key == "barcode"))
+    await db.commit()
+
+    bad = _scan("EPC-BARCODE", scan_type="barcode")
+    good = _scan("EPC-RFID", scan_type="rfid")
+    resp = await client.post("/kiosk/scans", headers=hdrs, json={
+        "serial": SERIAL, "scans": [good, bad]})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["rejected"] == [{"client_scan_id": bad["client_scan_id"],
+                                 "code": "bad_scan_type"}]
+    assert body["accepted"] == [good["client_scan_id"]]
+
+    db.expire_all()
+    rows = (await db.scalars(select(RawScan))).all()
+    assert [r.scanned_value for r in rows] == ["EPC-RFID"]
+
+
 async def test_unknown_serial_is_404(client, db, seeded_user):
     hdrs = await login(client)
     resp = await client.post("/kiosk/scans", headers=hdrs, json={

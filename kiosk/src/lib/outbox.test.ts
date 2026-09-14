@@ -13,11 +13,22 @@ vi.mock('./api', async (importOriginal) => {
   return { ...actual, postScans: api.postScans };
 });
 
+// `putRows` is wrapped so a single test can force a storage write to
+// fail mid-flush; everything else (the rest of localDb, real
+// fake-indexeddb) stays untouched.
+const localDb = vi.hoisted(() => ({ putRows: vi.fn() }));
+vi.mock('./localDb', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./localDb')>();
+  localDb.putRows.mockImplementation(
+    (...args: Parameters<typeof actual.putRows>) => actual.putRows(...args));
+  return { ...actual, putRows: localDb.putRows };
+});
+
 import { ApiError } from './api';
 import { closeDb, getAll } from './localDb';
 import {
-  BACKOFF, clearSent, enqueueScan, flushOutbox, loadOutbox, readOutbox, resetOutboxForTest,
-  retryFailed, senderIdle, startSender, stopSender, type OutboxRow,
+  BACKOFF, clearSent, discardFailed, enqueueScan, flushOutbox, loadOutbox, readOutbox,
+  resetOutboxForTest, retryFailed, senderIdle, startSender, stopSender, type OutboxRow,
 } from './outbox';
 
 const SETUP = { site_id: 'site-1', initiative_id: 'init-1', scan_status: 'cage_exit' };
@@ -42,6 +53,7 @@ beforeEach(async () => {
   resetOutboxForTest();
   api.postScans.mockReset();
   api.postScans.mockResolvedValue({ accepted: [], rejected: [] });
+  localDb.putRows.mockClear();     // keep the delegating impl, drop call history
   await loadOutbox();
 });
 
@@ -164,20 +176,59 @@ it('retryFailed puts failed rows back at the front of the queue', async () => {
   expect(readOutbox().rows[0].status).toBe('accepted');
 });
 
-it('clearSent removes accepted, failed and nomatch rows but keeps work in flight', async () => {
+it('clearSent removes accepted and nomatch rows but keeps failed and work in flight', async () => {
+  api.postScans.mockRejectedValue(new ApiError(503, 'unavailable'));
+  startSender();
+  await enqueueScan(matched('SN-failed'));
+  await tick(600);
+  for (const wait of BACKOFF) await tick(wait);
+  expect(readOutbox().rows.find((r) => r.scanned_value === 'SN-failed'))
+    .toMatchObject({ status: 'failed' });
+
   api.postScans.mockImplementation((body: { scans: { client_scan_id: string }[] }) =>
     Promise.resolve({ accepted: body.scans.map((s) => s.client_scan_id), rejected: [] }));
-  startSender();
   await enqueueScan(matched('SN-sent'));
   await tick(600);
   await enqueueScan({ scanned_value: 'nope', scan_type: 'barcode', asset: null, ...SETUP });
   stopSender();
   await enqueueScan(matched('SN-waiting'));      // sender stopped: stays queued
 
-  expect(readOutbox().rows).toHaveLength(3);
+  expect(readOutbox().rows).toHaveLength(4);
   await clearSent();
+  expect(ids(readOutbox().rows)).toEqual(['SN-waiting', 'SN-failed']);
+  expect(await getAll('outbox')).toHaveLength(2);
+});
+
+it('discardFailed removes only failed rows, and leaves everything else untouched', async () => {
+  api.postScans.mockRejectedValue(new ApiError(503, 'unavailable'));
+  startSender();
+  await enqueueScan(matched('SN-failed'));
+  await tick(600);
+  for (const wait of BACKOFF) await tick(wait);
+  expect(readOutbox().rows[0]).toMatchObject({ status: 'failed' });
+
+  stopSender();
+  await enqueueScan(matched('SN-waiting'));
+
+  await discardFailed();
   expect(ids(readOutbox().rows)).toEqual(['SN-waiting']);
   expect(await getAll('outbox')).toHaveLength(1);
+});
+
+it('a storage failure while marking a batch `sending` recovers it to `queued` instead of stranding it', async () => {
+  api.postScans.mockImplementation((body: { scans: { client_scan_id: string }[] }) =>
+    Promise.resolve({ accepted: body.scans.map((s) => s.client_scan_id), rejected: [] }));
+  startSender();
+  await enqueueScan(matched('SN-1'));
+
+  // The batch's first write — flipping the row to `sending` before the
+  // POST — fails; `dueRows` only ever picks up `queued`/`retrying`, so
+  // without recovery this row would sit `sending` forever.
+  localDb.putRows.mockRejectedValueOnce(new Error('storage'));
+  await tick(600);
+
+  // Recovered to `queued`, rescheduled, and this time it goes through.
+  expect(readOutbox().rows[0]).toMatchObject({ status: 'accepted', attempts: 0 });
 });
 
 it('resumes queued and retrying rows left behind by a reload', async () => {

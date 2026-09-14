@@ -26,8 +26,8 @@ import { flash } from '../lib/flash';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { getAll } from '../lib/localDb';
 import {
-  BACKOFF, clearSent, enqueueScan, retryFailed, startSender, stopSender, useOutbox,
-  type OutboxRow,
+  BACKOFF, clearSent, discardFailed, enqueueScan, retryFailed, startSender, stopSender,
+  useOutbox, type OutboxRow,
 } from '../lib/outbox';
 import { buildScanIndex, matchScan, scanTypeFor, type ScanAsset, type ScanIndex } from '../lib/scanMatch';
 import { useSyncStatus } from '../lib/sync';
@@ -35,7 +35,12 @@ import { useSyncStatus } from '../lib/sync';
 type LoadStatus = 'loading' | 'ready' | 'error';
 
 /** Focus belongs to these when the person deliberately moved it there
- *  (Retry failed, Clear sent); everything else hands it straight back. */
+ *  — a Settings-page input, say — so the drift handler below leaves it
+ *  alone rather than fighting them for it. The scan toolbar's own
+ *  one-shot buttons (Retry failed, Clear sent, Discard failed) are the
+ *  deliberate exception: they take focus to be clicked, do their job,
+ *  and hand it straight back once their action resolves — see
+ *  `runToolbarAction`. */
 const KEEPS_FOCUS = new Set(['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'A']);
 
 function statusLabel(row: OutboxRow): string {
@@ -63,6 +68,10 @@ export default function Scan() {
   const [value, setValue] = useState('');
   const [index, setIndex] = useState<ScanIndex | null>(null);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('loading');
+  // Set by a failed enqueue/toolbar write and left up until something
+  // succeeds — an unattended kiosk needs an operator to notice storage
+  // is failing, not a toast that vanishes before anyone walks back over.
+  const [storageError, setStorageError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const loadId = useRef(0);
   const firstLoad = useRef(true);
@@ -144,25 +153,32 @@ export default function Scan() {
       scan_status: setup.scanStatus,
     };
     const match = matchScan(index, raw);
-    if (match) {
-      flash(hslCss(appearance.good_scan));
-      void enqueueScan({
-        scanned_value: raw,
-        scan_type: scanTypeFor(match.kind),
-        asset: {
-          id: match.asset.id,
-          asset_id: match.asset.asset_id,
-          name: match.asset.name,
-          rfid: match.asset.rfid,
-          serial_number: match.asset.serial_number,
-          make_model: match.asset.make_model,
-        },
-        ...where,
-      });
-    } else {
-      flash(hslCss(appearance.not_found_scan));
-      void enqueueScan({ scanned_value: raw, scan_type: 'barcode', asset: null, ...where });
-    }
+    flash(hslCss(match ? appearance.good_scan : appearance.not_found_scan));
+    const enqueued = match
+      ? enqueueScan({
+          scanned_value: raw,
+          scan_type: scanTypeFor(match.kind),
+          asset: {
+            id: match.asset.id,
+            asset_id: match.asset.asset_id,
+            name: match.asset.name,
+            rfid: match.asset.rfid,
+            serial_number: match.asset.serial_number,
+            make_model: match.asset.make_model,
+          },
+          ...where,
+        })
+      : enqueueScan({ scanned_value: raw, scan_type: 'barcode', asset: null, ...where });
+    // Attaching both handlers to the same promise (rather than a bare
+    // `.catch`) is what keeps a storage failure from a scan the operator
+    // never sees resolved — it must land on screen, not vanish as an
+    // unhandled rejection nobody was watching for.
+    void enqueued.then(
+      () => setStorageError(null),
+      () => setStorageError(
+        "Couldn't save the scan to this kiosk's storage — the last value was not recorded.",
+      ),
+    );
   };
 
   const onSubmit = (e: FormEvent) => {
@@ -186,6 +202,25 @@ export default function Scan() {
     [setup],
   );
 
+  // Retry failed / Clear sent / Discard failed are one-shot actions, not
+  // sustained focus targets: the general focusout handler above leaves
+  // focus wherever the operator clicked (so typing into some other
+  // input or select on the page is not fought), but a scanner needs the
+  // scan box back the moment one of these buttons has done its job.
+  // Storage failures are surfaced instead of swallowed, same as enqueue.
+  const runToolbarAction = (action: () => Promise<void>) => {
+    void action()
+      .then(() => setStorageError(null), () => setStorageError("Couldn't update the scan list."))
+      .finally(focusInput);
+  };
+
+  const onDiscardFailed = () => {
+    if (!window.confirm(
+      `Discard ${counts.failed} failed scans? They were never received by the portal.`,
+    )) return;
+    runToolbarAction(discardFailed);
+  };
+
   return (
     <div className="portal-page">
       <div className="eyebrow">Kiosk · Scanning</div>
@@ -196,6 +231,9 @@ export default function Scan() {
 
       {loadStatus === 'error' && (
         <p className="form-error" role="alert">Couldn&apos;t read this kiosk&apos;s local data.</p>
+      )}
+      {storageError && (
+        <p className="form-error scan-storage-error" role="alert">{storageError}</p>
       )}
       {empty && (
         <p className="page-hint">No move data on this kiosk. Sync it from Kiosk Setup.</p>
@@ -225,13 +263,24 @@ export default function Scan() {
           {counts.queued} queued · {counts.accepted} sent · {counts.failed} failed
         </p>
         {counts.failed > 0 && (
-          <button type="button" className="mini-btn" onClick={() => void retryFailed()}>
+          <button
+            type="button" className="mini-btn"
+            onClick={() => runToolbarAction(retryFailed)}
+          >
             Retry failed
           </button>
         )}
-        {counts.accepted + counts.failed + counts.nomatch > 0 && (
-          <button type="button" className="mini-btn" onClick={() => void clearSent()}>
+        {counts.accepted + counts.nomatch > 0 && (
+          <button
+            type="button" className="mini-btn"
+            onClick={() => runToolbarAction(clearSent)}
+          >
             Clear sent
+          </button>
+        )}
+        {counts.failed > 0 && (
+          <button type="button" className="mini-btn" onClick={onDiscardFailed}>
+            Discard failed
           </button>
         )}
       </div>

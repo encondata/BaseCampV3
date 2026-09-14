@@ -84,8 +84,12 @@ export function openDb(): Promise<IDBDatabase> {
       // version. Found live: three stale tabs pinned the database at v1
       // and the Scanning page simply never became usable.
       db.onversionchange = () => {
+        // Drop the cached promise BEFORE closing: an `openDb()` call
+        // arriving in the gap between `close()` and some later cleanup
+        // must not hand back a connection already on its way out —
+        // it needs to see nothing cached and open a fresh one.
+        dbPromise = null;
         db.close();
-        if (dbPromise) void dbPromise.then((open) => { if (open === db) dbPromise = null; });
       };
       resolve(db);
     };

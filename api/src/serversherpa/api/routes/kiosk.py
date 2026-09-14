@@ -534,12 +534,13 @@ async def ingest_scans(
     Idempotent on the kiosk-generated `client_scan_id`: a batch the
     kiosk retries because it never saw the response stores nothing new
     and reports every scan as accepted again, so the kiosk can clear its
-    outbox. A scan naming a site, move, or checkpoint the server does
-    not know is rejected on its own (`bad_site` / `bad_initiative` /
-    `bad_status`) and the rest of the batch still lands — one bad row
-    from a stale kiosk must not cost a truckload of scans. The whole
-    batch fails only on an unknown kiosk (404), a malformed body (422),
-    or read-only mode (423 — this writes, so it is not exempt).
+    outbox. A scan naming a site, move, checkpoint, or scan type the
+    server does not know is rejected on its own (`bad_site` /
+    `bad_initiative` / `bad_status` / `bad_scan_type`) and the rest of
+    the batch still lands — one bad row from a stale kiosk must not cost
+    a truckload of scans. The whole batch fails only on an unknown kiosk
+    (404), a malformed body (422), or read-only mode (423 — this writes,
+    so it is not exempt).
 
     A checkpoint is only required to exist, not to still be active: a
     status someone deactivated mid-move must not start dropping scans.
@@ -562,12 +563,19 @@ async def ingest_scans(
         select(StatusValue.key).where(
             StatusValue.record_type == "asset",
             StatusValue.key.in_(status_keys)))) if status_keys else set()
+    scan_type_keys = {s.scan_type for s in body.scans}
+    known_scan_types = set(await db.scalars(
+        select(StatusValue.key).where(
+            StatusValue.record_type == "scan",
+            StatusValue.key.in_(scan_type_keys)))) if scan_type_keys else set()
 
     accepted: list[uuid.UUID] = []
     rejected: list[KioskScanRejected] = []
     rows: list[dict] = []
     for scan in body.scans:
-        if scan.site_id is not None and scan.site_id not in known_sites:
+        if scan.scan_type not in known_scan_types:
+            code = "bad_scan_type"
+        elif scan.site_id is not None and scan.site_id not in known_sites:
             code = "bad_site"
         elif (scan.initiative_id is not None
                 and scan.initiative_id not in known_initiatives):

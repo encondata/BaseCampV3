@@ -331,7 +331,17 @@ async function flushOnce(): Promise<void> {
 export function flushOutbox(): Promise<void> {
   if (inFlight) return inFlight;
   const run = flushOnce()
-    .catch(() => undefined)   // storage failures must not kill the sender
+    .catch(() => {
+      // Storage failures must not kill the sender — but a batch left
+      // `sending` would never be picked up again (`dueRows` only takes
+      // `queued`/`retrying`), stranding it for good. Put it back to
+      // `queued` (attempts untouched: this was not a network attempt)
+      // so the check below schedules it straight back onto the queue.
+      const stranded = all.filter((r) => r.status === 'sending');
+      if (!stranded.length) return;
+      for (const row of stranded) row.status = 'queued';
+      rebuild();
+    })
     .then(() => {
       inFlight = null;
       // More than one batch's worth waiting? Go again straight away;
@@ -359,17 +369,33 @@ export async function retryFailed(): Promise<void> {
   scheduleFlush(0);
 }
 
-/** "Clear sent" — drops everything settled (accepted, failed, and the
- *  unmatched scans that were never going anywhere) and keeps whatever
- *  is still on its way. */
-export async function clearSent(): Promise<void> {
-  const done = all.filter((r) =>
-    r.status === 'accepted' || r.status === 'failed' || r.status === 'nomatch');
-  if (!done.length) return;
-  await deleteRows('outbox', done.map((r) => r.client_scan_id));
-  const dropped = new Set(done.map((r) => r.client_scan_id));
+/** Removes every row matching `pred` in one write, shared by `clearSent`
+ *  and `discardFailed` below. */
+async function dropRows(pred: (row: OutboxRow) => boolean): Promise<void> {
+  const drop = all.filter(pred);
+  if (!drop.length) return;
+  await deleteRows('outbox', drop.map((r) => r.client_scan_id));
+  const dropped = new Set(drop.map((r) => r.client_scan_id));
   all = all.filter((r) => !dropped.has(r.client_scan_id));
   rebuild();
+}
+
+/** "Clear sent" — drops what settled cleanly (accepted, and the
+ *  unmatched scans that were never going anywhere) and keeps whatever
+ *  is still on its way OR needs the operator's attention. `failed` rows
+ *  are deliberately NOT included: they are scans the portal never
+ *  received, and clearing them silently would look identical to a
+ *  clean send from the operator's side. See `discardFailed`. */
+export function clearSent(): Promise<void> {
+  return dropRows((r) => r.status === 'accepted' || r.status === 'nomatch');
+}
+
+/** "Discard failed" — the operator has confirmed these scans are being
+ *  abandoned, not just tidied off the screen; the page asks first
+ *  because, unlike `clearSent`, this throws away scans that never
+ *  reached the portal. */
+export function discardFailed(): Promise<void> {
+  return dropRows((r) => r.status === 'failed');
 }
 
 /** Test seam: drops the in-memory queue and every timer, as if the page

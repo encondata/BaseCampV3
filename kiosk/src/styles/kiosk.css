@@ -432,15 +432,15 @@
 /* The left border is what reads at a glance from a few feet away; the
    tint keeps the row legible without washing the text out. */
 .scan-row > td:first-child { border-left: 3px solid transparent; }
-.scan-row.is-accepted { background: rgba(62, 207, 142, .15); }
+.scan-row.is-accepted { background: color-mix(in srgb, var(--c-green, #178a4c) 15%, transparent); }
 .scan-row.is-accepted > td:first-child { border-left-color: var(--c-green, #178a4c); }
 .scan-row.is-queued,
 .scan-row.is-sending,
-.scan-row.is-retrying { background: rgba(255, 161, 46, .15); }
+.scan-row.is-retrying { background: color-mix(in srgb, var(--c-amber, #a36207) 15%, transparent); }
 .scan-row.is-queued > td:first-child,
 .scan-row.is-sending > td:first-child,
 .scan-row.is-retrying > td:first-child { border-left-color: var(--c-amber, #a36207); }
 .scan-row.is-failed,
-.scan-row.is-nomatch { background: rgba(192, 53, 64, .12); }
+.scan-row.is-nomatch { background: color-mix(in srgb, var(--c-red, #c03540) 12%, transparent); }
 .scan-row.is-failed > td:first-child,
 .scan-row.is-nomatch > td:first-child { border-left-color: var(--c-red, #c03540); }

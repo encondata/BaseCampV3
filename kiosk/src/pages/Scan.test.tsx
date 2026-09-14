@@ -14,6 +14,18 @@ vi.mock('../lib/api', async (importOriginal) => {
   return { ...actual, postScans: api.postScans };
 });
 
+// `enqueueScan` is wrapped so a single test can force it to reject —
+// everything else about the outbox (IndexedDB, timers, batching) stays
+// real, since a fake-indexeddb-backed queue is what these tests exist
+// to exercise.
+const outbox = vi.hoisted(() => ({ enqueueScan: vi.fn() }));
+vi.mock('../lib/outbox', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/outbox')>();
+  outbox.enqueueScan.mockImplementation(
+    (...args: Parameters<typeof actual.enqueueScan>) => actual.enqueueScan(...args));
+  return { ...actual, enqueueScan: outbox.enqueueScan };
+});
+
 import { clearFlash, readFlash } from '../lib/flash';
 import { closeDb, replaceAll } from '../lib/localDb';
 import { writeKioskSetup } from '../lib/kioskSetup';
@@ -49,6 +61,7 @@ beforeEach(async () => {
   // Nothing is accepted by default, so a row's color in these tests is
   // the one the page gave it, not one the network changed underneath.
   api.postScans.mockResolvedValue({ accepted: [], rejected: [] });
+  outbox.enqueueScan.mockClear();      // keep the delegating impl, drop call history
 });
 
 afterEach(() => {
@@ -152,6 +165,54 @@ it('counts the queue and offers Clear sent once something has settled', async ()
   await waitFor(() => expect(screen.getByText('Nothing scanned yet.')).toBeTruthy());
 });
 
+it('a storage failure while enqueuing a scan surfaces a persistent alert instead of losing it', async () => {
+  const input = await renderScan();
+  outbox.enqueueScan.mockRejectedValueOnce(new Error('storage full'));
+  await userEvent.type(input, '100348{Enter}');
+
+  const alert = await screen.findByText(
+    "Couldn't save the scan to this kiosk's storage — the last value was not recorded.",
+  );
+  expect(alert.getAttribute('role')).toBe('alert');
+  expect(alert.className).toContain('scan-storage-error');
+
+  // A later scan that does save clears it — the banner reports the
+  // kiosk's current state, not a permanent scar from one bad write.
+  await userEvent.type(input, '10043{Enter}');
+  await waitFor(() => expect(screen.queryByText(
+    "Couldn't save the scan to this kiosk's storage — the last value was not recorded.",
+  )).toBeNull());
+});
+
+it('Clear sent keeps failed scans; Discard failed removes them after confirmation', async () => {
+  api.postScans.mockImplementation((body: { scans: { client_scan_id: string }[] }) =>
+    Promise.resolve({
+      accepted: [],
+      rejected: body.scans.map((s) => ({ client_scan_id: s.client_scan_id, code: 'bad_site' })),
+    }));
+  const input = await renderScan();
+  await userEvent.type(input, '100348{Enter}');
+  await waitFor(() => expect(screen.getByText(/1 failed/)).toBeTruthy());
+
+  await userEvent.type(input, 'nope123{Enter}');
+  await screen.findByRole('row', { name: /nope123/ });
+
+  await userEvent.click(screen.getByRole('button', { name: 'Clear sent' }));
+  await waitFor(() => expect(screen.queryByRole('row', { name: /nope123/ })).toBeNull());
+  expect(screen.getByRole('row', { name: /Rack 4 switch/ })).toBeTruthy();   // failed row stays
+
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  await userEvent.click(screen.getByRole('button', { name: 'Discard failed' }));
+  expect(confirmSpy).toHaveBeenCalledWith(
+    'Discard 1 failed scans? They were never received by the portal.');
+  expect(screen.getByRole('row', { name: /Rack 4 switch/ })).toBeTruthy();   // declined: still there
+
+  confirmSpy.mockReturnValue(true);
+  await userEvent.click(screen.getByRole('button', { name: 'Discard failed' }));
+  await waitFor(() => expect(screen.getByText('Nothing scanned yet.')).toBeTruthy());
+  confirmSpy.mockRestore();
+});
+
 it('an empty local database disables the input and says where to fix it', async () => {
   render(<MemoryRouter><Scan /></MemoryRouter>);
   expect(await screen.findByText('No move data on this kiosk. Sync it from Kiosk Setup.'))
@@ -171,13 +232,28 @@ it('takes focus back when it drifts to something that does not want it', async (
   stray.remove();
 });
 
-it('leaves focus alone when the operator clicks a button on the page', async () => {
+it('returns focus to the input after Clear sent resolves', async () => {
   const input = await renderScan();
   await userEvent.type(input, 'nope123{Enter}');
   await screen.findByRole('row', { name: /nope123/ });
 
   const clear = screen.getByRole('button', { name: 'Clear sent' });
-  clear.focus();
-  await new Promise((r) => setTimeout(r, 10));
-  expect(document.activeElement).toBe(clear);
+  await userEvent.click(clear);
+  // Clicking moves focus to the button first — the toolbar action is a
+  // one-shot, not a place focus should settle, so it comes straight back.
+  await waitFor(() => expect(document.activeElement).toBe(input));
+});
+
+it('returns focus to the input after Retry failed resolves', async () => {
+  api.postScans.mockImplementation((body: { scans: { client_scan_id: string }[] }) =>
+    Promise.resolve({
+      accepted: [],
+      rejected: body.scans.map((s) => ({ client_scan_id: s.client_scan_id, code: 'bad_site' })),
+    }));
+  const input = await renderScan();
+  await userEvent.type(input, '100348{Enter}');
+  const retry = await screen.findByRole('button', { name: 'Retry failed' });
+
+  await userEvent.click(retry);
+  await waitFor(() => expect(document.activeElement).toBe(input));
 });
