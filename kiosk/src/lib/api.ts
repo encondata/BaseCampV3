@@ -391,6 +391,40 @@ export async function postScans(
   return jsonFrom<KioskScanBatchOut>(resp);
 }
 
+// ── printer maintenance ─────────────────────────────────────────────
+
+/** One piece of printer maintenance this kiosk performed over WebUSB.
+ *  `event` is an enum on the server too, so a later maintenance action
+ *  joins this union rather than getting its own endpoint. */
+export interface KioskPrinterEvent {
+  serial: string;
+  event: 'factory_reset';
+  outcome: 'completed' | 'failed';
+  printer_model?: string | null;
+  printer_firmware?: string | null;
+  calibrated?: boolean;
+  failed_step?: string | null;
+  error?: string | null;
+}
+
+/** Reports maintenance so it lands in the portal's audit log. Resolves
+ *  to whether it was recorded and NEVER throws or rejects: the printer
+ *  work already happened out at the kiosk, so a server that is down,
+ *  slow, or unreachable must not break the flow that is reporting it —
+ *  the caller shows a "couldn't record this" line and carries on. */
+export async function postPrinterEvent(body: KioskPrinterEvent): Promise<boolean> {
+  try {
+    const resp = await apiFetch('/kiosk/printer-events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
 // ── public system status (login banners) ────────────────────────────
 
 export const DEFAULT_SYSTEM_STATUS: SystemStatus = {

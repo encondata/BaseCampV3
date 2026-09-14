@@ -10,14 +10,21 @@
  * yet". Everything goes through the hook rather than the raw transport,
  * so each command lands in the page's command log.
  *
- * Nothing here touches the API: a factory reset is a browser-to-printer
- * (WebUSB) action and is NOT audited server-side.
+ * The reset itself is browser-to-printer (WebUSB) and never touches the
+ * API, but the fact that it happened does: when the run ends — whether
+ * it completed or failed — the modal posts it to /kiosk/printer-events,
+ * which writes one audit row an admin can review in the portal. That
+ * report is strictly best-effort: it is fired and never awaited, a
+ * failure only shows a line in the modal, and nothing about it can stop
+ * the hand-off into the setup wizard.
  */
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 
 import { CALIBRATE, FACTORY_DEFAULTS, SAVE_SETTINGS, configurationQuery } from '@portal/labels/zebraCommands';
 import { parseConfiguration, type HostIdentification, type PrinterConfiguration } from '@portal/labels/zebraUsb';
 
+import { postPrinterEvent } from '../../lib/api';
+import { getIdentity } from '../../lib/identity';
 import type { ZebraPrinter } from '../../lib/useZebraPrinter';
 
 type StepId = 'defaults' | 'restart' | 'calibrate' | 'save' | 'config';
@@ -67,6 +74,7 @@ export default function FactoryResetModal({ printer, identity, onDone, onClose }
   const [error, setError] = useState('');
   const [failedAt, setFailedAt] = useState<number | null>(null);
   const [retryable, setRetryable] = useState(true);
+  const [reported, setReported] = useState<'ok' | 'failed' | null>(null);
   const running = phase === 'reset' && failedAt === null;
 
   const printerRef = useRef(printer);
@@ -109,6 +117,31 @@ export default function FactoryResetModal({ printer, identity, onDone, onClose }
     throw new Error(RESTART_FAILED);
   };
 
+  /** Tell the portal what happened, success or failure — a failed reset
+   *  is exactly the run an admin wants to find later. Never awaited by
+   *  the caller and never throws (see `postPrinterEvent`). */
+  const report = async (
+    outcome: 'completed' | 'failed',
+    failure?: { failed_step: StepId; error: string },
+  ) => {
+    let recorded = false;
+    try {
+      recorded = await postPrinterEvent({
+        serial: getIdentity().serial,
+        event: 'factory_reset',
+        outcome,
+        printer_model: identity?.model ?? null,
+        printer_firmware: identity?.firmware ?? null,
+        calibrated: calibrate,
+        failed_step: failure?.failed_step ?? null,
+        error: failure?.error ?? null,
+      });
+    } catch {
+      recorded = false;   // belt and braces: postPrinterEvent already swallows
+    }
+    if (aliveRef.current) setReported(recorded ? 'ok' : 'failed');
+  };
+
   const runStep = async (id: StepId) => {
     const p = printerRef.current;
     if (id === 'defaults') await p.send(FACTORY_DEFAULTS);
@@ -123,6 +156,7 @@ export default function FactoryResetModal({ printer, identity, onDone, onClose }
     setError('');
     setFailedAt(null);
     setRetryable(true);
+    setReported(null);
     for (let i = from; i < steps.length; i++) {
       const id = steps[i];
       setStates((s) => ({ ...s, [id]: 'running' }));
@@ -135,11 +169,13 @@ export default function FactoryResetModal({ printer, identity, onDone, onClose }
         setError(message);
         setFailedAt(i);
         setRetryable(message !== RECONNECT_NEEDED);
+        void report('failed', { failed_step: id, error: message });
         return;
       }
       if (!aliveRef.current) return;
       setStates((s) => ({ ...s, [id]: 'done' }));
     }
+    void report('completed');
     onDone(configRef.current);
   };
 
@@ -211,6 +247,10 @@ export default function FactoryResetModal({ printer, identity, onDone, onClose }
                 })}
               </ul>
               {error && <div className="zp-notice error" role="alert"><p className="page-hint">{error}</p></div>}
+              {reported === 'ok' && <p className="page-hint">Recorded in the portal.</p>}
+              {reported === 'failed' && (
+                <p className="form-error">Couldn&apos;t record this reset in the portal — tell an admin.</p>
+              )}
               {running && <p className="page-hint">Leave the printer powered on. This takes up to a minute.</p>}
             </div>
           )}

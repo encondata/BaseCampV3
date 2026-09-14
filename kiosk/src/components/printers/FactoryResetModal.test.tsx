@@ -10,7 +10,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HostIdentification } from '@portal/labels/zebraUsb';
 
-import FactoryResetModal from './FactoryResetModal';
+const api = vi.hoisted(() => ({
+  postPrinterEvent: vi.fn(async (_body: import('../../lib/api').KioskPrinterEvent) => true),
+}));
+vi.mock('../../lib/api', async (importActual) => ({
+  ...(await importActual<typeof import('../../lib/api')>()), ...api,
+}));
+vi.mock('../../lib/identity', async (importActual) => ({
+  ...(await importActual<typeof import('../../lib/identity')>()),
+  getIdentity: () => ({ serial: 'kiosk-web-test-serial', name: 'Test Kiosk', persistent: true }),
+}));
+
+const { default: FactoryResetModal } = await import('./FactoryResetModal');
 
 const IDENTITY: HostIdentification = { model: 'ZD421-203dpi ZPL', firmware: 'V92.21.16Z', dotsPerMm: 8, memory: '8192KB', dpi: 203 };
 
@@ -53,7 +64,7 @@ const tick = async (rounds = 3) => {
   await act(async () => { for (let i = 0; i < rounds; i++) await vi.advanceTimersByTimeAsync(2000); });
 };
 
-beforeEach(() => vi.useFakeTimers());
+beforeEach(() => { vi.useFakeTimers(); api.postPrinterEvent.mockReset(); api.postPrinterEvent.mockResolvedValue(true); });
 afterEach(() => { vi.useRealTimers(); cleanup(); });
 
 describe('FactoryResetModal', () => {
@@ -155,5 +166,54 @@ describe('FactoryResetModal', () => {
     expect(printer.send.mock.calls.map((c) => c[0])).toEqual(['^XA^JUF^XZ', '~JC', '^XA^JUS^XZ']);
     expect(onDone).toHaveBeenCalledTimes(1);
     expect(onDone.mock.calls[0][0]).toMatchObject({ darkness: 10, printSpeed: 6, mediaType: 'GAP/NOTCH', printWidth: 812 });
+  });
+
+  it('reports a completed reset to the portal with the printer and calibrate choice', async () => {
+    const { onDone } = setup();
+    await click(screen.getByRole('button', { name: 'Factory reset' }));
+    await tick(30);
+    expect(api.postPrinterEvent).toHaveBeenCalledTimes(1);
+    expect(api.postPrinterEvent.mock.calls[0][0]).toEqual({
+      serial: 'kiosk-web-test-serial',
+      event: 'factory_reset',
+      outcome: 'completed',
+      printer_model: 'ZD421-203dpi ZPL',
+      printer_firmware: 'V92.21.16Z',
+      calibrated: true,
+      failed_step: null,
+      error: null,
+    });
+    expect(onDone).toHaveBeenCalled();
+    expect(screen.getByText('Recorded in the portal.')).toBeTruthy();
+  });
+
+  it('reports a failed reset with the step it died on and the message shown', async () => {
+    setup(fakePrinter({ identifyAlwaysFails: true }));
+    await click(screen.getByRole('button', { name: 'Factory reset' }));
+    await tick(30);
+    expect(api.postPrinterEvent).toHaveBeenCalledTimes(1);
+    expect(api.postPrinterEvent.mock.calls[0][0]).toMatchObject({
+      outcome: 'failed',
+      failed_step: 'restart',
+      error: 'The printer did not come back. Power-cycle it, reconnect, and try again.',
+      calibrated: true,
+    });
+  });
+
+  it('a report the server refuses warns, and still hands off to setup', async () => {
+    api.postPrinterEvent.mockResolvedValue(false);
+    const { onDone } = setup();
+    await click(screen.getByRole('button', { name: 'Factory reset' }));
+    await tick(30);
+    expect(screen.getByText(/Couldn't record this reset in the portal/)).toBeTruthy();
+    expect(onDone).toHaveBeenCalled();
+  });
+
+  it('a rejected report can never stop the hand-off', async () => {
+    api.postPrinterEvent.mockRejectedValue(new Error('boom'));
+    const { onDone } = setup();
+    await click(screen.getByRole('button', { name: 'Factory reset' }));
+    await tick(30);
+    expect(onDone).toHaveBeenCalled();
   });
 });
