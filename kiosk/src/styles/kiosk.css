@@ -180,6 +180,7 @@
 .kiosk-tile.is-disabled:hover { transform: none; box-shadow: none; border-color: var(--paper-line); }
 .kiosk-tile-lock { font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em; color: var(--text-mute); }
 .kiosk-setup-banner { margin-top: 18px; border-left: 3px solid var(--accent); }
+.kiosk-setup-banner.is-dev { border-left-color: var(--c-amber); }
 .kiosk-placeholder { max-width: 560px; margin-top: 18px; padding: 22px 24px; background: var(--paper); border: 1px dashed var(--paper-line); border-radius: 14px; color: var(--text-mute); display: grid; gap: 14px; justify-items: start; }
 .kiosk-section { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; color: var(--snow); opacity: .85; white-space: nowrap; }
 @media (max-width: 900px) { .kiosk-section { display: none; } }

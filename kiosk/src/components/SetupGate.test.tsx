@@ -3,6 +3,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 
+import { writeDevMode } from '../lib/devMode';
 import { FEATURES } from '../lib/features';
 import { writeSetupState } from '../lib/setupState';
 import SetupGate from './SetupGate';
@@ -38,6 +39,19 @@ it('redirects to / when setup failed', () => {
 
 it('renders children when setup is complete', () => {
   writeSetupState('complete');
+  renderAt('/scan');
+  expect(screen.getByText('Scan feature')).toBeTruthy();
+});
+
+it('renders children when setup is incomplete but developer mode is on', () => {
+  writeDevMode(true);
+  renderAt('/scan');
+  expect(screen.getByText('Scan feature')).toBeTruthy();
+});
+
+it('renders children when setup failed but developer mode is on', () => {
+  writeSetupState('failed');
+  writeDevMode(true);
   renderAt('/scan');
   expect(screen.getByText('Scan feature')).toBeTruthy();
 });

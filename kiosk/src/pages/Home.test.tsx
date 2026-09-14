@@ -12,6 +12,7 @@ const auth = vi.hoisted(() => ({
 }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
+import { writeDevMode } from '../lib/devMode';
 import { FEATURES } from '../lib/features';
 import { writeSetupState } from '../lib/setupState';
 import FeaturePage from './FeaturePage';
@@ -100,4 +101,34 @@ it('when setup failed, shows the failed copy on the banner and lock lines', () =
   renderRouted();
   expect(screen.getByText('Kiosk setup failed. Open Kiosk Setup to try again.')).toBeTruthy();
   expect(screen.getAllByText('Kiosk setup failed — open Kiosk Setup.').length).toBeGreaterThan(0);
+});
+
+it('when setup is incomplete and developer mode is on, no tile is disabled and the dev note replaces the normal banner', () => {
+  writeDevMode(true);
+  renderRouted();
+  for (const f of FEATURES) {
+    const tile = screen.getByRole('link', { name: new RegExp(f.title) });
+    expect(tile.getAttribute('aria-disabled')).toBeNull();
+  }
+  expect(screen.getByText('Developer mode: all features are available while kiosk setup is incomplete.')).toBeTruthy();
+  expect(screen.queryByText('Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.')).toBeNull();
+});
+
+it('when setup failed and developer mode is on, no tile is disabled and the dev note reflects the failed state', () => {
+  writeSetupState('failed');
+  writeDevMode(true);
+  renderRouted();
+  for (const f of FEATURES) {
+    const tile = screen.getByRole('link', { name: new RegExp(f.title) });
+    expect(tile.getAttribute('aria-disabled')).toBeNull();
+  }
+  expect(screen.getByText('Developer mode: all features are available while kiosk setup is failed.')).toBeTruthy();
+  expect(screen.queryByText('Kiosk setup failed. Open Kiosk Setup to try again.')).toBeNull();
+});
+
+it('when setup is complete and developer mode is on, no dev note is shown', () => {
+  writeSetupState('complete');
+  writeDevMode(true);
+  renderRouted();
+  expect(screen.queryByText(/Developer mode: all features are available/)).toBeNull();
 });

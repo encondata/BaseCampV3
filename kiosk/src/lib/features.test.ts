@@ -22,3 +22,15 @@ it('every other feature is unavailable until setup is complete', () => {
     expect(featureAvailable(feature, 'complete')).toBe(true);
   }
 });
+
+it('developer mode overrides the setup gate for every feature, in every setup state', () => {
+  for (const state of ['incomplete', 'complete', 'failed'] as const) {
+    for (const feature of [setup, settings, scan, labels, timeclock]) {
+      expect(featureAvailable(feature, state, true)).toBe(true);
+    }
+  }
+});
+
+it('developer mode defaults to off when omitted', () => {
+  expect(featureAvailable(scan, 'incomplete')).toBe(false);
+});

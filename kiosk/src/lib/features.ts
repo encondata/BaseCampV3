@@ -29,8 +29,13 @@ export const FEATURES: KioskFeature[] = [
 ];
 
 /** Whether a tile/route may be used given the kiosk's setup state — always
- *  true for `alwaysAvailable` features (Kiosk Setup, Settings), otherwise
- *  only once setup is complete. */
-export function featureAvailable(feature: KioskFeature, setupState: KioskSetupState): boolean {
-  return feature.alwaysAvailable || isSetupComplete(setupState);
+ *  true for `alwaysAvailable` features (Kiosk Setup, Settings) or when
+ *  developer mode is on (Jimmy: "developer mode overrides this to always
+ *  allow all options"), otherwise only once setup is complete. */
+export function featureAvailable(
+  feature: KioskFeature,
+  setupState: KioskSetupState,
+  devMode = false,
+): boolean {
+  return devMode || feature.alwaysAvailable || isSetupComplete(setupState);
 }

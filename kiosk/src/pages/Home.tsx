@@ -3,6 +3,7 @@
 
 import { Link } from 'react-router-dom';
 
+import { useDevMode } from '../lib/devMode';
 import { featureAvailable, FEATURES, type KioskFeature } from '../lib/features';
 import { useKioskSetupState } from '../lib/setupState';
 
@@ -53,6 +54,7 @@ const ICONS: Record<KioskFeature['id'], JSX.Element> = {
 
 export default function Home() {
   const [setupState] = useKioskSetupState();
+  const [devMode] = useDevMode();
   const complete = setupState === 'complete';
   const failed = setupState === 'failed';
 
@@ -60,7 +62,12 @@ export default function Home() {
     <div className="portal-page">
       <div className="eyebrow">Kiosk</div>
       <h1 className="page-title">What would you like to do?</h1>
-      {!complete && (
+      {!complete && devMode && (
+        <div className="portal-banner kiosk-setup-banner is-dev">
+          Developer mode: all features are available while kiosk setup is {setupState}.
+        </div>
+      )}
+      {!complete && !devMode && (
         <div className="portal-banner kiosk-setup-banner">
           {failed
             ? 'Kiosk setup failed. Open Kiosk Setup to try again.'
@@ -69,7 +76,7 @@ export default function Home() {
       )}
       <nav className="kiosk-launcher" aria-label="Kiosk features">
         {FEATURES.map((f) => {
-          const available = featureAvailable(f, setupState);
+          const available = featureAvailable(f, setupState, devMode);
           const tile = (
             <>
               {ICONS[f.id]}

@@ -7,11 +7,13 @@
 import type { ReactNode } from 'react';
 import { Navigate } from 'react-router-dom';
 
+import { useDevMode } from '../lib/devMode';
 import { featureAvailable, type KioskFeature } from '../lib/features';
 import { useKioskSetupState } from '../lib/setupState';
 
 export default function SetupGate({ feature, children }: { feature: KioskFeature; children: ReactNode }) {
   const [setupState] = useKioskSetupState();
-  if (!featureAvailable(feature, setupState)) return <Navigate to="/" replace />;
+  const [devMode] = useDevMode();
+  if (!featureAvailable(feature, setupState, devMode)) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
