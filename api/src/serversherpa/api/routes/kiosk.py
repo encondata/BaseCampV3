@@ -17,10 +17,11 @@ from serversherpa.api.deps import (
 )
 from serversherpa.api.routes.auth import session_response
 from serversherpa.api.schemas import (
-    HeartbeatIn, HeartbeatOut, KioskSignOutIn, PairCreateIn, PairCreateOut, PairInfoOut,
-    PairPollIn, PairPollOut,
+    HeartbeatIn, HeartbeatOut, KioskSetupIn, KioskSetupOut, KioskSignOutIn, PairCreateIn,
+    PairCreateOut, PairInfoOut, PairPollIn, PairPollOut, SetupOptionInitiative,
+    SetupOptionScanType, SetupOptionsOut,
 )
-from serversherpa.db.models import Device, KioskPairRequest, UserAccount
+from serversherpa.db.models import Device, Initiative, KioskPairRequest, StatusValue, UserAccount
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_pairing as pairing
 from serversherpa.services.audit import audit
@@ -236,3 +237,77 @@ async def sign_out(
     device.session_started_at = None
     device.updated_at = datetime.now(UTC)
     await db.commit()
+
+
+# ── setup wizard (kiosk:view) ────────────────────────────────────────
+
+MOVE_STATUSES = ("planned", "in_progress")
+
+
+async def _allowed_initiatives(db: AsyncSession) -> list[Initiative]:
+    return list((await db.scalars(
+        select(Initiative)
+        .where(Initiative.initiative_type == "move",
+               Initiative.status.in_(MOVE_STATUSES),
+               Initiative.archived_at.is_(None))
+        .order_by(Initiative.name))).all())
+
+
+async def _active_scan_types(db: AsyncSession) -> list[StatusValue]:
+    return list((await db.scalars(
+        select(StatusValue)
+        .where(StatusValue.record_type == "asset", StatusValue.is_active.is_(True))
+        .order_by(StatusValue.sort_order, StatusValue.label))).all())
+
+
+@router.get("/setup-options", response_model=SetupOptionsOut)
+async def setup_options(
+    db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> SetupOptionsOut:
+    """Move initiatives and active asset status values for the Kiosk Setup
+    wizard, filtered exactly like the portal's kiosk device modal
+    (initiative_type=move, status planned/in_progress, not archived; asset
+    status values, active only) — see DeviceEditModal.tsx/KioskDevices.tsx.
+    Workers hold kiosk:view but not initiatives:view, so they cannot call
+    /initiatives directly; this endpoint gives the kiosk only the narrow
+    slice of that data the wizard needs."""
+    initiatives = await _allowed_initiatives(db)
+    scan_types = await _active_scan_types(db)
+    return SetupOptionsOut(
+        initiatives=[SetupOptionInitiative(id=i.id, name=i.name, status=i.status)
+                    for i in initiatives],
+        scan_types=[SetupOptionScanType(key=s.key, label=s.label, color=s.color)
+                   for s in scan_types])
+
+
+@router.post("/setup", response_model=KioskSetupOut)
+async def kiosk_setup(
+    body: KioskSetupIn, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskSetupOut:
+    """Stamps this kiosk's Device row (found by serial) with the move and
+    scan type chosen in the Kiosk Setup wizard. Not read-only exempt —
+    this is a write."""
+    device = await db.scalar(select(Device).where(Device.serial == body.serial))
+    if device is None or device.device_type != "kiosk":
+        raise _err(404, "device_not_found")
+    initiative = await db.get(Initiative, body.initiative_id)
+    if (initiative is None or initiative.initiative_type != "move"
+            or initiative.status not in MOVE_STATUSES
+            or initiative.archived_at is not None):
+        raise _err(422, "bad_initiative")
+    scan_type = await db.get(StatusValue, ("asset", body.scan_status))
+    if scan_type is None or not scan_type.is_active:
+        raise _err(422, "bad_scan_status")
+
+    device.current_initiative_id = initiative.id
+    device.scan_status = scan_type.key
+    device.updated_at = datetime.now(UTC)
+    audit(db, actor_id=actor.person.id, entity_type="device",
+          entity_id=str(device.id), action="kiosk_setup",
+          changes={"initiative_id": str(initiative.id), "scan_status": scan_type.key})
+    await db.commit()
+    return KioskSetupOut(device_id=device.id, initiative_id=initiative.id,
+                         initiative_name=initiative.name,
+                         scan_status=scan_type.key, scan_status_label=scan_type.label)
