@@ -2423,6 +2423,48 @@ class KioskPrinterEventIn(BaseModel):
     error: str | None = Field(default=None, max_length=500)
 
 
+# ── kiosk RFID enroll ──
+
+class KioskRfidEnrollIn(BaseModel):
+    """One tag the kiosk's RFID Enroll screen just read for an asset it
+    already found by serial or asset ID.
+
+    `rfid_tag` is whatever the reader produced: the server strips
+    whitespace, upper-cases, and left-pads it with zeros to the house's
+    24-character stored format itself (422 `bad_rfid` /
+    `rfid_too_long`), so a kiosk that normalizes differently — or not at
+    all — can never write a tag in another shape. The field is capped
+    generously here so the endpoint's own codes, not a schema error,
+    explain a too-long tag.
+
+    `scan_status` is the checkpoint the enrollment scan records (the
+    Admin tab's "RFID Enroll checkpoint"); `site_id` / `initiative_id`
+    come from Kiosk Setup and fall back to the Device's own setup.
+    `client_scan_id` makes the whole call idempotent, exactly as it does
+    for /kiosk/scans."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    rfid_tag: str = Field(min_length=1, max_length=200)
+    scan_status: str = Field(min_length=1, max_length=120)
+    client_scan_id: uuid.UUID
+    site_id: uuid.UUID | None = None
+    initiative_id: uuid.UUID | None = None
+
+
+class KioskRfidEnrollOut(BaseModel):
+    """The tagged asset as the kiosk should now show it. `rfid_tag` is
+    the stored (padded) value — the kiosk trims it for display the same
+    way the portal's lists do. `already_had_tag` says this asset was
+    already carrying exactly this tag, so nothing changed but the scan."""
+
+    asset_id: uuid.UUID
+    asset_name: str | None = None
+    asset_tag: str          # the human Asset ID (Asset.legacy_id), "" if unset
+    serial_number: str | None = None
+    rfid_tag: str
+    already_had_tag: bool
+
+
 # ── kiosk timeclock ──
 
 class KioskTimeclockPerson(BaseModel):

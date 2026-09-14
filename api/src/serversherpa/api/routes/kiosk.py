@@ -22,7 +22,7 @@ from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
     HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut, KioskClockInIn,
     KioskClockOutIn, KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
-    KioskScanBatchIn,
+    KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn,
     KioskScanBatchOut, KioskScanRejected, KioskSetupIn, KioskSetupOut,
     KioskSignOutIn, KioskTimeclockEntry, KioskTimeclockLastEntry,
     KioskTimeclockPerson, KioskTimeclockStatusOut, LabelVocabOut,
@@ -41,7 +41,7 @@ from serversherpa.labels.generate.values import (
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_pairing as pairing
 from serversherpa.services import timeclock
-from serversherpa.services.audit import audit
+from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import presign_get
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
@@ -630,6 +630,122 @@ async def ingest_scans(
           changes={"accepted": len(accepted), "rejected": len(rejected)})
     await db.commit()
     return KioskScanBatchOut(accepted=accepted, rejected=rejected)
+
+
+# ── RFID enroll (kiosk:view) ─────────────────────────────────────────
+
+RFID_LENGTH = 24    # the house stored format: 24 characters, zero-padded
+
+
+def normalize_rfid(raw: str) -> str:
+    """The house RFID format, enforced here and not taken on trust from
+    the kiosk (which normalizes the same way so the operator sees what
+    will be stored): whitespace stripped — inside as well as around, a
+    reader may space-separate an EPC — upper-cased, alphanumeric only,
+    then left-padded with zeros to exactly 24 characters. `displayRfid`
+    strips that padding again for display; the stored value keeps it, so
+    a tag read as "100348" and one read as its padded EPC are one row."""
+    tag = "".join(raw.split()).upper()
+    if not tag or not tag.isascii() or not tag.isalnum():
+        raise _err(422, "bad_rfid")
+    if len(tag) > RFID_LENGTH:
+        raise _err(422, "rfid_too_long")
+    return tag.rjust(RFID_LENGTH, "0")
+
+
+@router.post("/assets/{asset_id}/rfid", response_model=KioskRfidEnrollOut)
+async def enroll_rfid(
+    asset_id: uuid.UUID, body: KioskRfidEnrollIn, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskRfidEnrollOut:
+    """Write an RFID tag onto an asset from the kiosk's RFID Enroll
+    screen, and record the physical scan that produced it — both in one
+    transaction, so an asset is never tagged without the scan (or the
+    other way round).
+
+    The tag is normalized server-side (`normalize_rfid`): the kiosk does
+    the same padding so the operator can see what will be stored, but
+    nothing the kiosk sends is trusted. `rfid_tag` is unique across
+    assets (the `assets_rfid_uniq` partial index), so a tag already on
+    another asset is a 409 naming that asset rather than a constraint
+    error the screen cannot explain. The same tag on THIS asset is a
+    success with `already_had_tag`: nothing changed, so there is no
+    audit row — but the scan is still written, because the operator
+    really did wave a tag at a reader.
+
+    The scan is one `raw_scans` row shaped exactly like /kiosk/scans
+    writes them (`scan_type='rfid'`, the configured checkpoint in both
+    `status` and `scan_status`, `source='kiosk'`, the Device's name as
+    `device_id`), fresh for the scan-matching worker, and idempotent on
+    the kiosk's `client_scan_id` — a retried save records one scan.
+
+    Unlike /kiosk/scans, the checkpoint must still be ACTIVE: it is
+    configured once on Settings › Admin rather than sent per scan, so a
+    retired checkpoint is a misconfiguration to fix there (422
+    `bad_status`), not a scan to keep. Not read-only exempt — this
+    writes real data the kiosk can retry."""
+    tag = normalize_rfid(body.rfid_tag)
+    device = await _kiosk_device(db, body.serial)
+    asset = await db.get(Asset, asset_id)
+    if asset is None or asset.archived_at is not None:
+        raise _err(404, "asset_not_found")
+    checkpoint = await db.get(StatusValue, ("asset", body.scan_status))
+    if checkpoint is None or not checkpoint.is_active:
+        raise _err(422, "bad_status")
+
+    # The kiosk sends its own setup's site and move; a stale kiosk can
+    # still name one that has since gone. Checked rather than left to the
+    # scan's foreign keys, so that is a 422 the screen can report and not
+    # a 500 (/kiosk/scans rejects the same way, per scan).
+    if body.site_id is not None and await db.get(Site, body.site_id) is None:
+        raise _err(422, "bad_site")
+    if (body.initiative_id is not None
+            and await db.get(Initiative, body.initiative_id) is None):
+        raise _err(422, "bad_initiative")
+
+    holder = await db.scalar(
+        select(Asset).where(Asset.rfid_tag == tag, Asset.id != asset.id))
+    if holder is not None:
+        raise _err(409, "rfid_in_use", asset_id=str(holder.id),
+                   asset_name=holder.name)
+
+    now = datetime.now(UTC)
+    already_had_tag = (asset.rfid_tag or "").upper() == tag
+    if not already_had_tag:
+        before = snapshot(asset, ["rfid_tag"])
+        asset.rfid_tag = tag
+        asset.updated_at = now
+        audit(db, actor_id=actor.person.id, entity_type="asset",
+              entity_id=str(asset.id), action="kiosk_rfid_enroll",
+              changes={**diff(before, snapshot(asset, ["rfid_tag"])),
+                       "device": device.name})
+
+    # DO NOTHING against the partial unique index, same as /kiosk/scans:
+    # a kiosk retrying a save it never saw the answer to records one scan.
+    await db.execute(pg_insert(RawScan).values({
+        "scanned_value": tag,
+        "scan_type": "rfid",
+        "status": checkpoint.key,
+        "scan_status": checkpoint.key,
+        "scanned_at": now,
+        "device_id": device.name,
+        "operator_id": actor.person.id,
+        "site_id": body.site_id or device.site_id,
+        "initiative_id": body.initiative_id or device.current_initiative_id,
+        "source": "kiosk",
+        "client_scan_id": body.client_scan_id,
+    }).on_conflict_do_nothing(
+        index_elements=["client_scan_id"],
+        index_where=text("client_scan_id IS NOT NULL")))
+
+    # last_seen_at only: the kiosk's own configuration did not change.
+    device.last_seen_at = now
+    await db.commit()
+    return KioskRfidEnrollOut(
+        asset_id=asset.id, asset_name=asset.name,
+        asset_tag=str(asset.legacy_id) if asset.legacy_id is not None else "",
+        serial_number=asset.serial_number, rfid_tag=tag,
+        already_had_tag=already_had_tag)
 
 
 # ── timeclock (kiosk:view) ───────────────────────────────────────────
