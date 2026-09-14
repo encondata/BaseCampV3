@@ -636,3 +636,9 @@
 .enroll-preview { margin: 8px 0 0; font-size: 14px; color: var(--text-mute); max-width: clamp(20rem, 62vw, 62rem); }
 .enroll-preview .mono { font-size: 16px; color: var(--text-dark); }
 .enroll-actions { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
+/* The session list of this kiosk's own enrollments — same `.local-table`
+   shape as the scan list, but session-only (React state, no IndexedDB)
+   and capped at 25 rows, so it never needs the scan list's per-status
+   coloring. */
+.enroll-list-wrap.local-table-wrap { max-width: clamp(20rem, 82vw, 90rem); margin-top: 18px; }
+.enroll-list td:last-child, .enroll-list th:last-child { width: 1%; white-space: nowrap; }

@@ -3,7 +3,9 @@
  *  endpoint: finding the asset by serial or asset ID, the padded tag
  *  preview, the save, and what each failure says. */
 import 'fake-indexeddb/auto';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import {
+  cleanup, render, screen, waitFor, within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { IDBFactory } from 'fake-indexeddb';
 import { MemoryRouter } from 'react-router-dom';
@@ -295,4 +297,87 @@ it('Cancel returns to the asset step with nothing saved', async () => {
   await waitFor(() => expect(document.activeElement).toBe(el));
   expect(screen.queryByLabelText('RFID tag')).toBeNull();
   expect(api.postRfidEnroll).not.toHaveBeenCalled();
+});
+
+it('shows no session list before the first enrollment', async () => {
+  render_();
+  await assetInput();
+  expect(screen.queryByRole('table')).toBeNull();
+});
+
+it('a saved enrollment appears in the session list with name, serial, and the trimmed tag', async () => {
+  const user = userEvent.setup();
+  render_();
+  await scanAsset('SN-4242');
+  await screen.findByLabelText('RFID tag');
+  await user.type(tagInput(), '100348{Enter}');
+  await screen.findByText('Enrolled Rack 4 switch → 100348');
+
+  const table = await screen.findByRole('table');
+  const row = within(table).getByText('Rack 4 switch').closest('tr');
+  expect(row).toBeTruthy();
+  expect(within(row as HTMLElement).getByText('SN-4242')).toBeTruthy();
+  const tagCell = within(row as HTMLElement).getByText('100348');
+  expect(tagCell.title).toBe(PADDED);
+});
+
+it('a second enrollment appears above the first, newest first', async () => {
+  const user = userEvent.setup();
+  api.postRfidEnroll
+    .mockResolvedValueOnce(enrolled())
+    .mockResolvedValueOnce({
+      asset_id: TAGGED.id,
+      asset_name: TAGGED.name,
+      asset_tag: TAGGED.asset_id,
+      serial_number: TAGGED.serial_number,
+      rfid_tag: `${'0'.repeat(18)}200500`,
+      already_had_tag: false,
+    });
+  render_();
+  await scanAsset('SN-4242');
+  await screen.findByLabelText('RFID tag');
+  await user.type(tagInput(), '100348{Enter}');
+  await screen.findByText('Enrolled Rack 4 switch → 100348');
+
+  await scanAsset('10043');
+  await screen.findByLabelText('RFID tag');
+  await user.type(tagInput(), '200500{Enter}');
+  await screen.findByText('Enrolled Patch panel → 200500');
+
+  const table = await screen.findByRole('table');
+  const rows = within(table).getAllByRole('row').slice(1); // drop the header row
+  expect(within(rows[0]).getByText('Patch panel')).toBeTruthy();
+  expect(within(rows[1]).getByText('Rack 4 switch')).toBeTruthy();
+});
+
+it('enrolling a new tag onto an asset that already had one shows a replaced chip', async () => {
+  const user = userEvent.setup();
+  api.postRfidEnroll.mockResolvedValue({
+    asset_id: TAGGED.id,
+    asset_name: TAGGED.name,
+    asset_tag: TAGGED.asset_id,
+    serial_number: TAGGED.serial_number,
+    rfid_tag: `${'0'.repeat(18)}200500`,
+    already_had_tag: false,
+  });
+  render_();
+  await scanAsset('10043');
+  await screen.findByLabelText('RFID tag');
+  await user.type(tagInput(), '200500{Enter}');
+  await screen.findByText('Enrolled Patch panel → 200500');
+
+  const table = await screen.findByRole('table');
+  const row = within(table).getByText('Patch panel').closest('tr');
+  expect(within(row as HTMLElement).getByText('replaced')).toBeTruthy();
+});
+
+it('a failed save adds no row to the session list', async () => {
+  const user = userEvent.setup();
+  api.postRfidEnroll.mockRejectedValue(new ApiError(0, 'network'));
+  render_();
+  await scanAsset('SN-4242');
+  await screen.findByLabelText('RFID tag');
+  await user.type(tagInput(), '100348{Enter}');
+  await screen.findByText("Can't reach the portal. The tag was not saved.");
+  expect(screen.queryByRole('table')).toBeNull();
 });

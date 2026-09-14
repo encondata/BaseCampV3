@@ -20,9 +20,15 @@
  * (unlike scanning, whose queue exists because a dock loses signal
  * mid-shift). A save that did not reach the portal did not happen, and
  * the screen says so rather than promising to send it later. The
- * portal's asset record and the enrollment scan are the only trail;
- * the kiosk keeps no list of past enrollments — the toast is the
- * receipt, the same decision the Timeclock screen made.
+ * portal's asset record and the enrollment scan are the only trail.
+ *
+ * Below the input, a session-only list of this session's enrollments
+ * (newest first, capped at 25) gives the operator a quick "what did I
+ * just do" glance without leaving the screen. It lives in React state
+ * only — no IndexedDB — and a reload clears it: the Timeclock screen
+ * made the same call for the same reason (Jimmy, 2026-09-14, removing
+ * its own recent list), because the portal's asset record and the
+ * enrollment scan, not a kiosk-local cache, are the record of truth.
  */
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
@@ -44,6 +50,21 @@ import { playScanSound } from '../lib/sound';
 import { useSyncStatus } from '../lib/sync';
 
 type LoadStatus = 'loading' | 'ready' | 'error';
+
+/** One row of the session-only "what did I just enroll" list below the
+ *  input. Not the portal's `KioskRfidEnroll` shape verbatim — `at` is
+ *  added for the list's time column and `replaced` is derived here,
+ *  from what the page already knew about the asset before saving. */
+interface EnrollmentRow {
+  id: string;
+  name: string;
+  serial: string | null;
+  rfid: string;
+  replaced: boolean;
+  at: string;
+}
+
+const MAX_ENROLLMENTS = 25;
 
 /** The Scanning page's rule: focus is only reclaimed from things nobody
  *  deliberately moved it to. */
@@ -74,6 +95,13 @@ function saveErrorText(err: unknown): string {
   return `Couldn't save the tag (${code}).`;
 }
 
+/** Matches the Scanning list's time column. */
+function enrolledAt(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+}
+
 export default function Enroll() {
   const [setup] = useKioskSetup();
   const { phase } = useSyncStatus();
@@ -88,6 +116,7 @@ export default function Enroll() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [enrollments, setEnrollments] = useState<EnrollmentRow[]>([]);
 
   const assetRef = useRef<HTMLInputElement>(null);
   const tagRef = useRef<HTMLInputElement>(null);
@@ -239,6 +268,20 @@ export default function Enroll() {
         });
         showToast(`Enrolled ${result.asset_name ?? target.name ?? target.asset_id}`
           + ` → ${displayRfid(result.rfid_tag)}`);
+        // "Replaced" means the asset walked in with a different tag
+        // already on it — not the already_had_tag case, where the same
+        // tag was re-scanned and nothing actually changed.
+        setEnrollments((current) => [
+          {
+            id: uuid(),
+            name: result.asset_name ?? target.name ?? target.asset_id,
+            serial: result.serial_number ?? target.serial_number,
+            rfid: result.rfid_tag,
+            replaced: Boolean(target.rfid) && !result.already_had_tag,
+            at: new Date().toISOString(),
+          },
+          ...current,
+        ].slice(0, MAX_ENROLLMENTS));
         toAssetStep();
       },
       (err: unknown) => {
@@ -368,6 +411,34 @@ export default function Enroll() {
           />
           {error && <p className="form-error" role="alert">{error}</p>}
         </>
+      )}
+
+      {enrollments.length > 0 && (
+        <div className="local-table-wrap enroll-list-wrap">
+          <table className="local-table enroll-list">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Serial</th>
+                <th>RFID</th>
+                <th aria-label="Time" />
+              </tr>
+            </thead>
+            <tbody>
+              {enrollments.map((row) => (
+                <tr key={row.id}>
+                  <td>{row.name}</td>
+                  <td className="mono">{row.serial || '—'}</td>
+                  <td className="mono" title={row.rfid}>
+                    {displayRfid(row.rfid)}
+                    {row.replaced && <span className="chip tag">replaced</span>}
+                  </td>
+                  <td className="mono">{enrolledAt(row.at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
