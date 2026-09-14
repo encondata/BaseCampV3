@@ -1,0 +1,19 @@
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+
+import App from './App';
+// Portal design system first (tokens, shell, login theme, primitives), then
+// the kiosk's own rules. Order matters: kiosk.css only adds and scopes.
+import '@portal/styles/base.css';
+import '@portal/styles/portal-theme.css';
+import '@portal/styles/auth-theme.css';
+import '@portal/styles/directory.css';
+import '@portal/styles/chrome.css';
+import '@portal/styles/profile.css';
+import './styles/kiosk.css';
+
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);

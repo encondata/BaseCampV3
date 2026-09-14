@@ -57,7 +57,12 @@ def _format_ru(value: Decimal | None) -> str:
     return f"U{text}"
 
 
-def _make_model(make: str, model: str) -> str:
+def make_model_text(make: str, model: str) -> str:
+    """"Make + model" display text, blank-safe (`""`/`""` -> `""`). Public
+    so callers that need this one field without the whole catalog (e.g.
+    the kiosk sync endpoint) don't have to depend on the placeholder
+    catalog just to get it — see `placeholder_values`'s `make_model` key,
+    computed the same way."""
     if make and model:
         return f"{make} {model}"
     return make or model
@@ -129,7 +134,7 @@ def placeholder_values(
         "serial_number": asset_row.serial_number or "",
         "make": make,
         "model": model,
-        "make_model": _make_model(make, model),
+        "make_model": make_model_text(make, model),
         "source_raw": source_raw,
         "source_ru": _format_ru(asset_row.source_ru),
         "source_site": sites.origin.name if sites.origin else "",

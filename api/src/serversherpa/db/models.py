@@ -217,6 +217,30 @@ class AuthSession(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
+class KioskPairRequest(Base):
+    """One 'link with phone' attempt from a kiosk. The kiosk keeps the
+    poll token (only its sha256 is stored); a portal user approves the
+    code on their phone; the kiosk's next poll claims a fresh session
+    and the row becomes `claimed` (one-shot). Expiry is derived from
+    expires_at, never stored as a status. Rows older than a day are
+    deleted opportunistically on the next create."""
+
+    __tablename__ = "kiosk_pair_requests"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    code: Mapped[str] = mapped_column(unique=True)
+    poll_token_hash: Mapped[str]
+    serial: Mapped[str] = mapped_column(CITEXT)
+    kiosk_name: Mapped[str]
+    status: Mapped[str] = mapped_column(server_default=text("'pending'"))
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    ip_address: Mapped[str | None]
+    expires_at: Mapped[datetime]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
 class Attachment(Base):
     __tablename__ = "attachments"
 
@@ -761,6 +785,17 @@ class RawScan(Base):
     source: Mapped[str] = mapped_column(server_default="")
     match_attempted_at: Mapped[datetime | None] = mapped_column(
         comment="last matcher attempt; NULL = never tried")
+    # kiosk ingest (migration 0063)
+    client_scan_id: Mapped[uuid.UUID | None] = mapped_column(
+        comment="kiosk-generated scan id; UNIQUE where set, which is what "
+                "makes POST /kiosk/scans idempotent on a retried batch")
+    scan_status: Mapped[str | None] = mapped_column(
+        comment="checkpoint the scanning device was set to, as reported — "
+                "un-FK'd device data (cf. devices.scan_status); `status` is "
+                "the vocabulary-checked column the matcher copies")
+    initiative_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="SET NULL"),
+        comment="the move this scan belongs to (the kiosk's current move)")
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
@@ -931,6 +966,12 @@ class Device(Base):
         server_default=text("now()"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    # who is signed in on this kiosk right now (set by the sign-in
+    # heartbeat, cleared by /kiosk/sign-out)
+    session_person_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    session_login_method: Mapped[str | None]
+    session_started_at: Mapped[datetime | None]
 
 
 class DeviceDhcpLease(Base):

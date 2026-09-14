@@ -76,6 +76,8 @@ function kiosk(overrides: Partial<DeviceItem>): DeviceItem {
     tags_read_24h: 0,
     version: '2.4.1', sub_type: 'pi',
     current_initiative_id: 'i1', current_initiative_name: 'NAP11 Hall Migration (demo)',
+    session_person_id: null, session_person_name: null,
+    session_login_method: null, session_started_at: null,
     ...overrides,
   };
 }
@@ -270,6 +272,28 @@ it('clicking Delete + confirm calls deleteDevice and reloads', async () => {
   await waitFor(() => expect(api.listDevices).toHaveBeenCalledTimes(2));
 
   confirmSpy.mockRestore();
+});
+
+it('renders the signed-in user and login-method chip; a session-less row shows dashes', async () => {
+  const SESSION_DEVICES: DeviceItem[] = [
+    kiosk({
+      id: 's1', name: 'kiosk-signed-in',
+      session_person_id: 'p1', session_person_name: 'Claude Dev',
+      session_login_method: 'link', session_started_at: '2026-09-13T10:00:00Z',
+    }),
+    kiosk({ id: 's2', name: 'kiosk-signed-out' }),
+  ];
+  api.listDevices.mockResolvedValue(SESSION_DEVICES);
+  render(<KioskDevices />);
+
+  const signedInRow = (await screen.findByText('kiosk-signed-in')).closest('.dir-row') as HTMLElement;
+  expect(within(signedInRow).getByText('Claude Dev')).not.toBeNull();
+  const chip = within(signedInRow).getByText('Phone link');
+  expect(chip.className).toContain('chip tag');
+
+  const signedOutRow = screen.getByText('kiosk-signed-out').closest('.dir-row') as HTMLElement;
+  const dashes = within(signedOutRow).getAllByText('—');
+  expect(dashes.length).toBeGreaterThanOrEqual(2);
 });
 
 it('shows the load-error banner when listDevices rejects', async () => {

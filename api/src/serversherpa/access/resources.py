@@ -101,6 +101,11 @@ _RESOURCES = [
     # because this resource keeps the default visible_to = {"global"} — it
     # has no scope-aware row filtering, so do not widen visible_to here.
     Resource("ai", "AI assistant"),
+    # The kiosk app (kiosk/): who may sign in to a kiosk (password login
+    # with client="kiosk", approving a phone pairing, the heartbeat).
+    # Not a portal page, so no routes. Workers are self-anchored, hence
+    # "self" in visible_to; no client/partner role holds it by default.
+    Resource("kiosk", "Kiosk", visible_to=frozenset({"global", "self"})),
 ]
 
 REGISTRY: dict[str, Resource] = {r.id: r for r in _RESOURCES}

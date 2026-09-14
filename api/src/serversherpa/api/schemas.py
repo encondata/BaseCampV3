@@ -1,5 +1,6 @@
 """API response/request models (Pydantic)."""
 
+import json
 import re
 import urllib.parse
 import uuid
@@ -98,6 +99,9 @@ class UiPreferences(BaseModel):
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
+    # "kiosk" adds the kiosk:view gate before a session is minted (the
+    # kiosk app sends it; the portal never does).
+    client: Literal["portal", "kiosk"] = "portal"
 
 
 class ScopeOut(BaseModel):
@@ -136,6 +140,84 @@ class MeOut(BaseModel):
 
 class ErrorOut(BaseModel):
     code: str
+
+
+# ── kiosk: pairing + heartbeat ─────────────────────────────────────
+
+from serversherpa.services.kiosk_pairing import PairStatus  # noqa: E402
+
+
+class PairCreateIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=80)
+
+    @field_validator("serial", "name")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("blank")
+        return v
+
+
+class PairCreateOut(BaseModel):
+    code: str
+    poll_token: str          # returned exactly once; only its hash is stored
+    link_url: str
+    expires_at: datetime
+
+
+class PairPollIn(BaseModel):
+    poll_token: str = Field(min_length=1, max_length=200)
+
+
+class PairPollOut(BaseModel):
+    status: PairStatus
+    session: SessionOut | None = None   # present only when status == "approved"
+
+
+class PairInfoOut(BaseModel):
+    code: str
+    kiosk_name: str
+    serial: str
+    status: PairStatus
+    expires_at: datetime
+
+
+class HeartbeatIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
+    name: str = Field(min_length=1, max_length=80)
+    mode: Literal["web", "laptop", "pi", "android", "ios"]
+    version: str | None = Field(default=None, max_length=40)
+    raw_info: dict[str, Any] = Field(default_factory=dict)
+    sign_in: bool = False
+    login_method: Literal["password", "link"] | None = None
+
+    @field_validator("serial", "name")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("blank")
+        return v
+
+    @field_validator("raw_info")
+    @classmethod
+    def _raw_info_bounded(cls, v: dict[str, Any]) -> dict[str, Any]:
+        if len(v) > 32 or len(json.dumps(v)) > 4096:
+            raise ValueError("raw_info too large")
+        return v
+
+
+class HeartbeatOut(BaseModel):
+    device_id: uuid.UUID
+    name: str
+    registration: Literal["ok", "soon", "expired", "none"]
+    token_expires_at: datetime | None
+
+
+class KioskSignOutIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
 
 
 class PersonDetail(BaseModel):
@@ -2143,6 +2225,10 @@ class DeviceItem(BaseModel):
     last_seen_at: datetime | None
     raw_info: dict
     registered_at: datetime
+    session_person_id: uuid.UUID | None
+    session_person_name: str | None
+    session_login_method: str | None
+    session_started_at: datetime | None
 
 
 class DevicePatch(BaseModel):
@@ -2175,6 +2261,135 @@ class DeviceLeaseItem(BaseModel):
     reserved: bool
     up: bool
     last_seen_at: datetime | None
+
+
+# ── kiosk setup ──
+
+class SetupOptionSite(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
+class SetupOptionInitiative(BaseModel):
+    id: uuid.UUID
+    name: str
+    status: str
+    status_label: str
+    client_name: str | None = None
+    scheduled_start: str | None = None
+    scheduled_end: str | None = None
+    source_site: SetupOptionSite | None = None
+    destination_site: SetupOptionSite | None = None
+
+
+class SetupOptionScanType(BaseModel):
+    key: str
+    label: str
+    color: str
+
+
+class SetupOptionsOut(BaseModel):
+    initiatives: list[SetupOptionInitiative]
+    scan_types: list[SetupOptionScanType]
+
+
+class KioskSetupIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
+    initiative_id: uuid.UUID
+    site_id: uuid.UUID
+    scan_status: str = Field(min_length=1)
+
+
+class KioskSetupOut(BaseModel):
+    device_id: uuid.UUID
+    initiative_id: uuid.UUID
+    initiative_name: str
+    site_id: uuid.UUID
+    site_name: str
+    site_role: Literal["source", "destination"]
+    scan_status: str
+    scan_status_label: str
+
+
+# ── kiosk local-data sync ──
+
+class KioskAssetOut(BaseModel):
+    """One roster asset as the kiosk caches it. `label` is the full label
+    placeholder map for this asset on this move (the same values the label
+    generator writes), so a kiosk can render a label offline."""
+
+    id: uuid.UUID
+    asset_id: str            # Asset.legacy_id, the human Asset ID ("" if unset)
+    name: str | None = None
+    rfid: str | None = None
+    serial_number: str | None = None
+    make: str | None = None
+    model: str | None = None
+    make_model: str
+    label: dict[str, str]
+
+
+class KioskAssetsSyncOut(BaseModel):
+    initiative_id: uuid.UUID
+    initiative_name: str
+    generated_at: datetime
+    assets: list[KioskAssetOut]
+
+
+class KioskPersonOut(BaseModel):
+    id: uuid.UUID
+    display_name: str
+    rfid_tag: str | None = None
+    is_worker: bool
+    has_account: bool
+
+
+class KioskPeopleSyncOut(BaseModel):
+    generated_at: datetime
+    people: list[KioskPersonOut]
+
+
+# ── kiosk scan ingest ──
+
+class KioskScanIn(BaseModel):
+    """One scan the kiosk already matched against its local copy of the
+    move. `asset_id` is that local match — informational only: the
+    server's own scan-matching worker re-matches `scanned_value` from
+    scratch, so a stale local database can never mis-attribute a scan.
+    `site_id` / `initiative_id` / `scan_status` are per-scan overrides;
+    left out, each falls back to the kiosk Device's own setup."""
+
+    client_scan_id: uuid.UUID
+    scanned_value: str = Field(min_length=1, max_length=200)
+    scan_type: Literal["rfid", "barcode"]
+    scanned_at: datetime
+    asset_id: uuid.UUID | None = None
+    site_id: uuid.UUID | None = None
+    initiative_id: uuid.UUID | None = None
+    scan_status: str | None = Field(default=None, max_length=120)
+
+    @field_validator("scanned_value")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("blank")
+        return v
+
+
+class KioskScanBatchIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
+    scans: list[KioskScanIn] = Field(min_length=1, max_length=100)
+
+
+class KioskScanRejected(BaseModel):
+    client_scan_id: uuid.UUID
+    code: Literal["bad_site", "bad_initiative", "bad_status", "bad_scan_type"]
+
+
+class KioskScanBatchOut(BaseModel):
+    accepted: list[uuid.UUID]
+    rejected: list[KioskScanRejected]
 
 
 # ── Labels ──

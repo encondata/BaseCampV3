@@ -12,14 +12,16 @@ _ALL = ["dashboard", "users", "workers", "clients", "partners",
         "attachments", "settings", "access", "audit", "devtools", "sites",
         "assets", "asset_models", "containers", "trucks", "warehouse", "initiatives", "scans",
         "status_rules", "scanning_hardware", "labels", "reports", "time",
-        "notifications", "ai"]
+        "notifications", "ai", "kiosk"]
+# resources that only ever carry `view`, whoever holds them
+VIEW_ONLY = ("ai", "kiosk")
 
 DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
-    "developer":   {r: FULL if r != "ai" else ("view",) for r in _ALL},
-    "founder":     {**{r: FULL for r in _ALL if r != "devtools" and r != "ai"},
-                    "ai": ("view",)},
-    "super_admin": {**{r: FULL for r in _ALL if r != "devtools" and r != "ai"},
-                    "ai": ("view",)},
+    "developer":   {r: FULL if r not in VIEW_ONLY else ("view",) for r in _ALL},
+    "founder":     {**{r: FULL for r in _ALL if r != "devtools" and r not in VIEW_ONLY},
+                    "ai": ("view",), "kiosk": ("view",)},
+    "super_admin": {**{r: FULL for r in _ALL if r != "devtools" and r not in VIEW_ONLY},
+                    "ai": ("view",), "kiosk": ("view",)},
     "admin": {"dashboard": ("view",), "users": FULL, "workers": FULL,
               "clients": FULL, "partners": FULL, "attachments": FULL,
               "settings": ("view", "change"), "access": ("view", "change"),
@@ -28,7 +30,8 @@ DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
               "warehouse": FULL, "initiatives": FULL,
               "scans": ("view", "change", "delete"), "status_rules": FULL,
               "scanning_hardware": FULL, "labels": FULL, "reports": FULL,
-              "time": FULL, "notifications": FULL, "ai": ("view",)},
+              "time": FULL, "notifications": FULL, "ai": ("view",),
+              "kiosk": ("view",)},
     "staff": {"dashboard": ("view",), "users": ("view", "add", "change"),
               "workers": FULL, "clients": FULL, "partners": FULL,
               "attachments": FULL, "settings": ("view",), "access": ("view",),
@@ -36,7 +39,8 @@ DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
               "containers": FULL, "trucks": FULL, "warehouse": FULL, "initiatives": FULL,
               "scans": ("view",),
               "status_rules": ("view",), "scanning_hardware": ("view",),
-              "labels": ("view",), "reports": ("view", "add"), "time": ("view",)},
+              "labels": ("view",), "reports": ("view", "add"), "time": ("view",),
+              "kiosk": ("view",)},
     "client_owner":  {"dashboard": ("view",), "clients": ("view", "change"),
                       "attachments": ("view",), "assets": ("view",),
                       "initiatives": ("view",)},
@@ -50,7 +54,7 @@ DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
     "vendor_admin":  {"dashboard": ("view",), "partners": ("view", "change"),
                       "workers": ("view",)},
     "vendor_viewer": {"dashboard": ("view",), "partners": ("view",)},
-    "worker":   {"dashboard": ("view",), "workers": ("view",)},
+    "worker":   {"dashboard": ("view",), "workers": ("view",), "kiosk": ("view",)},
     "external": {},
 }
 

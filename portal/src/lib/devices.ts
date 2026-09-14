@@ -41,7 +41,7 @@ export function tokenExpiryState(
 }
 
 const SUB_TYPE_LABELS: Record<string, string> = {
-  laptop: 'Laptop', pi: 'Pi', android: 'Android', ios: 'iOS', zebra: 'Zebra',
+  laptop: 'Laptop', pi: 'Pi', web: 'Web', android: 'Android', ios: 'iOS', zebra: 'Zebra',
 };
 
 export function subTypeLabel(type: string | null): string {
@@ -54,6 +54,13 @@ export function registrationLabel(state: ReturnType<typeof tokenExpiryState>): s
   if (state === 'soon') return 'Expires soon';
   if (state === 'expired') return 'Expired';
   return 'Unregistered';
+}
+
+export function loginMethodLabel(m: string | null): string {
+  if (m == null) return '—';
+  if (m === 'password') return 'Password';
+  if (m === 'link') return 'Phone link';
+  return m;
 }
 
 export function deviceCellText(d: DeviceItem, key: string): string {
@@ -83,6 +90,8 @@ export function deviceCellText(d: DeviceItem, key: string): string {
     case 'registration': return registrationLabel(tokenExpiryState(d.token_expires_at));
     case 'expires':
       return d.token_expires_at ? new Date(d.token_expires_at).toLocaleDateString() : '—';
+    case 'signed_in': return d.session_person_name ?? '—';
+    case 'login_method': return loginMethodLabel(d.session_login_method);
     default: return '';
   }
 }
@@ -91,7 +100,7 @@ export function deviceSearchText(d: DeviceItem): string {
   return [
     d.name, d.wan_ip, d.lan_ip, d.mac, d.serial, d.site_name, vpnLabel(d.vpn_status),
     d.model, d.scan_status_label, d.version, subTypeLabel(d.sub_type),
-    d.current_initiative_name,
+    d.current_initiative_name, d.session_person_name,
   ].filter(Boolean).join(' ');
 }
 
@@ -106,6 +115,8 @@ export function deviceSortValue(d: DeviceItem, key: string): string | number {
     case 'registration': return registrationLabel(tokenExpiryState(d.token_expires_at)).toLowerCase();
     case 'expires': return d.token_expires_at ?? '';
     case 'current_move': return d.current_initiative_name ?? '';
+    case 'signed_in': return d.session_person_name ?? '';
+    case 'login_method': return loginMethodLabel(d.session_login_method).toLowerCase();
     default: return deviceCellText(d, key).toLowerCase();
   }
 }

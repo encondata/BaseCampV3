@@ -1,0 +1,11 @@
+.git
+.claude
+**/node_modules
+**/dist
+**/dist-node
+api/.venv
+api/backups
+**/.env
+docs
+*.md
+!kiosk/README.md

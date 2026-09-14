@@ -12,10 +12,10 @@ ground-up rewrite with a security-first design.
 | **Web portal** | React 18 · Vite · TypeScript | [`portal/`](portal/) |
 | **Database** | PostgreSQL 16 (DO Managed Postgres in prod) | migrations in [`api/migrations/`](api/migrations/) |
 | **Object storage** | S3-compatible via boto3 (MinIO dev / DO Spaces prod) | private bucket, presigned reads |
-| **Kiosk / mobile** | planned — consume the same API | — |
+| **Kiosk (web mode)** | React 18 · Vite · own Docker image (Caddy) | [`kiosk/`](kiosk/) |
 
 Production target: a single DigitalOcean droplet running Docker Compose
-(Caddy → api / portal containers), with managed Postgres and Spaces external.
+(Caddy → api / portal / kiosk containers), with managed Postgres and Spaces external.
 Nothing stateful lives on the droplet.
 
 ### Security design (prime directive)
@@ -63,10 +63,16 @@ cd portal
 npm install
 npm run build:rack-renderer   # PDF reports need this once (rebuild after rack changes)
 npm run dev                  # http://localhost:5173
+
+# 5. Kiosk (optional; third terminal)
+cd kiosk
+npm install
+npm run dev                  # http://localhost:5174 — sign in with email/password or "Link with phone"
 ```
 
 Or, after the one-time setup above, run the whole dev stack (API +
-import worker + portal, all auto-reloading) in a single terminal:
+import worker + portal + kiosk, all auto-reloading) in a single terminal
+— `honcho start -f Procfile.dev` now includes the kiosk:
 
 ```bash
 api/.venv/bin/honcho start -f Procfile.dev

@@ -3331,6 +3331,8 @@ export interface DeviceItem {
   tags_read_24h: number;
   version: string | null; sub_type: string | null;
   current_initiative_id: string | null; current_initiative_name: string | null;
+  session_person_id: string | null; session_person_name: string | null;
+  session_login_method: string | null; session_started_at: string | null;
 }
 
 export async function listDevices(deviceType?: string): Promise<DeviceItem[]> {
@@ -3400,6 +3402,34 @@ export async function listDeviceLeases(deviceId: string): Promise<DeviceLease[]>
   const resp = await apiFetch(`/devices/${deviceId}/leases`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
+}
+
+/* ── kiosk pairing — the phone side of the kiosk's "Link with phone" ─ */
+
+export type PairStatus = 'pending' | 'approved' | 'denied' | 'expired';
+
+export interface PairInfo {
+  code: string;
+  kiosk_name: string;
+  serial: string;
+  status: PairStatus;
+  expires_at: string;
+}
+
+export async function getPairInfo(code: string): Promise<PairInfo> {
+  const resp = await apiFetch(`/kiosk/pair/${encodeURIComponent(code)}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function approvePair(code: string): Promise<void> {
+  const resp = await apiFetch(`/kiosk/pair/${encodeURIComponent(code)}/approve`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function denyPair(code: string): Promise<void> {
+  const resp = await apiFetch(`/kiosk/pair/${encodeURIComponent(code)}/deny`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
 }
 
 // ── Labels ───────────────────────────────────────────────────────────

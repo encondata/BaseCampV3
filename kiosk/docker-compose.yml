@@ -1,0 +1,22 @@
+# ServerSherpa kiosk (web mode) — one static image served by Caddy.
+#
+#   cp kiosk/.env.example kiosk/.env   # then edit the two URLs
+#   docker compose -f kiosk/docker-compose.yml --env-file kiosk/.env up --build
+#
+# The browser (not the container) resolves KIOSK_API_URL, so on a dev box
+# http://localhost:8000 is right even though the container can't reach it.
+name: serversherpa-kiosk
+
+services:
+  kiosk:
+    build:
+      context: ..
+      dockerfile: kiosk/Dockerfile
+      args:
+        KIOSK_VERSION: ${KIOSK_VERSION:-0.1.0}
+    ports:
+      - "${KIOSK_PORT:-8090}:8080"
+    environment:
+      KIOSK_API_URL: ${KIOSK_API_URL:?set KIOSK_API_URL in kiosk/.env}
+      KIOSK_PORTAL_URL: ${KIOSK_PORTAL_URL:?set KIOSK_PORTAL_URL in kiosk/.env}
+    restart: unless-stopped

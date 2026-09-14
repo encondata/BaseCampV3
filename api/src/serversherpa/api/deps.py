@@ -1,5 +1,6 @@
 """FastAPI dependencies: DB session, current user, permission guards."""
 
+import ipaddress
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -80,12 +81,13 @@ MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Never frozen: sign-in/out/refresh/password/preferences/session revocation,
 # and the admin toggle itself — whoever could turn read-only on can always
 # turn it off. Everything else under /auth/me (profile edits) freezes like
-# any other write.
+# any other write. /kiosk/pair* is a sign-in (approve/deny on the phone) —
+# never frozen. /kiosk/heartbeat is NOT exempt.
 READ_ONLY_EXEMPT_PATHS = frozenset({
     "/auth/login", "/auth/refresh", "/auth/logout",
     "/auth/me/preferences", "/auth/me/password", "/system/admin",
 })
-READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/",)
+READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/kiosk/pair")
 
 
 def _read_only_exempt(path: str) -> bool:
@@ -188,3 +190,28 @@ def client_ip(request: Request) -> str | None:
     if forwarded:
         return forwarded.split(",")[0].strip()
     return request.client.host if request.client else None
+
+
+def rate_limit_ip(request: Request) -> str:
+    """The address an unauthenticated abuse cap should key on. Caddy (our
+    only proxy) APPENDS the real client to X-Forwarded-For, so the
+    rightmost entry is the one it wrote and the leftmost is whatever the
+    caller typed; the header is honored only when the direct peer is the
+    proxy on this box (loopback or a private network). Never None: an
+    unattributable caller shares one 'unknown' bucket."""
+    peer = request.client.host if request.client else None
+    forwarded = request.headers.get("x-forwarded-for")
+    if peer and forwarded:
+        try:
+            peer_addr = ipaddress.ip_address(peer)
+        except ValueError:
+            peer_addr = None
+        if peer_addr is not None and (peer_addr.is_loopback or peer_addr.is_private):
+            rightmost = forwarded.split(",")[-1].strip()
+            if rightmost:
+                try:
+                    ipaddress.ip_address(rightmost)
+                except ValueError:
+                    return peer or "unknown"
+                return rightmost
+    return peer or "unknown"

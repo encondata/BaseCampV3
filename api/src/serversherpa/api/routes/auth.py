@@ -27,7 +27,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 REFRESH_COOKIE = "ss_refresh"
 
 # AuthError code -> HTTP status. Everything else is a plain 401.
-_STATUS = {"account_locked": 423}
+_STATUS = {"account_locked": 423, "kiosk_not_allowed": 403}
 
 
 def _set_refresh_cookie(response: Response, result: AuthResult) -> None:
@@ -56,7 +56,7 @@ def _scope_out(access) -> ScopeOut:
                     partner_ids=sorted(access.partner_ids))
 
 
-def _session_response(result: AuthResult, response: Response) -> SessionOut:
+def session_response(result: AuthResult, response: Response) -> SessionOut:
     _set_refresh_cookie(response, result)
     return SessionOut(
         access_token=result.access_token,
@@ -86,10 +86,11 @@ async def login(
         result = await auth_service.login(
             db, email=body.email, password=body.password,
             ip=client_ip(request), user_agent=request.headers.get("user-agent"),
+            client=body.client,
         )
     except AuthError as exc:
         raise _auth_http_error(exc) from None
-    return _session_response(result, response)
+    return session_response(result, response)
 
 
 @router.post("/refresh", response_model=SessionOut)
@@ -107,7 +108,7 @@ async def refresh(
     except AuthError as exc:
         _clear_refresh_cookie(response)
         raise _auth_http_error(exc) from None
-    return _session_response(result, response)
+    return session_response(result, response)
 
 
 @router.post("/logout", status_code=204)

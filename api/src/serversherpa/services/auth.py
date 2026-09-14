@@ -58,6 +58,7 @@ def _check_account_usable(account: UserAccount) -> None:
 async def login(
     db: AsyncSession, *, email: str, password: str,
     ip: str | None = None, user_agent: str | None = None,
+    client: str = "portal",
 ) -> AuthResult:
     settings = get_settings()
     pepper = settings.password_pepper.get_secret_value()
@@ -102,7 +103,33 @@ async def login(
         # reach this state until then.
         raise AuthError("totp_required")
 
-    # success — reset lockout state, stamp telemetry
+    access: AccessInfo | None = None
+    if client == "kiosk":
+        access = await resolve_access(db, account.person_id)
+        if not access.can("kiosk", "view"):
+            # right password, wrong place: audited, but never a lockout strike
+            audit(db, actor_id=account.person_id, entity_type="auth",
+                  entity_id=email, action="login_failed",
+                  changes={"reason": "kiosk_not_allowed"}, ip=ip)
+            await db.commit()
+            raise AuthError("kiosk_not_allowed")
+
+    return await start_session(db, account, ip=ip, user_agent=user_agent,
+                               access=access)
+
+
+async def start_session(
+    db: AsyncSession, account: UserAccount, *,
+    ip: str | None, user_agent: str | None,
+    audit_action: str = "login", access: AccessInfo | None = None,
+) -> AuthResult:
+    """Mint a session for an account whose holder has just proven who they
+    are — a password login, or a kiosk pairing they approved on their
+    phone (audit_action="login_pair"). Resets lockout state, stamps the
+    last-login telemetry, audits, commits. `account.person` must be
+    loaded (see _load_account)."""
+    settings = get_settings()
+    now = datetime.now(UTC)
     account.failed_login_count = 0
     account.locked_until = None
     account.last_login_at = now
@@ -122,10 +149,11 @@ async def login(
     )
     db.add(session)
     audit(db, actor_id=account.person_id, entity_type="auth",
-          entity_id=str(account.person_id), action="login", ip=ip)
+          entity_id=str(account.person_id), action=audit_action, ip=ip)
     await db.commit()
 
-    access = await resolve_access(db, account.person_id)
+    if access is None:
+        access = await resolve_access(db, account.person_id)
     return AuthResult(
         access_token=create_access_token(
             person_id=account.person_id, session_id=session_id,
