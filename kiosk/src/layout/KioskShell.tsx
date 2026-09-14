@@ -3,7 +3,7 @@
  * palette, or notifications — the kiosk is a single-purpose screen.
  * Wrapped in .portal-shell so the person's theme/accent/density
  * preferences apply exactly as in the portal (applyPreferences sets the
- * data-* attributes on it). Signed out (the Settings page), the bar
+ * data-* attributes on it). Signed out (the Kiosk Setup page), the bar
  * shows only the logo, mode chip, and kiosk name.
  */
 
@@ -66,7 +66,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
           {feature && <span className="kiosk-section">{feature.title}</span>}
         </div>
         <button type="button" className="kiosk-name" title="Kiosk setup"
-                onClick={() => navigate('/settings')}>
+                onClick={() => navigate('/setup')}>
           {identity.name}
         </button>
         <div className="kiosk-user">

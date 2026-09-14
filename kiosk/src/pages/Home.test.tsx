@@ -31,15 +31,17 @@ function renderRouted() {
   );
 }
 
-it('renders a tile link for each feature, Kiosk Setup first', () => {
+it('renders a tile link for each feature, Kiosk Setup first and Settings last', () => {
   renderRouted();
   const links = screen.getAllByRole('link');
-  expect(links).toHaveLength(4);
+  expect(links).toHaveLength(5);
   expect(links[0].textContent).toContain('Kiosk Setup');
-  expect(links[0].getAttribute('href')).toBe('/settings');
+  expect(links[0].getAttribute('href')).toBe('/setup');
   expect(screen.getByRole('link', { name: /Scanning/ }).getAttribute('href')).toBe('/scan');
   expect(screen.getByRole('link', { name: /Label Printing/ }).getAttribute('href')).toBe('/labels');
   expect(screen.getByRole('link', { name: /Timeclock/ }).getAttribute('href')).toBe('/timeclock');
+  expect(links[4].textContent).toContain('Settings');
+  expect(links[4].getAttribute('href')).toBe('/settings');
 });
 
 it('renders the launcher tiles only, with no facts list', () => {
@@ -48,6 +50,7 @@ it('renders the launcher tiles only, with no facts list', () => {
   expect(screen.getByRole('link', { name: /Scanning/ })).toBeTruthy();
   expect(screen.getByRole('link', { name: /Label Printing/ })).toBeTruthy();
   expect(screen.getByRole('link', { name: /Timeclock/ })).toBeTruthy();
+  expect(screen.getByRole('link', { name: /Settings/ })).toBeTruthy();
   expect(document.querySelector('dl')).toBeNull();
 });
 

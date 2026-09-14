@@ -8,6 +8,7 @@ import FeaturePage from './pages/FeaturePage';
 import Home from './pages/Home';
 import KioskSettings from './pages/KioskSettings';
 import Login from './pages/Login';
+import Settings from './pages/Settings';
 
 export default function App() {
   return (
@@ -15,7 +16,8 @@ export default function App() {
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route path="/settings" element={<KioskShell><KioskSettings /></KioskShell>} />
+          <Route path="/setup" element={<KioskShell><KioskSettings /></KioskShell>} />
+          <Route path="/settings" element={<KioskGuard><KioskShell><Settings /></KioskShell></KioskGuard>} />
           <Route path="/" element={<KioskGuard><KioskShell><Home /></KioskShell></KioskGuard>} />
           {FEATURES.filter((f) => f.placeholder).map((f) => (
             <Route

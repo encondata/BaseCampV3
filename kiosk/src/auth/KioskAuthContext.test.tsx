@@ -34,6 +34,8 @@ function Probe() {
       <span data-testid="status">{a.status}</span>
       <span data-testid="reg">{a.registration ?? 'null'}</span>
       <span data-testid="can">{String(a.can('kiosk', 'view'))}</span>
+      <span data-testid="is-admin">{String(a.isAdmin)}</span>
+      <span data-testid="is-developer">{String(a.isDeveloper)}</span>
       <button onClick={() => void a.login('a@x', 'pw')}>login</button>
       <button onClick={() => a.completePair(SESSION as unknown as Parameters<typeof a.completePair>[0])}>
         pair
@@ -119,4 +121,31 @@ it('logout signs out on the server before dropping the session', async () => {
   await act(async () => { screen.getByText('logout').click(); });
   expect(api.signOutRequest).toHaveBeenCalledWith('kiosk-web-test');
   expect(order).toEqual(['signOut', 'logout']);
+});
+
+it('derives isAdmin/isDeveloper as both true for a developer at admin rank', async () => {
+  api.loginRequest.mockResolvedValue({ ...SESSION, roles: ['developer'], max_rank: 100 });
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('login').click(); });
+  expect(screen.getByTestId('is-admin').textContent).toBe('true');
+  expect(screen.getByTestId('is-developer').textContent).toBe('true');
+});
+
+it('derives isAdmin true / isDeveloper false for an admin who is not a developer', async () => {
+  api.loginRequest.mockResolvedValue({ ...SESSION, roles: ['admin'], max_rank: 60 });
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('login').click(); });
+  expect(screen.getByTestId('is-admin').textContent).toBe('true');
+  expect(screen.getByTestId('is-developer').textContent).toBe('false');
+});
+
+it('derives isAdmin/isDeveloper as both false for a plain worker', async () => {
+  api.loginRequest.mockResolvedValue({ ...SESSION, roles: ['worker'], max_rank: 10 });
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('login').click(); });
+  expect(screen.getByTestId('is-admin').textContent).toBe('false');
+  expect(screen.getByTestId('is-developer').textContent).toBe('false');
 });

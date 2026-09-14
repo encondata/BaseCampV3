@@ -87,6 +87,10 @@
 .form-error { color: var(--c-red); font-size: 13px; margin: 4px 0 0; }
 .form-notice { color: var(--text-mute); font-size: 13px; margin: 4px 0 0; }
 
+/* ── Settings page tabs ───────────────────────────────────────── */
+.settings-tabs { margin: 18px 0 22px; }
+.settings-tab-title { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+
 /* ── link with phone ───────────────────────────────────────────── */
 /* auth-theme.css has no --c-red (the login pane never shows a form
    error in red elsewhere); scope it here for .pair-panel's error copy. */

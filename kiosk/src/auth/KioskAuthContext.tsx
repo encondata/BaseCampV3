@@ -9,7 +9,7 @@ import {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode,
 } from 'react';
 
-import { computeCan, type Action, type PermMap } from '@portal/lib/access';
+import { ADMIN_RANK, computeCan, type Action, type PermMap } from '@portal/lib/access';
 
 import {
   installVisibilityRefresh, loginRequest, logoutRequest, onSessionEnded, refreshSession,
@@ -28,10 +28,14 @@ interface State {
   preferences: UiPreferences | null;
   mustChangePassword: boolean;
   sessionExpiresAt: string | null;
+  roles: string[];
+  maxRank: number;
 }
 
 export interface KioskAuthValue extends State {
   registration: RegistrationState | null;
+  isAdmin: boolean;
+  isDeveloper: boolean;
   login: (email: string, password: string) => Promise<SessionData>;
   completePair: (session: SessionData) => void;
   logout: () => Promise<void>;
@@ -41,7 +45,7 @@ export interface KioskAuthValue extends State {
 
 const ANON: State = {
   status: 'anon', person: null, perms: null, preferences: null,
-  mustChangePassword: false, sessionExpiresAt: null,
+  mustChangePassword: false, sessionExpiresAt: null, roles: [], maxRank: 0,
 };
 const LOADING: State = { ...ANON, status: 'loading' };
 
@@ -49,6 +53,7 @@ function stateFrom(s: SessionData): State {
   return {
     status: 'authed', person: s.person, perms: s.perms, preferences: s.preferences,
     mustChangePassword: s.must_change_password, sessionExpiresAt: s.session_expires_at,
+    roles: s.roles, maxRank: s.max_rank,
   };
 }
 
@@ -117,9 +122,12 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
 
   const heartbeatNow = useCallback(() => heartbeat.current?.now() ?? Promise.resolve(), []);
 
+  const isAdmin = state.maxRank >= ADMIN_RANK;
+  const isDeveloper = state.roles.includes('developer');
+
   const value = useMemo<KioskAuthValue>(
-    () => ({ ...state, registration, login, completePair, logout, can, heartbeatNow }),
-    [state, registration, login, completePair, logout, can, heartbeatNow],
+    () => ({ ...state, registration, isAdmin, isDeveloper, login, completePair, logout, can, heartbeatNow }),
+    [state, registration, isAdmin, isDeveloper, login, completePair, logout, can, heartbeatNow],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

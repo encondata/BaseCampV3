@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /** KioskShell's top bar shows a section label for the current feature
- *  route and nothing for / or /settings. */
+ *  route and nothing for /. */
 import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -58,14 +58,24 @@ it('shows no section label at /', () => {
   expect(document.querySelector('.kiosk-section')).toBeNull();
 });
 
-it('shows "Kiosk Setup" as the section label at /settings', () => {
+it('shows "Kiosk Setup" as the section label at /setup', () => {
+  render(
+    <MemoryRouter initialEntries={['/setup']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const section = document.querySelector('.kiosk-section');
+  expect(section?.textContent).toBe('Kiosk Setup');
+});
+
+it('shows "Settings" as the section label at /settings', () => {
   render(
     <MemoryRouter initialEntries={['/settings']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
   const section = document.querySelector('.kiosk-section');
-  expect(section?.textContent).toBe('Kiosk Setup');
+  expect(section?.textContent).toBe('Settings');
 });
 
 it('footer shows the kiosk facts when signed in', () => {
@@ -89,7 +99,7 @@ it('footer shows only kiosk/mode/version when signed out', () => {
   auth.person = null;
   auth.registration = null;
   render(
-    <MemoryRouter initialEntries={['/settings']}>
+    <MemoryRouter initialEntries={['/setup']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );

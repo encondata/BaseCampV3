@@ -3,18 +3,20 @@
  *  Permission gating of tiles is deferred (see spec). */
 
 export interface KioskFeature {
-  id: 'setup' | 'scan' | 'labels' | 'timeclock';
+  id: 'setup' | 'scan' | 'labels' | 'timeclock' | 'settings';
   path: string;
   title: string;
   blurb: string;
   /** True for features that still fall back to the generic FeaturePage
-   *  placeholder; absent for features with a real screen (Kiosk Setup). */
+   *  placeholder; absent for features with a real screen (Kiosk Setup,
+   *  Settings). */
   placeholder?: boolean;
 }
 
 export const FEATURES: KioskFeature[] = [
-  { id: 'setup', path: '/settings', title: 'Kiosk Setup', blurb: 'Name this kiosk and check its connection.' },
+  { id: 'setup', path: '/setup', title: 'Kiosk Setup', blurb: 'Name this kiosk and check its connection.' },
   { id: 'scan', path: '/scan', title: 'Scanning', blurb: 'Scan assets, containers, and badges.', placeholder: true },
   { id: 'labels', path: '/labels', title: 'Label Printing', blurb: 'Print asset and container labels.', placeholder: true },
   { id: 'timeclock', path: '/timeclock', title: 'Timeclock', blurb: 'Clock in and out of a move.', placeholder: true },
+  { id: 'settings', path: '/settings', title: 'Settings', blurb: 'Appearance, sound, devices, and more.' },
 ];
