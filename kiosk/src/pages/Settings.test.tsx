@@ -20,6 +20,12 @@ vi.mock('../lib/localDb', async (importOriginal) => {
   return { ...actual, clearDb: syncMock.clearDb };
 });
 
+const apiMock = vi.hoisted(() => ({ getSetupOptions: vi.fn() }));
+vi.mock('../lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/api')>();
+  return { ...actual, getSetupOptions: apiMock.getSetupOptions };
+});
+
 const auth = vi.hoisted(() => ({
   status: 'authed', isAdmin: false, isDeveloper: false, heartbeatNow: vi.fn(() => Promise.resolve()),
 }));
@@ -66,6 +72,13 @@ beforeEach(() => {
   closeDb();
   (globalThis as unknown as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
   resetSoundAudioForTest();
+  apiMock.getSetupOptions.mockReset().mockResolvedValue({
+    initiatives: [],
+    scan_types: [
+      { key: 'pre_stage', label: 'Pre-Stage', color: '#336699' },
+      { key: 'cage_exit', label: 'RFID 1 - Cage Exit', color: '#996633' },
+    ],
+  });
   audioContexts.mockClear();
   (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
 });
@@ -337,4 +350,43 @@ it('the Sound tab refuses a file that is too big or is not audio', async () => {
     input, new File(['nope'], 'notes.txt', { type: 'text/plain' }), { applyAccept: false });
   expect(await screen.findByText("That doesn't look like an audio file.")).toBeTruthy();
   expect(screen.queryByText('notes.txt')).toBeNull();
+});
+
+it('the Admin tab offers the RFID Enroll checkpoint, defaulting to Pre-Stage, and persists a change', async () => {
+  auth.isAdmin = true;
+  renderAt('/settings?tab=admin');
+
+  const select = await screen.findByLabelText('RFID Enroll checkpoint') as HTMLSelectElement;
+  await waitFor(() => expect(select.options.length).toBe(2));
+  expect(select.value).toBe('pre_stage');
+  expect([...select.options].map((o) => o.textContent)).toEqual(['Pre-Stage', 'RFID 1 - Cage Exit']);
+  expect(screen.getByText('The scan type recorded when a tag is enrolled.')).toBeTruthy();
+
+  await userEvent.selectOptions(select, 'cage_exit');
+  expect(localStorage.getItem('ss.kiosk.enrollStatus')).toBe('cage_exit');
+  expect((screen.getByLabelText('RFID Enroll checkpoint') as HTMLSelectElement).value).toBe('cage_exit');
+});
+
+it('a stored checkpoint the portal no longer offers falls back to the default', async () => {
+  auth.isAdmin = true;
+  localStorage.setItem('ss.kiosk.enrollStatus', 'retired_checkpoint');
+  renderAt('/settings?tab=admin');
+
+  const select = await screen.findByLabelText('RFID Enroll checkpoint') as HTMLSelectElement;
+  await waitFor(() => expect(select.value).toBe('pre_stage'));
+});
+
+it('a worker never sees the RFID Enroll checkpoint row, on any tab', () => {
+  renderAt('/settings?tab=admin');
+  expect(screen.queryByLabelText('RFID Enroll checkpoint')).toBeNull();
+  expect(screen.queryByText('RFID Enroll checkpoint')).toBeNull();
+});
+
+it('the Admin tab says so when the checkpoint list cannot be loaded', async () => {
+  auth.isAdmin = true;
+  apiMock.getSetupOptions.mockRejectedValueOnce(new Error('offline'));
+  renderAt('/settings?tab=admin');
+  expect(await screen.findByText(
+    "Couldn't load the checkpoint list. The stored choice still applies.",
+  )).toBeTruthy();
 });

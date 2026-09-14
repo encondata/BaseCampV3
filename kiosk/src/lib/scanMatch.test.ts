@@ -1,6 +1,8 @@
 import { expect, it } from 'vitest';
 
-import { buildScanIndex, matchScan, scanTypeFor, type ScanAsset } from './scanMatch';
+import {
+  buildScanIndex, matchAssetOrSerial, matchScan, scanTypeFor, type ScanAsset,
+} from './scanMatch';
 
 const rows: ScanAsset[] = [
   {
@@ -66,4 +68,27 @@ it('scanTypeFor reports rfid for a tag and barcode for everything else', () => {
   expect(scanTypeFor('rfid')).toBe('rfid');
   expect(scanTypeFor('asset_id')).toBe('barcode');
   expect(scanTypeFor('serial')).toBe('barcode');
+});
+
+it('matchAssetOrSerial matches an asset ID or a serial, and never an RFID tag', () => {
+  expect(matchAssetOrSerial(index, '10043')).toMatchObject({ kind: 'asset_id', asset: { id: 'a-2' } });
+  expect(matchAssetOrSerial(index, ' sn-4242 ')).toMatchObject({ kind: 'serial', asset: { id: 'a-1' } });
+  // a-1's RFID tag, padded and trimmed: matchScan finds it, this must not
+  expect(matchScan(index, '100348')).toMatchObject({ kind: 'rfid' });
+  expect(matchAssetOrSerial(index, '100348')).toBeNull();
+  expect(matchAssetOrSerial(index, '000000000000100348')).toBeNull();
+});
+
+it('matchAssetOrSerial tries the asset ID before the serial', () => {
+  const clash = buildScanIndex([
+    { ...rows[0], id: 'by-serial', serial_number: 'X1', asset_id: 'zzz', rfid: null },
+    { ...rows[1], id: 'by-asset', asset_id: 'X1', serial_number: null, rfid: null },
+  ]);
+  expect(matchAssetOrSerial(clash, 'x1')).toMatchObject({ kind: 'asset_id', asset: { id: 'by-asset' } });
+});
+
+it('matchAssetOrSerial returns null for a blank or unknown value', () => {
+  expect(matchAssetOrSerial(index, '')).toBeNull();
+  expect(matchAssetOrSerial(index, '  ')).toBeNull();
+  expect(matchAssetOrSerial(index, 'nope123')).toBeNull();
 });

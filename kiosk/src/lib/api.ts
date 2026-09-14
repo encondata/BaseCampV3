@@ -263,9 +263,13 @@ export interface SetupOptionInitiative {
   destination_site: SetupOptionSite | null;
 }
 
+/** One asset-status checkpoint the portal offers a kiosk — Kiosk
+ *  Setup's scan type, and Settings › Admin's RFID Enroll checkpoint. */
+export interface SetupOptionScanType { key: string; label: string; color: string }
+
 export interface SetupOptions {
   initiatives: SetupOptionInitiative[];
-  scan_types: { key: string; label: string; color: string }[];
+  scan_types: SetupOptionScanType[];
 }
 
 export interface KioskSetupResult {
@@ -389,6 +393,45 @@ export async function postScans(
     body: JSON.stringify(body),
   });
   return jsonFrom<KioskScanBatchOut>(resp);
+}
+
+// ── RFID enroll ─────────────────────────────────────────────────────
+
+/** The tagged asset, as the portal now holds it. `rfid_tag` is the
+ *  stored (24-character, zero-padded) value — trim it with
+ *  `displayRfid` for display. `already_had_tag` means this asset was
+ *  already carrying exactly this tag, so only the scan was recorded. */
+export interface KioskRfidEnroll {
+  asset_id: string;
+  asset_name: string | null;
+  asset_tag: string;
+  serial_number: string | null;
+  rfid_tag: string;
+  already_had_tag: boolean;
+}
+
+/** Writes an RFID tag onto an asset and records the enrollment scan, in
+ *  one server transaction. `rfid_tag` is padded here as well as on the
+ *  server (see `lib/rfid.ts`) so the operator sees what will be stored;
+ *  the server normalizes again and never trusts this value.
+ *
+ *  There is deliberately no outbox behind this: uniqueness can only be
+ *  decided by the portal, so a save that does not reach it did not
+ *  happen. Throws `ApiError` — 409 `rfid_in_use` (its `detail` carries
+ *  the other asset's `asset_id` / `asset_name`), 422 `bad_rfid` /
+ *  `rfid_too_long` / `bad_status`, 404 `asset_not_found` /
+ *  `device_not_found`, 423 read-only, 0 `network`. */
+export async function postRfidEnroll(body: {
+  asset_id: string; serial: string; rfid_tag: string; scan_status: string;
+  client_scan_id: string; site_id?: string | null; initiative_id?: string | null;
+}): Promise<KioskRfidEnroll> {
+  const { asset_id: assetId, ...rest } = body;
+  const resp = await apiFetch(`/kiosk/assets/${encodeURIComponent(assetId)}/rfid`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rest),
+  });
+  return jsonFrom<KioskRfidEnroll>(resp);
 }
 
 // ── printer maintenance ─────────────────────────────────────────────

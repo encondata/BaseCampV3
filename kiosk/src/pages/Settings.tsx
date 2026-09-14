@@ -4,11 +4,14 @@
  *  counts) with a "Clear local data" button. Admin and Developer are hidden (not
  *  disabled) unless the signed-in person holds the level; signed out,
  *  only This Kiosk is visible (see `visibleTabs`). Appearance owns the two
- *  scan-flash colors (kiosk-local HSL); every tab body but those two is
- *  a placeholder for now. The active tab lives in the
- *  `tab` search param, so a link can deep-link straight to a section. */
+ *  scan-flash colors (kiosk-local HSL); Admin owns the RFID Enroll
+ *  checkpoint — admin-gated on purpose, because it decides what every
+ *  enrollment on this kiosk records and a worker should not be able to
+ *  change what the move's data says. The remaining tab bodies are
+ *  placeholders for now. The active tab lives in the `tab` search
+ *  param, so a link can deep-link straight to a section. */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
@@ -17,8 +20,10 @@ import LocalDataInspector from '../components/LocalDataInspector';
 import SoundPanel from '../components/SoundPanel';
 import { Switch } from '../components/Switch';
 import ThisKioskPanel from '../components/ThisKioskPanel';
+import { getSetupOptions, type SetupOptionScanType } from '../lib/api';
 import { FLASH_MS_RANGE, useAppearance } from '../lib/appearance';
 import { useDevMode } from '../lib/devMode';
+import { effectiveEnrollStatus, useEnrollStatus } from '../lib/enrollSettings';
 import { clearDb } from '../lib/localDb';
 import { SETTINGS_TABS, visibleTabs, type SettingsTabId } from '../lib/settingsTabs';
 import { SETUP_STATES, setupStateLabel, useKioskSetupState } from '../lib/setupState';
@@ -35,6 +40,13 @@ export default function Settings() {
   const [setupState, setSetupState] = useKioskSetupState();
   const sync = useSyncStatus();
   const [clearError, setClearError] = useState(false);
+  const [enrollStatus, setEnrollStatus] = useEnrollStatus();
+  // The checkpoint vocabulary, fetched only for the Admin tab (a worker
+  // never sees the row, so never pays for the call). null while loading
+  // or after a failure — the stored choice still applies either way,
+  // which is why a failure is a note rather than a blocked screen.
+  const [scanTypes, setScanTypes] = useState<SetupOptionScanType[] | null>(null);
+  const [scanTypesError, setScanTypesError] = useState(false);
 
   const clearLocalData = () => {
     setClearError(false);
@@ -44,6 +56,20 @@ export default function Settings() {
   const tabs = visibleTabs(SETTINGS_TABS, { isAdmin, isDeveloper, signedIn });
   const requested = searchParams.get('tab');
   const active = tabs.find((t) => t.id === requested) ?? tabs.find((t) => t.id === DEFAULT_TAB) ?? tabs[0];
+
+  const onAdminTab = active?.id === 'admin';
+  useEffect(() => {
+    if (!onAdminTab) return;
+    let live = true;
+    setScanTypesError(false);
+    getSetupOptions().then(
+      (options) => { if (live) setScanTypes(options.scan_types); },
+      () => { if (live) setScanTypesError(true); },
+    );
+    // eslint-disable-next-line consistent-return -- the cleanup only exists for the fetch
+    return () => { live = false; };
+  }, [onAdminTab]);
+  const offeredKeys = scanTypes?.map((s) => s.key) ?? [];
 
   return (
     <div className="portal-page">
@@ -126,6 +152,37 @@ export default function Settings() {
           </>
         )}
         {active.id === 'sound' && <SoundPanel />}
+        {active.id === 'admin' && (
+          <div className="settings-row">
+            <div>
+              <label htmlFor="enroll-status-select" className="settings-row-label">
+                RFID Enroll checkpoint
+              </label>
+              <p className="settings-row-hint">
+                The scan type recorded when a tag is enrolled.
+              </p>
+              {scanTypesError && (
+                <p className="form-error" role="alert">
+                  Couldn&apos;t load the checkpoint list. The stored choice still applies.
+                </p>
+              )}
+            </div>
+            <select
+              id="enroll-status-select"
+              className="settings-select"
+              aria-label="RFID Enroll checkpoint"
+              value={effectiveEnrollStatus(enrollStatus, offeredKeys)}
+              disabled={scanTypes === null}
+              onChange={(e) => setEnrollStatus(e.target.value)}
+            >
+              {scanTypes === null
+                ? <option value={enrollStatus}>{enrollStatus}</option>
+                : scanTypes.map((s) => (
+                  <option key={s.key} value={s.key}>{s.label}</option>
+                ))}
+            </select>
+          </div>
+        )}
         {active.id === 'developer' && (
           <div className="settings-row">
             <div>
@@ -186,7 +243,8 @@ export default function Settings() {
           </div>
         )}
         {active.id === 'developer' && <LocalDataInspector />}
-        {active.id !== 'this-kiosk' && active.id !== 'appearance' && active.id !== 'sound' && (
+        {active.id !== 'this-kiosk' && active.id !== 'appearance' && active.id !== 'sound'
+          && active.id !== 'admin' && (
           <div className="kiosk-placeholder">
             <p>This section is not available yet.</p>
           </div>

@@ -90,6 +90,22 @@ export function matchScan(index: ScanIndex, raw: string): ScanMatch | null {
   return null;
 }
 
+/** Asset ID or serial only, in that order — RFID Enroll's first step,
+ *  where the operator is identifying the asset they are about to tag.
+ *  Deliberately NOT `matchScan`: that tries RFID first, so scanning a
+ *  tag that already belongs to some asset would silently pick it as the
+ *  thing to re-tag. Here an RFID read simply does not match, and the
+ *  screen says which input the operator is standing in. */
+export function matchAssetOrSerial(index: ScanIndex, raw: string): ScanMatch | null {
+  const plain = key(raw);
+  if (!plain) return null;
+  const byAssetId = index.byAssetId.get(plain);
+  if (byAssetId) return { kind: 'asset_id', asset: byAssetId };
+  const bySerial = index.bySerial.get(plain);
+  if (bySerial) return { kind: 'serial', asset: bySerial };
+  return null;
+}
+
 /** What the ingest endpoint's `scan_type` should say. The vocabulary
  *  also has `manual`, but the kiosk has no keyed-entry mode yet — a
  *  typed serial is indistinguishable from a scanned one here. */

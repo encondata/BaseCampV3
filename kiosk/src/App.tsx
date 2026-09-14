@@ -6,6 +6,7 @@ import SetupGate from './components/SetupGate';
 import KioskShell from './layout/KioskShell';
 import { FEATURES } from './lib/features';
 import { LABEL_SECTIONS } from './lib/labelSections';
+import Enroll from './pages/Enroll';
 import FeaturePage from './pages/FeaturePage';
 import Home from './pages/Home';
 import KioskSetup from './pages/KioskSetup';
@@ -18,6 +19,7 @@ import Settings from './pages/Settings';
 import Timeclock from './pages/Timeclock';
 
 const SCAN = FEATURES.find((f) => f.id === 'scan')!;
+const ENROLL = FEATURES.find((f) => f.id === 'enroll')!;
 const LABELS = FEATURES.find((f) => f.id === 'labels')!;
 const TIMECLOCK = FEATURES.find((f) => f.id === 'timeclock')!;
 
@@ -42,6 +44,17 @@ export default function App() {
               <KioskGuard>
                 <SetupGate feature={SCAN}>
                   <KioskShell><Scan /></KioskShell>
+                </SetupGate>
+              </KioskGuard>
+            )}
+          />
+          {/* RFID Enroll is a real screen too — same guards as Scanning. */}
+          <Route
+            path={ENROLL.path}
+            element={(
+              <KioskGuard>
+                <SetupGate feature={ENROLL}>
+                  <KioskShell><Enroll /></KioskShell>
                 </SetupGate>
               </KioskGuard>
             )}

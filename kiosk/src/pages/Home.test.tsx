@@ -38,14 +38,17 @@ it('renders a tile link for each feature, Kiosk Setup first and Settings last', 
   writeSetupState('complete');
   renderRouted();
   const links = screen.getAllByRole('link');
-  expect(links).toHaveLength(5);
+  expect(links).toHaveLength(6);
   expect(links[0].textContent).toContain('Kiosk Setup');
   expect(links[0].getAttribute('href')).toBe('/setup');
   expect(screen.getByRole('link', { name: /Scanning/ }).getAttribute('href')).toBe('/scan');
+  // RFID Enroll sits immediately after Scanning
+  expect(links[2].textContent).toContain('RFID Enroll');
+  expect(links[2].getAttribute('href')).toBe('/enroll');
   expect(screen.getByRole('link', { name: /Label Printing/ }).getAttribute('href')).toBe('/labels');
   expect(screen.getByRole('link', { name: /Timeclock/ }).getAttribute('href')).toBe('/timeclock');
-  expect(links[4].textContent).toContain('Settings');
-  expect(links[4].getAttribute('href')).toBe('/settings');
+  expect(links[5].textContent).toContain('Settings');
+  expect(links[5].getAttribute('href')).toBe('/settings');
 });
 
 it('renders the launcher tiles only, with no facts list', () => {
@@ -53,6 +56,7 @@ it('renders the launcher tiles only, with no facts list', () => {
   renderRouted();
   expect(screen.getByRole('link', { name: /Kiosk Setup/ })).toBeTruthy();
   expect(screen.getByRole('link', { name: /Scanning/ })).toBeTruthy();
+  expect(screen.getByRole('link', { name: /RFID Enroll/ })).toBeTruthy();
   expect(screen.getByRole('link', { name: /Label Printing/ })).toBeTruthy();
   expect(screen.getByRole('link', { name: /Timeclock/ })).toBeTruthy();
   expect(screen.getByRole('link', { name: /Settings/ })).toBeTruthy();
@@ -70,7 +74,7 @@ it('navigates to the placeholder and back', async () => {
 
 it('when setup is incomplete, greys out every tile except Kiosk Setup and Settings, and shows the banner', async () => {
   renderRouted();
-  for (const name of [/Scanning/, /Label Printing/, /Timeclock/]) {
+  for (const name of [/Scanning/, /RFID Enroll/, /Label Printing/, /Timeclock/]) {
     const tile = screen.getByRole('link', { name });
     expect(tile.getAttribute('aria-disabled')).toBe('true');
   }

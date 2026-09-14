@@ -581,3 +581,48 @@
    main.tsx imports after it), so the destructive Reset printer / Factory
    reset buttons re-assert the red here — kiosk.css is imported last. */
 .btn-solid.btn-danger { background: var(--c-red, #c03540); color: #fff; }
+
+/* ── Settings: a native select in a settings row ──────────────────────
+   The kiosk has no ComboBox of its own and this is a short, fixed
+   vocabulary, so a plain <select> is the honest control — sized for a
+   finger, and holding its width while the label side wraps. */
+.settings-select {
+  flex: 0 0 auto;
+  min-height: 44px;
+  min-width: 200px;
+  max-width: 100%;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 15px;
+  color: var(--text-dark);
+  background: var(--paper);
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+}
+.settings-select:focus-visible { border-color: var(--accent); outline: none; }
+.settings-select:disabled { opacity: .6; }
+
+/* ── RFID Enroll ─────────────────────────────────────────────────────
+   Step one is the Scanning page's box, alone. Step two is the asset
+   card — which asset is about to be tagged — over a second box, with
+   the padded value it will store shown underneath so the operator can
+   read what the portal is about to hold. */
+.enroll-card {
+  padding: 18px 22px;
+  background: var(--paper); border: 1px solid var(--paper-line); border-radius: 16px;
+  max-width: 720px; margin: 0 0 16px;
+}
+.enroll-card-name { font-size: 24px; font-weight: 600; }
+.enroll-facts {
+  display: flex; flex-wrap: wrap; gap: 6px 28px; margin: 10px 0 0;
+}
+.enroll-facts > div { min-width: 0; }
+.enroll-facts dt {
+  font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-mute);
+}
+.enroll-facts dd { margin: 2px 0 0; font-size: 15px; color: var(--text-dark); }
+.enroll-replace { margin: 12px 0 0; font-size: 13px; color: var(--text-mute); }
+.enroll-preview { margin: 8px 0 0; font-size: 14px; color: var(--text-mute); max-width: 720px; }
+.enroll-preview .mono { font-size: 16px; color: var(--text-dark); }
+.enroll-actions { display: flex; gap: 12px; align-items: center; margin-top: 16px; }

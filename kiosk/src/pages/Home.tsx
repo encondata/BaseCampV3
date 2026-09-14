@@ -27,6 +27,21 @@ const ICONS: Record<KioskFeature['id'], JSX.Element> = {
       <rect x="32" y="8" width="3" height="24" fill="currentColor" />
     </svg>
   ),
+  // A luggage-tag outline with an antenna's waves coming off it: the
+  // tag is the asset's label, the waves are what the reader hears.
+  enroll: (
+    <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path
+        d="M4 9h11l9 11-9 11H4V9z"
+        stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round"
+      />
+      <circle cx="10.5" cy="15.5" r="2" fill="currentColor" />
+      <path
+        d="M29 14a8 8 0 0 1 0 12M33.5 10a13.5 13.5 0 0 1 0 20"
+        stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
+      />
+    </svg>
+  ),
   labels: (
     <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <path
