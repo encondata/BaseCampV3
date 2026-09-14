@@ -143,6 +143,8 @@ A tab registry (`src/lib/settingsTabs.ts`) lists five sections in order: Appeara
 
 The page renders a `.segmented.settings-tabs` tab strip (the same `role="tablist"` pattern as the portal's directory pills) built only from the visible tabs. The active tab lives in the `tab` search param (`useSearchParams`) so it survives a reload and can be deep-linked; an unknown or currently-hidden `tab` value (e.g. a worker hitting `?tab=admin`) falls back to Appearance rather than redirecting. Every tab body is a placeholder for now: the tab's label as an `h2.settings-tab-title`, its blurb as `.page-hint`, and a `.kiosk-placeholder` card reading "This section is not available yet."
 
+Developer tab: the first control is a Developer mode toggle (kiosk-local, localStorage `ss.kiosk.devMode`, footer shows "Dev mode On"); what it reveals is defined per feature as they land — today it only flips the flag.
+
 ### Styles (`src/styles/kiosk.css`)
 
 Only kiosk-specific rules: `.kiosk-shell` (grid rows auto/1fr, `min-height:100vh`, `background: var(--paper-2)`), `.kiosk-top` (height 56 px, `background: var(--ink)`, `color: var(--snow)`, border-bottom `var(--ink-line)`), `.kiosk-mode`, `.pair-code`, `.pair-qr`, `.form-notice`, `.pane-gear`, `.eyebrow-kiosk`, `.settings-tabs`, `.settings-tab-title`. Everything else comes from the portal sheets. The kiosk never redefines a `--` token. List-typography guardrail selectors are not used (no lists in this pass).
@@ -277,6 +279,7 @@ Built on branch `kiosk-web` via `docs/superpowers/plans/2026-09-13-kiosk-web.md`
 - 2026-09-13 (Jimmy): kiosk facts moved from Home cards to a footer status line.
 - 2026-09-13 (Jimmy): Kiosk Setup is the first launcher tile (opens the settings screen).
 - 2026-09-13 (Jimmy): Settings page with Appearance/Sound/Devices/Admin/Developer tabs; Admin and Developer hidden unless the person holds the level.
+- 2026-09-13 (Jimmy): Developer tab starts with a Developer mode toggle.
 
 Live-verified 2026-09-13 against the worktree API (dev DB at 0061): email/password sign-in, heartbeat creating "Kiosk 4716 · Web" on Kiosk Devices and the chip flipping to Registered after Register from the portal, link-with-phone approve (kiosk on Home within one poll) and deny ("Sign-in was declined on the phone."), the move-password placeholder (no request), and the Docker/compose build on 8090 signing in with the same-site cookie. Not live-verified: the `kiosk_not_allowed` refusal in the UI (covered by `tests/test_auth_kiosk_login.py`), a real phone camera scanning the QR, and prod cross-subdomain cookies (`SS_COOKIE_DOMAIN`).
 

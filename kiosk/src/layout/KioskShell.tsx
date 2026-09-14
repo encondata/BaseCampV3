@@ -16,6 +16,7 @@ import { applyPreferences, DEFAULT_PREFERENCES } from '@portal/lib/settings';
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import type { RegistrationState } from '../lib/api';
 import { kioskVersion } from '../lib/config';
+import { useDevMode } from '../lib/devMode';
 import { FEATURES } from '../lib/features';
 import { getIdentity } from '../lib/identity';
 import { platform } from '../lib/platform';
@@ -31,6 +32,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
   const authed = status === 'authed';
+  const [devMode] = useDevMode();
 
   useEffect(() => {
     applyPreferences(preferences ?? DEFAULT_PREFERENCES);
@@ -94,6 +96,14 @@ export default function KioskShell({ children }: { children: ReactNode }) {
             </span>
           </Fragment>
         ))}
+        {devMode && (
+          <Fragment>
+            <span className="kiosk-foot-sep" aria-hidden="true">·</span>
+            <span className="kiosk-foot-item kiosk-foot-dev">
+              <b>Dev mode</b><span>On</span>
+            </span>
+          </Fragment>
+        )}
       </footer>
     </div>
   );

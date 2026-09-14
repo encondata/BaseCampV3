@@ -7,6 +7,8 @@
 import { useSearchParams } from 'react-router-dom';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
+import { Switch } from '../components/Switch';
+import { useDevMode } from '../lib/devMode';
 import { SETTINGS_TABS, visibleTabs, type SettingsTabId } from '../lib/settingsTabs';
 
 const DEFAULT_TAB: SettingsTabId = 'appearance';
@@ -14,6 +16,7 @@ const DEFAULT_TAB: SettingsTabId = 'appearance';
 export default function Settings() {
   const { isAdmin, isDeveloper } = useKioskAuth();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [devMode, setDevMode] = useDevMode();
 
   const tabs = visibleTabs(SETTINGS_TABS, { isAdmin, isDeveloper });
   const requested = searchParams.get('tab');
@@ -44,6 +47,22 @@ export default function Settings() {
       <section role="tabpanel" aria-labelledby={`settings-tab-${active.id}`}>
         <h2 className="settings-tab-title">{active.label}</h2>
         <p className="page-hint">{active.blurb}</p>
+        {active.id === 'developer' && (
+          <div className="settings-row">
+            <div>
+              <label htmlFor="dev-mode-switch" className="settings-row-label">Developer mode</label>
+              <p className="settings-row-hint">
+                Shows diagnostics and developer tools on this kiosk. Stored on this kiosk only.
+              </p>
+            </div>
+            <Switch
+              id="dev-mode-switch"
+              aria-label="Developer mode"
+              on={devMode}
+              onChange={setDevMode}
+            />
+          </div>
+        )}
         <div className="kiosk-placeholder">
           <p>This section is not available yet.</p>
         </div>

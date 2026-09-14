@@ -13,6 +13,7 @@ afterEach(() => {
   cleanup();
   auth.isAdmin = false;
   auth.isDeveloper = false;
+  localStorage.clear();
 });
 
 function renderAt(path: string) {
@@ -58,4 +59,21 @@ it('an admin requesting ?tab=admin sees Admin selected', () => {
   renderAt('/settings?tab=admin');
   expect(screen.getByRole('tab', { name: 'Admin' }).getAttribute('aria-selected')).toBe('true');
   expect(screen.getByRole('heading', { name: 'Admin' })).toBeTruthy();
+});
+
+it('a developer sees a Developer mode switch on the Developer tab, unchecked by default, that persists on click', async () => {
+  auth.isAdmin = true;
+  auth.isDeveloper = true;
+  renderAt('/settings?tab=developer');
+  const toggle = screen.getByRole('switch', { name: 'Developer mode' });
+  expect(toggle.getAttribute('aria-checked')).toBe('false');
+
+  await userEvent.click(toggle);
+  expect(toggle.getAttribute('aria-checked')).toBe('true');
+  expect(localStorage.getItem('ss.kiosk.devMode')).toBe('true');
+});
+
+it('a worker never sees the Developer mode switch, on any tab', () => {
+  renderAt('/settings');
+  expect(screen.queryByRole('switch', { name: 'Developer mode' })).toBeNull();
 });

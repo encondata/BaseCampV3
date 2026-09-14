@@ -37,6 +37,7 @@ afterEach(() => {
   auth.person = { display_name: 'Alex Worker' };
   auth.registration = 'ok';
   auth.sessionExpiresAt = '2026-09-14T19:00:42.000Z';
+  localStorage.clear();
 });
 
 it('shows the feature title in .kiosk-section at a feature route', () => {
@@ -108,4 +109,39 @@ it('footer shows only kiosk/mode/version when signed out', () => {
   expect(text).toContain(getIdentity().name);
   expect(text).toContain('Web');
   expect(text).not.toContain('Alex Worker');
+});
+
+it('footer shows "Dev mode" when developer mode is on', () => {
+  localStorage.setItem('ss.kiosk.devMode', 'true');
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const footer = screen.getByRole('contentinfo');
+  expect(footer.textContent ?? '').toContain('Dev mode');
+});
+
+it('footer omits "Dev mode" when developer mode is off', () => {
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const footer = screen.getByRole('contentinfo');
+  expect(footer.textContent ?? '').not.toContain('Dev mode');
+});
+
+it('footer shows "Dev mode" signed out too (kiosk-local, not tied to the session)', () => {
+  auth.status = 'anon';
+  auth.person = null;
+  auth.registration = null;
+  localStorage.setItem('ss.kiosk.devMode', 'true');
+  render(
+    <MemoryRouter initialEntries={['/setup']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const footer = screen.getByRole('contentinfo');
+  expect(footer.textContent ?? '').toContain('Dev mode');
 });
