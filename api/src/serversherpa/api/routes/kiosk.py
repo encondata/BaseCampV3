@@ -8,7 +8,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from sqlalchemy import case, select, update
+from sqlalchemy import case, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload
 
@@ -19,13 +20,14 @@ from serversherpa.api.deps import (
 from serversherpa.api.routes.auth import session_response
 from serversherpa.api.schemas import (
     HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut, KioskPeopleSyncOut,
-    KioskPersonOut, KioskSetupIn, KioskSetupOut, KioskSignOutIn, PairCreateIn,
-    PairCreateOut, PairInfoOut, PairPollIn, PairPollOut, SetupOptionInitiative,
+    KioskPersonOut, KioskScanBatchIn, KioskScanBatchOut, KioskScanRejected,
+    KioskSetupIn, KioskSetupOut, KioskSignOutIn, PairCreateIn, PairCreateOut,
+    PairInfoOut, PairPollIn, PairPollOut, SetupOptionInitiative,
     SetupOptionScanType, SetupOptionSite, SetupOptionsOut,
 )
 from serversherpa.db.models import (
     Asset, AssetModel, Client, Device, Initiative, InitiativeAsset, KioskPairRequest,
-    LabelPlaceholder, Person, Site, StatusValue, UserAccount, WorkerProfile,
+    LabelPlaceholder, Person, RawScan, Site, StatusValue, UserAccount, WorkerProfile,
 )
 from serversherpa.labels.generate.values import (
     CONTAINER_KEYS, AssetRow, Sites, make_model_text, placeholder_values,
@@ -502,3 +504,111 @@ async def sync_people(
                                rfid_tag=p.rfid_tag, is_worker=is_worker,
                                has_account=has_account)
                 for p, is_worker, has_account in rows])
+
+
+# ── scan ingest (kiosk:view) ─────────────────────────────────────────
+
+
+@router.post("/scans", response_model=KioskScanBatchOut)
+async def ingest_scans(
+    body: KioskScanBatchIn, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskScanBatchOut:
+    """Take a batch of scans off a kiosk and write them into `raw_scans`
+    — the same inbox the scan-matching worker drains. The kiosk sends
+    only scans it already matched against its local copy of the move
+    (its `asset_id` rides along as information); the server re-matches
+    `scanned_value` from scratch, so a stale local database can never
+    mis-attribute a scan.
+
+    Each row is written fresh — `match_attempted_at` NULL, which is
+    exactly what `scans/worker.py::run_once` selects on — with
+    `device_id` = the kiosk's Device name (the reader/kiosk identity
+    string raw_scans has always carried), `operator_id` = the signed-in
+    person, `source` = "kiosk", and site / move / checkpoint taken from
+    the scan when it carries them and from the kiosk's own setup when it
+    does not. The checkpoint lands in both `status` (the FK'd column the
+    matcher copies into processed_scans and status rules trigger on) and
+    `scan_status` (what the device reported, kept verbatim).
+
+    Idempotent on the kiosk-generated `client_scan_id`: a batch the
+    kiosk retries because it never saw the response stores nothing new
+    and reports every scan as accepted again, so the kiosk can clear its
+    outbox. A scan naming a site, move, or checkpoint the server does
+    not know is rejected on its own (`bad_site` / `bad_initiative` /
+    `bad_status`) and the rest of the batch still lands — one bad row
+    from a stale kiosk must not cost a truckload of scans. The whole
+    batch fails only on an unknown kiosk (404), a malformed body (422),
+    or read-only mode (423 — this writes, so it is not exempt).
+
+    A checkpoint is only required to exist, not to still be active: a
+    status someone deactivated mid-move must not start dropping scans.
+    """
+    device = await db.scalar(select(Device).where(Device.serial == body.serial))
+    if device is None or device.device_type != "kiosk":
+        raise _err(404, "device_not_found")
+    now = datetime.now(UTC)
+
+    # One lookup per reference kind for the whole batch, not per scan.
+    site_ids = {s.site_id for s in body.scans if s.site_id is not None}
+    initiative_ids = {s.initiative_id for s in body.scans if s.initiative_id is not None}
+    status_keys = {s.scan_status for s in body.scans if s.scan_status is not None}
+    known_sites = set(await db.scalars(
+        select(Site.id).where(Site.id.in_(site_ids)))) if site_ids else set()
+    known_initiatives = set(await db.scalars(
+        select(Initiative.id).where(
+            Initiative.id.in_(initiative_ids)))) if initiative_ids else set()
+    known_statuses = set(await db.scalars(
+        select(StatusValue.key).where(
+            StatusValue.record_type == "asset",
+            StatusValue.key.in_(status_keys)))) if status_keys else set()
+
+    accepted: list[uuid.UUID] = []
+    rejected: list[KioskScanRejected] = []
+    rows: list[dict] = []
+    for scan in body.scans:
+        if scan.site_id is not None and scan.site_id not in known_sites:
+            code = "bad_site"
+        elif (scan.initiative_id is not None
+                and scan.initiative_id not in known_initiatives):
+            code = "bad_initiative"
+        elif scan.scan_status is not None and scan.scan_status not in known_statuses:
+            code = "bad_status"
+        else:
+            code = ""
+        if code:
+            rejected.append(KioskScanRejected(
+                client_scan_id=scan.client_scan_id, code=code))
+            continue
+        checkpoint = scan.scan_status or device.scan_status
+        rows.append({
+            "scanned_value": scan.scanned_value,
+            "scan_type": scan.scan_type,
+            "status": checkpoint,
+            "scan_status": checkpoint,
+            "scanned_at": scan.scanned_at,
+            "device_id": device.name,
+            "operator_id": actor.person.id,
+            "site_id": scan.site_id or device.site_id,
+            "initiative_id": scan.initiative_id or device.current_initiative_id,
+            "source": "kiosk",
+            "client_scan_id": scan.client_scan_id,
+        })
+        accepted.append(scan.client_scan_id)
+
+    if rows:
+        # DO NOTHING against the partial unique index: a retried batch (or
+        # two kiosks racing the same outbox) inserts nothing the second
+        # time, and the scan still counts as accepted above.
+        await db.execute(pg_insert(RawScan).values(rows).on_conflict_do_nothing(
+            index_elements=["client_scan_id"],
+            index_where=text("client_scan_id IS NOT NULL")))
+
+    # last_seen_at only: updated_at means "this kiosk's configuration
+    # changed", and ingesting scans does not change it.
+    device.last_seen_at = now
+    audit(db, actor_id=actor.person.id, entity_type="device",
+          entity_id=str(device.id), action="kiosk_scans",
+          changes={"accepted": len(accepted), "rejected": len(rejected)})
+    await db.commit()
+    return KioskScanBatchOut(accepted=accepted, rejected=rejected)

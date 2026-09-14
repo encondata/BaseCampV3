@@ -785,6 +785,17 @@ class RawScan(Base):
     source: Mapped[str] = mapped_column(server_default="")
     match_attempted_at: Mapped[datetime | None] = mapped_column(
         comment="last matcher attempt; NULL = never tried")
+    # kiosk ingest (migration 0063)
+    client_scan_id: Mapped[uuid.UUID | None] = mapped_column(
+        comment="kiosk-generated scan id; UNIQUE where set, which is what "
+                "makes POST /kiosk/scans idempotent on a retried batch")
+    scan_status: Mapped[str | None] = mapped_column(
+        comment="checkpoint the scanning device was set to, as reported — "
+                "un-FK'd device data (cf. devices.scan_status); `status` is "
+                "the vocabulary-checked column the matcher copies")
+    initiative_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("initiatives.id", ondelete="SET NULL"),
+        comment="the move this scan belongs to (the kiosk's current move)")
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 

@@ -2311,6 +2311,49 @@ class KioskPeopleSyncOut(BaseModel):
     people: list[KioskPersonOut]
 
 
+# ── kiosk scan ingest ──
+
+class KioskScanIn(BaseModel):
+    """One scan the kiosk already matched against its local copy of the
+    move. `asset_id` is that local match — informational only: the
+    server's own scan-matching worker re-matches `scanned_value` from
+    scratch, so a stale local database can never mis-attribute a scan.
+    `site_id` / `initiative_id` / `scan_status` are per-scan overrides;
+    left out, each falls back to the kiosk Device's own setup."""
+
+    client_scan_id: uuid.UUID
+    scanned_value: str = Field(min_length=1, max_length=200)
+    scan_type: Literal["rfid", "barcode"]
+    scanned_at: datetime
+    asset_id: uuid.UUID | None = None
+    site_id: uuid.UUID | None = None
+    initiative_id: uuid.UUID | None = None
+    scan_status: str | None = Field(default=None, max_length=120)
+
+    @field_validator("scanned_value")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("blank")
+        return v
+
+
+class KioskScanBatchIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
+    scans: list[KioskScanIn] = Field(min_length=1, max_length=100)
+
+
+class KioskScanRejected(BaseModel):
+    client_scan_id: uuid.UUID
+    code: Literal["bad_site", "bad_initiative", "bad_status"]
+
+
+class KioskScanBatchOut(BaseModel):
+    accepted: list[uuid.UUID]
+    rejected: list[KioskScanRejected]
+
+
 # ── Labels ──
 
 
