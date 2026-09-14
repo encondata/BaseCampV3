@@ -7,7 +7,7 @@ docs/superpowers/specs/2026-09-13-kiosk-web-design.md"""
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload
 
@@ -22,7 +22,7 @@ from serversherpa.api.schemas import (
     SetupOptionScanType, SetupOptionSite, SetupOptionsOut,
 )
 from serversherpa.db.models import (
-    Device, Initiative, KioskPairRequest, Site, StatusValue, UserAccount,
+    Client, Device, Initiative, KioskPairRequest, Site, StatusValue, UserAccount,
 )
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_pairing as pairing
@@ -243,23 +243,40 @@ async def sign_out(
 
 # ── setup wizard (kiosk:view) ────────────────────────────────────────
 
-MOVE_STATUSES = ("planned", "in_progress")
+# Terminal/historical keys from the initiative status vocabulary seeded in
+# migrations/versions/0016_initiatives.py (record_type="initiative"):
+# planned / scheduled / in_progress / on_hold are active work; completed
+# and cancelled are done and excluded from the kiosk's move list.
+HISTORICAL_INITIATIVE_STATUSES = ("completed", "cancelled")
+
+
+async def _initiative_status_labels(db: AsyncSession) -> dict[str, str]:
+    rows = await db.execute(
+        select(StatusValue.key, StatusValue.label)
+        .where(StatusValue.record_type == "initiative"))
+    return dict(rows.all())
 
 
 async def _allowed_initiatives_with_sites(db: AsyncSession) -> list:
-    """Move initiatives (filtered as above), each paired with its origin
-    (source) and destination Site rows via an outer join — either side
-    can be absent on a move that hasn't had its sites set yet."""
+    """Move initiatives that are not complete or historical, each paired
+    with its origin (source) and destination Site rows and its Client, all
+    via outer joins — any of these can be absent (a move that hasn't had
+    its sites or client set yet). Ordered with in-progress moves first,
+    then everything else, then by the earliest scheduled_start (nulls
+    last), then by name."""
     Origin = aliased(Site)
     Dest = aliased(Site)
+    in_progress_first = case((Initiative.status == "in_progress", 0), else_=1)
     return list((await db.execute(
-        select(Initiative, Origin, Dest)
+        select(Initiative, Origin, Dest, Client)
         .outerjoin(Origin, Initiative.origin_site_id == Origin.id)
         .outerjoin(Dest, Initiative.destination_site_id == Dest.id)
+        .outerjoin(Client, Initiative.client_id == Client.id)
         .where(Initiative.initiative_type == "move",
-               Initiative.status.in_(MOVE_STATUSES),
-               Initiative.archived_at.is_(None))
-        .order_by(Initiative.name))).all())
+               Initiative.archived_at.is_(None),
+               Initiative.status.not_in(HISTORICAL_INITIATIVE_STATUSES))
+        .order_by(in_progress_first, Initiative.scheduled_start.is_(None),
+                  Initiative.scheduled_start, Initiative.name))).all())
 
 
 async def _active_scan_types(db: AsyncSession) -> list[StatusValue]:
@@ -274,23 +291,28 @@ async def setup_options(
     db: DbSession,
     actor: AuthContext = require_permission("kiosk", "view"),
 ) -> SetupOptionsOut:
-    """Move initiatives and active asset status values for the Kiosk Setup
-    wizard, filtered exactly like the portal's kiosk device modal
-    (initiative_type=move, status planned/in_progress, not archived; asset
-    status values, active only) — see DeviceEditModal.tsx/KioskDevices.tsx.
-    Workers hold kiosk:view but not initiatives:view, so they cannot call
-    /initiatives directly; this endpoint gives the kiosk only the narrow
-    slice of that data the wizard needs."""
+    """Move initiatives that are not complete or historical (see
+    HISTORICAL_INITIATIVE_STATUSES) and active asset status values, for the
+    Kiosk Setup wizard's card pickers. Workers hold kiosk:view but not
+    initiatives:view, so they cannot call /initiatives directly; this
+    endpoint gives the kiosk only the narrow slice of that data the wizard
+    needs, including the status label and client name for display."""
     rows = await _allowed_initiatives_with_sites(db)
     scan_types = await _active_scan_types(db)
+    status_labels = await _initiative_status_labels(db)
     return SetupOptionsOut(
         initiatives=[
             SetupOptionInitiative(
                 id=i.id, name=i.name, status=i.status,
+                status_label=status_labels.get(i.status, i.status),
+                client_name=client.name if client else None,
+                scheduled_start=(i.scheduled_start.isoformat()
+                                if i.scheduled_start else None),
+                scheduled_end=i.scheduled_end.isoformat() if i.scheduled_end else None,
                 source_site=SetupOptionSite(id=origin.id, name=origin.name) if origin else None,
                 destination_site=(SetupOptionSite(id=dest.id, name=dest.name)
                                   if dest else None))
-            for i, origin, dest in rows],
+            for i, origin, dest, client in rows],
         scan_types=[SetupOptionScanType(key=s.key, label=s.label, color=s.color)
                    for s in scan_types])
 
@@ -308,7 +330,7 @@ async def kiosk_setup(
         raise _err(404, "device_not_found")
     initiative = await db.get(Initiative, body.initiative_id)
     if (initiative is None or initiative.initiative_type != "move"
-            or initiative.status not in MOVE_STATUSES
+            or initiative.status in HISTORICAL_INITIATIVE_STATUSES
             or initiative.archived_at is not None):
         raise _err(422, "bad_initiative")
     scan_type = await db.get(StatusValue, ("asset", body.scan_status))

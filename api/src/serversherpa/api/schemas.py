@@ -2236,6 +2236,10 @@ class SetupOptionInitiative(BaseModel):
     id: uuid.UUID
     name: str
     status: str
+    status_label: str
+    client_name: str | None = None
+    scheduled_start: str | None = None
+    scheduled_end: str | None = None
     source_site: SetupOptionSite | None = None
     destination_site: SetupOptionSite | None = None
 

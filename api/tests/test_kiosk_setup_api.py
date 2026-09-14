@@ -1,7 +1,7 @@
-"""Kiosk Setup wizard: GET /kiosk/setup-options (move initiatives +
-active asset status values, filtered exactly like the portal's kiosk
-modal) and POST /kiosk/setup (stamps the kiosk Device's
-current_initiative_id/site_id/scan_status, audited). Workers hold
+"""Kiosk Setup wizard: GET /kiosk/setup-options (every move initiative
+that is not complete or historical, with status label/client name/sites,
+plus active asset status values) and POST /kiosk/setup (stamps the kiosk
+Device's current_initiative_id/site_id/scan_status, audited). Workers hold
 kiosk:view but not initiatives:view, which is why setup-options exists
 instead of the kiosk calling /initiatives directly. Gated on kiosk:view;
 blocked under read-only mode (it writes)."""
@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
-from serversherpa.db.models import AuditLog, Device, Initiative, Site, StatusValue
+from serversherpa.db.models import AuditLog, Client, Device, Initiative, Site, StatusValue
 from tests.test_auth_kiosk_login import _client_viewer
 from tests.test_sites_api import login
 from tests.test_status_values_write import _make
@@ -31,23 +31,27 @@ async def _seed_sites(db):
     return origin, dest
 
 
-async def _seed_initiatives(db, *, origin_site=None, dest_site=None):
+async def _seed_initiatives(db, *, origin_site=None, dest_site=None, client=None):
     now = datetime.now(UTC)
     planned = Initiative(name="NAP11 Hall Migration (demo)",
                          initiative_type="move", status="planned",
+                         client_id=client.id if client else None,
                          origin_site_id=origin_site.id if origin_site else None,
                          destination_site_id=dest_site.id if dest_site else None)
     in_progress = Initiative(name="NAP7 Rack Move", initiative_type="move",
                              status="in_progress")
+    on_hold = Initiative(name="Paused Move", initiative_type="move", status="on_hold")
     completed = Initiative(name="Old Move", initiative_type="move",
                            status="completed")
+    cancelled = Initiative(name="Dead Move", initiative_type="move",
+                           status="cancelled")
     archived = Initiative(name="Archived Move", initiative_type="move",
                           status="planned", archived_at=now)
     not_a_move = Initiative(name="Some Project", initiative_type="project",
                             status="planned")
-    db.add_all([planned, in_progress, completed, archived, not_a_move])
+    db.add_all([planned, in_progress, on_hold, completed, cancelled, archived, not_a_move])
     await db.flush()
-    return planned, in_progress, completed, archived, not_a_move
+    return planned, in_progress, on_hold, completed, cancelled, archived, not_a_move
 
 
 async def _seed_scan_types(db):
@@ -67,7 +71,8 @@ async def _seed_scan_types(db):
 
 async def test_setup_options_filters_initiatives_and_scan_types(client, db, seeded_user):
     hdrs = await login(client)
-    planned, in_progress, completed, archived, not_a_move = await _seed_initiatives(db)
+    planned, in_progress, on_hold, completed, cancelled, archived, not_a_move = (
+        await _seed_initiatives(db))
     active, inactive, other_type = await _seed_scan_types(db)
     await db.commit()
 
@@ -76,17 +81,49 @@ async def test_setup_options_filters_initiatives_and_scan_types(client, db, seed
     body = resp.json()
 
     names = {i["name"] for i in body["initiatives"]}
-    assert names == {planned.name, in_progress.name}
+    assert names == {planned.name, in_progress.name, on_hold.name}
     assert completed.name not in names
+    assert cancelled.name not in names
     assert archived.name not in names
     assert not_a_move.name not in names
-    # ordered by name
-    assert [i["name"] for i in body["initiatives"]] == sorted(names)
 
     keys = {s["key"] for s in body["scan_types"]}
     assert active.key in keys
     assert inactive.key not in keys
     assert other_type.key not in keys
+
+
+async def test_setup_options_orders_in_progress_first_then_by_name(client, db, seeded_user):
+    hdrs = await login(client)
+    planned, in_progress, on_hold, *_ = await _seed_initiatives(db)
+    await db.commit()
+
+    resp = await client.get("/kiosk/setup-options", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    names = [i["name"] for i in resp.json()["initiatives"]]
+    assert names.index(in_progress.name) < names.index(planned.name)
+    assert names.index(in_progress.name) < names.index(on_hold.name)
+
+
+async def test_setup_options_includes_status_label_and_client_name(client, db, seeded_user):
+    hdrs = await login(client)
+    client_row = Client(name="Acme Corp")
+    db.add(client_row)
+    await db.flush()
+    planned, in_progress, on_hold, *_ = await _seed_initiatives(db, client=client_row)
+    await db.commit()
+
+    resp = await client.get("/kiosk/setup-options", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    by_name = {i["name"]: i for i in resp.json()["initiatives"]}
+
+    assert by_name[planned.name]["status_label"] == "Planned"
+    assert by_name[planned.name]["client_name"] == "Acme Corp"
+    assert by_name[planned.name]["scheduled_start"] is None
+    assert by_name[planned.name]["scheduled_end"] is None
+    assert by_name[in_progress.name]["status_label"] == "In progress"
+    assert by_name[in_progress.name]["client_name"] is None
+    assert by_name[on_hold.name]["status_label"] == "On hold"
 
 
 async def test_setup_options_includes_sites(client, db, seeded_user):
@@ -229,12 +266,28 @@ async def test_setup_rejects_completed_initiative(client, db, seeded_user):
     hdrs = await login(client)
     device = Device(device_type="kiosk", name="Kiosk Setup Bad Init", serial=SERIAL)
     db.add(device)
-    _, _, completed, _, _ = await _seed_initiatives(db)
+    _, _, _, completed, _, _, _ = await _seed_initiatives(db)
     active, *_ = await _seed_scan_types(db)
     await db.commit()
 
     resp = await client.post("/kiosk/setup", headers=hdrs, json={
         "serial": SERIAL, "initiative_id": str(completed.id),
+        "site_id": DUMMY_SITE_ID, "scan_status": active.key,
+    })
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "bad_initiative"
+
+
+async def test_setup_rejects_cancelled_initiative(client, db, seeded_user):
+    hdrs = await login(client)
+    device = Device(device_type="kiosk", name="Kiosk Setup Bad Init Cancelled", serial=SERIAL)
+    db.add(device)
+    _, _, _, _, cancelled, _, _ = await _seed_initiatives(db)
+    active, *_ = await _seed_scan_types(db)
+    await db.commit()
+
+    resp = await client.post("/kiosk/setup", headers=hdrs, json={
+        "serial": SERIAL, "initiative_id": str(cancelled.id),
         "site_id": DUMMY_SITE_ID, "scan_status": active.key,
     })
     assert resp.status_code == 422, resp.text
