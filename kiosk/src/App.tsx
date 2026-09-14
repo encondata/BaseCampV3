@@ -14,9 +14,11 @@ import Labels from './pages/Labels';
 import Login from './pages/Login';
 import Scan from './pages/Scan';
 import Settings from './pages/Settings';
+import Timeclock from './pages/Timeclock';
 
 const SCAN = FEATURES.find((f) => f.id === 'scan')!;
 const LABELS = FEATURES.find((f) => f.id === 'labels')!;
+const TIMECLOCK = FEATURES.find((f) => f.id === 'timeclock')!;
 
 export default function App() {
   return (
@@ -69,6 +71,17 @@ export default function App() {
               )}
             />
           ))}
+          {/* Timeclock is a real screen too — same guards as Scanning. */}
+          <Route
+            path={TIMECLOCK.path}
+            element={(
+              <KioskGuard>
+                <SetupGate feature={TIMECLOCK}>
+                  <KioskShell><Timeclock /></KioskShell>
+                </SetupGate>
+              </KioskGuard>
+            )}
+          />
           {FEATURES.filter((f) => f.placeholder).map((f) => (
             <Route
               key={f.id}

@@ -401,3 +401,82 @@ export async function getSystemStatus(): Promise<SystemStatus> {
   const resp = await request(`${apiUrl()}/system/status`);
   return jsonFrom<SystemStatus>(resp);
 }
+
+// ── timeclock (the kiosk punch clock) ───────────────────────────────
+
+/** Who the kiosk is punching, as the timeclock card shows them.
+ *  `avatar_url` is presigned and short-lived — fetched with the status,
+ *  never cached locally. */
+export interface KioskTimeclockPerson {
+  id: string;
+  display_name: string;
+  first_name: string;
+  last_name: string;
+  preferred_name: string | null;
+  avatar_url: string | null;
+  rfid_tag: string | null;
+}
+
+/** The open entry, so the card can count up from `started_at` and name
+ *  the move and site the punch belongs to. */
+export interface KioskTimeclockEntry {
+  id: string;
+  started_at: string;
+  initiative_id: string | null;
+  initiative_name: string | null;
+  site_id: string | null;
+  site_name: string | null;
+}
+
+/** The entry a clock-out just closed — enough for "Clocked out ·
+ *  3h 12m" without a second round trip. */
+export interface KioskTimeclockLastEntry {
+  id: string;
+  started_at: string;
+  ended_at: string;
+  minutes: number;
+}
+
+export interface KioskTimeclockStatus {
+  person: KioskTimeclockPerson;
+  clocked_in: boolean;
+  entry: KioskTimeclockEntry | null;
+  last_entry: KioskTimeclockLastEntry | null;
+}
+
+/** Is this person on the clock right now, and since when? 404
+ *  `person_not_found` for someone the portal no longer has (or has
+ *  archived) — a kiosk holding a stale local copy is the likely cause. */
+export async function fetchTimeclockStatus(personId: string): Promise<KioskTimeclockStatus> {
+  const resp = await apiFetch(`/kiosk/timeclock/${encodeURIComponent(personId)}`);
+  return jsonFrom<KioskTimeclockStatus>(resp);
+}
+
+/** Opens an entry for the worker at the kiosk. Site and move come from
+ *  Kiosk Setup; left out, the server falls back to the kiosk Device's
+ *  own setup. Throws `ApiError` — 409 `already_clocked_in`, 422
+ *  `bad_site`/`bad_initiative`, 423 read-only, 0 `network`. */
+export async function postClockIn(body: {
+  serial: string; person_id: string;
+  site_id?: string | null; initiative_id?: string | null; at?: string;
+}): Promise<KioskTimeclockStatus> {
+  const resp = await apiFetch('/kiosk/timeclock/clock-in', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return jsonFrom<KioskTimeclockStatus>(resp);
+}
+
+/** Closes the worker's open entry; the answer carries `last_entry` with
+ *  the minutes worked. 409 `not_clocked_in` when there is none. */
+export async function postClockOut(body: {
+  serial: string; person_id: string; at?: string;
+}): Promise<KioskTimeclockStatus> {
+  const resp = await apiFetch('/kiosk/timeclock/clock-out', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return jsonFrom<KioskTimeclockStatus>(resp);
+}

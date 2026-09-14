@@ -472,3 +472,55 @@
 }
 .sound-upload-row .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sound-upload-row .size { font-family: var(--font-mono); font-size: 11px; color: var(--text-mute); }
+
+/* ── Timeclock ───────────────────────────────────────────────────────
+   The Scanning page's input, then either a list of people to tap or one
+   worker's card. Everything is sized for a finger at arm's length: the
+   result rows are tall, the avatar is big enough to recognize across a
+   dock, and the single action button is a 64px target. */
+.tc-results { display: grid; gap: 8px; margin-top: 14px; max-width: 720px; }
+.tc-result {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px;
+  background: var(--paper); border: 1px solid var(--paper-line); border-radius: 12px;
+  font-size: 17px; text-align: left; cursor: pointer; color: var(--text-dark);
+}
+.tc-result:hover, .tc-result:focus-visible { border-color: var(--accent); outline: none; }
+.tc-result-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tc-result-chip {
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--text-mute); white-space: nowrap;
+}
+.tc-result-tag { font-family: var(--font-mono); font-size: 13px; color: var(--text-mute); }
+
+.tc-card {
+  display: flex; align-items: center; gap: 18px;
+  padding: 22px 24px;
+  background: var(--paper); border: 1px solid var(--paper-line); border-radius: 16px;
+  max-width: 720px; margin-top: 18px;
+}
+.tc-card-body { min-width: 0; }
+.tc-avatar, .tc-avatar-fallback {
+  width: 88px; height: 88px; border-radius: 50%; flex: none; object-fit: cover;
+}
+.tc-avatar-fallback {
+  display: grid; place-items: center;
+  background: var(--paper-2); color: var(--text-mute); font-size: 30px; font-weight: 600;
+}
+.tc-name { font-size: 26px; font-weight: 600; }
+.tc-status { font-size: 17px; margin: 6px 0 2px; }
+.tc-status.is-in { color: var(--c-green); }
+.tc-status.is-out { color: var(--text-mute); }
+.tc-sub { font-size: 13px; color: var(--text-mute); margin: 0; }
+.tc-actions { display: flex; gap: 12px; align-items: center; margin-top: 18px; }
+.tc-action { min-height: 64px; font-size: 20px; padding: 0 32px; }
+.tc-toast {
+  margin-top: 14px; padding: 12px 16px; border-radius: 10px;
+  background: color-mix(in srgb, var(--c-green) 15%, transparent);
+  border-left: 3px solid var(--c-green);
+  font-size: 15px;
+}
+/* The session-only receipt of what this kiosk punched — the portal's
+   own time entries are the record. Same shape as the scan list. */
+.tc-recent { width: 100%; margin-top: 18px; }
+.tc-chip { font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }

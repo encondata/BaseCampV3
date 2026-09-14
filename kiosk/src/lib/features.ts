@@ -13,7 +13,8 @@ export interface KioskFeature {
   blurb: string;
   /** True for features that still fall back to the generic FeaturePage
    *  placeholder; absent for features with a real screen (Settings,
-   *  Kiosk Setup, and Scanning). */
+   *  Kiosk Setup, Scanning, Label Printing, and Timeclock — which is to
+   *  say all of them today; the flag stays for the next one). */
   placeholder?: boolean;
   /** True for the two tiles that stay usable no matter the kiosk setup
    *  state (Kiosk Setup and Settings) — see `featureAvailable`. */
@@ -24,7 +25,7 @@ export const FEATURES: KioskFeature[] = [
   { id: 'setup', path: '/setup', title: 'Kiosk Setup', blurb: 'Set up this kiosk for a move.', alwaysAvailable: true },
   { id: 'scan', path: '/scan', title: 'Scanning', blurb: 'Scan assets, containers, and badges.' },
   { id: 'labels', path: '/labels', title: 'Label Printing', blurb: 'Print asset and container labels.' },
-  { id: 'timeclock', path: '/timeclock', title: 'Timeclock', blurb: 'Clock in and out of a move.', placeholder: true },
+  { id: 'timeclock', path: '/timeclock', title: 'Timeclock', blurb: 'Clock in and out of a move.' },
   { id: 'settings', path: '/settings', title: 'Settings', blurb: 'Appearance, sound, devices, and more.', alwaysAvailable: true },
 ];
 
