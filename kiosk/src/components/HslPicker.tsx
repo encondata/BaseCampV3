@@ -1,7 +1,8 @@
 /** One color on the Appearance tab: a live swatch, three channel
  *  sliders, the `hsl(...)` readout, and a Preview flash button that
- *  fires the real overlay so the color can be judged full-screen rather
- *  than from a 40px square. Controlled — the Appearance tab owns the
+ *  fires the real overlay — for the configured flash duration, so the
+ *  preview is the real thing — so the color can be judged full-screen
+ *  rather than from a 40px square. Controlled — the Appearance tab owns the
  *  value and persists every change immediately. */
 
 import { hslCss, type Hsl } from '../lib/appearance';
@@ -16,8 +17,8 @@ const CHANNELS: Channel[] = [
 ];
 
 export default function HslPicker({
-  name, value, onChange,
-}: { name: string; value: Hsl; onChange: (next: Hsl) => void }) {
+  name, value, onChange, flashMs,
+}: { name: string; value: Hsl; onChange: (next: Hsl) => void; flashMs?: number }) {
   const css = hslCss(value);
   return (
     <div className="hsl-picker">
@@ -41,7 +42,7 @@ export default function HslPicker({
       </div>
       <div className="hsl-foot">
         <code className="hsl-readout">{css}</code>
-        <button type="button" className="mini-btn" onClick={() => flash(css)}>Preview flash</button>
+        <button type="button" className="mini-btn" onClick={() => flash(css, flashMs)}>Preview flash</button>
       </div>
     </div>
   );

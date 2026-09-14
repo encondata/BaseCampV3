@@ -16,7 +16,7 @@ import HslPicker from '../components/HslPicker';
 import LocalDataInspector from '../components/LocalDataInspector';
 import { Switch } from '../components/Switch';
 import ThisKioskPanel from '../components/ThisKioskPanel';
-import { useAppearance } from '../lib/appearance';
+import { FLASH_MS_RANGE, useAppearance } from '../lib/appearance';
 import { useDevMode } from '../lib/devMode';
 import { clearDb } from '../lib/localDb';
 import { SETTINGS_TABS, visibleTabs, type SettingsTabId } from '../lib/settingsTabs';
@@ -84,6 +84,7 @@ export default function Settings() {
                 name="Good scan flash"
                 value={appearance.good_scan}
                 onChange={(good_scan) => setAppearance({ good_scan })}
+                flashMs={appearance.flash_ms}
               />
             </div>
             <div className="settings-row">
@@ -98,7 +99,28 @@ export default function Settings() {
                 name="Not-found scan flash"
                 value={appearance.not_found_scan}
                 onChange={(not_found_scan) => setAppearance({ not_found_scan })}
+                flashMs={appearance.flash_ms}
               />
+            </div>
+            <div className="settings-row">
+              <div>
+                <span className="settings-row-label">Flash duration</span>
+                <p className="settings-row-hint">
+                  How long the screen flashes after a scan.
+                </p>
+              </div>
+              <label className="flash-ms">
+                <input
+                  type="range"
+                  min={FLASH_MS_RANGE.min}
+                  max={FLASH_MS_RANGE.max}
+                  step={FLASH_MS_RANGE.step}
+                  value={appearance.flash_ms}
+                  aria-label="Flash duration"
+                  onChange={(e) => setAppearance({ flash_ms: Number(e.target.value) })}
+                />
+                <span className="flash-ms-value mono">{`${appearance.flash_ms} ms`}</span>
+              </label>
             </div>
           </>
         )}

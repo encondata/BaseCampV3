@@ -443,3 +443,10 @@
 .scan-row.is-nomatch { background: color-mix(in srgb, var(--c-red, #c03540) 12%, transparent); }
 .scan-row.is-failed > td:first-child,
 .scan-row.is-nomatch > td:first-child { border-left-color: var(--c-red, #c03540); }
+
+/* The flash-duration row: a range plus its mono readout, sized like one
+   of the picker's own channel rows so the Appearance tab reads as one
+   column of controls. */
+.flash-ms { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.flash-ms input[type='range'] { width: 180px; accent-color: var(--accent); }
+.flash-ms-value { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-mute); min-width: 52px; text-align: right; }

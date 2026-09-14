@@ -90,6 +90,7 @@ it('a matched RFID flashes the good color, queues the scan, and lists the asset'
   await userEvent.type(input, '100348{Enter}');
 
   expect(readFlash()?.color).toBe('hsl(150 60% 45%)');
+  expect(readFlash()?.ms).toBe(350);
   expect(input.value).toBe('');
   expect(document.activeElement).toBe(input);      // refocused after submit
 
@@ -256,4 +257,16 @@ it('returns focus to the input after Retry failed resolves', async () => {
 
   await userEvent.click(retry);
   await waitFor(() => expect(document.activeElement).toBe(input));
+});
+
+it('flashes for as long as the Appearance tab says, on both paths', async () => {
+  localStorage.setItem('ss.kiosk.appearance', JSON.stringify({ flash_ms: 1000 }));
+  writeKioskSetup(SETUP);
+  const input = await renderScan();
+
+  await userEvent.type(input, '100348{Enter}');
+  expect(readFlash()?.ms).toBe(1000);
+
+  await userEvent.type(input, 'nope123{Enter}');
+  expect(readFlash()?.ms).toBe(1000);
 });

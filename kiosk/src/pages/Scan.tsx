@@ -153,7 +153,7 @@ export default function Scan() {
       scan_status: setup.scanStatus,
     };
     const match = matchScan(index, raw);
-    flash(hslCss(match ? appearance.good_scan : appearance.not_found_scan));
+    flash(hslCss(match ? appearance.good_scan : appearance.not_found_scan), appearance.flash_ms);
     const enqueued = match
       ? enqueueScan({
           scanned_value: raw,

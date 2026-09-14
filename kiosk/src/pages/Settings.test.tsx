@@ -229,3 +229,13 @@ it('the Appearance tab shows both scan-flash pickers and persists a change', asy
   expect(JSON.parse(localStorage.getItem('ss.kiosk.appearance')!).good_scan)
     .toEqual({ h: 210, s: 60, l: 45 });
 });
+
+it('the Appearance tab sets how long the flash lasts, and persists it', () => {
+  renderAt('/settings?tab=appearance');
+  expect(screen.getByText('Flash duration')).toBeTruthy();
+  expect(screen.getByText('350 ms')).toBeTruthy();
+
+  fireEvent.change(screen.getByLabelText('Flash duration'), { target: { value: '1000' } });
+  expect(screen.getByText('1000 ms')).toBeTruthy();
+  expect(JSON.parse(localStorage.getItem('ss.kiosk.appearance')!).flash_ms).toBe(1000);
+});

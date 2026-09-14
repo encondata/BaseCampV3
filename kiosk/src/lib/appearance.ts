@@ -10,6 +10,10 @@
  * Colors are stored as HSL channels rather than a hex string so the
  * Appearance tab's three sliders map straight onto the stored value and
  * a half-dragged hue never has to round-trip through a parser.
+ *
+ * `flash_ms` — how long that flash lasts — lives here too: a kiosk on a
+ * loading dock, read from ten feet away, may want a full second where a
+ * desk-height kiosk wants a blink.
  */
 
 import { useSyncExternalStore } from 'react';
@@ -21,11 +25,16 @@ export interface Hsl { h: number; s: number; l: number }
 export interface Appearance {
   good_scan: Hsl;
   not_found_scan: Hsl;
+  /** Flash duration in milliseconds, clamped to `FLASH_MS_RANGE`. */
+  flash_ms: number;
 }
+
+export const FLASH_MS_RANGE = { min: 100, max: 2000, step: 50 } as const;
 
 export const DEFAULT_APPEARANCE: Appearance = {
   good_scan: { h: 150, s: 60, l: 45 },
   not_found_scan: { h: 0, s: 70, l: 50 },
+  flash_ms: 350,
 };
 
 type Listener = () => void;
@@ -38,6 +47,14 @@ function isHsl(value: unknown): value is Hsl {
   const inRange = (n: unknown, max: number) =>
     typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= max;
   return inRange(v.h, 360) && inRange(v.s, 100) && inRange(v.l, 100);
+}
+
+/** Anything that isn't a usable number reads as the default; anything
+ *  that is gets clamped, so neither a hand-edited file nor a future
+ *  slider can hand the overlay a 0 ms (or 30 s) flash. */
+function clampFlashMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_APPEARANCE.flash_ms;
+  return Math.min(FLASH_MS_RANGE.max, Math.max(FLASH_MS_RANGE.min, Math.round(value)));
 }
 
 // useSyncExternalStore needs a referentially stable snapshot while
@@ -66,6 +83,7 @@ function read(): Appearance {
         good_scan: isHsl(parsed?.good_scan) ? parsed.good_scan : DEFAULT_APPEARANCE.good_scan,
         not_found_scan: isHsl(parsed?.not_found_scan)
           ? parsed.not_found_scan : DEFAULT_APPEARANCE.not_found_scan,
+        flash_ms: clampFlashMs(parsed?.flash_ms),
       };
     } catch {
       /* malformed stored JSON reads as the defaults */
@@ -82,6 +100,7 @@ export function readAppearance(): Appearance {
  *  false when storage refuses (private window, full store). */
 export function writeAppearance(patch: Partial<Appearance>): boolean {
   const next: Appearance = { ...read(), ...patch };
+  next.flash_ms = clampFlashMs(next.flash_ms);
   try {
     localStorage.setItem(KEY, JSON.stringify(next));
   } catch {
