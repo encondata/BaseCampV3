@@ -230,3 +230,20 @@ Security notes, recorded so the review does not re-derive them: 40-bit codes wit
 ## Out of scope (deliberately)
 
 Scanning and any scan ingest endpoint; the move-password backend; device tokens or pre-shared enrollment secrets; blocking an unregistered or expired kiosk; SSE/WebSocket push for pairing; Laptop, RFID Middleware, and Device App modes (only the `platform()` seam exists); native iOS/Android or Electron builds; Docker images for the API and portal; a prod Caddy for the whole stack; a kiosk-hosted change-password form; TOTP.
+
+## Implementation notes (2026-09-13)
+
+Built on branch `kiosk-web` via `docs/superpowers/plans/2026-09-13-kiosk-web.md`. Migration head is **0061**. Deliberate deviations from the text above, all reviewed:
+
+- **Pairing rate limit keys on the proxy-written address.** `deps.rate_limit_ip()` honors `X-Forwarded-For` only when the direct peer is loopback or private (Caddy on the same box) and then takes the RIGHTMOST entry, which the proxy appends; a public peer's header is ignored. The stored `ip_address` is the same value. The spec's "per IP" wording did not say which IP; the leftmost entry is attacker-controlled.
+- **One-shot claim and approve/deny are conditional UPDATEs** (`WHERE status = 'approved'` / `'pending'`, rowcount-gated) so a retried poll or two approvers cannot mint two sessions. A claim denied at poll time (approver disabled or lost `kiosk:view`) is audited as `kiosk_pair_claim_denied`.
+- **`client_viewer` test persona** needs a client anchor (`person_roles_client_scope_check`); `tests/test_auth_kiosk_login.py::_client_viewer` builds it.
+- **Kiosk toolchain:** vitest is pinned `^3.2.4` (vitest 4 requires vite 6+; the portal only gets away with vitest 4 because npm nested a second vite under it). `test.environment` is `node` by default and every DOM test carries `// @vitest-environment jsdom`. `main.tsx` uses StrictMode; `PairPanel` guards its mount request with a generation counter so dev mode mints one code.
+- **Docker image installs only the kiosk's packages.** `npm ci --prefix portal` inside the image fails on the portal lockfile's peer conflict, and nothing in the image needs it: `vite.config.ts` dedupes `gsap` to the kiosk's copy and portal type imports are erased. The image runs `npm run build:bundle` (`vite build`); type-checking stays in `npm run build` outside the image.
+- **Shell CSS:** `.portal-shell.kiosk-shell` (doubled selector) overrides the portal shell's nav+main grid, `height: 100vh` and `overflow: hidden`; the kiosk lays out as one column with a scrolling `.kiosk-main`. The login pane is light (paper), so the method switch and text code use the pane's dark-text tokens with the active pill inverted.
+- **Class names:** inside the shell the kiosk uses the portal's `btn-solid` / `mini-btn` (there is no `.btn`/`.btn-ghost` outside the login theme). Settings shows an inline "Kiosk name saved." notice rather than a toast (the portal's ToastHost is a React component). `KioskBanners` fetches `/system/status` itself for the same reason.
+- **`/link/:code` load errors:** 404 / `pair_not_found` / `pair_not_pending` show the expired copy; any other failure shows "Something went wrong. Try again." with a Retry that reloads.
+
+Live-verified 2026-09-13 against the worktree API (dev DB at 0061): email/password sign-in, heartbeat creating "Kiosk 4716 · Web" on Kiosk Devices and the chip flipping to Registered after Register from the portal, link-with-phone approve (kiosk on Home within one poll) and deny ("Sign-in was declined on the phone."), the move-password placeholder (no request), and the Docker/compose build on 8090 signing in with the same-site cookie. Not live-verified: the `kiosk_not_allowed` refusal in the UI (covered by `tests/test_auth_kiosk_login.py`), a real phone camera scanning the QR, and prod cross-subdomain cookies (`SS_COOKIE_DOMAIN`).
+
+Known cosmetic follow-up: at viewport widths under ~900 px the top bar's mode chip overlaps the kiosk-name button and the person name is hidden.
