@@ -190,9 +190,10 @@ it('footer shows "Complete" when kiosk setup state is complete', () => {
   expect(document.querySelector('.kiosk-foot-setup.is-complete')).toBeTruthy();
 });
 
-it('footer shows Move + Scan items after Setup when a selection is saved', () => {
+it('footer shows Move + Site + Scan items after Setup when a selection is saved', () => {
   writeKioskSetup({
     initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
+    siteId: 's-1', siteName: 'NAP11 Hall', siteRole: 'source',
     scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
   });
   render(
@@ -203,6 +204,7 @@ it('footer shows Move + Scan items after Setup when a selection is saved', () =>
   const footer = screen.getByRole('contentinfo');
   const text = footer.textContent ?? '';
   expect(text).toContain('NAP11 Hall Migration (demo)');
+  expect(text).toContain('NAP11 Hall');
   expect(text).toContain('RFID 1 - Cage Exit');
 });
 

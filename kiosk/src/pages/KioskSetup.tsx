@@ -1,21 +1,25 @@
 /**
- * Kiosk Setup wizard: pick a move, then a scan type, and stamp this
- * kiosk's Device row (POST /kiosk/setup). Native <select> elements — the
- * portal's ComboBox is a .tsx the kiosk cannot import, and large touch
- * targets matter more here than the portal's picker affordances. Once a
- * selection is saved and setup is complete, shows a summary card instead
- * of the wizard; "Change setup" re-enters the wizard pre-selected.
+ * Kiosk Setup wizard: pick a move, then which of that move's sites this
+ * kiosk is at ("step 1A" — the move's source or destination site), then
+ * a scan type, and stamp this kiosk's Device row (POST /kiosk/setup).
+ * Native <select> elements — the portal's ComboBox is a .tsx the kiosk
+ * cannot import, and large touch targets matter more here than the
+ * portal's picker affordances. Once a selection is saved and setup is
+ * complete, shows a summary card instead of the wizard; "Change setup"
+ * re-enters the wizard pre-selected.
  */
 
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { ApiError, getSetupOptions, submitKioskSetup, type SetupOptions } from '../lib/api';
+import {
+  ApiError, getSetupOptions, submitKioskSetup, type SetupOptions, type SetupOptionSite,
+} from '../lib/api';
 import { getIdentity } from '../lib/identity';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { isSetupComplete, useKioskSetupState, writeSetupState } from '../lib/setupState';
 
-type Step = 1 | 2;
+type Step = 1 | 2 | 3;
 
 export default function KioskSetup() {
   const navigate = useNavigate();
@@ -26,6 +30,7 @@ export default function KioskSetup() {
   const [loadError, setLoadError] = useState(false);
   const [step, setStep] = useState<Step>(1);
   const [initiativeId, setInitiativeId] = useState('');
+  const [siteId, setSiteId] = useState('');
   const [scanStatus, setScanStatus] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
@@ -44,9 +49,11 @@ export default function KioskSetup() {
   const openWizard = (preselect: boolean) => {
     if (preselect && selection) {
       setInitiativeId(selection.initiativeId);
+      setSiteId(selection.siteId);
       setScanStatus(selection.scanStatus);
     } else {
       setInitiativeId('');
+      setSiteId('');
       setScanStatus('');
     }
     setSubmitError('');
@@ -54,16 +61,27 @@ export default function KioskSetup() {
     setWizardOpen(true);
   };
 
+  const selectedInitiative = options?.initiatives.find((i) => i.id === initiativeId) ?? null;
+  const siteChoices: { site: SetupOptionSite; role: 'source' | 'destination' }[] = [];
+  if (selectedInitiative?.source_site) {
+    siteChoices.push({ site: selectedInitiative.source_site, role: 'source' });
+  }
+  if (selectedInitiative?.destination_site) {
+    siteChoices.push({ site: selectedInitiative.destination_site, role: 'destination' });
+  }
+
   const finish = async () => {
     setSubmitting(true);
     setSubmitError('');
     try {
       const identity = getIdentity();
       const result = await submitKioskSetup({
-        serial: identity.serial, initiative_id: initiativeId, scan_status: scanStatus,
+        serial: identity.serial, initiative_id: initiativeId, site_id: siteId,
+        scan_status: scanStatus,
       });
       setSelection({
         initiativeId: result.initiative_id, initiativeName: result.initiative_name,
+        siteId: result.site_id, siteName: result.site_name, siteRole: result.site_role,
         scanStatus: result.scan_status, scanLabel: result.scan_status_label,
       });
       writeSetupState('complete');
@@ -83,7 +101,8 @@ export default function KioskSetup() {
         <h1 className="page-title">Kiosk setup</h1>
         <div className="setup-summary">
           <p>
-            This kiosk is set up for <b>{selection.initiativeName}</b> · scan type{' '}
+            This kiosk is set up for <b>{selection.initiativeName}</b> at{' '}
+            <b>{selection.siteName}</b> ({selection.siteRole}) · scan type{' '}
             <b>{selection.scanLabel}</b>
           </p>
           <div className="setup-actions">
@@ -99,14 +118,15 @@ export default function KioskSetup() {
     );
   }
 
+  const stepLabel = step === 1 ? 'Step 1 of 3 · Move'
+    : step === 2 ? 'Step 2 of 3 · Site' : 'Step 3 of 3 · Scan type';
+
   return (
     <div className="portal-page">
       <div className="eyebrow">Kiosk · Setup</div>
       <h1 className="page-title">Kiosk setup</h1>
       <div className="setup-wizard">
-        <div className="setup-steps">
-          {step === 1 ? 'Step 1 of 2 · Move' : 'Step 2 of 2 · Scan type'}
-        </div>
+        <div className="setup-steps">{stepLabel}</div>
 
         {loadError && (
           <>
@@ -123,7 +143,7 @@ export default function KioskSetup() {
             <div className="full">
               <label htmlFor="setup-move">Move</label>
               <select id="setup-move" value={initiativeId}
-                      onChange={(e) => setInitiativeId(e.target.value)}>
+                      onChange={(e) => { setInitiativeId(e.target.value); setSiteId(''); }}>
                 <option value="" disabled>Choose a move…</option>
                 {options.initiatives.map((i) => (
                   <option key={i.id} value={i.id}>
@@ -143,6 +163,32 @@ export default function KioskSetup() {
 
         {!loadError && options !== null && step === 2 && (
           <form className="pf-form" noValidate
+                onSubmit={(e) => { e.preventDefault(); setStep(3); }}>
+            <h2 className="full">Which site is this kiosk at?</h2>
+            <div className="full">
+              <label htmlFor="setup-site">Site</label>
+              <select id="setup-site" value={siteId}
+                      onChange={(e) => setSiteId(e.target.value)}>
+                <option value="" disabled>Choose a site…</option>
+                {siteChoices.map(({ site, role }) => (
+                  <option key={site.id} value={site.id}>{site.name} — {role}</option>
+                ))}
+              </select>
+            </div>
+            {siteChoices.length === 0 && (
+              <p className="page-hint full">
+                This move has no sites yet. Ask a coordinator to add them.
+              </p>
+            )}
+            <div className="pf-form-actions full">
+              <button type="button" className="mini-btn" onClick={() => setStep(1)}>Back</button>
+              <button type="submit" className="btn-solid" disabled={!siteId}>Next</button>
+            </div>
+          </form>
+        )}
+
+        {!loadError && options !== null && step === 3 && (
+          <form className="pf-form" noValidate
                 onSubmit={(e) => { e.preventDefault(); void finish(); }}>
             <div className="full">
               <label htmlFor="setup-scan">Scan type</label>
@@ -160,7 +206,7 @@ export default function KioskSetup() {
               </p>
             )}
             <div className="pf-form-actions full">
-              <button type="button" className="mini-btn" onClick={() => setStep(1)}>Back</button>
+              <button type="button" className="mini-btn" onClick={() => setStep(2)}>Back</button>
               <button type="submit" className="btn-solid" disabled={!scanStatus || submitting}>
                 {submitting ? 'Saving…' : 'Finish'}
               </button>

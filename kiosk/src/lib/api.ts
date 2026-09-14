@@ -252,8 +252,14 @@ export async function signOutRequest(serial: string): Promise<void> {
 
 // ── kiosk setup wizard ──────────────────────────────────────────────
 
+export interface SetupOptionSite { id: string; name: string }
+
 export interface SetupOptions {
-  initiatives: { id: string; name: string; status: string }[];
+  initiatives: {
+    id: string; name: string; status: string;
+    source_site: SetupOptionSite | null;
+    destination_site: SetupOptionSite | null;
+  }[];
   scan_types: { key: string; label: string; color: string }[];
 }
 
@@ -261,6 +267,9 @@ export interface KioskSetupResult {
   device_id: string;
   initiative_id: string;
   initiative_name: string;
+  site_id: string;
+  site_name: string;
+  site_role: 'source' | 'destination';
   scan_status: string;
   scan_status_label: string;
 }
@@ -271,7 +280,7 @@ export async function getSetupOptions(): Promise<SetupOptions> {
 }
 
 export async function submitKioskSetup(body: {
-  serial: string; initiative_id: string; scan_status: string;
+  serial: string; initiative_id: string; site_id: string; scan_status: string;
 }): Promise<KioskSetupResult> {
   const resp = await apiFetch('/kiosk/setup', {
     method: 'POST',

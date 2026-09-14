@@ -13,6 +13,7 @@ import {
 
 const SELECTION = {
   initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
+  siteId: 's-1', siteName: 'NAP11 Hall', siteRole: 'source' as const,
   scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
 };
 

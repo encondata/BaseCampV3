@@ -71,6 +71,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   if (kioskSetup) {
     footItems.push(
       { label: 'Move', value: kioskSetup.initiativeName },
+      { label: 'Site', value: kioskSetup.siteName },
       { label: 'Scan', value: kioskSetup.scanLabel },
     );
   }

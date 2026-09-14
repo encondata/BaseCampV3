@@ -1,11 +1,11 @@
 /**
- * The kiosk's saved setup selection: which move and scan type it was set
- * up for, kiosk-local (mirrors `devMode.ts`/`setupState.ts`'s store/hook
- * shape). The server is the source of truth for the Device row itself
- * (current_initiative_id/scan_status); this is only a local cache of the
- * names so the summary card and footer can render without an extra
- * fetch. Stored in localStorage with the same try/catch idiom — a
- * blocked or full store just leaves the selection unset.
+ * The kiosk's saved setup selection: which move, site, and scan type it
+ * was set up for, kiosk-local (mirrors `devMode.ts`/`setupState.ts`'s
+ * store/hook shape). The server is the source of truth for the Device
+ * row itself (current_initiative_id/site_id/scan_status); this is only a
+ * local cache of the names so the summary card and footer can render
+ * without an extra fetch. Stored in localStorage with the same try/catch
+ * idiom — a blocked or full store just leaves the selection unset.
  */
 
 import { useSyncExternalStore } from 'react';
@@ -15,6 +15,9 @@ const KEY = 'ss.kiosk.setup';
 export interface KioskSetupSelection {
   initiativeId: string;
   initiativeName: string;
+  siteId: string;
+  siteName: string;
+  siteRole: 'source' | 'destination';
   scanStatus: string;
   scanLabel: string;
 }
@@ -27,6 +30,8 @@ function isSelection(value: unknown): value is KioskSetupSelection {
   if (value === null || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
   return typeof v.initiativeId === 'string' && typeof v.initiativeName === 'string'
+    && typeof v.siteId === 'string' && typeof v.siteName === 'string'
+    && (v.siteRole === 'source' || v.siteRole === 'destination')
     && typeof v.scanStatus === 'string' && typeof v.scanLabel === 'string';
 }
 

@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import aliased, joinedload
 
 from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
@@ -19,9 +19,11 @@ from serversherpa.api.routes.auth import session_response
 from serversherpa.api.schemas import (
     HeartbeatIn, HeartbeatOut, KioskSetupIn, KioskSetupOut, KioskSignOutIn, PairCreateIn,
     PairCreateOut, PairInfoOut, PairPollIn, PairPollOut, SetupOptionInitiative,
-    SetupOptionScanType, SetupOptionsOut,
+    SetupOptionScanType, SetupOptionSite, SetupOptionsOut,
 )
-from serversherpa.db.models import Device, Initiative, KioskPairRequest, StatusValue, UserAccount
+from serversherpa.db.models import (
+    Device, Initiative, KioskPairRequest, Site, StatusValue, UserAccount,
+)
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_pairing as pairing
 from serversherpa.services.audit import audit
@@ -244,9 +246,16 @@ async def sign_out(
 MOVE_STATUSES = ("planned", "in_progress")
 
 
-async def _allowed_initiatives(db: AsyncSession) -> list[Initiative]:
-    return list((await db.scalars(
-        select(Initiative)
+async def _allowed_initiatives_with_sites(db: AsyncSession) -> list:
+    """Move initiatives (filtered as above), each paired with its origin
+    (source) and destination Site rows via an outer join — either side
+    can be absent on a move that hasn't had its sites set yet."""
+    Origin = aliased(Site)
+    Dest = aliased(Site)
+    return list((await db.execute(
+        select(Initiative, Origin, Dest)
+        .outerjoin(Origin, Initiative.origin_site_id == Origin.id)
+        .outerjoin(Dest, Initiative.destination_site_id == Dest.id)
         .where(Initiative.initiative_type == "move",
                Initiative.status.in_(MOVE_STATUSES),
                Initiative.archived_at.is_(None))
@@ -272,11 +281,16 @@ async def setup_options(
     Workers hold kiosk:view but not initiatives:view, so they cannot call
     /initiatives directly; this endpoint gives the kiosk only the narrow
     slice of that data the wizard needs."""
-    initiatives = await _allowed_initiatives(db)
+    rows = await _allowed_initiatives_with_sites(db)
     scan_types = await _active_scan_types(db)
     return SetupOptionsOut(
-        initiatives=[SetupOptionInitiative(id=i.id, name=i.name, status=i.status)
-                    for i in initiatives],
+        initiatives=[
+            SetupOptionInitiative(
+                id=i.id, name=i.name, status=i.status,
+                source_site=SetupOptionSite(id=origin.id, name=origin.name) if origin else None,
+                destination_site=(SetupOptionSite(id=dest.id, name=dest.name)
+                                  if dest else None))
+            for i, origin, dest in rows],
         scan_types=[SetupOptionScanType(key=s.key, label=s.label, color=s.color)
                    for s in scan_types])
 
@@ -286,9 +300,9 @@ async def kiosk_setup(
     body: KioskSetupIn, db: DbSession,
     actor: AuthContext = require_permission("kiosk", "view"),
 ) -> KioskSetupOut:
-    """Stamps this kiosk's Device row (found by serial) with the move and
-    scan type chosen in the Kiosk Setup wizard. Not read-only exempt —
-    this is a write."""
+    """Stamps this kiosk's Device row (found by serial) with the move, the
+    move's source or destination site, and the scan type chosen in the
+    Kiosk Setup wizard. Not read-only exempt — this is a write."""
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None or device.device_type != "kiosk":
         raise _err(404, "device_not_found")
@@ -300,14 +314,26 @@ async def kiosk_setup(
     scan_type = await db.get(StatusValue, ("asset", body.scan_status))
     if scan_type is None or not scan_type.is_active:
         raise _err(422, "bad_scan_status")
+    if body.site_id == initiative.origin_site_id:
+        site_role = "source"
+    elif body.site_id == initiative.destination_site_id:
+        site_role = "destination"
+    else:
+        raise _err(422, "bad_site")
+    site = await db.get(Site, body.site_id)
+    if site is None:
+        raise _err(422, "bad_site")
 
     device.current_initiative_id = initiative.id
+    device.site_id = site.id
     device.scan_status = scan_type.key
     device.updated_at = datetime.now(UTC)
     audit(db, actor_id=actor.person.id, entity_type="device",
           entity_id=str(device.id), action="kiosk_setup",
-          changes={"initiative_id": str(initiative.id), "scan_status": scan_type.key})
+          changes={"initiative_id": str(initiative.id), "site_id": str(site.id),
+                   "scan_status": scan_type.key})
     await db.commit()
     return KioskSetupOut(device_id=device.id, initiative_id=initiative.id,
                          initiative_name=initiative.name,
+                         site_id=site.id, site_name=site.name, site_role=site_role,
                          scan_status=scan_type.key, scan_status_label=scan_type.label)

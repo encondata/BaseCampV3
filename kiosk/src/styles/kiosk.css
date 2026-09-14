@@ -268,6 +268,10 @@
 }
 .setup-summary b { color: var(--text-dark); }
 .setup-actions { display: flex; gap: 10px; }
+.setup-wizard .pf-form h2 {
+  grid-column: 1 / -1; margin: 0 0 4px; font-size: 15px; font-weight: 600;
+  color: var(--text-dark);
+}
 
 /* notifications.css's .pf-form select rule isn't imported by the kiosk
    (main.tsx doesn't pull in notifications.css) — restate a minimal,

@@ -2227,10 +2227,17 @@ class DeviceLeaseItem(BaseModel):
 
 # ── kiosk setup ──
 
+class SetupOptionSite(BaseModel):
+    id: uuid.UUID
+    name: str
+
+
 class SetupOptionInitiative(BaseModel):
     id: uuid.UUID
     name: str
     status: str
+    source_site: SetupOptionSite | None = None
+    destination_site: SetupOptionSite | None = None
 
 
 class SetupOptionScanType(BaseModel):
@@ -2247,6 +2254,7 @@ class SetupOptionsOut(BaseModel):
 class KioskSetupIn(BaseModel):
     serial: str = Field(min_length=1, max_length=120)
     initiative_id: uuid.UUID
+    site_id: uuid.UUID
     scan_status: str = Field(min_length=1)
 
 
@@ -2254,6 +2262,9 @@ class KioskSetupOut(BaseModel):
     device_id: uuid.UUID
     initiative_id: uuid.UUID
     initiative_name: str
+    site_id: uuid.UUID
+    site_name: str
+    site_role: Literal["source", "destination"]
     scan_status: str
     scan_status_label: str
 
