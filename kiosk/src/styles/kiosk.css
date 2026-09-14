@@ -358,3 +358,43 @@
 .local-kv dt { font-family: var(--font-mono); color: var(--text-mute); }
 .local-kv dd { margin: 0; }
 .local-table-wrap { overflow-x: auto; }
+
+/* ── scan flash overlay ──────────────────────────────────────────────
+   Rendered once by KioskShell, over everything, click-through. The color
+   is inline (it comes from the kiosk's Appearance settings); only the
+   fade lives here. prefers-reduced-motion keeps the color but drops the
+   ramp for a short solid flash. */
+.scan-flash {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  pointer-events: none;
+  opacity: 0;
+  animation: scan-flash-fade linear forwards;
+}
+@keyframes scan-flash-fade {
+  from { opacity: .85; }
+  to { opacity: 0; }
+}
+.scan-flash.is-reduced { animation-name: scan-flash-hold; }
+@keyframes scan-flash-hold {
+  0%, 99% { opacity: .8; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scan-flash { animation-name: scan-flash-hold; }
+}
+
+/* ── Appearance tab: HSL color picker ───────────────────────────────── */
+.hsl-picker { display: flex; align-items: center; gap: 16px; flex: 0 0 auto; flex-wrap: wrap; }
+.hsl-swatch {
+  width: 40px; height: 40px; flex: 0 0 auto;
+  border-radius: 10px; border: 1px solid var(--paper-line);
+}
+.hsl-channels { display: grid; gap: 4px; }
+.hsl-channel { display: grid; grid-template-columns: 76px 140px 46px; align-items: center; gap: 8px; }
+.hsl-channel-name { font-size: 12.5px; color: var(--text-mute); }
+.hsl-channel input[type='range'] { width: 100%; accent-color: var(--accent); }
+.hsl-channel-value { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-mute); text-align: right; }
+.hsl-foot { display: grid; gap: 8px; justify-items: start; }
+.hsl-readout { font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }

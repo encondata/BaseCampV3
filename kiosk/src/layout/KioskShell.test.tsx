@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /** KioskShell's top bar shows a section label for the current feature
  *  route and nothing for /. */
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -35,6 +35,7 @@ const auth = vi.hoisted(() => ({
 }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
+import { clearFlash, flash } from '../lib/flash';
 import { getIdentity } from '../lib/identity';
 import { writeKioskSetup } from '../lib/kioskSetup';
 import { writeSetupState } from '../lib/setupState';
@@ -247,4 +248,14 @@ it('footer has no Data item before any sync', () => {
     </MemoryRouter>,
   );
   expect(screen.getByRole('contentinfo').textContent ?? '').not.toContain('Data');
+});
+
+it('renders the scan flash overlay, which paints once a flash fires', () => {
+  render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+  expect(document.querySelector('.scan-flash')).toBeNull();
+  act(() => { flash('hsl(150 60% 45%)', 350); });
+  // jsdom normalizes the inline hsl() background to its rgb() equivalent.
+  expect((document.querySelector('.scan-flash') as HTMLElement).style.background)
+    .toBe('rgb(46, 184, 115)');
+  act(() => { clearFlash(); });
 });

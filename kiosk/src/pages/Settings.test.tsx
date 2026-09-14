@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -212,4 +212,20 @@ it('a developer sees the local data inspector on the Developer tab', () => {
   auth.isDeveloper = true;
   renderAt('/settings?tab=developer');
   expect(screen.getByTestId('local-data-inspector')).toBeTruthy();
+});
+
+it('the Appearance tab shows both scan-flash pickers and persists a change', async () => {
+  renderAt('/settings?tab=appearance');
+  expect(screen.getByText('Good scan flash')).toBeTruthy();
+  expect(screen.getByText('Not-found scan flash')).toBeTruthy();
+  expect(screen.getByLabelText('Good scan flash hue')).toBeTruthy();
+  expect(screen.getByLabelText('Not-found scan flash lightness')).toBeTruthy();
+  expect(screen.getByText('hsl(150 60% 45%)')).toBeTruthy();
+  expect(screen.getByText('hsl(0 70% 50%)')).toBeTruthy();
+  expect(screen.queryByText('This section is not available yet.')).toBeNull();
+
+  fireEvent.change(screen.getByLabelText('Good scan flash hue'), { target: { value: '210' } });
+  expect(screen.getByText('hsl(210 60% 45%)')).toBeTruthy();
+  expect(JSON.parse(localStorage.getItem('ss.kiosk.appearance')!).good_scan)
+    .toEqual({ h: 210, s: 60, l: 45 });
 });

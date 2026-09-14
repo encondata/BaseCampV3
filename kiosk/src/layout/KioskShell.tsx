@@ -14,6 +14,7 @@ import { registrationLabel } from '@portal/lib/devices';
 import { applyPreferences, DEFAULT_PREFERENCES } from '@portal/lib/settings';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
+import ScanFlash from '../components/ScanFlash';
 import type { RegistrationState } from '../lib/api';
 import { kioskVersion } from '../lib/config';
 import { useDevMode } from '../lib/devMode';
@@ -131,6 +132,9 @@ export default function KioskShell({ children }: { children: ReactNode }) {
           </Fragment>
         )}
       </footer>
+      {/* One overlay for the whole kiosk: scan feedback fires from the
+          Scanning page but has to paint over the shell, not inside it. */}
+      <ScanFlash />
     </div>
   );
 }

@@ -3,17 +3,20 @@
  *  is on, also shows a read-only "Local data" row (the downloaded move's
  *  counts) with a "Clear local data" button. Admin and Developer are hidden (not
  *  disabled) unless the signed-in person holds the level; signed out,
- *  only This Kiosk is visible (see `visibleTabs`). Every tab body but
- *  This Kiosk's is a placeholder for now. The active tab lives in the
+ *  only This Kiosk is visible (see `visibleTabs`). Appearance owns the two
+ *  scan-flash colors (kiosk-local HSL); every tab body but those two is
+ *  a placeholder for now. The active tab lives in the
  *  `tab` search param, so a link can deep-link straight to a section. */
 
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
+import HslPicker from '../components/HslPicker';
 import LocalDataInspector from '../components/LocalDataInspector';
 import { Switch } from '../components/Switch';
 import ThisKioskPanel from '../components/ThisKioskPanel';
+import { useAppearance } from '../lib/appearance';
 import { useDevMode } from '../lib/devMode';
 import { clearDb } from '../lib/localDb';
 import { SETTINGS_TABS, visibleTabs, type SettingsTabId } from '../lib/settingsTabs';
@@ -27,6 +30,7 @@ export default function Settings() {
   const signedIn = status === 'authed';
   const [searchParams, setSearchParams] = useSearchParams();
   const [devMode, setDevMode] = useDevMode();
+  const [appearance, setAppearance] = useAppearance();
   const [setupState, setSetupState] = useKioskSetupState();
   const sync = useSyncStatus();
   const [clearError, setClearError] = useState(false);
@@ -66,6 +70,38 @@ export default function Settings() {
         <h2 className="settings-tab-title">{active.label}</h2>
         <p className="page-hint">{active.blurb}</p>
         {active.id === 'this-kiosk' && <ThisKioskPanel />}
+        {active.id === 'appearance' && (
+          <>
+            <div className="settings-row">
+              <div>
+                <span className="settings-row-label">Good scan flash</span>
+                <p className="settings-row-hint">
+                  The color the whole screen flashes when a scan matches this kiosk&apos;s
+                  local move data. Stored on this kiosk only.
+                </p>
+              </div>
+              <HslPicker
+                name="Good scan flash"
+                value={appearance.good_scan}
+                onChange={(good_scan) => setAppearance({ good_scan })}
+              />
+            </div>
+            <div className="settings-row">
+              <div>
+                <span className="settings-row-label">Not-found scan flash</span>
+                <p className="settings-row-hint">
+                  The color the whole screen flashes when a scan matches nothing.
+                  Stored on this kiosk only.
+                </p>
+              </div>
+              <HslPicker
+                name="Not-found scan flash"
+                value={appearance.not_found_scan}
+                onChange={(not_found_scan) => setAppearance({ not_found_scan })}
+              />
+            </div>
+          </>
+        )}
         {active.id === 'developer' && (
           <div className="settings-row">
             <div>
@@ -126,7 +162,7 @@ export default function Settings() {
           </div>
         )}
         {active.id === 'developer' && <LocalDataInspector />}
-        {active.id !== 'this-kiosk' && (
+        {active.id !== 'this-kiosk' && active.id !== 'appearance' && (
           <div className="kiosk-placeholder">
             <p>This section is not available yet.</p>
           </div>
