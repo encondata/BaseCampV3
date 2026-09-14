@@ -3,11 +3,21 @@
    never redefines a -- token. */
 
 /* ── shell ─────────────────────────────────────────────────────── */
-.kiosk-shell {
-  min-height: 100vh;
-  min-height: 100dvh;
+/* .portal-shell (portal-theme.css) is a nav + main grid
+   (grid-template-columns: var(--nav-width) minmax(0, 1fr)) meant for the
+   portal's sidebar layout. The kiosk shell has no sidebar, so the doubled
+   selector .portal-shell.kiosk-shell is needed to out-specificity that
+   rule outright rather than only overriding the properties .kiosk-shell
+   used to redeclare — otherwise the column template leaks through and the
+   kiosk header/main land in the 248px nav column instead of stacking. */
+.portal-shell.kiosk-shell {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;            /* the main column scrolls, not the window */
   background: var(--paper-2);
   color: var(--text-dark);
   font-family: var(--font-display);
@@ -53,7 +63,11 @@
 .kiosk-user { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-width: 0; }
 .kiosk-person { font-size: 13px; color: var(--snow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kiosk-top .mini-btn { color: var(--snow); border-color: var(--ink-line); background: transparent; }
-.kiosk-main { min-width: 0; }
+.kiosk-shell .kiosk-main {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
 
 /* ── pages ─────────────────────────────────────────────────────── */
 .kiosk-facts {
