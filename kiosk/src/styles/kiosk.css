@@ -411,8 +411,7 @@
 .scan-input {
   font-size: 22px;
   padding: 16px 18px;
-  width: 100%;
-  max-width: 900px;
+  width: 100%;            /* fills the page, whatever the screen size */
   border: 2px solid var(--paper-line);
   border-radius: 14px;
   background: var(--paper);
@@ -427,7 +426,7 @@
 .scan-input:disabled { opacity: .55; cursor: not-allowed; }
 .scan-toolbar { display: flex; align-items: center; gap: 12px; margin: 14px 0 10px; }
 .scan-counts { margin: 0; font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }
-.scan-list { max-width: 1100px; }
+.scan-list { width: 100%; }   /* no cap: the list is the page */
 .scan-chip { font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
 /* The left border is what reads at a glance from a few feet away; the
    tint keeps the row legible without washing the text out. */
