@@ -40,6 +40,14 @@ interface Props {
   printer: Pick<ZebraPrinter, 'query' | 'send' | 'identify' | 'status' | 'log' | 'clearLog' | 'productName'>;
   vocab: LabelVocab[];
   identity: HostIdentification | null;
+  /** A configuration the caller has just read (the factory-reset flow
+   *  hands over the printer's post-reset `^HH`), used instead of the
+   *  read-on-mount. Absent — the usual entry from the tool row — keeps
+   *  the original behavior of reading the printer itself. */
+  initialConfig?: PrinterConfiguration | null;
+  /** Overrides the header eyebrow, so a hand-off can say what it is
+   *  continuing from. */
+  intro?: string;
   onClose: () => void;
 }
 
@@ -50,17 +58,17 @@ const CONFIG_ITEMS: { key: keyof PrinterConfiguration; label: string; fmt?: (v: 
   { key: 'firmware', label: 'Firmware' },
 ];
 
-export default function PrinterSetupModal({ printer, vocab, identity: identityIn, onClose }: Props) {
+export default function PrinterSetupModal({ printer, vocab, identity: identityIn, initialConfig, intro, onClose }: Props) {
   const [step, setStep] = useState<Step>('identify');
   const [identity, setIdentity] = useState(identityIn);
   const [status, setStatus] = useState<HostStatus | null>(null);
-  const [config, setConfig] = useState<PrinterConfiguration | null>(null);
+  const [config, setConfig] = useState<PrinterConfiguration | null>(initialConfig ?? null);
   const [reading, setReading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [media, setMedia] = useState<MediaChoices>(mediaChoicesFromConfig(null));
+  const [media, setMedia] = useState<MediaChoices>(() => mediaChoicesFromConfig(initialConfig ?? null));
   const [mediaResult, setMediaResult] = useState<ReturnType<typeof confirmMedia> | null>(null);
-  const [quality, setQuality] = useState<QualityChoices>({ darkness: null, speed: null });
+  const [quality, setQuality] = useState<QualityChoices>(() => (initialConfig ? qualityFromConfig(initialConfig) : { darkness: null, speed: null }));
   const [qualityResult, setQualityResult] = useState<ReturnType<typeof confirmQuality> | null>(null);
   const [sizeKey, setSizeKey] = useState('');
   const [resetText, setResetText] = useState('');
@@ -103,7 +111,9 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
       setReading(false);
     }
   };
-  useEffect(() => { void readAll(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // A seeded configuration is already the printer's current state; the
+  // Identify step's Refresh re-reads on demand.
+  useEffect(() => { if (!initialConfig) void readAll(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const reread = async (): Promise<PrinterConfiguration | null> => {
@@ -286,7 +296,7 @@ export default function PrinterSetupModal({ printer, vocab, identity: identityIn
       <div className="modal-card reports-modal-card rgm-card zp-setup-card" role="dialog" aria-label="Full printer setup">
         <div className="modal-head">
           <div className="rgm-head-text">
-            <div className="eyebrow">Printers</div>
+            <div className="eyebrow">{intro ?? 'Printers'}</div>
             <h3>Full printer setup</h3>
             <p className="page-hint">Guided configuration for the connected Zebra printer. Each step sends the commands and reads the printer back to confirm.</p>
           </div>

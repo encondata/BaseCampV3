@@ -4,7 +4,8 @@
  * card for the browser-connected (WebUSB) Zebra — connect/disconnect,
  * previously authorized printers, identity (`~HI`) and health (`~HS`)
  * chips, the hook's notice strip and command log — over the tool rows
- * that open Test Label Alignment and Full Printer Setup.
+ * that open Test Label Alignment, Full Printer Setup, and Factory Reset
+ * (which hands its post-reset `^HH` straight into the setup wizard).
  *
  * No tabs: Brother is not in scope here. Install Fonts is a disabled row
  * ("Managed from the portal") — pushing font bytes needs labels:view on
@@ -22,9 +23,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import type { HostIdentification, HostStatus, UsbDeviceLike } from '@portal/labels/zebraUsb';
+import type { HostIdentification, HostStatus, PrinterConfiguration, UsbDeviceLike } from '@portal/labels/zebraUsb';
 
 import AlignmentTestModal from '../components/printers/AlignmentTestModal';
+import FactoryResetModal from '../components/printers/FactoryResetModal';
 import PrinterHealth from '../components/printers/PrinterHealth';
 import PrinterSetupModal from '../components/printers/PrinterSetupModal';
 import { fetchLabelVocab, type LabelVocab } from '../lib/api';
@@ -35,11 +37,12 @@ const SECTION = LABEL_SECTIONS.find((s) => s.id === 'printers')!;
 
 const UNSUPPORTED = "This browser can't talk to USB printers. Use Chrome or Edge over HTTPS or localhost.";
 
-type Tool = 'alignment' | 'setup';
+type Tool = 'alignment' | 'setup' | 'reset';
 
-const TOOLS: { key: Tool; title: string; description: string; action: string }[] = [
+const TOOLS: { key: Tool; title: string; description: string; action: string; danger?: boolean }[] = [
   { key: 'alignment', title: 'Test Label Alignment', description: 'Print a calibration label and dial in offsets.', action: 'Print test label' },
   { key: 'setup', title: 'Full Printer Setup', description: 'Guided first-time configuration for a new Zebra printer.', action: 'Start setup' },
+  { key: 'reset', title: 'Factory Reset', description: "Restore the printer's factory defaults, then set it up again.", action: 'Reset printer', danger: true },
 ];
 
 export default function PrinterTools() {
@@ -49,6 +52,9 @@ export default function PrinterTools() {
   const [status, setStatus] = useState<HostStatus | null>(null);
   const [known, setKnown] = useState<UsbDeviceLike[]>([]);
   const [tool, setTool] = useState<Tool | null>(null);
+  // Set when the setup wizard is opened by a finished factory reset, so it
+  // starts from the printer's post-reset configuration instead of re-reading.
+  const [fromReset, setFromReset] = useState<{ config: PrinterConfiguration | null } | null>(null);
   const [notice, setNotice] = useState<{ type: string; message: string } | null>(null);
 
   useEffect(() => {
@@ -139,7 +145,7 @@ export default function PrinterTools() {
                 </div>
                 <div className="cell zp-tool-action">
                   {gated && <span className="cell-sub">Connect a printer first</span>}
-                  <button type="button" className="btn-solid" disabled={gated} onClick={() => setTool(t.key)}>{t.action}</button>
+                  <button type="button" className={t.danger ? 'btn-solid btn-danger' : 'btn-solid'} disabled={gated} onClick={() => { setFromReset(null); setTool(t.key); }}>{t.action}</button>
                 </div>
               </div>
             </div>
@@ -160,7 +166,22 @@ export default function PrinterTools() {
       </div>
 
       {tool === 'alignment' && <AlignmentTestModal vocab={vocab} printerDpi={identity?.dpi ?? null} onPrint={printZpl} onClose={() => setTool(null)} />}
-      {tool === 'setup' && <PrinterSetupModal printer={printer} vocab={vocab} identity={identity} onClose={() => { setTool(null); void refreshStatus(); }} />}
+      {tool === 'reset' && (
+        <FactoryResetModal
+          printer={printer}
+          identity={identity}
+          onDone={(config) => { setFromReset({ config }); setTool('setup'); }}
+          onClose={() => { setTool(null); void refreshStatus(); }}
+        />
+      )}
+      {tool === 'setup' && (
+        <PrinterSetupModal
+          printer={printer} vocab={vocab} identity={identity}
+          initialConfig={fromReset?.config ?? undefined}
+          intro={fromReset ? 'Printers · After factory reset' : undefined}
+          onClose={() => { setTool(null); setFromReset(null); void refreshStatus(); }}
+        />
+      )}
     </div>
   );
 }

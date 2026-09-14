@@ -4,7 +4,7 @@
  *  no `navigator.usb`, and a real `useZebraPrinter` driven by a fake USB
  *  device — Connect goes through `requestZebraDevice` (a Zebra
  *  vendor-filtered requestDevice) and the `~HI`/`~HS` chips follow. */
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -27,6 +27,10 @@ const VOCAB: LabelVocab[] = [
 
 const HI = '\x02ZD421-203dpi ZPL,V92.21.16Z,8,8192KB,X\x03';
 const HS = '\x02030,0,0,1218,000,0,0,0,000,0,0,0\x03\r\n\x02000,0,0,0,0,2,4,0,00000000,1,000\x03';
+const HH = '\x02' + Object.entries({
+  DARKNESS: '+10.0', 'PRINT SPEED': '6.0 IPS', 'PRINT MODE': 'TEAR OFF', 'MEDIA TYPE': 'GAP/NOTCH',
+  'PRINT METHOD': 'DIRECT-THERMAL', 'PRINT WIDTH': '812', 'LABEL LENGTH': '1218', FIRMWARE: 'V72.19.15Z <-',
+}).map(([k, v]) => `${v.padEnd(20)}${k}`).join('\r\n') + '\x03';
 
 /** A fake Zebra: transferIn always resolves (empty when nothing is
  *  queued), so the transport's drain reads finish instantly instead of
@@ -49,6 +53,7 @@ function fakeDevice(name = 'ZD421') {
       dev.sent.push(cmd);
       if (cmd === '~HI') pending = HI;
       else if (cmd === '~HS') pending = HS;
+      else if (cmd === '^XA^HH^XZ') pending = HH;
     },
     async transferIn() {
       const text = pending;
@@ -80,7 +85,7 @@ afterEach(() => { cleanup(); setUsb(undefined); });
 
 const renderPage = () => render(<MemoryRouter><PrinterTools /></MemoryRouter>);
 
-it('renders the printer card, the three tool rows, and a way back', async () => {
+it('renders the printer card, the four tool rows, and a way back', async () => {
   renderPage();
   expect(screen.getByRole('heading', { name: 'Printer Setup / Troubleshooting' })).toBeTruthy();
   expect(screen.getByText('Kiosk · Label Printing')).toBeTruthy();
@@ -90,6 +95,7 @@ it('renders the printer card, the three tool rows, and a way back', async () => 
   expect(screen.getByText('No printer connected')).toBeTruthy();
   expect(screen.getByText('Test Label Alignment')).toBeTruthy();
   expect(screen.getByText('Full Printer Setup')).toBeTruthy();
+  expect(screen.getByText('Factory Reset')).toBeTruthy();
   expect(screen.getByText('Install Fonts')).toBeTruthy();
   await waitFor(() => expect(api.fetchLabelVocab).toHaveBeenCalled());
 });
@@ -110,11 +116,12 @@ it('Install Fonts stays disabled and points at the portal', async () => {
   await waitFor(() => expect(api.fetchLabelVocab).toHaveBeenCalled());
 });
 
-it('the two live tool rows are gated until a printer is connected', async () => {
+it('the three live tool rows are gated until a printer is connected', async () => {
   renderPage();
   expect((screen.getByRole('button', { name: 'Print test label' }) as HTMLButtonElement).disabled).toBe(true);
   expect((screen.getByRole('button', { name: 'Start setup' }) as HTMLButtonElement).disabled).toBe(true);
-  expect(screen.getAllByText('Connect a printer first').length).toBe(2);
+  expect((screen.getByRole('button', { name: 'Reset printer' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getAllByText('Connect a printer first').length).toBe(3);
   await waitFor(() => expect(api.fetchLabelVocab).toHaveBeenCalled());
 });
 
@@ -163,4 +170,42 @@ it('lists a previously authorized printer and connects to it without the chooser
   await userEvent.click(await screen.findByRole('button', { name: 'Connect ZD621' }));
   expect(usb.requestDevice).not.toHaveBeenCalled();
   expect(await screen.findByText('Printer connected · ZD621')).toBeTruthy();
+});
+
+it('the Factory Reset row sits after Full Printer Setup and is gated too', async () => {
+  renderPage();
+  const titles = [...document.querySelectorAll('.zp-tool-row .cell-top b')].map((n) => n.textContent);
+  expect(titles).toEqual(['Test Label Alignment', 'Full Printer Setup', 'Factory Reset', 'Install Fonts']);
+  expect((screen.getByRole('button', { name: 'Reset printer' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getAllByText('Connect a printer first').length).toBe(3);
+  await waitFor(() => expect(api.fetchLabelVocab).toHaveBeenCalled());
+});
+
+it('Factory Reset runs against the connected printer and hands off to the setup wizard', async () => {
+  vi.useFakeTimers();
+  try {
+    // userEvent's pointer sequence never settles under fake timers, so
+    // the clicks here are plain fireEvent inside act().
+    const click = async (el: Element) => { await act(async () => { fireEvent.click(el); }); };
+    const dev = fakeDevice();
+    setUsb(fakeUsb(dev));
+    renderPage();
+    await click(screen.getByRole('button', { name: 'Connect via USB' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+
+    await click(screen.getByRole('button', { name: 'Reset printer' }));
+    expect(screen.getByRole('dialog', { name: 'Factory reset' })).toBeTruthy();
+    await click(screen.getByRole('button', { name: 'Factory reset' }));
+    await act(async () => { for (let i = 0; i < 30; i++) await vi.advanceTimersByTimeAsync(2000); });
+
+    expect(dev.sent).toContain('^XA^JUF^XZ');
+    expect(dev.sent).toContain('^XA^JUS^XZ');
+    expect(screen.queryByRole('dialog', { name: 'Factory reset' })).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Full printer setup' })).toBeTruthy();
+    expect(screen.getByText('Printers · After factory reset')).toBeTruthy();
+    // seeded from the post-reset ^HH read rather than re-reading on mount
+    expect(screen.getByText('GAP/NOTCH')).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
 });

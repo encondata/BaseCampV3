@@ -550,3 +550,34 @@
 .kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-setup-card > .modal-head,
 .kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-align-card > .modal-foot,
 .kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-setup-card > .modal-foot { flex: none; }
+
+/* ── factory reset modal ───────────────────────────────────────────
+   Its own card class (not zp-setup-card) so printers.css's
+   `max-height: none` — there so the setup card's dropdowns can escape —
+   never applies: this card has no dropdowns and must stay inside a
+   tablet's viewport. Same cap as the other two, kept for the kiosk. */
+.modal-card.reports-modal-card.rgm-card.zp-reset-card { width: min(620px, 96vw); max-width: 96vw; }
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-reset-card {
+  max-height: 92dvh;
+  display: flex;
+  flex-direction: column;
+}
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-reset-card > .modal-body { overflow: auto; min-height: 0; }
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-reset-card > .modal-head,
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-reset-card > .modal-foot { flex: none; }
+
+.zp-check { display: flex; align-items: center; gap: 10px; font-size: 15px; }
+.zp-check input { width: 18px; height: 18px; }
+
+.zp-reset-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.zp-reset-step {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; border: 1px solid var(--paper-line); border-radius: 10px;
+  background: var(--surface, #fff);
+}
+.zp-reset-step.is-pending { opacity: 0.6; }
+
+/* `.btn-danger` (directory.css) loses to `.btn-solid` (profile.css, which
+   main.tsx imports after it), so the destructive Reset printer / Factory
+   reset buttons re-assert the red here — kiosk.css is imported last. */
+.btn-solid.btn-danger { background: var(--c-red, #c03540); color: #fff; }
