@@ -1,8 +1,9 @@
 /**
  * Kiosk login — the portal's split-screen login (brand panel with the
- * shared terrain scene + form pane) with a method switch: email &
- * password (same API, tagged client=kiosk), link with phone (PairPanel),
- * and the move-password placeholder. Uses auth-theme.css verbatim.
+ * shared terrain scene + form pane). Email & password is the normal,
+ * default form (same API, tagged client=kiosk); alternate methods (link
+ * with phone via PairPanel, move password) sit behind an "Other ways to
+ * sign in" button below it. Uses auth-theme.css verbatim.
  */
 
 import { gsap } from 'gsap';
@@ -13,10 +14,11 @@ import { buildBrandScene } from '@portal/lib/brandScene';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import KioskBanners from '../components/KioskBanners';
-import MethodSwitch, { readMethod, storeMethod, type Method } from '../components/MethodSwitch';
 import PairPanel from '../components/PairPanel';
 import { ApiError, type SessionData } from '../lib/api';
 import { getIdentity } from '../lib/identity';
+
+type View = 'password' | 'chooser' | 'link' | 'move';
 
 const ERROR_MESSAGES: Record<string, string> = {
   invalid_credentials: 'Invalid email or password.',
@@ -41,6 +43,24 @@ function EyeIcon() {
   );
 }
 
+function LinkIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="3" width="6" height="6" rx="1" /><rect x="15" y="3" width="6" height="6" rx="1" />
+      <rect x="3" y="15" width="6" height="6" rx="1" /><rect x="15" y="15" width="6" height="6" rx="1" />
+      <rect x="9" y="9" width="6" height="6" rx="1" />
+    </svg>
+  );
+}
+
+function KeyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="7.5" cy="15.5" r="4.5" /><path d="M11 12 20 3M16 8l3-3M20 3l1 1" />
+    </svg>
+  );
+}
+
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -48,8 +68,7 @@ export default function Login() {
   const fromState = (location.state as { from?: { pathname?: string } } | null)?.from;
   const from = fromState?.pathname && !fromState.pathname.startsWith('/login') ? fromState.pathname : '/';
 
-  const [method, setMethod] = useState<Method>(readMethod);
-  const chooseMethod = (m: Method) => { setMethod(m); storeMethod(m); };
+  const [view, setView] = useState<View>('password');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -168,62 +187,94 @@ export default function Login() {
           </div>
           <div className="login-banners"><KioskBanners /></div>
           <h2 className="form-title" data-reveal="">Sign in</h2>
-          <div data-reveal="">
-            <MethodSwitch value={method} onChange={chooseMethod} />
-          </div>
 
-          {method === 'password' && (
-            <form onSubmit={handlePassword} noValidate>
-              <div className="field">
-                <label htmlFor="login-email">Email</label>
-                <div className="control">
-                  <input id="login-email" ref={emailRef} name="email" type="email"
-                         placeholder="you@company.com" autoComplete="username" autoFocus
-                         className={invalid.email ? 'invalid' : ''} value={email}
-                         onChange={(e) => { setEmail(e.target.value); setInvalid((v) => ({ ...v, email: false })); setError(''); }} />
+          {(view === 'password' || view === 'chooser') && (
+            <div data-reveal="">
+              <form onSubmit={handlePassword} noValidate>
+                <div className="field">
+                  <label htmlFor="login-email">Email</label>
+                  <div className="control">
+                    <input id="login-email" ref={emailRef} name="email" type="email"
+                           placeholder="you@company.com" autoComplete="username" autoFocus
+                           className={invalid.email ? 'invalid' : ''} value={email}
+                           onChange={(e) => { setEmail(e.target.value); setInvalid((v) => ({ ...v, email: false })); setError(''); }} />
+                  </div>
                 </div>
-              </div>
-              <div className="field">
-                <label htmlFor="login-password">Password</label>
-                <div className="control">
-                  <input id="login-password" ref={passwordRef} name="password"
-                         type={showPassword ? 'text' : 'password'} placeholder="••••••••••••"
-                         autoComplete="current-password" className={invalid.password ? 'invalid' : ''}
-                         value={password}
-                         onChange={(e) => { setPassword(e.target.value); setInvalid((v) => ({ ...v, password: false })); setError(''); }} />
-                  <button type="button" className={`peek ${showPassword ? 'on' : ''}`}
-                          aria-label={showPassword ? 'Hide password' : 'Show password'}
-                          onClick={() => setShowPassword(!showPassword)}><EyeIcon /></button>
+                <div className="field">
+                  <label htmlFor="login-password">Password</label>
+                  <div className="control">
+                    <input id="login-password" ref={passwordRef} name="password"
+                           type={showPassword ? 'text' : 'password'} placeholder="••••••••••••"
+                           autoComplete="current-password" className={invalid.password ? 'invalid' : ''}
+                           value={password}
+                           onChange={(e) => { setPassword(e.target.value); setInvalid((v) => ({ ...v, password: false })); setError(''); }} />
+                    <button type="button" className={`peek ${showPassword ? 'on' : ''}`}
+                            aria-label={showPassword ? 'Hide password' : 'Show password'}
+                            onClick={() => setShowPassword(!showPassword)}><EyeIcon /></button>
+                  </div>
                 </div>
-              </div>
-              <p className={`error-msg ${error ? 'show' : ''}`} role={error ? 'alert' : undefined}>{error}</p>
-              <button type="submit" className="btn" disabled={loading}>{loading ? 'Signing in…' : 'Sign in'}</button>
-              <p className="form-foot">Forgot your password? Reset it in the portal.</p>
-            </form>
+                <p className={`error-msg ${error ? 'show' : ''}`} role={error ? 'alert' : undefined}>{error}</p>
+                <button type="submit" className="btn" disabled={loading}>{loading ? 'Signing in…' : 'Sign in'}</button>
+                <p className="form-foot">Forgot your password? Reset it in the portal.</p>
+              </form>
+
+              <div className="divider">or</div>
+
+              {view === 'password' ? (
+                <button type="button" className="btn-alt" onClick={() => setView('chooser')}>
+                  Other ways to sign in
+                </button>
+              ) : (
+                <div className="alt-methods">
+                  <button type="button" className="btn-alt" onClick={() => setView('link')}>
+                    <LinkIcon />
+                    Link with phone
+                  </button>
+                  <button type="button" className="btn-alt" onClick={() => setView('move')}>
+                    <KeyIcon />
+                    Move password
+                  </button>
+                </div>
+              )}
+            </div>
           )}
 
-          {method === 'link' && <PairPanel onApproved={onApproved} />}
+          {view === 'link' && (
+            <div data-reveal="">
+              <p className="form-hint">Link this kiosk with your phone.</p>
+              <PairPanel onApproved={onApproved} />
+              <p className="form-foot">
+                <button type="button" className="link" onClick={() => setView('password')}>Back to email &amp; password</button>
+              </p>
+            </div>
+          )}
 
-          {method === 'move' && (
-            <form onSubmit={handleMove} noValidate>
-              <div className="field">
-                <label htmlFor="login-move">Move password</label>
-                <div className="control">
-                  <input id="login-move" name="move-password" type={showMove ? 'text' : 'password'}
-                         placeholder="••••••••" autoComplete="off" value={movePassword}
-                         onChange={(e) => { setMovePassword(e.target.value); setMoveNotice(false); }} />
-                  <button type="button" className={`peek ${showMove ? 'on' : ''}`}
-                          aria-label={showMove ? 'Hide password' : 'Show password'}
-                          onClick={() => setShowMove(!showMove)}><EyeIcon /></button>
+          {view === 'move' && (
+            <div data-reveal="">
+              <p className="form-hint">Sign in with a move password.</p>
+              <form onSubmit={handleMove} noValidate>
+                <div className="field">
+                  <label htmlFor="login-move">Move password</label>
+                  <div className="control">
+                    <input id="login-move" name="move-password" type={showMove ? 'text' : 'password'}
+                           placeholder="••••••••" autoComplete="off" value={movePassword}
+                           onChange={(e) => { setMovePassword(e.target.value); setMoveNotice(false); }} />
+                    <button type="button" className={`peek ${showMove ? 'on' : ''}`}
+                            aria-label={showMove ? 'Hide password' : 'Show password'}
+                            onClick={() => setShowMove(!showMove)}><EyeIcon /></button>
+                  </div>
                 </div>
-              </div>
-              {moveNotice && (
-                <p className="form-notice" role="status">
-                  Move passwords aren&apos;t available yet. Use email &amp; password or link with your phone.
-                </p>
-              )}
-              <button type="submit" className="btn">Sign in</button>
-            </form>
+                {moveNotice && (
+                  <p className="form-notice" role="status">
+                    Move passwords aren&apos;t available yet. Use email &amp; password or link with your phone.
+                  </p>
+                )}
+                <button type="submit" className="btn">Sign in</button>
+              </form>
+              <p className="form-foot">
+                <button type="button" className="link" onClick={() => setView('password')}>Back to email &amp; password</button>
+              </p>
+            </div>
           )}
         </div>
       </section>

@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-/** Kiosk login: three method pills (link is the default and the choice
- *  persists), password sign-in with the kiosk-specific error copy, the
- *  move-password placeholder that never calls the API, and the settings
- *  gear. The terrain scene and PairPanel are mocked. */
+/** Kiosk login: email & password is the default, normal form; below it a
+ *  divider and an "Other ways to sign in" button expand to Link with
+ *  phone / Move password. Password sign-in carries the kiosk-specific
+ *  error copy; move password is a placeholder that never calls the API.
+ *  The terrain scene and PairPanel are mocked. */
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -50,20 +51,31 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-it('opens on Link with phone by default and remembers the chosen method', async () => {
+it('opens on the email & password form by default', async () => {
   renderLogin();
-  expect(screen.getByRole('tab', { name: 'Link with phone', selected: true })).toBeTruthy();
-  expect(screen.getByText('PAIR PANEL')).toBeTruthy();
-  await userEvent.click(screen.getByRole('tab', { name: 'Email & password' }));
   expect(screen.getByLabelText('Email')).toBeTruthy();
-  expect(localStorage.getItem('ss.kiosk.method')).toBe('password');
-  cleanup();
+  expect(screen.getByLabelText('Password')).toBeTruthy();
+  expect(screen.queryByText('PAIR PANEL')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Other ways to sign in' })).toBeTruthy();
+  expect(screen.queryAllByRole('tab')).toHaveLength(0);
+});
+
+it('expands to the alternate methods and back again', async () => {
   renderLogin();
-  expect(screen.getByRole('tab', { name: 'Email & password', selected: true })).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Other ways to sign in' }));
+  expect(screen.getByRole('button', { name: 'Link with phone' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Move password' })).toBeTruthy();
+
+  await userEvent.click(screen.getByRole('button', { name: 'Link with phone' }));
+  expect(screen.getByText('PAIR PANEL')).toBeTruthy();
+  const back = screen.getByRole('button', { name: 'Back to email & password' });
+  expect(back).toBeTruthy();
+
+  await userEvent.click(back);
+  expect(screen.getByLabelText('Email')).toBeTruthy();
 });
 
 it('signs in with email and password and lands on home', async () => {
-  localStorage.setItem('ss.kiosk.method', 'password');
   renderLogin();
   await userEvent.type(screen.getByLabelText('Email'), 'w@x.test');
   await userEvent.type(screen.getByLabelText('Password'), 'pw');
@@ -73,7 +85,6 @@ it('signs in with email and password and lands on home', async () => {
 });
 
 it('shows the kiosk-specific error copy', async () => {
-  localStorage.setItem('ss.kiosk.method', 'password');
   auth.login.mockRejectedValue(new ApiError(403, 'kiosk_not_allowed'));
   renderLogin();
   await userEvent.type(screen.getByLabelText('Email'), 'w@x.test');
@@ -88,7 +99,8 @@ it('shows the kiosk-specific error copy', async () => {
 
 it('move password is a placeholder that never calls the API', async () => {
   renderLogin();
-  await userEvent.click(screen.getByRole('tab', { name: 'Move password' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Other ways to sign in' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Move password' }));
   await userEvent.type(screen.getByLabelText('Move password'), 'secret');
   await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
   expect(screen.getByText(/Move passwords aren't available yet/)).toBeTruthy();
@@ -107,6 +119,8 @@ it('shows system banners and the settings gear', async () => {
 
 it('hands PairPanel a stable onApproved across Login re-renders', async () => {
   const { rerender } = renderLogin();
+  await userEvent.click(screen.getByRole('button', { name: 'Other ways to sign in' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Link with phone' }));
   expect(seenOnApproved).toHaveLength(1);
   // A re-render of the same route tree (e.g. Login re-rendering because
   // its auth context settled) must not mint a new onApproved — PairPanel

@@ -1,9 +1,6 @@
 /* kiosk.css — rules specific to the kiosk app. Every token and shared
-   primitive comes from the portal sheets imported in main.tsx; the only
-   exception is the method-switch block below, which scopes --surface/
-   --surface-2 to .login-shell .method-switch for the light login pane
-   (auth-theme.css does not define them) — it never redefines a -- token
-   at :root or on the shell. */
+   primitive comes from the portal sheets imported in main.tsx; it never
+   redefines a -- token at :root or on the shell. */
 
 /* ── shell ─────────────────────────────────────────────────────── */
 /* .portal-shell (portal-theme.css) is a nav + main grid
@@ -161,20 +158,28 @@
   color: var(--text-mute);
   white-space: nowrap;
 }
-/* .segmented reads --surface/--surface-2, which the login pane (unlike
-   .portal-shell) does not define — point them at the pane's own light
-   surfaces so the unselected pills sit on paper, not on the dark tokens
-   the rest of the app uses. --paper-line/--text-dark/--text-mute are
-   already correct on .login-shell (auth-theme.css), so they are not
-   overridden here. */
-.login-shell .method-switch {
-  --surface: var(--paper);
-  --surface-2: var(--paper-2);
-  display: flex;
+/* .btn-alt: same visual rules as the portal's .btn-sso (auth-theme.css),
+   kept as a separate class name since .btn-sso is SSO-specific there. */
+.login-shell .btn-alt {
   width: 100%;
-  margin: 0 0 18px;
+  border: 1.5px solid var(--paper-line);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-dark);
+  font-family: var(--font-display);
+  font-size: 14.5px;
+  font-weight: 400;
+  padding: 14px 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  transition: border-color .2s, background .2s, transform .15s;
 }
-.login-shell .method-switch button { flex: 1 1 0; justify-content: center; }
-.login-shell .method-switch button.on { background: var(--ink); color: var(--snow); }
+.login-shell .btn-alt:hover { border-color: var(--ink); background: #fff9; }
+.login-shell .btn-alt:active { transform: scale(.985); }
+.login-shell .btn-alt svg { width: 17px; height: 17px; color: var(--amber); flex: none; }
+.login-shell .alt-methods { display: grid; gap: 10px; }
 .login-shell .form-notice { color: var(--text-mute); font-size: 13px; margin: 0 0 14px; }
 .login-shell .form-error { font-size: 13px; margin: 0; }
