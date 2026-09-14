@@ -254,12 +254,17 @@ export async function signOutRequest(serial: string): Promise<void> {
 
 export interface SetupOptionSite { id: string; name: string }
 
+export interface SetupOptionInitiative {
+  id: string; name: string; status: string; status_label: string;
+  client_name: string | null;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  source_site: SetupOptionSite | null;
+  destination_site: SetupOptionSite | null;
+}
+
 export interface SetupOptions {
-  initiatives: {
-    id: string; name: string; status: string;
-    source_site: SetupOptionSite | null;
-    destination_site: SetupOptionSite | null;
-  }[];
+  initiatives: SetupOptionInitiative[];
   scan_types: { key: string; label: string; color: string }[];
 }
 

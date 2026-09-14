@@ -2,24 +2,39 @@
  * Kiosk Setup wizard: pick a move, then which of that move's sites this
  * kiosk is at ("step 1A" — the move's source or destination site), then
  * a scan type, and stamp this kiosk's Device row (POST /kiosk/setup).
- * Native <select> elements — the portal's ComboBox is a .tsx the kiosk
- * cannot import, and large touch targets matter more here than the
- * portal's picker affordances. Once a selection is saved and setup is
- * complete, shows a summary card instead of the wizard; "Change setup"
- * re-enters the wizard pre-selected.
+ * Tap-to-select card pickers (`.setup-card`, mirroring `.kiosk-tile`) —
+ * large touch targets, no native `<select>`. Tapping a move or site card
+ * selects it and advances to the next step; tapping a scan-type card
+ * saves immediately. Once a selection is saved and setup is complete,
+ * shows a summary card instead of the wizard; "Change setup" re-enters
+ * the wizard pre-selected.
  */
 
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import {
-  ApiError, getSetupOptions, submitKioskSetup, type SetupOptions, type SetupOptionSite,
+  ApiError, getSetupOptions, submitKioskSetup, type SetupOptionInitiative,
+  type SetupOptions, type SetupOptionSite,
 } from '../lib/api';
 import { getIdentity } from '../lib/identity';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { isSetupComplete, useKioskSetupState, writeSetupState } from '../lib/setupState';
 
 type Step = 1 | 2 | 3;
+
+function formatMoveDate(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function formatMoveDates(initiative: SetupOptionInitiative): string | null {
+  const start = initiative.scheduled_start ? formatMoveDate(initiative.scheduled_start) : null;
+  const end = initiative.scheduled_end ? formatMoveDate(initiative.scheduled_end) : null;
+  if (start && end) return `${start} – ${end}`;
+  if (start) return `Starts ${start}`;
+  if (end) return `Ends ${end}`;
+  return null;
+}
 
 export default function KioskSetup() {
   const navigate = useNavigate();
@@ -70,14 +85,26 @@ export default function KioskSetup() {
     siteChoices.push({ site: selectedInitiative.destination_site, role: 'destination' });
   }
 
-  const finish = async () => {
+  const selectMove = (id: string) => {
+    if (id !== initiativeId) setSiteId('');
+    setInitiativeId(id);
+    setStep(2);
+  };
+
+  const selectSite = (id: string) => {
+    setSiteId(id);
+    setStep(3);
+  };
+
+  const finish = async (scanKey: string) => {
+    setScanStatus(scanKey);
     setSubmitting(true);
     setSubmitError('');
     try {
       const identity = getIdentity();
       const result = await submitKioskSetup({
         serial: identity.serial, initiative_id: initiativeId, site_id: siteId,
-        scan_status: scanStatus,
+        scan_status: scanKey,
       });
       setSelection({
         initiativeId: result.initiative_id, initiativeName: result.initiative_name,
@@ -138,80 +165,87 @@ export default function KioskSetup() {
         {!loadError && options === null && <p className="page-hint">Loading moves…</p>}
 
         {!loadError && options !== null && step === 1 && (
-          <form className="pf-form" noValidate
-                onSubmit={(e) => { e.preventDefault(); setStep(2); }}>
-            <div className="full">
-              <label htmlFor="setup-move">Move</label>
-              <select id="setup-move" value={initiativeId}
-                      onChange={(e) => { setInitiativeId(e.target.value); setSiteId(''); }}>
-                <option value="" disabled>Choose a move…</option>
-                {options.initiatives.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    {i.name}{i.status === 'planned' ? ' (planned)' : ''}
-                  </option>
-                ))}
-              </select>
+          <div>
+            <h2>Which move?</h2>
+            <div className="setup-cards" role="listbox" aria-label="Moves">
+              {options.initiatives.map((i) => {
+                const dates = formatMoveDates(i);
+                return (
+                  <button key={i.id} type="button" role="option"
+                          aria-selected={initiativeId === i.id} className="setup-card"
+                          onClick={() => selectMove(i.id)}>
+                    <div className="setup-card-title">{i.name}</div>
+                    <span className={`chip ${i.status === 'in_progress' ? 'c-green' : 'tag'}`}>
+                      {i.status_label}
+                    </span>
+                    {i.client_name && <div className="setup-card-meta">{i.client_name}</div>}
+                    {dates && <div className="setup-card-meta">{dates}</div>}
+                    <div className="setup-card-sites">
+                      {i.source_site?.name ?? '—'} → {i.destination_site?.name ?? '—'}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
             {options.initiatives.length === 0 && (
-              <p className="page-hint full">No active moves. Ask a coordinator to plan one.</p>
+              <p className="page-hint">No active moves. Ask a coordinator to plan one.</p>
             )}
-            <div className="pf-form-actions full">
-              <button type="submit" className="btn-solid" disabled={!initiativeId}>Next</button>
-            </div>
-          </form>
+          </div>
         )}
 
         {!loadError && options !== null && step === 2 && (
-          <form className="pf-form" noValidate
-                onSubmit={(e) => { e.preventDefault(); setStep(3); }}>
-            <h2 className="full">Which site is this kiosk at?</h2>
-            <div className="full">
-              <label htmlFor="setup-site">Site</label>
-              <select id="setup-site" value={siteId}
-                      onChange={(e) => setSiteId(e.target.value)}>
-                <option value="" disabled>Choose a site…</option>
-                {siteChoices.map(({ site, role }) => (
-                  <option key={site.id} value={site.id}>{site.name} — {role}</option>
-                ))}
-              </select>
+          <div>
+            <h2>Which site is this kiosk at?</h2>
+            <div className="setup-cards" role="listbox" aria-label="Sites">
+              {siteChoices.map(({ site, role }) => (
+                <button key={site.id} type="button" role="option"
+                        aria-selected={siteId === site.id} className="setup-card"
+                        onClick={() => selectSite(site.id)}>
+                  <div className="setup-card-role">{role.toUpperCase()}</div>
+                  <div className="setup-card-title">{site.name}</div>
+                </button>
+              ))}
             </div>
             {siteChoices.length === 0 && (
-              <p className="page-hint full">
+              <p className="page-hint">
                 This move has no sites yet. Ask a coordinator to add them.
               </p>
             )}
-            <div className="pf-form-actions full">
+            <div className="pf-form-actions">
               <button type="button" className="mini-btn" onClick={() => setStep(1)}>Back</button>
-              <button type="submit" className="btn-solid" disabled={!siteId}>Next</button>
             </div>
-          </form>
+          </div>
         )}
 
         {!loadError && options !== null && step === 3 && (
-          <form className="pf-form" noValidate
-                onSubmit={(e) => { e.preventDefault(); void finish(); }}>
-            <div className="full">
-              <label htmlFor="setup-scan">Scan type</label>
-              <select id="setup-scan" value={scanStatus}
-                      onChange={(e) => setScanStatus(e.target.value)}>
-                <option value="" disabled>Choose a scan type…</option>
-                {options.scan_types.map((s) => (
-                  <option key={s.key} value={s.key}>{s.label}</option>
-                ))}
-              </select>
+          <div>
+            <h2>Which scan type?</h2>
+            <div className="setup-cards" role="listbox" aria-label="Scan types">
+              {options.scan_types.map((s) => {
+                const saving = submitting && scanStatus === s.key;
+                return (
+                  <button key={s.key} type="button" role="option"
+                          aria-selected={scanStatus === s.key}
+                          className={`setup-card${saving ? ' is-saving' : ''}`}
+                          disabled={submitting} onClick={() => void finish(s.key)}>
+                    <span className="dot" style={{ background: s.color }} />
+                    <span className="setup-card-title">{saving ? 'Saving…' : s.label}</span>
+                  </button>
+                );
+              })}
             </div>
             {submitError && (
-              <p className="form-error full" role="alert">
+              <p className="form-error" role="alert">
                 Couldn&apos;t save the kiosk setup ({submitError}). Try again.
               </p>
             )}
-            <div className="pf-form-actions full">
-              <button type="button" className="mini-btn" onClick={() => setStep(2)}>Back</button>
-              <button type="submit" className="btn-solid" disabled={!scanStatus || submitting}>
-                {submitting ? 'Saving…' : 'Finish'}
+            <div className="pf-form-actions">
+              <button type="button" className="mini-btn" onClick={() => setStep(2)}
+                      disabled={submitting}>
+                Back
               </button>
             </div>
-          </form>
+          </div>
         )}
       </div>
     </div>

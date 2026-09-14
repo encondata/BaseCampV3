@@ -268,10 +268,40 @@
 }
 .setup-summary b { color: var(--text-dark); }
 .setup-actions { display: flex; gap: 10px; }
-.setup-wizard .pf-form h2 {
-  grid-column: 1 / -1; margin: 0 0 4px; font-size: 15px; font-weight: 600;
-  color: var(--text-dark);
+.setup-wizard h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; color: var(--text-dark); }
+
+/* Kiosk Setup's card pickers — one per move/site/scan-type step, tap to
+   select (and advance, or save on the scan-type step). Mirrors
+   .kiosk-tile's paper/border/radius so the wizard reads like the rest of
+   the kiosk chrome; dynamic grid like .kiosk-launcher. */
+.setup-cards {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px; margin: 10px 0;
 }
+.setup-card {
+  display: grid; gap: 8px; align-content: start; min-height: 120px;
+  padding: 18px; text-align: left; cursor: pointer; font: inherit;
+  background: var(--paper); border: 1px solid var(--paper-line); border-radius: 14px;
+  color: var(--text-dark); transition: border-color .15s, transform .15s, box-shadow .15s;
+}
+.setup-card:hover, .setup-card:focus-visible {
+  border-color: var(--accent); box-shadow: 0 6px 24px rgba(var(--accent-rgb), .18);
+  transform: translateY(-2px); outline: none;
+}
+.setup-card:active { transform: translateY(0); }
+.setup-card[aria-selected="true"] {
+  border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .25);
+}
+.setup-card:disabled { cursor: default; opacity: .5; }
+.setup-card.is-saving { opacity: .7; }
+.setup-card-title { font-size: 16px; font-weight: 600; }
+.setup-card-role {
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-mute);
+}
+.setup-card-meta { font-size: 13px; color: var(--text-mute); }
+.setup-card-sites { font-size: 13px; color: var(--text-mute); }
+.setup-card .dot { width: 14px; height: 14px; border-radius: 50%; flex: none; }
 
 /* notifications.css's .pf-form select rule isn't imported by the kiosk
    (main.tsx doesn't pull in notifications.css) — restate a minimal,
