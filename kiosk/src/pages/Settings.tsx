@@ -11,6 +11,7 @@ import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
+import LocalDataInspector from '../components/LocalDataInspector';
 import { Switch } from '../components/Switch';
 import ThisKioskPanel from '../components/ThisKioskPanel';
 import { useDevMode } from '../lib/devMode';
@@ -124,6 +125,7 @@ export default function Settings() {
             </button>
           </div>
         )}
+        {active.id === 'developer' && <LocalDataInspector />}
         {active.id !== 'this-kiosk' && (
           <div className="kiosk-placeholder">
             <p>This section is not available yet.</p>

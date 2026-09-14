@@ -326,3 +326,35 @@
   font-size: 15px;
   color: var(--text-dark);
 }
+
+/* ── Developer tab: local data inspector ─────────────────────────────
+   Native <details>/<summary> sections (the list-typography guardrail
+   only scans portal/src, so a raw <table> here is fine) plus a filter
+   toolbar (.dir-search from directory.css) and a key/value list for the
+   label map and the sync meta row. */
+.local-section { margin-top: 18px; max-width: 1100px; }
+.local-section > summary {
+  cursor: pointer; font-weight: 600; font-size: 15px; padding: 10px 0;
+  list-style: none; display: flex; gap: 10px; align-items: center;
+}
+.local-section > summary::before { content: '▸'; font-size: 12px; color: var(--text-mute); }
+.local-section[open] > summary::before { content: '▾'; }
+.local-toolbar { display: flex; align-items: center; gap: 12px; margin: 6px 0 10px; }
+.local-count { font-family: var(--font-mono); font-size: 11px; color: var(--text-mute); }
+.local-table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+  background: var(--paper); border: 1px solid var(--paper-line); border-radius: 10px;
+  overflow: hidden;
+}
+.local-table th {
+  text-align: left; font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--text-mute); padding: 8px 10px;
+  border-bottom: 1px solid var(--paper-line);
+}
+.local-table td { padding: 7px 10px; border-bottom: 1px solid var(--paper-line); vertical-align: top; }
+.local-table tr:last-child td { border-bottom: 0; }
+.local-table .mono { font-family: var(--font-mono); font-size: 12px; }
+.local-kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; font-size: 12.5px; padding: 6px 0; }
+.local-kv dt { font-family: var(--font-mono); color: var(--text-mute); }
+.local-kv dd { margin: 0; }
+.local-table-wrap { overflow-x: auto; }

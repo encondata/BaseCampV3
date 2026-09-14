@@ -23,6 +23,13 @@ const auth = vi.hoisted(() => ({
 }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
+// LocalDataInspector reads IndexedDB itself (see LocalDataInspector.test.tsx
+// for that behavior); Settings.tsx only needs to know it renders on the
+// Developer tab, so it's mocked here rather than seeding a fake database.
+vi.mock('../components/LocalDataInspector', () => ({
+  default: () => <div data-testid="local-data-inspector" />,
+}));
+
 import Settings from './Settings';
 
 afterEach(() => {
@@ -198,4 +205,11 @@ it('the Local data row reads "Nothing downloaded yet" before a sync', async () =
   renderAt('/settings?tab=developer');
   await userEvent.click(screen.getByRole('switch', { name: 'Developer mode' }));
   expect(screen.getByText('Nothing downloaded yet.')).toBeTruthy();
+});
+
+it('a developer sees the local data inspector on the Developer tab', () => {
+  auth.isAdmin = true;
+  auth.isDeveloper = true;
+  renderAt('/settings?tab=developer');
+  expect(screen.getByTestId('local-data-inspector')).toBeTruthy();
 });
