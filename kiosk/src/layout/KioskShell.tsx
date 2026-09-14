@@ -8,13 +8,14 @@
  */
 
 import { useEffect, type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import { registrationLabel } from '@portal/lib/devices';
 import { applyPreferences, DEFAULT_PREFERENCES } from '@portal/lib/settings';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import type { RegistrationState } from '../lib/api';
+import { FEATURES } from '../lib/features';
 import { getIdentity } from '../lib/identity';
 import { platform } from '../lib/platform';
 
@@ -25,6 +26,7 @@ const REG_CHIP: Record<RegistrationState, string> = {
 export default function KioskShell({ children }: { children: ReactNode }) {
   const { status, person, registration, preferences, logout } = useKioskAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const authed = status === 'authed';
 
   useEffect(() => {
@@ -33,6 +35,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
 
   const identity = getIdentity();
   const { label: modeLabel } = platform();
+  const feature = FEATURES.find((f) => f.path === location.pathname);
 
   return (
     <div className="portal-shell kiosk-shell">
@@ -41,6 +44,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
           <img className="kiosk-logo" src="/images/serversherpa-logo.png" alt="" />
           <span className="kiosk-wordmark">Server<em>Sherpa</em></span>
           <span className="kiosk-mode">Kiosk · {modeLabel}</span>
+          {feature && <span className="kiosk-section">{feature.title}</span>}
         </div>
         <button type="button" className="kiosk-name" title="Kiosk settings"
                 onClick={() => navigate('/settings')}>

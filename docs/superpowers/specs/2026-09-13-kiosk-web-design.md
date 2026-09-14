@@ -101,6 +101,16 @@ No side nav, no command palette, no notifications panel. The kiosk is full-width
 
 **Home (`/`)**: eyebrow "Kiosk", title "Ready", hint "Scanning arrives in a later update." One card with kiosk name, mode, signed-in person, session ends at (local time), registration state. Placeholder only.
 
+### Home launcher and feature placeholders (2026-09-13)
+
+Home became a launcher: eyebrow "Kiosk", title "What would you like to do?", then a `.kiosk-launcher` grid of `.kiosk-tile` links — one per entry in a new `src/lib/features.ts` registry (`FEATURES: {id, path, title, blurb}[]`) — each with a 40 px inline SVG icon, a title, and a blurb: Scanning (`/scan`, a barcode glyph), Label Printing (`/labels`, a tag), Timeclock (`/timeclock`, a clock). The identity facts that used to be the whole page move below the tiles as a compact `dl.kiosk-facts.kiosk-facts-compact` (same markup and values, smaller footprint).
+
+Each feature gets a route in `App.tsx` — `/scan`, `/labels`, `/timeclock`, mapped over `FEATURES` — wrapped in `KioskGuard` + `KioskShell` exactly like `/`. All three render the same `FeaturePage` component (`{feature}` prop): `.portal-page` with eyebrow "Kiosk · {title}", the feature title, hint "Coming soon. {blurb}", and a dashed `.kiosk-placeholder` card reading "This feature is not available yet." with a "Back to home" link. `*` still falls back to `/`.
+
+`KioskShell`'s top bar gains a `.kiosk-section` label (mono, sits after the mode chip inside `.kiosk-brand`, hidden ≤900px alongside the mode chip) showing the current feature's title via `useLocation` + `FEATURES.find`; it renders nothing on `/` and `/settings`.
+
+Permission gating of tiles is deferred — `scan`, `labels`, and `time` resources already exist in the access system, but every signed-in kiosk user sees all three tiles for now.
+
 **Kiosk settings (`/settings`)**: reachable signed in (top bar) and signed out (gear icon at the top-right of the login pane). It always renders inside `KioskShell`; when signed out the top bar shows only the logo, mode chip, and kiosk name (no user, no sign out, no registration chip). `.pf-form`: Kiosk name (text, required), Serial (read-only mono), API URL and Portal URL (read-only, resolved values), Version, Mode. Save → `setKioskName` + `heartbeatNow()` if authed + toast "Kiosk name saved". Back returns to where it came from.
 
 **Must-change-password**: if the adopted session has `must_change_password`, `KioskGuard` renders a `.portal-page` notice "Your password needs to be changed before you can use a kiosk. Sign in to the portal at {portalUrl} to change it." with a Sign out button, instead of the page. (The security-fixes branch makes this a server-side 403 `password_change_required` on every other route, so the kiosk never relies on client enforcement.)
@@ -254,6 +264,7 @@ Built on branch `kiosk-web` via `docs/superpowers/plans/2026-09-13-kiosk-web.md`
 - 2026-09-13 (Jimmy): the segmented method switch was replaced — email & password is the normal form; alternates sit behind a button below it.
 - 2026-09-13 (Jimmy): "Register automatically at sign-in — first sign-in on a kiosk stamps a 30-day registration (same as clicking Register); later sign-ins renew it only when it has expired or is within 7 days of expiring. Anyone allowed to use the kiosk can do it."
 - 2026-09-13 (Jimmy): Kiosk Devices shows the signed-in user and login type (migration 0062).
+- 2026-09-13 (Jimmy): first features as placeholders — Scanning, Label Printing, Timeclock.
 
 Live-verified 2026-09-13 against the worktree API (dev DB at 0061): email/password sign-in, heartbeat creating "Kiosk 4716 · Web" on Kiosk Devices and the chip flipping to Registered after Register from the portal, link-with-phone approve (kiosk on Home within one poll) and deny ("Sign-in was declined on the phone."), the move-password placeholder (no request), and the Docker/compose build on 8090 signing in with the same-site cookie. Not live-verified: the `kiosk_not_allowed` refusal in the UI (covered by `tests/test_auth_kiosk_login.py`), a real phone camera scanning the QR, and prod cross-subdomain cookies (`SS_COOKIE_DOMAIN`).
 
