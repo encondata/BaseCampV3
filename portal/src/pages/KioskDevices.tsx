@@ -245,13 +245,14 @@ export default function KioskDevices() {
           ? <span>—</span>
           : <span className="chip tag">{loginMethodLabel(d.session_login_method)}</span>;
       case 'signed_in':
-        return d.session_started_at
+        return d.session_person_name
           ? (
-            <span title={`Signed in ${new Date(d.session_started_at).toLocaleString()}`}>
+            <span title={d.session_started_at
+              ? `Signed in ${new Date(d.session_started_at).toLocaleString()}` : undefined}>
               {deviceCellText(d, 'signed_in')}
             </span>
           )
-          : <span>{deviceCellText(d, 'signed_in')}</span>;
+          : <span>—</span>;
       default:
         return <span>{deviceCellText(d, key)}</span>;
     }

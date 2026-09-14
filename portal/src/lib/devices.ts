@@ -100,7 +100,7 @@ export function deviceSearchText(d: DeviceItem): string {
   return [
     d.name, d.wan_ip, d.lan_ip, d.mac, d.serial, d.site_name, vpnLabel(d.vpn_status),
     d.model, d.scan_status_label, d.version, subTypeLabel(d.sub_type),
-    d.current_initiative_name,
+    d.current_initiative_name, d.session_person_name,
   ].filter(Boolean).join(' ');
 }
 

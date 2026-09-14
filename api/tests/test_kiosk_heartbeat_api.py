@@ -143,11 +143,14 @@ async def test_sign_in_on_an_ok_registration_changes_nothing(client, db, seeded_
     await db.commit()
     original_expires_at = d.token_expires_at
 
-    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json={**BODY, "sign_in": True})
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs,
+                             json={**BODY, "sign_in": True, "login_method": "password"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["registration"] == "ok"
     await db.refresh(d)
     assert d.token_expires_at == original_expires_at
+    assert d.session_person_id == seeded_user.id
+    assert d.session_login_method == "password"
     audits = (await db.scalars(select(AuditLog).where(AuditLog.action == "register"))).all()
     assert len(audits) == 0
 

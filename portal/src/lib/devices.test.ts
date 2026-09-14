@@ -207,4 +207,10 @@ describe('kiosk session accessors', () => {
     expect(deviceSortValue({ ...R, session_person_name: null }, 'signed_in')).toBe('');
     expect(deviceSortValue(signedIn, 'login_method')).toBe('phone link');
   });
+
+  it('deviceSearchText includes the signed-in person', () => {
+    expect(deviceSearchText(signedIn).toLowerCase()).toContain('claude dev');
+    expect(deviceSearchText({ ...R, session_person_name: null }).toLowerCase())
+      .not.toContain('claude dev');
+  });
 });

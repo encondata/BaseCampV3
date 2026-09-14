@@ -62,3 +62,30 @@ it('sends no sign_in flag when the first beat is not a sign-in', async () => {
   expect(api.heartbeatRequest.mock.calls[0][0].sign_in).toBeUndefined();
   handle.stop();
 });
+
+it('retries the sign-in flag on the next tick after a failed first beat', async () => {
+  const onState = vi.fn();
+  api.heartbeatRequest.mockRejectedValueOnce(new Error('network'));
+  const handle = startHeartbeat(onState, 1000, { method: 'password' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(api.heartbeatRequest.mock.calls[0][0].sign_in).toBe(true);
+  expect(api.heartbeatRequest.mock.calls[0][0].login_method).toBe('password');
+  expect(onState).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(api.heartbeatRequest.mock.calls[1][0].sign_in).toBe(true);
+  expect(api.heartbeatRequest.mock.calls[1][0].login_method).toBe('password');
+  expect(onState).toHaveBeenCalledTimes(1);
+  handle.stop();
+});
+
+it('now() after a failed first beat still carries the sign-in flag', async () => {
+  const onState = vi.fn();
+  api.heartbeatRequest.mockRejectedValueOnce(new Error('network'));
+  const handle = startHeartbeat(onState, 60_000, { method: 'link' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(api.heartbeatRequest.mock.calls[0][0].sign_in).toBe(true);
+  await handle.now();
+  expect(api.heartbeatRequest.mock.calls[1][0].sign_in).toBe(true);
+  expect(api.heartbeatRequest.mock.calls[1][0].login_method).toBe('link');
+  handle.stop();
+});
