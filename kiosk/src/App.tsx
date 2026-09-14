@@ -6,6 +6,7 @@ import SetupGate from './components/SetupGate';
 import KioskShell from './layout/KioskShell';
 import { FEATURES } from './lib/features';
 import { LABEL_SECTIONS } from './lib/labelSections';
+import Containers from './pages/Containers';
 import Enroll from './pages/Enroll';
 import FeaturePage from './pages/FeaturePage';
 import Home from './pages/Home';
@@ -20,6 +21,7 @@ import Timeclock from './pages/Timeclock';
 
 const SCAN = FEATURES.find((f) => f.id === 'scan')!;
 const ENROLL = FEATURES.find((f) => f.id === 'enroll')!;
+const CONTAINERS = FEATURES.find((f) => f.id === 'containers')!;
 const LABELS = FEATURES.find((f) => f.id === 'labels')!;
 const TIMECLOCK = FEATURES.find((f) => f.id === 'timeclock')!;
 
@@ -55,6 +57,17 @@ export default function App() {
               <KioskGuard>
                 <SetupGate feature={ENROLL}>
                   <KioskShell><Enroll /></KioskShell>
+                </SetupGate>
+              </KioskGuard>
+            )}
+          />
+          {/* Containers is a real screen too — same guards as Scanning. */}
+          <Route
+            path={CONTAINERS.path}
+            element={(
+              <KioskGuard>
+                <SetupGate feature={CONTAINERS}>
+                  <KioskShell><Containers /></KioskShell>
                 </SetupGate>
               </KioskGuard>
             )}

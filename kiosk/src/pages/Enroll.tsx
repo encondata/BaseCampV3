@@ -37,7 +37,7 @@ import { displayRfid } from '@portal/lib/format';
 
 import { ApiError, postRfidEnroll } from '../lib/api';
 import { hslCss, useAppearance } from '../lib/appearance';
-import { useEnrollStatus } from '../lib/enrollSettings';
+import { useCheckpoint } from '../lib/checkpointSettings';
 import { flash } from '../lib/flash';
 import { getIdentity, uuid } from '../lib/identity';
 import { useKioskSetup } from '../lib/kioskSetup';
@@ -106,7 +106,7 @@ export default function Enroll() {
   const [setup] = useKioskSetup();
   const { phase } = useSyncStatus();
   const [appearance] = useAppearance();
-  const [enrollStatus] = useEnrollStatus();
+  const [enrollStatus] = useCheckpoint('enroll');
 
   const [rows, setRows] = useState<ScanAsset[]>([]);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('loading');

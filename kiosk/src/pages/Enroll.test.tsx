@@ -33,7 +33,7 @@ vi.mock('../lib/sound', async (importOriginal) => {
 
 import { ApiError } from '../lib/api';
 import { DEFAULT_APPEARANCE, hslCss } from '../lib/appearance';
-import { writeEnrollStatus } from '../lib/enrollSettings';
+import { writeCheckpoint } from '../lib/checkpointSettings';
 import { clearFlash, readFlash } from '../lib/flash';
 import { getIdentity } from '../lib/identity';
 import { writeKioskSetup } from '../lib/kioskSetup';
@@ -154,7 +154,7 @@ it('an unknown value flashes not-found and stays on the asset step', async () =>
 
 it('previews the padded tag as it is typed and posts the padded value', async () => {
   const user = userEvent.setup();
-  writeEnrollStatus('staged');
+  writeCheckpoint('enroll', 'staged');
   render_();
   await scanAsset('SN-4242');
   await screen.findByLabelText('RFID tag');

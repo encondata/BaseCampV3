@@ -7,7 +7,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const syncMock = vi.hoisted(() => ({
-  status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; syncedAt?: string },
+  status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; containers?: number; syncedAt?: string },
   clearDb: vi.fn(() => Promise.resolve()),
   resetSyncStatus: vi.fn(),
 }));
@@ -77,6 +77,8 @@ beforeEach(() => {
     scan_types: [
       { key: 'pre_stage', label: 'Pre-Stage', color: '#336699' },
       { key: 'cage_exit', label: 'RFID 1 - Cage Exit', color: '#996633' },
+      { key: 'in_container', label: 'In Container', color: '#2e7d32' },
+      { key: 'un_pack', label: 'Un-Pack', color: '#8a4b2a' },
     ],
   });
   audioContexts.mockClear();
@@ -223,12 +225,12 @@ it('the Local data row is absent until developer mode is switched on', () => {
 it('a developer with dev mode on sees the local data counts and can clear them', async () => {
   auth.isAdmin = true;
   auth.isDeveloper = true;
-  syncMock.status = { phase: 'done', assets: 15, people: 4, syncedAt: '2026-09-13T18:14:00Z' };
+  syncMock.status = { phase: 'done', assets: 15, people: 4, containers: 6, syncedAt: '2026-09-13T18:14:00Z' };
   renderAt('/settings?tab=developer');
   await userEvent.click(screen.getByRole('switch', { name: 'Developer mode' }));
 
   expect(screen.getByText('Local data')).toBeTruthy();
-  expect(screen.getByText(/15 assets · 4 people · synced /)).toBeTruthy();
+  expect(screen.getByText(/15 assets · 4 people · 6 containers · synced /)).toBeTruthy();
 
   await userEvent.click(screen.getByRole('button', { name: 'Clear local data' }));
   expect(syncMock.clearDb).toHaveBeenCalled();
@@ -238,7 +240,7 @@ it('a developer with dev mode on sees the local data counts and can clear them',
 it('a clearDb failure shows an inline error and leaves the status untouched', async () => {
   auth.isAdmin = true;
   auth.isDeveloper = true;
-  syncMock.status = { phase: 'done', assets: 15, people: 4, syncedAt: '2026-09-13T18:14:00Z' };
+  syncMock.status = { phase: 'done', assets: 15, people: 4, containers: 6, syncedAt: '2026-09-13T18:14:00Z' };
   syncMock.clearDb.mockRejectedValue(new Error('boom'));
   renderAt('/settings?tab=developer');
   await userEvent.click(screen.getByRole('switch', { name: 'Developer mode' }));
@@ -247,7 +249,7 @@ it('a clearDb failure shows an inline error and leaves the status untouched', as
 
   expect((await screen.findByRole('alert')).textContent).toBe("Couldn't clear local data.");
   expect(syncMock.resetSyncStatus).not.toHaveBeenCalled();
-  expect(screen.getByText(/15 assets · 4 people · synced /)).toBeTruthy();
+  expect(screen.getByText(/15 assets · 4 people · 6 containers · synced /)).toBeTruthy();
 });
 
 it('the Local data row reads "Nothing downloaded yet" before a sync', async () => {
@@ -357,9 +359,10 @@ it('the Admin tab offers the RFID Enroll checkpoint, defaulting to Pre-Stage, an
   renderAt('/settings?tab=admin');
 
   const select = await screen.findByLabelText('RFID Enroll checkpoint') as HTMLSelectElement;
-  await waitFor(() => expect(select.options.length).toBe(2));
+  await waitFor(() => expect(select.options.length).toBe(4));
   expect(select.value).toBe('pre_stage');
-  expect([...select.options].map((o) => o.textContent)).toEqual(['Pre-Stage', 'RFID 1 - Cage Exit']);
+  expect([...select.options].map((o) => o.textContent))
+    .toEqual(['Pre-Stage', 'RFID 1 - Cage Exit', 'In Container', 'Un-Pack']);
   expect(screen.getByText('The scan type recorded when a tag is enrolled.')).toBeTruthy();
 
   await userEvent.selectOptions(select, 'cage_exit');
@@ -374,6 +377,39 @@ it('a stored checkpoint the portal no longer offers falls back to the default', 
 
   const select = await screen.findByLabelText('RFID Enroll checkpoint') as HTMLSelectElement;
   await waitFor(() => expect(select.value).toBe('pre_stage'));
+});
+
+it('the Admin tab offers the two container checkpoints, with their own defaults', async () => {
+  auth.isAdmin = true;
+  renderAt('/settings?tab=admin');
+
+  const pack = await screen.findByLabelText('Container pack checkpoint') as HTMLSelectElement;
+  const unpack = screen.getByLabelText('Container unpack checkpoint') as HTMLSelectElement;
+  await waitFor(() => expect(pack.options.length).toBe(4));
+  expect(pack.value).toBe('in_container');
+  expect(unpack.value).toBe('un_pack');
+  expect(screen.getByText(
+    'The scan type recorded when an asset is packed into a container.')).toBeTruthy();
+  expect(screen.getByText(
+    'The scan type recorded when an asset is unpacked from a container.')).toBeTruthy();
+
+  await userEvent.selectOptions(pack, 'cage_exit');
+  expect(localStorage.getItem('ss.kiosk.containerPackStatus')).toBe('cage_exit');
+  await userEvent.selectOptions(unpack, 'pre_stage');
+  expect(localStorage.getItem('ss.kiosk.containerUnpackStatus')).toBe('pre_stage');
+
+  // Each row owns its own key: setting one never moves the others.
+  expect((screen.getByLabelText('Container pack checkpoint') as HTMLSelectElement).value)
+    .toBe('cage_exit');
+  expect((screen.getByLabelText('RFID Enroll checkpoint') as HTMLSelectElement).value)
+    .toBe('pre_stage');
+  expect(localStorage.getItem('ss.kiosk.enrollStatus')).toBeNull();
+});
+
+it('a worker never sees the container checkpoint rows either', () => {
+  renderAt('/settings?tab=admin');
+  expect(screen.queryByLabelText('Container pack checkpoint')).toBeNull();
+  expect(screen.queryByLabelText('Container unpack checkpoint')).toBeNull();
 });
 
 it('a worker never sees the RFID Enroll checkpoint row, on any tab', () => {

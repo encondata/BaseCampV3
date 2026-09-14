@@ -42,6 +42,24 @@ const ICONS: Record<KioskFeature['id'], JSX.Element> = {
       />
     </svg>
   ),
+  // A crate seen head-on: a lidded box with its two strapping bands —
+  // the shape someone standing at the kiosk is holding.
+  containers: (
+    <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <rect
+        x="4" y="11" width="32" height="23" rx="2"
+        stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round"
+      />
+      <path d="M4 17h32" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+      <path
+        d="M14 17v17M26 17v17" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
+      />
+      <path
+        d="M13 11V8a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v3"
+        stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round"
+      />
+    </svg>
+  ),
   labels: (
     <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <path
