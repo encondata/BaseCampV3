@@ -15,7 +15,7 @@ ground-up rewrite with a security-first design.
 | **Kiosk (web mode)** | React 18 · Vite · own Docker image (Caddy) | [`kiosk/`](kiosk/) |
 
 Production target: a single DigitalOcean droplet running Docker Compose
-(Caddy → api / portal containers), with managed Postgres and Spaces external.
+(Caddy → api / portal / kiosk containers), with managed Postgres and Spaces external.
 Nothing stateful lives on the droplet.
 
 ### Security design (prime directive)
