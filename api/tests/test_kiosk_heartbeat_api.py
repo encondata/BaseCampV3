@@ -104,3 +104,89 @@ async def test_heartbeat_blocked_in_read_only_mode(client, db, seeded_user):
                              json={"read_only": True})).status_code == 200
     staff = await _make(db, client, "staff", "st@test.example.com")
     assert (await client.post("/kiosk/heartbeat", headers=staff, json=BODY)).status_code == 423
+
+
+async def test_sign_in_registers_a_fresh_kiosk(client, db, seeded_user):
+    hdrs = await login(client)
+    before = datetime.now(UTC)
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json={**BODY, "sign_in": True})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["registration"] == "ok"
+    expires_at = datetime.fromisoformat(body["token_expires_at"])
+    assert abs((expires_at - (before + timedelta(days=30))).total_seconds()) < 60
+    d = await db.scalar(select(Device).where(Device.serial == "kiosk-web-aaaa"))
+    assert d.registered_at is not None
+    audits = (await db.scalars(select(AuditLog).where(AuditLog.action == "register"))).all()
+    assert len(audits) == 1
+    a = audits[0]
+    assert a.entity_type == "device" and a.entity_id == str(d.id)
+    assert a.changes["source"] == "kiosk_sign_in"
+    assert a.changes["days"] == 30
+    assert a.actor_person_id == seeded_user.id
+
+
+async def test_heartbeat_without_sign_in_does_not_register(client, db, seeded_user):
+    hdrs = await login(client)
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json=BODY)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["registration"] == "none"
+    audits = (await db.scalars(select(AuditLog).where(AuditLog.action == "register"))).all()
+    assert len(audits) == 0
+
+
+async def test_sign_in_on_an_ok_registration_changes_nothing(client, db, seeded_user):
+    hdrs = await login(client)
+    await client.post("/kiosk/heartbeat", headers=hdrs, json=BODY)
+    d = await db.scalar(select(Device).where(Device.serial == "kiosk-web-aaaa"))
+    d.token_expires_at = datetime.now(UTC) + timedelta(days=20)
+    await db.commit()
+    original_expires_at = d.token_expires_at
+
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json={**BODY, "sign_in": True})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["registration"] == "ok"
+    await db.refresh(d)
+    assert d.token_expires_at == original_expires_at
+    audits = (await db.scalars(select(AuditLog).where(AuditLog.action == "register"))).all()
+    assert len(audits) == 0
+
+
+async def test_sign_in_renews_a_soon_to_expire_registration(client, db, seeded_user):
+    hdrs = await login(client)
+    await client.post("/kiosk/heartbeat", headers=hdrs, json=BODY)
+    d = await db.scalar(select(Device).where(Device.serial == "kiosk-web-aaaa"))
+    d.token_expires_at = datetime.now(UTC) + timedelta(days=3)
+    await db.commit()
+
+    before = datetime.now(UTC)
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json={**BODY, "sign_in": True})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["registration"] == "ok"
+    expires_at = datetime.fromisoformat(body["token_expires_at"])
+    assert abs((expires_at - (before + timedelta(days=30))).total_seconds()) < 60
+    audits = (await db.scalars(select(AuditLog).where(AuditLog.action == "register"))).all()
+    assert len(audits) == 1
+    assert audits[0].changes["source"] == "kiosk_sign_in"
+    assert audits[0].changes["days"] == 30
+
+
+async def test_sign_in_renews_an_expired_registration(client, db, seeded_user):
+    hdrs = await login(client)
+    await client.post("/kiosk/heartbeat", headers=hdrs, json=BODY)
+    d = await db.scalar(select(Device).where(Device.serial == "kiosk-web-aaaa"))
+    d.token_expires_at = datetime.now(UTC) - timedelta(days=1)
+    await db.commit()
+
+    before = datetime.now(UTC)
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json={**BODY, "sign_in": True})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["registration"] == "ok"
+    expires_at = datetime.fromisoformat(body["token_expires_at"])
+    assert abs((expires_at - (before + timedelta(days=30))).total_seconds()) < 60
+    audits = (await db.scalars(select(AuditLog).where(AuditLog.action == "register"))).all()
+    assert len(audits) == 1
+    assert audits[0].changes["source"] == "kiosk_sign_in"
+    assert audits[0].changes["days"] == 30

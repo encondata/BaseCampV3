@@ -223,12 +223,13 @@ export interface HeartbeatResult {
 }
 
 export async function heartbeatRequest(body: {
-  serial: string; name: string; mode: string; version: string | null;
+  serial: string; name: string; mode: string; version: string | null; sign_in?: boolean;
 }): Promise<HeartbeatResult> {
+  const { sign_in, ...rest } = body;
   const resp = await apiFetch('/kiosk/heartbeat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    body: JSON.stringify(sign_in ? { ...rest, sign_in } : rest),
   });
   return jsonFrom<HeartbeatResult>(resp);
 }

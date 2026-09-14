@@ -15,7 +15,7 @@ import {
   installVisibilityRefresh, loginRequest, logoutRequest, onSessionEnded, refreshSession,
   type PersonOut, type RegistrationState, type SessionData, type UiPreferences,
 } from '../lib/api';
-import { startHeartbeat, type HeartbeatHandle } from '../lib/heartbeat';
+import { HEARTBEAT_MS, startHeartbeat, type HeartbeatHandle } from '../lib/heartbeat';
 
 export type KioskAuthStatus = 'loading' | 'authed' | 'anon';
 
@@ -56,6 +56,9 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<State>(LOADING);
   const [registration, setRegistration] = useState<RegistrationState | null>(null);
   const heartbeat = useRef<HeartbeatHandle | null>(null);
+  // True only for the beat right after login()/completePair() — never for a
+  // cookie restore — so the API can auto-register the kiosk on sign-in.
+  const signInRef = useRef(false);
 
   // Hard reload within the session window: the cookie restores it silently.
   useEffect(() => {
@@ -76,7 +79,8 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
       setRegistration(null);
       return;
     }
-    const handle = startHeartbeat(setRegistration);
+    const handle = startHeartbeat(setRegistration, HEARTBEAT_MS, signInRef.current);
+    signInRef.current = false;
     heartbeat.current = handle;
     return () => {
       handle.stop();
@@ -86,11 +90,15 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const data = await loginRequest(email, password);
+    signInRef.current = true;
     setState(stateFrom(data));
     return data;
   }, []);
 
-  const completePair = useCallback((data: SessionData) => setState(stateFrom(data)), []);
+  const completePair = useCallback((data: SessionData) => {
+    signInRef.current = true;
+    setState(stateFrom(data));
+  }, []);
 
   const logout = useCallback(async () => {
     heartbeat.current?.stop();

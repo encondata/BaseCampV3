@@ -9,6 +9,7 @@ import { startHeartbeat } from './heartbeat';
 beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
+  api.heartbeatRequest.mockClear();
   api.heartbeatRequest.mockResolvedValue({ device_id: 'd', name: 'K', registration: 'ok', token_expires_at: null });
 });
 afterEach(() => vi.useRealTimers());
@@ -39,5 +40,23 @@ it('keeps the last state through failures and now() beats immediately', async ()
   expect(onState).toHaveBeenCalledTimes(1);          // failure reported nothing
   await handle.now();
   expect(onState).toHaveBeenCalledTimes(2);
+  handle.stop();
+});
+
+it('marks only the very first beat as a sign-in when told to', async () => {
+  const onState = vi.fn();
+  const handle = startHeartbeat(onState, 1000, true);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(api.heartbeatRequest.mock.calls[0][0].sign_in).toBe(true);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(api.heartbeatRequest.mock.calls[1][0].sign_in).toBeUndefined();
+  handle.stop();
+});
+
+it('sends no sign_in flag when the first beat is not a sign-in', async () => {
+  const onState = vi.fn();
+  const handle = startHeartbeat(onState, 1000);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(api.heartbeatRequest.mock.calls[0][0].sign_in).toBeUndefined();
   handle.stop();
 });

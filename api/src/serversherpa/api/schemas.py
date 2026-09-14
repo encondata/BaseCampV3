@@ -189,6 +189,7 @@ class HeartbeatIn(BaseModel):
     mode: Literal["web", "laptop", "pi", "android", "ios"]
     version: str | None = Field(default=None, max_length=40)
     raw_info: dict[str, Any] = Field(default_factory=dict)
+    sign_in: bool = False
 
     @field_validator("serial", "name")
     @classmethod

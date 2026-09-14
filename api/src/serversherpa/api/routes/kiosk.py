@@ -155,6 +155,7 @@ async def deny_pair(
 # ── heartbeat (kiosk:view) ──────────────────────────────────────────
 
 REGISTRATION_SOON = timedelta(days=7)   # same threshold as the Kiosk Devices page
+KIOSK_AUTO_REGISTER_DAYS = 30   # matches the portal's Register default (devices.py::register_device)
 
 
 def registration_state(token_expires_at: datetime | None, now: datetime) -> str:
@@ -172,7 +173,10 @@ async def heartbeat(
 ) -> HeartbeatOut:
     """Upsert this kiosk's Device row by serial and stamp last_seen_at.
     Creation is audited once (self_register); later beats are telemetry.
-    Register/Renew (token_expires_at) stays a portal admin action."""
+    A sign-in beat (body.sign_in) also auto-registers the kiosk for
+    KIOSK_AUTO_REGISTER_DAYS when its registration is none, expired, or
+    within REGISTRATION_SOON of expiring; Register/Renew in the portal
+    remain available for admins."""
     now = datetime.now(UTC)
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None:
@@ -193,6 +197,16 @@ async def heartbeat(
         device.raw_info = {**(device.raw_info or {}), **body.raw_info}
         device.last_seen_at = now
         device.updated_at = now
+    if body.sign_in and registration_state(device.token_expires_at, now) in (
+        "none", "expired", "soon",
+    ):
+        device.registered_at = now
+        device.token_expires_at = now + timedelta(days=KIOSK_AUTO_REGISTER_DAYS)
+        audit(db, actor_id=actor.person.id, entity_type="device",
+              entity_id=str(device.id), action="register",
+              changes={"days": KIOSK_AUTO_REGISTER_DAYS,
+                       "token_expires_at": device.token_expires_at.isoformat(),
+                       "source": "kiosk_sign_in"})
     await db.commit()
     return HeartbeatOut(device_id=device.id, name=device.name,
                         registration=registration_state(device.token_expires_at, now),

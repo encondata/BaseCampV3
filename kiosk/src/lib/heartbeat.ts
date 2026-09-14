@@ -22,27 +22,29 @@ export interface HeartbeatHandle {
 export function startHeartbeat(
   onState: (state: RegistrationState) => void,
   intervalMs: number = HEARTBEAT_MS,
+  firstBeatIsSignIn = false,
 ): HeartbeatHandle {
   let stopped = false;
-  const beat = async () => {
+  const beat = async (signIn = false) => {
     if (stopped) return;
     const { serial, name } = getIdentity();
     try {
       const result = await heartbeatRequest({
         serial, name, mode: platform().mode, version: kioskVersion(),
+        ...(signIn ? { sign_in: true } : {}),
       });
       if (!stopped) onState(result.registration);
     } catch {
       /* keep the last known state; next tick retries */
     }
   };
-  void beat();
+  void beat(firstBeatIsSignIn);
   const timer = setInterval(() => void beat(), intervalMs);
   return {
     stop() {
       stopped = true;
       clearInterval(timer);
     },
-    now: beat,
+    now: () => beat(),
   };
 }

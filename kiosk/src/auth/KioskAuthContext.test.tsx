@@ -10,7 +10,7 @@ const api = vi.hoisted(() => ({
   installVisibilityRefresh: vi.fn(() => () => {}),
 }));
 vi.mock('../lib/api', () => api);
-const hb = vi.hoisted(() => ({ startHeartbeat: vi.fn() }));
+const hb = vi.hoisted(() => ({ startHeartbeat: vi.fn(), HEARTBEAT_MS: 60_000 }));
 vi.mock('../lib/heartbeat', () => hb);
 
 import { KioskAuthProvider, useKioskAuth } from './KioskAuthContext';
@@ -32,6 +32,9 @@ function Probe() {
       <span data-testid="reg">{a.registration ?? 'null'}</span>
       <span data-testid="can">{String(a.can('kiosk', 'view'))}</span>
       <button onClick={() => void a.login('a@x', 'pw')}>login</button>
+      <button onClick={() => a.completePair(SESSION as unknown as Parameters<typeof a.completePair>[0])}>
+        pair
+      </button>
       <button onClick={() => void a.logout()}>logout</button>
     </div>
   );
@@ -79,4 +82,25 @@ it('does not heartbeat while a password change is required', async () => {
   await act(async () => {});
   expect(screen.getByTestId('status').textContent).toBe('authed');
   expect(hb.startHeartbeat).not.toHaveBeenCalled();
+});
+
+it('marks the first heartbeat as a sign-in after login()', async () => {
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('login').click(); });
+  expect(hb.startHeartbeat.mock.calls[0][2]).toBe(true);
+});
+
+it('does not mark the heartbeat as a sign-in after a cookie restore', async () => {
+  api.refreshSession.mockResolvedValue(SESSION);
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  expect(hb.startHeartbeat.mock.calls[0][2]).toBe(false);
+});
+
+it('marks the first heartbeat as a sign-in after completePair()', async () => {
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('pair').click(); });
+  expect(hb.startHeartbeat.mock.calls[0][2]).toBe(true);
 });

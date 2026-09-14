@@ -11,7 +11,7 @@ The kiosk is the scanning-floor face of ServerSherpa. It will eventually run in 
 | Code sharing | Own app in `kiosk/`; a Vite alias `@portal` reaches into `portal/src` for **stylesheets and React-free TypeScript only**. No npm workspace, no copied tokens. |
 | Session model | Same cookie model as the portal (`ss_refresh` httpOnly cookie on the API host, in-memory access token). No body refresh tokens. |
 | Who may sign in | New permission resource `kiosk` with one action `view`. Granted by default to developer, founder, super_admin, admin, staff, worker. |
-| Kiosk identity | Each kiosk self-registers as a `Device` row (`device_type='kiosk'`) by serial, using the signed-in user's session. No pre-shared secret, no device token. Register/Renew (`token_expires_at`) stays an admin action in the portal. |
+| Kiosk identity | Each kiosk self-registers as a `Device` row (`device_type='kiosk'`) by serial, using the signed-in user's session. No pre-shared secret, no device token. Signing in registers the kiosk automatically (30 days, renewed when expired or within 7 days of expiring); anyone allowed to use the kiosk can do it. Register/Renew remain available in the portal, for registering ahead of time or renewing a kiosk nobody has signed into. |
 | Pairing transport | Kiosk polls every 2 s while a code is showing. No WebSocket or SSE. |
 
 ## App shape
@@ -88,7 +88,7 @@ State: `status: 'loading' | 'authed' | 'anon'`, `person`, `perms`, `mustChangePa
 
 ### Heartbeat (`src/lib/heartbeat.ts`)
 
-`startHeartbeat(onState)` posts immediately, then every 60 s, `{serial, name, mode, version}` to `POST /kiosk/heartbeat`; calls `onState(response.registration)` on success; on any failure (network, 423 read-only, 403) it keeps the last known state and retries next tick. Returns a `stop()` that clears the timer. It also re-posts immediately when the kiosk name changes (settings page calls `heartbeatNow()`).
+`startHeartbeat(onState, intervalMs, firstBeatIsSignIn)` posts immediately, then every 60 s, `{serial, name, mode, version}` to `POST /kiosk/heartbeat`; calls `onState(response.registration)` on success; on any failure (network, 423 read-only, 403) it keeps the last known state and retries next tick. Returns a `stop()` that clears the timer. It also re-posts immediately when the kiosk name changes (settings page calls `heartbeatNow()`). When `firstBeatIsSignIn` is true (set by `KioskAuthContext` only for the beat that follows `login()`/`completePair()`, never a cookie restore), that one beat only adds `sign_in: true` to the body — see the API's `### Heartbeat` section below for what the server does with it.
 
 ### Shell and screens
 
@@ -179,11 +179,12 @@ Security notes, recorded so the review does not re-derive them: 40-bit codes wit
 
 ### Heartbeat
 
-`POST /kiosk/heartbeat` — requires `kiosk:view`. Body `HeartbeatIn {serial: str, name: str, mode: Literal["web","laptop","pi","android","ios"], version: str | None, raw_info: dict = {}}`.
+`POST /kiosk/heartbeat` — requires `kiosk:view`. Body `HeartbeatIn {serial: str, name: str, mode: Literal["web","laptop","pi","android","ios"], version: str | None, raw_info: dict = {}, sign_in: bool = False}`.
 
 - Look up `Device` by `serial` (the existing partial unique index `devices_serial_uniq` covers this). None → insert `Device(device_type="kiosk", name, serial, sub_type=mode, version, raw_info, last_seen_at=now)`. Found with `device_type != "kiosk"` → 409 `serial_conflict`. Found kiosk → update `name`, `sub_type`, `version`, `raw_info` (merged, kiosk keys win), `last_seen_at`, `updated_at`.
 - Returns `HeartbeatOut {device_id, name, registration: "ok"|"soon"|"expired"|"none", token_expires_at}` using the Kiosk Devices thresholds (7 days).
 - Not audited (a heartbeat is telemetry); creation is audited once (`action="self_register"`, actor = signed-in person).
+- **Sign-in auto-registers the kiosk.** `sign_in` is true only on the one heartbeat the kiosk sends right after a person signs in (password login or a completed pairing) — never on a cookie restore, never on a periodic tick. When `sign_in` is true and the kiosk's registration is not `"ok"` (i.e. `"none"`, `"expired"`, or `"soon"` — within 7 days of expiring), the heartbeat stamps `registered_at = now` and `token_expires_at = now + 30 days` (`KIOSK_AUTO_REGISTER_DAYS`, matching the portal's Register default) and writes an audit row exactly like the portal's Register action (`action="register"`, `entity_type="device"`) but `changes` carries an extra `source: "kiosk_sign_in"` key and the actor is the signed-in kiosk user. A sign-in on a kiosk that is already `"ok"` (more than 7 days left) changes nothing and audits nothing.
 
 ### Portal
 
@@ -247,6 +248,7 @@ Built on branch `kiosk-web` via `docs/superpowers/plans/2026-09-13-kiosk-web.md`
 - **Heartbeat has no serial ownership proof:** any `kiosk:view` holder can rename any kiosk by posting its serial in a heartbeat. Accepted for this pass — device tokens/enrollment secrets are out of scope (see "Out of scope").
 - **`.dockerignore` lives at the repo root** (the Docker build context for `kiosk/Dockerfile -f .. .`), not under `kiosk/`.
 - 2026-09-13 (Jimmy): the segmented method switch was replaced — email & password is the normal form; alternates sit behind a button below it.
+- 2026-09-13 (Jimmy): "Register automatically at sign-in — first sign-in on a kiosk stamps a 30-day registration (same as clicking Register); later sign-ins renew it only when it has expired or is within 7 days of expiring. Anyone allowed to use the kiosk can do it."
 
 Live-verified 2026-09-13 against the worktree API (dev DB at 0061): email/password sign-in, heartbeat creating "Kiosk 4716 · Web" on Kiosk Devices and the chip flipping to Registered after Register from the portal, link-with-phone approve (kiosk on Home within one poll) and deny ("Sign-in was declined on the phone."), the move-password placeholder (no request), and the Docker/compose build on 8090 signing in with the same-site cookie. Not live-verified: the `kiosk_not_allowed` refusal in the UI (covered by `tests/test_auth_kiosk_login.py`), a real phone camera scanning the QR, and prod cross-subdomain cookies (`SS_COOKIE_DOMAIN`).
 
