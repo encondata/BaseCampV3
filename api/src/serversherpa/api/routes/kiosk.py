@@ -21,7 +21,8 @@ from serversherpa.api.routes.auth import session_response
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
     HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut, KioskClockInIn,
-    KioskClockOutIn, KioskPeopleSyncOut, KioskPersonOut, KioskScanBatchIn,
+    KioskClockOutIn, KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
+    KioskScanBatchIn,
     KioskScanBatchOut, KioskScanRejected, KioskSetupIn, KioskSetupOut,
     KioskSignOutIn, KioskTimeclockEntry, KioskTimeclockLastEntry,
     KioskTimeclockPerson, KioskTimeclockStatusOut, LabelVocabOut,
@@ -797,6 +798,53 @@ async def timeclock_clock_out(
                    "device_id": str(device.id)})
     await db.commit()
     return await _status_out(db, person, None, last_entry=entry)
+
+
+# ── printer maintenance (kiosk:view) ─────────────────────────────────
+
+@router.post("/printer-events", status_code=204)
+async def record_printer_event(
+    body: KioskPrinterEventIn, request: Request, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> None:
+    """Record printer maintenance a kiosk performed over WebUSB. The work
+    itself is browser-to-printer and never touches the server, so this
+    endpoint exists purely to leave a trail: one audit_log row against
+    the kiosk's Device, which surfaces on the portal's /audit page and in
+    the actor's own /auth/me/activity.
+
+    `event` is an enum so later printer maintenance — a head cleaning, a
+    firmware push — becomes another member rather than another endpoint;
+    `factory_reset` is its only member today.
+
+    Failures are recorded as well as successes: a reset that left a
+    printer stuck halfway is exactly what an admin wants to find later,
+    so `outcome="failed"` carries the step it died on and the message the
+    operator saw. Null-valued fields are left out of `changes` rather
+    than stored as nulls, so the audit viewer's change table shows only
+    what actually happened.
+
+    Read-only mode does NOT block this (see READ_ONLY_EXEMPT_PATHS): the
+    physical reset already happened, and refusing to record it during a
+    maintenance freeze loses the trail this endpoint exists to create.
+    Nothing here but an append-only audit row is written, which is safe
+    while frozen — a deliberate difference from /kiosk/scans and
+    /kiosk/timeclock/*, whose writes are real data the kiosk can retry.
+    """
+    device = await _kiosk_device(db, body.serial)
+    changes = {"outcome": body.outcome,
+               "printer_model": body.printer_model,
+               "printer_firmware": body.printer_firmware,
+               "calibrated": body.calibrated,
+               "failed_step": body.failed_step,
+               "error": body.error}
+    # last_seen_at only: the kiosk's configuration did not change.
+    device.last_seen_at = datetime.now(UTC)
+    audit(db, actor_id=actor.person.id, entity_type="device",
+          entity_id=str(device.id), action=f"kiosk_printer_{body.event}",
+          changes={k: v for k, v in changes.items() if v is not None},
+          ip=client_ip(request))
+    await db.commit()
 
 
 # ── label vocabulary (kiosk:view) ────────────────────────────────────

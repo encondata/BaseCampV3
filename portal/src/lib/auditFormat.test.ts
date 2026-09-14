@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { entityHref } from './auditFormat';
+import { actionLabel, entityHref, targetLabel } from './auditFormat';
 
 const row = (entity_type: string, entity_id: string | null) =>
   ({ action: 'update', entity_type, entity_id, changes: {} });
@@ -23,5 +23,21 @@ describe('entityHref', () => {
     expect(entityHref(row('auth', 'a@b.com'))).toBeNull();
     expect(entityHref(row('status_value', 'site:active'))).toBeNull();
     expect(entityHref(row('site', null))).toBeNull();
+  });
+});
+
+describe('labels', () => {
+  it('names a kiosk printer factory reset', () => {
+    expect(actionLabel({ ...row('device', 'd-1'), action: 'kiosk_printer_factory_reset' }))
+      .toBe('Printer factory reset');
+  });
+  it('falls back to a readable action for anything unmapped', () => {
+    expect(actionLabel({ ...row('device', 'd-1'), action: 'kiosk_printer_head_clean' }))
+      .toBe('kiosk printer head clean');
+  });
+  it("shows the kiosk's name as the target of a device row", () => {
+    expect(targetLabel({ ...row('device', 'd-1'), entity_name: 'Dock Kiosk' }))
+      .toBe("device 'Dock Kiosk'");
+    expect(targetLabel(row('device', 'd-1'))).toBe('device');
   });
 });

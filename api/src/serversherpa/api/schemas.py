@@ -2399,6 +2399,30 @@ class KioskScanBatchOut(BaseModel):
     rejected: list[KioskScanRejected]
 
 
+# ── kiosk printer maintenance ──
+
+class KioskPrinterEventIn(BaseModel):
+    """One piece of printer maintenance a kiosk performed over WebUSB.
+    `event` is an enum with a single member today (`factory_reset`) so
+    later maintenance events — a head cleaning, a firmware push — become
+    another member here rather than another endpoint.
+
+    `printer_model` / `printer_firmware` are whatever `~HI` reported and
+    are null when the printer was never identified; `failed_step` and
+    `error` describe a run that did not finish, and are null for one that
+    did. `error` is a message meant for a human, capped so a runaway
+    device string cannot bloat the audit log."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    event: Literal["factory_reset"]
+    outcome: Literal["completed", "failed"]
+    printer_model: str | None = Field(default=None, max_length=120)
+    printer_firmware: str | None = Field(default=None, max_length=120)
+    calibrated: bool = False
+    failed_step: str | None = Field(default=None, max_length=60)
+    error: str | None = Field(default=None, max_length=500)
+
+
 # ── kiosk timeclock ──
 
 class KioskTimeclockPerson(BaseModel):

@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import (
-    Asset, AssetModel, Client, Partner, Person, ProcessedScan, Site,
+    Asset, AssetModel, Client, Device, Partner, Person, ProcessedScan, Site,
 )
 
 Ref = tuple[str, str]
@@ -83,6 +83,17 @@ async def resolve_entity_refs(db: AsyncSession, refs: set[Ref]) -> Resolved:
             out[("asset_model", str(m.id))] = {
                 "name": f"{m.make} {m.model}",
                 "summary": {"Category": m.category or "—"},
+            }
+
+    if by_type.get("device"):
+        # kiosks, readers and routers all live in `devices`; the audit page's
+        # Target column shows the device's name (a kiosk's friendly name).
+        for d in await db.scalars(
+                select(Device).where(Device.id.in_(by_type["device"]))):
+            out[("device", str(d.id))] = {
+                "name": d.name,
+                "summary": {"Type": d.device_type,
+                            "Serial": d.serial or "—"},
             }
 
     if by_type.get("processed_scan"):

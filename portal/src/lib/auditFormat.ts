@@ -27,6 +27,7 @@ export const ACTION_LABELS: Record<string, string> = {
   restore: 'Unarchived',
   'clients.set': 'Changed client links',
   'survey.update': 'Updated survey',
+  kiosk_printer_factory_reset: 'Printer factory reset',
   'godmode.enable': 'Enabled god mode',
 };
 
@@ -47,6 +48,7 @@ export const ENTITY_LABELS: Record<string, string> = {
   asset_model: 'asset model',
   container: 'container',
   processed_scan: 'processed scan',
+  device: 'device',
 };
 
 export function actionLabel(row: AuditRowLike): string {

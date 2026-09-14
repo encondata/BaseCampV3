@@ -83,9 +83,18 @@ MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # turn it off. Everything else under /auth/me (profile edits) freezes like
 # any other write. /kiosk/pair* is a sign-in (approve/deny on the phone) —
 # never frozen. /kiosk/heartbeat is NOT exempt.
+#
+# /kiosk/printer-events is exempt for a different reason: the printer was
+# already factory reset out in the warehouse, and the only thing this call
+# writes is the append-only audit row that records it. Refusing it during a
+# maintenance freeze would not undo the reset — it would just lose the
+# trail the feature exists to create. Contrast /kiosk/scans and
+# /kiosk/timeclock/*, which stay frozen because their writes are real data
+# the kiosk can hold onto and retry once the freeze lifts.
 READ_ONLY_EXEMPT_PATHS = frozenset({
     "/auth/login", "/auth/refresh", "/auth/logout",
     "/auth/me/preferences", "/auth/me/password", "/system/admin",
+    "/kiosk/printer-events",
 })
 READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/kiosk/pair")
 
@@ -120,9 +129,12 @@ async def enforce_read_only(db: AsyncSession, request: Request,
 # neither is a mutating route and so isn't already covered by
 # READ_ONLY_EXEMPT_PATHS. `/system/admin` is deliberately NOT inherited:
 # read-only exempts it because whoever can turn read-only on can turn it
-# off, which says nothing about a temp-password admin session.
+# off, which says nothing about a temp-password admin session. Neither is
+# `/kiosk/printer-events`: read-only exempts it so an already-performed
+# reset still gets recorded, which likewise says nothing about a session
+# that has not finished signing in.
 FORCED_CHANGE_EXEMPT_PATHS = (
-    (READ_ONLY_EXEMPT_PATHS - {"/system/admin"})
+    (READ_ONLY_EXEMPT_PATHS - {"/system/admin", "/kiosk/printer-events"})
     | {"/auth/me", "/auth/me/sessions"}
 )
 FORCED_CHANGE_EXEMPT_PREFIXES = READ_ONLY_EXEMPT_PREFIXES
