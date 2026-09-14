@@ -60,6 +60,23 @@ const ICONS: Record<KioskFeature['id'], JSX.Element> = {
       />
     </svg>
   ),
+  // A tractor unit and its box trailer seen from the side, on two
+  // wheels: what the operator walks up to on the dock.
+  trucks: (
+    <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path
+        d="M2 10h19v17H2V10z"
+        stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round"
+      />
+      <path
+        d="M21 16h7l5 6v5h-12v-11z"
+        stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round"
+      />
+      <circle cx="12" cy="30" r="3.5" stroke="currentColor" strokeWidth="2.5" />
+      <circle cx="28" cy="30" r="3.5" stroke="currentColor" strokeWidth="2.5" />
+      <path d="M2 27h6.5M15.5 27h9M31.5 27H38" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+    </svg>
+  ),
   labels: (
     <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <path

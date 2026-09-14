@@ -5,14 +5,19 @@
  *
  * Each one is a key from the portal's asset status vocabulary, the same
  * list Kiosk Setup's scan-type step offers (`getSetupOptions()`'s
- * `scan_types`). There are three today and they differ only in their
+ * `scan_types`). There are five today and they differ only in their
  * storage key, their default, and their label, so they share one module
- * rather than three near-copies of it:
+ * rather than five near-copies of it:
  *
  *   - `enroll` — RFID Enroll, default `pre_stage` ("we have the tag, the
  *     asset is ready to move", which is what enrollment means).
  *   - `containerPack` — Containers › Pack, default `in_container`.
  *   - `containerUnpack` — Containers › Unpack, default `un_pack`.
+ *   - `truckLoad` — Trucks › Load, default `on_truck` (the house
+ *     vocabulary's own word for a crate that is riding a trailer).
+ *   - `truckUnload` — Trucks › Unload, default `received` (coming off a
+ *     truck is an arrival; `un_pack` belongs to opening the crate, which
+ *     is a separate scan on the Containers screen).
  *
  * The rows that set them live on Settings › Admin on purpose: each
  * decides what every scan of its kind on this kiosk records, and a
@@ -26,7 +31,8 @@
 
 import { useSyncExternalStore } from 'react';
 
-export type CheckpointId = 'enroll' | 'containerPack' | 'containerUnpack';
+export type CheckpointId =
+  'enroll' | 'containerPack' | 'containerUnpack' | 'truckLoad' | 'truckUnload';
 
 interface CheckpointDef {
   /** The localStorage key. `enroll`'s predates this module and is kept
@@ -39,6 +45,8 @@ const DEFS: Record<CheckpointId, CheckpointDef> = {
   enroll: { storageKey: 'ss.kiosk.enrollStatus', fallback: 'pre_stage' },
   containerPack: { storageKey: 'ss.kiosk.containerPackStatus', fallback: 'in_container' },
   containerUnpack: { storageKey: 'ss.kiosk.containerUnpackStatus', fallback: 'un_pack' },
+  truckLoad: { storageKey: 'ss.kiosk.truckLoadStatus', fallback: 'on_truck' },
+  truckUnload: { storageKey: 'ss.kiosk.truckUnloadStatus', fallback: 'received' },
 };
 
 export function defaultCheckpoint(id: CheckpointId): string {
@@ -60,7 +68,7 @@ export function readCheckpoint(id: CheckpointId): string {
 
 /** Persists the choice and notifies subscribers; false when storage
  *  refuses. Every subscriber is notified, not just this checkpoint's —
- *  there are three keys and a handful of listeners, so a precise
+ *  there are five keys and a handful of listeners, so a precise
  *  fan-out would cost more than the re-read it saves. */
 export function writeCheckpoint(id: CheckpointId, key: string): boolean {
   try {

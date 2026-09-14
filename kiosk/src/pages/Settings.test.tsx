@@ -7,7 +7,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const syncMock = vi.hoisted(() => ({
-  status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; containers?: number; syncedAt?: string },
+  status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; containers?: number; trucks?: number; syncedAt?: string },
   clearDb: vi.fn(() => Promise.resolve()),
   resetSyncStatus: vi.fn(),
 }));
@@ -79,6 +79,8 @@ beforeEach(() => {
       { key: 'cage_exit', label: 'RFID 1 - Cage Exit', color: '#996633' },
       { key: 'in_container', label: 'In Container', color: '#2e7d32' },
       { key: 'un_pack', label: 'Un-Pack', color: '#8a4b2a' },
+      { key: 'on_truck', label: 'On Truck', color: '#4b5cff' },
+      { key: 'received', label: 'Received', color: '#1f7a5a' },
     ],
   });
   audioContexts.mockClear();
@@ -225,12 +227,12 @@ it('the Local data row is absent until developer mode is switched on', () => {
 it('a developer with dev mode on sees the local data counts and can clear them', async () => {
   auth.isAdmin = true;
   auth.isDeveloper = true;
-  syncMock.status = { phase: 'done', assets: 15, people: 4, containers: 6, syncedAt: '2026-09-13T18:14:00Z' };
+  syncMock.status = { phase: 'done', assets: 15, people: 4, containers: 6, trucks: 2, syncedAt: '2026-09-13T18:14:00Z' };
   renderAt('/settings?tab=developer');
   await userEvent.click(screen.getByRole('switch', { name: 'Developer mode' }));
 
   expect(screen.getByText('Local data')).toBeTruthy();
-  expect(screen.getByText(/15 assets · 4 people · 6 containers · synced /)).toBeTruthy();
+  expect(screen.getByText(/15 assets · 4 people · 6 containers · 2 trucks · synced /)).toBeTruthy();
 
   await userEvent.click(screen.getByRole('button', { name: 'Clear local data' }));
   expect(syncMock.clearDb).toHaveBeenCalled();
@@ -240,7 +242,7 @@ it('a developer with dev mode on sees the local data counts and can clear them',
 it('a clearDb failure shows an inline error and leaves the status untouched', async () => {
   auth.isAdmin = true;
   auth.isDeveloper = true;
-  syncMock.status = { phase: 'done', assets: 15, people: 4, containers: 6, syncedAt: '2026-09-13T18:14:00Z' };
+  syncMock.status = { phase: 'done', assets: 15, people: 4, containers: 6, trucks: 2, syncedAt: '2026-09-13T18:14:00Z' };
   syncMock.clearDb.mockRejectedValue(new Error('boom'));
   renderAt('/settings?tab=developer');
   await userEvent.click(screen.getByRole('switch', { name: 'Developer mode' }));
@@ -249,7 +251,7 @@ it('a clearDb failure shows an inline error and leaves the status untouched', as
 
   expect((await screen.findByRole('alert')).textContent).toBe("Couldn't clear local data.");
   expect(syncMock.resetSyncStatus).not.toHaveBeenCalled();
-  expect(screen.getByText(/15 assets · 4 people · 6 containers · synced /)).toBeTruthy();
+  expect(screen.getByText(/15 assets · 4 people · 6 containers · 2 trucks · synced /)).toBeTruthy();
 });
 
 it('the Local data row reads "Nothing downloaded yet" before a sync', async () => {
@@ -359,10 +361,11 @@ it('the Admin tab offers the RFID Enroll checkpoint, defaulting to Pre-Stage, an
   renderAt('/settings?tab=admin');
 
   const select = await screen.findByLabelText('RFID Enroll checkpoint') as HTMLSelectElement;
-  await waitFor(() => expect(select.options.length).toBe(4));
+  await waitFor(() => expect(select.options.length).toBe(6));
   expect(select.value).toBe('pre_stage');
   expect([...select.options].map((o) => o.textContent))
-    .toEqual(['Pre-Stage', 'RFID 1 - Cage Exit', 'In Container', 'Un-Pack']);
+    .toEqual(['Pre-Stage', 'RFID 1 - Cage Exit', 'In Container', 'Un-Pack',
+      'On Truck', 'Received']);
   expect(screen.getByText('The scan type recorded when a tag is enrolled.')).toBeTruthy();
 
   await userEvent.selectOptions(select, 'cage_exit');
@@ -385,7 +388,7 @@ it('the Admin tab offers the two container checkpoints, with their own defaults'
 
   const pack = await screen.findByLabelText('Container pack checkpoint') as HTMLSelectElement;
   const unpack = screen.getByLabelText('Container unpack checkpoint') as HTMLSelectElement;
-  await waitFor(() => expect(pack.options.length).toBe(4));
+  await waitFor(() => expect(pack.options.length).toBe(6));
   expect(pack.value).toBe('in_container');
   expect(unpack.value).toBe('un_pack');
   expect(screen.getByText(
@@ -404,6 +407,39 @@ it('the Admin tab offers the two container checkpoints, with their own defaults'
   expect((screen.getByLabelText('RFID Enroll checkpoint') as HTMLSelectElement).value)
     .toBe('pre_stage');
   expect(localStorage.getItem('ss.kiosk.enrollStatus')).toBeNull();
+});
+
+it('the Admin tab offers the two truck checkpoints, with their own defaults', async () => {
+  auth.isAdmin = true;
+  renderAt('/settings?tab=admin');
+
+  const load = await screen.findByLabelText('Truck load checkpoint') as HTMLSelectElement;
+  const unload = screen.getByLabelText('Truck unload checkpoint') as HTMLSelectElement;
+  await waitFor(() => expect(load.options.length).toBe(6));
+  expect(load.value).toBe('on_truck');
+  expect(unload.value).toBe('received');
+  expect(screen.getByText(
+    'The scan type recorded when a container is loaded onto a truck.')).toBeTruthy();
+  expect(screen.getByText(
+    'The scan type recorded when a container is unloaded off a truck.')).toBeTruthy();
+
+  await userEvent.selectOptions(load, 'cage_exit');
+  expect(localStorage.getItem('ss.kiosk.truckLoadStatus')).toBe('cage_exit');
+  await userEvent.selectOptions(unload, 'un_pack');
+  expect(localStorage.getItem('ss.kiosk.truckUnloadStatus')).toBe('un_pack');
+
+  // Each row owns its own key: setting one never moves the others.
+  expect((screen.getByLabelText('Truck load checkpoint') as HTMLSelectElement).value)
+    .toBe('cage_exit');
+  expect((screen.getByLabelText('Container pack checkpoint') as HTMLSelectElement).value)
+    .toBe('in_container');
+  expect(localStorage.getItem('ss.kiosk.containerPackStatus')).toBeNull();
+});
+
+it('a worker never sees the truck checkpoint rows either', () => {
+  renderAt('/settings?tab=admin');
+  expect(screen.queryByLabelText('Truck load checkpoint')).toBeNull();
+  expect(screen.queryByLabelText('Truck unload checkpoint')).toBeNull();
 });
 
 it('a worker never sees the container checkpoint rows either', () => {

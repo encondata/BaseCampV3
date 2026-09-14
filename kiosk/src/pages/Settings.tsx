@@ -33,9 +33,9 @@ import { SETUP_STATES, setupStateLabel, useKioskSetupState } from '../lib/setupS
 import { formatSyncedAt, resetSyncStatus, useSyncStatus } from '../lib/sync';
 
 /** The Admin tab's checkpoint rows: one `<select>` per kiosk-local
- *  checkpoint, all reading the same `scan_types` vocabulary. Three rows
+ *  checkpoint, all reading the same `scan_types` vocabulary. Five rows
  *  that differ only in label and hint, so they share one component
- *  rather than three near-copies of the same markup. */
+ *  rather than five near-copies of the same markup. */
 interface CheckpointRowDef {
   id: CheckpointId;
   label: string;
@@ -61,6 +61,18 @@ const CHECKPOINT_ROWS: CheckpointRowDef[] = [
     label: 'Container unpack checkpoint',
     hint: 'The scan type recorded when an asset is unpacked from a container.',
     selectId: 'container-unpack-status-select',
+  },
+  {
+    id: 'truckLoad',
+    label: 'Truck load checkpoint',
+    hint: 'The scan type recorded when a container is loaded onto a truck.',
+    selectId: 'truck-load-status-select',
+  },
+  {
+    id: 'truckUnload',
+    label: 'Truck unload checkpoint',
+    hint: 'The scan type recorded when a container is unloaded off a truck.',
+    selectId: 'truck-unload-status-select',
   },
 ];
 
@@ -216,7 +228,7 @@ export default function Settings() {
         )}
         {active.id === 'sound' && <SoundPanel />}
         {active.id === 'admin' && scanTypesError && (
-          // One note for the tab, not one per row: all three selects read
+          // One note for the tab, not one per row: all five selects read
           // the same vocabulary, so they fail together.
           <p className="form-error" role="alert">
             Couldn&apos;t load the checkpoint list. The stored choice still applies.
@@ -273,6 +285,7 @@ export default function Settings() {
                 {sync.assets !== undefined && sync.people !== undefined
                   ? `${sync.assets} assets · ${sync.people} people`
                     + ` · ${sync.containers ?? 0} containers`
+                    + ` · ${sync.trucks ?? 0} trucks`
                     + (sync.syncedAt ? ` · synced ${formatSyncedAt(sync.syncedAt)}` : '')
                   : 'Nothing downloaded yet.'}
               </p>

@@ -18,10 +18,12 @@ import PrinterTools from './pages/PrinterTools';
 import Scan from './pages/Scan';
 import Settings from './pages/Settings';
 import Timeclock from './pages/Timeclock';
+import Trucks from './pages/Trucks';
 
 const SCAN = FEATURES.find((f) => f.id === 'scan')!;
 const ENROLL = FEATURES.find((f) => f.id === 'enroll')!;
 const CONTAINERS = FEATURES.find((f) => f.id === 'containers')!;
+const TRUCKS = FEATURES.find((f) => f.id === 'trucks')!;
 const LABELS = FEATURES.find((f) => f.id === 'labels')!;
 const TIMECLOCK = FEATURES.find((f) => f.id === 'timeclock')!;
 
@@ -68,6 +70,17 @@ export default function App() {
               <KioskGuard>
                 <SetupGate feature={CONTAINERS}>
                   <KioskShell><Containers /></KioskShell>
+                </SetupGate>
+              </KioskGuard>
+            )}
+          />
+          {/* Trucks is a real screen too — same guards as Scanning. */}
+          <Route
+            path={TRUCKS.path}
+            element={(
+              <KioskGuard>
+                <SetupGate feature={TRUCKS}>
+                  <KioskShell><Trucks /></KioskShell>
                 </SetupGate>
               </KioskGuard>
             )}

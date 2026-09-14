@@ -321,6 +321,9 @@
 .setup-card-meta { font-size: 13px; color: var(--text-mute); }
 .setup-card-sites { font-size: 13px; color: var(--text-mute); }
 .setup-card .dot { width: 14px; height: 14px; border-radius: 50%; flex: none; }
+/* A card is a grid, so its children stretch by default — a status chip
+   stretched to the full card width reads as a field, not a chip. */
+.setup-card .chip { justify-self: start; }
 
 /* notifications.css's .pf-form select rule isn't imported by the kiosk
    (main.tsx doesn't pull in notifications.css) — restate a minimal,
@@ -670,3 +673,11 @@
 .ct-list td:nth-last-child(2), .ct-list th:nth-last-child(2) { width: 1%; white-space: nowrap; }
 .ct-chip { font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
 .ct-moved { display: block; font-size: 12px; color: var(--text-mute); margin-top: 2px; }
+
+/* Trucks' step one: the filter over the truck cards. `.dir-search` is
+   the portal's directory toolbar input; here it stands alone above a
+   `.setup-cards` grid, so it takes the full card width on a kiosk rather
+   than the narrow trailing width it has in a portal toolbar. */
+.local-toolbar.tk-filter { margin: 10px 0 0; }
+.local-toolbar.tk-filter .dir-search { flex: 1 1 auto; max-width: 520px; margin-left: 0; }
+.local-toolbar.tk-filter .dir-search input { width: 100%; font-size: 16px; padding: 10px 12px 10px 34px; }
