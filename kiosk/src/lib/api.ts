@@ -250,6 +250,37 @@ export async function signOutRequest(serial: string): Promise<void> {
   }
 }
 
+// ── kiosk setup wizard ──────────────────────────────────────────────
+
+export interface SetupOptions {
+  initiatives: { id: string; name: string; status: string }[];
+  scan_types: { key: string; label: string; color: string }[];
+}
+
+export interface KioskSetupResult {
+  device_id: string;
+  initiative_id: string;
+  initiative_name: string;
+  scan_status: string;
+  scan_status_label: string;
+}
+
+export async function getSetupOptions(): Promise<SetupOptions> {
+  const resp = await apiFetch('/kiosk/setup-options');
+  return jsonFrom<SetupOptions>(resp);
+}
+
+export async function submitKioskSetup(body: {
+  serial: string; initiative_id: string; scan_status: string;
+}): Promise<KioskSetupResult> {
+  const resp = await apiFetch('/kiosk/setup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return jsonFrom<KioskSetupResult>(resp);
+}
+
 // ── public system status (login banners) ────────────────────────────
 
 export const DEFAULT_SYSTEM_STATUS: SystemStatus = {

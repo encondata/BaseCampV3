@@ -28,6 +28,7 @@ const auth = vi.hoisted(() => ({
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
 import { getIdentity } from '../lib/identity';
+import { writeKioskSetup } from '../lib/kioskSetup';
 import { writeSetupState } from '../lib/setupState';
 import KioskShell from './KioskShell';
 
@@ -187,4 +188,30 @@ it('footer shows "Complete" when kiosk setup state is complete', () => {
   const footer = screen.getByRole('contentinfo');
   expect(footer.textContent ?? '').toContain('Complete');
   expect(document.querySelector('.kiosk-foot-setup.is-complete')).toBeTruthy();
+});
+
+it('footer shows Move + Scan items after Setup when a selection is saved', () => {
+  writeKioskSetup({
+    initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
+    scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+  });
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const footer = screen.getByRole('contentinfo');
+  const text = footer.textContent ?? '';
+  expect(text).toContain('NAP11 Hall Migration (demo)');
+  expect(text).toContain('RFID 1 - Cage Exit');
+});
+
+it('footer omits Move + Scan items when no selection is saved', () => {
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const footer = screen.getByRole('contentinfo');
+  expect(footer.textContent ?? '').not.toContain('NAP11 Hall Migration (demo)');
 });

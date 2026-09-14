@@ -19,6 +19,7 @@ import { kioskVersion } from '../lib/config';
 import { useDevMode } from '../lib/devMode';
 import { FEATURES } from '../lib/features';
 import { getIdentity } from '../lib/identity';
+import { useKioskSetup } from '../lib/kioskSetup';
 import { platform } from '../lib/platform';
 import { setupStateLabel, useKioskSetupState, type KioskSetupState } from '../lib/setupState';
 
@@ -41,6 +42,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const authed = status === 'authed';
   const [devMode] = useDevMode();
   const [setupState] = useKioskSetupState();
+  const [kioskSetup] = useKioskSetup();
 
   useEffect(() => {
     applyPreferences(preferences ?? DEFAULT_PREFERENCES);
@@ -66,6 +68,12 @@ export default function KioskShell({ children }: { children: ReactNode }) {
     );
   }
   footItems.push({ label: 'Setup', value: setupStateLabel(setupState), className: SETUP_FOOT_CLASS[setupState] });
+  if (kioskSetup) {
+    footItems.push(
+      { label: 'Move', value: kioskSetup.initiativeName },
+      { label: 'Scan', value: kioskSetup.scanLabel },
+    );
+  }
 
   return (
     <div className="portal-shell kiosk-shell">
