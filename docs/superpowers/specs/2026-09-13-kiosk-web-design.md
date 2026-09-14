@@ -96,14 +96,15 @@ State: `status: 'loading' | 'authed' | 'anon'`, `person`, `perms`, `mustChangePa
 
 - `.kiosk-top`: logo mark + wordmark `Server<em>Sherpa</em>` + `.kiosk-mode` chip "Kiosk · Web"; center: kiosk name (mono, click → `/settings`); right: registration chip (`Registered` green / `Expires soon` amber / `Expired` red / `Unregistered` neutral, using the portal's `.chip.c-*` classes and the same `tokenExpiryState` thresholds as the Kiosk Devices page: ok > 7 d, soon ≤ 7 d, expired past, none null), user avatar + display name, `Sign out` button (`.btn-ghost`).
 - `.kiosk-main`: the routed page in a `.portal-page`.
+- `.kiosk-foot`: a one-line mono status bar, the shell's third grid row (`.portal-shell.kiosk-shell` is `grid-template-rows: auto minmax(0, 1fr) auto`), items separated by a `·` (`.kiosk-foot-sep`): Kiosk name, Mode, Version, and — signed in only — Signed in as, Session ends (local time via `toLocaleString()`), Registration (`Checking…` while `registration` is still null). Signed out (the Settings page when anon) it shows only Kiosk, Mode, and Version.
 
 No side nav, no command palette, no notifications panel. The kiosk is full-width.
 
-**Home (`/`)**: eyebrow "Kiosk", title "Ready", hint "Scanning arrives in a later update." One card with kiosk name, mode, signed-in person, session ends at (local time), registration state. Placeholder only.
+**Home (`/`)** is launcher-only: eyebrow, title, and the feature tiles. The kiosk identity facts that once lived on Home now live in the shell's `.kiosk-foot` footer, visible from every screen.
 
 ### Home launcher and feature placeholders (2026-09-13)
 
-Home became a launcher: eyebrow "Kiosk", title "What would you like to do?", then a `.kiosk-launcher` grid of `.kiosk-tile` links — one per entry in a new `src/lib/features.ts` registry (`FEATURES: {id, path, title, blurb}[]`) — each with a 40 px inline SVG icon, a title, and a blurb: Scanning (`/scan`, a barcode glyph), Label Printing (`/labels`, a tag), Timeclock (`/timeclock`, a clock). The identity facts that used to be the whole page move below the tiles as a compact `dl.kiosk-facts.kiosk-facts-compact` (same markup and values, smaller footprint).
+Home became a launcher: eyebrow "Kiosk", title "What would you like to do?", then a `.kiosk-launcher` grid of `.kiosk-tile` links — one per entry in a new `src/lib/features.ts` registry (`FEATURES: {id, path, title, blurb}[]`) — each with a 40 px inline SVG icon, a title, and a blurb: Scanning (`/scan`, a barcode glyph), Label Printing (`/labels`, a tag), Timeclock (`/timeclock`, a clock). Home is launcher-only now — the identity facts that used to be the whole page, then a compact strip below the tiles, moved again: they live in the shell's `.kiosk-foot` footer (see "Shell and screens").
 
 Each feature gets a route in `App.tsx` — `/scan`, `/labels`, `/timeclock`, mapped over `FEATURES` — wrapped in `KioskGuard` + `KioskShell` exactly like `/`. All three render the same `FeaturePage` component (`{feature}` prop): `.portal-page` with eyebrow "Kiosk · {title}", the feature title, hint "Coming soon. {blurb}", and a dashed `.kiosk-placeholder` card reading "This feature is not available yet." with a "Back to home" link. `*` still falls back to `/`.
 
@@ -265,6 +266,7 @@ Built on branch `kiosk-web` via `docs/superpowers/plans/2026-09-13-kiosk-web.md`
 - 2026-09-13 (Jimmy): "Register automatically at sign-in — first sign-in on a kiosk stamps a 30-day registration (same as clicking Register); later sign-ins renew it only when it has expired or is within 7 days of expiring. Anyone allowed to use the kiosk can do it."
 - 2026-09-13 (Jimmy): Kiosk Devices shows the signed-in user and login type (migration 0062).
 - 2026-09-13 (Jimmy): first features as placeholders — Scanning, Label Printing, Timeclock.
+- 2026-09-13 (Jimmy): kiosk facts moved from Home cards to a footer status line.
 
 Live-verified 2026-09-13 against the worktree API (dev DB at 0061): email/password sign-in, heartbeat creating "Kiosk 4716 · Web" on Kiosk Devices and the chip flipping to Registered after Register from the portal, link-with-phone approve (kiosk on Home within one poll) and deny ("Sign-in was declined on the phone."), the move-password placeholder (no request), and the Docker/compose build on 8090 signing in with the same-site cookie. Not live-verified: the `kiosk_not_allowed` refusal in the UI (covered by `tests/test_auth_kiosk_login.py`), a real phone camera scanning the QR, and prod cross-subdomain cookies (`SS_COOKIE_DOMAIN`).
 

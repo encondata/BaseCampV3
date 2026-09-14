@@ -13,7 +13,7 @@
 .portal-shell.kiosk-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100vh;
   height: 100dvh;
   min-height: 0;
@@ -58,6 +58,10 @@
   cursor: pointer;
   padding: 6px 10px;
   border-radius: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40vw;
 }
 .kiosk-name:hover { background: var(--ink-2); }
 .kiosk-user { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-width: 0; }
@@ -78,27 +82,6 @@
 }
 
 /* ── pages ─────────────────────────────────────────────────────── */
-.kiosk-facts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 14px;
-  max-width: 900px;
-  margin: 18px 0 0;
-}
-.kiosk-facts > div {
-  background: var(--paper);
-  border: 1px solid var(--paper-line);
-  border-radius: 12px;
-  padding: 14px 16px;
-}
-.kiosk-facts dt {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: .12em;
-  text-transform: uppercase;
-  color: var(--text-mute);
-}
-.kiosk-facts dd { margin: 6px 0 0; font-size: 18px; font-weight: 500; }
 .kiosk-settings { max-width: 720px; }
 .kiosk-settings input.mono { font-family: var(--font-mono); font-size: 12.5px; }
 .form-error { color: var(--c-red); font-size: 13px; margin: 4px 0 0; }
@@ -139,8 +122,6 @@
 .kiosk-tile svg { width: 40px; height: 40px; color: var(--accent); }
 .kiosk-tile-title { font-size: 22px; font-weight: 600; }
 .kiosk-tile-blurb { font-size: 14px; color: var(--text-mute); }
-.kiosk-facts-compact { margin-top: 26px; max-width: 1100px; }
-.kiosk-facts-compact dd { font-size: 15px; }
 .kiosk-placeholder { max-width: 560px; margin-top: 18px; padding: 22px 24px; background: var(--paper); border: 1px dashed var(--paper-line); border-radius: 14px; color: var(--text-mute); display: grid; gap: 14px; justify-items: start; }
 .kiosk-section { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; color: var(--snow); opacity: .85; white-space: nowrap; }
 @media (max-width: 900px) { .kiosk-section { display: none; } }
@@ -197,3 +178,16 @@
 .login-shell .alt-methods { display: grid; gap: 10px; }
 .login-shell .form-notice { color: var(--text-mute); font-size: 13px; margin: 0 0 14px; }
 .login-shell .form-error { font-size: 13px; margin: 0; }
+
+/* ── footer ────────────────────────────────────────────────────── */
+.kiosk-foot {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  min-height: 36px; padding: 6px 18px;
+  background: var(--paper); border-top: 1px solid var(--paper-line);
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-mute); letter-spacing: .02em;
+}
+.kiosk-foot-item { white-space: nowrap; }
+.kiosk-foot-item b { font-weight: 500; letter-spacing: .1em; text-transform: uppercase; font-size: 9.5px; margin-right: 6px; color: var(--text-mute); opacity: .8; }
+.kiosk-foot-item span { color: var(--text-dark); }
+.kiosk-foot-sep { opacity: .5; }
+@media (max-width: 600px) { .kiosk-foot-sep { display: none; } .kiosk-foot { gap: 4px 14px; } }

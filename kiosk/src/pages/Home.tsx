@@ -1,14 +1,9 @@
-/** Home launcher — a tile per kiosk feature, plus the compact identity
- *  facts strip that used to be the whole page. */
+/** Home launcher — a tile per kiosk feature. The identity facts that used
+ *  to live here now live in the shell's footer (KioskShell). */
 
 import { Link } from 'react-router-dom';
 
-import { registrationLabel } from '@portal/lib/devices';
-
-import { useKioskAuth } from '../auth/KioskAuthContext';
 import { FEATURES, type KioskFeature } from '../lib/features';
-import { getIdentity } from '../lib/identity';
-import { platform } from '../lib/platform';
 
 const ICONS: Record<KioskFeature['id'], JSX.Element> = {
   scan: (
@@ -39,8 +34,6 @@ const ICONS: Record<KioskFeature['id'], JSX.Element> = {
 };
 
 export default function Home() {
-  const { person, registration, sessionExpiresAt } = useKioskAuth();
-  const identity = getIdentity();
   return (
     <div className="portal-page">
       <div className="eyebrow">Kiosk</div>
@@ -54,13 +47,6 @@ export default function Home() {
           </Link>
         ))}
       </nav>
-      <dl className="kiosk-facts kiosk-facts-compact">
-        <div><dt>Kiosk</dt><dd>{identity.name}</dd></div>
-        <div><dt>Mode</dt><dd>{platform().label}</dd></div>
-        <div><dt>Signed in as</dt><dd>{person?.display_name ?? '—'}</dd></div>
-        <div><dt>Session ends</dt><dd>{sessionExpiresAt ? new Date(sessionExpiresAt).toLocaleString() : '—'}</dd></div>
-        <div><dt>Registration</dt><dd>{registration ? registrationLabel(registration) : 'Checking…'}</dd></div>
-      </dl>
     </div>
   );
 }

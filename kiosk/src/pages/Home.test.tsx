@@ -13,7 +13,6 @@ const auth = vi.hoisted(() => ({
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
 import { FEATURES } from '../lib/features';
-import { getIdentity } from '../lib/identity';
 import FeaturePage from './FeaturePage';
 import Home from './Home';
 
@@ -39,12 +38,12 @@ it('renders a tile link for each feature', () => {
   expect(screen.getByRole('link', { name: /Timeclock/ }).getAttribute('href')).toBe('/timeclock');
 });
 
-it('still shows the facts strip with the kiosk name', () => {
+it('renders the launcher tiles only, with no facts list', () => {
   renderRouted();
-  const facts = document.querySelector('.kiosk-facts-compact');
-  expect(facts).toBeTruthy();
-  expect(facts!.textContent).toContain(getIdentity().name);
-  expect(screen.getByText('Alex Worker')).toBeTruthy();
+  expect(screen.getByRole('link', { name: /Scanning/ })).toBeTruthy();
+  expect(screen.getByRole('link', { name: /Label Printing/ })).toBeTruthy();
+  expect(screen.getByRole('link', { name: /Timeclock/ })).toBeTruthy();
+  expect(document.querySelector('dl')).toBeNull();
 });
 
 it('navigates to the placeholder and back', async () => {

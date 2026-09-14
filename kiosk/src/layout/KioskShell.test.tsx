@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /** KioskShell's top bar shows a section label for the current feature
  *  route and nothing for / or /settings. */
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -17,17 +17,27 @@ beforeEach(() => {
 });
 
 const auth = vi.hoisted(() => ({
-  status: 'authed' as const,
-  person: { display_name: 'Alex Worker' },
-  registration: 'ok' as const,
+  status: 'authed' as 'authed' | 'anon',
+  person: { display_name: 'Alex Worker' } as { display_name: string } | null,
+  registration: 'ok' as 'ok' | 'soon' | 'expired' | 'none' | null,
   preferences: null,
+  sessionExpiresAt: '2026-09-14T19:00:42.000Z' as string | null,
   logout: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
+import { getIdentity } from '../lib/identity';
 import KioskShell from './KioskShell';
 
-afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+  vi.unstubAllGlobals();
+  auth.status = 'authed';
+  auth.person = { display_name: 'Alex Worker' };
+  auth.registration = 'ok';
+  auth.sessionExpiresAt = '2026-09-14T19:00:42.000Z';
+});
 
 it('shows the feature title in .kiosk-section at a feature route', () => {
   render(
@@ -55,4 +65,36 @@ it('shows no section label at /settings', () => {
     </MemoryRouter>,
   );
   expect(document.querySelector('.kiosk-section')).toBeNull();
+});
+
+it('footer shows the kiosk facts when signed in', () => {
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const footer = screen.getByRole('contentinfo');
+  const text = footer.textContent ?? '';
+  expect(text).toContain(getIdentity().name);
+  expect(text).toContain('Web');
+  expect(text).toContain('0.1.0');
+  expect(text).toContain('Alex Worker');
+  expect(text).toContain('Registered');
+  expect(text).toContain('Session ends');
+});
+
+it('footer shows only kiosk/mode/version when signed out', () => {
+  auth.status = 'anon';
+  auth.person = null;
+  auth.registration = null;
+  render(
+    <MemoryRouter initialEntries={['/settings']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const footer = screen.getByRole('contentinfo');
+  const text = footer.textContent ?? '';
+  expect(text).toContain(getIdentity().name);
+  expect(text).toContain('Web');
+  expect(text).not.toContain('Alex Worker');
 });
