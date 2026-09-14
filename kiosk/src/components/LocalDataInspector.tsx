@@ -16,6 +16,8 @@
 
 import { Fragment, useEffect, useRef, useState } from 'react';
 
+import { displayRfid } from '@portal/lib/format';
+
 import { getAll, readMeta } from '../lib/localDb';
 import { useSyncStatus } from '../lib/sync';
 
@@ -174,7 +176,7 @@ export default function LocalDataInspector() {
                       <tr>
                         <td className="mono">{a.asset_id}</td>
                         <td>{a.name ?? '—'}</td>
-                        <td className="mono">{a.rfid ?? '—'}</td>
+                        <td className="mono" title={a.rfid ?? undefined}>{displayRfid(a.rfid)}</td>
                         <td className="mono">{a.serial_number ?? '—'}</td>
                         <td>{a.make_model || '—'}</td>
                         <td>
@@ -239,7 +241,7 @@ export default function LocalDataInspector() {
                   {shownPeople.map((p) => (
                     <tr key={p.id}>
                       <td>{p.display_name}</td>
-                      <td className="mono">{p.rfid_tag ?? '—'}</td>
+                      <td className="mono" title={p.rfid_tag ?? undefined}>{displayRfid(p.rfid_tag)}</td>
                       <td className="mono" title={p.id}>{p.id.slice(0, 8)}</td>
                       <td>
                         {p.is_worker && <span className="chip tag">worker</span>}
