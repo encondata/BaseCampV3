@@ -67,7 +67,10 @@ export interface PeopleIndex<P extends MatchPerson = MatchPerson> {
 const SHORT_ID = /^[0-9a-f]{8}$/i;
 
 function words(value: string | null | undefined): string[] {
-  return (value ?? '').trim().toLowerCase().split(/\s+/).filter(Boolean);
+  // Whitespace or a hyphen starts a new part, so "Smith-Jones" indexes
+  // as both "smith" and "jones" (and "smith-jones" itself is never a
+  // part, so nobody has to type the hyphen to find them).
+  return (value ?? '').trim().toLowerCase().split(/[\s-]+/).filter(Boolean);
 }
 
 /** The RFID key: zero-padding stripped, upper-cased. A missing tag
@@ -135,6 +138,24 @@ export function matchPersonExact<P extends MatchPerson>(
   // never resolves to somebody's id by coincidence.
   if (byFullId && (lower.length !== 8 || SHORT_ID.test(lower))) return byFullId;
   return null;
+}
+
+/** True when `raw` names one person outright by RFID tag but is *also*
+ *  a strict prefix of a different person's (longer) tag — "1003" vs
+ *  "100348". A fixed reader appends digits one at a time, so mid-scan
+ *  the shorter tag can briefly look like a complete, exact match; the
+ *  caller should hold off on auto-selecting until Enter (or the rest of
+ *  the scan) settles which one was meant. Exact-length equality is
+ *  never ambiguous — only a genuine prefix relationship is. */
+export function isAmbiguousPrefix<P extends MatchPerson>(
+  index: PeopleIndex<P>, raw: string,
+): boolean {
+  const tag = rfidKey(raw.trim());
+  if (!tag || !index.byRfid.has(tag)) return false;
+  for (const other of index.byRfid.keys()) {
+    if (other !== tag && other.startsWith(tag)) return true;
+  }
+  return false;
 }
 
 /** Every term is a prefix of a distinct part — a small bipartite match,

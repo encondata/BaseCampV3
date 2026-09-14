@@ -47,6 +47,14 @@ const TINA: KioskPersonRow = {
   id: 'p-tina', display_name: 'Tina Tanaka', first_name: 'Tina', last_name: 'Tanaka',
   preferred_name: null, rfid_tag: '4821', is_worker: true, has_account: false,
 };
+const SHORT_TAG: KioskPersonRow = {
+  id: 'p-short', display_name: 'Short Tag', first_name: 'Short', last_name: 'Tag',
+  preferred_name: null, rfid_tag: '1003', is_worker: true, has_account: false,
+};
+const LONG_TAG: KioskPersonRow = {
+  id: 'p-long', display_name: 'Long Tag', first_name: 'Long', last_name: 'Tag',
+  preferred_name: null, rfid_tag: '100348', is_worker: true, has_account: false,
+};
 
 const SETUP = {
   initiativeId: 'init-1', initiativeName: 'NAP11 Hall Migration',
@@ -233,4 +241,54 @@ it('with no people synced, says so and disables the input', async () => {
   render_();
   expect(await screen.findByText('No people on this kiosk. Sync from Kiosk Setup.')).toBeTruthy();
   await waitFor(() => expect(input().disabled).toBe(true));
+});
+
+it('Cancel clears a lingering punch error, so it never greets the next worker', async () => {
+  api.postClockIn.mockRejectedValue(new ApiError(0, 'network'));
+  render_();
+  await typeAndPick('tina', /Tina Tanaka/);
+  await userEvent.click(await screen.findByRole('button', { name: 'Clock in' }));
+  expect(await screen.findByText("Can't reach the portal. The punch was not recorded."))
+    .toBeTruthy();
+
+  await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(screen.queryByText("Can't reach the portal. The punch was not recorded.")).toBeNull();
+});
+
+it('a punch error auto-dismisses on its own, like the not-found error', async () => {
+  api.postClockIn.mockRejectedValue(new ApiError(0, 'network'));
+  render_();
+  await typeAndPick('tina', /Tina Tanaka/);
+  await userEvent.click(await screen.findByRole('button', { name: 'Clock in' }));
+  expect(await screen.findByText("Can't reach the portal. The punch was not recorded."))
+    .toBeTruthy();
+
+  await waitFor(() => expect(
+    screen.queryByText("Can't reach the portal. The punch was not recorded.")).toBeNull(),
+  { timeout: 4000 });
+}, 6000);
+
+it('a value that is also a prefix of a longer RFID waits rather than auto-selecting', async () => {
+  await replaceAll('people', [SHORT_TAG, LONG_TAG]);
+  api.fetchTimeclockStatus.mockResolvedValue(clockedIn(LONG_TAG, 0));
+  render_();
+  const el = await ready();
+  await userEvent.type(el, '1003');
+
+  // "1003" is SHORT_TAG's whole tag but also a strict prefix of
+  // LONG_TAG's — too soon to tell, so it must stay on the entry screen.
+  expect(input()).toBeTruthy();
+  expect(api.fetchTimeclockStatus).not.toHaveBeenCalled();
+
+  await userEvent.type(el, '48');
+  await waitFor(() => expect(api.fetchTimeclockStatus).toHaveBeenCalledWith('p-long'));
+});
+
+it('Enter still selects the exact match even though it is an ambiguous prefix', async () => {
+  await replaceAll('people', [SHORT_TAG, LONG_TAG]);
+  api.fetchTimeclockStatus.mockResolvedValue(clockedIn(SHORT_TAG, 0));
+  render_();
+  await userEvent.type(await ready(), '1003{Enter}');
+
+  await waitFor(() => expect(api.fetchTimeclockStatus).toHaveBeenCalledWith('p-short'));
 });

@@ -38,13 +38,12 @@ import { getIdentity } from '../lib/identity';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { getAll } from '../lib/localDb';
 import {
-  buildPeopleIndex, matchPersonExact, searchPeople, type PeopleIndex,
+  buildPeopleIndex, isAmbiguousPrefix, matchPersonExact, searchPeople, type PeopleIndex,
 } from '../lib/peopleMatch';
 import { playScanSound } from '../lib/sound';
 import { useSyncStatus } from '../lib/sync';
 
-type LoadStatus = 'loading' | 'ready' | 'error';
-type StatusPhase = 'loading' | 'ready' | 'error';
+type Phase = 'loading' | 'ready' | 'error';
 
 /** The same rule the Scanning page uses: focus is only reclaimed from
  *  things nobody deliberately moved it to. */
@@ -58,7 +57,7 @@ const ERROR_MS = 3_000;
 
 /** "3h 12m", or "45m" under the hour. Minutes, because that is what the
  *  API counts in and what a timesheet is read in. */
-export function formatMinutes(total: number): string {
+function formatMinutes(total: number): string {
   const minutes = Math.max(0, Math.round(total));
   const hours = Math.floor(minutes / 60);
   return hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
@@ -100,11 +99,11 @@ export default function Timeclock() {
   const [appearance] = useAppearance();
 
   const [index, setIndex] = useState<PeopleIndex<KioskPersonRow> | null>(null);
-  const [loadStatus, setLoadStatus] = useState<LoadStatus>('loading');
+  const [loadStatus, setLoadStatus] = useState<Phase>('loading');
   const [value, setValue] = useState('');
   const [selected, setSelected] = useState<KioskPersonRow | null>(null);
   const [status, setStatus] = useState<KioskTimeclockStatus | null>(null);
-  const [statusPhase, setStatusPhase] = useState<StatusPhase>('loading');
+  const [statusPhase, setStatusPhase] = useState<Phase>('loading');
   const [punching, setPunching] = useState(false);
   const [avatarFailed, setAvatarFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -194,11 +193,13 @@ export default function Timeclock() {
 
   const toEntry = () => {
     statusId.current += 1;              // a status still in flight loses the screen
+    if (errorTimer.current) clearTimeout(errorTimer.current);
     setSelected(null);
     setStatus(null);
     setStatusPhase('loading');
     setPunching(false);
     setValue('');
+    setError(null);                     // a failed punch's copy never greets the next worker
   };
 
   const loadPersonStatus = (personId: string) => {
@@ -240,7 +241,15 @@ export default function Timeclock() {
   // A badge scan is fast typing that happens to end with Enter, so the
   // exact check runs on every keystroke: the tag selects its owner the
   // moment it is complete, without waiting for the Enter to arrive.
+  // Except when the value in hand is also a strict prefix of a longer
+  // tag in the roster ("1003" vs "100348") — then it is too soon to
+  // tell which worker is meant, so the auto-select waits for Enter (or
+  // the rest of the scan) to settle it.
   const onChange = (next: string) => {
+    if (index && isAmbiguousPrefix(index, next)) {
+      setValue(next);
+      return;
+    }
     const hit = index ? matchPersonExact(index, next) : null;
     if (hit) {
       select(hit);
@@ -304,7 +313,7 @@ export default function Timeclock() {
         flash(hslCss(appearance.not_found_scan), appearance.flash_ms);
         playScanSound('not_found');
         setPunching(false);
-        showError(punchErrorText(err));
+        showError(punchErrorText(err), ERROR_MS);
         setIdleAt(Date.now());
         // Those two codes are the portal knowing this worker's state
         // better than the screen does — re-read it and let them tap the

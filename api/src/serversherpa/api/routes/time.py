@@ -150,8 +150,7 @@ async def clock_in(body: ClockInIn, db: DbSession, user: CurrentUser) -> TimeEnt
 async def clock_out(body: ClockOutIn, db: DbSession, user: CurrentUser) -> TimeEntryItem:
     if not _can_clock(user):
         raise _err(403, "forbidden")
-    entry = await db.scalar(select(TimeEntry).where(
-        TimeEntry.person_id == user.person.id, TimeEntry.clock_out_at.is_(None)))
+    entry = await timeclock.open_entry_for(db, user.person.id)
     if entry is None:
         raise _err(409, "not_clocked_in")
 

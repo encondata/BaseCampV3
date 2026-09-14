@@ -454,11 +454,14 @@ export async function fetchTimeclockStatus(personId: string): Promise<KioskTimec
 
 /** Opens an entry for the worker at the kiosk. Site and move come from
  *  Kiosk Setup; left out, the server falls back to the kiosk Device's
- *  own setup. Throws `ApiError` — 409 `already_clocked_in`, 422
- *  `bad_site`/`bad_initiative`, 423 read-only, 0 `network`. */
+ *  own setup. Always stamped with the server's clock — there is no
+ *  `at`, deliberately: back-dating a punch stays a portal action (see
+ *  the spec's Timeclock security note). Throws `ApiError` — 409
+ *  `already_clocked_in`, 422 `bad_site`/`bad_initiative`, 423
+ *  read-only, 0 `network`. */
 export async function postClockIn(body: {
   serial: string; person_id: string;
-  site_id?: string | null; initiative_id?: string | null; at?: string;
+  site_id?: string | null; initiative_id?: string | null;
 }): Promise<KioskTimeclockStatus> {
   const resp = await apiFetch('/kiosk/timeclock/clock-in', {
     method: 'POST',
@@ -469,9 +472,10 @@ export async function postClockIn(body: {
 }
 
 /** Closes the worker's open entry; the answer carries `last_entry` with
- *  the minutes worked. 409 `not_clocked_in` when there is none. */
+ *  the minutes worked. 409 `not_clocked_in` when there is none. No
+ *  `at` either, for the same reason as `postClockIn`. */
 export async function postClockOut(body: {
-  serial: string; person_id: string; at?: string;
+  serial: string; person_id: string;
 }): Promise<KioskTimeclockStatus> {
   const resp = await apiFetch('/kiosk/timeclock/clock-out', {
     method: 'POST',

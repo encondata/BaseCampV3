@@ -663,13 +663,6 @@ async def _timeclock_person(db: AsyncSession, person_id: uuid.UUID) -> Person:
     return person
 
 
-def _aware(moment: datetime | None) -> datetime | None:
-    """A naive `at` from a kiosk means UTC (the column is timestamptz)."""
-    if moment is None:
-        return None
-    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
-
-
 def _person_out(person: Person) -> KioskTimeclockPerson:
     return KioskTimeclockPerson(
         id=person.id, display_name=person.display_name,
@@ -709,10 +702,18 @@ async def timeclock_status(
     actor: AuthContext = require_permission("kiosk", "view"),
 ) -> KioskTimeclockStatusOut:
     """Is this person on the clock right now, and since when? The kiosk
-    polls this to show the avatar and the running elapsed time."""
+    polls this to show the avatar and the running elapsed time.
+
+    When there is no open entry, `last_entry` carries their most
+    recently CLOSED entry (ordered by `clock_out_at`), so the "Not
+    clocked in" card can say "Last clock-out {time}" — null when they
+    have never punched out at all. While clocked in, `last_entry` is
+    left null; the card has the open entry to show instead."""
     person = await _timeclock_person(db, person_id)
     entry = await timeclock.open_entry_for(db, person.id)
-    return await _status_out(db, person, entry)
+    last_entry = (None if entry is not None
+                  else await timeclock.last_closed_entry_for(db, person.id))
+    return await _status_out(db, person, entry, last_entry=last_entry)
 
 
 @router.post("/timeclock/clock-in", response_model=KioskTimeclockStatusOut)
@@ -725,7 +726,11 @@ async def timeclock_clock_in(
     the server does not know is 422 (`bad_site` / `bad_initiative`)
     rather than 404, since the kiosk may simply be holding a stale copy
     of a setup. 409 `already_clocked_in` carries the open entry's id so
-    the kiosk can offer "clock out" instead."""
+    the kiosk can offer "clock out" instead.
+
+    Always stamped `datetime.now(UTC)` — there is no `at` (see
+    `KioskClockInIn`'s docstring): back-dating a punch stays a portal
+    action, behind `time:change` + `adjust_reason`, never a kiosk one."""
     device = await _kiosk_device(db, body.serial)
     person = await _timeclock_person(db, body.person_id)
     site_id = body.site_id or device.site_id
@@ -743,7 +748,7 @@ async def timeclock_clock_in(
     try:
         entry = await timeclock.create_open_entry(
             db, person_id=person.id, initiative_id=initiative_id, site_id=site_id,
-            clock_in_at=_aware(body.at) or now, created_by=actor.person.id,
+            clock_in_at=now, created_by=actor.person.id,
             source="kiosk", device_id=device.id)
     except timeclock.AlreadyClockedIn:
         # the one-open-entry index caught a punch that raced the check above
@@ -770,7 +775,11 @@ async def timeclock_clock_out(
     """Close the worker's open entry (which graduates it to `pending`,
     the timesheet-approval queue — exactly what self-service clock-out
     does). `last_entry` comes back so the kiosk can say "Clocked out
-    after 3h 12m" without another call."""
+    after 3h 12m" without another call.
+
+    Always stamped `datetime.now(UTC)` — there is no `at` (see
+    `KioskClockOutIn`'s docstring), so there is nothing left to validate
+    against `clock_in_at` and no `bad_time` error to raise."""
     device = await _kiosk_device(db, body.serial)
     person = await _timeclock_person(db, body.person_id)
     entry = await timeclock.open_entry_for(db, person.id)
@@ -778,11 +787,7 @@ async def timeclock_clock_out(
         raise _err(409, "not_clocked_in")
 
     now = datetime.now(UTC)
-    ended_at = _aware(body.at) or now
-    if ended_at < entry.clock_in_at:
-        raise _err(422, "bad_time")
-
-    changes = timeclock.close_open_entry(entry, clock_out_at=ended_at, now=now)
+    changes = timeclock.close_open_entry(entry, clock_out_at=now, now=now)
     device.last_seen_at = now
     audit(db, actor_id=actor.person.id, entity_type="time_entry",
           entity_id=str(entry.id), action="kiosk_clock_out",

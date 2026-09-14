@@ -2,7 +2,9 @@
  *  whatever order the person at the screen thinks of it. */
 import { expect, it } from 'vitest';
 
-import { buildPeopleIndex, matchPersonExact, searchPeople, type MatchPerson } from './peopleMatch';
+import {
+  buildPeopleIndex, isAmbiguousPrefix, matchPersonExact, searchPeople, type MatchPerson,
+} from './peopleMatch';
 
 const person = (over: Partial<MatchPerson> & { id: string }): MatchPerson => ({
   display_name: 'Someone', first_name: 'Some', last_name: 'One',
@@ -116,4 +118,28 @@ it('indexes people by tag and id and reports its size', () => {
   expect(index.size).toBe(3);
   expect(index.byRfid.get('100348')).toBe(JIMMY);
   expect(index.byId.get(TINA.id)).toBe(TINA);
+});
+
+it('splits a hyphenated name into its own parts', () => {
+  const smithJones = person({
+    id: 'sj', display_name: 'Sam Smith-Jones', first_name: 'Sam', last_name: 'Smith-Jones',
+  });
+  const hyphenated = buildPeopleIndex([smithJones]);
+  expect(ids(searchPeople(hyphenated, 'jones'))).toEqual(['Sam Smith-Jones']);
+  expect(ids(searchPeople(hyphenated, 'smith'))).toEqual(['Sam Smith-Jones']);
+  expect(ids(searchPeople(hyphenated, 'sam jones'))).toEqual(['Sam Smith-Jones']);
+});
+
+it('flags a value that is both an exact RFID match and a strict prefix of another', () => {
+  const short = person({ id: 's', display_name: 'Short Tag', rfid_tag: '1003' });
+  const long = person({ id: 'l', display_name: 'Long Tag', rfid_tag: '100348' });
+  const prefixed = buildPeopleIndex([short, long]);
+  expect(isAmbiguousPrefix(prefixed, '1003')).toBe(true);
+  // the longer tag is not a prefix of anything else, so it's never ambiguous
+  expect(isAmbiguousPrefix(prefixed, '100348')).toBe(false);
+  // a value with no exact match at all is not "ambiguous" — it's just unknown
+  expect(isAmbiguousPrefix(prefixed, '10')).toBe(false);
+  expect(isAmbiguousPrefix(prefixed, '999')).toBe(false);
+  // exact-length equality (no other tag) is never ambiguous
+  expect(isAmbiguousPrefix(index, '100348')).toBe(false);
 });

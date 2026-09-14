@@ -35,6 +35,17 @@ async def open_entry_for(db: AsyncSession, person_id: uuid.UUID) -> TimeEntry | 
         TimeEntry.person_id == person_id, TimeEntry.clock_out_at.is_(None)))
 
 
+async def last_closed_entry_for(db: AsyncSession, person_id: uuid.UUID) -> TimeEntry | None:
+    """The person's most recently CLOSED entry (clock_out_at IS NOT
+    NULL), ordered by clock_out_at so this is the true most recent
+    shift rather than merely the most recently created row — or None if
+    they have never clocked out. Used for "Last clock-out {time}" when
+    there is no open entry to show instead."""
+    return await db.scalar(select(TimeEntry).where(
+        TimeEntry.person_id == person_id, TimeEntry.clock_out_at.isnot(None))
+        .order_by(TimeEntry.clock_out_at.desc()).limit(1))
+
+
 def worked_minutes(entry: TimeEntry) -> int:
     """Worked minutes, net of break. 0 while the entry is still open."""
     if entry.clock_out_at is None:
@@ -79,7 +90,18 @@ async def create_open_entry(
         async with db.begin_nested():
             db.add(entry)
             await db.flush()
-    except IntegrityError:
+    except IntegrityError as exc:
+        # Only the one-open-entry index means "already clocked in" — a
+        # bogus initiative_id/site_id/device_id (a caller's FK pointing
+        # nowhere) is also an IntegrityError but a different bug, and
+        # must not be misreported as a 409 the caller could reasonably
+        # act on. The constraint name lives on the *original* asyncpg
+        # exception, not SQLAlchemy's DBAPI-wrapper `exc.orig` (which
+        # only carries the message and sqlstate) — the wrapper chains
+        # asyncpg's own exception on as `__cause__`.
+        asyncpg_exc = exc.orig.__cause__ if exc.orig is not None else None
+        if getattr(asyncpg_exc, "constraint_name", None) != "one_open_entry_per_person":
+            raise
         raise AlreadyClockedIn from None
     return entry
 

@@ -2445,20 +2445,27 @@ class KioskTimeclockStatusOut(BaseModel):
 
 class KioskClockInIn(BaseModel):
     """`site_id` / `initiative_id` left out fall back to the kiosk
-    Device's own setup; `at` left out means now (the kiosk sends it only
-    to back-date a punch it took while offline)."""
+    Device's own setup. There is deliberately no `at`: the kiosk has no
+    offline queue (see the spec), so it never needs to back-date a punch,
+    and `kiosk:view` includes the worker role, which holds no `time`
+    grants — an unbounded `at` would let a worker post a fabricated
+    back-dated clock-in straight into the approval queue, bypassing the
+    portal's own `time:change` + `adjust_reason` gate on edits. Every
+    kiosk punch is stamped `datetime.now(UTC)`; back-dating stays a
+    portal action."""
 
     serial: str = Field(min_length=1, max_length=120)
     person_id: uuid.UUID
     site_id: uuid.UUID | None = None
     initiative_id: uuid.UUID | None = None
-    at: datetime | None = None
 
 
 class KioskClockOutIn(BaseModel):
+    """No `at` either, for the same reason as `KioskClockInIn` — see
+    there."""
+
     serial: str = Field(min_length=1, max_length=120)
     person_id: uuid.UUID
-    at: datetime | None = None
 
 
 # ── Labels ──
