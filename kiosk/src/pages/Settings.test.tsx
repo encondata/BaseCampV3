@@ -4,13 +4,16 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
-const auth = vi.hoisted(() => ({ isAdmin: false, isDeveloper: false }));
+const auth = vi.hoisted(() => ({
+  status: 'authed', isAdmin: false, isDeveloper: false, heartbeatNow: vi.fn(() => Promise.resolve()),
+}));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
 import Settings from './Settings';
 
 afterEach(() => {
   cleanup();
+  auth.status = 'authed';
   auth.isAdmin = false;
   auth.isDeveloper = false;
   localStorage.clear();
@@ -24,19 +27,21 @@ function renderAt(path: string) {
   );
 }
 
-it('a worker sees exactly Appearance, Sound, and Devices — no Admin or Developer text', () => {
+it('a worker sees Appearance, Sound, Devices, and This Kiosk — no Admin or Developer text', () => {
   renderAt('/settings');
-  expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Appearance', 'Sound', 'Devices']);
+  expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+    'Appearance', 'Sound', 'Devices', 'This Kiosk',
+  ]);
   expect(screen.queryByText('Admin')).toBeNull();
   expect(screen.queryByText('Developer')).toBeNull();
 });
 
-it('a developer sees all five tabs', () => {
+it('a developer sees all six tabs, This Kiosk after Devices', () => {
   auth.isAdmin = true;
   auth.isDeveloper = true;
   renderAt('/settings');
   expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
-    'Appearance', 'Sound', 'Devices', 'Admin', 'Developer',
+    'Appearance', 'Sound', 'Devices', 'This Kiosk', 'Admin', 'Developer',
   ]);
 });
 
@@ -59,6 +64,37 @@ it('an admin requesting ?tab=admin sees Admin selected', () => {
   renderAt('/settings?tab=admin');
   expect(screen.getByRole('tab', { name: 'Admin' }).getAttribute('aria-selected')).toBe('true');
   expect(screen.getByRole('heading', { name: 'Admin' })).toBeTruthy();
+});
+
+it('signed in, This Kiosk shows the serial field and no placeholder card', () => {
+  renderAt('/settings?tab=this-kiosk');
+  expect(screen.getByRole('tab', { name: 'This Kiosk' }).getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByLabelText('Serial')).toBeTruthy();
+  expect(screen.getByLabelText('Kiosk name')).toBeTruthy();
+  expect(screen.queryByText('This section is not available yet.')).toBeNull();
+});
+
+it('signed out, only the This Kiosk tab and the name field are shown', () => {
+  auth.status = 'anon';
+  renderAt('/settings');
+  expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['This Kiosk']);
+  expect(screen.getByRole('tab', { name: 'This Kiosk' }).getAttribute('aria-selected')).toBe('true');
+  expect(screen.getByLabelText('Kiosk name')).toBeTruthy();
+});
+
+it('signed out, requesting ?tab=admin still lands on This Kiosk', () => {
+  auth.status = 'anon';
+  renderAt('/settings?tab=admin');
+  expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['This Kiosk']);
+  expect(screen.getByRole('tab', { name: 'This Kiosk' }).getAttribute('aria-selected')).toBe('true');
+});
+
+it('an admin/developer signed out still sees only This Kiosk', () => {
+  auth.status = 'anon';
+  auth.isAdmin = true;
+  auth.isDeveloper = true;
+  renderAt('/settings');
+  expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['This Kiosk']);
 });
 
 it('a developer sees a Developer mode switch on the Developer tab, unchecked by default, that persists on click', async () => {

@@ -76,8 +76,8 @@ export default function KioskShell({ children }: { children: ReactNode }) {
           <span className="kiosk-mode">Kiosk · {modeLabel}</span>
           {feature && <span className="kiosk-section">{feature.title}</span>}
         </div>
-        <button type="button" className="kiosk-name" title="Kiosk setup"
-                onClick={() => navigate('/setup')}>
+        <button type="button" className="kiosk-name" title="This kiosk"
+                onClick={() => navigate('/settings?tab=this-kiosk')}>
           {identity.name}
         </button>
         <div className="kiosk-user">

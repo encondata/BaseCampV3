@@ -12,8 +12,10 @@ export interface KioskFeature {
   title: string;
   blurb: string;
   /** True for features that still fall back to the generic FeaturePage
-   *  placeholder; absent for features with a real screen (Kiosk Setup,
-   *  Settings). */
+   *  placeholder; absent for features with a real screen (Settings). Kiosk
+   *  Setup carries it too now — the kiosk variables it used to host moved
+   *  to Settings › This Kiosk, so `/setup` is itself a placeholder for the
+   *  real setup flow. */
   placeholder?: boolean;
   /** True for the two tiles that stay usable no matter the kiosk setup
    *  state (Kiosk Setup and Settings) — see `featureAvailable`. */
@@ -21,7 +23,7 @@ export interface KioskFeature {
 }
 
 export const FEATURES: KioskFeature[] = [
-  { id: 'setup', path: '/setup', title: 'Kiosk Setup', blurb: 'Name this kiosk and check its connection.', alwaysAvailable: true },
+  { id: 'setup', path: '/setup', title: 'Kiosk Setup', blurb: 'Set up this kiosk for a move.', alwaysAvailable: true, placeholder: true },
   { id: 'scan', path: '/scan', title: 'Scanning', blurb: 'Scan assets, containers, and badges.', placeholder: true },
   { id: 'labels', path: '/labels', title: 'Label Printing', blurb: 'Print asset and container labels.', placeholder: true },
   { id: 'timeclock', path: '/timeclock', title: 'Timeclock', blurb: 'Clock in and out of a move.', placeholder: true },

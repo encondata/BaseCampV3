@@ -7,9 +7,10 @@ import KioskShell from './layout/KioskShell';
 import { FEATURES } from './lib/features';
 import FeaturePage from './pages/FeaturePage';
 import Home from './pages/Home';
-import KioskSettings from './pages/KioskSettings';
 import Login from './pages/Login';
 import Settings from './pages/Settings';
+
+const SETUP_FEATURE = FEATURES.find((f) => f.id === 'setup')!;
 
 export default function App() {
   return (
@@ -17,10 +18,13 @@ export default function App() {
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route path="/setup" element={<KioskShell><KioskSettings /></KioskShell>} />
-          <Route path="/settings" element={<KioskGuard><KioskShell><Settings /></KioskShell></KioskGuard>} />
+          {/* /setup and /settings work signed in or out — never behind
+              KioskGuard. Kiosk Setup is a placeholder for the real setup
+              flow; its variables now live on Settings › This Kiosk. */}
+          <Route path="/setup" element={<KioskShell><FeaturePage feature={SETUP_FEATURE} /></KioskShell>} />
+          <Route path="/settings" element={<KioskShell><Settings /></KioskShell>} />
           <Route path="/" element={<KioskGuard><KioskShell><Home /></KioskShell></KioskGuard>} />
-          {FEATURES.filter((f) => f.placeholder).map((f) => (
+          {FEATURES.filter((f) => f.placeholder && f.id !== 'setup').map((f) => (
             <Route
               key={f.id}
               path={f.path}

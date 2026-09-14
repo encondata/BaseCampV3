@@ -1,13 +1,15 @@
-/** Kiosk Settings — tabbed sections for Appearance, Sound, Devices,
- *  Admin, and Developer. Admin and Developer are hidden (not disabled)
- *  unless the signed-in person holds the level; every tab body is a
- *  placeholder for now. The active tab lives in the `tab` search param,
- *  so a link can deep-link straight to a section. */
+/** Kiosk Settings — tabbed sections for Appearance, Sound, Devices, This
+ *  Kiosk, Admin, and Developer. Admin and Developer are hidden (not
+ *  disabled) unless the signed-in person holds the level; signed out,
+ *  only This Kiosk is visible (see `visibleTabs`). Every tab body but
+ *  This Kiosk's is a placeholder for now. The active tab lives in the
+ *  `tab` search param, so a link can deep-link straight to a section. */
 
 import { useSearchParams } from 'react-router-dom';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import { Switch } from '../components/Switch';
+import ThisKioskPanel from '../components/ThisKioskPanel';
 import { useDevMode } from '../lib/devMode';
 import { SETTINGS_TABS, visibleTabs, type SettingsTabId } from '../lib/settingsTabs';
 import { SETUP_STATES, setupStateLabel, useKioskSetupState } from '../lib/setupState';
@@ -15,12 +17,13 @@ import { SETUP_STATES, setupStateLabel, useKioskSetupState } from '../lib/setupS
 const DEFAULT_TAB: SettingsTabId = 'appearance';
 
 export default function Settings() {
-  const { isAdmin, isDeveloper } = useKioskAuth();
+  const { status, isAdmin, isDeveloper } = useKioskAuth();
+  const signedIn = status === 'authed';
   const [searchParams, setSearchParams] = useSearchParams();
   const [devMode, setDevMode] = useDevMode();
   const [setupState, setSetupState] = useKioskSetupState();
 
-  const tabs = visibleTabs(SETTINGS_TABS, { isAdmin, isDeveloper });
+  const tabs = visibleTabs(SETTINGS_TABS, { isAdmin, isDeveloper, signedIn });
   const requested = searchParams.get('tab');
   const active = tabs.find((t) => t.id === requested) ?? tabs.find((t) => t.id === DEFAULT_TAB) ?? tabs[0];
 
@@ -49,6 +52,7 @@ export default function Settings() {
       <section role="tabpanel" aria-labelledby={`settings-tab-${active.id}`}>
         <h2 className="settings-tab-title">{active.label}</h2>
         <p className="page-hint">{active.blurb}</p>
+        {active.id === 'this-kiosk' && <ThisKioskPanel />}
         {active.id === 'developer' && (
           <div className="settings-row">
             <div>
@@ -89,9 +93,11 @@ export default function Settings() {
             </div>
           </div>
         )}
-        <div className="kiosk-placeholder">
-          <p>This section is not available yet.</p>
-        </div>
+        {active.id !== 'this-kiosk' && (
+          <div className="kiosk-placeholder">
+            <p>This section is not available yet.</p>
+          </div>
+        )}
       </section>
     </div>
   );

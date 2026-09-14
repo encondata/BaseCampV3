@@ -2,7 +2,8 @@
 /** KioskShell's top bar shows a section label for the current feature
  *  route and nothing for /. */
 import { cleanup, render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 // applyPreferences reads prefers-reduced-motion; jsdom has no matchMedia.
@@ -78,6 +79,24 @@ it('shows "Settings" as the section label at /settings', () => {
   );
   const section = document.querySelector('.kiosk-section');
   expect(section?.textContent).toBe('Settings');
+});
+
+function SettingsStub() {
+  const [params] = useSearchParams();
+  return <div>SETTINGS tab={params.get('tab')}</div>;
+}
+
+it('the kiosk-name button navigates to the This Kiosk settings tab', async () => {
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <Routes>
+        <Route path="/" element={<KioskShell><div /></KioskShell>} />
+        <Route path="/settings" element={<SettingsStub />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await userEvent.click(screen.getByRole('button', { name: getIdentity().name }));
+  expect(await screen.findByText('SETTINGS tab=this-kiosk')).toBeTruthy();
 });
 
 it('footer shows the kiosk facts when signed in', () => {

@@ -37,7 +37,7 @@ function renderLogin() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/" element={<div>HOME</div>} />
-        <Route path="/setup" element={<div>SETUP</div>} />
+        <Route path="/settings" element={<div>SETTINGS</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -114,7 +114,7 @@ it('shows system banners and the settings gear', async () => {
   expect(await screen.findByText('Read-only maintenance mode — Cutover')).toBeTruthy();
   expect(screen.getByText('Hello all')).toBeTruthy();
   await userEvent.click(screen.getByRole('button', { name: 'Kiosk settings' }));
-  expect(await screen.findByText('SETUP')).toBeTruthy();
+  expect(await screen.findByText('SETTINGS')).toBeTruthy();
 });
 
 it('hands PairPanel a stable onApproved across Login re-renders', async () => {
@@ -132,7 +132,7 @@ it('hands PairPanel a stable onApproved across Login re-renders', async () => {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/" element={<div>HOME</div>} />
-        <Route path="/setup" element={<div>SETUP</div>} />
+        <Route path="/settings" element={<div>SETTINGS</div>} />
       </Routes>
     </MemoryRouter>,
   );
