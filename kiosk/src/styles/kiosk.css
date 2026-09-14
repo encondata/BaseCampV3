@@ -82,7 +82,7 @@
 }
 
 /* ── pages ─────────────────────────────────────────────────────── */
-.kiosk-settings { max-width: 720px; }
+.kiosk-settings { max-width: clamp(20rem, 62vw, 62rem); }
 .kiosk-settings input.mono { font-family: var(--font-mono); font-size: 12.5px; }
 .form-error { color: var(--c-red); font-size: 13px; margin: 4px 0 0; }
 .form-notice { color: var(--text-mute); font-size: 13px; margin: 4px 0 0; }
@@ -99,7 +99,7 @@
   gap: 16px;
   padding: 14px 0;
   border-bottom: 1px solid var(--paper-line);
-  max-width: 560px;
+  max-width: clamp(20rem, 62vw, 62rem);
 }
 /* The label+hint side wraps and shrinks first; a control on the right
    (Switch, or a multi-button .segmented like the setup-state radiogroup)
@@ -167,9 +167,19 @@
 }
 
 /* ── home launcher & feature placeholders ─────────────────────────── */
-/* Fill the row: as many tiles as fit at >= 200px each, no width cap, so a
-   fifth tile joins the first row whenever the screen has room for it. */
-.kiosk-launcher { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 18px; margin: 22px 0 0; }
+/* Fill the row, but never more than --tile-cols across: each track is at
+   least one fifth of the row (gaps subtracted), so a sixth tile wraps
+   instead of squeezing in. The 200px floor still wins on narrow screens,
+   where fewer tiles fit and the grid wraps on its own. */
+.kiosk-launcher {
+  --tile-cols: 5;
+  --tile-gap: 18px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(
+    max(200px, calc((100% - (var(--tile-cols) - 1) * var(--tile-gap)) / var(--tile-cols))), 1fr));
+  gap: var(--tile-gap);
+  margin: 22px 0 0;
+}
 .kiosk-tile { display: grid; gap: 10px; align-content: start; min-height: 190px; padding: 22px 22px 20px; background: var(--paper); border: 1px solid var(--paper-line); border-radius: 16px; color: var(--text-dark); text-decoration: none; transition: border-color .15s, transform .15s, box-shadow .15s; }
 .kiosk-tile:hover, .kiosk-tile:focus-visible { border-color: var(--accent); box-shadow: 0 6px 24px rgba(var(--accent-rgb), .18); transform: translateY(-2px); outline: none; }
 .kiosk-tile:active { transform: translateY(0); }
@@ -181,7 +191,7 @@
 .kiosk-tile-lock { font-family: var(--font-mono); font-size: 11px; letter-spacing: .06em; color: var(--text-mute); }
 .kiosk-setup-banner { margin-top: 18px; border-left: 3px solid var(--accent); }
 .kiosk-setup-banner.is-dev { border-left-color: var(--c-amber); }
-.kiosk-placeholder { max-width: 560px; margin-top: 18px; padding: 22px 24px; background: var(--paper); border: 1px dashed var(--paper-line); border-radius: 14px; color: var(--text-mute); display: grid; gap: 14px; justify-items: start; }
+.kiosk-placeholder { max-width: clamp(20rem, 62vw, 62rem); margin-top: 18px; padding: 22px 24px; background: var(--paper); border: 1px dashed var(--paper-line); border-radius: 14px; color: var(--text-mute); display: grid; gap: 14px; justify-items: start; }
 .kiosk-section { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; color: var(--snow); opacity: .85; white-space: nowrap; }
 @media (max-width: 900px) { .kiosk-section { display: none; } }
 
@@ -261,9 +271,9 @@
   text-transform: uppercase; color: var(--text-mute); margin: 8px 0 14px;
 }
 .setup-wizard { max-width: none; }
-.setup-wizard .form-error { max-width: 560px; }
+.setup-wizard .form-error { max-width: clamp(20rem, 62vw, 62rem); }
 .setup-summary {
-  max-width: 560px; margin-top: 18px; padding: 22px 24px;
+  max-width: clamp(20rem, 62vw, 62rem); margin-top: 18px; padding: 22px 24px;
   background: var(--paper); border: 1px solid var(--paper-line); border-radius: 14px;
   display: grid; gap: 14px;
 }
@@ -332,7 +342,7 @@
    only scans portal/src, so a raw <table> here is fine) plus a filter
    toolbar (.dir-search from directory.css) and a key/value list for the
    label map and the sync meta row. */
-.local-section { margin-top: 18px; max-width: 1100px; }
+.local-section { margin-top: 18px; max-width: clamp(20rem, 82vw, 90rem); }
 .local-section > summary {
   cursor: pointer; font-weight: 600; font-size: 15px; padding: 10px 0;
   list-style: none; display: flex; gap: 10px; align-items: center;
@@ -463,7 +473,7 @@
 .sound-volume { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
 .sound-volume input[type='range'] { width: 180px; accent-color: var(--accent); }
 .sound-volume-value { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-mute); min-width: 52px; text-align: right; }
-.sound-uploads { display: grid; gap: 8px; margin-top: 10px; max-width: 560px; }
+.sound-uploads { display: grid; gap: 8px; margin-top: 10px; max-width: clamp(20rem, 62vw, 62rem); }
 .sound-upload-row {
   display: flex; align-items: center; gap: 10px;
   padding: 8px 12px;
@@ -478,7 +488,7 @@
    worker's card. Everything is sized for a finger at arm's length: the
    result rows are tall, the avatar is big enough to recognize across a
    dock, and the single action button is a 64px target. */
-.tc-results { display: grid; gap: 8px; margin-top: 14px; max-width: 720px; }
+.tc-results { display: grid; gap: 8px; margin-top: 14px; max-width: clamp(20rem, 62vw, 62rem); }
 .tc-result {
   display: flex; align-items: center; gap: 12px;
   padding: 14px 16px;
@@ -497,7 +507,7 @@
   display: flex; align-items: center; gap: 18px;
   padding: 22px 24px;
   background: var(--paper); border: 1px solid var(--paper-line); border-radius: 16px;
-  max-width: 720px; margin-top: 18px;
+  max-width: clamp(20rem, 62vw, 62rem); margin-top: 18px;
 }
 .tc-card-body { min-width: 0; }
 .tc-avatar, .tc-avatar-fallback {
@@ -610,7 +620,7 @@
 .enroll-card {
   padding: 18px 22px;
   background: var(--paper); border: 1px solid var(--paper-line); border-radius: 16px;
-  max-width: 720px; margin: 0 0 16px;
+  max-width: clamp(20rem, 62vw, 62rem); margin: 0 0 16px;
 }
 .enroll-card-name { font-size: 24px; font-weight: 600; }
 .enroll-facts {
@@ -623,6 +633,6 @@
 }
 .enroll-facts dd { margin: 2px 0 0; font-size: 15px; color: var(--text-dark); }
 .enroll-replace { margin: 12px 0 0; font-size: 13px; color: var(--text-mute); }
-.enroll-preview { margin: 8px 0 0; font-size: 14px; color: var(--text-mute); max-width: 720px; }
+.enroll-preview { margin: 8px 0 0; font-size: 14px; color: var(--text-mute); max-width: clamp(20rem, 62vw, 62rem); }
 .enroll-preview .mono { font-size: 16px; color: var(--text-dark); }
 .enroll-actions { display: flex; gap: 12px; align-items: center; margin-top: 16px; }
