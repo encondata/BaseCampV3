@@ -12,6 +12,7 @@ import KioskSetup from './pages/KioskSetup';
 import LabelSectionPage from './pages/LabelSectionPage';
 import Labels from './pages/Labels';
 import Login from './pages/Login';
+import PrinterTools from './pages/PrinterTools';
 import Scan from './pages/Scan';
 import Settings from './pages/Settings';
 import Timeclock from './pages/Timeclock';
@@ -58,6 +59,9 @@ export default function App() {
               </KioskGuard>
             )}
           />
+          {/* Printer Setup / Troubleshooting is a real screen now; the
+              other two sections keep the placeholder page. The section
+              entry still owns the title and blurb either way. */}
           {LABEL_SECTIONS.map((s) => (
             <Route
               key={s.id}
@@ -65,7 +69,9 @@ export default function App() {
               element={(
                 <KioskGuard>
                   <SetupGate feature={LABELS}>
-                    <KioskShell><LabelSectionPage section={s} /></KioskShell>
+                    <KioskShell>
+                      {s.id === 'printers' ? <PrinterTools /> : <LabelSectionPage section={s} />}
+                    </KioskShell>
                   </SetupGate>
                 </KioskGuard>
               )}

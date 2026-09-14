@@ -13,7 +13,7 @@
  * Types come from the portal (type-only imports are erased at build).
  */
 
-import type { PersonOut, SessionData, UiPreferences } from '@portal/lib/api';
+import type { LabelVocab, PersonOut, SessionData, UiPreferences } from '@portal/lib/api';
 import type { SystemStatus } from '@portal/lib/systemStatus';
 
 import { apiUrl } from './config';
@@ -483,4 +483,21 @@ export async function postClockOut(body: {
     body: JSON.stringify(body),
   });
   return jsonFrom<KioskTimeclockStatus>(resp);
+}
+
+// ── label vocabulary ────────────────────────────────────────────────
+
+/** Re-exported from the portal so the printer tools share one shape. */
+export type { LabelVocab };
+
+/** Label sizes, DPI, types, and languages for the printer tools.
+ *  Deliberately NOT the portal's `/labels/vocab`: that gates on
+ *  labels:view, which the `worker` role does not hold, so a worker at a
+ *  kiosk could not size a test label. `/kiosk/labels/vocab` returns the
+ *  same rows under kiosk:view (read-only reference data). */
+export async function fetchLabelVocab(kind?: string): Promise<LabelVocab[]> {
+  const resp = await apiFetch(kind
+    ? `/kiosk/labels/vocab?kind=${encodeURIComponent(kind)}`
+    : '/kiosk/labels/vocab');
+  return jsonFrom<LabelVocab[]>(resp);
 }
