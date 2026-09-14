@@ -2273,6 +2273,44 @@ class KioskSetupOut(BaseModel):
     scan_status_label: str
 
 
+# ── kiosk local-data sync ──
+
+class KioskAssetOut(BaseModel):
+    """One roster asset as the kiosk caches it. `label` is the full label
+    placeholder map for this asset on this move (the same values the label
+    generator writes), so a kiosk can render a label offline."""
+
+    id: uuid.UUID
+    asset_id: str            # Asset.legacy_id, the human Asset ID ("" if unset)
+    name: str | None = None
+    rfid: str | None = None
+    serial_number: str | None = None
+    make: str | None = None
+    model: str | None = None
+    make_model: str
+    label: dict[str, str]
+
+
+class KioskAssetsSyncOut(BaseModel):
+    initiative_id: uuid.UUID
+    initiative_name: str
+    generated_at: datetime
+    assets: list[KioskAssetOut]
+
+
+class KioskPersonOut(BaseModel):
+    id: uuid.UUID
+    display_name: str
+    rfid_tag: str | None = None
+    is_worker: bool
+    has_account: bool
+
+
+class KioskPeopleSyncOut(BaseModel):
+    generated_at: datetime
+    people: list[KioskPersonOut]
+
+
 # ── Labels ──
 
 

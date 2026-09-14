@@ -4,9 +4,10 @@ phone side) and, in Task 4, the signed-in heartbeat that upserts the
 kiosk's Device row. Design:
 docs/superpowers/specs/2026-09-13-kiosk-web-design.md"""
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload
@@ -17,12 +18,17 @@ from serversherpa.api.deps import (
 )
 from serversherpa.api.routes.auth import session_response
 from serversherpa.api.schemas import (
-    HeartbeatIn, HeartbeatOut, KioskSetupIn, KioskSetupOut, KioskSignOutIn, PairCreateIn,
+    HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut, KioskPeopleSyncOut,
+    KioskPersonOut, KioskSetupIn, KioskSetupOut, KioskSignOutIn, PairCreateIn,
     PairCreateOut, PairInfoOut, PairPollIn, PairPollOut, SetupOptionInitiative,
     SetupOptionScanType, SetupOptionSite, SetupOptionsOut,
 )
 from serversherpa.db.models import (
-    Client, Device, Initiative, KioskPairRequest, Site, StatusValue, UserAccount,
+    Asset, AssetModel, Client, Device, Initiative, InitiativeAsset, KioskPairRequest,
+    LabelPlaceholder, Person, Site, StatusValue, UserAccount, WorkerProfile,
+)
+from serversherpa.labels.generate.values import (
+    CONTAINER_KEYS, AssetRow, Sites, placeholder_values,
 )
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_pairing as pairing
@@ -373,3 +379,117 @@ async def kiosk_setup(
                          initiative_name=initiative.name,
                          site_id=site.id, site_name=site.name, site_role=site_role,
                          scan_status=scan_type.key, scan_status_label=scan_type.label)
+
+
+# ── local-data sync (kiosk:view) ─────────────────────────────────────
+
+
+async def _label_catalog_keys(db: AsyncSession) -> list[str]:
+    """The active label placeholder catalog, minus the container-only
+    keys (labels/generate/values.py resolves those to "" for an asset
+    row anyway — the runner is asset-only). Same source of truth the
+    label generator reads, so the kiosk caches exactly the values a
+    generated label would carry."""
+    keys = list((await db.scalars(
+        select(LabelPlaceholder.key)
+        .where(LabelPlaceholder.is_active.is_(True))
+        .order_by(LabelPlaceholder.sort_order, LabelPlaceholder.key))).all())
+    return [k for k in keys if k not in CONTAINER_KEYS]
+
+
+@router.get("/sync/assets", response_model=KioskAssetsSyncOut)
+async def sync_assets(
+    db: DbSession,
+    initiative_id: uuid.UUID = Query(...),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskAssetsSyncOut:
+    """Every asset on this move's roster, for the kiosk's local
+    (IndexedDB) copy of the move: identity fields (asset ID, name, RFID,
+    serial, make/model) plus `label` — the full label placeholder map
+    for that asset on this move, computed by the label generator's own
+    `placeholder_values` so an offline kiosk renders the same values a
+    generated label carries.
+
+    One response, no paging: the whole roster comes down in a single
+    fetch (the portal's convention for roster-shaped data — see
+    /initiatives/{id}/assets). A roster is hundreds to a few thousand
+    rows; at roughly 400-600 bytes per row that is well under a
+    megabyte, and the kiosk fetches it once per setup.
+
+    404 `initiative_not_found` for an unknown id; 422 `bad_initiative`
+    when the initiative is not a move. Gated on kiosk:view only, like
+    the rest of this router (see /kiosk/setup-options' scope note)."""
+    initiative = await db.get(Initiative, initiative_id)
+    if initiative is None:
+        raise _err(404, "initiative_not_found")
+    if initiative.initiative_type != "move":
+        raise _err(422, "bad_initiative")
+
+    origin = (await db.get(Site, initiative.origin_site_id)
+              if initiative.origin_site_id else None)
+    destination = (await db.get(Site, initiative.destination_site_id)
+                   if initiative.destination_site_id else None)
+    sites = Sites(origin=origin, destination=destination)
+    catalog_keys = await _label_catalog_keys(db)
+
+    rows = (await db.execute(
+        select(Asset, InitiativeAsset, AssetModel)
+        .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id)
+        .outerjoin(AssetModel, AssetModel.id == Asset.model_id)
+        .where(InitiativeAsset.initiative_id == initiative.id)
+        .order_by(Asset.legacy_id))).all()
+
+    assets: list[KioskAssetOut] = []
+    for asset, ia, model in rows:
+        asset_row = AssetRow(
+            asset_id=asset.id, legacy_id=asset.legacy_id, name=asset.name,
+            serial_number=asset.serial_number,
+            make=model.make if model else None, model=model.model if model else None,
+            source_rack=ia.source_rack, source_ru=ia.source_ru,
+            source_position=ia.source_position, destination_rack=ia.destination_rack,
+            destination_ru=ia.destination_ru,
+            destination_position=ia.destination_position)
+        label = placeholder_values(asset_row, initiative, sites, catalog_keys)
+        assets.append(KioskAssetOut(
+            id=asset.id, asset_id=label["asset_id"], name=asset.name,
+            rfid=asset.rfid_tag, serial_number=asset.serial_number,
+            make=model.make if model else None, model=model.model if model else None,
+            make_model=label["make_model"], label=label))
+
+    return KioskAssetsSyncOut(
+        initiative_id=initiative.id, initiative_name=initiative.name,
+        generated_at=datetime.now(UTC), assets=assets)
+
+
+@router.get("/sync/people", response_model=KioskPeopleSyncOut)
+async def sync_people(
+    db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskPeopleSyncOut:
+    """Every non-archived person who has a worker profile or a user
+    account, for the kiosk's local copy of the people list — the set a
+    kiosk needs to recognize whoever walks up to it.
+
+    Privacy note: this caches names and RFID tags on the kiosk itself
+    (IndexedDB, so they survive a reload). That is internal directory
+    data, not contact details — no email, phone, or address is sent —
+    and the endpoint is gated on kiosk:view, the same gate as the rest
+    of this router. Contacts with neither a worker profile nor an
+    account (client-side people) are never included. One response, no
+    paging: the list is a few hundred rows at most."""
+    rows = (await db.execute(
+        select(Person,
+               WorkerProfile.person_id.isnot(None),
+               UserAccount.person_id.isnot(None))
+        .outerjoin(WorkerProfile, WorkerProfile.person_id == Person.id)
+        .outerjoin(UserAccount, UserAccount.person_id == Person.id)
+        .where(Person.archived_at.is_(None),
+               (WorkerProfile.person_id.isnot(None))
+               | (UserAccount.person_id.isnot(None)))
+        .order_by(Person.last_name, Person.first_name))).all()
+    return KioskPeopleSyncOut(
+        generated_at=datetime.now(UTC),
+        people=[KioskPersonOut(id=p.id, display_name=p.display_name,
+                               rfid_tag=p.rfid_tag, is_worker=is_worker,
+                               has_account=has_account)
+                for p, is_worker, has_account in rows])
