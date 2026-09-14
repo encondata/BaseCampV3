@@ -35,7 +35,10 @@ function write(key: string, value: string): boolean {
   }
 }
 
-function uuid(): string {
+/** A v4 uuid — `crypto.randomUUID` where it exists (every browser the
+ *  kiosk targets), a Math.random shim otherwise. Also the outbox's
+ *  `client_scan_id` generator. */
+export function uuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }

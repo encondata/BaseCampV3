@@ -5,7 +5,8 @@ import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, expect, it } from 'vitest';
 
 import {
-  clearDb, closeDb, count, getAll, getByIndex, readMeta, replaceAll, replaceAllMulti, writeMeta,
+  clearDb, closeDb, count, deleteRows, getAll, getByIndex, openDb, putRows, readMeta, replaceAll,
+  replaceAllMulti, writeMeta,
 } from './localDb';
 
 const asset = (id: string, rfid: string) => ({
@@ -103,4 +104,75 @@ it('replaceAllMulti aborts every store together when one write is invalid', asyn
   expect((await getAll('assets')).map((r) => (r as { id: string }).id)).toEqual(['old']);
   expect(await count('people')).toBe(0);
   expect(await readMeta('sync')).toBeNull();
+});
+
+it('v2 adds the outbox store, keyed on client_scan_id with a status index', async () => {
+  const db = await openDb();
+  expect(db.version).toBe(2);
+  expect([...db.objectStoreNames].sort()).toEqual(['assets', 'meta', 'outbox', 'people']);
+});
+
+it('upgrades a v1 database in place, keeping its rows and adding the outbox', async () => {
+  // Build a v1 database by hand — exactly what a kiosk that synced
+  // before the outbox shipped has on disk.
+  await new Promise<void>((resolve, reject) => {
+    const req = indexedDB.open('serversherpa-kiosk', 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      db.createObjectStore('assets', { keyPath: 'id' }).createIndex('rfid', 'rfid');
+      db.createObjectStore('people', { keyPath: 'id' }).createIndex('rfid_tag', 'rfid_tag');
+      db.createObjectStore('meta', { keyPath: 'key' });
+    };
+    req.onsuccess = () => { req.result.close(); resolve(); };
+    req.onerror = () => reject(req.error);
+  });
+  await replaceAll('assets', [asset('a', 'R1')]);
+  closeDb();
+
+  const db = await openDb();
+  expect(db.version).toBe(2);
+  expect(db.objectStoreNames.contains('outbox')).toBe(true);
+  expect(await count('assets')).toBe(1);
+});
+
+it('putRows upserts without clearing, and deleteRows removes by key', async () => {
+  await putRows('outbox', [
+    { client_scan_id: 's1', status: 'queued' }, { client_scan_id: 's2', status: 'queued' },
+  ]);
+  await putRows('outbox', [{ client_scan_id: 's1', status: 'accepted' }]);
+  const rows = await getAll<{ client_scan_id: string; status: string }>('outbox');
+  expect(rows.map((r) => [r.client_scan_id, r.status]).sort())
+    .toEqual([['s1', 'accepted'], ['s2', 'queued']]);
+
+  await deleteRows('outbox', ['s1']);
+  expect((await getAll('outbox')).length).toBe(1);
+});
+
+it('clearDb leaves the outbox alone — unsent scans are not local cache', async () => {
+  await replaceAll('assets', [asset('a', 'R1')]);
+  await putRows('outbox', [{ client_scan_id: 's1', status: 'queued' }]);
+  await clearDb();
+  expect(await count('assets')).toBe(0);
+  expect(await count('outbox')).toBe(1);
+});
+
+it('closes its connection when another tab needs a higher version', async () => {
+  await replaceAll('assets', [asset('a', 'R1')]);
+  await openDb();
+
+  // Exactly what a newer tab does: open the same database one version
+  // up. Without the `versionchange` handler this rejects as blocked and
+  // the newer tab hangs forever — which is what happened live, where
+  // three stale tabs pinned the database at v1 and the Scanning page
+  // never became usable.
+  const upgraded = await new Promise<IDBDatabase>((resolve, reject) => {
+    const req = indexedDB.open('serversherpa-kiosk', 3);
+    req.onupgradeneeded = () => req.result.createObjectStore('later', { keyPath: 'id' });
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+    req.onblocked = () => reject(new Error('blocked — the old connection never yielded'));
+  });
+  expect(upgraded.version).toBe(3);
+  expect(upgraded.objectStoreNames.contains('assets')).toBe(true);
+  upgraded.close();
 });

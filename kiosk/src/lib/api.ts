@@ -345,6 +345,46 @@ export async function fetchPeopleSync(): Promise<KioskPeopleSync> {
   return jsonFrom<KioskPeopleSync>(resp);
 }
 
+// ── scan ingest ─────────────────────────────────────────────────────
+
+/** One scan the kiosk already matched against its local copy of the
+ *  move. `asset_id` is that local match — informational only; the server
+ *  re-matches `scanned_value` itself. `site_id`/`initiative_id`/
+ *  `scan_status` come from Kiosk Setup and default to the Device's own
+ *  setup when omitted. */
+export interface KioskScanIn {
+  client_scan_id: string;
+  scanned_value: string;
+  scan_type: 'rfid' | 'barcode';
+  scanned_at: string;
+  asset_id?: string | null;
+  site_id?: string | null;
+  initiative_id?: string | null;
+  scan_status?: string | null;
+}
+
+export interface KioskScanBatchOut {
+  accepted: string[];
+  rejected: { client_scan_id: string; code: string }[];
+}
+
+/** Posts 1-100 scans. Idempotent on `client_scan_id`, so a batch the
+ *  kiosk retried because it never saw the response is accepted again
+ *  rather than double-counted — which is what lets the outbox retry a
+ *  timeout without thinking twice. Throws `ApiError` on anything but a
+ *  200 (including 423 read-only and a network failure), which is the
+ *  outbox's signal to back off and try the whole batch again. */
+export async function postScans(
+  body: { serial: string; scans: KioskScanIn[] },
+): Promise<KioskScanBatchOut> {
+  const resp = await apiFetch('/kiosk/scans', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return jsonFrom<KioskScanBatchOut>(resp);
+}
+
 // ── public system status (login banners) ────────────────────────────
 
 export const DEFAULT_SYSTEM_STATUS: SystemStatus = {

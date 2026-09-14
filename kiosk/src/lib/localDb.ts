@@ -4,11 +4,17 @@
  * holds the move's data downloaded after Kiosk Setup, so a kiosk can
  * recognize an asset or a person without the API.
  *
- * Database `serversherpa-kiosk` v1, three stores:
+ * Database `serversherpa-kiosk` v2, four stores:
  *   - `assets` (keyPath `id`; indexes `rfid`, `asset_id`, `serial_number`)
  *   - `people` (keyPath `id`; index `rfid_tag`)
  *   - `meta`   (keyPath `key`) — the `sync` row: which move, the counts,
  *     and when it was downloaded.
+ *   - `outbox` (keyPath `client_scan_id`; index `status`) — v2: scans
+ *     waiting to reach the API (see `outbox.ts`).
+ *
+ * v1 databases upgrade in place: `onupgradeneeded` only creates the
+ * stores that are missing, so an existing kiosk keeps its downloaded
+ * move and simply gains the outbox.
  *
  * Unlike the portal's cache, failures here are NOT swallowed: every call
  * is promise-based and a missing IndexedDB, a blocked open, or a failed
@@ -17,11 +23,16 @@
  */
 
 const DB_NAME = 'serversherpa-kiosk';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
-export type StoreName = 'assets' | 'people' | 'meta';
+export type StoreName = 'assets' | 'people' | 'meta' | 'outbox';
 
+/** The downloaded move — what "Clear local data" empties. `outbox` is
+ *  deliberately NOT here: clearing the cached roster must never throw
+ *  away scans that have not reached the API yet. */
 export const STORES: StoreName[] = ['assets', 'people', 'meta'];
+
+export const ALL_STORES: StoreName[] = [...STORES, 'outbox'];
 
 export interface MetaRow {
   key: string;
@@ -60,8 +71,24 @@ export function openDb(): Promise<IDBDatabase> {
         db.createObjectStore('people', { keyPath: 'id' }).createIndex('rfid_tag', 'rfid_tag');
       }
       if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
+      if (!db.objectStoreNames.contains('outbox')) {
+        db.createObjectStore('outbox', { keyPath: 'client_scan_id' }).createIndex('status', 'status');
+      }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // Another tab (or this kiosk's next version) asking for a higher
+      // version is blocked for as long as this connection stays open —
+      // which, on a kiosk left on a screen for weeks, is forever. Yield
+      // the connection instead: the next call reopens at the new
+      // version. Found live: three stale tabs pinned the database at v1
+      // and the Scanning page simply never became usable.
+      db.onversionchange = () => {
+        db.close();
+        if (dbPromise) void dbPromise.then((open) => { if (open === db) dbPromise = null; });
+      };
+      resolve(db);
+    };
     req.onerror = () => reject(req.error ?? new Error('IndexedDB open failed'));
     req.onblocked = () => reject(new Error('IndexedDB open blocked'));
   }).catch((err) => {
@@ -157,6 +184,25 @@ export function replaceAllMulti(
     }
     if (meta) tx.objectStore('meta').put({ ...meta.value, key: meta.key });
     return counts;
+  });
+}
+
+/** Writes rows without clearing the store first — the outbox's update
+ *  path, where every write is an upsert of a handful of known keys and
+ *  the rest of the queue must survive it. One transaction, so a batch
+ *  that moves ten rows to `sending` either all moves or none does. */
+export function putRows(store: StoreName, rows: readonly unknown[]): Promise<void> {
+  return withStores([store], 'readwrite', async (tx) => {
+    const os = tx.objectStore(store);
+    for (const row of rows) os.put(row);
+  });
+}
+
+/** Deletes rows by key, in one transaction (the outbox's "Clear sent"). */
+export function deleteRows(store: StoreName, keys: readonly IDBValidKey[]): Promise<void> {
+  return withStores([store], 'readwrite', async (tx) => {
+    const os = tx.objectStore(store);
+    for (const key of keys) os.delete(key);
   });
 }
 
