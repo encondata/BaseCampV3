@@ -81,8 +81,9 @@ def _validate_meta(kind: str, meta: dict) -> str | None:
     return None
 
 
-async def _vocab_usage(db: DbSession) -> dict[tuple[str, str], int]:
-    """(kind, key) -> count of label_templates referencing it."""
+async def vocab_usage(db: DbSession) -> dict[tuple[str, str], int]:
+    """(kind, key) -> count of label_templates referencing it. Public:
+    the kiosk's own vocab route reuses it so both listings match."""
     totals: dict[tuple[str, str], int] = {}
     rows = (await db.execute(select(
         LabelTemplate.label_type, LabelTemplate.size_key,
@@ -104,7 +105,7 @@ async def list_vocab(
     if kind is not None:
         q = q.where(LabelVocab.kind == kind)
     rows = (await db.execute(q)).scalars().all()
-    usage = await _vocab_usage(db)
+    usage = await vocab_usage(db)
     out = []
     for r in rows:
         item = LabelVocabOut.model_validate(r)

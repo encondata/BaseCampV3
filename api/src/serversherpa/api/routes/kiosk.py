@@ -18,19 +18,21 @@ from serversherpa.api.deps import (
     AuthContext, DbSession, client_ip, rate_limit_ip, require_permission,
 )
 from serversherpa.api.routes.auth import session_response
+from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
     HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut, KioskClockInIn,
     KioskClockOutIn, KioskPeopleSyncOut, KioskPersonOut, KioskScanBatchIn,
     KioskScanBatchOut, KioskScanRejected, KioskSetupIn, KioskSetupOut,
     KioskSignOutIn, KioskTimeclockEntry, KioskTimeclockLastEntry,
-    KioskTimeclockPerson, KioskTimeclockStatusOut, PairCreateIn, PairCreateOut,
+    KioskTimeclockPerson, KioskTimeclockStatusOut, LabelVocabOut,
+    PairCreateIn, PairCreateOut,
     PairInfoOut, PairPollIn, PairPollOut, SetupOptionInitiative,
     SetupOptionScanType, SetupOptionSite, SetupOptionsOut,
 )
 from serversherpa.db.models import (
     Asset, AssetModel, Client, Device, Initiative, InitiativeAsset, KioskPairRequest,
-    LabelPlaceholder, Person, RawScan, Site, StatusValue, TimeEntry, UserAccount,
-    WorkerProfile,
+    LabelPlaceholder, LabelVocab, Person, RawScan, Site, StatusValue, TimeEntry,
+    UserAccount, WorkerProfile,
 )
 from serversherpa.labels.generate.values import (
     CONTAINER_KEYS, AssetRow, Sites, make_model_text, placeholder_values,
@@ -795,3 +797,38 @@ async def timeclock_clock_out(
                    "device_id": str(device.id)})
     await db.commit()
     return await _status_out(db, person, None, last_entry=entry)
+
+
+# ── label vocabulary (kiosk:view) ────────────────────────────────────
+
+@router.get("/labels/vocab", response_model=list[LabelVocabOut])
+async def list_label_vocab(
+    db: DbSession, kind: str | None = None,
+    _actor: AuthContext = require_permission("kiosk", "view"),
+) -> list[LabelVocabOut]:
+    """The label vocabulary (types, sizes, DPI, languages) for the kiosk.
+
+    Why a second route instead of reusing GET /labels/vocab: that one
+    gates on labels:view, which the `worker` role does not hold —
+    kiosk:view does not imply it. Without this a worker standing at a
+    kiosk could not pick a label size or DPI for a test label on
+    /labels/printers.
+
+    Read-only reference data: the same rows, the same ordering, and the
+    same template usage counts as the portal's listing (it reuses
+    `labels.vocab_usage`), so the two payloads are identical. Nothing
+    here is writable from the kiosk — vocab edits stay devtools-gated in
+    the portal.
+    """
+    q = select(LabelVocab).order_by(LabelVocab.kind, LabelVocab.sort_order,
+                                    LabelVocab.key)
+    if kind is not None:
+        q = q.where(LabelVocab.kind == kind)
+    rows = (await db.execute(q)).scalars().all()
+    usage = await _vocab_usage(db)
+    out = []
+    for r in rows:
+        item = LabelVocabOut.model_validate(r)
+        item.usage_count = usage.get((r.kind, r.key), 0)
+        out.append(item)
+    return out
