@@ -17,6 +17,11 @@ import KioskSettings from './KioskSettings';
 beforeEach(() => localStorage.clear());
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
+it('shows the "Kiosk setup" title', () => {
+  render(<MemoryRouter><KioskSettings /></MemoryRouter>);
+  expect(screen.getByRole('heading', { name: 'Kiosk setup' })).toBeTruthy();
+});
+
 it('shows the identity and saves a new name, re-beating when signed in', async () => {
   render(<MemoryRouter><KioskSettings /></MemoryRouter>);
   const serial = getIdentity().serial;

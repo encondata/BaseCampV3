@@ -58,13 +58,14 @@ it('shows no section label at /', () => {
   expect(document.querySelector('.kiosk-section')).toBeNull();
 });
 
-it('shows no section label at /settings', () => {
+it('shows "Kiosk Setup" as the section label at /settings', () => {
   render(
     <MemoryRouter initialEntries={['/settings']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
-  expect(document.querySelector('.kiosk-section')).toBeNull();
+  const section = document.querySelector('.kiosk-section');
+  expect(section?.textContent).toBe('Kiosk Setup');
 });
 
 it('footer shows the kiosk facts when signed in', () => {

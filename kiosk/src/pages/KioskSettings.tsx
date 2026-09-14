@@ -32,8 +32,8 @@ export default function KioskSettings() {
 
   return (
     <div className="portal-page">
-      <div className="eyebrow">Kiosk</div>
-      <h1 className="page-title">Kiosk settings</h1>
+      <div className="eyebrow">Kiosk · Setup</div>
+      <h1 className="page-title">Kiosk setup</h1>
       <p className="page-hint">This name is what people see on their phone when they link with this kiosk.</p>
       {!identity.persistent && (
         <div className="portal-banner">

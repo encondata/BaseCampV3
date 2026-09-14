@@ -6,6 +6,15 @@ import { Link } from 'react-router-dom';
 import { FEATURES, type KioskFeature } from '../lib/features';
 
 const ICONS: Record<KioskFeature['id'], JSX.Element> = {
+  setup: (
+    <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <circle cx="20" cy="20" r="4.5" stroke="currentColor" strokeWidth="2.5" />
+      <path
+        d="M32.3 23.3a2.8 2.8 0 0 0 .6 3.1l.2.2a3.3 3.3 0 1 1-4.7 4.7l-.2-.2a2.8 2.8 0 0 0-3.1-.6 2.8 2.8 0 0 0-1.7 2.6V34a3.3 3.3 0 1 1-6.6 0v-.3a2.8 2.8 0 0 0-1.8-2.6 2.8 2.8 0 0 0-3.1.6l-.2.2a3.3 3.3 0 1 1-4.7-4.7l.2-.2a2.8 2.8 0 0 0 .6-3.1 2.8 2.8 0 0 0-2.6-1.7H4.7a3.3 3.3 0 1 1 0-6.6H5a2.8 2.8 0 0 0 2.6-1.8 2.8 2.8 0 0 0-.6-3.1l-.2-.2a3.3 3.3 0 1 1 4.7-4.7l.2.2a2.8 2.8 0 0 0 3.1.6H15a2.8 2.8 0 0 0 1.7-2.6V4.7a3.3 3.3 0 1 1 6.6 0V5a2.8 2.8 0 0 0 1.7 2.6 2.8 2.8 0 0 0 3.1-.6l.2-.2a3.3 3.3 0 1 1 4.7 4.7l-.2.2a2.8 2.8 0 0 0-.6 3.1V15a2.8 2.8 0 0 0 2.6 1.7h.3a3.3 3.3 0 1 1 0 6.6h-.3a2.8 2.8 0 0 0-2.6 1.7Z"
+        stroke="currentColor" strokeWidth="2.5" strokeLinejoin="round"
+      />
+    </svg>
+  ),
   scan: (
     <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <rect x="5" y="8" width="3" height="24" fill="currentColor" />

@@ -17,7 +17,7 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/settings" element={<KioskShell><KioskSettings /></KioskShell>} />
           <Route path="/" element={<KioskGuard><KioskShell><Home /></KioskShell></KioskGuard>} />
-          {FEATURES.map((f) => (
+          {FEATURES.filter((f) => f.placeholder).map((f) => (
             <Route
               key={f.id}
               path={f.path}

@@ -8,7 +8,7 @@ import FeaturePage from './FeaturePage';
 
 afterEach(() => cleanup());
 
-describe.each(FEATURES)('FeaturePage for $title', (feature) => {
+describe.each(FEATURES.filter((f) => f.placeholder))('FeaturePage for $title', (feature) => {
   it('shows the title, coming-soon hint, placeholder notice, and a link home', () => {
     render(<MemoryRouter><FeaturePage feature={feature} /></MemoryRouter>);
     expect(screen.getByRole('heading', { name: feature.title })).toBeTruthy();
