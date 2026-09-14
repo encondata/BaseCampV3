@@ -523,3 +523,30 @@
 /* The session-only receipt of what this kiosk punched — the portal's
    own time entries are the record. Same shape as the scan list. */
 .tc-chip { font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
+
+/* ── printer modals on a kiosk screen ──────────────────────────────
+   printers.css gives the alignment and setup cards `max-height: none;
+   overflow: visible` so the portal's dropdowns escape the card. A kiosk
+   is often a tablet in landscape (~600-800px tall), where that lets the
+   footer — and its Next/Finish buttons — fall off the bottom of the
+   fixed scrim with no way to reach them. Cap the card to the viewport
+   and scroll the body instead, keeping the header and footer in view.
+   Scoped to .kiosk-shell so the portal's own pages are untouched. */
+/* The full four-class chain, because printers.css sets `max-height: none`
+   at that specificity — a shorter selector loses the cap and keeps the
+   footer off-screen. */
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-align-card,
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-setup-card {
+  max-height: 92dvh;
+  display: flex;
+  flex-direction: column;
+}
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-align-card > .modal-body,
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-setup-card > .modal-body {
+  overflow: auto;
+  min-height: 0;
+}
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-align-card > .modal-head,
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-setup-card > .modal-head,
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-align-card > .modal-foot,
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-setup-card > .modal-foot { flex: none; }

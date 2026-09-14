@@ -138,6 +138,8 @@ Jimmy: "Bring over the functions for printer settings and test label printing fr
 
 **Deferred**: Install Fonts on the kiosk (pushing font bytes needs the portal's font library, which is `labels:view`-gated — the row stays disabled and points at the portal); Brother printers; any printer registry (the kiosk knows only the printer this browser is authorized for); and remembering which printer a kiosk last used.
 
+- **Modal height on a kiosk screen.** `printers.css` gives the alignment and setup cards `max-height: none; overflow: visible` so the portal's dropdowns can escape the card. A kiosk is often a tablet in landscape (~640px tall), where that drops the footer's Next/Finish buttons off the bottom of the fixed scrim. `kiosk.css` caps both cards to `92dvh` and scrolls the body instead, using the portal's full four-class chain because a shorter selector loses to its `max-height: none`.
+
 ### Login page (`/login`)
 
 Same two-panel `.login-shell` as the portal, reusing `auth-theme.css` verbatim:
