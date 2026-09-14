@@ -145,7 +145,7 @@ it('clicking a result loads the portal status and shows the card', async () => {
   expect(screen.queryByRole('button', { name: 'Clock in' })).toBeNull();
 });
 
-it('clocks a worker out, flashes, sounds, and returns to the entry state with a toast and a recent row', async () => {
+it('clocks a worker out, flashes, sounds, and returns to the entry state with a toast', async () => {
   api.fetchTimeclockStatus.mockResolvedValue(clockedIn());
   render_();
   await typeAndPick('jimmy', /Jimmy Henderson/);
@@ -158,10 +158,7 @@ it('clocks a worker out, flashes, sounds, and returns to the entry state with a 
   expect(readFlash()?.color).toBe(hslCss(DEFAULT_APPEARANCE.good_scan));
   expect(await screen.findByText('Clocked out — Jimmy Henderson · 3h 12m')).toBeTruthy();
   expect(input()).toBeTruthy();                       // back to the entry state
-  const recent = screen.getByRole('table');
-  expect(recent.textContent).toContain('Jimmy Henderson');
-  expect(recent.textContent).toContain('Out');
-  expect(recent.textContent).toContain('3h 12m');
+  expect(screen.queryByRole('table')).toBeNull();     // the kiosk keeps no punch history
 });
 
 it('clocks a worker in when they are not on the clock', async () => {
@@ -178,7 +175,7 @@ it('clocks a worker in when they are not on the clock', async () => {
     site_id: 'site-1', initiative_id: 'init-1',
   }));
   expect(await screen.findByText('Clocked in — Tina Tanaka')).toBeTruthy();
-  expect(screen.getByRole('table').textContent).toContain('In');
+  expect(screen.queryByRole('table')).toBeNull();
 });
 
 it('an RFID with leading zeros selects the worker without Enter', async () => {

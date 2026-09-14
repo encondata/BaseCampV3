@@ -522,5 +522,4 @@
 }
 /* The session-only receipt of what this kiosk punched — the portal's
    own time entries are the record. Same shape as the scan list. */
-.tc-recent { width: 100%; margin-top: 18px; }
 .tc-chip { font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }

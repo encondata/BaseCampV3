@@ -17,9 +17,8 @@
  * local clock state and no offline queue here (unlike scanning, whose
  * outbox exists because a dock loses signal mid-shift). A punch that
  * didn't reach the API didn't happen, and the screen says so rather than
- * promising to send it later. The recent list below is a session-only
- * receipt of what this kiosk punched — the portal's `time_entries` rows
- * are the record.
+ * promising to send it later. The portal's `time_entries` rows are the
+ * only record of a punch; the kiosk keeps no history of its own.
  *
  * A kiosk is unattended by nature, so the card never sits: twenty idle
  * seconds return it to the entry state, and so does every punch.
@@ -47,20 +46,11 @@ import { useSyncStatus } from '../lib/sync';
 type LoadStatus = 'loading' | 'ready' | 'error';
 type StatusPhase = 'loading' | 'ready' | 'error';
 
-interface RecentPunch {
-  id: number;
-  name: string;
-  kind: 'in' | 'out';
-  at: string;
-  minutes: number | null;
-}
-
 /** The same rule the Scanning page uses: focus is only reclaimed from
  *  things nobody deliberately moved it to. */
 const KEEPS_FOCUS = new Set(['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'A']);
 
 const MAX_RESULTS = 8;
-const MAX_RECENT = 10;
 const IDLE_MS = 20_000;      // a card never outlives the person at it
 const TICK_MS = 30_000;      // the elapsed counter's resolution
 const TOAST_MS = 5_000;
@@ -119,14 +109,12 @@ export default function Timeclock() {
   const [avatarFailed, setAvatarFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [recent, setRecent] = useState<RecentPunch[]>([]);
   const [, setTick] = useState(0);
   const [idleAt, setIdleAt] = useState(0);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const loadId = useRef(0);
   const statusId = useRef(0);
-  const recentId = useRef(0);
   const errorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const firstLoad = useRef(true);
@@ -286,10 +274,6 @@ export default function Timeclock() {
     showError(`No worker found for "${raw}".`, ERROR_MS);
   };
 
-  const addRecent = (punch: Omit<RecentPunch, 'id'>) => {
-    setRecent((rows) => [{ ...punch, id: ++recentId.current }, ...rows].slice(0, MAX_RECENT));
-  };
-
   const punch = () => {
     if (!selected || !status || punching) return;
     const person = selected;
@@ -311,12 +295,6 @@ export default function Timeclock() {
         playScanSound('good');
         const name = next.person.display_name;
         const minutes = next.last_entry?.minutes ?? null;
-        addRecent({
-          name,
-          kind: clockingOut ? 'out' : 'in',
-          at: new Date().toISOString(),
-          minutes: clockingOut ? minutes : null,
-        });
         showToast(clockingOut
           ? `Clocked out — ${name}${minutes === null ? '' : ` · ${formatMinutes(minutes)}`}`
           : `Clocked in — ${name}`);
@@ -469,30 +447,6 @@ export default function Timeclock() {
         </>
       )}
 
-      {recent.length > 0 && (
-        <div className="local-table-wrap">
-          <table className="local-table tc-recent">
-            <thead>
-              <tr>
-                <th>Worker</th>
-                <th>Punch</th>
-                <th>Time</th>
-                <th>Duration</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recent.map((row) => (
-                <tr key={row.id}>
-                  <td>{row.name}</td>
-                  <td><span className="tc-chip">{row.kind === 'in' ? 'In' : 'Out'}</span></td>
-                  <td className="mono">{clockTime(row.at)}</td>
-                  <td className="mono">{row.minutes === null ? '—' : formatMinutes(row.minutes)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
     </div>
   );
 }
