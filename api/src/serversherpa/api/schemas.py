@@ -2337,8 +2337,15 @@ class KioskAssetsSyncOut(BaseModel):
 
 
 class KioskPersonOut(BaseModel):
+    """One cached person. The name parts ride along with display_name so
+    the kiosk can match a typed name in any order ("tina t", "timeclock
+    tina") without re-splitting a formatted string."""
+
     id: uuid.UUID
     display_name: str
+    first_name: str
+    last_name: str
+    preferred_name: str | None = None
     rfid_tag: str | None = None
     is_worker: bool
     has_account: bool
@@ -2390,6 +2397,68 @@ class KioskScanRejected(BaseModel):
 class KioskScanBatchOut(BaseModel):
     accepted: list[uuid.UUID]
     rejected: list[KioskScanRejected]
+
+
+# ── kiosk timeclock ──
+
+class KioskTimeclockPerson(BaseModel):
+    """Who the kiosk is punching, as the timeclock screen shows them —
+    avatar included, so a worker recognizes themselves at a glance."""
+
+    id: uuid.UUID
+    display_name: str
+    first_name: str
+    last_name: str
+    preferred_name: str | None = None
+    avatar_url: str | None = None      # presigned, short-lived; None without an avatar
+    rfid_tag: str | None = None
+
+
+class KioskTimeclockEntry(BaseModel):
+    """The open entry, so the kiosk can show how long they have been on
+    the clock (now - started_at) and against which move and site."""
+
+    id: uuid.UUID
+    started_at: datetime
+    initiative_id: uuid.UUID | None = None
+    initiative_name: str | None = None
+    site_id: uuid.UUID | None = None
+    site_name: str | None = None
+
+
+class KioskTimeclockLastEntry(BaseModel):
+    """The entry a clock-out just closed — enough for "Clocked out after
+    3h 12m" without a second round trip."""
+
+    id: uuid.UUID
+    started_at: datetime
+    ended_at: datetime
+    minutes: int
+
+
+class KioskTimeclockStatusOut(BaseModel):
+    person: KioskTimeclockPerson
+    clocked_in: bool
+    entry: KioskTimeclockEntry | None = None
+    last_entry: KioskTimeclockLastEntry | None = None
+
+
+class KioskClockInIn(BaseModel):
+    """`site_id` / `initiative_id` left out fall back to the kiosk
+    Device's own setup; `at` left out means now (the kiosk sends it only
+    to back-date a punch it took while offline)."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    person_id: uuid.UUID
+    site_id: uuid.UUID | None = None
+    initiative_id: uuid.UUID | None = None
+    at: datetime | None = None
+
+
+class KioskClockOutIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
+    person_id: uuid.UUID
+    at: datetime | None = None
 
 
 # ── Labels ──

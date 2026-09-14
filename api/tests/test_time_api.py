@@ -369,7 +369,7 @@ async def test_clock_in_race_loser_gets_409(client, db, seeded_user, monkeypatch
     """The loser of a concurrent clock-in misses the pre-check and hits
     one_open_entry_per_person — that must surface as the same 409, not an
     unhandled IntegrityError."""
-    from serversherpa.api.routes import time as time_routes
+    from serversherpa.services import timeclock
 
     hdrs = await login(client)
     db.add(TimeEntry(person_id=seeded_user.id, clock_in_at=T0))
@@ -378,7 +378,7 @@ async def test_clock_in_race_loser_gets_409(client, db, seeded_user, monkeypatch
     async def _races_past_check(db, person_id):
         return None
 
-    monkeypatch.setattr(time_routes, "_open_entry_for", _races_past_check)
+    monkeypatch.setattr(timeclock, "open_entry_for", _races_past_check)
     resp = await client.post("/time/clock-in", headers=hdrs, json={})
     assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "already_clocked_in"

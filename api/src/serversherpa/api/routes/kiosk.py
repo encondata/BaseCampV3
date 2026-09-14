@@ -19,28 +19,33 @@ from serversherpa.api.deps import (
 )
 from serversherpa.api.routes.auth import session_response
 from serversherpa.api.schemas import (
-    HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut, KioskPeopleSyncOut,
-    KioskPersonOut, KioskScanBatchIn, KioskScanBatchOut, KioskScanRejected,
-    KioskSetupIn, KioskSetupOut, KioskSignOutIn, PairCreateIn, PairCreateOut,
+    HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut, KioskClockInIn,
+    KioskClockOutIn, KioskPeopleSyncOut, KioskPersonOut, KioskScanBatchIn,
+    KioskScanBatchOut, KioskScanRejected, KioskSetupIn, KioskSetupOut,
+    KioskSignOutIn, KioskTimeclockEntry, KioskTimeclockLastEntry,
+    KioskTimeclockPerson, KioskTimeclockStatusOut, PairCreateIn, PairCreateOut,
     PairInfoOut, PairPollIn, PairPollOut, SetupOptionInitiative,
     SetupOptionScanType, SetupOptionSite, SetupOptionsOut,
 )
 from serversherpa.db.models import (
     Asset, AssetModel, Client, Device, Initiative, InitiativeAsset, KioskPairRequest,
-    LabelPlaceholder, Person, RawScan, Site, StatusValue, UserAccount, WorkerProfile,
+    LabelPlaceholder, Person, RawScan, Site, StatusValue, TimeEntry, UserAccount,
+    WorkerProfile,
 )
 from serversherpa.labels.generate.values import (
     CONTAINER_KEYS, AssetRow, Sites, make_model_text, placeholder_values,
 )
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_pairing as pairing
+from serversherpa.services import timeclock
 from serversherpa.services.audit import audit
+from serversherpa.services.storage import presign_get
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
 
 
-def _err(status: int, code: str) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code})
+def _err(status: int, code: str, **extra) -> HTTPException:
+    return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
 # ── pairing: kiosk side (no auth) ───────────────────────────────────
@@ -501,6 +506,8 @@ async def sync_people(
     return KioskPeopleSyncOut(
         generated_at=datetime.now(UTC),
         people=[KioskPersonOut(id=p.id, display_name=p.display_name,
+                               first_name=p.first_name, last_name=p.last_name,
+                               preferred_name=p.preferred_name,
                                rfid_tag=p.rfid_tag, is_worker=is_worker,
                                has_account=has_account)
                 for p, is_worker, has_account in rows])
@@ -620,3 +627,166 @@ async def ingest_scans(
           changes={"accepted": len(accepted), "rejected": len(rejected)})
     await db.commit()
     return KioskScanBatchOut(accepted=accepted, rejected=rejected)
+
+
+# ── timeclock (kiosk:view) ───────────────────────────────────────────
+
+# The kiosk punch clock. A worker walks up, is found by badge, RFID, or
+# typed name against the synced people list, and is clocked in or out —
+# against the move and site from the kiosk's own setup unless the body
+# says otherwise. The rows land in `time_entries`, the portal's own time
+# tracking, with `source = "kiosk"` and `device_id` naming the kiosk.
+#
+# Gate: kiosk:view, like the rest of this router — and unlike
+# /time/clock-in, which acts strictly on the caller's own person id, these
+# act on ANOTHER person. Any kiosk user can therefore punch any worker.
+# That is deliberate and matches the physical situation (one shared screen
+# on a loading dock, one person tapping it for whoever is in front of
+# them); the audit row names the operator, so every punch is attributable.
+# See the spec's security notes. Both POSTs write, so neither is
+# read-only exempt.
+
+
+async def _kiosk_device(db: AsyncSession, serial: str) -> Device:
+    device = await db.scalar(select(Device).where(Device.serial == serial))
+    if device is None or device.device_type != "kiosk":
+        raise _err(404, "device_not_found")
+    return device
+
+
+async def _timeclock_person(db: AsyncSession, person_id: uuid.UUID) -> Person:
+    """An archived person is 404, not a punchable worker — the kiosk's
+    people sync drops them too, so only a stale local cache asks."""
+    person = await db.get(Person, person_id)
+    if person is None or person.archived_at is not None:
+        raise _err(404, "person_not_found")
+    return person
+
+
+def _aware(moment: datetime | None) -> datetime | None:
+    """A naive `at` from a kiosk means UTC (the column is timestamptz)."""
+    if moment is None:
+        return None
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
+
+
+def _person_out(person: Person) -> KioskTimeclockPerson:
+    return KioskTimeclockPerson(
+        id=person.id, display_name=person.display_name,
+        first_name=person.first_name, last_name=person.last_name,
+        preferred_name=person.preferred_name,
+        avatar_url=presign_get(person.avatar_key), rfid_tag=person.rfid_tag)
+
+
+async def _entry_out(db: AsyncSession, entry: TimeEntry) -> KioskTimeclockEntry:
+    initiative = (await db.get(Initiative, entry.initiative_id)
+                  if entry.initiative_id else None)
+    site = await db.get(Site, entry.site_id) if entry.site_id else None
+    return KioskTimeclockEntry(
+        id=entry.id, started_at=entry.clock_in_at,
+        initiative_id=entry.initiative_id,
+        initiative_name=initiative.name if initiative else None,
+        site_id=entry.site_id, site_name=site.name if site else None)
+
+
+async def _status_out(
+    db: AsyncSession, person: Person, entry: TimeEntry | None, *,
+    last_entry: TimeEntry | None = None,
+) -> KioskTimeclockStatusOut:
+    return KioskTimeclockStatusOut(
+        person=_person_out(person),
+        clocked_in=entry is not None,
+        entry=await _entry_out(db, entry) if entry is not None else None,
+        last_entry=None if last_entry is None else KioskTimeclockLastEntry(
+            id=last_entry.id, started_at=last_entry.clock_in_at,
+            ended_at=last_entry.clock_out_at,
+            minutes=timeclock.worked_minutes(last_entry)))
+
+
+@router.get("/timeclock/{person_id}", response_model=KioskTimeclockStatusOut)
+async def timeclock_status(
+    person_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskTimeclockStatusOut:
+    """Is this person on the clock right now, and since when? The kiosk
+    polls this to show the avatar and the running elapsed time."""
+    person = await _timeclock_person(db, person_id)
+    entry = await timeclock.open_entry_for(db, person.id)
+    return await _status_out(db, person, entry)
+
+
+@router.post("/timeclock/clock-in", response_model=KioskTimeclockStatusOut)
+async def timeclock_clock_in(
+    body: KioskClockInIn, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskTimeclockStatusOut:
+    """Open a time entry for the worker at the kiosk. Site and move come
+    from the body when given and from the kiosk's setup otherwise; an id
+    the server does not know is 422 (`bad_site` / `bad_initiative`)
+    rather than 404, since the kiosk may simply be holding a stale copy
+    of a setup. 409 `already_clocked_in` carries the open entry's id so
+    the kiosk can offer "clock out" instead."""
+    device = await _kiosk_device(db, body.serial)
+    person = await _timeclock_person(db, body.person_id)
+    site_id = body.site_id or device.site_id
+    initiative_id = body.initiative_id or device.current_initiative_id
+    if site_id is not None and await db.get(Site, site_id) is None:
+        raise _err(422, "bad_site")
+    if initiative_id is not None and await db.get(Initiative, initiative_id) is None:
+        raise _err(422, "bad_initiative")
+
+    open_entry = await timeclock.open_entry_for(db, person.id)
+    if open_entry is not None:
+        raise _err(409, "already_clocked_in", entry_id=str(open_entry.id))
+
+    now = datetime.now(UTC)
+    try:
+        entry = await timeclock.create_open_entry(
+            db, person_id=person.id, initiative_id=initiative_id, site_id=site_id,
+            clock_in_at=_aware(body.at) or now, created_by=actor.person.id,
+            source="kiosk", device_id=device.id)
+    except timeclock.AlreadyClockedIn:
+        # the one-open-entry index caught a punch that raced the check above
+        racing = await timeclock.open_entry_for(db, person.id)
+        raise _err(409, "already_clocked_in",
+                   entry_id=str(racing.id) if racing else None) from None
+
+    device.last_seen_at = now
+    audit(db, actor_id=actor.person.id, entity_type="time_entry",
+          entity_id=str(entry.id), action="kiosk_clock_in",
+          changes={"person_id": str(person.id),
+                   "site_id": str(site_id) if site_id else None,
+                   "initiative_id": str(initiative_id) if initiative_id else None,
+                   "device_id": str(device.id)})
+    await db.commit()
+    return await _status_out(db, person, entry)
+
+
+@router.post("/timeclock/clock-out", response_model=KioskTimeclockStatusOut)
+async def timeclock_clock_out(
+    body: KioskClockOutIn, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskTimeclockStatusOut:
+    """Close the worker's open entry (which graduates it to `pending`,
+    the timesheet-approval queue — exactly what self-service clock-out
+    does). `last_entry` comes back so the kiosk can say "Clocked out
+    after 3h 12m" without another call."""
+    device = await _kiosk_device(db, body.serial)
+    person = await _timeclock_person(db, body.person_id)
+    entry = await timeclock.open_entry_for(db, person.id)
+    if entry is None:
+        raise _err(409, "not_clocked_in")
+
+    now = datetime.now(UTC)
+    ended_at = _aware(body.at) or now
+    if ended_at < entry.clock_in_at:
+        raise _err(422, "bad_time")
+
+    changes = timeclock.close_open_entry(entry, clock_out_at=ended_at, now=now)
+    device.last_seen_at = now
+    audit(db, actor_id=actor.person.id, entity_type="time_entry",
+          entity_id=str(entry.id), action="kiosk_clock_out",
+          changes={**changes, "person_id": str(person.id),
+                   "device_id": str(device.id)})
+    await db.commit()
+    return await _status_out(db, person, None, last_entry=entry)

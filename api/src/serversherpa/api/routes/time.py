@@ -9,7 +9,6 @@ from datetime import time as dt_time
 
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
@@ -19,6 +18,7 @@ from serversherpa.api.schemas import (
     TimePunchOptionsOut, TimeStatsSummaryOut, TimeSummaryOut, TimeSummaryPerson,
 )
 from serversherpa.db.models import Initiative, Person, Site, StatusValue, TimeEntry
+from serversherpa.services import timeclock
 from serversherpa.services.audit import audit, diff, snapshot
 
 router = APIRouter(prefix="/time", tags=["time"])
@@ -65,12 +65,9 @@ async def _initiative_names(db: DbSession, ids: set) -> dict:
         .where(Initiative.id.in_(ids)))).all())
 
 
-def _minutes(entry: TimeEntry) -> int:
-    """Worked minutes, net of break. 0 while the entry is still open."""
-    if entry.clock_out_at is None:
-        return 0
-    span = int((entry.clock_out_at - entry.clock_in_at).total_seconds() // 60)
-    return max(0, span - entry.break_minutes)
+# Worked minutes, net of break, 0 while still open — shared with the
+# kiosk timeclock (services/timeclock.py).
+_minutes = timeclock.worked_minutes
 
 
 def _item(e: TimeEntry, vocab: dict, people: dict, sites: dict,
@@ -104,11 +101,6 @@ async def _items(db: DbSession, entries: list[TimeEntry]) -> list[TimeEntryItem]
     return [_item(e, vocab, people, sites, initiatives) for e in entries]
 
 
-async def _open_entry_for(db: DbSession, person_id: uuid.UUID) -> TimeEntry | None:
-    return await db.scalar(select(TimeEntry).where(
-        TimeEntry.person_id == person_id, TimeEntry.clock_out_at.is_(None)))
-
-
 def _can_clock(actor: AuthContext) -> bool:
     """Punch-clock gate for clock-in/clock-out. Rule: the actor may hold
     `time:view` (staff, admin, super_admin, founder, developer all do), OR
@@ -126,7 +118,7 @@ def _can_clock(actor: AuthContext) -> bool:
 async def clock_in(body: ClockInIn, db: DbSession, user: CurrentUser) -> TimeEntryItem:
     if not _can_clock(user):
         raise _err(403, "forbidden")
-    existing = await _open_entry_for(db, user.person.id)
+    existing = await timeclock.open_entry_for(db, user.person.id)
     if existing is not None:
         raise _err(409, "already_clocked_in")
     if body.initiative_id is not None and \
@@ -135,20 +127,17 @@ async def clock_in(body: ClockInIn, db: DbSession, user: CurrentUser) -> TimeEnt
     if body.site_id is not None and await db.get(Site, body.site_id) is None:
         raise _err(404, "site_not_found")
 
-    entry = TimeEntry(
-        person_id=user.person.id, initiative_id=body.initiative_id,
-        site_id=body.site_id, clock_in_at=datetime.now(UTC),
-        notes=body.notes or "", created_by=user.person.id)
     # the pre-check above is only advisory — a concurrent clock-in for the
     # same person can still race past it, so the actual guard is the
-    # partial unique index (one_open_entry_per_person, migration 0028).
-    # Flushing inside a savepoint catches that race here as a clean 409
-    # instead of surfacing an unhandled IntegrityError as a 500.
+    # partial unique index (one_open_entry_per_person, migration 0028),
+    # which create_open_entry turns into a clean 409 rather than an
+    # unhandled IntegrityError (a 500).
     try:
-        async with db.begin_nested():
-            db.add(entry)
-            await db.flush()
-    except IntegrityError:
+        entry = await timeclock.create_open_entry(
+            db, person_id=user.person.id, initiative_id=body.initiative_id,
+            site_id=body.site_id, clock_in_at=datetime.now(UTC),
+            notes=body.notes or "", created_by=user.person.id)
+    except timeclock.AlreadyClockedIn:
         raise _err(409, "already_clocked_in") from None
     audit(db, actor_id=user.person.id, entity_type="time_entry",
           entity_id=str(entry.id), action="clock_in",
@@ -172,17 +161,9 @@ async def clock_out(body: ClockOutIn, db: DbSession, user: CurrentUser) -> TimeE
         if body.break_minutes < 0 or body.break_minutes >= worked_span:
             raise _err(422, "invalid_break")
 
-    fields = ["status", "clock_out_at", "break_minutes", "notes"]
-    before = snapshot(entry, fields)
-    entry.clock_out_at = now
-    if body.break_minutes is not None:
-        entry.break_minutes = body.break_minutes
-    if body.notes:
-        entry.notes = f"{entry.notes}\n{body.notes}".strip() if entry.notes \
-            else body.notes
-    entry.status = "pending"
-    entry.updated_at = now
-    changes = diff(before, snapshot(entry, fields))
+    changes = timeclock.close_open_entry(
+        entry, clock_out_at=now, now=now, break_minutes=body.break_minutes,
+        notes=body.notes)
     audit(db, actor_id=user.person.id, entity_type="time_entry",
           entity_id=str(entry.id), action="clock_out", changes=changes)
     await db.commit()

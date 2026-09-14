@@ -176,10 +176,16 @@ async def test_people_sync_lists_workers_and_account_holders(client, db, seeded_
     by_id = {p["id"]: p for p in body["people"]}
 
     assert by_id[str(worker.id)]["display_name"] == "Wanda Worker"
+    # name parts ride along so the kiosk can match a typed name in any order
+    assert by_id[str(worker.id)]["first_name"] == "Wanda"
+    assert by_id[str(worker.id)]["last_name"] == "Worker"
+    assert by_id[str(worker.id)]["preferred_name"] is None
     assert by_id[str(worker.id)]["rfid_tag"] == "W-RFID-1"
     assert by_id[str(worker.id)]["is_worker"] is True
     assert by_id[str(worker.id)]["has_account"] is False
 
+    assert by_id[str(account_holder.id)]["first_name"] == "Anne"
+    assert by_id[str(account_holder.id)]["last_name"] == "Account"
     assert by_id[str(account_holder.id)]["rfid_tag"] == "A-RFID-2"
     assert by_id[str(account_holder.id)]["is_worker"] is False
     assert by_id[str(account_holder.id)]["has_account"] is True

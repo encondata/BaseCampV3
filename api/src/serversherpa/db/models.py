@@ -1141,6 +1141,8 @@ class TimeEntry(Base):
     status_record_type: Mapped[str] = mapped_column(
         server_default=text("'time_entry'"))  # GENERATED column; never written
     source: Mapped[str] = mapped_column(server_default="punch")
+    device_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("devices.id", ondelete="SET NULL"))   # the kiosk, when source='kiosk'
     notes: Mapped[str] = mapped_column(server_default="")
     adjusted: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     adjust_reason: Mapped[str | None]
