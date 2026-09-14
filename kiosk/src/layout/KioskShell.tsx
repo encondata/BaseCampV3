@@ -22,6 +22,7 @@ import { getIdentity } from '../lib/identity';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { platform } from '../lib/platform';
 import { setupStateLabel, useKioskSetupState, type KioskSetupState } from '../lib/setupState';
+import { useSyncStatus } from '../lib/sync';
 
 const REG_CHIP: Record<RegistrationState, string> = {
   ok: 'c-green', soon: 'c-amber', expired: 'c-red', none: 'c-slate',
@@ -43,6 +44,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const [devMode] = useDevMode();
   const [setupState] = useKioskSetupState();
   const [kioskSetup] = useKioskSetup();
+  const sync = useSyncStatus();
 
   useEffect(() => {
     applyPreferences(preferences ?? DEFAULT_PREFERENCES);
@@ -74,6 +76,12 @@ export default function KioskShell({ children }: { children: ReactNode }) {
       { label: 'Site', value: kioskSetup.siteName },
       { label: 'Scan', value: kioskSetup.scanLabel },
     );
+  }
+  // Only once the local database actually holds a download (the meta row
+  // is what `useSyncStatus` hydrates from) — a kiosk that has never
+  // synced shows no Data item at all rather than "0 assets".
+  if (sync.assets !== undefined && sync.people !== undefined) {
+    footItems.push({ label: 'Data', value: `${sync.assets} assets · ${sync.people} people` });
   }
 
   return (

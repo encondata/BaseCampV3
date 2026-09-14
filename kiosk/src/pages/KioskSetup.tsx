@@ -7,7 +7,9 @@
  * selects it and advances to the next step; tapping a scan-type card
  * saves immediately. Once a selection is saved and setup is complete,
  * shows a summary card instead of the wizard; "Change setup" re-enters
- * the wizard pre-selected.
+ * the wizard pre-selected. A successful save also kicks off the move's
+ * local-data download (`runSync`, not awaited) and the summary's
+ * `.sync-status` block reports it.
  */
 
 import { useEffect, useState } from 'react';
@@ -22,6 +24,7 @@ import { useKioskSetup } from '../lib/kioskSetup';
 import {
   isSetupComplete, readSetupState, useKioskSetupState, writeSetupState,
 } from '../lib/setupState';
+import { formatSyncedAt, runSync, useSyncStatus } from '../lib/sync';
 
 type Step = 1 | 2 | 3;
 
@@ -51,6 +54,7 @@ export default function KioskSetup() {
   const [scanStatus, setScanStatus] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  const sync = useSyncStatus();
 
   const load = () => {
     setLoadError(false);
@@ -136,6 +140,10 @@ export default function KioskSetup() {
       });
       writeSetupState('complete');
       setWizardOpen(false);
+      // Fire-and-forget: the summary appears immediately and the
+      // download reports itself through `.sync-status`. A sync outcome
+      // never changes the setup state — the kiosk IS set up either way.
+      void runSync(result.initiative_id, result.initiative_name);
     } catch (err) {
       // A transient save failure shouldn't downgrade a kiosk that was
       // already set up and working — only mark 'failed' when it wasn't
@@ -148,6 +156,7 @@ export default function KioskSetup() {
   };
 
   if (!wizardOpen && selection) {
+    const resync = () => { void runSync(selection.initiativeId, selection.initiativeName); };
     return (
       <div className="portal-page">
         <div className="eyebrow">Kiosk · Setup</div>
@@ -158,6 +167,35 @@ export default function KioskSetup() {
             <b>{selection.siteName}</b> ({selection.siteRole}) · scan type{' '}
             <b>{selection.scanLabel}</b>
           </p>
+          <div className="sync-status">
+            {/* idle only happens before a first sync, or after the
+                Developer tab's "Clear local data" — without this branch
+                that would be a dead end with no way back. */}
+            {sync.phase === 'idle' && (
+              <>
+                <span>No move data on this kiosk yet.</span>
+                <button type="button" className="mini-btn" onClick={resync}>Sync now</button>
+              </>
+            )}
+            {sync.phase === 'running' && <span>Downloading move data…</span>}
+            {sync.phase === 'done' && (
+              <>
+                <span>
+                  Local data: {sync.assets ?? 0} assets · {sync.people ?? 0} people
+                  {sync.syncedAt ? ` · synced ${formatSyncedAt(sync.syncedAt)}` : ''}
+                </span>
+                <button type="button" className="mini-btn" onClick={resync}>Sync again</button>
+              </>
+            )}
+            {sync.phase === 'error' && (
+              <>
+                <span className="form-error" role="alert">
+                  Couldn&apos;t download move data ({sync.error ?? 'unknown_error'}).
+                </span>
+                <button type="button" className="mini-btn" onClick={resync}>Try again</button>
+              </>
+            )}
+          </div>
           <div className="setup-actions">
             <button type="button" className="mini-btn" onClick={() => openWizard(true)}>
               Change setup

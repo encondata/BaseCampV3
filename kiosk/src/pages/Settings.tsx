@@ -1,5 +1,7 @@
 /** Kiosk Settings — tabbed sections for Appearance, Sound, Devices, This
- *  Kiosk, Admin, and Developer. Admin and Developer are hidden (not
+ *  Kiosk, Admin, and Developer. The Developer tab, while developer mode
+ *  is on, also shows a read-only "Local data" row (the downloaded move's
+ *  counts) with a "Clear local data" button. Admin and Developer are hidden (not
  *  disabled) unless the signed-in person holds the level; signed out,
  *  only This Kiosk is visible (see `visibleTabs`). Every tab body but
  *  This Kiosk's is a placeholder for now. The active tab lives in the
@@ -11,8 +13,10 @@ import { useKioskAuth } from '../auth/KioskAuthContext';
 import { Switch } from '../components/Switch';
 import ThisKioskPanel from '../components/ThisKioskPanel';
 import { useDevMode } from '../lib/devMode';
+import { clearDb } from '../lib/localDb';
 import { SETTINGS_TABS, visibleTabs, type SettingsTabId } from '../lib/settingsTabs';
 import { SETUP_STATES, setupStateLabel, useKioskSetupState } from '../lib/setupState';
+import { formatSyncedAt, resetSyncStatus, useSyncStatus } from '../lib/sync';
 
 const DEFAULT_TAB: SettingsTabId = 'appearance';
 
@@ -22,6 +26,11 @@ export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [devMode, setDevMode] = useDevMode();
   const [setupState, setSetupState] = useKioskSetupState();
+  const sync = useSyncStatus();
+
+  const clearLocalData = () => {
+    void clearDb().finally(resetSyncStatus);
+  };
 
   const tabs = visibleTabs(SETTINGS_TABS, { isAdmin, isDeveloper, signedIn });
   const requested = searchParams.get('tab');
@@ -91,6 +100,22 @@ export default function Settings() {
                 </button>
               ))}
             </div>
+          </div>
+        )}
+        {active.id === 'developer' && devMode && (
+          <div className="settings-row">
+            <div>
+              <span className="settings-row-label">Local data</span>
+              <p className="settings-row-hint">
+                {sync.assets !== undefined && sync.people !== undefined
+                  ? `${sync.assets} assets · ${sync.people} people`
+                    + (sync.syncedAt ? ` · synced ${formatSyncedAt(sync.syncedAt)}` : '')
+                  : 'Nothing downloaded yet.'}
+              </p>
+            </div>
+            <button type="button" className="mini-btn" onClick={clearLocalData}>
+              Clear local data
+            </button>
           </div>
         )}
         {active.id !== 'this-kiosk' && (

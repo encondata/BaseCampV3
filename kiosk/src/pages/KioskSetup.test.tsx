@@ -21,10 +21,19 @@ vi.mock('../lib/api', async (importOriginal) => {
   return { ...actual, getSetupOptions: apiMock.getSetupOptions, submitKioskSetup: apiMock.submitKioskSetup };
 });
 
+const syncMock = vi.hoisted(() => ({
+  runSync: vi.fn(() => Promise.resolve()),
+  status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; syncedAt?: string; error?: string },
+}));
+vi.mock('../lib/sync', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/sync')>();
+  return { ...actual, runSync: syncMock.runSync, useSyncStatus: () => syncMock.status };
+});
+
 import { ApiError } from '../lib/api';
 import { getIdentity } from '../lib/identity';
-import { readKioskSetup } from '../lib/kioskSetup';
-import { readSetupState } from '../lib/setupState';
+import { readKioskSetup, writeKioskSetup } from '../lib/kioskSetup';
+import { readSetupState, writeSetupState } from '../lib/setupState';
 import KioskSetup from './KioskSetup';
 
 const OPTIONS = {
@@ -65,6 +74,8 @@ beforeEach(() => {
   localStorage.clear();
   apiMock.getSetupOptions.mockReset().mockResolvedValue(OPTIONS);
   apiMock.submitKioskSetup.mockReset().mockResolvedValue(RESULT);
+  syncMock.runSync.mockClear();
+  syncMock.status = { phase: 'idle' };
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -309,4 +320,61 @@ it('a cached move no longer in the loaded options is cleared and step 2 is not e
     expect(screen.queryAllByRole('option', { selected: true })).toHaveLength(0);
   });
   expect(screen.getByText('Step 1 of 3 · Move')).toBeTruthy();
+});
+
+
+// ── local move data (sync) ──────────────────────────────────────────
+
+it('a successful save kicks off the move-data download', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await goToScanStep(user);
+  await user.click(cardFor('RFID 1 - Cage Exit'));
+
+  await screen.findByText(/This kiosk is set up for/);
+  expect(syncMock.runSync).toHaveBeenCalledWith('i-1', 'NAP11 Hall Migration (demo)');
+});
+
+function renderSummaryWith(status: typeof syncMock.status) {
+  writeKioskSetup({
+    initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
+    siteId: 's-2', siteName: 'NAP22 Hall', siteRole: 'destination',
+    scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+  });
+  writeSetupState('complete');
+  syncMock.status = status;
+  return renderPage();
+}
+
+it('the summary shows the running, done, and error sync states', async () => {
+  const { container } = renderSummaryWith({ phase: 'running' });
+  expect(await screen.findByText('Downloading move data…')).toBeTruthy();
+  expect(container.querySelector('.sync-status')).toBeTruthy();
+  cleanup();
+
+  renderSummaryWith({
+    phase: 'done', assets: 15, people: 4, syncedAt: '2026-09-13T18:14:00Z',
+  });
+  expect(await screen.findByText(/Local data: 15 assets · 4 people · synced /)).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Sync again' })).toBeTruthy();
+  cleanup();
+
+  renderSummaryWith({ phase: 'error', error: 'network' });
+  expect(await screen.findByText("Couldn't download move data (network).")).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+});
+
+it('"Sync again" re-runs the download for the saved move', async () => {
+  const user = userEvent.setup();
+  renderSummaryWith({ phase: 'done', assets: 15, people: 4, syncedAt: '2026-09-13T18:14:00Z' });
+  await user.click(await screen.findByRole('button', { name: 'Sync again' }));
+  expect(syncMock.runSync).toHaveBeenCalledWith('i-1', 'NAP11 Hall Migration (demo)');
+});
+
+it('an idle summary offers "Sync now" (e.g. after Clear local data)', async () => {
+  const user = userEvent.setup();
+  renderSummaryWith({ phase: 'idle' });
+  expect(await screen.findByText('No move data on this kiosk yet.')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Sync now' }));
+  expect(syncMock.runSync).toHaveBeenCalledWith('i-1', 'NAP11 Hall Migration (demo)');
 });

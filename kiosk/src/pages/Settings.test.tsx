@@ -4,6 +4,20 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
+const syncMock = vi.hoisted(() => ({
+  status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; syncedAt?: string },
+  clearDb: vi.fn(() => Promise.resolve()),
+  resetSyncStatus: vi.fn(),
+}));
+vi.mock('../lib/sync', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/sync')>();
+  return { ...actual, useSyncStatus: () => syncMock.status, resetSyncStatus: syncMock.resetSyncStatus };
+});
+vi.mock('../lib/localDb', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/localDb')>();
+  return { ...actual, clearDb: syncMock.clearDb };
+});
+
 const auth = vi.hoisted(() => ({
   status: 'authed', isAdmin: false, isDeveloper: false, heartbeatNow: vi.fn(() => Promise.resolve()),
 }));
@@ -16,6 +30,9 @@ afterEach(() => {
   auth.status = 'authed';
   auth.isAdmin = false;
   auth.isDeveloper = false;
+  syncMock.status = { phase: 'idle' };
+  syncMock.clearDb.mockClear();
+  syncMock.resetSyncStatus.mockClear();
   localStorage.clear();
 });
 
@@ -135,4 +152,35 @@ it('a developer with dev mode on sees the kiosk setup state radiogroup and can s
   await userEvent.click(screen.getByRole('radio', { name: 'Complete' }));
   expect(screen.getByRole('radio', { name: 'Complete' }).getAttribute('aria-checked')).toBe('true');
   expect(localStorage.getItem('ss.kiosk.setupState')).toBe('complete');
+});
+
+
+it('the Local data row is absent until developer mode is switched on', () => {
+  auth.isAdmin = true;
+  auth.isDeveloper = true;
+  renderAt('/settings?tab=developer');
+  expect(screen.queryByText('Local data')).toBeNull();
+});
+
+it('a developer with dev mode on sees the local data counts and can clear them', async () => {
+  auth.isAdmin = true;
+  auth.isDeveloper = true;
+  syncMock.status = { phase: 'done', assets: 15, people: 4, syncedAt: '2026-09-13T18:14:00Z' };
+  renderAt('/settings?tab=developer');
+  await userEvent.click(screen.getByRole('switch', { name: 'Developer mode' }));
+
+  expect(screen.getByText('Local data')).toBeTruthy();
+  expect(screen.getByText(/15 assets · 4 people · synced /)).toBeTruthy();
+
+  await userEvent.click(screen.getByRole('button', { name: 'Clear local data' }));
+  expect(syncMock.clearDb).toHaveBeenCalled();
+  expect(syncMock.resetSyncStatus).toHaveBeenCalled();
+});
+
+it('the Local data row reads "Nothing downloaded yet" before a sync', async () => {
+  auth.isAdmin = true;
+  auth.isDeveloper = true;
+  renderAt('/settings?tab=developer');
+  await userEvent.click(screen.getByRole('switch', { name: 'Developer mode' }));
+  expect(screen.getByText('Nothing downloaded yet.')).toBeTruthy();
 });

@@ -17,6 +17,14 @@ beforeEach(() => {
   }));
 });
 
+const syncMock = vi.hoisted(() => ({
+  status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; syncedAt?: string },
+}));
+vi.mock('../lib/sync', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/sync')>();
+  return { ...actual, useSyncStatus: () => syncMock.status };
+});
+
 const auth = vi.hoisted(() => ({
   status: 'authed' as 'authed' | 'anon',
   person: { display_name: 'Alex Worker' } as { display_name: string } | null,
@@ -40,6 +48,7 @@ afterEach(() => {
   auth.person = { display_name: 'Alex Worker' };
   auth.registration = 'ok';
   auth.sessionExpiresAt = '2026-09-14T19:00:42.000Z';
+  syncMock.status = { phase: 'idle' };
   localStorage.clear();
 });
 
@@ -216,4 +225,26 @@ it('footer omits Move + Scan items when no selection is saved', () => {
   );
   const footer = screen.getByRole('contentinfo');
   expect(footer.textContent ?? '').not.toContain('NAP11 Hall Migration (demo)');
+});
+
+
+it('footer shows a Data item with the local counts once a sync has happened', () => {
+  syncMock.status = { phase: 'done', assets: 15, people: 4, syncedAt: '2026-09-13T18:14:00Z' };
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const footer = screen.getByRole('contentinfo');
+  expect(footer.textContent ?? '').toContain('Data');
+  expect(footer.textContent ?? '').toContain('15 assets · 4 people');
+});
+
+it('footer has no Data item before any sync', () => {
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  expect(screen.getByRole('contentinfo').textContent ?? '').not.toContain('Data');
 });

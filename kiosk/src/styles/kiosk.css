@@ -269,6 +269,14 @@
 }
 .setup-summary b { color: var(--text-dark); }
 .setup-actions { display: flex; gap: 10px; }
+
+/* The summary card's local-data line: the sync phase plus its action
+   button, wrapping to its own row on a narrow kiosk. */
+.sync-status {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  font-size: 13px; color: var(--text-mute);
+}
+.sync-status .form-error { margin: 0; }
 .setup-wizard h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; color: var(--text-dark); }
 
 /* Kiosk Setup's card pickers — one per move/site/scan-type step, tap to

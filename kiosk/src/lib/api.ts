@@ -295,6 +295,56 @@ export async function submitKioskSetup(body: {
   return jsonFrom<KioskSetupResult>(resp);
 }
 
+// ── local-data sync (after Kiosk Setup) ─────────────────────────────
+
+/** One roster asset. `label` is the label placeholder map the API built
+ *  with the label generator's own resolver — the keys the label
+ *  templates use (`asset_id`, `asset_name`, `serial_number`, `make`,
+ *  `model`, `make_model`, `source_raw`/`source_ru`/`source_site`, the
+ *  destination trio, `move_name`, `move_date`). */
+export interface KioskAssetRow {
+  id: string;
+  asset_id: string;
+  name: string | null;
+  rfid: string | null;
+  serial_number: string | null;
+  make: string | null;
+  model: string | null;
+  make_model: string;
+  label: Record<string, string>;
+}
+
+export interface KioskAssetsSync {
+  initiative_id: string;
+  initiative_name: string;
+  generated_at: string;
+  assets: KioskAssetRow[];
+}
+
+export interface KioskPersonRow {
+  id: string;
+  display_name: string;
+  rfid_tag: string | null;
+  is_worker: boolean;
+  has_account: boolean;
+}
+
+export interface KioskPeopleSync {
+  generated_at: string;
+  people: KioskPersonRow[];
+}
+
+/** The whole roster in one response — the API does not page it. */
+export async function fetchAssetsSync(initiativeId: string): Promise<KioskAssetsSync> {
+  const resp = await apiFetch(`/kiosk/sync/assets?initiative_id=${encodeURIComponent(initiativeId)}`);
+  return jsonFrom<KioskAssetsSync>(resp);
+}
+
+export async function fetchPeopleSync(): Promise<KioskPeopleSync> {
+  const resp = await apiFetch('/kiosk/sync/people');
+  return jsonFrom<KioskPeopleSync>(resp);
+}
+
 // ── public system status (login banners) ────────────────────────────
 
 export const DEFAULT_SYSTEM_STATUS: SystemStatus = {
