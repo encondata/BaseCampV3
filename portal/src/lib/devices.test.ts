@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { DeviceItem } from './api';
 import {
   connectionLabel, deviceCellText, deviceSearchText, deviceSortValue, formatUptime,
-  registrationLabel, subTypeLabel, tokenExpiryState, vpnLabel,
+  loginMethodLabel, registrationLabel, subTypeLabel, tokenExpiryState, vpnLabel,
 } from './devices';
 
 const R: DeviceItem = {
@@ -19,6 +19,8 @@ const R: DeviceItem = {
   tags_read_24h: 0,
   version: null, sub_type: null,
   current_initiative_id: null, current_initiative_name: null,
+  session_person_id: null, session_person_name: null,
+  session_login_method: null, session_started_at: null,
 };
 
 describe('formatUptime', () => {
@@ -177,5 +179,32 @@ describe('kiosk accessors', () => {
 
   it('labels the web kiosk sub-type', () => {
     expect(subTypeLabel('web')).toBe('Web');
+  });
+});
+
+describe('kiosk session accessors', () => {
+  const signedIn = {
+    ...R, session_person_id: 'p1', session_person_name: 'Claude Dev',
+    session_login_method: 'link', session_started_at: '2026-09-13T10:00:00Z',
+  };
+
+  it('loginMethodLabel maps known values, passes through unknown, dashes null', () => {
+    expect(loginMethodLabel('password')).toBe('Password');
+    expect(loginMethodLabel('link')).toBe('Phone link');
+    expect(loginMethodLabel('badge')).toBe('badge');
+    expect(loginMethodLabel(null)).toBe('—');
+  });
+
+  it('cellText for signed_in/login_method', () => {
+    expect(deviceCellText(signedIn, 'signed_in')).toBe('Claude Dev');
+    expect(deviceCellText(signedIn, 'login_method')).toBe('Phone link');
+    expect(deviceCellText({ ...R, session_person_name: null }, 'signed_in')).toBe('—');
+    expect(deviceCellText({ ...R, session_login_method: null }, 'login_method')).toBe('—');
+  });
+
+  it('sortValue for signed_in/login_method', () => {
+    expect(deviceSortValue(signedIn, 'signed_in')).toBe('Claude Dev');
+    expect(deviceSortValue({ ...R, session_person_name: null }, 'signed_in')).toBe('');
+    expect(deviceSortValue(signedIn, 'login_method')).toBe('phone link');
   });
 });

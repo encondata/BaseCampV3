@@ -190,6 +190,7 @@ class HeartbeatIn(BaseModel):
     version: str | None = Field(default=None, max_length=40)
     raw_info: dict[str, Any] = Field(default_factory=dict)
     sign_in: bool = False
+    login_method: Literal["password", "link"] | None = None
 
     @field_validator("serial", "name")
     @classmethod
@@ -212,6 +213,10 @@ class HeartbeatOut(BaseModel):
     name: str
     registration: Literal["ok", "soon", "expired", "none"]
     token_expires_at: datetime | None
+
+
+class KioskSignOutIn(BaseModel):
+    serial: str = Field(min_length=1, max_length=120)
 
 
 class PersonDetail(BaseModel):
@@ -2182,6 +2187,10 @@ class DeviceItem(BaseModel):
     last_seen_at: datetime | None
     raw_info: dict
     registered_at: datetime
+    session_person_id: uuid.UUID | None
+    session_person_name: str | None
+    session_login_method: str | None
+    session_started_at: datetime | None
 
 
 class DevicePatch(BaseModel):

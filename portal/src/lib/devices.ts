@@ -56,6 +56,13 @@ export function registrationLabel(state: ReturnType<typeof tokenExpiryState>): s
   return 'Unregistered';
 }
 
+export function loginMethodLabel(m: string | null): string {
+  if (m == null) return '—';
+  if (m === 'password') return 'Password';
+  if (m === 'link') return 'Phone link';
+  return m;
+}
+
 export function deviceCellText(d: DeviceItem, key: string): string {
   switch (key) {
     case 'name': return d.name;
@@ -83,6 +90,8 @@ export function deviceCellText(d: DeviceItem, key: string): string {
     case 'registration': return registrationLabel(tokenExpiryState(d.token_expires_at));
     case 'expires':
       return d.token_expires_at ? new Date(d.token_expires_at).toLocaleDateString() : '—';
+    case 'signed_in': return d.session_person_name ?? '—';
+    case 'login_method': return loginMethodLabel(d.session_login_method);
     default: return '';
   }
 }
@@ -106,6 +115,8 @@ export function deviceSortValue(d: DeviceItem, key: string): string | number {
     case 'registration': return registrationLabel(tokenExpiryState(d.token_expires_at)).toLowerCase();
     case 'expires': return d.token_expires_at ?? '';
     case 'current_move': return d.current_initiative_name ?? '';
+    case 'signed_in': return d.session_person_name ?? '';
+    case 'login_method': return loginMethodLabel(d.session_login_method).toLowerCase();
     default: return deviceCellText(d, key).toLowerCase();
   }
 }

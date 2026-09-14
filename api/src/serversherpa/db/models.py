@@ -955,6 +955,12 @@ class Device(Base):
         server_default=text("now()"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    # who is signed in on this kiosk right now (set by the sign-in
+    # heartbeat, cleared by /kiosk/sign-out)
+    session_person_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    session_login_method: Mapped[str | None]
+    session_started_at: Mapped[datetime | None]
 
 
 class DeviceDhcpLease(Base):

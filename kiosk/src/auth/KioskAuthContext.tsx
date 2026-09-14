@@ -13,9 +13,11 @@ import { computeCan, type Action, type PermMap } from '@portal/lib/access';
 
 import {
   installVisibilityRefresh, loginRequest, logoutRequest, onSessionEnded, refreshSession,
+  signOutRequest,
   type PersonOut, type RegistrationState, type SessionData, type UiPreferences,
 } from '../lib/api';
 import { HEARTBEAT_MS, startHeartbeat, type HeartbeatHandle } from '../lib/heartbeat';
+import { getIdentity } from '../lib/identity';
 
 export type KioskAuthStatus = 'loading' | 'authed' | 'anon';
 
@@ -56,9 +58,10 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<State>(LOADING);
   const [registration, setRegistration] = useState<RegistrationState | null>(null);
   const heartbeat = useRef<HeartbeatHandle | null>(null);
-  // True only for the beat right after login()/completePair() — never for a
-  // cookie restore — so the API can auto-register the kiosk on sign-in.
-  const signInRef = useRef(false);
+  // Set only for the beat right after login()/completePair() — never for a
+  // cookie restore — so the API can auto-register the kiosk on sign-in and
+  // record how the person signed in.
+  const signInRef = useRef<{ method: 'password' | 'link' } | undefined>(undefined);
 
   // Hard reload within the session window: the cookie restores it silently.
   useEffect(() => {
@@ -80,7 +83,7 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
       return;
     }
     const handle = startHeartbeat(setRegistration, HEARTBEAT_MS, signInRef.current);
-    signInRef.current = false;
+    signInRef.current = undefined;
     heartbeat.current = handle;
     return () => {
       handle.stop();
@@ -90,18 +93,19 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const data = await loginRequest(email, password);
-    signInRef.current = true;
+    signInRef.current = { method: 'password' };
     setState(stateFrom(data));
     return data;
   }, []);
 
   const completePair = useCallback((data: SessionData) => {
-    signInRef.current = true;
+    signInRef.current = { method: 'link' };
     setState(stateFrom(data));
   }, []);
 
   const logout = useCallback(async () => {
     heartbeat.current?.stop();
+    await signOutRequest(getIdentity().serial);
     await logoutRequest();
     setState(ANON);
   }, []);

@@ -22,23 +22,23 @@ export interface HeartbeatHandle {
 export function startHeartbeat(
   onState: (state: RegistrationState) => void,
   intervalMs: number = HEARTBEAT_MS,
-  firstBeatIsSignIn = false,
+  signIn?: { method: 'password' | 'link' },
 ): HeartbeatHandle {
   let stopped = false;
-  const beat = async (signIn = false) => {
+  const beat = async (asSignIn?: { method: 'password' | 'link' }) => {
     if (stopped) return;
     const { serial, name } = getIdentity();
     try {
       const result = await heartbeatRequest({
         serial, name, mode: platform().mode, version: kioskVersion(),
-        ...(signIn ? { sign_in: true } : {}),
+        ...(asSignIn ? { sign_in: true, login_method: asSignIn.method } : {}),
       });
       if (!stopped) onState(result.registration);
     } catch {
       /* keep the last known state; next tick retries */
     }
   };
-  void beat(firstBeatIsSignIn);
+  void beat(signIn);
   const timer = setInterval(() => void beat(), intervalMs);
   return {
     stop() {

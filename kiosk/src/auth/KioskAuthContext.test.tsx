@@ -6,12 +6,15 @@ const api = vi.hoisted(() => ({
   refreshSession: vi.fn(),
   loginRequest: vi.fn(),
   logoutRequest: vi.fn(),
+  signOutRequest: vi.fn(),
   onSessionEnded: vi.fn(() => () => {}),
   installVisibilityRefresh: vi.fn(() => () => {}),
 }));
 vi.mock('../lib/api', () => api);
 const hb = vi.hoisted(() => ({ startHeartbeat: vi.fn(), HEARTBEAT_MS: 60_000 }));
 vi.mock('../lib/heartbeat', () => hb);
+const identity = vi.hoisted(() => ({ getIdentity: vi.fn(() => ({ serial: 'kiosk-web-test', name: 'Kiosk Test' })) }));
+vi.mock('../lib/identity', () => identity);
 
 import { KioskAuthProvider, useKioskAuth } from './KioskAuthContext';
 
@@ -44,6 +47,7 @@ beforeEach(() => {
   api.refreshSession.mockResolvedValue(null);
   api.loginRequest.mockResolvedValue(SESSION);
   api.logoutRequest.mockResolvedValue(undefined);
+  api.signOutRequest.mockResolvedValue(undefined);
   hb.startHeartbeat.mockImplementation((onState: (s: string) => void) => {
     onState('none');
     return { stop: vi.fn(), now: vi.fn(() => Promise.resolve()) };
@@ -84,23 +88,35 @@ it('does not heartbeat while a password change is required', async () => {
   expect(hb.startHeartbeat).not.toHaveBeenCalled();
 });
 
-it('marks the first heartbeat as a sign-in after login()', async () => {
+it('marks the first heartbeat as a password sign-in after login()', async () => {
   render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
   await act(async () => {});
   await act(async () => { screen.getByText('login').click(); });
-  expect(hb.startHeartbeat.mock.calls[0][2]).toBe(true);
+  expect(hb.startHeartbeat.mock.calls[0][2]).toEqual({ method: 'password' });
 });
 
 it('does not mark the heartbeat as a sign-in after a cookie restore', async () => {
   api.refreshSession.mockResolvedValue(SESSION);
   render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
   await act(async () => {});
-  expect(hb.startHeartbeat.mock.calls[0][2]).toBe(false);
+  expect(hb.startHeartbeat.mock.calls[0][2]).toBeUndefined();
 });
 
-it('marks the first heartbeat as a sign-in after completePair()', async () => {
+it('marks the first heartbeat as a link sign-in after completePair()', async () => {
   render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
   await act(async () => {});
   await act(async () => { screen.getByText('pair').click(); });
-  expect(hb.startHeartbeat.mock.calls[0][2]).toBe(true);
+  expect(hb.startHeartbeat.mock.calls[0][2]).toEqual({ method: 'link' });
+});
+
+it('logout signs out on the server before dropping the session', async () => {
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('login').click(); });
+  const order: string[] = [];
+  api.signOutRequest.mockImplementationOnce(async () => { order.push('signOut'); });
+  api.logoutRequest.mockImplementationOnce(async () => { order.push('logout'); });
+  await act(async () => { screen.getByText('logout').click(); });
+  expect(api.signOutRequest).toHaveBeenCalledWith('kiosk-web-test');
+  expect(order).toEqual(['signOut', 'logout']);
 });

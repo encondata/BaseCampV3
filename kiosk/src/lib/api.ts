@@ -224,6 +224,7 @@ export interface HeartbeatResult {
 
 export async function heartbeatRequest(body: {
   serial: string; name: string; mode: string; version: string | null; sign_in?: boolean;
+  login_method?: 'password' | 'link';
 }): Promise<HeartbeatResult> {
   const { sign_in, ...rest } = body;
   const resp = await apiFetch('/kiosk/heartbeat', {
@@ -232,6 +233,21 @@ export async function heartbeatRequest(body: {
     body: JSON.stringify(sign_in ? { ...rest, sign_in } : rest),
   });
   return jsonFrom<HeartbeatResult>(resp);
+}
+
+/** Clears this kiosk's signed-in session on the server. Never throws —
+ *  the kiosk is about to drop its own token either way, so a failed
+ *  sign-out isn't worth surfacing to the person signing out. */
+export async function signOutRequest(serial: string): Promise<void> {
+  try {
+    await apiFetch('/kiosk/sign-out', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serial }),
+    });
+  } catch {
+    /* ignore — kiosk is signing out regardless */
+  }
 }
 
 // ── public system status (login banners) ────────────────────────────

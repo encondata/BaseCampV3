@@ -27,8 +27,8 @@ import {
   usePersistentListState, type CellText,
 } from '../lib/columnMenu';
 import {
-  deviceCellText, deviceSearchText, deviceSortValue, registrationLabel, subTypeLabel,
-  tokenExpiryState,
+  deviceCellText, deviceSearchText, deviceSortValue, loginMethodLabel, registrationLabel,
+  subTypeLabel, tokenExpiryState,
 } from '../lib/devices';
 import {
   ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
@@ -51,6 +51,8 @@ const COLUMNS: ColumnDef[] = [
   { key: 'mac', label: 'MAC', width: 'minmax(150px, 1fr)', default: true },
   { key: 'version', label: 'Version', width: '90px', default: true },
   { key: 'registration', label: 'Registration', width: '120px', default: true },
+  { key: 'signed_in', label: 'Signed in', width: 'minmax(140px, 1fr)', default: true },
+  { key: 'login_method', label: 'Login', width: '110px', default: true },
   { key: 'current_move', label: 'Current Move', width: 'minmax(160px, 1.2fr)', default: true },
   { key: 'scan_status', label: 'Scan Type', width: 'minmax(140px, 1fr)', default: true },
   { key: 'site', label: 'Site', width: 'minmax(120px, 1fr)', default: true },
@@ -71,6 +73,8 @@ const CSV_COLUMNS: [string, (d: DeviceItem) => string][] = [
   ['MAC', (d) => deviceCellText(d, 'mac')],
   ['Version', (d) => deviceCellText(d, 'version')],
   ['Registration', (d) => deviceCellText(d, 'registration')],
+  ['Signed in', (d) => deviceCellText(d, 'signed_in')],
+  ['Login', (d) => deviceCellText(d, 'login_method')],
   ['Current Move', (d) => deviceCellText(d, 'current_move')],
   ['Scan Type', (d) => deviceCellText(d, 'scan_status')],
   ['Site', (d) => deviceCellText(d, 'site')],
@@ -123,10 +127,12 @@ export default function KioskDevices() {
     const subTypes = new Set<string>();
     const registrations = new Set<string>();
     const sites = new Set<string>();
+    const loginMethods = new Set<string>();
     for (const d of devices ?? []) {
       subTypes.add(subTypeLabel(d.sub_type));
       registrations.add(registrationLabel(tokenExpiryState(d.token_expires_at)));
       sites.add(d.site_name ?? '—');
+      loginMethods.add(loginMethodLabel(d.session_login_method));
     }
     return [
       { key: 'sub_type', title: 'Type', options: Array.from(subTypes).sort().map((v) => (
@@ -137,6 +143,8 @@ export default function KioskDevices() {
       { key: 'site', title: 'Site', options: Array.from(sites).sort().map((v) => (
         { value: v, label: v }
       )) },
+      { key: 'login_method', title: 'Login', options: Array.from(loginMethods).sort()
+        .map((v) => ({ value: v, label: v })) },
     ];
   }, [devices]);
 
@@ -144,6 +152,7 @@ export default function KioskDevices() {
     if (groupKey === 'sub_type') return [subTypeLabel(d.sub_type)];
     if (groupKey === 'registration') return [registrationLabel(tokenExpiryState(d.token_expires_at))];
     if (groupKey === 'site') return [d.site_name ?? '—'];
+    if (groupKey === 'login_method') return [loginMethodLabel(d.session_login_method)];
     return [];
   };
 
@@ -231,6 +240,18 @@ export default function KioskDevices() {
               <span className="dot" />{deviceCellText(d, 'scan_status')}
             </span>
           );
+      case 'login_method':
+        return d.session_login_method == null
+          ? <span>—</span>
+          : <span className="chip tag">{loginMethodLabel(d.session_login_method)}</span>;
+      case 'signed_in':
+        return d.session_started_at
+          ? (
+            <span title={`Signed in ${new Date(d.session_started_at).toLocaleString()}`}>
+              {deviceCellText(d, 'signed_in')}
+            </span>
+          )
+          : <span>{deviceCellText(d, 'signed_in')}</span>;
       default:
         return <span>{deviceCellText(d, key)}</span>;
     }

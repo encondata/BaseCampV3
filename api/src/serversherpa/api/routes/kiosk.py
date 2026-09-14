@@ -17,7 +17,8 @@ from serversherpa.api.deps import (
 )
 from serversherpa.api.routes.auth import session_response
 from serversherpa.api.schemas import (
-    HeartbeatIn, HeartbeatOut, PairCreateIn, PairCreateOut, PairInfoOut, PairPollIn, PairPollOut,
+    HeartbeatIn, HeartbeatOut, KioskSignOutIn, PairCreateIn, PairCreateOut, PairInfoOut,
+    PairPollIn, PairPollOut,
 )
 from serversherpa.db.models import Device, KioskPairRequest, UserAccount
 from serversherpa.services import auth as auth_service
@@ -173,7 +174,9 @@ async def heartbeat(
 ) -> HeartbeatOut:
     """Upsert this kiosk's Device row by serial and stamp last_seen_at.
     Creation is audited once (self_register); later beats are telemetry.
-    A sign-in beat (body.sign_in) also auto-registers the kiosk for
+    A sign-in beat (body.sign_in) records who is now signed in
+    (session_person_id/session_login_method/session_started_at, cleared
+    by /kiosk/sign-out) and also auto-registers the kiosk for
     KIOSK_AUTO_REGISTER_DAYS when its registration is none, expired, or
     within REGISTRATION_SOON of expiring; Register/Renew in the portal
     remain available for admins."""
@@ -197,17 +200,39 @@ async def heartbeat(
         device.raw_info = {**(device.raw_info or {}), **body.raw_info}
         device.last_seen_at = now
         device.updated_at = now
-    if body.sign_in and registration_state(device.token_expires_at, now) in (
-        "none", "expired", "soon",
-    ):
-        device.registered_at = now
-        device.token_expires_at = now + timedelta(days=KIOSK_AUTO_REGISTER_DAYS)
-        audit(db, actor_id=actor.person.id, entity_type="device",
-              entity_id=str(device.id), action="register",
-              changes={"days": KIOSK_AUTO_REGISTER_DAYS,
-                       "token_expires_at": device.token_expires_at.isoformat(),
-                       "source": "kiosk_sign_in"})
+    if body.sign_in:
+        device.session_person_id = actor.person.id
+        device.session_login_method = body.login_method
+        device.session_started_at = now
+        if registration_state(device.token_expires_at, now) in ("none", "expired", "soon"):
+            device.registered_at = now
+            device.token_expires_at = now + timedelta(days=KIOSK_AUTO_REGISTER_DAYS)
+            audit(db, actor_id=actor.person.id, entity_type="device",
+                  entity_id=str(device.id), action="register",
+                  changes={"days": KIOSK_AUTO_REGISTER_DAYS,
+                           "token_expires_at": device.token_expires_at.isoformat(),
+                           "source": "kiosk_sign_in"})
     await db.commit()
     return HeartbeatOut(device_id=device.id, name=device.name,
                         registration=registration_state(device.token_expires_at, now),
                         token_expires_at=device.token_expires_at)
+
+
+@router.post("/sign-out", status_code=204)
+async def sign_out(
+    body: KioskSignOutIn, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> None:
+    """Clear this kiosk's signed-in session, if it's still this person's.
+    Always 204 — a missing device or someone else's session is not an
+    error, since the kiosk is about to drop its own token either way."""
+    device = await db.scalar(select(Device).where(Device.serial == body.serial))
+    if device is None:
+        return
+    if device.session_person_id is not None and device.session_person_id != actor.person.id:
+        return
+    device.session_person_id = None
+    device.session_login_method = None
+    device.session_started_at = None
+    device.updated_at = datetime.now(UTC)
+    await db.commit()

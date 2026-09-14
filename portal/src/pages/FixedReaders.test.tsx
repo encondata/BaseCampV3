@@ -61,6 +61,8 @@ const DEVICES: DeviceItem[] = [
     scan_status_color: '#31F527', tags_read_24h: 152,
     version: null, sub_type: null,
     current_initiative_id: null, current_initiative_name: null,
+    session_person_id: null, session_person_name: null,
+    session_login_method: null, session_started_at: null,
   },
   {
     id: 'd1', device_type: 'fixed_reader', name: 'dock-reader-1',
@@ -75,6 +77,8 @@ const DEVICES: DeviceItem[] = [
     scan_status_color: '#F5A623', tags_read_24h: 88,
     version: null, sub_type: null,
     current_initiative_id: null, current_initiative_name: null,
+    session_person_id: null, session_person_name: null,
+    session_login_method: null, session_started_at: null,
   },
 ];
 

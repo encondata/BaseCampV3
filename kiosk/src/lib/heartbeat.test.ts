@@ -43,13 +43,15 @@ it('keeps the last state through failures and now() beats immediately', async ()
   handle.stop();
 });
 
-it('marks only the very first beat as a sign-in when told to', async () => {
+it('marks only the very first beat as a sign-in when told to, carrying the login method', async () => {
   const onState = vi.fn();
-  const handle = startHeartbeat(onState, 1000, true);
+  const handle = startHeartbeat(onState, 1000, { method: 'link' });
   await vi.advanceTimersByTimeAsync(0);
   expect(api.heartbeatRequest.mock.calls[0][0].sign_in).toBe(true);
+  expect(api.heartbeatRequest.mock.calls[0][0].login_method).toBe('link');
   await vi.advanceTimersByTimeAsync(1000);
   expect(api.heartbeatRequest.mock.calls[1][0].sign_in).toBeUndefined();
+  expect(api.heartbeatRequest.mock.calls[1][0].login_method).toBeUndefined();
   handle.stop();
 });
 

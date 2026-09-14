@@ -8,13 +8,14 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.orm import aliased
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     DeviceCreate, DeviceItem, DeviceLeaseItem, DevicePatch, DeviceRegisterIn,
 )
 from serversherpa.db.models import (
-    Device, DeviceDhcpLease, Initiative, ProcessedScan, RawScan, Site,
+    Device, DeviceDhcpLease, Initiative, Person, ProcessedScan, RawScan, Site,
     StatusValue,
 )
 from serversherpa.services.audit import audit, diff, snapshot
@@ -24,6 +25,9 @@ router = APIRouter(prefix="/devices", tags=["devices"])
 
 def _err(status: int, code: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code})
+
+
+SessionPerson = aliased(Person)
 
 
 def _device_query():
@@ -40,7 +44,9 @@ def _device_query():
                 .group_by(ProcessedScan.device_id).subquery())
     return (select(Device, Site.name, up_counts.c.connected,
                    StatusValue.label, StatusValue.color,
-                   raw_24h.c.n, proc_24h.c.n, Initiative.name)
+                   raw_24h.c.n, proc_24h.c.n, Initiative.name,
+                   SessionPerson.preferred_name, SessionPerson.first_name,
+                   SessionPerson.last_name)
             .outerjoin(Site, Device.site_id == Site.id)
             .outerjoin(up_counts, up_counts.c.device_id == Device.id)
             .outerjoin(StatusValue,
@@ -49,12 +55,17 @@ def _device_query():
             .outerjoin(raw_24h, raw_24h.c.device_id == Device.name)
             .outerjoin(proc_24h, proc_24h.c.device_id == Device.name)
             .outerjoin(Initiative,
-                       Device.current_initiative_id == Initiative.id))
+                       Device.current_initiative_id == Initiative.id)
+            .outerjoin(SessionPerson,
+                       SessionPerson.id == Device.session_person_id))
 
 
 def _row_to_item(row) -> dict:
     (d, site_name, connected, ss_label, ss_color, raw_n, proc_n,
-     initiative_name) = row
+     initiative_name, session_preferred, session_first, session_last) = row
+    session_person_name = (
+        f"{session_preferred or session_first} {session_last}"
+        if session_last is not None else None)
     return {
         "id": d.id, "device_type": d.device_type, "name": d.name,
         "serial": d.serial, "mac": d.mac,
@@ -75,6 +86,10 @@ def _row_to_item(row) -> dict:
         "uptime_seconds": d.uptime_seconds,
         "last_seen_at": d.last_seen_at, "raw_info": d.raw_info,
         "registered_at": d.registered_at,
+        "session_person_id": d.session_person_id,
+        "session_person_name": session_person_name,
+        "session_login_method": d.session_login_method,
+        "session_started_at": d.session_started_at,
     }
 
 

@@ -79,6 +79,8 @@ function handheld(overrides: Partial<DeviceItem>): DeviceItem {
     tags_read_24h: 0,
     version: '2.4.1', sub_type: 'android',
     current_initiative_id: 'i1', current_initiative_name: 'NAP11 Hall Migration (demo)',
+    session_person_id: null, session_person_name: null,
+    session_login_method: null, session_started_at: null,
     ...overrides,
   };
 }

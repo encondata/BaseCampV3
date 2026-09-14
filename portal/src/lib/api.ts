@@ -3320,6 +3320,8 @@ export interface DeviceItem {
   tags_read_24h: number;
   version: string | null; sub_type: string | null;
   current_initiative_id: string | null; current_initiative_name: string | null;
+  session_person_id: string | null; session_person_name: string | null;
+  session_login_method: string | null; session_started_at: string | null;
 }
 
 export async function listDevices(deviceType?: string): Promise<DeviceItem[]> {
