@@ -19,7 +19,9 @@ import {
 } from '../lib/api';
 import { getIdentity } from '../lib/identity';
 import { useKioskSetup } from '../lib/kioskSetup';
-import { isSetupComplete, useKioskSetupState, writeSetupState } from '../lib/setupState';
+import {
+  isSetupComplete, readSetupState, useKioskSetupState, writeSetupState,
+} from '../lib/setupState';
 
 type Step = 1 | 2 | 3;
 
@@ -60,6 +62,27 @@ export default function KioskSetup() {
     if (wizardOpen) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wizardOpen]);
+
+  // Revalidate a preselected (cached) choice against the options that just
+  // loaded — a move, site, or scan type saved earlier may no longer exist,
+  // may no longer be offered, or (for a site) may no longer belong to the
+  // reselected move. Clearing it here, rather than trusting the cache,
+  // means step 1 never shows a phantom selection.
+  useEffect(() => {
+    if (!options) return;
+    if (initiativeId && !options.initiatives.some((i) => i.id === initiativeId)) {
+      setInitiativeId('');
+      setSiteId('');
+      setScanStatus('');
+      return;
+    }
+    const initiative = options.initiatives.find((i) => i.id === initiativeId);
+    const validSiteIds = [initiative?.source_site?.id, initiative?.destination_site?.id]
+      .filter((id): id is string => Boolean(id));
+    if (siteId && !validSiteIds.includes(siteId)) setSiteId('');
+    if (scanStatus && !options.scan_types.some((s) => s.key === scanStatus)) setScanStatus('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [options]);
 
   const openWizard = (preselect: boolean) => {
     if (preselect && selection) {
@@ -114,7 +137,10 @@ export default function KioskSetup() {
       writeSetupState('complete');
       setWizardOpen(false);
     } catch (err) {
-      writeSetupState('failed');
+      // A transient save failure shouldn't downgrade a kiosk that was
+      // already set up and working — only mark 'failed' when it wasn't
+      // already 'complete'; the summary stays reachable via Cancel.
+      if (readSetupState() !== 'complete') writeSetupState('failed');
       setSubmitError(err instanceof ApiError ? err.code : 'unknown_error');
     } finally {
       setSubmitting(false);
@@ -189,6 +215,13 @@ export default function KioskSetup() {
             </div>
             {options.initiatives.length === 0 && (
               <p className="page-hint">No active moves. Ask a coordinator to plan one.</p>
+            )}
+            {selection && setupState === 'complete' && (
+              <div className="pf-form-actions">
+                <button type="button" className="mini-btn" onClick={() => setWizardOpen(false)}>
+                  Cancel
+                </button>
+              </div>
             )}
           </div>
         )}

@@ -266,3 +266,47 @@ it('"Go to home" navigates to /', async () => {
   await user.click(screen.getByRole('button', { name: 'Go to home' }));
   expect(await screen.findByText('Home')).toBeTruthy();
 });
+
+it('a rejected re-save of an already-complete setup keeps it complete, and Cancel returns to the summary', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await goToScanStep(user);
+  await user.click(cardFor('RFID 1 - Cage Exit'));
+  await screen.findByText(/This kiosk is set up for/);
+  expect(readSetupState()).toBe('complete');
+
+  apiMock.submitKioskSetup.mockRejectedValueOnce(new ApiError(500, 'server_error'));
+  await user.click(screen.getByRole('button', { name: 'Change setup' }));
+  await goToScanStep(user);
+  await user.click(cardFor('RFID 1 - Cage Exit'));
+
+  expect(await screen.findByText("Couldn't save the kiosk setup (server_error). Try again."))
+    .toBeTruthy();
+  // the transient failure must not downgrade a kiosk that was already
+  // working — the state stays 'complete', not 'failed'
+  expect(readSetupState()).toBe('complete');
+
+  await user.click(screen.getByRole('button', { name: 'Back' }));
+  await user.click(screen.getByRole('button', { name: 'Back' }));
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(await screen.findByText(/This kiosk is set up for/)).toBeTruthy();
+});
+
+it('a cached move no longer in the loaded options is cleared and step 2 is not entered', async () => {
+  localStorage.setItem('ss.kiosk.setupState', 'complete');
+  localStorage.setItem('ss.kiosk.setup', JSON.stringify({
+    initiativeId: 'stale-move', initiativeName: 'Stale Move',
+    siteId: 'stale-site', siteName: 'Stale Site', siteRole: 'source',
+    scanStatus: 'stale-scan', scanLabel: 'Stale Scan',
+  }));
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText(/This kiosk is set up for/);
+  await user.click(screen.getByRole('button', { name: 'Change setup' }));
+
+  await screen.findByText('NAP11 Hall Migration (demo)');
+  await waitFor(() => {
+    expect(screen.queryAllByRole('option', { selected: true })).toHaveLength(0);
+  });
+  expect(screen.getByText('Step 1 of 3 · Move')).toBeTruthy();
+});

@@ -233,6 +233,25 @@ async def test_setup_with_source_site_stamps_the_role(client, db, seeded_user):
     assert body["site_role"] == "source"
 
 
+async def test_worker_can_complete_setup(client, db, seeded_user):
+    """A worker (the persona kiosks are actually signed into) holds
+    kiosk:view and can complete setup end to end — not just an admin, as
+    every other test in this file happens to use via login()."""
+    hdrs = await _make(db, client, "worker", "w-setup-write@test.example.com")
+    device = Device(device_type="kiosk", name="Kiosk Setup Worker", serial=SERIAL)
+    db.add(device)
+    origin, dest = await _seed_sites(db)
+    planned, *_ = await _seed_initiatives(db, origin_site=origin, dest_site=dest)
+    active, *_ = await _seed_scan_types(db)
+    await db.commit()
+
+    resp = await client.post("/kiosk/setup", headers=hdrs, json={
+        "serial": SERIAL, "initiative_id": str(planned.id),
+        "site_id": str(dest.id), "scan_status": active.key,
+    })
+    assert resp.status_code == 200, resp.text
+
+
 async def test_setup_permission(client, db, seeded_user):
     device = Device(device_type="kiosk", name="Kiosk Setup Perm", serial=SERIAL)
     db.add(device)

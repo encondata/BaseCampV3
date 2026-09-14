@@ -257,7 +257,9 @@ async def _initiative_status_labels(db: AsyncSession) -> dict[str, str]:
     return dict(rows.all())
 
 
-async def _allowed_initiatives_with_sites(db: AsyncSession) -> list:
+async def _allowed_initiatives_with_sites(
+    db: AsyncSession,
+) -> list[tuple[Initiative, Site | None, Site | None, Client | None]]:
     """Move initiatives that are not complete or historical, each paired
     with its origin (source) and destination Site rows and its Client, all
     via outer joins — any of these can be absent (a move that hasn't had
@@ -296,7 +298,19 @@ async def setup_options(
     Kiosk Setup wizard's card pickers. Workers hold kiosk:view but not
     initiatives:view, so they cannot call /initiatives directly; this
     endpoint gives the kiosk only the narrow slice of that data the wizard
-    needs, including the status label and client name for display."""
+    needs, including the status label and client name for display.
+
+    The *filter* matches the portal's move picker in spirit (not-complete,
+    not-cancelled moves — see the docstring above); the *scope* is
+    deliberately wider than the portal's equivalent. This runs with no
+    scope_conditions applied at all: it is gated on kiosk:view only, so any
+    signed-in kiosk user sees every active move and its sites, regardless
+    of client/initiative anchoring. Applying the portal's scope here would
+    leave client/vendor kiosk users staring at an empty list (they hold no
+    initiatives:view-shaped scope), and workers are self-anchored rather
+    than initiative-anchored, so there is no narrower scope to apply that
+    would still let a worker set up a kiosk. See the spec's security notes
+    for the accepted-risk writeup."""
     rows = await _allowed_initiatives_with_sites(db)
     scan_types = await _active_scan_types(db)
     status_labels = await _initiative_status_labels(db)

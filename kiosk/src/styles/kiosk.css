@@ -260,7 +260,8 @@
   font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em;
   text-transform: uppercase; color: var(--text-mute); margin: 8px 0 14px;
 }
-.setup-wizard { max-width: 560px; }
+.setup-wizard { max-width: none; }
+.setup-wizard .form-error { max-width: 560px; }
 .setup-summary {
   max-width: 560px; margin-top: 18px; padding: 22px 24px;
   background: var(--paper); border: 1px solid var(--paper-line); border-radius: 14px;
