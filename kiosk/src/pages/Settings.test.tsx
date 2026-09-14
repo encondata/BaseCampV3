@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -76,4 +76,27 @@ it('a developer sees a Developer mode switch on the Developer tab, unchecked by 
 it('a worker never sees the Developer mode switch, on any tab', () => {
   renderAt('/settings');
   expect(screen.queryByRole('switch', { name: 'Developer mode' })).toBeNull();
+});
+
+it('the kiosk setup state radiogroup is absent until developer mode is switched on', () => {
+  auth.isAdmin = true;
+  auth.isDeveloper = true;
+  renderAt('/settings?tab=developer');
+  expect(screen.queryByRole('radiogroup', { name: 'Kiosk setup state' })).toBeNull();
+});
+
+it('a developer with dev mode on sees the kiosk setup state radiogroup and can set it', async () => {
+  auth.isAdmin = true;
+  auth.isDeveloper = true;
+  renderAt('/settings?tab=developer');
+  await userEvent.click(screen.getByRole('switch', { name: 'Developer mode' }));
+
+  const group = screen.getByRole('radiogroup', { name: 'Kiosk setup state' });
+  const options = within(group).getAllByRole('radio');
+  expect(options.map((o) => o.textContent)).toEqual(['Incomplete', 'Complete', 'Failed']);
+  expect(screen.getByRole('radio', { name: 'Incomplete' }).getAttribute('aria-checked')).toBe('true');
+
+  await userEvent.click(screen.getByRole('radio', { name: 'Complete' }));
+  expect(screen.getByRole('radio', { name: 'Complete' }).getAttribute('aria-checked')).toBe('true');
+  expect(localStorage.getItem('ss.kiosk.setupState')).toBe('complete');
 });

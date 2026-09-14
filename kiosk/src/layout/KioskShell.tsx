@@ -20,12 +20,19 @@ import { useDevMode } from '../lib/devMode';
 import { FEATURES } from '../lib/features';
 import { getIdentity } from '../lib/identity';
 import { platform } from '../lib/platform';
+import { setupStateLabel, useKioskSetupState, type KioskSetupState } from '../lib/setupState';
 
 const REG_CHIP: Record<RegistrationState, string> = {
   ok: 'c-green', soon: 'c-amber', expired: 'c-red', none: 'c-slate',
 };
 
-interface FootItem { label: string; value: string }
+interface FootItem { label: string; value: string; className?: string }
+
+const SETUP_FOOT_CLASS: Record<KioskSetupState, string> = {
+  complete: 'kiosk-foot-setup is-complete',
+  incomplete: 'kiosk-foot-setup is-incomplete',
+  failed: 'kiosk-foot-setup is-failed',
+};
 
 export default function KioskShell({ children }: { children: ReactNode }) {
   const { status, person, registration, preferences, sessionExpiresAt, logout } = useKioskAuth();
@@ -33,6 +40,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const location = useLocation();
   const authed = status === 'authed';
   const [devMode] = useDevMode();
+  const [setupState] = useKioskSetupState();
 
   useEffect(() => {
     applyPreferences(preferences ?? DEFAULT_PREFERENCES);
@@ -57,6 +65,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
       { label: 'Registration', value: registration ? registrationLabel(registration) : 'Checking…' },
     );
   }
+  footItems.push({ label: 'Setup', value: setupStateLabel(setupState), className: SETUP_FOOT_CLASS[setupState] });
 
   return (
     <div className="portal-shell kiosk-shell">
@@ -91,7 +100,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
         {footItems.map((item, i) => (
           <Fragment key={item.label}>
             {i > 0 && <span className="kiosk-foot-sep" aria-hidden="true">·</span>}
-            <span className="kiosk-foot-item">
+            <span className={`kiosk-foot-item${item.className ? ` ${item.className}` : ''}`}>
               <b>{item.label}</b><span>{item.value}</span>
             </span>
           </Fragment>

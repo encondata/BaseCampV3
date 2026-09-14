@@ -27,6 +27,7 @@ const auth = vi.hoisted(() => ({
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
 import { getIdentity } from '../lib/identity';
+import { writeSetupState } from '../lib/setupState';
 import KioskShell from './KioskShell';
 
 afterEach(() => {
@@ -144,4 +145,27 @@ it('footer shows "Dev mode" signed out too (kiosk-local, not tied to the session
   );
   const footer = screen.getByRole('contentinfo');
   expect(footer.textContent ?? '').toContain('Dev mode');
+});
+
+it('footer shows "Setup" + "Incomplete" by default', () => {
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const footer = screen.getByRole('contentinfo');
+  expect(footer.textContent ?? '').toContain('Incomplete');
+  expect(document.querySelector('.kiosk-foot-setup.is-incomplete')).toBeTruthy();
+});
+
+it('footer shows "Complete" when kiosk setup state is complete', () => {
+  writeSetupState('complete');
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const footer = screen.getByRole('contentinfo');
+  expect(footer.textContent ?? '').toContain('Complete');
+  expect(document.querySelector('.kiosk-foot-setup.is-complete')).toBeTruthy();
 });

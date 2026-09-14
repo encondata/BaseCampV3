@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 
 import { KioskAuthProvider } from './auth/KioskAuthContext';
 import KioskGuard from './components/KioskGuard';
+import SetupGate from './components/SetupGate';
 import KioskShell from './layout/KioskShell';
 import { FEATURES } from './lib/features';
 import FeaturePage from './pages/FeaturePage';
@@ -23,7 +24,13 @@ export default function App() {
             <Route
               key={f.id}
               path={f.path}
-              element={<KioskGuard><KioskShell><FeaturePage feature={f} /></KioskShell></KioskGuard>}
+              element={(
+                <KioskGuard>
+                  <SetupGate feature={f}>
+                    <KioskShell><FeaturePage feature={f} /></KioskShell>
+                  </SetupGate>
+                </KioskGuard>
+              )}
             />
           ))}
           <Route path="*" element={<Navigate to="/" replace />} />

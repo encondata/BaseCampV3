@@ -145,6 +145,20 @@ The page renders a `.segmented.settings-tabs` tab strip (the same `role="tablist
 
 Developer tab: the first control is a Developer mode toggle (kiosk-local, localStorage `ss.kiosk.devMode`, footer shows "Dev mode On"); what it reveals is defined per feature as they land — today it only flips the flag.
 
+### Kiosk setup state (2026-09-13)
+
+A global kiosk-local flag, `kiosk_setup_complete`, gates every launcher tile except Kiosk Setup and Settings until the kiosk has been set up. `src/lib/setupState.ts` mirrors `devMode.ts`'s store/hook shape: `KioskSetupState = 'incomplete' | 'complete' | 'failed'`, `SETUP_STATES` (the three values in that order), `readSetupState`/`writeSetupState`/`subscribeSetupState`/`useKioskSetupState` (localStorage key `ss.kiosk.setupState`, same try/catch idiom — a blocked or full store, or a garbage stored value, reads as `'incomplete'`), plus `isSetupComplete(state)` and `setupStateLabel(state)` ("Incomplete"/"Complete"/"Failed"). Storage is kiosk-local for now; a server-side Device field is deferred so the portal can show a kiosk's setup state too.
+
+`KioskFeature` gained `alwaysAvailable?: boolean`, set on `setup` and `settings` — the two tiles that work no matter the state. `featureAvailable(feature, setupState)` (`features.ts`) is `feature.alwaysAvailable || isSetupComplete(setupState)`.
+
+**Greying rule (Home)**: any tile that isn't available renders as a disabled `<a>` (`kiosk-tile is-disabled`, `aria-disabled="true"`, `role="link"`, `tabIndex={-1}`, click prevented) instead of a `Link`, with a `.kiosk-tile-lock` line under its blurb ("Finish Kiosk Setup first." or, when the state is `failed`, "Kiosk setup failed — open Kiosk Setup."). Above the grid, a `.portal-banner.kiosk-setup-banner` repeats the same message at the page level ("Kiosk setup is incomplete. Only Kiosk Setup and Settings are available." / "Kiosk setup failed. Open Kiosk Setup to try again.") whenever the state isn't `complete`.
+
+**Route gate**: a new `src/components/SetupGate.tsx` wraps every placeholder feature's route element in `App.tsx` (inside `KioskGuard`, outside `KioskShell`) — it renders its children when `featureAvailable` is true and otherwise `<Navigate to="/" replace />`, so typing a feature path directly (e.g. `/scan`) while setup is incomplete or failed lands back on the launcher instead of the placeholder.
+
+**Footer**: `KioskShell` appends a `Setup` item after `Registration` showing `setupStateLabel(state)`, colored via `--c-*` tokens through classes `.kiosk-foot-setup.is-complete` (`--c-green`), `.is-incomplete` (`--c-amber`), and `.is-failed` (`--c-red`).
+
+**Developer-tab testing aid**: while Developer mode is on, the Developer tab (`Settings.tsx`) shows a second `.settings-row` below the Developer mode row — label "Kiosk setup state", hint "Testing aid until real setup logic sets this. Stored on this kiosk only.", and a `.segmented[role="radiogroup"]` of three `role="radio"` buttons (Incomplete/Complete/Failed) bound to `useKioskSetupState()`. It exists only so the greying and gating can be exercised on a real kiosk before any setup flow sets the flag for real.
+
 ### Styles (`src/styles/kiosk.css`)
 
 Only kiosk-specific rules: `.kiosk-shell` (grid rows auto/1fr, `min-height:100vh`, `background: var(--paper-2)`), `.kiosk-top` (height 56 px, `background: var(--ink)`, `color: var(--snow)`, border-bottom `var(--ink-line)`), `.kiosk-mode`, `.pair-code`, `.pair-qr`, `.form-notice`, `.pane-gear`, `.eyebrow-kiosk`, `.settings-tabs`, `.settings-tab-title`. Everything else comes from the portal sheets. The kiosk never redefines a `--` token. List-typography guardrail selectors are not used (no lists in this pass).
@@ -272,6 +286,7 @@ Built on branch `kiosk-web` via `docs/superpowers/plans/2026-09-13-kiosk-web.md`
 - **Heartbeat has no serial ownership proof:** any `kiosk:view` holder can rename any kiosk by posting its serial in a heartbeat, and by the same token can also claim another kiosk's "Signed in" cell for themselves by posting its serial with `sign_in: true` (never a third party — the audit names the real, signed-in actor). Accepted for this pass — device tokens/enrollment secrets are out of scope (see "Out of scope").
 - **De-register in the portal is undone by the next kiosk sign-in.** Registration is a lifecycle marker, not a gate — it doesn't block anything — so a kiosk someone de-registered in the portal re-registers itself the moment the next person signs in there; the re-registration is audited with `source: "kiosk_sign_in"` like any other auto-registration.
 - **`.dockerignore` lives at the repo root** (the Docker build context for `kiosk/Dockerfile -f .. .`), not under `kiosk/`.
+- **Jimmy: kiosk_setup_complete (incomplete|complete|failed) gates every tile except Kiosk Setup and Settings.**
 - 2026-09-13 (Jimmy): the segmented method switch was replaced — email & password is the normal form; alternates sit behind a button below it.
 - 2026-09-13 (Jimmy): "Register automatically at sign-in — first sign-in on a kiosk stamps a 30-day registration (same as clicking Register); later sign-ins renew it only when it has expired or is within 7 days of expiring. Anyone allowed to use the kiosk can do it."
 - 2026-09-13 (Jimmy): Kiosk Devices shows the signed-in user and login type (migration 0062).

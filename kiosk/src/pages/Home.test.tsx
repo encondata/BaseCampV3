@@ -2,7 +2,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const auth = vi.hoisted(() => ({
   status: 'authed', person: { display_name: 'Alex Worker' }, perms: null, preferences: null,
@@ -13,9 +13,11 @@ const auth = vi.hoisted(() => ({
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
 import { FEATURES } from '../lib/features';
+import { writeSetupState } from '../lib/setupState';
 import FeaturePage from './FeaturePage';
 import Home from './Home';
 
+beforeEach(() => localStorage.clear());
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 function renderRouted() {
@@ -32,6 +34,7 @@ function renderRouted() {
 }
 
 it('renders a tile link for each feature, Kiosk Setup first and Settings last', () => {
+  writeSetupState('complete');
   renderRouted();
   const links = screen.getAllByRole('link');
   expect(links).toHaveLength(5);
@@ -45,6 +48,7 @@ it('renders a tile link for each feature, Kiosk Setup first and Settings last', 
 });
 
 it('renders the launcher tiles only, with no facts list', () => {
+  writeSetupState('complete');
   renderRouted();
   expect(screen.getByRole('link', { name: /Kiosk Setup/ })).toBeTruthy();
   expect(screen.getByRole('link', { name: /Scanning/ })).toBeTruthy();
@@ -55,9 +59,45 @@ it('renders the launcher tiles only, with no facts list', () => {
 });
 
 it('navigates to the placeholder and back', async () => {
+  writeSetupState('complete');
   renderRouted();
   await userEvent.click(screen.getByRole('link', { name: /Timeclock/ }));
   expect(await screen.findByText('This feature is not available yet.')).toBeTruthy();
   await userEvent.click(screen.getByRole('link', { name: 'Back to home' }));
   expect(await screen.findByText('What would you like to do?')).toBeTruthy();
+});
+
+it('when setup is incomplete, greys out every tile except Kiosk Setup and Settings, and shows the banner', async () => {
+  renderRouted();
+  for (const name of [/Scanning/, /Label Printing/, /Timeclock/]) {
+    const tile = screen.getByRole('link', { name });
+    expect(tile.getAttribute('aria-disabled')).toBe('true');
+  }
+  const setup = screen.getByRole('link', { name: /^Kiosk Setup/ });
+  const settings = screen.getByRole('link', { name: /^Settings/ });
+  expect(setup.getAttribute('aria-disabled')).toBeNull();
+  expect(settings.getAttribute('aria-disabled')).toBeNull();
+
+  await userEvent.click(screen.getByRole('link', { name: /Scanning/ }));
+  expect(screen.queryByText('This feature is not available yet.')).toBeNull();
+
+  expect(screen.getByText('Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.')).toBeTruthy();
+});
+
+it('when setup is complete, no tile is disabled and no banner is shown', () => {
+  writeSetupState('complete');
+  renderRouted();
+  for (const f of FEATURES) {
+    const tile = screen.getByRole('link', { name: new RegExp(f.title) });
+    expect(tile.getAttribute('aria-disabled')).toBeNull();
+  }
+  expect(screen.queryByText(/Kiosk setup is incomplete/)).toBeNull();
+  expect(screen.queryByText(/Kiosk setup failed/)).toBeNull();
+});
+
+it('when setup failed, shows the failed copy on the banner and lock lines', () => {
+  writeSetupState('failed');
+  renderRouted();
+  expect(screen.getByText('Kiosk setup failed. Open Kiosk Setup to try again.')).toBeTruthy();
+  expect(screen.getAllByText('Kiosk setup failed — open Kiosk Setup.').length).toBeGreaterThan(0);
 });

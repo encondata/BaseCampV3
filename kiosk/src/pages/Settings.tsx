@@ -10,6 +10,7 @@ import { useKioskAuth } from '../auth/KioskAuthContext';
 import { Switch } from '../components/Switch';
 import { useDevMode } from '../lib/devMode';
 import { SETTINGS_TABS, visibleTabs, type SettingsTabId } from '../lib/settingsTabs';
+import { SETUP_STATES, setupStateLabel, useKioskSetupState } from '../lib/setupState';
 
 const DEFAULT_TAB: SettingsTabId = 'appearance';
 
@@ -17,6 +18,7 @@ export default function Settings() {
   const { isAdmin, isDeveloper } = useKioskAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const [devMode, setDevMode] = useDevMode();
+  const [setupState, setSetupState] = useKioskSetupState();
 
   const tabs = visibleTabs(SETTINGS_TABS, { isAdmin, isDeveloper });
   const requested = searchParams.get('tab');
@@ -61,6 +63,30 @@ export default function Settings() {
               on={devMode}
               onChange={setDevMode}
             />
+          </div>
+        )}
+        {active.id === 'developer' && devMode && (
+          <div className="settings-row">
+            <div>
+              <span className="settings-row-label">Kiosk setup state</span>
+              <p className="settings-row-hint">
+                Testing aid until real setup logic sets this. Stored on this kiosk only.
+              </p>
+            </div>
+            <div className="segmented" role="radiogroup" aria-label="Kiosk setup state">
+              {SETUP_STATES.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  role="radio"
+                  aria-checked={s === setupState}
+                  className={s === setupState ? 'on' : ''}
+                  onClick={() => setSetupState(s)}
+                >
+                  {setupStateLabel(s)}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         <div className="kiosk-placeholder">

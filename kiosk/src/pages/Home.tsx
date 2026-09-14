@@ -3,7 +3,8 @@
 
 import { Link } from 'react-router-dom';
 
-import { FEATURES, type KioskFeature } from '../lib/features';
+import { featureAvailable, FEATURES, type KioskFeature } from '../lib/features';
+import { useKioskSetupState } from '../lib/setupState';
 
 const ICONS: Record<KioskFeature['id'], JSX.Element> = {
   setup: (
@@ -51,18 +52,57 @@ const ICONS: Record<KioskFeature['id'], JSX.Element> = {
 };
 
 export default function Home() {
+  const [setupState] = useKioskSetupState();
+  const complete = setupState === 'complete';
+  const failed = setupState === 'failed';
+
   return (
     <div className="portal-page">
       <div className="eyebrow">Kiosk</div>
       <h1 className="page-title">What would you like to do?</h1>
+      {!complete && (
+        <div className="portal-banner kiosk-setup-banner">
+          {failed
+            ? 'Kiosk setup failed. Open Kiosk Setup to try again.'
+            : 'Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.'}
+        </div>
+      )}
       <nav className="kiosk-launcher" aria-label="Kiosk features">
-        {FEATURES.map((f) => (
-          <Link key={f.id} className="kiosk-tile" to={f.path}>
-            {ICONS[f.id]}
-            <span className="kiosk-tile-title">{f.title}</span>
-            <span className="kiosk-tile-blurb">{f.blurb}</span>
-          </Link>
-        ))}
+        {FEATURES.map((f) => {
+          const available = featureAvailable(f, setupState);
+          const tile = (
+            <>
+              {ICONS[f.id]}
+              <span className="kiosk-tile-title">{f.title}</span>
+              <span className="kiosk-tile-blurb">{f.blurb}</span>
+              {!available && (
+                <span className="kiosk-tile-lock">
+                  {failed ? 'Kiosk setup failed — open Kiosk Setup.' : 'Finish Kiosk Setup first.'}
+                </span>
+              )}
+            </>
+          );
+          if (!available) {
+            return (
+              <a
+                key={f.id}
+                className="kiosk-tile is-disabled"
+                aria-disabled="true"
+                role="link"
+                tabIndex={-1}
+                href={f.path}
+                onClick={(e) => e.preventDefault()}
+              >
+                {tile}
+              </a>
+            );
+          }
+          return (
+            <Link key={f.id} className="kiosk-tile" to={f.path}>
+              {tile}
+            </Link>
+          );
+        })}
       </nav>
     </div>
   );
