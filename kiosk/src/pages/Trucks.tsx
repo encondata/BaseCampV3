@@ -29,9 +29,13 @@
  * follow from one crate riding one truck: loading a container that is on
  * ANOTHER truck MOVES it, and the answer says where from ("moved from
  * {truck}"), so nobody wonders why another trailer got lighter. Loading
- * onto the truck it is already on is a no-op that still records the scan.
- * Unloading from the wrong trailer is a refusal naming the right one,
- * never a silent removal.
+ * onto the truck it is already on is a no-op that still records the scan
+ * — and looks like one: `already_there` gets the **duplicate** flash
+ * color, the duplicate sound, and a marker on the row that is already
+ * there, never a second row claiming a load that did not happen (the
+ * same treatment Containers gives a repeat pack, for the same reason:
+ * one crate, one truck). Unloading from the wrong trailer is a refusal
+ * naming the right one, never a silent removal.
  *
  * Online only, deliberately, for exactly the reason Containers is: which
  * truck carries a crate is relational state the kiosk cannot resolve
@@ -73,16 +77,27 @@ type Action = 'load' | 'unload';
  *  asset to its container without a round trip. */
 type PackedAsset = ScanAsset & { container_id?: string | null };
 
+/** What a row records. `already_on` is not an action — nobody did
+ *  anything — so it never wears the Load chip; it is the honest label for
+ *  a crate this session found already aboard. */
+type RowKind = Action | 'already_on';
+
 /** One row of the session-only list under the input. `movedFrom` is the
  *  truck the crate came off, when a load turned into a move; `viaAsset`
- *  is the asset that was actually scanned, when it was not the crate. */
+ *  is the asset that was actually scanned, when it was not the crate;
+ *  `again` counts the repeat scans this row has absorbed, so scanning the
+ *  same crate twice marks the row instead of growing the list.
+ *  `containerId` is what a repeat is matched on — a crate is what a
+ *  truck carries, whichever value named it. */
 interface SessionRow {
   id: string;
+  containerId: string;
   name: string;
   assetCount: number;
-  action: Action;
+  kind: RowKind;
   movedFrom: string | null;
   viaAsset: string | null;
+  again: number;
   at: string;
 }
 
@@ -98,6 +113,19 @@ const ACTIONS: { id: Action; label: string }[] = [
   { id: 'load', label: 'Load' },
   { id: 'unload', label: 'Unload' },
 ];
+
+/** The chip on a row. Load and Unload are things the operator did, and
+ *  are titled like actions; "already on" is a state the trailer was in
+ *  before the scan, and is deliberately not. */
+const ROW_LABEL: Record<RowKind, string> = {
+  load: 'Load', unload: 'Unload', already_on: 'already on',
+};
+
+/** "scanned again", then "scanned again ×2" — a count only once there is
+ *  something to count. */
+function againText(n: number): string {
+  return n > 1 ? `scanned again ×${n}` : 'scanned again';
+}
 
 /** The magnifying glass the portal's `.dir-search` toolbar draws. Inlined
  *  for the same reason `LocalDataInspector` inlines it: the kiosk cannot
@@ -135,6 +163,18 @@ function scanErrorText(err: unknown): string {
   return `Couldn't record that (${code}).`;
 }
 
+/** The one inline line under the box. A refusal is an `alert` in the
+ *  error color; a repeat scan is a `status` — nothing went wrong, so
+ *  nothing shouts. */
+interface Message { kind: 'error' | 'note'; text: string }
+
+function ScanMessage({ message }: { message: Message | null }) {
+  if (!message) return null;
+  return message.kind === 'error'
+    ? <p className="form-error" role="alert">{message.text}</p>
+    : <p className="ct-note" role="status">{message.text}</p>;
+}
+
 /** Matches the Scanning list's time column. */
 function scannedAt(iso: string): string {
   return new Date(iso).toLocaleTimeString(undefined, {
@@ -165,14 +205,16 @@ export default function Trucks() {
   const [filter, setFilter] = useState('');
   const [scanValue, setScanValue] = useState('');
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // One inline slot, two voices: a refusal is an alert, a repeat scan is
+  // a status. Nothing went wrong when the crate is already aboard.
+  const [message, setMessage] = useState<Message | null>(null);
   const [rows, setRows] = useState<SessionRow[]>([]);
 
   const filterRef = useRef<HTMLInputElement>(null);
   const scanRef = useRef<HTMLInputElement>(null);
   const loadId = useRef(0);
   const firstLoad = useRef(true);
-  const errorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // All three local stores are read once and indexed once — a scan must
   // not wait on IndexedDB. Re-read when a sync finishes (the kiosk may
@@ -206,7 +248,7 @@ export default function Trucks() {
   }, [phase]);
 
   useEffect(() => () => {
-    if (errorTimer.current) clearTimeout(errorTimer.current);
+    if (messageTimer.current) clearTimeout(messageTimer.current);
   }, []);
 
   const truckIndex = useMemo(() => buildTruckIndex(trucks), [trucks]);
@@ -247,15 +289,18 @@ export default function Trucks() {
     };
   }, [disabled, onScanStep]);
 
-  const showError = (text: string) => {
-    if (errorTimer.current) clearTimeout(errorTimer.current);
-    setError(text);
-    errorTimer.current = setTimeout(() => setError(null), ERROR_MS);
+  const showMessage = (kind: Message['kind'], text: string) => {
+    if (messageTimer.current) clearTimeout(messageTimer.current);
+    setMessage({ kind, text });
+    messageTimer.current = setTimeout(() => setMessage(null), ERROR_MS);
   };
 
-  const clearError = () => {
-    if (errorTimer.current) clearTimeout(errorTimer.current);
-    setError(null);
+  const showError = (text: string) => showMessage('error', text);
+  const showNote = (text: string) => showMessage('note', text);
+
+  const clearMessage = () => {
+    if (messageTimer.current) clearTimeout(messageTimer.current);
+    setMessage(null);
   };
 
   const bad = () => {
@@ -263,8 +308,15 @@ export default function Trucks() {
     playScanSound('not_found');
   };
 
+  /** A scan that changed nothing: its own color and its own sound, so an
+   *  operator loading a trailer can tell it from a load without reading. */
+  const nothingHappened = () => {
+    flash(hslCss(appearance.duplicate_scan), appearance.flash_ms);
+    playScanSound('duplicate');
+  };
+
   const pick = (row: TruckRow) => {
-    clearError();
+    clearMessage();
     setFilter('');
     setScanValue('');
     setAction('load');
@@ -277,7 +329,7 @@ export default function Trucks() {
    *  the last truck's rows under the next truck's card would read as
    *  "these are on it", which is exactly wrong. */
   const done = () => {
-    clearError();
+    clearMessage();
     setTruck(null);
     setContainerCount(0);
     setFilter('');
@@ -328,7 +380,7 @@ export default function Trucks() {
 
     const trailer = truck;
     setSending(true);
-    clearError();
+    clearMessage();
     postTruckContainer({
       truck_id: trailer.id,
       serial: getIdentity().serial,
@@ -342,18 +394,57 @@ export default function Trucks() {
       initiative_id: setup?.initiativeId,
     }).then(
       (result) => {
+        setSending(false);
+        const crate = result.container;
+
+        // A crate rides one truck, so loading it where it already is is a
+        // nothing-happened event: no second row, and the header count
+        // does not move because nothing moved. Scanning an asset whose
+        // crate is already aboard is the same event — the row still says
+        // "via asset {name}", because that is what was scanned.
+        if (result.already_there) {
+          nothingHappened();
+          showNote(`${crate.name} is already on this truck.`);
+          setRows((current) => {
+            const at = current.findIndex((r) => r.containerId === crate.id);
+            if (at === -1) {
+              // Loaded earlier, or by someone else: there is nothing to
+              // mark, and a "Load" row would claim work this session
+              // never did.
+              return [{
+                id: uuid(),
+                containerId: crate.id,
+                name: crate.name,
+                assetCount: crate.asset_count,
+                kind: 'already_on' as const,
+                movedFrom: null,
+                viaAsset,
+                again: 0,
+                at: new Date().toISOString(),
+              }, ...current].slice(0, MAX_ROWS);
+            }
+            const next = current.slice();
+            // The original chip and time are left alone — they record
+            // the scan that did something.
+            next[at] = { ...next[at], again: next[at].again + 1 };
+            return next;
+          });
+          return;
+        }
+
         flash(hslCss(appearance.good_scan), appearance.flash_ms);
         playScanSound('good');
-        setSending(false);
         setContainerCount(result.truck.container_count);
         setRows((current) => [
           {
             id: uuid(),
-            name: result.container.name,
-            assetCount: result.container.asset_count,
-            action: result.action,
+            containerId: crate.id,
+            name: crate.name,
+            assetCount: crate.asset_count,
+            kind: result.action,
             movedFrom: result.moved_from?.name ?? null,
             viaAsset,
+            again: 0,
             at: new Date().toISOString(),
           },
           ...current,
@@ -431,7 +522,7 @@ export default function Trucks() {
                   // unload because the toggle moved under it.
                   setAction(a.id);
                   setScanValue('');
-                  clearError();
+                  clearMessage();
                   scanRef.current?.focus();
                 }}
               >
@@ -456,7 +547,7 @@ export default function Trucks() {
             onChange={(e) => setScanValue(e.target.value)}
             onKeyDown={onKeyDown(submitScan)}
           />
-          {error && <p className="form-error" role="alert">{error}</p>}
+          <ScanMessage message={message} />
           <div className="ct-done">
             <button type="button" className="mini-btn" onClick={done}>Done</button>
           </div>
@@ -538,9 +629,10 @@ export default function Trucks() {
                   </td>
                   <td className="mono">{row.assetCount}</td>
                   <td>
-                    <span className="chip tag ct-chip">
-                      {row.action === 'load' ? 'Load' : 'Unload'}
-                    </span>
+                    <span className="chip tag ct-chip">{ROW_LABEL[row.kind]}</span>
+                    {row.again > 0 && (
+                      <span className="chip tag ct-again">{againText(row.again)}</span>
+                    )}
                   </td>
                   <td className="mono">{scannedAt(row.at)}</td>
                 </tr>

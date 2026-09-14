@@ -23,7 +23,11 @@
  * crated elsewhere therefore MOVES it, and the answer says where from —
  * the row shows "moved from {name}" so nobody has to wonder why another
  * crate just got lighter. Packing into the crate it is already in is a
- * no-op that still records the scan.
+ * no-op that still records the scan, and the screen says so rather than
+ * repeating the good flash: `already_there` gets the **duplicate**
+ * color, the duplicate sound, and a marker on the row that is already
+ * there — never a second row, because a row is a claim that something
+ * happened and nothing did.
  *
  * Online only, deliberately. Membership is relational state the kiosk
  * cannot resolve alone — only the portal knows which other crate holds
@@ -60,16 +64,25 @@ import { useSyncStatus } from '../lib/sync';
 type LoadStatus = 'loading' | 'ready' | 'error';
 type Action = 'pack' | 'unpack';
 
+/** What a row records. `already_in` is not an action — nobody did
+ *  anything — so it never wears the Pack chip; it is the honest label for
+ *  an asset this session found already crated here. */
+type RowKind = Action | 'already_in';
+
 /** One row of the session-only list under the input. `movedFrom` is the
  *  crate the asset came out of, when the unique membership constraint
- *  turned a pack into a move. */
+ *  turned a pack into a move; `again` counts the repeat scans this row
+ *  has absorbed, so a sweep of the same crate marks the row instead of
+ *  growing the list. `assetId` is what a repeat is matched on. */
 interface SessionRow {
   id: string;
+  assetId: string;
   name: string;
   serial: string | null;
   rfid: string | null;
-  action: Action;
+  kind: RowKind;
   movedFrom: string | null;
+  again: number;
   at: string;
 }
 
@@ -86,6 +99,19 @@ const ACTIONS: { id: Action; label: string }[] = [
   { id: 'pack', label: 'Pack' },
   { id: 'unpack', label: 'Unpack' },
 ];
+
+/** The chip on a row. Pack and Unpack are things the operator did, and
+ *  are titled like actions; "already in" is a state the crate was in
+ *  before the scan, and is deliberately not. */
+const ROW_LABEL: Record<RowKind, string> = {
+  pack: 'Pack', unpack: 'Unpack', already_in: 'already in',
+};
+
+/** "scanned again", then "scanned again ×2" — a count only once there is
+ *  something to count. */
+function againText(n: number): string {
+  return n > 1 ? `scanned again ×${n}` : 'scanned again';
+}
 
 /** What a refused scan says out loud. The portal's own code is kept in
  *  the fallback so an unexpected answer is still reportable. */
@@ -106,6 +132,18 @@ function scanErrorText(err: unknown): string {
   }
   if (code === 'network') return "Can't reach the portal. That scan was not recorded.";
   return `Couldn't record that (${code}).`;
+}
+
+/** The one inline line under the box. A refusal is an `alert` in the
+ *  error color; a repeat scan is a `status` in the duplicate color —
+ *  nothing went wrong, so nothing shouts. */
+interface Message { kind: 'error' | 'note'; text: string }
+
+function ScanMessage({ message }: { message: Message | null }) {
+  if (!message) return null;
+  return message.kind === 'error'
+    ? <p className="form-error" role="alert">{message.text}</p>
+    : <p className="ct-note" role="status">{message.text}</p>;
 }
 
 /** Matches the Scanning list's time column. */
@@ -133,14 +171,17 @@ export default function Containers() {
   const [assetValue, setAssetValue] = useState('');
   const [choices, setChoices] = useState<ContainerRow[]>([]);
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // One inline slot, two voices: a refusal is an alert, a repeat scan is
+  // a status. Nothing went wrong when a crate already holds the asset,
+  // and the line must not read as if it had.
+  const [message, setMessage] = useState<Message | null>(null);
   const [rows, setRows] = useState<SessionRow[]>([]);
 
   const containerRef = useRef<HTMLInputElement>(null);
   const assetRef = useRef<HTMLInputElement>(null);
   const loadId = useRef(0);
   const firstLoad = useRef(true);
-  const errorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const messageTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Both local stores are read once and indexed once — a scan must not
   // wait on IndexedDB. Re-read when a sync finishes (the kiosk may have
@@ -169,7 +210,7 @@ export default function Containers() {
   }, [phase]);
 
   useEffect(() => () => {
-    if (errorTimer.current) clearTimeout(errorTimer.current);
+    if (messageTimer.current) clearTimeout(messageTimer.current);
   }, []);
 
   const containerIndex = useMemo(() => buildContainerIndex(containers), [containers]);
@@ -206,15 +247,18 @@ export default function Containers() {
     };
   }, [disabled, onAssetStep]);
 
-  const showError = (text: string) => {
-    if (errorTimer.current) clearTimeout(errorTimer.current);
-    setError(text);
-    errorTimer.current = setTimeout(() => setError(null), ERROR_MS);
+  const showMessage = (kind: Message['kind'], text: string) => {
+    if (messageTimer.current) clearTimeout(messageTimer.current);
+    setMessage({ kind, text });
+    messageTimer.current = setTimeout(() => setMessage(null), ERROR_MS);
   };
 
-  const clearError = () => {
-    if (errorTimer.current) clearTimeout(errorTimer.current);
-    setError(null);
+  const showError = (text: string) => showMessage('error', text);
+  const showNote = (text: string) => showMessage('note', text);
+
+  const clearMessage = () => {
+    if (messageTimer.current) clearTimeout(messageTimer.current);
+    setMessage(null);
   };
 
   const bad = () => {
@@ -222,8 +266,15 @@ export default function Containers() {
     playScanSound('not_found');
   };
 
+  /** A scan that changed nothing: its own color and its own sound, so an
+   *  operator sweeping a crate can tell it from a pack without reading. */
+  const nothingHappened = () => {
+    flash(hslCss(appearance.duplicate_scan), appearance.flash_ms);
+    playScanSound('duplicate');
+  };
+
   const pick = (row: ContainerRow) => {
-    clearError();
+    clearMessage();
     setChoices([]);
     setValue('');
     setAssetValue('');
@@ -237,7 +288,7 @@ export default function Containers() {
    *  the last crate's rows under the next crate's card would read as
    *  "these are in here", which is exactly wrong. */
   const done = () => {
-    clearError();
+    clearMessage();
     setChoices([]);
     setContainer(null);
     setAssetCount(0);
@@ -286,7 +337,7 @@ export default function Containers() {
     const asset = hit.asset;
     const crate = container;
     setSending(true);
-    clearError();
+    clearMessage();
     postContainerAsset({
       container_id: crate.id,
       serial: getIdentity().serial,
@@ -300,18 +351,57 @@ export default function Containers() {
       initiative_id: setup?.initiativeId,
     }).then(
       (result) => {
+        setSending(false);
+        const name = result.asset.name || asset.name || result.asset.asset_tag || asset.asset_id;
+        const serial = result.asset.serial_number ?? asset.serial_number;
+        const rfid = result.asset.rfid ?? asset.rfid;
+
+        // An asset is in at most one container, so a repeat pack is a
+        // nothing-happened event: no second row, and the header count
+        // does not move because nothing moved.
+        if (result.already_there) {
+          nothingHappened();
+          showNote(`${name} is already in this container.`);
+          setRows((current) => {
+            const at = current.findIndex((r) => r.assetId === asset.id);
+            if (at === -1) {
+              // Packed earlier, or by someone else: there is nothing to
+              // mark, and a "Pack" row would claim work this session
+              // never did.
+              return [{
+                id: uuid(),
+                assetId: asset.id,
+                name,
+                serial,
+                rfid,
+                kind: 'already_in' as const,
+                movedFrom: null,
+                again: 0,
+                at: new Date().toISOString(),
+              }, ...current].slice(0, MAX_ROWS);
+            }
+            const next = current.slice();
+            // The original chip and time are left alone — they record
+            // the scan that did something.
+            next[at] = { ...next[at], again: next[at].again + 1 };
+            return next;
+          });
+          return;
+        }
+
         flash(hslCss(appearance.good_scan), appearance.flash_ms);
         playScanSound('good');
-        setSending(false);
         setAssetCount(result.container.asset_count);
         setRows((current) => [
           {
             id: uuid(),
-            name: result.asset.name || asset.name || result.asset.asset_tag || asset.asset_id,
-            serial: result.asset.serial_number ?? asset.serial_number,
-            rfid: result.asset.rfid ?? asset.rfid,
-            action: result.action,
+            assetId: asset.id,
+            name,
+            serial,
+            rfid,
+            kind: result.action,
             movedFrom: result.moved_from?.name ?? null,
+            again: 0,
             at: new Date().toISOString(),
           },
           ...current,
@@ -390,7 +480,7 @@ export default function Containers() {
                   // unpack because the toggle moved under it.
                   setAction(a.id);
                   setAssetValue('');
-                  clearError();
+                  clearMessage();
                   assetRef.current?.focus();
                 }}
               >
@@ -415,7 +505,7 @@ export default function Containers() {
             onChange={(e) => setAssetValue(e.target.value)}
             onKeyDown={onKeyDown(submitAsset)}
           />
-          {error && <p className="form-error" role="alert">{error}</p>}
+          <ScanMessage message={message} />
           <div className="ct-done">
             <button type="button" className="mini-btn" onClick={done}>Done</button>
           </div>
@@ -438,7 +528,7 @@ export default function Containers() {
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={onKeyDown(submitContainer)}
           />
-          {error && <p className="form-error" role="alert">{error}</p>}
+          <ScanMessage message={message} />
           {choices.length > 0 && (
             <div className="tc-results">
               {choices.map((row) => (
@@ -484,9 +574,10 @@ export default function Containers() {
                     {row.rfid ? displayRfid(row.rfid) : '—'}
                   </td>
                   <td>
-                    <span className="chip tag ct-chip">
-                      {row.action === 'pack' ? 'Pack' : 'Unpack'}
-                    </span>
+                    <span className="chip tag ct-chip">{ROW_LABEL[row.kind]}</span>
+                    {row.again > 0 && (
+                      <span className="chip tag ct-again">{againText(row.again)}</span>
+                    )}
                   </td>
                   <td className="mono">{scannedAt(row.at)}</td>
                 </tr>

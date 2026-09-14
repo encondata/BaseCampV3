@@ -673,6 +673,16 @@
 .ct-list td:nth-last-child(2), .ct-list th:nth-last-child(2) { width: 1%; white-space: nowrap; }
 .ct-chip { font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
 .ct-moved { display: block; font-size: 12px; color: var(--text-mute); margin-top: 2px; }
+/* A repeat scan changed nothing: the line under the box is a note in the
+   duplicate flash's amber, not a red refusal, and the chip that marks the
+   row it already had sits beside the action chip rather than replacing
+   it — the original Pack / Load still records what really happened. */
+.ct-note { color: var(--c-amber, #a36207); font-size: 13px; margin: 4px 0 0; }
+.ct-again {
+  font-family: var(--font-mono); font-size: 11px; white-space: nowrap; margin-left: 6px;
+  background: color-mix(in srgb, var(--c-amber, #a36207) 16%, transparent);
+  border-color: color-mix(in srgb, var(--c-amber, #a36207) 40%, transparent);
+}
 
 /* Trucks' step one: the filter over the truck cards. `.dir-search` is
    the portal's directory toolbar input; here it stands alone above a

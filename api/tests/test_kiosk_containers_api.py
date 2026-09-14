@@ -265,7 +265,12 @@ async def test_packing_an_asset_held_elsewhere_moves_it_and_reports_moved_from(
 async def test_packing_into_the_same_container_twice_is_a_no_op_with_two_scans(
         client, db, seeded_user):
     """Nothing changed the second time, so there is no second audit row —
-    but each physical scan is real, so both scans are recorded."""
+    but each physical scan is real, so both scans are recorded.
+
+    The answer's shape is the kiosk's contract for the repeat: the screen
+    reads `already_there` to flash its duplicate color, play its own
+    sound, and mark the row it already has instead of adding a second
+    one, so every field it reads is pinned here."""
     hdrs = await login(client)
     *_, crate, _other, asset = await _seed(db)
     await db.commit()
@@ -280,7 +285,15 @@ async def test_packing_into_the_same_container_twice_is_a_no_op_with_two_scans(
     body = second.json()
     assert body["already_there"] is True
     assert body["moved_from"] is None
+    assert body["action"] == "pack"
+    assert body["container"]["id"] == str(crate_id)
     assert body["container"]["asset_count"] == 1
+    # The asset block still comes back in full: the kiosk names the asset
+    # in "{name} is already in this container." and matches the repeat
+    # against the row it already has by this id.
+    assert body["asset"]["id"] == str(asset_id)
+    assert body["asset"]["name"]
+    assert set(body["asset"]) == {"id", "name", "asset_tag", "serial_number", "rfid"}
 
     db.expire_all()
     assert len((await db.scalars(select(ContainerAsset).where(

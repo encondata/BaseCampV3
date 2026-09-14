@@ -277,7 +277,12 @@ async def test_loading_a_container_held_by_another_truck_moves_it(
 async def test_loading_onto_the_same_truck_twice_is_a_no_op_with_two_scans(
         client, db, seeded_user):
     """Nothing changed the second time, so there is no second audit row —
-    but each physical scan is real, so both scans are recorded."""
+    but each physical scan is real, so both scans are recorded.
+
+    The answer's shape is the kiosk's contract for the repeat: the screen
+    reads `already_there` to flash its duplicate color, play its own
+    sound, and mark the row it already has instead of adding a second
+    one, so every field it reads is pinned here."""
     hdrs = await login(client)
     *_, truck, _other, crate, _crate2, _asset = await _seed(db)
     await db.commit()
@@ -292,7 +297,15 @@ async def test_loading_onto_the_same_truck_twice_is_a_no_op_with_two_scans(
     body = second.json()
     assert body["already_there"] is True
     assert body["moved_from"] is None
+    assert body["action"] == "load"
+    assert body["truck"]["id"] == str(truck_id)
     assert body["truck"]["container_count"] == 1
+    # The container block still comes back in full: the kiosk names the
+    # crate in "{name} is already on this truck." and matches the repeat
+    # against the row it already has by this id.
+    assert body["container"]["id"] == str(crate_id)
+    assert body["container"]["name"]
+    assert set(body["container"]) == {"id", "name", "asset_count"}
 
     db.expire_all()
     assert len((await db.scalars(select(TruckContainer).where(

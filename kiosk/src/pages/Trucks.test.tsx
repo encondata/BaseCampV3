@@ -275,6 +275,95 @@ it('a moved_from answer shows the note on that row', async () => {
   });
 });
 
+/* ── a repeat scan: nothing happened ──────────────────────────────── */
+
+/** A crate rides one truck, so loading it where it already is changes
+ *  nothing. The count the duplicate answer carries is deliberately wrong
+ *  so the header proves it does not move on a no-op. */
+const again = (over: Record<string, unknown> = {}) => loaded({
+  already_there: true,
+  truck: { id: TRUCK.id, name: TRUCK.name, container_count: 99 },
+  ...over,
+});
+
+const rowsOf = () => within(screen.getByRole('table')).getAllByRole('row').slice(1);
+
+it('a repeat load flashes amber, sounds different, and marks the row instead of adding one', async () => {
+  api.postTruckContainer.mockReset()
+    .mockResolvedValueOnce(loaded())
+    .mockResolvedValue(again());
+  render_();
+  await pickTruck('TRUCK-1');
+  await scan('SC-DAL_PAL-001');
+  await waitFor(() => expect(count()).toBe('3'));
+
+  await scan('SC-DAL_PAL-001');
+
+  expect(await screen.findByRole('status')).toHaveProperty(
+    'textContent', 'SC-DAL_PAL-001 is already on this truck.');
+  expect(readFlash()?.color).toBe(hslCss(DEFAULT_APPEARANCE.duplicate_scan));
+  expect(readFlash()?.ms).toBe(DEFAULT_APPEARANCE.flash_ms);
+  expect(sound.playScanSound).toHaveBeenLastCalledWith('duplicate');
+
+  const rows = rowsOf();
+  expect(rows).toHaveLength(1);
+  expect(rows[0].textContent).toContain('Load');
+  expect(rows[0].textContent).toContain('scanned again');
+  expect(rows[0].textContent).not.toContain('×');
+  expect(count()).toBe('3');            // nothing happened, so nothing moved
+});
+
+it('a third scan of the same container counts the repeats', async () => {
+  api.postTruckContainer.mockReset()
+    .mockResolvedValueOnce(loaded())
+    .mockResolvedValue(again());
+  render_();
+  await pickTruck('TRUCK-1');
+  await scan('SC-DAL_PAL-001');
+  await waitFor(() => expect(count()).toBe('3'));
+
+  await scan('SC-DAL_PAL-001');
+  expect(await screen.findByText('scanned again')).toBeTruthy();
+  await scan('SC-DAL_PAL-001');
+
+  expect(await screen.findByText('scanned again ×2')).toBeTruthy();
+  expect(rowsOf()).toHaveLength(1);
+  expect(count()).toBe('3');
+});
+
+it('a repeat for a container with no row of its own lists it as already on', async () => {
+  api.postTruckContainer.mockReset().mockResolvedValue(again());
+  render_();
+  await pickTruck('TRUCK-1');
+  await scan('SC-DAL_PAL-001');
+
+  expect(await screen.findByRole('status')).toHaveProperty(
+    'textContent', 'SC-DAL_PAL-001 is already on this truck.');
+  const rows = rowsOf();
+  expect(rows).toHaveLength(1);
+  expect(rows[0].textContent).toContain('SC-DAL_PAL-001');
+  expect(rows[0].textContent).toContain('already on');
+  expect(rows[0].textContent).not.toContain('Load');
+  expect(count()).toBe('2');            // the header never moved
+});
+
+it('an asset whose crate is already aboard is the same nothing-happened event', async () => {
+  api.postTruckContainer.mockReset().mockResolvedValue(again());
+  render_();
+  await pickTruck('TRUCK-1');
+  await scan('sn-4242');                // the asset, not the crate
+
+  expect(await screen.findByRole('status')).toHaveProperty(
+    'textContent', 'SC-DAL_PAL-001 is already on this truck.');
+  const rows = rowsOf();
+  expect(rows).toHaveLength(1);
+  expect(rows[0].textContent).toContain('already on');
+  // The row still says how the crate was named, because that is what
+  // the operator actually scanned.
+  expect(within(rows[0]).getByText('via asset Rack 4 switch')).toBeTruthy();
+  expect(count()).toBe('2');
+});
+
 it('switching to Unload clears the box and sends the unload checkpoint', async () => {
   const user = userEvent.setup();
   writeCheckpoint('truckUnload', 'received');

@@ -199,6 +199,83 @@ it('Pack sends the pack checkpoint and the setup\'s site and move, flashes, coun
   expect(assetInput().value).toBe('');
 });
 
+/* ── a repeat scan: nothing happened ──────────────────────────────── */
+
+/** An asset can only be in one container, so packing it where it already
+ *  is changes nothing — and must not look like a pack. The count the
+ *  duplicate answer carries is deliberately wrong in these cases so the
+ *  header proves it does not move on a no-op. */
+const again = (over: Record<string, unknown> = {}) => packed({
+  already_there: true,
+  container: { id: CRATE.id, name: CRATE.name, asset_count: 99 },
+  ...over,
+});
+
+const rowsOf = () => within(screen.getByRole('table')).getAllByRole('row').slice(1);
+
+it('a repeat pack flashes amber, sounds different, and marks the row instead of adding one', async () => {
+  api.postContainerAsset.mockReset()
+    .mockResolvedValueOnce(packed())
+    .mockResolvedValue(again());
+  render_();
+  await scanContainer('SC-DAL_PAL-001');
+  await scanAsset('sn-4242');
+  await waitFor(() => expect(count()).toBe('3'));
+
+  await scanAsset('sn-4242');
+
+  expect(await screen.findByRole('status')).toHaveProperty(
+    'textContent', 'Rack 4 switch is already in this container.');
+  expect(readFlash()?.color).toBe(hslCss(DEFAULT_APPEARANCE.duplicate_scan));
+  expect(readFlash()?.ms).toBe(DEFAULT_APPEARANCE.flash_ms);
+  expect(sound.playScanSound).toHaveBeenLastCalledWith('duplicate');
+
+  // One row, still the pack it was, now marked as scanned again.
+  const rows = rowsOf();
+  expect(rows).toHaveLength(1);
+  expect(rows[0].textContent).toContain('Pack');
+  expect(rows[0].textContent).toContain('scanned again');
+  expect(rows[0].textContent).not.toContain('×');
+  expect(count()).toBe('3');            // nothing happened, so nothing moved
+});
+
+it('a third scan of the same asset counts the repeats', async () => {
+  api.postContainerAsset.mockReset()
+    .mockResolvedValueOnce(packed())
+    .mockResolvedValue(again());
+  render_();
+  await scanContainer('SC-DAL_PAL-001');
+  await scanAsset('sn-4242');
+  await waitFor(() => expect(count()).toBe('3'));
+
+  await scanAsset('sn-4242');
+  expect(await screen.findByText('scanned again')).toBeTruthy();
+  await scanAsset('sn-4242');
+
+  expect(await screen.findByText('scanned again ×2')).toBeTruthy();
+  expect(rowsOf()).toHaveLength(1);
+  expect(count()).toBe('3');
+});
+
+it('a repeat for an asset with no row of its own lists it as already in', async () => {
+  // Packed earlier, or by someone else: there is no row to mark, and a
+  // row saying "Pack" would claim work this shift did not do.
+  api.postContainerAsset.mockReset().mockResolvedValue(again());
+  render_();
+  await scanContainer('SC-DAL_PAL-001');
+  await scanAsset('sn-4242');
+
+  expect(await screen.findByRole('status')).toHaveProperty(
+    'textContent', 'Rack 4 switch is already in this container.');
+  const rows = rowsOf();
+  expect(rows).toHaveLength(1);
+  expect(rows[0].textContent).toContain('Rack 4 switch');
+  expect(rows[0].textContent).toContain('already in');
+  expect(rows[0].textContent).not.toContain('Pack');
+  expect(rows[0].textContent).not.toContain('scanned again');
+  expect(count()).toBe('2');            // the header never moved
+});
+
 it('a moved_from answer shows the note on that row', async () => {
   api.postContainerAsset.mockResolvedValue(packed({
     moved_from: { id: 'c-2', name: 'SC-DAL_PAL-002' },
