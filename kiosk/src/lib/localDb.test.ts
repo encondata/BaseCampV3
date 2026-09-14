@@ -24,6 +24,12 @@ const container = (id: string, name: string, tag: string | null) => ({
   asset_count: 0,
 });
 
+const truck = (id: string, name: string, loadNumber: string | null) => ({
+  id, name, load_number: loadNumber, status: 'in_transit', status_label: 'In Transit',
+  driver_name: null, start_site_id: null, start_site_name: null,
+  end_site_id: null, end_site_name: null, container_count: 0,
+});
+
 beforeEach(() => {
   closeDb();
   (globalThis as unknown as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
@@ -66,15 +72,17 @@ it('clearDb empties every store', async () => {
   await replaceAll('assets', [asset('a', 'R1')]);
   await replaceAll('people', [person('p1', 'W-1')]);
   await replaceAll('containers', [container('c-1', 'SC-DAL_PAL-001', 'R-1')]);
-  await writeMeta('sync', { assets: 1, people: 1, containers: 1 });
+  await replaceAll('trucks', [truck('t-1', 'TRUCK-1', 'L-1042')]);
+  await writeMeta('sync', { assets: 1, people: 1, containers: 1, trucks: 1 });
 
   await clearDb();
 
   expect(await count('assets')).toBe(0);
   expect(await count('people')).toBe(0);
-  // Containers are cached move data like the roster, so a wipe takes
-  // them too — otherwise a stale crate list would outlive the move.
+  // Containers and trucks are cached move data like the roster, so a wipe
+  // takes them too — otherwise a stale list would outlive the move.
   expect(await count('containers')).toBe(0);
+  expect(await count('trucks')).toBe(0);
   expect(await readMeta('sync')).toBeNull();
 });
 
@@ -116,11 +124,20 @@ it('replaceAllMulti aborts every store together when one write is invalid', asyn
   expect(await readMeta('sync')).toBeNull();
 });
 
-it('v4 carries the outbox, the uploaded sounds, and the containers store', async () => {
+it('v5 carries the outbox, the sounds, the containers, and the trucks store', async () => {
   const db = await openDb();
-  expect(db.version).toBe(4);
+  expect(db.version).toBe(5);
   expect([...db.objectStoreNames].sort())
-    .toEqual(['assets', 'containers', 'meta', 'outbox', 'people', 'sounds']);
+    .toEqual(['assets', 'containers', 'meta', 'outbox', 'people', 'sounds', 'trucks']);
+});
+
+it('finds a truck by name and by load_number', async () => {
+  await replaceAll('trucks', [truck('t-1', 'TRUCK-1', 'L-1042'), truck('t-2', 'TRUCK-2', null)]);
+  expect(await count('trucks')).toBe(2);
+  expect((await getByIndex('trucks', 'name', 'TRUCK-2'))
+    .map((r) => (r as { id: string }).id)).toEqual(['t-2']);
+  expect((await getByIndex('trucks', 'load_number', 'L-1042'))
+    .map((r) => (r as { id: string }).id)).toEqual(['t-1']);
 });
 
 it('finds a container by rfid_tag and by name', async () => {
@@ -152,10 +169,11 @@ it('upgrades a v1 database in place, keeping its rows and adding the outbox', as
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(4);
+  expect(db.version).toBe(5);
   expect(db.objectStoreNames.contains('outbox')).toBe(true);
   expect(db.objectStoreNames.contains('sounds')).toBe(true);
   expect(db.objectStoreNames.contains('containers')).toBe(true);
+  expect(db.objectStoreNames.contains('trucks')).toBe(true);
   expect(await count('assets')).toBe(1);
 });
 
@@ -178,9 +196,10 @@ it('upgrades a v2 database in place, keeping its outbox and adding sounds', asyn
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(4);
+  expect(db.version).toBe(5);
   expect(db.objectStoreNames.contains('sounds')).toBe(true);
   expect(db.objectStoreNames.contains('containers')).toBe(true);
+  expect(db.objectStoreNames.contains('trucks')).toBe(true);
   expect(await count('outbox')).toBe(1);
 });
 
@@ -205,11 +224,46 @@ it('upgrades a v3 database in place, keeping its data and adding containers', as
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(4);
+  expect(db.version).toBe(5);
   expect(db.objectStoreNames.contains('containers')).toBe(true);
+  expect(db.objectStoreNames.contains('trucks')).toBe(true);
   expect(await count('assets')).toBe(1);
   expect(await count('outbox')).toBe(1);
   expect(await count('containers')).toBe(0);
+  expect(await count('trucks')).toBe(0);
+});
+
+it('upgrades a v4 database in place, keeping its containers and adding trucks', async () => {
+  // A kiosk that synced before the Trucks screen shipped: its downloaded
+  // move — crates included — and its queued scans must all survive.
+  await new Promise<void>((resolve, reject) => {
+    const req = indexedDB.open('serversherpa-kiosk', 4);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      db.createObjectStore('assets', { keyPath: 'id' }).createIndex('rfid', 'rfid');
+      db.createObjectStore('people', { keyPath: 'id' }).createIndex('rfid_tag', 'rfid_tag');
+      db.createObjectStore('meta', { keyPath: 'key' });
+      db.createObjectStore('outbox', { keyPath: 'client_scan_id' }).createIndex('status', 'status');
+      db.createObjectStore('sounds', { keyPath: 'id' });
+      const containers = db.createObjectStore('containers', { keyPath: 'id' });
+      containers.createIndex('rfid_tag', 'rfid_tag');
+      containers.createIndex('name', 'name');
+    };
+    req.onsuccess = () => { req.result.close(); resolve(); };
+    req.onerror = () => reject(req.error);
+  });
+  await replaceAll('assets', [asset('a', 'R1')]);
+  await replaceAll('containers', [container('c-1', 'SC-DAL_PAL-001', 'R-1')]);
+  await putRows('outbox', [{ client_scan_id: 's1', status: 'queued' }]);
+  closeDb();
+
+  const db = await openDb();
+  expect(db.version).toBe(5);
+  expect(db.objectStoreNames.contains('trucks')).toBe(true);
+  expect(await count('assets')).toBe(1);
+  expect(await count('containers')).toBe(1);
+  expect(await count('outbox')).toBe(1);
+  expect(await count('trucks')).toBe(0);
 });
 
 it('putRows upserts without clearing, and deleteRows removes by key', async () => {
@@ -228,11 +282,13 @@ it('putRows upserts without clearing, and deleteRows removes by key', async () =
 it('clearDb leaves the outbox and uploaded sounds alone — neither is local cache', async () => {
   await replaceAll('assets', [asset('a', 'R1')]);
   await replaceAll('containers', [container('c-1', 'SC-DAL_PAL-001', 'R-1')]);
+  await replaceAll('trucks', [truck('t-1', 'TRUCK-1', 'L-1042')]);
   await putRows('outbox', [{ client_scan_id: 's1', status: 'queued' }]);
   await putRows('sounds', [{ id: 'snd-1', name: 'ding.wav', type: 'audio/wav', size: 3 }]);
   await clearDb();
   expect(await count('assets')).toBe(0);
   expect(await count('containers')).toBe(0);
+  expect(await count('trucks')).toBe(0);
   expect(await count('outbox')).toBe(1);
   expect(await count('sounds')).toBe(1);   // an upload is the operator's file, not cache
 });
@@ -247,13 +303,13 @@ it('closes its connection when another tab needs a higher version', async () => 
   // three stale tabs pinned the database at v1 and the Scanning page
   // never became usable.
   const upgraded = await new Promise<IDBDatabase>((resolve, reject) => {
-    const req = indexedDB.open('serversherpa-kiosk', 5);
+    const req = indexedDB.open('serversherpa-kiosk', 6);
     req.onupgradeneeded = () => req.result.createObjectStore('later', { keyPath: 'id' });
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
     req.onblocked = () => reject(new Error('blocked — the old connection never yielded'));
   });
-  expect(upgraded.version).toBe(5);
+  expect(upgraded.version).toBe(6);
   expect(upgraded.objectStoreNames.contains('assets')).toBe(true);
   upgraded.close();
 });

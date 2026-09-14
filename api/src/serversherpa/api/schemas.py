@@ -2316,7 +2316,13 @@ class KioskSetupOut(BaseModel):
 class KioskAssetOut(BaseModel):
     """One roster asset as the kiosk caches it. `label` is the full label
     placeholder map for this asset on this move (the same values the label
-    generator writes), so a kiosk can render a label offline."""
+    generator writes), so a kiosk can render a label offline.
+
+    `container_id` is the crate this asset is packed in, or None
+    (`container_assets.asset_id` is UNIQUE, so there is at most one). The
+    Trucks screen needs it: trucks carry containers, so an asset someone
+    scans there has to resolve to its crate before anything can be loaded,
+    and that lookup must not cost a round trip."""
 
     id: uuid.UUID
     asset_id: str            # Asset.legacy_id, the human Asset ID ("" if unset)
@@ -2326,6 +2332,7 @@ class KioskAssetOut(BaseModel):
     make: str | None = None
     model: str | None = None
     make_model: str
+    container_id: uuid.UUID | None = None
     label: dict[str, str]
 
 
@@ -2597,6 +2604,97 @@ class KioskContainerAssetOut(BaseModel):
     asset: KioskContainerAssetRow
     action: Literal["pack", "unpack"]
     moved_from: KioskContainerRef | None = None
+    already_there: bool = False
+
+
+# ── kiosk trucks (load / unload) ──
+
+class KioskTruckOut(BaseModel):
+    """One of the move's trucks as the kiosk caches it. Trucks carry no
+    RFID tag, so nothing here is a scannable key — this is what the
+    Trucks screen's card picker shows (name, load number, status, driver,
+    the route) and filters on (name or load number).
+
+    `container_count` is the count at sync time; the screen keeps its own
+    live count from there, and every load/unload answer carries a fresh
+    one."""
+
+    id: uuid.UUID
+    name: str
+    load_number: str | None = None
+    status: str
+    status_label: str
+    driver_name: str | None = None
+    start_site_id: uuid.UUID | None = None
+    start_site_name: str | None = None
+    end_site_id: uuid.UUID | None = None
+    end_site_name: str | None = None
+    container_count: int
+
+
+class KioskTrucksSyncOut(BaseModel):
+    initiative_id: uuid.UUID
+    generated_at: datetime
+    trucks: list[KioskTruckOut]
+
+
+class KioskTruckContainerIn(BaseModel):
+    """One container the kiosk just scanned onto (or off) a truck.
+
+    Trucks carry CONTAINERS, not assets — `truck_containers` is keyed on
+    (truck_id, container_id) and there is no asset-to-truck link. When the
+    operator scans an asset, the kiosk resolves it to the container it is
+    packed in and sends THAT container's id; `scanned_value` still carries
+    what was physically read, so the scan record is honest about it.
+
+    `scan_status` is the checkpoint the load/unload scan records (the
+    Admin tab's "Truck load/unload checkpoint"); `site_id` /
+    `initiative_id` come from Kiosk Setup and fall back to the Device's
+    own setup. `client_scan_id` makes the scan idempotent, exactly as it
+    does for /kiosk/scans."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    container_id: uuid.UUID
+    action: Literal["load", "unload"]
+    scanned_value: str = Field(min_length=1, max_length=200)
+    scan_type: str = Field(min_length=1, max_length=120)
+    scan_status: str = Field(min_length=1, max_length=120)
+    client_scan_id: uuid.UUID
+    site_id: uuid.UUID | None = None
+    initiative_id: uuid.UUID | None = None
+
+
+class KioskTruckRef(BaseModel):
+    """A truck named in a result — the one loaded, or the one a container
+    was moved off / is actually on."""
+
+    id: uuid.UUID
+    name: str
+
+
+class KioskTruckStateOut(KioskTruckRef):
+    container_count: int
+
+
+class KioskTruckContainerRow(BaseModel):
+    """The container a load/unload acted on, for the session list."""
+
+    id: uuid.UUID
+    name: str
+    asset_count: int
+
+
+class KioskTruckContainerOut(BaseModel):
+    """What the Trucks screen shows after a scan: the truck with its fresh
+    count, the container as the portal holds it, and — when the container
+    was already riding another truck — the truck it came off.
+    `already_there` means the container was already on THIS truck, so only
+    the scan was recorded."""
+
+    truck: KioskTruckStateOut
+    container: KioskTruckContainerRow
+    action: Literal["load", "unload"]
+    moved_from: KioskTruckRef | None = None
     already_there: bool = False
 
 

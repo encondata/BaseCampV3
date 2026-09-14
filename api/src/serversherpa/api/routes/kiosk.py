@@ -28,7 +28,9 @@ from serversherpa.api.schemas import (
     KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn,
     KioskScanBatchOut, KioskScanRejected, KioskSetupIn, KioskSetupOut,
     KioskSignOutIn, KioskTimeclockEntry, KioskTimeclockLastEntry,
-    KioskTimeclockPerson, KioskTimeclockStatusOut, LabelVocabOut,
+    KioskTimeclockPerson, KioskTimeclockStatusOut, KioskTruckContainerIn,
+    KioskTruckContainerOut, KioskTruckContainerRow, KioskTruckOut,
+    KioskTruckRef, KioskTrucksSyncOut, KioskTruckStateOut, LabelVocabOut,
     PairCreateIn, PairCreateOut,
     PairInfoOut, PairPollIn, PairPollOut, SetupOptionInitiative,
     SetupOptionScanType, SetupOptionSite, SetupOptionsOut,
@@ -36,7 +38,8 @@ from serversherpa.api.schemas import (
 from serversherpa.db.models import (
     Asset, AssetModel, Client, Container, ContainerAsset, Device, Initiative,
     InitiativeAsset, KioskPairRequest, LabelPlaceholder, LabelVocab, Person,
-    RawScan, Site, StatusValue, TimeEntry, UserAccount, WorkerProfile,
+    RawScan, Site, StatusValue, TimeEntry, Truck, TruckContainer, UserAccount,
+    WorkerProfile,
 )
 from serversherpa.labels.generate.values import (
     CONTAINER_KEYS, AssetRow, Sites, make_model_text, placeholder_values,
@@ -445,6 +448,15 @@ async def sync_assets(
     sites = Sites(origin=origin, destination=destination)
     catalog_keys = await _label_catalog_keys(db)
 
+    # Which crate holds each asset — one row per asset by the unique
+    # constraint on `container_assets.asset_id`. The Trucks screen resolves
+    # a scanned asset to its container locally, so this rides along here
+    # rather than costing a round trip per scan.
+    packed_in = dict((await db.execute(
+        select(ContainerAsset.asset_id, ContainerAsset.container_id)
+        .join(InitiativeAsset, InitiativeAsset.asset_id == ContainerAsset.asset_id)
+        .where(InitiativeAsset.initiative_id == initiative.id))).all())
+
     rows = (await db.execute(
         select(Asset, InitiativeAsset, AssetModel)
         .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id)
@@ -475,8 +487,8 @@ async def sync_assets(
         assets.append(KioskAssetOut(
             id=asset.id, asset_id=asset_id, name=asset.name,
             rfid=asset.rfid_tag, serial_number=asset.serial_number,
-            make=make, model=model_name,
-            make_model=make_model, label=label))
+            make=make, model=model_name, make_model=make_model,
+            container_id=packed_in.get(asset.id), label=label))
 
     return KioskAssetsSyncOut(
         initiative_id=initiative.id, initiative_name=initiative.name,
@@ -946,6 +958,215 @@ async def pack_container_asset(
     await db.commit()
     return result
 
+
+# ── trucks: load / unload (kiosk:view) ───────────────────────────────
+
+
+@router.get("/sync/trucks", response_model=KioskTrucksSyncOut)
+async def sync_trucks(
+    db: DbSession,
+    initiative_id: uuid.UUID = Query(...),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskTrucksSyncOut:
+    """Every unarchived truck on this move, for the kiosk's local copy —
+    what the Trucks screen's step-one card picker lists and filters.
+
+    Unlike containers and assets, a truck carries NO scannable tag: there
+    is no `rfid_tag` on `trucks` and nothing on a trailer to read. So this
+    payload is not a match index, it is a picker's row: the name and load
+    number the filter narrows on, and the status, driver, and route that
+    tell the operator they are standing at the right trailer.
+
+    Scoped exactly the way /sync/containers is — one move, one response,
+    no paging (a move has a handful of trucks). Archived trucks are left
+    out; a kiosk should not be able to load something the portal retired.
+
+    `container_count` is the count at sync time, for the card's opening
+    number; the screen keeps its own live count from there, and every
+    load/unload answer carries the server's fresh count anyway.
+
+    404 `initiative_not_found` for an unknown id; 422 `bad_initiative`
+    when the initiative is not a move — same contract as /sync/containers.
+    Gated on kiosk:view, like the rest of this router."""
+    initiative = await db.get(Initiative, initiative_id)
+    if initiative is None:
+        raise _err(404, "initiative_not_found")
+    if initiative.initiative_type != "move":
+        raise _err(422, "bad_initiative")
+
+    start = aliased(Site)
+    end = aliased(Site)
+    rows = (await db.execute(
+        select(Truck, start.name, end.name, StatusValue.label)
+        .outerjoin(start, start.id == Truck.start_site_id)
+        .outerjoin(end, end.id == Truck.end_site_id)
+        .outerjoin(StatusValue,
+                   (StatusValue.record_type == "truck")
+                   & (StatusValue.key == Truck.status))
+        .where(Truck.initiative_id == initiative.id,
+               Truck.archived_at.is_(None))
+        .order_by(Truck.name))).all()
+
+    ids = [t.id for t, _, _, _ in rows]
+    counts = dict((await db.execute(
+        select(TruckContainer.truck_id, func.count())
+        .where(TruckContainer.truck_id.in_(ids))
+        .group_by(TruckContainer.truck_id))).all()) if ids else {}
+
+    return KioskTrucksSyncOut(
+        initiative_id=initiative.id, generated_at=datetime.now(UTC),
+        trucks=[KioskTruckOut(
+            id=t.id, name=t.name, load_number=t.load_number, status=t.status,
+            status_label=status_label or t.status, driver_name=t.driver_name,
+            start_site_id=t.start_site_id, start_site_name=start_name,
+            end_site_id=t.end_site_id, end_site_name=end_name,
+            container_count=counts.get(t.id, 0))
+            for t, start_name, end_name, status_label in rows])
+
+
+@router.post("/trucks/{truck_id}/containers",
+             response_model=KioskTruckContainerOut)
+async def load_truck_container(
+    truck_id: uuid.UUID, body: KioskTruckContainerIn, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskTruckContainerOut:
+    """Load a container onto a truck, or unload it off one, from the
+    kiosk's Trucks screen — the link and the physical scan that produced
+    it, in ONE transaction (the Containers shape), so a crate never moves
+    without the scan or the other way round.
+
+    Trucks carry CONTAINERS. `truck_containers` is keyed on (truck_id,
+    container_id) and there is no asset-to-truck link at all, so an asset
+    scanned at the kiosk is resolved to its container there and this
+    endpoint only ever sees a container id. A crate rides one truck at a
+    time, so loading one that is already on a DIFFERENT truck is a MOVE,
+    not an error — the old row is deleted, the new one inserted, and
+    `moved_from` names the truck it came off so the screen can say so.
+    Loading onto the truck it is already on is a no-op: nothing changed,
+    so there is no second audit row — but the scan is still written,
+    because the operator really did wave something at a reader.
+
+    Unloading a container that is on some OTHER truck is 409
+    `not_on_truck` naming that truck, rather than silently emptying it:
+    the operator is at the wrong trailer, and the screen says which one is
+    right. Unloading one that is on no truck is the same 409 with no truck
+    named.
+
+    The scan is one `raw_scans` row shaped exactly like /kiosk/scans
+    writes them (`scanned_value` and `scan_type` as the kiosk read them —
+    which may be the ASSET the operator scanned, not the crate that moved
+    — the configured checkpoint in both `status` and `scan_status`,
+    `source='kiosk'`, the Device's name as `device_id`), fresh for the
+    scan-matching worker and idempotent on `client_scan_id`.
+
+    Like the Containers endpoint, the checkpoint must still be ACTIVE (422
+    `bad_status`): it is configured once on Settings › Admin rather than
+    sent per scan, so a retired one is a misconfiguration to fix there.
+    `scan_type` is the scan vocabulary itself (422 `bad_scan_type`). Not
+    read-only exempt — this writes."""
+    device = await _kiosk_device(db, body.serial)
+    truck = await db.get(Truck, truck_id)
+    if truck is None or truck.archived_at is not None:
+        raise _err(404, "truck_not_found")
+    container = await db.get(Container, body.container_id)
+    if container is None or container.archived_at is not None:
+        raise _err(404, "container_not_found")
+    checkpoint = await db.get(StatusValue, ("asset", body.scan_status))
+    if checkpoint is None or not checkpoint.is_active:
+        raise _err(422, "bad_status")
+    scan_type = await db.get(StatusValue, ("scan", body.scan_type))
+    if scan_type is None or not scan_type.is_active:
+        raise _err(422, "bad_scan_type")
+
+    # A stale kiosk can still name a site or move that has since gone —
+    # checked here so that is a reportable 422 and not a 500 out of the
+    # scan's foreign keys (/kiosk/scans rejects the same way, per scan).
+    if body.site_id is not None and await db.get(Site, body.site_id) is None:
+        raise _err(422, "bad_site")
+    if (body.initiative_id is not None
+            and await db.get(Initiative, body.initiative_id) is None):
+        raise _err(422, "bad_initiative")
+
+    # Which truck is carrying this crate now. The primary key allows a
+    # crate on two trucks in principle; the kiosk and the portal both
+    # treat it as one, so the first row found is the holder.
+    current = (await db.execute(
+        select(TruckContainer, Truck)
+        .join(Truck, Truck.id == TruckContainer.truck_id)
+        .where(TruckContainer.container_id == container.id))).first()
+    link, holder = current if current else (None, None)
+
+    now = datetime.now(UTC)
+    asset_count = await db.scalar(
+        select(func.count()).select_from(ContainerAsset)
+        .where(ContainerAsset.container_id == container.id)) or 0
+    moved_from: KioskTruckRef | None = None
+    already_there = False
+
+    if body.action == "load":
+        if link is not None and holder.id == truck.id:
+            already_there = True
+        else:
+            if link is not None:
+                moved_from = KioskTruckRef(id=holder.id, name=holder.name)
+                await db.delete(link)
+                await db.flush()
+                holder.updated_at = now
+            db.add(TruckContainer(truck_id=truck.id, container_id=container.id))
+            truck.updated_at = now
+            audit(db, actor_id=actor.person.id, entity_type="truck",
+                  entity_id=str(truck.id), action="kiosk_truck_load",
+                  changes={"container_id": str(container.id),
+                           "container_name": container.name,
+                           "asset_count": asset_count,
+                           "from_truck": moved_from.name if moved_from else None,
+                           "device": device.name})
+    else:
+        if link is None or holder.id != truck.id:
+            extra = ({"truck_id": str(holder.id), "truck_name": holder.name}
+                     if holder is not None else {})
+            raise _err(409, "not_on_truck", **extra)
+        await db.delete(link)
+        truck.updated_at = now
+        audit(db, actor_id=actor.person.id, entity_type="truck",
+              entity_id=str(truck.id), action="kiosk_truck_unload",
+              changes={"container_id": str(container.id),
+                       "container_name": container.name,
+                       "asset_count": asset_count,
+                       "from_truck": truck.name, "device": device.name})
+
+    # DO NOTHING against the partial unique index, same as /kiosk/scans:
+    # a kiosk retrying a call it never saw the answer to records one scan.
+    await db.execute(pg_insert(RawScan).values({
+        "scanned_value": body.scanned_value,
+        "scan_type": scan_type.key,
+        "status": checkpoint.key,
+        "scan_status": checkpoint.key,
+        "scanned_at": now,
+        "device_id": device.name,
+        "operator_id": actor.person.id,
+        "site_id": body.site_id or device.site_id,
+        "initiative_id": body.initiative_id or device.current_initiative_id,
+        "source": "kiosk",
+        "client_scan_id": body.client_scan_id,
+    }).on_conflict_do_nothing(
+        index_elements=["client_scan_id"],
+        index_where=text("client_scan_id IS NOT NULL")))
+
+    # last_seen_at only: the kiosk's own configuration did not change.
+    device.last_seen_at = now
+    await db.flush()
+    count = await db.scalar(
+        select(func.count()).select_from(TruckContainer)
+        .where(TruckContainer.truck_id == truck.id)) or 0
+    result = KioskTruckContainerOut(
+        truck=KioskTruckStateOut(id=truck.id, name=truck.name,
+                                 container_count=count),
+        container=KioskTruckContainerRow(id=container.id, name=container.name,
+                                         asset_count=asset_count),
+        action=body.action, moved_from=moved_from, already_there=already_there)
+    await db.commit()
+    return result
 
 # ── timeclock (kiosk:view) ───────────────────────────────────────────
 

@@ -2,13 +2,14 @@
  * Downloading the move's data into the kiosk's local database, and the
  * status store the UI watches while it happens.
  *
- * `runSync(initiativeId, initiativeName)` fetches all three sync
- * endpoints in parallel and only then writes `assets`, `people`, and
- * `containers` — a fetch that fails leaves the previously cached rows
- * exactly as they were, so a kiosk that loses the network keeps the move
- * it already has. The meta `sync` row records which move, the three
- * counts, and when, which is also how a reloaded kiosk shows `done` with
- * real counts before anything is fetched again (`hydrateSyncStatus`).
+ * `runSync(initiativeId, initiativeName)` fetches all four sync
+ * endpoints in parallel and only then writes `assets`, `people`,
+ * `containers`, and `trucks` — a fetch that fails leaves the previously
+ * cached rows exactly as they were, so a kiosk that loses the network
+ * keeps the move it already has. The meta `sync` row records which move,
+ * the four counts, and when, which is also how a reloaded kiosk shows
+ * `done` with real counts before anything is fetched again
+ * (`hydrateSyncStatus`).
  *
  * The store/hook shape mirrors `setupState.ts` (`useSyncExternalStore`
  * over a module-level snapshot + listener set). Sync outcomes never
@@ -18,7 +19,9 @@
 
 import { useEffect, useSyncExternalStore } from 'react';
 
-import { ApiError, fetchAssetsSync, fetchContainersSync, fetchPeopleSync } from './api';
+import {
+  ApiError, fetchAssetsSync, fetchContainersSync, fetchPeopleSync, fetchTrucksSync,
+} from './api';
 import { count, readMeta, replaceAllMulti } from './localDb';
 
 export type SyncPhase = 'idle' | 'running' | 'done' | 'error';
@@ -28,6 +31,7 @@ export interface SyncStatus {
   assets?: number;
   people?: number;
   containers?: number;
+  trucks?: number;
   syncedAt?: string;
   error?: string;
 }
@@ -73,9 +77,11 @@ export async function hydrateSyncStatus(): Promise<void> {
       phase: 'done',
       assets: typeof row.assets === 'number' ? row.assets : 0,
       people: typeof row.people === 'number' ? row.people : 0,
-      // A kiosk that last synced before containers shipped has no count
-      // in its meta row; 0 is the honest answer until it syncs again.
+      // A kiosk that last synced before containers (or trucks) shipped
+      // has no count in its meta row; 0 is the honest answer until it
+      // syncs again.
       containers: typeof row.containers === 'number' ? row.containers : 0,
+      trucks: typeof row.trucks === 'number' ? row.trucks : 0,
       syncedAt: typeof row.syncedAt === 'string' ? row.syncedAt : undefined,
     });
   } catch {
@@ -91,7 +97,7 @@ export async function hydrateSyncStatus(): Promise<void> {
 let currentRun = 0;
 
 /**
- * Fetch all three endpoints, then replace all three stores. Failure modes:
+ * Fetch all four endpoints, then replace all four stores. Failure modes:
  * a fetch error reports the `ApiError` code, a database error reports
  * `'storage'`; either way the cached rows are untouched and the status
  * keeps the counts it had so the footer doesn't blink.
@@ -110,9 +116,11 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
   let assets: Awaited<ReturnType<typeof fetchAssetsSync>>;
   let people: Awaited<ReturnType<typeof fetchPeopleSync>>;
   let containers: Awaited<ReturnType<typeof fetchContainersSync>>;
+  let trucks: Awaited<ReturnType<typeof fetchTrucksSync>>;
   try {
-    [assets, people, containers] = await Promise.all([
+    [assets, people, containers, trucks] = await Promise.all([
       fetchAssetsSync(initiativeId), fetchPeopleSync(), fetchContainersSync(initiativeId),
+      fetchTrucksSync(initiativeId),
     ]);
   } catch (err) {
     if (myRun !== currentRun) return;
@@ -127,35 +135,37 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
   if (myRun !== currentRun) return;
   try {
     const syncedAt = new Date().toISOString();
-    // assets, people, containers, and the meta pointer land in ONE
-    // transaction — see `replaceAllMulti` — so a reader (or a reload)
+    // assets, people, containers, trucks, and the meta pointer land in
+    // ONE transaction — see `replaceAllMulti` — so a reader (or a reload)
     // never sees them half-updated.
     await replaceAllMulti(
       [
         { store: 'assets', rows: assets.assets },
         { store: 'people', rows: people.people },
         { store: 'containers', rows: containers.containers },
+        { store: 'trucks', rows: trucks.trucks },
       ],
       {
         key: META_KEY,
         value: {
           initiativeId, initiativeName,
           assets: assets.assets.length, people: people.people.length,
-          containers: containers.containers.length, syncedAt,
+          containers: containers.containers.length,
+          trucks: trucks.trucks.length, syncedAt,
         },
       },
     );
     if (myRun !== currentRun) return;
     // Counts come from the store itself, not the fetched payloads' lengths
     // — what actually landed is what the kiosk should report.
-    const [assetsCount, peopleCount, containersCount] = await Promise.all([
-      count('assets'), count('people'), count('containers'),
+    const [assetsCount, peopleCount, containersCount, trucksCount] = await Promise.all([
+      count('assets'), count('people'), count('containers'), count('trucks'),
     ]);
     if (myRun !== currentRun) return;
     hydrated = true;
     setStatus({
       phase: 'done', assets: assetsCount, people: peopleCount,
-      containers: containersCount, syncedAt,
+      containers: containersCount, trucks: trucksCount, syncedAt,
     });
   } catch {
     if (myRun !== currentRun) return;

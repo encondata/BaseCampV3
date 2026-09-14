@@ -8,6 +8,7 @@ const apiMock = vi.hoisted(() => ({
   fetchAssetsSync: vi.fn(),
   fetchPeopleSync: vi.fn(),
   fetchContainersSync: vi.fn(),
+  fetchTrucksSync: vi.fn(),
 }));
 vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>();
@@ -16,6 +17,7 @@ vi.mock('./api', async (importOriginal) => {
     fetchAssetsSync: apiMock.fetchAssetsSync,
     fetchPeopleSync: apiMock.fetchPeopleSync,
     fetchContainersSync: apiMock.fetchContainersSync,
+    fetchTrucksSync: apiMock.fetchTrucksSync,
   };
 });
 
@@ -55,6 +57,24 @@ const CONTAINERS = {
   ],
 };
 
+const TRUCKS = {
+  initiative_id: 'i-1', generated_at: '2026-09-13T12:00:00Z',
+  trucks: [
+    {
+      id: 't-1', name: 'TRUCK-1', load_number: 'L-1042', status: 'in_transit',
+      status_label: 'In Transit', driver_name: 'Dana Driver',
+      start_site_id: 's-1', start_site_name: 'NAP11',
+      end_site_id: 's-2', end_site_name: 'ACC4', container_count: 3,
+    },
+    {
+      id: 't-2', name: 'TRUCK-2', load_number: 'L-1043', status: 'created',
+      status_label: 'Created', driver_name: null,
+      start_site_id: null, start_site_name: null,
+      end_site_id: null, end_site_name: null, container_count: 0,
+    },
+  ],
+};
+
 const PEOPLE = {
   generated_at: '2026-09-13T12:00:00Z',
   people: [
@@ -69,29 +89,36 @@ beforeEach(() => {
   apiMock.fetchAssetsSync.mockReset();
   apiMock.fetchPeopleSync.mockReset();
   apiMock.fetchContainersSync.mockReset();
+  apiMock.fetchTrucksSync.mockReset();
 });
 
-it('writes all three stores and the meta row, and reports done with counts', async () => {
+it('writes all four stores and the meta row, and reports done with counts', async () => {
   apiMock.fetchAssetsSync.mockResolvedValue(ASSETS);
   apiMock.fetchPeopleSync.mockResolvedValue(PEOPLE);
   apiMock.fetchContainersSync.mockResolvedValue(CONTAINERS);
+  apiMock.fetchTrucksSync.mockResolvedValue(TRUCKS);
 
   await runSync('i-1', 'NAP11 Hall Migration (demo)');
 
   expect(apiMock.fetchAssetsSync).toHaveBeenCalledWith('i-1');
   expect(apiMock.fetchContainersSync).toHaveBeenCalledWith('i-1');
+  expect(apiMock.fetchTrucksSync).toHaveBeenCalledWith('i-1');
   expect(await count('assets')).toBe(2);
   expect(await count('people')).toBe(1);
   expect(await count('containers')).toBe(2);
+  expect(await count('trucks')).toBe(2);
+  expect((await getAll('trucks')).map((r) => (r as { name: string }).name).sort())
+    .toEqual(['TRUCK-1', 'TRUCK-2']);
   expect(await readMeta('sync')).toMatchObject({
     key: 'sync', initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
-    assets: 2, people: 1, containers: 2,
+    assets: 2, people: 1, containers: 2, trucks: 2,
   });
   const status = readSyncStatus();
   expect(status.phase).toBe('done');
   expect(status.assets).toBe(2);
   expect(status.people).toBe(1);
   expect(status.containers).toBe(2);
+  expect(status.trucks).toBe(2);
   expect(status.syncedAt).toBeTruthy();
 });
 
@@ -100,6 +127,7 @@ it('a failed assets fetch reports the ApiError code and leaves cached rows alone
   apiMock.fetchAssetsSync.mockRejectedValue(new ApiError(500, 'server_error'));
   apiMock.fetchPeopleSync.mockResolvedValue(PEOPLE);
   apiMock.fetchContainersSync.mockResolvedValue(CONTAINERS);
+  apiMock.fetchTrucksSync.mockResolvedValue(TRUCKS);
 
   await runSync('i-1', 'A Move');
 
@@ -107,6 +135,7 @@ it('a failed assets fetch reports the ApiError code and leaves cached rows alone
   expect((await getAll('assets')).map((r) => (r as { id: string }).id)).toEqual(['old']);
   expect(await count('people')).toBe(0);
   expect(await count('containers')).toBe(0);
+  expect(await count('trucks')).toBe(0);
   expect(await readMeta('sync')).toBeNull();
 });
 
@@ -114,6 +143,7 @@ it('a storage failure reports error "storage"', async () => {
   apiMock.fetchAssetsSync.mockResolvedValue(ASSETS);
   apiMock.fetchPeopleSync.mockResolvedValue(PEOPLE);
   apiMock.fetchContainersSync.mockResolvedValue(CONTAINERS);
+  apiMock.fetchTrucksSync.mockResolvedValue(TRUCKS);
   closeDb();
   (globalThis as unknown as { indexedDB: IDBFactory | undefined }).indexedDB = undefined;
 
@@ -129,12 +159,13 @@ it('reports counts from the store, not the fetched payload length', async () => 
   apiMock.fetchAssetsSync.mockResolvedValue(dupAssets);
   apiMock.fetchPeopleSync.mockResolvedValue(PEOPLE);
   apiMock.fetchContainersSync.mockResolvedValue(CONTAINERS);
+  apiMock.fetchTrucksSync.mockResolvedValue(TRUCKS);
 
   await runSync('i-1', 'A Move');
 
   expect(await count('assets')).toBe(1);
   expect(readSyncStatus()).toMatchObject({
-    phase: 'done', assets: 1, people: 1, containers: 2,
+    phase: 'done', assets: 1, people: 1, containers: 2, trucks: 2,
   });
 });
 
@@ -145,6 +176,8 @@ it('a newer sync supersedes an older one: a superseded run writes and reports no
   let resolveBAssets!: (v: typeof ASSETS) => void;
   let resolveBPeople!: (v: typeof PEOPLE) => void;
   let resolveBContainers!: (v: typeof CONTAINERS) => void;
+  let resolveATrucks!: (v: typeof TRUCKS) => void;
+  let resolveBTrucks!: (v: typeof TRUCKS) => void;
 
   apiMock.fetchAssetsSync
     .mockImplementationOnce(() => new Promise((res) => { resolveAAssets = res; }))
@@ -155,6 +188,9 @@ it('a newer sync supersedes an older one: a superseded run writes and reports no
   apiMock.fetchContainersSync
     .mockImplementationOnce(() => new Promise((res) => { resolveAContainers = res; }))
     .mockImplementationOnce(() => new Promise((res) => { resolveBContainers = res; }));
+  apiMock.fetchTrucksSync
+    .mockImplementationOnce(() => new Promise((res) => { resolveATrucks = res; }))
+    .mockImplementationOnce(() => new Promise((res) => { resolveBTrucks = res; }));
 
   const runA = runSync('i-1', 'Move A');
   const runB = runSync('i-2', 'Move B');
@@ -162,12 +198,14 @@ it('a newer sync supersedes an older one: a superseded run writes and reports no
   resolveAAssets(ASSETS);
   resolveAPeople(PEOPLE);
   resolveAContainers(CONTAINERS);
+  resolveATrucks(TRUCKS);
   await runA;
 
   // A's writes never happened — B is still in flight.
   expect(await count('assets')).toBe(0);
   expect(await count('people')).toBe(0);
   expect(await count('containers')).toBe(0);
+  expect(await count('trucks')).toBe(0);
   expect(await readMeta('sync')).toBeNull();
   expect(readSyncStatus().phase).toBe('running');
 
@@ -175,13 +213,15 @@ it('a newer sync supersedes an older one: a superseded run writes and reports no
   resolveBAssets(assetsForB);
   resolveBPeople(PEOPLE);
   resolveBContainers({ ...CONTAINERS, containers: [CONTAINERS.containers[0]] });
+  resolveBTrucks({ ...TRUCKS, trucks: [TRUCKS.trucks[0]] });
   await runB;
 
   expect(await count('assets')).toBe(1);
   expect(await count('containers')).toBe(1);
+  expect(await count('trucks')).toBe(1);
   expect(await readMeta('sync')).toMatchObject({ initiativeId: 'i-2', initiativeName: 'Move B' });
   expect(readSyncStatus()).toMatchObject({
-    phase: 'done', assets: 1, people: 1, containers: 1,
+    phase: 'done', assets: 1, people: 1, containers: 1, trucks: 1,
   });
 });
 
@@ -189,6 +229,7 @@ it('clearing the local data resets the status to idle', async () => {
   apiMock.fetchAssetsSync.mockResolvedValue(ASSETS);
   apiMock.fetchPeopleSync.mockResolvedValue(PEOPLE);
   apiMock.fetchContainersSync.mockResolvedValue(CONTAINERS);
+  apiMock.fetchTrucksSync.mockResolvedValue(TRUCKS);
   await runSync('i-1', 'A Move');
   expect(readSyncStatus().phase).toBe('done');
 
@@ -198,4 +239,5 @@ it('clearing the local data resets the status to idle', async () => {
   expect(readSyncStatus()).toEqual({ phase: 'idle' });
   expect(await count('assets')).toBe(0);
   expect(await count('containers')).toBe(0);
+  expect(await count('trucks')).toBe(0);
 });

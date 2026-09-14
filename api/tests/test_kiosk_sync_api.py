@@ -67,6 +67,27 @@ async def _seed_people(db):
 
 # ── assets ──────────────────────────────────────────────────────────
 
+async def test_assets_sync_carries_the_crate_each_asset_is_packed_in(
+        client, db, seeded_user):
+    """The Trucks screen resolves a scanned asset to its container
+    locally — trucks carry crates, not assets — so the crate rides along
+    with the roster rather than costing a round trip per scan."""
+    from serversherpa.db.models import Container, ContainerAsset
+    hdrs = await login(client)
+    move, _project, on_roster, _off_roster = await _seed_move(db)
+    crate = Container(name="SYNC-CRATE-1", status="available",
+                      initiative_id=move.id)
+    db.add(crate)
+    await db.flush()
+    db.add(ContainerAsset(container_id=crate.id, asset_id=on_roster.id))
+    await db.commit()
+    crate_id = crate.id
+
+    resp = await client.get(f"/kiosk/sync/assets?initiative_id={move.id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["assets"][0]["container_id"] == str(crate_id)
+
+
 async def test_assets_sync_returns_the_roster_with_label_values(client, db, seeded_user):
     hdrs = await login(client)
     move, _project, on_roster, off_roster = await _seed_move(db)
@@ -88,6 +109,7 @@ async def test_assets_sync_returns_the_roster_with_label_values(client, db, seed
     assert row["make"] == "Cisco"
     assert row["model"] == "Nexus 9336C"
     assert row["make_model"] == "Cisco Nexus 9336C"
+    assert row["container_id"] is None      # this one is in no crate
 
     label = row["label"]
     assert label["asset_id"] == str(on_roster.legacy_id)

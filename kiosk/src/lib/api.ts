@@ -366,6 +366,31 @@ export interface KioskContainersSync {
   containers: KioskContainerRow[];
 }
 
+/** One of the move's trucks, as the kiosk caches it. Nothing here is a
+ *  scannable key — a truck carries no RFID tag — so this is the card
+ *  picker's row: what it shows, and the two fields its filter narrows on
+ *  (`name`, `load_number`). `container_count` is the count at sync time;
+ *  the Trucks screen keeps its own live count from there. */
+export interface KioskTruckRow {
+  id: string;
+  name: string;
+  load_number: string | null;
+  status: string;
+  status_label: string;
+  driver_name: string | null;
+  start_site_id: string | null;
+  start_site_name: string | null;
+  end_site_id: string | null;
+  end_site_name: string | null;
+  container_count: number;
+}
+
+export interface KioskTrucksSync {
+  initiative_id: string;
+  generated_at: string;
+  trucks: KioskTruckRow[];
+}
+
 /** The whole roster in one response — the API does not page it. */
 export async function fetchAssetsSync(initiativeId: string): Promise<KioskAssetsSync> {
   const resp = await apiFetch(`/kiosk/sync/assets?initiative_id=${encodeURIComponent(initiativeId)}`);
@@ -382,6 +407,13 @@ export async function fetchContainersSync(initiativeId: string): Promise<KioskCo
   const resp = await apiFetch(
     `/kiosk/sync/containers?initiative_id=${encodeURIComponent(initiativeId)}`);
   return jsonFrom<KioskContainersSync>(resp);
+}
+
+/** The move's unarchived trucks, in one response like the crates. */
+export async function fetchTrucksSync(initiativeId: string): Promise<KioskTrucksSync> {
+  const resp = await apiFetch(
+    `/kiosk/sync/trucks?initiative_id=${encodeURIComponent(initiativeId)}`);
+  return jsonFrom<KioskTrucksSync>(resp);
 }
 
 // ── scan ingest ─────────────────────────────────────────────────────
@@ -506,6 +538,54 @@ export async function postContainerAsset(body: {
       body: JSON.stringify(rest),
     });
   return jsonFrom<KioskContainerAssetResult>(resp);
+}
+
+// ── trucks: load / unload ───────────────────────────────────────────
+
+/** A truck named in a load/unload answer — the one loaded, or the one a
+ *  container came off / is actually on. */
+export interface KioskTruckRef { id: string; name: string }
+
+export interface KioskTruckContainerResult {
+  truck: KioskTruckRef & { container_count: number };
+  container: { id: string; name: string; asset_count: number };
+  action: 'load' | 'unload';
+  moved_from: KioskTruckRef | null;
+  already_there: boolean;
+}
+
+/** Loads a container onto a truck (or unloads it off one) and records the
+ *  scan that produced it, in one server transaction.
+ *
+ *  Trucks carry CONTAINERS: `truck_containers` is keyed on (truck_id,
+ *  container_id) and there is no asset-to-truck link, so an asset the
+ *  operator scanned is resolved to its container on the kiosk and this
+ *  call only ever names a container. `scanned_value` still carries what
+ *  was physically read.
+ *
+ *  There is deliberately no outbox behind this, for the same reason
+ *  `postContainerAsset` has none: which truck carries a crate is
+ *  relational state only the portal can resolve — loading one that is
+ *  already riding another truck MOVES it. Throws `ApiError` — 409
+ *  `not_on_truck` (its `detail` carries the `truck_id` / `truck_name` the
+ *  container is actually on, when it is on one), 404 `truck_not_found` /
+ *  `container_not_found` / `device_not_found`, 422 `bad_status` /
+ *  `bad_scan_type` / `bad_site` / `bad_initiative`, 423 read-only, 0
+ *  `network`. */
+export async function postTruckContainer(body: {
+  truck_id: string; serial: string; container_id: string;
+  action: 'load' | 'unload'; scanned_value: string; scan_type: 'rfid' | 'barcode';
+  scan_status: string; client_scan_id: string;
+  site_id?: string | null; initiative_id?: string | null;
+}): Promise<KioskTruckContainerResult> {
+  const { truck_id: truckId, ...rest } = body;
+  const resp = await apiFetch(
+    `/kiosk/trucks/${encodeURIComponent(truckId)}/containers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rest),
+    });
+  return jsonFrom<KioskTruckContainerResult>(resp);
 }
 
 // ── printer maintenance ─────────────────────────────────────────────
