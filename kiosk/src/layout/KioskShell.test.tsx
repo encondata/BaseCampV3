@@ -18,7 +18,7 @@ beforeEach(() => {
 });
 
 const syncMock = vi.hoisted(() => ({
-  status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; syncedAt?: string },
+  status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; containers?: number; syncedAt?: string },
 }));
 vi.mock('../lib/sync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/sync')>();
@@ -240,7 +240,7 @@ it('footer omits Move + Scan items when no selection is saved', () => {
 
 
 it('footer shows a Data item with the local counts once a sync has happened', () => {
-  syncMock.status = { phase: 'done', assets: 15, people: 4, syncedAt: '2026-09-13T18:14:00Z' };
+  syncMock.status = { phase: 'done', assets: 15, people: 4, containers: 6, syncedAt: '2026-09-13T18:14:00Z' };
   render(
     <MemoryRouter initialEntries={['/']}>
       <KioskShell><div /></KioskShell>
@@ -248,7 +248,7 @@ it('footer shows a Data item with the local counts once a sync has happened', ()
   );
   const footer = screen.getByRole('contentinfo');
   expect(footer.textContent ?? '').toContain('Data');
-  expect(footer.textContent ?? '').toContain('15 assets · 4 people');
+  expect(footer.textContent ?? '').toContain('15 assets · 4 people · 6 containers');
 });
 
 it('footer has no Data item before any sync', () => {

@@ -2509,6 +2509,97 @@ class KioskTimeclockStatusOut(BaseModel):
     last_entry: KioskTimeclockLastEntry | None = None
 
 
+# ── kiosk containers (pack / unpack) ──
+
+class KioskContainerOut(BaseModel):
+    """One of the move's containers as the kiosk caches it — enough to
+    recognize a scanned container (RFID tag, label tag, name) and to show
+    its header card (type, status, site) without a round trip.
+    `asset_count` is the count at sync time; the Containers screen keeps
+    its own live count from there."""
+
+    id: uuid.UUID
+    name: str
+    rfid_tag: str | None = None
+    label_tag: str | None = None
+    container_type: str | None = None
+    status: str
+    status_label: str
+    site_id: uuid.UUID | None = None
+    site_name: str | None = None
+    asset_count: int
+
+
+class KioskContainersSyncOut(BaseModel):
+    initiative_id: uuid.UUID
+    generated_at: datetime
+    containers: list[KioskContainerOut]
+
+
+class KioskContainerAssetIn(BaseModel):
+    """One asset the kiosk just scanned into (or out of) a container.
+
+    `action` is what the Pack / Unpack toggle was set to. `scanned_value`
+    and `scan_type` describe the physical scan exactly as /kiosk/scans
+    records it — the value the kiosk matched on, and whether it came off
+    a reader or a barcode. `asset_id` is the kiosk's own local match; the
+    server acts on it (membership is relational state, not something the
+    scan matcher can decide), but the raw scan still carries
+    `scanned_value` for the matcher to resolve independently.
+
+    `scan_status` is the checkpoint the pack/unpack scan records (the
+    Admin tab's "Container pack/unpack checkpoint"); `site_id` /
+    `initiative_id` come from Kiosk Setup and fall back to the Device's
+    own setup. `client_scan_id` makes the scan idempotent, exactly as it
+    does for /kiosk/scans."""
+
+    serial: str = Field(min_length=1, max_length=120)
+    asset_id: uuid.UUID
+    action: Literal["pack", "unpack"]
+    scanned_value: str = Field(min_length=1, max_length=200)
+    scan_type: Literal["rfid", "barcode"]
+    scan_status: str = Field(min_length=1, max_length=120)
+    client_scan_id: uuid.UUID
+    site_id: uuid.UUID | None = None
+    initiative_id: uuid.UUID | None = None
+
+
+class KioskContainerRef(BaseModel):
+    """A container named in a result — the one packed into, or the one an
+    asset was moved out of / is actually in."""
+
+    id: uuid.UUID
+    name: str
+
+
+class KioskContainerStateOut(KioskContainerRef):
+    asset_count: int
+
+
+class KioskContainerAssetRow(BaseModel):
+    """The asset a pack/unpack acted on, for the session list."""
+
+    id: uuid.UUID
+    name: str | None = None
+    asset_tag: str          # the human Asset ID (Asset.legacy_id), "" if unset
+    serial_number: str | None = None
+    rfid: str | None = None
+
+
+class KioskContainerAssetOut(BaseModel):
+    """What the Containers screen shows after a scan: the container with
+    its fresh count, the asset as the portal holds it, and — when the
+    unique membership constraint made a pack a move — the container it
+    came out of. `already_there` means the asset was already in THIS
+    container, so only the scan was recorded."""
+
+    container: KioskContainerStateOut
+    asset: KioskContainerAssetRow
+    action: Literal["pack", "unpack"]
+    moved_from: KioskContainerRef | None = None
+    already_there: bool = False
+
+
 class KioskClockInIn(BaseModel):
     """`site_id` / `initiative_id` left out fall back to the kiosk
     Device's own setup. There is deliberately no `at`: the kiosk has no

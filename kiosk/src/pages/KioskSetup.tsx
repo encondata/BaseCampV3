@@ -182,6 +182,7 @@ export default function KioskSetup() {
               <>
                 <span>
                   Local data: {sync.assets ?? 0} assets · {sync.people ?? 0} people
+                  {' · '}{sync.containers ?? 0} containers
                   {sync.syncedAt ? ` · synced ${formatSyncedAt(sync.syncedAt)}` : ''}
                 </span>
                 <button type="button" className="mini-btn" onClick={resync}>Sync again</button>

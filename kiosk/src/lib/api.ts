@@ -344,6 +344,28 @@ export interface KioskPeopleSync {
   people: KioskPersonRow[];
 }
 
+/** One of the move's containers, as the kiosk caches it. `asset_count`
+ *  is the count at sync time — the Containers screen keeps its own live
+ *  count from there, and every pack/unpack answer carries a fresh one. */
+export interface KioskContainerRow {
+  id: string;
+  name: string;
+  rfid_tag: string | null;
+  label_tag: string | null;
+  container_type: string | null;
+  status: string;
+  status_label: string;
+  site_id: string | null;
+  site_name: string | null;
+  asset_count: number;
+}
+
+export interface KioskContainersSync {
+  initiative_id: string;
+  generated_at: string;
+  containers: KioskContainerRow[];
+}
+
 /** The whole roster in one response — the API does not page it. */
 export async function fetchAssetsSync(initiativeId: string): Promise<KioskAssetsSync> {
   const resp = await apiFetch(`/kiosk/sync/assets?initiative_id=${encodeURIComponent(initiativeId)}`);
@@ -353,6 +375,13 @@ export async function fetchAssetsSync(initiativeId: string): Promise<KioskAssets
 export async function fetchPeopleSync(): Promise<KioskPeopleSync> {
   const resp = await apiFetch('/kiosk/sync/people');
   return jsonFrom<KioskPeopleSync>(resp);
+}
+
+/** The move's unarchived containers, in one response like the roster. */
+export async function fetchContainersSync(initiativeId: string): Promise<KioskContainersSync> {
+  const resp = await apiFetch(
+    `/kiosk/sync/containers?initiative_id=${encodeURIComponent(initiativeId)}`);
+  return jsonFrom<KioskContainersSync>(resp);
 }
 
 // ── scan ingest ─────────────────────────────────────────────────────
@@ -432,6 +461,51 @@ export async function postRfidEnroll(body: {
     body: JSON.stringify(rest),
   });
   return jsonFrom<KioskRfidEnroll>(resp);
+}
+
+// ── containers: pack / unpack ───────────────────────────────────────
+
+/** A container named in a pack/unpack answer — the one packed into, or
+ *  the one an asset came out of. */
+export interface KioskContainerRef { id: string; name: string }
+
+export interface KioskContainerAssetResult {
+  container: KioskContainerRef & { asset_count: number };
+  asset: {
+    id: string; name: string | null; asset_tag: string;
+    serial_number: string | null; rfid: string | null;
+  };
+  action: 'pack' | 'unpack';
+  moved_from: KioskContainerRef | null;
+  already_there: boolean;
+}
+
+/** Packs an asset into a container (or unpacks it out of one) and
+ *  records the scan that produced it, in one server transaction.
+ *
+ *  There is deliberately no outbox behind this: which container an asset
+ *  is in is relational state only the portal can resolve — packing
+ *  something already crated elsewhere MOVES it — so a call that does not
+ *  reach the portal did not happen. Throws `ApiError` — 409
+ *  `not_in_container` (its `detail` carries the `container_id` /
+ *  `container_name` the asset is actually in, when it is in one), 404
+ *  `container_not_found` / `asset_not_found` / `device_not_found`, 422
+ *  `bad_status` / `bad_site` / `bad_initiative`, 423 read-only, 0
+ *  `network`. */
+export async function postContainerAsset(body: {
+  container_id: string; serial: string; asset_id: string;
+  action: 'pack' | 'unpack'; scanned_value: string; scan_type: 'rfid' | 'barcode';
+  scan_status: string; client_scan_id: string;
+  site_id?: string | null; initiative_id?: string | null;
+}): Promise<KioskContainerAssetResult> {
+  const { container_id: containerId, ...rest } = body;
+  const resp = await apiFetch(
+    `/kiosk/containers/${encodeURIComponent(containerId)}/assets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rest),
+    });
+  return jsonFrom<KioskContainerAssetResult>(resp);
 }
 
 // ── printer maintenance ─────────────────────────────────────────────

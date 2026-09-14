@@ -18,6 +18,12 @@ const person = (id: string, tag: string) => ({
   id, display_name: `Person ${id}`, rfid_tag: tag, is_worker: true, has_account: false,
 });
 
+const container = (id: string, name: string, tag: string | null) => ({
+  id, name, rfid_tag: tag, label_tag: null, container_type: 'shipping_container',
+  status: 'available', status_label: 'Available', site_id: null, site_name: null,
+  asset_count: 0,
+});
+
 beforeEach(() => {
   closeDb();
   (globalThis as unknown as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
@@ -59,12 +65,16 @@ it('round-trips a meta row', async () => {
 it('clearDb empties every store', async () => {
   await replaceAll('assets', [asset('a', 'R1')]);
   await replaceAll('people', [person('p1', 'W-1')]);
-  await writeMeta('sync', { assets: 1, people: 1 });
+  await replaceAll('containers', [container('c-1', 'SC-DAL_PAL-001', 'R-1')]);
+  await writeMeta('sync', { assets: 1, people: 1, containers: 1 });
 
   await clearDb();
 
   expect(await count('assets')).toBe(0);
   expect(await count('people')).toBe(0);
+  // Containers are cached move data like the roster, so a wipe takes
+  // them too — otherwise a stale crate list would outlive the move.
+  expect(await count('containers')).toBe(0);
   expect(await readMeta('sync')).toBeNull();
 });
 
@@ -106,11 +116,22 @@ it('replaceAllMulti aborts every store together when one write is invalid', asyn
   expect(await readMeta('sync')).toBeNull();
 });
 
-it('v3 carries the outbox and the uploaded-sounds store', async () => {
+it('v4 carries the outbox, the uploaded sounds, and the containers store', async () => {
   const db = await openDb();
-  expect(db.version).toBe(3);
+  expect(db.version).toBe(4);
   expect([...db.objectStoreNames].sort())
-    .toEqual(['assets', 'meta', 'outbox', 'people', 'sounds']);
+    .toEqual(['assets', 'containers', 'meta', 'outbox', 'people', 'sounds']);
+});
+
+it('finds a container by rfid_tag and by name', async () => {
+  await replaceAll('containers', [
+    container('c-1', 'SC-DAL_PAL-001', 'R-1'), container('c-2', 'SC-DAL_PAL-002', null),
+  ]);
+  expect(await count('containers')).toBe(2);
+  expect((await getByIndex('containers', 'rfid_tag', 'R-1'))
+    .map((r) => (r as { id: string }).id)).toEqual(['c-1']);
+  expect((await getByIndex('containers', 'name', 'SC-DAL_PAL-002'))
+    .map((r) => (r as { id: string }).id)).toEqual(['c-2']);
 });
 
 it('upgrades a v1 database in place, keeping its rows and adding the outbox', async () => {
@@ -131,9 +152,10 @@ it('upgrades a v1 database in place, keeping its rows and adding the outbox', as
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(3);
+  expect(db.version).toBe(4);
   expect(db.objectStoreNames.contains('outbox')).toBe(true);
   expect(db.objectStoreNames.contains('sounds')).toBe(true);
+  expect(db.objectStoreNames.contains('containers')).toBe(true);
   expect(await count('assets')).toBe(1);
 });
 
@@ -156,9 +178,38 @@ it('upgrades a v2 database in place, keeping its outbox and adding sounds', asyn
   closeDb();
 
   const db = await openDb();
-  expect(db.version).toBe(3);
+  expect(db.version).toBe(4);
   expect(db.objectStoreNames.contains('sounds')).toBe(true);
+  expect(db.objectStoreNames.contains('containers')).toBe(true);
   expect(await count('outbox')).toBe(1);
+});
+
+it('upgrades a v3 database in place, keeping its data and adding containers', async () => {
+  // A kiosk that synced before the Containers screen shipped: its
+  // downloaded move and its queued scans must both survive.
+  await new Promise<void>((resolve, reject) => {
+    const req = indexedDB.open('serversherpa-kiosk', 3);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      db.createObjectStore('assets', { keyPath: 'id' }).createIndex('rfid', 'rfid');
+      db.createObjectStore('people', { keyPath: 'id' }).createIndex('rfid_tag', 'rfid_tag');
+      db.createObjectStore('meta', { keyPath: 'key' });
+      db.createObjectStore('outbox', { keyPath: 'client_scan_id' }).createIndex('status', 'status');
+      db.createObjectStore('sounds', { keyPath: 'id' });
+    };
+    req.onsuccess = () => { req.result.close(); resolve(); };
+    req.onerror = () => reject(req.error);
+  });
+  await replaceAll('assets', [asset('a', 'R1')]);
+  await putRows('outbox', [{ client_scan_id: 's1', status: 'queued' }]);
+  closeDb();
+
+  const db = await openDb();
+  expect(db.version).toBe(4);
+  expect(db.objectStoreNames.contains('containers')).toBe(true);
+  expect(await count('assets')).toBe(1);
+  expect(await count('outbox')).toBe(1);
+  expect(await count('containers')).toBe(0);
 });
 
 it('putRows upserts without clearing, and deleteRows removes by key', async () => {
@@ -176,10 +227,12 @@ it('putRows upserts without clearing, and deleteRows removes by key', async () =
 
 it('clearDb leaves the outbox and uploaded sounds alone — neither is local cache', async () => {
   await replaceAll('assets', [asset('a', 'R1')]);
+  await replaceAll('containers', [container('c-1', 'SC-DAL_PAL-001', 'R-1')]);
   await putRows('outbox', [{ client_scan_id: 's1', status: 'queued' }]);
   await putRows('sounds', [{ id: 'snd-1', name: 'ding.wav', type: 'audio/wav', size: 3 }]);
   await clearDb();
   expect(await count('assets')).toBe(0);
+  expect(await count('containers')).toBe(0);
   expect(await count('outbox')).toBe(1);
   expect(await count('sounds')).toBe(1);   // an upload is the operator's file, not cache
 });
@@ -194,13 +247,13 @@ it('closes its connection when another tab needs a higher version', async () => 
   // three stale tabs pinned the database at v1 and the Scanning page
   // never became usable.
   const upgraded = await new Promise<IDBDatabase>((resolve, reject) => {
-    const req = indexedDB.open('serversherpa-kiosk', 4);
+    const req = indexedDB.open('serversherpa-kiosk', 5);
     req.onupgradeneeded = () => req.result.createObjectStore('later', { keyPath: 'id' });
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
     req.onblocked = () => reject(new Error('blocked — the old connection never yielded'));
   });
-  expect(upgraded.version).toBe(4);
+  expect(upgraded.version).toBe(5);
   expect(upgraded.objectStoreNames.contains('assets')).toBe(true);
   upgraded.close();
 });

@@ -23,7 +23,7 @@ vi.mock('../lib/api', async (importOriginal) => {
 
 const syncMock = vi.hoisted(() => ({
   runSync: vi.fn(() => Promise.resolve()),
-  status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; syncedAt?: string; error?: string },
+  status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; containers?: number; syncedAt?: string; error?: string },
 }));
 vi.mock('../lib/sync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/sync')>();
@@ -353,9 +353,9 @@ it('the summary shows the running, done, and error sync states', async () => {
   cleanup();
 
   renderSummaryWith({
-    phase: 'done', assets: 15, people: 4, syncedAt: '2026-09-13T18:14:00Z',
+    phase: 'done', assets: 15, people: 4, containers: 6, syncedAt: '2026-09-13T18:14:00Z',
   });
-  expect(await screen.findByText(/Local data: 15 assets · 4 people · synced /)).toBeTruthy();
+  expect(await screen.findByText(/Local data: 15 assets · 4 people · 6 containers · synced /)).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Sync again' })).toBeTruthy();
   cleanup();
 
@@ -366,7 +366,7 @@ it('the summary shows the running, done, and error sync states', async () => {
 
 it('"Sync again" re-runs the download for the saved move', async () => {
   const user = userEvent.setup();
-  renderSummaryWith({ phase: 'done', assets: 15, people: 4, syncedAt: '2026-09-13T18:14:00Z' });
+  renderSummaryWith({ phase: 'done', assets: 15, people: 4, containers: 6, syncedAt: '2026-09-13T18:14:00Z' });
   await user.click(await screen.findByRole('button', { name: 'Sync again' }));
   expect(syncMock.runSync).toHaveBeenCalledWith('i-1', 'NAP11 Hall Migration (demo)');
 });

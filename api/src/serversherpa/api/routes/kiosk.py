@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from sqlalchemy import case, select, text, update
+from sqlalchemy import case, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload
@@ -21,7 +21,10 @@ from serversherpa.api.routes.auth import session_response
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
     HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut, KioskClockInIn,
-    KioskClockOutIn, KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
+    KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
+    KioskContainerAssetRow, KioskContainerOut, KioskContainerRef,
+    KioskContainersSyncOut, KioskContainerStateOut,
+    KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
     KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn,
     KioskScanBatchOut, KioskScanRejected, KioskSetupIn, KioskSetupOut,
     KioskSignOutIn, KioskTimeclockEntry, KioskTimeclockLastEntry,
@@ -31,9 +34,9 @@ from serversherpa.api.schemas import (
     SetupOptionScanType, SetupOptionSite, SetupOptionsOut,
 )
 from serversherpa.db.models import (
-    Asset, AssetModel, Client, Device, Initiative, InitiativeAsset, KioskPairRequest,
-    LabelPlaceholder, LabelVocab, Person, RawScan, Site, StatusValue, TimeEntry,
-    UserAccount, WorkerProfile,
+    Asset, AssetModel, Client, Container, ContainerAsset, Device, Initiative,
+    InitiativeAsset, KioskPairRequest, LabelPlaceholder, LabelVocab, Person,
+    RawScan, Site, StatusValue, TimeEntry, UserAccount, WorkerProfile,
 )
 from serversherpa.labels.generate.values import (
     CONTAINER_KEYS, AssetRow, Sites, make_model_text, placeholder_values,
@@ -516,6 +519,61 @@ async def sync_people(
                 for p, is_worker, has_account in rows])
 
 
+@router.get("/sync/containers", response_model=KioskContainersSyncOut)
+async def sync_containers(
+    db: DbSession,
+    initiative_id: uuid.UUID = Query(...),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskContainersSyncOut:
+    """Every unarchived container on this move, for the kiosk's local
+    copy — what the Containers screen matches a scanned crate against
+    (RFID tag, label tag, or name) and what its header card shows
+    (type, status, site) without a round trip.
+
+    Containers belong to a move via `containers.initiative_id` (migration
+    0057), so this is scoped exactly the way /sync/assets is: one move,
+    one response, no paging — a move's container list is tens to a few
+    hundred rows. Archived containers are left out; a kiosk should not be
+    able to pack into something the portal has retired.
+
+    `asset_count` is the count at sync time, for the card's opening
+    number; the screen keeps its own live count from there, and every
+    pack/unpack answer carries the server's fresh count anyway.
+
+    404 `initiative_not_found` for an unknown id; 422 `bad_initiative`
+    when the initiative is not a move — same contract as /sync/assets.
+    Gated on kiosk:view, like the rest of this router."""
+    initiative = await db.get(Initiative, initiative_id)
+    if initiative is None:
+        raise _err(404, "initiative_not_found")
+    if initiative.initiative_type != "move":
+        raise _err(422, "bad_initiative")
+
+    rows = (await db.execute(
+        select(Container, Site.name, StatusValue.label)
+        .outerjoin(Site, Site.id == Container.site_id)
+        .outerjoin(StatusValue,
+                   (StatusValue.record_type == "container")
+                   & (StatusValue.key == Container.status))
+        .where(Container.initiative_id == initiative.id,
+               Container.archived_at.is_(None))
+        .order_by(Container.name))).all()
+
+    ids = [c.id for c, _, _ in rows]
+    counts = dict((await db.execute(
+        select(ContainerAsset.container_id, func.count())
+        .where(ContainerAsset.container_id.in_(ids))
+        .group_by(ContainerAsset.container_id))).all()) if ids else {}
+
+    return KioskContainersSyncOut(
+        initiative_id=initiative.id, generated_at=datetime.now(UTC),
+        containers=[KioskContainerOut(
+            id=c.id, name=c.name, rfid_tag=c.rfid_tag, label_tag=c.label_tag,
+            container_type=c.container_type, status=c.status,
+            status_label=status_label or c.status,
+            site_id=c.site_id, site_name=site_name,
+            asset_count=counts.get(c.id, 0)) for c, site_name, status_label in rows])
+
 # ── scan ingest (kiosk:view) ─────────────────────────────────────────
 
 
@@ -746,6 +804,147 @@ async def enroll_rfid(
         asset_tag=str(asset.legacy_id) if asset.legacy_id is not None else "",
         serial_number=asset.serial_number, rfid_tag=tag,
         already_had_tag=already_had_tag)
+
+
+# ── containers: pack / unpack (kiosk:view) ───────────────────────────
+
+
+def _container_asset_row(asset: Asset) -> KioskContainerAssetRow:
+    return KioskContainerAssetRow(
+        id=asset.id, name=asset.name,
+        asset_tag=str(asset.legacy_id) if asset.legacy_id is not None else "",
+        serial_number=asset.serial_number, rfid=asset.rfid_tag)
+
+
+@router.post("/containers/{container_id}/assets",
+             response_model=KioskContainerAssetOut)
+async def pack_container_asset(
+    container_id: uuid.UUID, body: KioskContainerAssetIn, db: DbSession,
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskContainerAssetOut:
+    """Pack an asset into a container, or unpack it out of one, from the
+    kiosk's Containers screen — membership and the physical scan that
+    produced it, in ONE transaction (the RFID Enroll shape), so an asset
+    is never moved without the scan or the other way round.
+
+    `container_assets.asset_id` is UNIQUE: an asset is in at most one
+    container. So packing an asset that is already in a different
+    container is a MOVE, not an error — the old membership row is
+    deleted, the new one inserted, and `moved_from` names where it came
+    from so the screen can say so. Packing an asset that is already in
+    THIS container is a no-op: nothing changed, so there is no second
+    audit row — but the scan is still written, because the operator
+    really did wave something at a reader.
+
+    Unpacking an asset that is in some OTHER container is 409
+    `not_in_container` naming that container, rather than silently
+    emptying it: the operator is holding the wrong crate, and the screen
+    says which one is right. Unpacking an asset that is in no container
+    is the same 409 with no container named.
+
+    The scan is one `raw_scans` row shaped exactly like /kiosk/scans
+    writes them (`scanned_value` and `scan_type` as the kiosk read them,
+    the configured checkpoint in both `status` and `scan_status`,
+    `source='kiosk'`, the Device's name as `device_id`), fresh for the
+    scan-matching worker and idempotent on `client_scan_id`.
+
+    Like RFID Enroll and unlike /kiosk/scans, the checkpoint must still
+    be ACTIVE: it is configured once on Settings › Admin rather than sent
+    per scan, so a retired checkpoint is a misconfiguration to fix there
+    (422 `bad_status`). Not read-only exempt — this writes."""
+    device = await _kiosk_device(db, body.serial)
+    container = await db.get(Container, container_id)
+    if container is None or container.archived_at is not None:
+        raise _err(404, "container_not_found")
+    asset = await db.get(Asset, body.asset_id)
+    if asset is None or asset.archived_at is not None:
+        raise _err(404, "asset_not_found")
+    checkpoint = await db.get(StatusValue, ("asset", body.scan_status))
+    if checkpoint is None or not checkpoint.is_active:
+        raise _err(422, "bad_status")
+
+    # A stale kiosk can still name a site or move that has since gone —
+    # checked here so that is a reportable 422 and not a 500 out of the
+    # scan's foreign keys (/kiosk/scans rejects the same way, per scan).
+    if body.site_id is not None and await db.get(Site, body.site_id) is None:
+        raise _err(422, "bad_site")
+    if (body.initiative_id is not None
+            and await db.get(Initiative, body.initiative_id) is None):
+        raise _err(422, "bad_initiative")
+
+    # Where the asset is now: at most one row, by the unique constraint.
+    current = (await db.execute(
+        select(ContainerAsset, Container)
+        .join(Container, Container.id == ContainerAsset.container_id)
+        .where(ContainerAsset.asset_id == asset.id))).first()
+    membership, holder = current if current else (None, None)
+
+    now = datetime.now(UTC)
+    moved_from: KioskContainerRef | None = None
+    already_there = False
+
+    if body.action == "pack":
+        if membership is not None and holder.id == container.id:
+            already_there = True
+        else:
+            if membership is not None:
+                moved_from = KioskContainerRef(id=holder.id, name=holder.name)
+                # Delete before insert, and flush, so the unique index on
+                # asset_id never sees both rows at once.
+                await db.delete(membership)
+                await db.flush()
+                holder.updated_at = now
+            db.add(ContainerAsset(container_id=container.id, asset_id=asset.id,
+                                  added_by=actor.person.id))
+            container.updated_at = now
+            audit(db, actor_id=actor.person.id, entity_type="container",
+                  entity_id=str(container.id), action="kiosk_container_pack",
+                  changes={"asset_id": str(asset.id), "asset_name": asset.name,
+                           "from_container": moved_from.name if moved_from else None,
+                           "device": device.name})
+    else:
+        if membership is None or holder.id != container.id:
+            extra = ({"container_id": str(holder.id), "container_name": holder.name}
+                     if holder is not None else {})
+            raise _err(409, "not_in_container", **extra)
+        await db.delete(membership)
+        container.updated_at = now
+        audit(db, actor_id=actor.person.id, entity_type="container",
+              entity_id=str(container.id), action="kiosk_container_unpack",
+              changes={"asset_id": str(asset.id), "asset_name": asset.name,
+                       "from_container": container.name, "device": device.name})
+
+    # DO NOTHING against the partial unique index, same as /kiosk/scans:
+    # a kiosk retrying a call it never saw the answer to records one scan.
+    await db.execute(pg_insert(RawScan).values({
+        "scanned_value": body.scanned_value,
+        "scan_type": body.scan_type,
+        "status": checkpoint.key,
+        "scan_status": checkpoint.key,
+        "scanned_at": now,
+        "device_id": device.name,
+        "operator_id": actor.person.id,
+        "site_id": body.site_id or device.site_id,
+        "initiative_id": body.initiative_id or device.current_initiative_id,
+        "source": "kiosk",
+        "client_scan_id": body.client_scan_id,
+    }).on_conflict_do_nothing(
+        index_elements=["client_scan_id"],
+        index_where=text("client_scan_id IS NOT NULL")))
+
+    # last_seen_at only: the kiosk's own configuration did not change.
+    device.last_seen_at = now
+    await db.flush()
+    count = await db.scalar(
+        select(func.count()).select_from(ContainerAsset)
+        .where(ContainerAsset.container_id == container.id)) or 0
+    result = KioskContainerAssetOut(
+        container=KioskContainerStateOut(
+            id=container.id, name=container.name, asset_count=count),
+        asset=_container_asset_row(asset),
+        action=body.action, moved_from=moved_from, already_there=already_there)
+    await db.commit()
+    return result
 
 
 # ── timeclock (kiosk:view) ───────────────────────────────────────────

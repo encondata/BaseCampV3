@@ -4,7 +4,7 @@
  * holds the move's data downloaded after Kiosk Setup, so a kiosk can
  * recognize an asset or a person without the API.
  *
- * Database `serversherpa-kiosk` v3, five stores:
+ * Database `serversherpa-kiosk` v4, six stores:
  *   - `assets` (keyPath `id`; indexes `rfid`, `asset_id`, `serial_number`)
  *   - `people` (keyPath `id`; index `rfid_tag`)
  *   - `meta`   (keyPath `key`) — the `sync` row: which move, the counts,
@@ -13,10 +13,13 @@
  *     waiting to reach the API (see `outbox.ts`).
  *   - `sounds` (keyPath `id`) — v3: sound files uploaded on the Sound
  *     tab (`sound.ts`), blob and all. They live on this kiosk only.
+ *   - `containers` (keyPath `id`; indexes `rfid_tag`, `name`) — v4: the
+ *     move's crates, so the Containers screen can recognize a scanned
+ *     container without a round trip (`containerMatch.ts`).
  *
  * Older databases upgrade in place: `onupgradeneeded` only creates the
- * stores that are missing, so a kiosk at v1 or v2 keeps its downloaded
- * move (and its queued scans) and simply gains what it lacks.
+ * stores that are missing, so a kiosk at v1, v2, or v3 keeps its
+ * downloaded move (and its queued scans) and simply gains what it lacks.
  *
  * Unlike the portal's cache, failures here are NOT swallowed: every call
  * is promise-based and a missing IndexedDB, a blocked open, or a failed
@@ -25,15 +28,19 @@
  */
 
 const DB_NAME = 'serversherpa-kiosk';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
-export type StoreName = 'assets' | 'people' | 'meta' | 'outbox' | 'sounds';
+export type StoreName = 'assets' | 'people' | 'containers' | 'meta' | 'outbox' | 'sounds';
 
-/** The downloaded move — what "Clear local data" empties. `outbox` and
- *  `sounds` are deliberately NOT here: clearing the cached roster must
- *  never throw away scans that have not reached the API yet, nor the
- *  sound files someone uploaded to this kiosk. */
-export const STORES: StoreName[] = ['assets', 'people', 'meta'];
+/** The downloaded move — what "Clear local data" empties. `containers`
+ *  joins it for exactly the reason `assets` and `people` are here: it is
+ *  a cached copy of the move, re-downloadable from Kiosk Setup, and
+ *  leaving a stale crate list behind after a wipe would be the one thing
+ *  that still recognized the previous move. `outbox` and `sounds` are
+ *  deliberately NOT here: clearing the cached roster must never throw
+ *  away scans that have not reached the API yet, nor the sound files
+ *  someone uploaded to this kiosk. */
+export const STORES: StoreName[] = ['assets', 'people', 'containers', 'meta'];
 
 export const ALL_STORES: StoreName[] = [...STORES, 'outbox', 'sounds'];
 
@@ -78,6 +85,11 @@ export function openDb(): Promise<IDBDatabase> {
         db.createObjectStore('outbox', { keyPath: 'client_scan_id' }).createIndex('status', 'status');
       }
       if (!db.objectStoreNames.contains('sounds')) db.createObjectStore('sounds', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('containers')) {
+        const containers = db.createObjectStore('containers', { keyPath: 'id' });
+        containers.createIndex('rfid_tag', 'rfid_tag');
+        containers.createIndex('name', 'name');
+      }
     };
     req.onsuccess = () => {
       const db = req.result;

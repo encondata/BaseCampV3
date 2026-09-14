@@ -84,7 +84,11 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   // is what `useSyncStatus` hydrates from) — a kiosk that has never
   // synced shows no Data item at all rather than "0 assets".
   if (sync.assets !== undefined && sync.people !== undefined) {
-    footItems.push({ label: 'Data', value: `${sync.assets} assets · ${sync.people} people` });
+    footItems.push({
+      label: 'Data',
+      value: `${sync.assets} assets · ${sync.people} people`
+        + ` · ${sync.containers ?? 0} containers`,
+    });
   }
 
   return (
