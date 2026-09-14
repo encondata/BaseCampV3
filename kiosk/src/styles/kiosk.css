@@ -33,9 +33,9 @@
   color: var(--snow);
   border-bottom: 1px solid var(--ink-line);
 }
-.kiosk-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.kiosk-brand { display: flex; align-items: center; gap: 10px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .kiosk-logo { width: 26px; height: 26px; object-fit: contain; }
-.kiosk-wordmark { font-weight: 600; letter-spacing: .01em; white-space: nowrap; }
+.kiosk-wordmark { font-weight: 600; letter-spacing: .01em; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .kiosk-wordmark em { font-style: normal; color: var(--accent); }
 .kiosk-mode {
   font-family: var(--font-mono);
@@ -67,6 +67,14 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
+}
+
+@media (max-width: 900px) {
+  .kiosk-top { grid-template-columns: auto 1fr auto; gap: 10px; }
+  .kiosk-mode { display: none; }
+}
+@media (max-width: 600px) {
+  .kiosk-person { display: none; }
 }
 
 /* ── pages ─────────────────────────────────────────────────────── */

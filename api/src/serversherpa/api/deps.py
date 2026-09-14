@@ -174,5 +174,9 @@ def rate_limit_ip(request: Request) -> str:
         if peer_addr is not None and (peer_addr.is_loopback or peer_addr.is_private):
             rightmost = forwarded.split(",")[-1].strip()
             if rightmost:
+                try:
+                    ipaddress.ip_address(rightmost)
+                except ValueError:
+                    return peer or "unknown"
                 return rightmost
     return peer or "unknown"

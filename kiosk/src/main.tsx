@@ -9,6 +9,7 @@ import '@portal/styles/portal-theme.css';
 import '@portal/styles/auth-theme.css';
 import '@portal/styles/directory.css';
 import '@portal/styles/chrome.css';
+import '@portal/styles/profile.css';
 import './styles/kiosk.css';
 
 createRoot(document.getElementById('root')!).render(

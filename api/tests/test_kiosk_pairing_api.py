@@ -42,10 +42,10 @@ async def test_create_returns_code_token_and_link(client, db):
     assert row.ip_address                               # creator IP recorded
 
 
-async def test_second_code_for_same_kiosk_denies_the_first(client, db):
+async def test_multiple_codes_per_kiosk_stay_pending(client, db):
     a = await _create(client)
     b = await _create(client)
-    assert (await _poll(client, a)).json()["status"] == "denied"
+    assert (await _poll(client, a)).json()["status"] == "pending"
     assert (await _poll(client, b)).json()["status"] == "pending"
 
 
@@ -99,6 +99,26 @@ async def test_rate_limit_keys_on_rightmost_forwarded_entry(client, db):
         KioskPairRequest.serial == "kiosk-b-extra"))
     assert row1.ip_address == "203.0.113.1"
     assert row2.ip_address == "203.0.113.2"
+
+
+async def test_rate_limit_ignores_invalid_rightmost_forwarded_entry(client, db):
+    """A malformed rightmost X-Forwarded-For entry (proxy bug, or a caller
+    who bypassed the proxy) is never trusted as the rate-limit key: it
+    falls back to the test transport's loopback peer instead."""
+    for i in range(30):
+        resp = await client.post(
+            "/kiosk/pair", json={**KIOSK, "serial": f"kiosk-badfwd-{i:04d}"},
+            headers={"X-Forwarded-For": f"203.0.113.{i}, not-an-ip"})
+        assert resp.status_code == 201, resp.text
+    resp = await client.post(
+        "/kiosk/pair", json={**KIOSK, "serial": "kiosk-badfwd-final"},
+        headers={"X-Forwarded-For": "203.0.113.200, not-an-ip"})
+    assert resp.status_code == 429
+    assert resp.json()["detail"]["code"] == "pair_rate_limited"
+
+    row = await db.scalar(select(KioskPairRequest).where(
+        KioskPairRequest.serial == "kiosk-badfwd-0000"))
+    assert row.ip_address == "127.0.0.1"
 
 
 async def test_poll_wrong_token_and_unknown_code(client, db):

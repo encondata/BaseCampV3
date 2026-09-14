@@ -2,9 +2,9 @@
 /kiosk/pair routes apply. Codes are 8 Crockford base32 characters (40
 bits), live PAIR_TTL_SECONDS, and can only be claimed by the holder of
 the poll token handed to the kiosk once at creation (only its sha256 is
-stored). One live code per kiosk serial; PAIR_IP_LIMIT creations per IP
-per PAIR_IP_WINDOW_SECONDS, counted from the table (no in-memory state,
-so every API worker agrees). Design:
+stored). PAIR_IP_LIMIT creations per IP per PAIR_IP_WINDOW_SECONDS,
+counted from the table (no in-memory state, so every API worker agrees).
+Design:
 docs/superpowers/specs/2026-09-13-kiosk-web-design.md"""
 
 import hashlib
@@ -13,7 +13,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.config import get_settings
@@ -85,10 +85,6 @@ async def create_request(
             KioskPairRequest.created_at >= now - timedelta(seconds=PAIR_IP_WINDOW_SECONDS)))
     if (recent or 0) >= PAIR_IP_LIMIT:
         raise PairError("pair_rate_limited")
-    # one live code per kiosk: a new request retires the previous one
-    await db.execute(update(KioskPairRequest).where(
-        KioskPairRequest.serial == serial, KioskPairRequest.status == "pending",
-    ).values(status="denied", updated_at=now))
 
     code = generate_code()
     while await db.scalar(select(KioskPairRequest.id).where(KioskPairRequest.code == code)):
