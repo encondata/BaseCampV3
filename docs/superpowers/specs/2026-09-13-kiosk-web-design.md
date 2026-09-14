@@ -116,6 +116,12 @@ Permission gating of tiles is deferred — `scan`, `labels`, and `time` resource
 
 **Must-change-password**: if the adopted session has `must_change_password`, `KioskGuard` renders a `.portal-page` notice "Your password needs to be changed before you can use a kiosk. Sign in to the portal at {portalUrl} to change it." with a Sign out button, instead of the page. (The security-fixes branch makes this a server-side 403 `password_change_required` on every other route, so the kiosk never relies on client enforcement.)
 
+### Label Printing (2026-09-14)
+
+The Label Printing tile no longer opens `FeaturePage` directly — `/labels` now shows its own three-card entry screen, `src/pages/Labels.tsx`, listing the sections a new registry defines: `src/lib/labelSections.ts` exports `LabelSection = {id: 'station' | 'bulk' | 'printers', path, title, blurb}` and `LABEL_SECTIONS`, in order Printing Station (`/labels/station`, a printer glyph, "Scan an asset and print its labels."), Bulk Print (`/labels/bulk`, a stack of labels, "Print labels for a whole move, rack, or list."), and Printer Setup / Troubleshooting (`/labels/printers`, a wrench, "Connect, align, and test the label printer."). `Labels.tsx` reuses the launcher markup — eyebrow "Kiosk · Label Printing", title "Label Printing", hint "Choose what you want to do.", a `.kiosk-launcher label-sections` grid of `.kiosk-tile` links (unbounded width, same as Home's launcher) — and each section is itself a placeholder for now: `src/pages/LabelSectionPage.tsx` (`{section}` prop) renders the section's title, "Coming soon. {blurb}", and a `.kiosk-placeholder` card reading "This section is not available yet." with a "Back to Label Printing" link to `/labels`.
+
+`labels` drops `placeholder: true` in `features.ts` (its route is no longer built from the placeholder map) but keeps its normal `featureAvailable` gating — no `alwaysAvailable`. `App.tsx` routes `/labels` and the three `LABEL_SECTIONS` paths explicitly, each `KioskGuard` + `SetupGate(feature: LABELS)` + `KioskShell`, the same shape as `/scan`. Because none of the four paths is a `FEATURES` entry itself (`/labels/station` etc. aren't in the registry), `KioskShell`'s section-label lookup changed from an exact match to a prefix match — `pathname === f.path || pathname.startsWith(f.path + '/')` — so every `/labels/*` route still reads "Label Printing" in the top bar instead of showing no label at all.
+
 ### Login page (`/login`)
 
 Same two-panel `.login-shell` as the portal, reusing `auth-theme.css` verbatim:
@@ -394,6 +400,7 @@ Built on branch `kiosk-web` via `docs/superpowers/plans/2026-09-13-kiosk-web.md`
 - Jimmy: step 1A — pick the move's source or destination site; stamps the kiosk site.
 - Jimmy: Developer tab lists the three local stores.
 - Jimmy: dropdowns replaced by card pickers; moves = everything not complete/historical.
+- Jimmy: Label Printing opens on three cards — Printing Station, Bulk Print, Printer Setup/Troubleshooting (placeholders).
 
 Live-verified 2026-09-13 against the worktree API (dev DB at 0061): email/password sign-in, heartbeat creating "Kiosk 4716 · Web" on Kiosk Devices and the chip flipping to Registered after Register from the portal, link-with-phone approve (kiosk on Home within one poll) and deny ("Sign-in was declined on the phone."), the move-password placeholder (no request), and the Docker/compose build on 8090 signing in with the same-site cookie. Not live-verified: the `kiosk_not_allowed` refusal in the UI (covered by `tests/test_auth_kiosk_login.py`), a real phone camera scanning the QR, and prod cross-subdomain cookies (`SS_COOKIE_DOMAIN`).
 

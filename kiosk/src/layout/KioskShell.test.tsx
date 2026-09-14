@@ -72,6 +72,16 @@ it('shows no section label at /', () => {
   expect(document.querySelector('.kiosk-section')).toBeNull();
 });
 
+it('shows "Label Printing" as the section label at a /labels sub-route', () => {
+  render(
+    <MemoryRouter initialEntries={['/labels/bulk']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const section = document.querySelector('.kiosk-section');
+  expect(section?.textContent).toBe('Label Printing');
+});
+
 it('shows "Kiosk Setup" as the section label at /setup', () => {
   render(
     <MemoryRouter initialEntries={['/setup']}>

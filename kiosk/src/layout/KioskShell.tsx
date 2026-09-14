@@ -53,7 +53,9 @@ export default function KioskShell({ children }: { children: ReactNode }) {
 
   const identity = getIdentity();
   const { label: modeLabel } = platform();
-  const feature = FEATURES.find((f) => f.path === location.pathname);
+  const feature = FEATURES.find(
+    (f) => location.pathname === f.path || location.pathname.startsWith(`${f.path}/`),
+  );
 
   const footItems: FootItem[] = [
     { label: 'Kiosk', value: identity.name },

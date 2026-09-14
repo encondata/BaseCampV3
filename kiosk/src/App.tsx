@@ -5,14 +5,18 @@ import KioskGuard from './components/KioskGuard';
 import SetupGate from './components/SetupGate';
 import KioskShell from './layout/KioskShell';
 import { FEATURES } from './lib/features';
+import { LABEL_SECTIONS } from './lib/labelSections';
 import FeaturePage from './pages/FeaturePage';
 import Home from './pages/Home';
 import KioskSetup from './pages/KioskSetup';
+import LabelSectionPage from './pages/LabelSectionPage';
+import Labels from './pages/Labels';
 import Login from './pages/Login';
 import Scan from './pages/Scan';
 import Settings from './pages/Settings';
 
 const SCAN = FEATURES.find((f) => f.id === 'scan')!;
+const LABELS = FEATURES.find((f) => f.id === 'labels')!;
 
 export default function App() {
   return (
@@ -39,6 +43,32 @@ export default function App() {
               </KioskGuard>
             )}
           />
+          {/* Label Printing opens on its own three-card entry screen, so
+              it gets explicit routes rather than the placeholder map
+              below — same guards. */}
+          <Route
+            path={LABELS.path}
+            element={(
+              <KioskGuard>
+                <SetupGate feature={LABELS}>
+                  <KioskShell><Labels /></KioskShell>
+                </SetupGate>
+              </KioskGuard>
+            )}
+          />
+          {LABEL_SECTIONS.map((s) => (
+            <Route
+              key={s.id}
+              path={s.path}
+              element={(
+                <KioskGuard>
+                  <SetupGate feature={LABELS}>
+                    <KioskShell><LabelSectionPage section={s} /></KioskShell>
+                  </SetupGate>
+                </KioskGuard>
+              )}
+            />
+          ))}
           {FEATURES.filter((f) => f.placeholder).map((f) => (
             <Route
               key={f.id}
