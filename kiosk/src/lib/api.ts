@@ -321,9 +321,15 @@ export interface KioskAssetsSync {
   assets: KioskAssetRow[];
 }
 
+/** One cached person. The name parts ride along with `display_name` so
+ *  the timeclock can match a typed name in any order (`peopleMatch.ts`)
+ *  without re-splitting a formatted string. */
 export interface KioskPersonRow {
   id: string;
   display_name: string;
+  first_name: string;
+  last_name: string;
+  preferred_name: string | null;
   rfid_tag: string | null;
   is_worker: boolean;
   has_account: boolean;
