@@ -9,7 +9,10 @@ import FeaturePage from './pages/FeaturePage';
 import Home from './pages/Home';
 import KioskSetup from './pages/KioskSetup';
 import Login from './pages/Login';
+import Scan from './pages/Scan';
 import Settings from './pages/Settings';
+
+const SCAN = FEATURES.find((f) => f.id === 'scan')!;
 
 export default function App() {
   return (
@@ -24,6 +27,18 @@ export default function App() {
           <Route path="/setup" element={<KioskGuard><KioskShell><KioskSetup /></KioskShell></KioskGuard>} />
           <Route path="/settings" element={<KioskShell><Settings /></KioskShell>} />
           <Route path="/" element={<KioskGuard><KioskShell><Home /></KioskShell></KioskGuard>} />
+          {/* Scanning is a real screen now, so it gets its own route
+              rather than the placeholder map below — same guards. */}
+          <Route
+            path={SCAN.path}
+            element={(
+              <KioskGuard>
+                <SetupGate feature={SCAN}>
+                  <KioskShell><Scan /></KioskShell>
+                </SetupGate>
+              </KioskGuard>
+            )}
+          />
           {FEATURES.filter((f) => f.placeholder).map((f) => (
             <Route
               key={f.id}

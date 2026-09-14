@@ -387,6 +387,11 @@
 
 /* ── Appearance tab: HSL color picker ───────────────────────────────── */
 .hsl-picker { display: flex; align-items: center; gap: 16px; flex: 0 0 auto; flex-wrap: wrap; }
+/* The picker is wide, and .settings-row's label column is `min-width: 0`
+   — left alone the label collapses to one word per line. Give it a floor
+   and let the row wrap instead. */
+.settings-row:has(.hsl-picker) { flex-wrap: wrap; }
+.settings-row:has(.hsl-picker) > div:first-child { min-width: 240px; }
 .hsl-swatch {
   width: 40px; height: 40px; flex: 0 0 auto;
   border-radius: 10px; border: 1px solid var(--paper-line);
@@ -398,3 +403,44 @@
 .hsl-channel-value { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-mute); text-align: right; }
 .hsl-foot { display: grid; gap: 8px; justify-items: start; }
 .hsl-readout { font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }
+
+/* ── Scanning ────────────────────────────────────────────────────────
+   One big always-focused box (a barcode scanner types into whatever has
+   focus) over the scan list, which reuses .local-table's shape and adds
+   a status color per row. */
+.scan-input {
+  font-size: 22px;
+  padding: 16px 18px;
+  width: 100%;
+  max-width: 900px;
+  border: 2px solid var(--paper-line);
+  border-radius: 14px;
+  background: var(--paper);
+  color: var(--text-dark);
+  font-family: var(--font-mono);
+}
+.scan-input:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .25);
+}
+.scan-input:disabled { opacity: .55; cursor: not-allowed; }
+.scan-toolbar { display: flex; align-items: center; gap: 12px; margin: 14px 0 10px; }
+.scan-counts { margin: 0; font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }
+.scan-list { max-width: 1100px; }
+.scan-chip { font-family: var(--font-mono); font-size: 11px; white-space: nowrap; }
+/* The left border is what reads at a glance from a few feet away; the
+   tint keeps the row legible without washing the text out. */
+.scan-row > td:first-child { border-left: 3px solid transparent; }
+.scan-row.is-accepted { background: rgba(62, 207, 142, .15); }
+.scan-row.is-accepted > td:first-child { border-left-color: var(--c-green, #178a4c); }
+.scan-row.is-queued,
+.scan-row.is-sending,
+.scan-row.is-retrying { background: rgba(255, 161, 46, .15); }
+.scan-row.is-queued > td:first-child,
+.scan-row.is-sending > td:first-child,
+.scan-row.is-retrying > td:first-child { border-left-color: var(--c-amber, #a36207); }
+.scan-row.is-failed,
+.scan-row.is-nomatch { background: rgba(192, 53, 64, .12); }
+.scan-row.is-failed > td:first-child,
+.scan-row.is-nomatch > td:first-child { border-left-color: var(--c-red, #c03540); }
