@@ -18,6 +18,15 @@ vi.mock('../lib/api', async (importOriginal) => {
 // everything else about the outbox (IndexedDB, timers, batching) stays
 // real, since a fake-indexeddb-backed queue is what these tests exist
 // to exercise.
+// Audio is stubbed wholesale: jsdom has no Web Audio API, and what this
+// page owes the Sound tab is the call, not the noise (lib/sound.test.ts
+// covers the tones).
+const sound = vi.hoisted(() => ({ playScanSound: vi.fn() }));
+vi.mock('../lib/sound', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/sound')>();
+  return { ...actual, playScanSound: sound.playScanSound };
+});
+
 const outbox = vi.hoisted(() => ({ enqueueScan: vi.fn() }));
 vi.mock('../lib/outbox', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/outbox')>();
@@ -62,6 +71,7 @@ beforeEach(async () => {
   // the one the page gave it, not one the network changed underneath.
   api.postScans.mockResolvedValue({ accepted: [], rejected: [] });
   outbox.enqueueScan.mockClear();      // keep the delegating impl, drop call history
+  sound.playScanSound.mockClear();
 });
 
 afterEach(() => {
@@ -269,4 +279,15 @@ it('flashes for as long as the Appearance tab says, on both paths', async () => 
 
   await userEvent.type(input, 'nope123{Enter}');
   expect(readFlash()?.ms).toBe(1000);
+});
+
+it('plays the good sound on a match and the not-found sound on a miss', async () => {
+  const input = await renderScan();
+
+  await userEvent.type(input, '100348{Enter}');
+  expect(sound.playScanSound).toHaveBeenCalledWith('good');
+
+  await userEvent.type(input, 'nope123{Enter}');
+  expect(sound.playScanSound).toHaveBeenLastCalledWith('not_found');
+  expect(sound.playScanSound).toHaveBeenCalledTimes(2);
 });

@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import 'fake-indexeddb/auto';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { IDBFactory } from 'fake-indexeddb';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const syncMock = vi.hoisted(() => ({
   status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; syncedAt?: string },
@@ -30,7 +32,43 @@ vi.mock('../components/LocalDataInspector', () => ({
   default: () => <div data-testid="local-data-inspector" />,
 }));
 
+import { closeDb } from '../lib/localDb';
+import { resetSoundAudioForTest } from '../lib/sound';
 import Settings from './Settings';
+
+// jsdom has no Web Audio API and never plays an <audio> element; the
+// Sound tab's Play buttons only need to be provably wired, so a minimal
+// fake stands in (see lib/sound.test.ts for the tones themselves).
+const audioContexts = vi.fn();
+
+class FakeAudioContext {
+  state = 'running';
+  currentTime = 0;
+  destination = {};
+  constructor() { audioContexts(); }
+  resume() { return Promise.resolve(); }
+  createOscillator() {
+    return {
+      type: 'sine',
+      frequency: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
+      connect() {}, start() {}, stop() {},
+    };
+  }
+  createGain() {
+    return {
+      gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
+      connect() {},
+    };
+  }
+}
+
+beforeEach(() => {
+  closeDb();
+  (globalThis as unknown as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
+  resetSoundAudioForTest();
+  audioContexts.mockClear();
+  (window as unknown as { AudioContext: unknown }).AudioContext = FakeAudioContext;
+});
 
 afterEach(() => {
   cleanup();
@@ -238,4 +276,65 @@ it('the Appearance tab sets how long the flash lasts, and persists it', () => {
   fireEvent.change(screen.getByLabelText('Flash duration'), { target: { value: '1000' } });
   expect(screen.getByText('1000 ms')).toBeTruthy();
   expect(JSON.parse(localStorage.getItem('ss.kiosk.appearance')!).flash_ms).toBe(1000);
+});
+
+it('the Sound tab picks a sound per scan outcome, previews it, and persists the choice', async () => {
+  renderAt('/settings?tab=sound');
+  const good = screen.getByLabelText('Good scan sound') as HTMLSelectElement;
+  const notFound = screen.getByLabelText('Not-found scan sound') as HTMLSelectElement;
+  expect(good.value).toBe('builtin:chime');
+  expect(notFound.value).toBe('builtin:buzz');
+  expect([...good.options].map((o) => o.textContent))
+    .toEqual(['None', 'Chime', 'Beep', 'Double beep', 'Buzz', 'Bonk']);
+  expect(screen.queryByText('This section is not available yet.')).toBeNull();
+
+  fireEvent.change(good, { target: { value: 'builtin:double_beep' } });
+  expect(JSON.parse(localStorage.getItem('ss.kiosk.sound')!).good)
+    .toEqual({ kind: 'builtin', id: 'double_beep' });
+
+  fireEvent.change(screen.getByLabelText('Volume'), { target: { value: '40' } });
+  expect(screen.getByText('40%')).toBeTruthy();
+  expect(JSON.parse(localStorage.getItem('ss.kiosk.sound')!).volume).toBeCloseTo(0.4);
+
+  // Play previews the current choice — it must reach the audio API.
+  await userEvent.click(within(good.closest('.settings-row') as HTMLElement).getByRole('button', { name: 'Play' }));
+  expect(audioContexts).toHaveBeenCalled();
+});
+
+it('the Sound tab uploads a sound, offers it as a choice, and removes it', async () => {
+  renderAt('/settings?tab=sound');
+  expect(screen.getByText('MP3, WAV, or OGG up to 2 MB. Stored on this kiosk only.')).toBeTruthy();
+
+  const file = new File([new Uint8Array(2048)], 'ding.wav', { type: 'audio/wav' });
+  await userEvent.upload(screen.getByLabelText('Upload sound'), file);
+
+  // The name shows up twice once the upload lands: in the list, and as
+  // an option under the selects' "Uploaded" group.
+  const name = await screen.findByTitle('ding.wav');
+  const row = name.closest('.sound-upload-row') as HTMLElement;
+  expect(within(row).getByText('2 KB')).toBeTruthy();
+  expect(
+    [...(screen.getByLabelText('Good scan sound') as HTMLSelectElement).options]
+      .map((o) => o.textContent),
+  ).toContain('ding.wav');
+
+  await userEvent.click(within(row).getByRole('button', { name: 'Remove' }));
+  await waitFor(() => expect(screen.queryByTitle('ding.wav')).toBeNull());
+  expect(screen.queryByText('ding.wav')).toBeNull();   // gone from the selects too
+});
+
+it('the Sound tab refuses a file that is too big or is not audio', async () => {
+  renderAt('/settings?tab=sound');
+  const input = screen.getByLabelText('Upload sound');
+
+  await userEvent.upload(
+    input, new File([new Uint8Array(2 * 1024 * 1024 + 1)], 'long.wav', { type: 'audio/wav' }));
+  expect(await screen.findByText('That file is too large (2 MB max).')).toBeTruthy();
+
+  // `accept` keeps a non-audio file out of the picker in a real browser;
+  // the guard behind it is what this checks.
+  await userEvent.upload(
+    input, new File(['nope'], 'notes.txt', { type: 'text/plain' }), { applyAccept: false });
+  expect(await screen.findByText("That doesn't look like an audio file.")).toBeTruthy();
+  expect(screen.queryByText('notes.txt')).toBeNull();
 });

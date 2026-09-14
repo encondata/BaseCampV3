@@ -4,17 +4,19 @@
  * holds the move's data downloaded after Kiosk Setup, so a kiosk can
  * recognize an asset or a person without the API.
  *
- * Database `serversherpa-kiosk` v2, four stores:
+ * Database `serversherpa-kiosk` v3, five stores:
  *   - `assets` (keyPath `id`; indexes `rfid`, `asset_id`, `serial_number`)
  *   - `people` (keyPath `id`; index `rfid_tag`)
  *   - `meta`   (keyPath `key`) — the `sync` row: which move, the counts,
  *     and when it was downloaded.
  *   - `outbox` (keyPath `client_scan_id`; index `status`) — v2: scans
  *     waiting to reach the API (see `outbox.ts`).
+ *   - `sounds` (keyPath `id`) — v3: sound files uploaded on the Sound
+ *     tab (`sound.ts`), blob and all. They live on this kiosk only.
  *
- * v1 databases upgrade in place: `onupgradeneeded` only creates the
- * stores that are missing, so an existing kiosk keeps its downloaded
- * move and simply gains the outbox.
+ * Older databases upgrade in place: `onupgradeneeded` only creates the
+ * stores that are missing, so a kiosk at v1 or v2 keeps its downloaded
+ * move (and its queued scans) and simply gains what it lacks.
  *
  * Unlike the portal's cache, failures here are NOT swallowed: every call
  * is promise-based and a missing IndexedDB, a blocked open, or a failed
@@ -23,16 +25,17 @@
  */
 
 const DB_NAME = 'serversherpa-kiosk';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
-export type StoreName = 'assets' | 'people' | 'meta' | 'outbox';
+export type StoreName = 'assets' | 'people' | 'meta' | 'outbox' | 'sounds';
 
-/** The downloaded move — what "Clear local data" empties. `outbox` is
- *  deliberately NOT here: clearing the cached roster must never throw
- *  away scans that have not reached the API yet. */
+/** The downloaded move — what "Clear local data" empties. `outbox` and
+ *  `sounds` are deliberately NOT here: clearing the cached roster must
+ *  never throw away scans that have not reached the API yet, nor the
+ *  sound files someone uploaded to this kiosk. */
 export const STORES: StoreName[] = ['assets', 'people', 'meta'];
 
-export const ALL_STORES: StoreName[] = [...STORES, 'outbox'];
+export const ALL_STORES: StoreName[] = [...STORES, 'outbox', 'sounds'];
 
 export interface MetaRow {
   key: string;
@@ -74,6 +77,7 @@ export function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('outbox')) {
         db.createObjectStore('outbox', { keyPath: 'client_scan_id' }).createIndex('status', 'status');
       }
+      if (!db.objectStoreNames.contains('sounds')) db.createObjectStore('sounds', { keyPath: 'id' });
     };
     req.onsuccess = () => {
       const db = req.result;

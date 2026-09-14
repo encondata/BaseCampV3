@@ -10,7 +10,8 @@
  *
  * A scan is matched against the move downloaded to this kiosk
  * (`scanMatch.ts`), the whole screen flashes the Appearance tab's good
- * or not-found color, and the matched scan goes into the outbox
+ * or not-found color and the Sound tab's matching sound plays, and the
+ * matched scan goes into the outbox
  * (`outbox.ts`) rather than straight onto the network. The list below
  * is the operator's receipt: newest first, green when the API has taken
  * it, yellow while it is on its way, red when it failed or matched
@@ -30,6 +31,7 @@ import {
   useOutbox, type OutboxRow,
 } from '../lib/outbox';
 import { buildScanIndex, matchScan, scanTypeFor, type ScanAsset, type ScanIndex } from '../lib/scanMatch';
+import { playScanSound } from '../lib/sound';
 import { useSyncStatus } from '../lib/sync';
 
 type LoadStatus = 'loading' | 'ready' | 'error';
@@ -154,6 +156,9 @@ export default function Scan() {
     };
     const match = matchScan(index, raw);
     flash(hslCss(match ? appearance.good_scan : appearance.not_found_scan), appearance.flash_ms);
+    // Sound is feedback, never a gate: `playScanSound` swallows its own
+    // failures, so a kiosk with no audio device still records the scan.
+    playScanSound(match ? 'good' : 'not_found');
     const enqueued = match
       ? enqueueScan({
           scanned_value: raw,

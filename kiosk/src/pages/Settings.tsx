@@ -14,6 +14,7 @@ import { useSearchParams } from 'react-router-dom';
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import HslPicker from '../components/HslPicker';
 import LocalDataInspector from '../components/LocalDataInspector';
+import SoundPanel from '../components/SoundPanel';
 import { Switch } from '../components/Switch';
 import ThisKioskPanel from '../components/ThisKioskPanel';
 import { FLASH_MS_RANGE, useAppearance } from '../lib/appearance';
@@ -124,6 +125,7 @@ export default function Settings() {
             </div>
           </>
         )}
+        {active.id === 'sound' && <SoundPanel />}
         {active.id === 'developer' && (
           <div className="settings-row">
             <div>
@@ -184,7 +186,7 @@ export default function Settings() {
           </div>
         )}
         {active.id === 'developer' && <LocalDataInspector />}
-        {active.id !== 'this-kiosk' && active.id !== 'appearance' && (
+        {active.id !== 'this-kiosk' && active.id !== 'appearance' && active.id !== 'sound' && (
           <div className="kiosk-placeholder">
             <p>This section is not available yet.</p>
           </div>
