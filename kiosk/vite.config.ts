@@ -22,7 +22,11 @@ export default defineConfig({
   },
   server: {
     port: 5174,
-    host: true,
+    host: true,   // bind 0.0.0.0 — a proxy or a phone on the LAN has to reach it
+    // Vite 5.4 blocks requests whose Host header it doesn't recognize, so
+    // the dev subdomains have to be named. A leading dot allows the host
+    // and everything under it.
+    allowedHosts: ['.serversherpa.com', 'localhost'],
     fs: { allow: [repoRoot] },
   },
   test: {

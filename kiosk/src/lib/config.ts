@@ -6,6 +6,8 @@
  *   3. http://<this host>:8000 and :5173 (dev box on the LAN)
  */
 
+import { siblingOrigin } from '@portal/lib/siblingOrigin';
+
 declare global {
   interface Window {
     __KIOSK_CONFIG__?: { apiUrl?: string; portalUrl?: string };
@@ -26,6 +28,9 @@ export function apiUrl(): string {
   return (
     fromWindow('apiUrl') ??
     trim(import.meta.env.VITE_API_URL as string | undefined) ??
+    // kiosk.dev.serversherpa.com → https://api.dev.serversherpa.com; localhost
+    // and LAN IPs fall through to the port below.
+    siblingOrigin('api', window.location) ??
     `http://${window.location.hostname}:8000`
   );
 }
@@ -34,6 +39,7 @@ export function portalUrl(): string {
   return (
     fromWindow('portalUrl') ??
     trim(import.meta.env.VITE_PORTAL_URL as string | undefined) ??
+    siblingOrigin('portal', window.location) ??
     `http://${window.location.hostname}:5173`
   );
 }

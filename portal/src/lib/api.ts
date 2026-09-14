@@ -16,6 +16,7 @@
 import type { TagKey } from '../labels/tagTypes';
 import type { Action, PermMap, ScopeInfo } from './access';
 import type { OrgItem } from './orgs';
+import { siblingOrigin } from './siblingOrigin';
 import type { WorkerItem } from './workers';
 
 // Default: same host the portal was loaded from, port 8000 — so LAN devices
@@ -25,6 +26,10 @@ import type { WorkerItem } from './workers';
 export function apiUrl(): string {
   return (
     (import.meta.env.VITE_API_URL as string | undefined) ??
+    // portal.dev.serversherpa.com → https://api.dev.serversherpa.com, so one
+    // build serves any of the subdomain stacks; localhost and LAN IPs fall
+    // through to the port below. See lib/siblingOrigin.ts.
+    siblingOrigin('api', window.location) ??
     `http://${window.location.hostname}:8000`
   );
 }

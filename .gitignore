@@ -39,3 +39,6 @@ portal/tsconfig.tsbuildinfo
 
 # Local DB dumps (prod backups for import/reference — never commit)
 api/backups/
+
+# Detached dev-server logs (nohup), so the preview manager cannot reap them
+.devlogs/
