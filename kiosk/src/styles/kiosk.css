@@ -1,6 +1,9 @@
 /* kiosk.css — rules specific to the kiosk app. Every token and shared
-   primitive comes from the portal sheets imported in main.tsx; this file
-   never redefines a -- token. */
+   primitive comes from the portal sheets imported in main.tsx; the only
+   exception is the method-switch block below, which scopes --surface/
+   --surface-2 to .login-shell .method-switch for the light login pane
+   (auth-theme.css does not define them) — it never redefines a -- token
+   at :root or on the shell. */
 
 /* ── shell ─────────────────────────────────────────────────────── */
 /* .portal-shell (portal-theme.css) is a nav + main grid
@@ -105,8 +108,11 @@
 .form-notice { color: var(--text-mute); font-size: 13px; margin: 4px 0 0; }
 
 /* ── link with phone ───────────────────────────────────────────── */
+/* auth-theme.css has no --c-red (the login pane never shows a form
+   error in red elsewhere); scope it here for .pair-panel's error copy. */
+.login-shell .pair-panel { --c-red: #c03540; }
 .pair-panel { display: grid; justify-items: center; gap: 12px; text-align: center; padding: 6px 0 4px; }
-.pair-qr { width: 220px; height: 220px; border-radius: 12px; background: #fbfcfd; padding: 8px; }
+.pair-qr { width: 220px; height: 220px; border-radius: 12px; background: var(--paper); padding: 8px; }
 .pair-code {
   font-family: var(--font-mono);
   font-size: 34px;
@@ -116,7 +122,7 @@
 }
 .pair-countdown { font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); margin: 0; }
 .pair-panel .form-hint { margin: 0; }
-.pair-panel .form-error { color: #c03540; }
+.pair-panel .form-error { color: var(--c-red); }
 .btn-link {
   border: 0;
   background: transparent;

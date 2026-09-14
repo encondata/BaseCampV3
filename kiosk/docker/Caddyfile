@@ -4,6 +4,11 @@
 	root * /srv
 	encode gzip
 	header /config.js Cache-Control "no-store"
+	header {
+		X-Frame-Options DENY
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+	}
 	try_files {path} /index.html
 	file_server
 }

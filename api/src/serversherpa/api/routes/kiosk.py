@@ -66,13 +66,19 @@ async def poll_pair(
               and account.person.archived_at is None
               and access is not None and access.can("kiosk", "view"))
     if not usable:
-        row.status = "denied"
-        row.updated_at = now
-        audit(db, actor_id=None, entity_type="kiosk_pair", entity_id=row.code,
-              action="kiosk_pair_claim_denied",
-              changes={"serial": row.serial, "approved_by": str(row.approved_by)},
-              ip=client_ip(request))
-        await db.commit()
+        denied = await db.execute(
+            update(KioskPairRequest)
+            .where(KioskPairRequest.id == row.id, KioskPairRequest.status == "approved")
+            .values(status="denied", updated_at=now))
+        if denied.rowcount == 1:
+            audit(db, actor_id=None, entity_type="kiosk_pair", entity_id=row.code,
+                  action="kiosk_pair_claim_denied",
+                  changes={"serial": row.serial,
+                           "approved_by": str(row.approved_by) if row.approved_by else None},
+                  ip=client_ip(request))
+            await db.commit()
+        else:
+            await db.rollback()
         return PairPollOut(status="denied")
 
     claimed = await db.execute(

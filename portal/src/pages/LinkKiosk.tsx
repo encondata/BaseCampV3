@@ -14,7 +14,15 @@ import { ApiError, approvePair, denyPair, getPairInfo, type PairInfo } from '../
 import '../styles/link.css';
 
 export function normalizeCode(raw: string): string {
-  return raw.toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 8);
+  // Fold Crockford look-alikes the way a person actually types them
+  // (O/0, I/L/1, U/V are easy to mis-key or mis-read) before stripping
+  // punctuation and truncating to the code length.
+  const folded = raw
+    .toUpperCase()
+    .replace(/O/g, '0')
+    .replace(/[IL]/g, '1')
+    .replace(/U/g, 'V');
+  return folded.replace(/[^0-9A-Z]/g, '').slice(0, 8);
 }
 
 export default function LinkKiosk() {
@@ -70,6 +78,8 @@ function CodeEntry() {
   );
 }
 
+const GENERIC_ERROR = 'Something went wrong. Try again.';
+
 type Phase = 'loading' | 'pending' | 'busy' | 'approved' | 'denied' | 'gone' | 'error';
 
 function phaseFor(status: PairInfo['status']): Phase {
@@ -117,7 +127,7 @@ function PairDecision({ code, displayName }: { code: string; displayName: string
       if (err instanceof ApiError && (err.code === 'pair_not_pending' || err.code === 'pair_not_found')) {
         setPhase('gone');
       } else {
-        setError('Something went wrong. Try again.');
+        setError(GENERIC_ERROR);
         setPhase('pending');
       }
     }
@@ -137,7 +147,7 @@ function PairDecision({ code, displayName }: { code: string; displayName: string
       )}
       {phase === 'error' && (
         <>
-          <p className="link-error" role="alert">Something went wrong. Try again.</p>
+          <p className="link-error" role="alert">{GENERIC_ERROR}</p>
           <button type="button" className="mini-btn" onClick={retry}>Retry</button>
         </>
       )}

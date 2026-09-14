@@ -1,5 +1,6 @@
 """API response/request models (Pydantic)."""
 
+import json
 import re
 import uuid
 from datetime import date, datetime, time
@@ -142,7 +143,7 @@ class ErrorOut(BaseModel):
 
 # ── kiosk: pairing + heartbeat ─────────────────────────────────────
 
-PairStatus = Literal["pending", "approved", "denied", "expired"]
+from serversherpa.services.kiosk_pairing import PairStatus  # noqa: E402
 
 
 class PairCreateIn(BaseModel):
@@ -195,6 +196,13 @@ class HeartbeatIn(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError("blank")
+        return v
+
+    @field_validator("raw_info")
+    @classmethod
+    def _raw_info_bounded(cls, v: dict[str, Any]) -> dict[str, Any]:
+        if len(v) > 32 or len(json.dumps(v)) > 4096:
+            raise ValueError("raw_info too large")
         return v
 
 

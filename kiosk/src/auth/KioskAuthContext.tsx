@@ -93,6 +93,7 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
   const completePair = useCallback((data: SessionData) => setState(stateFrom(data)), []);
 
   const logout = useCallback(async () => {
+    heartbeat.current?.stop();
     await logoutRequest();
     setState(ANON);
   }, []);

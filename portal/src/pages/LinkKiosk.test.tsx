@@ -54,6 +54,13 @@ it('code entry normalizes and navigates to /link/:code', async () => {
   expect(await screen.findByText('Dock 3')).toBeTruthy();
 });
 
+it('folds Crockford look-alikes (O/I/L/U) before navigating', async () => {
+  renderAt('/link');
+  await userEvent.type(screen.getByLabelText('Code'), 'oill-u234');
+  await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  await waitFor(() => expect(api.getPairInfo).toHaveBeenCalledWith('0111V234'));
+});
+
 it('continue is disabled until eight characters are entered', async () => {
   renderAt('/link');
   const button = screen.getByRole('button', { name: 'Continue' }) as HTMLButtonElement;

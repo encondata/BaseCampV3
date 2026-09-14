@@ -78,9 +78,12 @@ export default function PairPanel({ onApproved }: { onApproved: (session: Sessio
   useEffect(() => {
     if (phase !== 'showing' || !pair || !canvasRef.current) return;
     try {
+      const style = getComputedStyle(canvasRef.current);
+      const dark = style.getPropertyValue('--text-dark').trim() || '#1b2129';
+      const light = style.getPropertyValue('--paper').trim() || '#fbfcfd';
       void QRCode.toCanvas(canvasRef.current, pair.link_url, {
         width: 220, margin: 1, errorCorrectionLevel: 'M',
-        color: { dark: '#1b2129', light: '#fbfcfd' },
+        color: { dark, light },
       }).catch(() => { /* canvas unavailable: the text code still works */ });
     } catch {
       /* same */
@@ -134,7 +137,7 @@ export default function PairPanel({ onApproved }: { onApproved: (session: Sessio
     return (
       <div className="pair-panel">
         <p className="form-error" role="alert">Couldn&apos;t get a code ({error}). Try again.</p>
-        <button type="button" className="btn" onClick={() => void request()}>Try again</button>
+        <button type="button" className="btn" onClick={() => request()}>Try again</button>
       </div>
     );
   }
@@ -144,7 +147,7 @@ export default function PairPanel({ onApproved }: { onApproved: (session: Sessio
         <p className="form-error" role="alert">
           {phase === 'denied' ? 'Sign-in was declined on the phone.' : 'This code expired.'}
         </p>
-        <button type="button" className="btn" onClick={() => void request()}>Get a new code</button>
+        <button type="button" className="btn" onClick={() => request()}>Get a new code</button>
       </div>
     );
   }
@@ -161,7 +164,7 @@ export default function PairPanel({ onApproved }: { onApproved: (session: Sessio
         Scan the code, or open <b>{portalHost(portalUrl())}/link</b> on your phone and enter it.
       </p>
       <p className="pair-countdown">Expires in {mm}:{ss}</p>
-      <button type="button" className="btn-link" onClick={() => void request()}>Get a new code</button>
+      <button type="button" className="btn-link" onClick={() => request()}>Get a new code</button>
     </div>
   );
 }

@@ -83,6 +83,21 @@ async def test_bad_mode_is_422(client, db, seeded_user):
     assert resp.status_code == 422
 
 
+async def test_raw_info_size_cap(client, db, seeded_user):
+    hdrs = await login(client)
+    too_many_keys = {**BODY, "raw_info": {f"k{i}": i for i in range(33)}}
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json=too_many_keys)
+    assert resp.status_code == 422
+
+    too_big = {**BODY, "raw_info": {"blob": "x" * 4096}}
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json=too_big)
+    assert resp.status_code == 422
+
+    within_bounds = {**BODY, "raw_info": {f"k{i}": i for i in range(32)}}
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json=within_bounds)
+    assert resp.status_code == 200, resp.text
+
+
 async def test_heartbeat_blocked_in_read_only_mode(client, db, seeded_user):
     admin = await _admin(db, client)
     assert (await client.put("/system/admin", headers=admin,

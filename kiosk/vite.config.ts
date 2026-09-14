@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
+import { configDefaults } from 'vitest/config';
 
 // The kiosk imports stylesheets and React-free helpers from the portal
 // through this alias (kiosk/src/portalImports.test.ts enforces the rule).
@@ -27,7 +28,7 @@ export default defineConfig({
   test: {
     // node by default (the portal-import guardrail needs a file URL); DOM tests carry their own @vitest-environment jsdom pragma
     environment: 'node',
-    exclude: ['**/node_modules/**', '**/dist/**', '**/._*'],
+    exclude: [...configDefaults.exclude, '**/._*'],
     // react-router-dom logs its "future flag" deprecation notices the
     // moment a <MemoryRouter> mounts without opting in; they're aimed at
     // app wiring (Task 11), not at these component tests, so they're
