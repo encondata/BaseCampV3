@@ -28,7 +28,7 @@ from serversherpa.db.models import (
     LabelPlaceholder, Person, Site, StatusValue, UserAccount, WorkerProfile,
 )
 from serversherpa.labels.generate.values import (
-    CONTAINER_KEYS, AssetRow, Sites, placeholder_values,
+    CONTAINER_KEYS, AssetRow, Sites, make_model_text, placeholder_values,
 )
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_pairing as pairing
@@ -441,20 +441,29 @@ async def sync_assets(
 
     assets: list[KioskAssetOut] = []
     for asset, ia, model in rows:
+        make = model.make if model else None
+        model_name = model.model if model else None
         asset_row = AssetRow(
             asset_id=asset.id, legacy_id=asset.legacy_id, name=asset.name,
             serial_number=asset.serial_number,
-            make=model.make if model else None, model=model.model if model else None,
+            make=make, model=model_name,
             source_rack=ia.source_rack, source_ru=ia.source_ru,
             source_position=ia.source_position, destination_rack=ia.destination_rack,
             destination_ru=ia.destination_ru,
             destination_position=ia.destination_position)
+        # asset_id/make/model/make_model are this endpoint's own top-level
+        # fields, computed straight from the asset/model columns (same join
+        # rule as values.py) — never read out of `label`, which is filtered
+        # to the active placeholder catalog and can lose keys (or the whole
+        # catalog) to an admin's edits without touching what the kiosk needs.
+        asset_id = str(asset.legacy_id) if asset.legacy_id is not None else ""
+        make_model = make_model_text(make or "", model_name or "")
         label = placeholder_values(asset_row, initiative, sites, catalog_keys)
         assets.append(KioskAssetOut(
-            id=asset.id, asset_id=label["asset_id"], name=asset.name,
+            id=asset.id, asset_id=asset_id, name=asset.name,
             rfid=asset.rfid_tag, serial_number=asset.serial_number,
-            make=model.make if model else None, model=model.model if model else None,
-            make_model=label["make_model"], label=label))
+            make=make, model=model_name,
+            make_model=make_model, label=label))
 
     return KioskAssetsSyncOut(
         initiative_id=initiative.id, initiative_name=initiative.name,

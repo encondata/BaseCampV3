@@ -7,6 +7,8 @@ worker (allowed) and a client_viewer (403)."""
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from sqlalchemy import text
+
 from serversherpa.db.models import (
     Asset, AssetModel, Initiative, InitiativeAsset, Person, Site, UserAccount,
     WorkerProfile,
@@ -100,6 +102,40 @@ async def test_assets_sync_returns_the_roster_with_label_values(client, db, seed
     assert label["destination_ru"] == "U22"
 
     assert str(off_roster.id) not in [a["id"] for a in body["assets"]]
+
+
+async def test_assets_sync_survives_a_deactivated_catalog_key(client, db, seeded_user):
+    """asset_id/make_model are computed from the asset/model columns, not
+    read out of the catalog-filtered `label` map — an admin deactivating
+    those placeholders must not 500 the sync endpoint."""
+    hdrs = await login(client)
+    move, _project, on_roster, _off = await _seed_move(db)
+    await db.execute(text(
+        "UPDATE label_placeholders SET is_active = false "
+        "WHERE key IN ('asset_id', 'make_model')"))
+    await db.commit()
+
+    resp = await client.get(f"/kiosk/sync/assets?initiative_id={move.id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    row = resp.json()["assets"][0]
+    assert row["asset_id"] == str(on_roster.legacy_id)
+    assert row["make_model"] == "Cisco Nexus 9336C"
+    assert "asset_id" not in row["label"]
+    assert "make_model" not in row["label"]
+
+
+async def test_assets_sync_with_an_empty_catalog(client, db, seeded_user):
+    hdrs = await login(client)
+    move, _project, on_roster, _off = await _seed_move(db)
+    await db.execute(text("DELETE FROM label_placeholders"))
+    await db.commit()
+
+    resp = await client.get(f"/kiosk/sync/assets?initiative_id={move.id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    row = resp.json()["assets"][0]
+    assert row["asset_id"] == str(on_roster.legacy_id)
+    assert row["make_model"] == "Cisco Nexus 9336C"
+    assert row["label"] == {}
 
 
 async def test_assets_sync_rejects_a_non_move_initiative(client, db, seeded_user):

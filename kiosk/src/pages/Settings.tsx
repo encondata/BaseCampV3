@@ -7,6 +7,7 @@
  *  This Kiosk's is a placeholder for now. The active tab lives in the
  *  `tab` search param, so a link can deep-link straight to a section. */
 
+import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
@@ -27,9 +28,11 @@ export default function Settings() {
   const [devMode, setDevMode] = useDevMode();
   const [setupState, setSetupState] = useKioskSetupState();
   const sync = useSyncStatus();
+  const [clearError, setClearError] = useState(false);
 
   const clearLocalData = () => {
-    void clearDb().finally(resetSyncStatus);
+    setClearError(false);
+    clearDb().then(resetSyncStatus).catch(() => setClearError(true));
   };
 
   const tabs = visibleTabs(SETTINGS_TABS, { isAdmin, isDeveloper, signedIn });
@@ -112,6 +115,9 @@ export default function Settings() {
                     + (sync.syncedAt ? ` · synced ${formatSyncedAt(sync.syncedAt)}` : '')
                   : 'Nothing downloaded yet.'}
               </p>
+              {clearError && (
+                <p className="form-error" role="alert">Couldn&apos;t clear local data.</p>
+              )}
             </div>
             <button type="button" className="mini-btn" onClick={clearLocalData}>
               Clear local data

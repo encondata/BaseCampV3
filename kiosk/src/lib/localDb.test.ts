@@ -5,7 +5,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { beforeEach, expect, it } from 'vitest';
 
 import {
-  clearDb, closeDb, count, getAll, getByIndex, readMeta, replaceAll, writeMeta,
+  clearDb, closeDb, count, getAll, getByIndex, readMeta, replaceAll, replaceAllMulti, writeMeta,
 } from './localDb';
 
 const asset = (id: string, rfid: string) => ({
@@ -71,4 +71,36 @@ it('rejects when IndexedDB is unavailable', async () => {
   closeDb();
   (globalThis as unknown as { indexedDB: IDBFactory | undefined }).indexedDB = undefined;
   await expect(count('assets')).rejects.toThrow();
+});
+
+it('replaceAllMulti writes several stores and a meta row in one go', async () => {
+  const counts = await replaceAllMulti(
+    [
+      { store: 'assets', rows: [asset('a', 'R1'), asset('b', 'R2')] },
+      { store: 'people', rows: [person('p1', 'W-1')] },
+    ],
+    { key: 'sync', value: { initiativeId: 'i-1', syncedAt: '2026-09-13T12:00:00Z' } },
+  );
+  expect(counts).toEqual({ assets: 2, people: 1 });
+  expect(await count('assets')).toBe(2);
+  expect(await count('people')).toBe(1);
+  expect(await readMeta('sync')).toMatchObject({ initiativeId: 'i-1' });
+});
+
+it('replaceAllMulti aborts every store together when one write is invalid', async () => {
+  await replaceAll('assets', [asset('old', 'R0')]);
+
+  await expect(replaceAllMulti(
+    [
+      { store: 'assets', rows: [asset('a', 'R1')] },
+      // No `id`: keyPath 'id' makes this an invalid key, which aborts the
+      // whole transaction — the `assets` put above must not survive it.
+      { store: 'people', rows: [{ display_name: 'No id' }] },
+    ],
+    { key: 'sync', value: { initiativeId: 'i-1' } },
+  )).rejects.toThrow();
+
+  expect((await getAll('assets')).map((r) => (r as { id: string }).id)).toEqual(['old']);
+  expect(await count('people')).toBe(0);
+  expect(await readMeta('sync')).toBeNull();
 });

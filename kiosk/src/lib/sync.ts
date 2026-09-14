@@ -19,7 +19,7 @@
 import { useEffect, useSyncExternalStore } from 'react';
 
 import { ApiError, fetchAssetsSync, fetchPeopleSync } from './api';
-import { readMeta, replaceAll, writeMeta } from './localDb';
+import { count, readMeta, replaceAllMulti } from './localDb';
 
 export type SyncPhase = 'idle' | 'running' | 'done' | 'error';
 
@@ -79,14 +79,28 @@ export async function hydrateSyncStatus(): Promise<void> {
   }
 }
 
+// Bumped on every call so a superseded run can tell it no longer owns the
+// screen: `runSync` closes over the value it read at entry (`myRun`) and
+// checks it against this counter before every status update and before
+// writing anything, so a slow older run can never clobber a newer one's
+// result (see the module docstring's re-entrancy rule).
+let currentRun = 0;
+
 /**
  * Fetch both endpoints, then replace both stores. Failure modes:
  * a fetch error reports the `ApiError` code, a database error reports
  * `'storage'`; either way the cached rows are untouched and the status
  * keeps the counts it had so the footer doesn't blink.
+ *
+ * Re-entrancy: calling this again (e.g. "Sync again" tapped while a sync
+ * is still running) starts a new run and makes every earlier run's
+ * eventual completion a no-op — it writes nothing and reports nothing,
+ * so only the newest run's outcome is ever visible.
  */
 export async function runSync(initiativeId: string, initiativeName: string): Promise<void> {
+  const myRun = ++currentRun;
   const previous = status;
+  if (myRun !== currentRun) return;
   setStatus({ ...previous, phase: 'running', error: undefined });
 
   let assets: Awaited<ReturnType<typeof fetchAssetsSync>>;
@@ -94,6 +108,7 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
   try {
     [assets, people] = await Promise.all([fetchAssetsSync(initiativeId), fetchPeopleSync()]);
   } catch (err) {
+    if (myRun !== currentRun) return;
     setStatus({
       ...previous,
       phase: 'error',
@@ -102,19 +117,34 @@ export async function runSync(initiativeId: string, initiativeName: string): Pro
     return;
   }
 
+  if (myRun !== currentRun) return;
   try {
-    await replaceAll('assets', assets.assets);
-    await replaceAll('people', people.people);
     const syncedAt = new Date().toISOString();
-    await writeMeta(META_KEY, {
-      initiativeId, initiativeName,
-      assets: assets.assets.length, people: people.people.length, syncedAt,
-    });
+    // assets, people, and the meta pointer land in ONE transaction — see
+    // `replaceAllMulti` — so a reader (or a reload) never sees them
+    // half-updated.
+    await replaceAllMulti(
+      [
+        { store: 'assets', rows: assets.assets },
+        { store: 'people', rows: people.people },
+      ],
+      {
+        key: META_KEY,
+        value: {
+          initiativeId, initiativeName,
+          assets: assets.assets.length, people: people.people.length, syncedAt,
+        },
+      },
+    );
+    if (myRun !== currentRun) return;
+    // Counts come from the store itself, not the fetched payloads' lengths
+    // — what actually landed is what the kiosk should report.
+    const [assetsCount, peopleCount] = await Promise.all([count('assets'), count('people')]);
+    if (myRun !== currentRun) return;
     hydrated = true;
-    setStatus({
-      phase: 'done', assets: assets.assets.length, people: people.people.length, syncedAt,
-    });
+    setStatus({ phase: 'done', assets: assetsCount, people: peopleCount, syncedAt });
   } catch {
+    if (myRun !== currentRun) return;
     setStatus({ ...previous, phase: 'error', error: 'storage' });
   }
 }

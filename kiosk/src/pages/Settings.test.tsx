@@ -177,6 +177,21 @@ it('a developer with dev mode on sees the local data counts and can clear them',
   expect(syncMock.resetSyncStatus).toHaveBeenCalled();
 });
 
+it('a clearDb failure shows an inline error and leaves the status untouched', async () => {
+  auth.isAdmin = true;
+  auth.isDeveloper = true;
+  syncMock.status = { phase: 'done', assets: 15, people: 4, syncedAt: '2026-09-13T18:14:00Z' };
+  syncMock.clearDb.mockRejectedValue(new Error('boom'));
+  renderAt('/settings?tab=developer');
+  await userEvent.click(screen.getByRole('switch', { name: 'Developer mode' }));
+
+  await userEvent.click(screen.getByRole('button', { name: 'Clear local data' }));
+
+  expect((await screen.findByRole('alert')).textContent).toBe("Couldn't clear local data.");
+  expect(syncMock.resetSyncStatus).not.toHaveBeenCalled();
+  expect(screen.getByText(/15 assets · 4 people · synced /)).toBeTruthy();
+});
+
 it('the Local data row reads "Nothing downloaded yet" before a sync', async () => {
   auth.isAdmin = true;
   auth.isDeveloper = true;

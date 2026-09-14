@@ -92,6 +92,55 @@ it('a storage failure reports error "storage"', async () => {
   expect(readSyncStatus()).toMatchObject({ phase: 'error', error: 'storage' });
 });
 
+it('reports counts from the store, not the fetched payload length', async () => {
+  // Two rows sharing the same `id` collapse to one record in the store —
+  // the status/meta counts must reflect that, not `assets.length`.
+  const dupAssets = { ...ASSETS, assets: [ASSETS.assets[0], { ...ASSETS.assets[0] }] };
+  apiMock.fetchAssetsSync.mockResolvedValue(dupAssets);
+  apiMock.fetchPeopleSync.mockResolvedValue(PEOPLE);
+
+  await runSync('i-1', 'A Move');
+
+  expect(await count('assets')).toBe(1);
+  expect(readSyncStatus()).toMatchObject({ phase: 'done', assets: 1, people: 1 });
+});
+
+it('a newer sync supersedes an older one: a superseded run writes and reports nothing', async () => {
+  let resolveAAssets!: (v: typeof ASSETS) => void;
+  let resolveAPeople!: (v: typeof PEOPLE) => void;
+  let resolveBAssets!: (v: typeof ASSETS) => void;
+  let resolveBPeople!: (v: typeof PEOPLE) => void;
+
+  apiMock.fetchAssetsSync
+    .mockImplementationOnce(() => new Promise((res) => { resolveAAssets = res; }))
+    .mockImplementationOnce(() => new Promise((res) => { resolveBAssets = res; }));
+  apiMock.fetchPeopleSync
+    .mockImplementationOnce(() => new Promise((res) => { resolveAPeople = res; }))
+    .mockImplementationOnce(() => new Promise((res) => { resolveBPeople = res; }));
+
+  const runA = runSync('i-1', 'Move A');
+  const runB = runSync('i-2', 'Move B');
+
+  resolveAAssets(ASSETS);
+  resolveAPeople(PEOPLE);
+  await runA;
+
+  // A's writes never happened — B is still in flight.
+  expect(await count('assets')).toBe(0);
+  expect(await count('people')).toBe(0);
+  expect(await readMeta('sync')).toBeNull();
+  expect(readSyncStatus().phase).toBe('running');
+
+  const assetsForB = { ...ASSETS, initiative_name: 'Move B', assets: [ASSETS.assets[0]] };
+  resolveBAssets(assetsForB);
+  resolveBPeople(PEOPLE);
+  await runB;
+
+  expect(await count('assets')).toBe(1);
+  expect(await readMeta('sync')).toMatchObject({ initiativeId: 'i-2', initiativeName: 'Move B' });
+  expect(readSyncStatus()).toMatchObject({ phase: 'done', assets: 1, people: 1 });
+});
+
 it('clearing the local data resets the status to idle', async () => {
   apiMock.fetchAssetsSync.mockResolvedValue(ASSETS);
   apiMock.fetchPeopleSync.mockResolvedValue(PEOPLE);

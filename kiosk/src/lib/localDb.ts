@@ -80,7 +80,11 @@ function request<T>(req: IDBRequest<T>): Promise<T> {
 
 /** Runs `fn` inside one transaction and resolves once it commits. The
  *  completion promise is created before `fn` runs so a transaction that
- *  auto-commits early is still observed. */
+ *  auto-commits early is still observed. `done` gets a no-op `.catch`
+ *  right away so an aborted transaction never surfaces as an
+ *  `unhandledrejection`: when `fn` itself throws, execution never reaches
+ *  `await done` below, and without this the later rejection (fired once
+ *  IDB actually aborts the transaction) would have no observer at all. */
 async function withStores<T>(
   stores: StoreName[], mode: IDBTransactionMode, fn: (tx: IDBTransaction) => Promise<T>,
 ): Promise<T> {
@@ -91,7 +95,21 @@ async function withStores<T>(
     tx.onerror = () => reject(tx.error ?? new Error('IndexedDB transaction failed'));
     tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'));
   });
-  const result = await fn(tx);
+  done.catch(() => undefined);
+  let result: T;
+  try {
+    result = await fn(tx);
+  } catch (err) {
+    // `fn` can throw synchronously — e.g. `put()` on a keyPath store
+    // throws immediately (not via `onerror`) when a row is missing its
+    // key — without the transaction itself ever hearing about it; left
+    // alone, it would just commit whatever had already been queued.
+    // Abort explicitly so a mid-write failure rolls back every store in
+    // this transaction together, not just the write that failed.
+    try { tx.abort(); } catch { /* already finished */ }
+    await done.catch(() => undefined);
+    throw err;
+  }
   await done;
   return result;
 }
@@ -103,7 +121,42 @@ export function replaceAll(store: StoreName, rows: readonly unknown[]): Promise<
   return withStores([store], 'readwrite', async (tx) => {
     const os = tx.objectStore(store);
     await request(os.clear());
-    for (const row of rows) await request(os.put(row));
+    // Issue every put without awaiting it individually — awaiting each one
+    // in turn works but is needlessly slow, and the transaction stays open
+    // only as long as every await it sees resolves via an IDB request of
+    // its own (not some other microtask/timer), so keeping this loop
+    // synchronous is what keeps IDB from committing early. A put that
+    // fails still surfaces: it aborts the transaction, which rejects
+    // `done` above — the promise `withStores`' caller awaits.
+    for (const row of rows) os.put(row);
+  });
+}
+
+/** Writes several stores' rows (and, when given, one `meta` row) in ONE
+ *  transaction — used to keep `assets`, `people`, and the `sync` meta
+ *  pointer consistent as a group: a failure in any of them aborts the
+ *  whole write, so a reader never sees a new `people` list paired with
+ *  the previous move's `assets` (or a `meta` row pointing at data that
+ *  never landed). Resolves with each store's row count, read via
+ *  `count()` inside the same transaction — after that store's puts, so it
+ *  reflects what actually landed (duplicate keys collapse) rather than
+ *  the length of the array the caller passed in. */
+export function replaceAllMulti(
+  entries: { store: StoreName; rows: readonly unknown[] }[],
+  meta?: { key: string; value: Record<string, unknown> },
+): Promise<Partial<Record<StoreName, number>>> {
+  const stores = entries.map((e) => e.store);
+  const txStores = meta ? [...stores, 'meta' as StoreName] : stores;
+  return withStores(txStores, 'readwrite', async (tx) => {
+    const counts: Partial<Record<StoreName, number>> = {};
+    for (const { store, rows } of entries) {
+      const os = tx.objectStore(store);
+      await request(os.clear());
+      for (const row of rows) os.put(row);
+      counts[store] = await request(os.count());
+    }
+    if (meta) tx.objectStore('meta').put({ ...meta.value, key: meta.key });
+    return counts;
   });
 }
 
