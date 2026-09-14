@@ -48,6 +48,15 @@ export const BATCH_DELAY = 500;
 /** How many rows the Scanning list renders; the counts see all of them. */
 export const LIST_CAP = 200;
 
+/** A `nomatch` row older than this is swept off the list — it never went
+ *  anywhere, and past this point it is just clutter from a tag that did
+ *  not resolve. */
+export const NOMATCH_TTL_MS = 120_000;
+
+/** How often the sender checks for expired `nomatch` rows while running.
+ *  Combined with `NOMATCH_TTL_MS`, a row lives on screen at most ~130 s. */
+export const NOMATCH_SWEEP_MS = 10_000;
+
 export type OutboxStatus =
   | 'queued' | 'sending' | 'accepted' | 'retrying' | 'failed' | 'nomatch';
 
@@ -212,6 +221,38 @@ let running = false;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let timerDueAt = Infinity;
 let inFlight: Promise<void> | null = null;
+let sweepTimer: ReturnType<typeof setTimeout> | null = null;
+let sweepInFlight: Promise<number> | null = null;
+
+/** Runs `expireNoMatch`, tracked the same way `flushOutbox` tracks its own
+ *  work — so `senderIdle` (and the tests that lean on it) see the sweep
+ *  through to completion instead of racing its IndexedDB delete — then
+ *  reschedules itself. A self-rescheduling `setTimeout` rather than
+ *  `setInterval`: the sender's other timer (`scheduleFlush`) is a
+ *  `setTimeout` too, and only `setTimeout`/`clearTimeout` are faked in
+ *  tests. */
+function scheduleSweep(): void {
+  sweepTimer = setTimeout(() => {
+    sweepInFlight = expireNoMatch().finally(() => { sweepInFlight = null; });
+    if (running) scheduleSweep();
+  }, NOMATCH_SWEEP_MS);
+}
+
+/** Deletes every `nomatch` row scanned more than `NOMATCH_TTL_MS` ago.
+ *  Never touches any other status — a row still `queued`/`retrying`/
+ *  `failed`/`accepted` stays no matter how old. Returns the number
+ *  removed. */
+export async function expireNoMatch(now: number = Date.now()): Promise<number> {
+  const cutoff = now - NOMATCH_TTL_MS;
+  const stale = all.filter(
+    (r) => r.status === 'nomatch' && new Date(r.scanned_at).getTime() < cutoff);
+  if (!stale.length) return 0;
+  await deleteRows('outbox', stale.map((r) => r.client_scan_id));
+  const dropped = new Set(stale.map((r) => r.client_scan_id));
+  all = all.filter((r) => !dropped.has(r.client_scan_id));
+  rebuild();
+  return stale.length;
+}
 
 /** Schedules a flush `delay` from now, never later than one already
  *  pending: a scan arriving inside another scan's batching window rides
@@ -232,7 +273,11 @@ function scheduleFlush(delay: number): void {
 export function startSender(): void {
   if (running) return;
   running = true;
-  void loadOutbox().then(() => scheduleFlush(BATCH_DELAY));
+  void loadOutbox().then(() => {
+    sweepInFlight = expireNoMatch().finally(() => { sweepInFlight = null; });
+    scheduleFlush(BATCH_DELAY);
+  });
+  scheduleSweep();
 }
 
 export function stopSender(): void {
@@ -240,12 +285,18 @@ export function stopSender(): void {
   if (timer !== null) clearTimeout(timer);
   timer = null;
   timerDueAt = Infinity;
+  if (sweepTimer !== null) clearTimeout(sweepTimer);
+  sweepTimer = null;
 }
 
-/** Resolves once the flush in flight (and anything it chained) is done
- *  — the seam the tests await instead of guessing at timings. */
+/** Resolves once the flush in flight (and anything it chained), plus any
+ *  `nomatch` sweep in flight, is done — the seam the tests await instead
+ *  of guessing at timings. */
 export async function senderIdle(): Promise<void> {
-  while (inFlight) await inFlight;
+  while (inFlight || sweepInFlight) {
+    if (inFlight) await inFlight;
+    if (sweepInFlight) await sweepInFlight;
+  }
 }
 
 function dueRows(now: number): OutboxRow[] {
@@ -403,6 +454,7 @@ export function discardFailed(): Promise<void> {
 export function resetOutboxForTest(): void {
   stopSender();
   inFlight = null;
+  sweepInFlight = null;
   all = [];
   nextSeq = 1;
   snapshot = EMPTY;

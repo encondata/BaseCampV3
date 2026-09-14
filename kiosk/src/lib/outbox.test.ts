@@ -27,8 +27,9 @@ vi.mock('./localDb', async (importOriginal) => {
 import { ApiError } from './api';
 import { closeDb, getAll } from './localDb';
 import {
-  BACKOFF, clearSent, discardFailed, enqueueScan, flushOutbox, loadOutbox, readOutbox,
-  resetOutboxForTest, retryFailed, senderIdle, startSender, stopSender, type OutboxRow,
+  BACKOFF, clearSent, discardFailed, enqueueScan, expireNoMatch, flushOutbox, loadOutbox,
+  readOutbox, resetOutboxForTest, retryFailed, senderIdle, startSender, stopSender,
+  type OutboxRow,
 } from './outbox';
 
 const SETUP = { site_id: 'site-1', initiative_id: 'init-1', scan_status: 'cage_exit' };
@@ -256,4 +257,65 @@ it('caps the rendered list at 200 rows while the counts see everything', async (
   const { rows, counts } = readOutbox();
   expect(rows).toHaveLength(200);
   expect(counts.queued).toBe(205);
+});
+
+it('expireNoMatch removes nomatch rows past 120s but spares a 119s one and any age of queued', async () => {
+  await enqueueScan(matched('SN-queued'));
+  await enqueueScan({ scanned_value: 'old-nomatch', scan_type: 'barcode', asset: null, ...SETUP });
+
+  vi.setSystemTime(new Date('2026-09-14T12:01:59Z'));   // +119s: too fresh to expire
+  await enqueueScan({ scanned_value: 'fresh-nomatch', scan_type: 'barcode', asset: null, ...SETUP });
+
+  vi.setSystemTime(new Date('2026-09-14T12:02:01Z'));   // old-nomatch now 121s old
+
+  const removed = await expireNoMatch();
+  expect(removed).toBe(1);
+  const values = ids(readOutbox().rows);
+  expect(values).toEqual(expect.arrayContaining(['SN-queued', 'fresh-nomatch']));
+  expect(values).not.toContain('old-nomatch');
+  expect(readOutbox().counts).toMatchObject({ nomatch: 1, queued: 1 });
+  expect(await getAll('outbox')).toHaveLength(2);
+});
+
+it('expireNoMatch never touches accepted or failed rows, however old', async () => {
+  api.postScans.mockImplementation((body: { scans: { client_scan_id: string }[] }) =>
+    Promise.resolve({ accepted: body.scans.map((s) => s.client_scan_id), rejected: [] }));
+  startSender();
+  await enqueueScan(matched('SN-accepted'));
+  await tick(600);
+  expect(readOutbox().rows[0].status).toBe('accepted');
+
+  api.postScans.mockRejectedValue(new ApiError(503, 'unavailable'));
+  await enqueueScan(matched('SN-failed'));
+  await tick(600);
+  for (const wait of BACKOFF) await tick(wait);
+  expect(readOutbox().rows.find((r) => r.scanned_value === 'SN-failed'))
+    .toMatchObject({ status: 'failed' });
+  stopSender();
+
+  vi.setSystemTime(new Date('2026-09-20T12:00:00Z'));   // days later
+  const removed = await expireNoMatch();
+  expect(removed).toBe(0);
+  expect(ids(readOutbox().rows)).toEqual(expect.arrayContaining(['SN-accepted', 'SN-failed']));
+});
+
+it('the running sender sweeps every 10s, clearing a nomatch row within ~130s of being scanned', async () => {
+  startSender();
+  await enqueueScan({ scanned_value: 'stale-soon', scan_type: 'barcode', asset: null, ...SETUP });
+
+  for (let i = 0; i < 12; i += 1) {
+    await tick(10_000);
+    expect(readOutbox().counts.nomatch).toBe(1);   // not yet 120s old
+  }
+  await tick(10_000);                              // 130s total: past the TTL
+  expect(readOutbox().counts.nomatch).toBe(0);
+});
+
+it('stopSender stops the nomatch sweep', async () => {
+  startSender();
+  await enqueueScan({ scanned_value: 'stale', scan_type: 'barcode', asset: null, ...SETUP });
+  stopSender();
+
+  await vi.advanceTimersByTimeAsync(200_000);
+  expect(readOutbox().counts.nomatch).toBe(1);
 });
