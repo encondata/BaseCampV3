@@ -1,9 +1,13 @@
 package com.serversherpa.kiosk.input.camera
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.CameraControl
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
@@ -60,55 +64,88 @@ fun CameraScanSheet(initialMode: CameraMode = CameraMode.SINGLE, onScan: (ScanEv
     var count by remember { mutableIntStateOf(0) }
     var recent by remember { mutableStateOf(listOf<String>()) }
     var finished by remember { mutableStateOf(false) }
+    var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok -> granted = ok; denied = !ok }
     LaunchedEffect(Unit) { if (!granted) launcher.launch(Manifest.permission.CAMERA) }
 
     val executor = remember { Executors.newSingleThreadExecutor() }
     val analyzer = remember {
+        // ML Kit Task listeners registered without an executor run on the main thread, so these
+        // Compose state writes (finished/count/recent) from the analyzer callback are safe.
         BarcodeAnalyzer { value, symbology ->
             if (finished) return@BarcodeAnalyzer
+            if (!session.offer(value)) return@BarcodeAnalyzer
             if (mode == CameraMode.SINGLE) {
                 finished = true
                 onScan(ScanEvent(value, ScanSource.CAMERA, symbology))
                 onDismiss()
-            } else if (session.offer(value)) {
+            } else {
                 count = session.count; recent = session.recent
                 onScan(ScanEvent(value, ScanSource.CAMERA, symbology))
             }
         }
     }
-    DisposableEffect(Unit) { onDispose { analyzer.close(); executor.shutdown() } }
+    DisposableEffect(Unit) {
+        onDispose {
+            cameraProvider?.unbindAll()
+            analyzer.close()
+            executor.shutdown()
+        }
+    }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         if (granted) {
-            var cameraControl by remember { mutableStateOf<androidx.camera.core.CameraControl?>(null) }
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    val view = PreviewView(ctx)
-                    val future = ProcessCameraProvider.getInstance(ctx)
-                    future.addListener({
-                        val provider = future.get()
-                        val preview = Preview.Builder().build().also { it.setSurfaceProvider(view.surfaceProvider) }
-                        val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
-                            .also { it.setAnalyzer(executor, analyzer) }
-                        provider.unbindAll()
-                        val camera = provider.bindToLifecycle(lifecycle, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
-                        cameraControl = camera.cameraControl
-                    }, ContextCompat.getMainExecutor(ctx))
-                    view
-                },
-            )
-            LaunchedEffect(torch) { cameraControl?.enableTorch(torch) }
-            // Reticle
-            Box(Modifier.align(Alignment.Center).size(240.dp).background(Color.Transparent)
-                .padding(2.dp)) {
-                Box(Modifier.fillMaxSize().background(Color.Transparent))
+            var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
+            var bindError by remember { mutableStateOf(false) }
+            if (bindError) {
+                Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Couldn't start the camera on this device.", color = Color.White)
+                }
+            } else {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        val view = PreviewView(ctx)
+                        val future = ProcessCameraProvider.getInstance(ctx)
+                        future.addListener({
+                            try {
+                                val provider = future.get()
+                                val preview = Preview.Builder().build().also { it.setSurfaceProvider(view.surfaceProvider) }
+                                val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
+                                    .also { it.setAnalyzer(executor, analyzer) }
+                                provider.unbindAll()
+                                val camera = provider.bindToLifecycle(lifecycle, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                                cameraControl = camera.cameraControl
+                                cameraProvider = provider
+                            } catch (e: Exception) {
+                                bindError = true
+                            }
+                        }, ContextCompat.getMainExecutor(ctx))
+                        view
+                    },
+                )
+                // Reticle
+                Box(Modifier.align(Alignment.Center).size(240.dp).background(Color.Transparent)
+                    .padding(2.dp)) {
+                    Box(Modifier.fillMaxSize().background(Color.Transparent))
+                }
             }
+            LaunchedEffect(torch, cameraControl) { cameraControl?.enableTorch(torch) }
         } else {
             Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(if (denied) "Camera access was denied. Allow it in Android Settings › Apps › ServerSherpa Kiosk." else "Requesting camera access…", color = Color.White)
+                if (denied) {
+                    Text("Camera access was denied. Allow it in Android Settings › Apps › ServerSherpa Kiosk.", color = Color.White)
+                    TextButton(onClick = {
+                        runCatching {
+                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + context.packageName))
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            context.startActivity(intent)
+                        }
+                    }) { Text("Open Settings") }
+                } else {
+                    Text("Requesting camera access…", color = Color.White)
+                }
             }
         }
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color(0xCC0C1117)).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
