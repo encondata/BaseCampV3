@@ -4,7 +4,7 @@
  * The Access and History tabs get their own `it` blocks in later tasks.
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { UserDetailOut } from '../lib/api';
@@ -171,4 +171,24 @@ it('shows the not-found state on 404', async () => {
   renderAt('/people/users/nope');
   expect(await screen.findByText('User not found')).toBeTruthy();
   expect(screen.getByRole('link', { name: '← Users' }).getAttribute('href')).toBe('/people/users');
+});
+
+it('ignores a stale response when personId changes mid-load', async () => {
+  let resolveP1: (d: UserDetailOut) => void = () => {};
+  const p1 = new Promise<UserDetailOut>((res) => { resolveP1 = res; });
+  const p2 = { ...DETAIL, person: { ...DETAIL.person, id: 'p2', display_name: 'Second Person' } };
+  api.getUserDetail.mockImplementation((id: string) => (id === 'p1' ? p1 : Promise.resolve(p2)));
+  render(
+    <MemoryRouter initialEntries={['/people/users/p1']}>
+      <Routes>
+        <Route path="/people/users/:personId" element={<><Link to="/people/users/p2">go p2</Link><UserDetail /></>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  fireEvent.click(await screen.findByText('go p2'));
+  expect(await screen.findByRole('heading', { level: 1, name: /Second Person/ })).toBeTruthy();
+  resolveP1(DETAIL);                                   // the stale p1 answer arrives late
+  await new Promise((r) => setTimeout(r, 0));
+  expect(screen.getByRole('heading', { level: 1, name: /Second Person/ })).toBeTruthy();
+  expect(screen.queryByRole('heading', { level: 1, name: /Wan Worker/ })).toBeNull();
 });

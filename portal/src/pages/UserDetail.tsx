@@ -4,7 +4,7 @@
  * History), profile-grid panels. Every admin action reuses the Users
  * directory's modals; the payload is one GET /users/{id}.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -57,12 +57,17 @@ export default function UserDetail() {
   const [action, setAction] = useState<Action | null>(null);
   const [signingOut, setSigningOut] = useState(false);
 
+  const reqSeq = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++reqSeq.current;
     setLoadError('');
     try {
-      setDetail(await getUserDetail(personId));
+      const next = await getUserDetail(personId);
+      if (seq !== reqSeq.current) return;      // a newer load superseded this one
+      setDetail(next);
       setMissing(false);
     } catch (err) {
+      if (seq !== reqSeq.current) return;
       if (err instanceof ApiError && (err.status === 404 || err.status === 403)) setMissing(true);
       else setLoadError('Could not load this user.');
     }
@@ -214,7 +219,7 @@ export default function UserDetail() {
       </div>
 
       {tab === 'profile' && (
-        <UserProfileTab detail={detail} mode={canManageUsers ? 'manage' : mode}
+        <UserProfileTab detail={detail} mode={mode}
                         onEdit={() => setAction({ kind: 'edit' })}
                         onReset={() => setAction({ kind: 'reset' })}
                         onSignOutAll={() => setAction({ kind: 'signout' })} />
