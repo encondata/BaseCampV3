@@ -7,14 +7,12 @@ backfilled round-robin over `created_at` (deterministic and reproducible),
 `POST /initiatives` assigns on create, and every reader falls back to the
 status color when the column is null.
 
-Numbering: `reports` was at 0063 when this was written. A sibling
-session's unmerged `timeclock` branch already holds
-`0064_time_entry_device.py` and has applied it to the shared dev
-database, so this migration is 0065 with `down_revision = "0063"`, which
-keeps this branch's own chain (and its test database) self-consistent.
-When the two branches converge, whoever merges second re-points this
-revision's `down_revision` to "0064" — there is no data dependency
-between them, only the chain.
+Numbering: written on `reports` while a sibling session's `timeclock`
+branch independently held `0064_time_entry_device.py`, so this started as
+0065 off 0063 to keep each branch's chain self-consistent. The branches
+converged on 2026-09-15 and `down_revision` was re-pointed to "0064" as
+planned — the two touch different tables and have no data dependency, only
+the chain.
 
 Design: docs/superpowers/specs/2026-09-15-initiative-color-design.md
 
@@ -28,7 +26,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0065"
-down_revision: str | None = "0063"
+down_revision: str | None = "0064"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
