@@ -43,7 +43,7 @@ function dateOnly(d: Date): Date {
  *  into a local calendar Date. Reads the Y-M-D digits directly rather
  *  than going through `new Date(iso)`, which parses a bare date as UTC
  *  midnight and then renders as the previous day anywhere west of UTC. */
-function parseApiDate(iso: string): Date {
+export function parseApiDay(iso: string): Date {
   const y = Number(iso.slice(0, 4));
   const m = Number(iso.slice(5, 7));
   const d = Number(iso.slice(8, 10));
@@ -144,8 +144,8 @@ function barBetween(
  *  scheduled_start, or a span entirely outside the range, is null. */
 export function barFor(item: TimelineItem, range: TimelineRange): TimelineBar | null {
   if (!item.scheduled_start) return null;
-  const start = parseApiDate(item.scheduled_start);
-  const end = item.scheduled_end ? parseApiDate(item.scheduled_end) : start;
+  const start = parseApiDay(item.scheduled_start);
+  const end = item.scheduled_end ? parseApiDay(item.scheduled_end) : start;
   return barBetween(start, end, range);
 }
 
@@ -156,8 +156,8 @@ export function realBarFor(
   item: TimelineItem, range: TimelineRange, today: Date,
 ): TimelineBar | null {
   if (!item.real_start_at) return null;
-  const start = parseApiDate(item.real_start_at);
-  const end = item.real_end_at ? parseApiDate(item.real_end_at) : dateOnly(today);
+  const start = parseApiDay(item.real_start_at);
+  const end = item.real_end_at ? parseApiDay(item.real_end_at) : dateOnly(today);
   return barBetween(start, end, range);
 }
 
@@ -201,6 +201,98 @@ export function monthGrid(anchor: Date): MonthCell[] {
   return cells;
 }
 
+/** One item's run through one week row of the calendar grid: which column
+ *  it starts in, how many columns it covers, which stacking lane it sits
+ *  on, and whether the run carries on past either edge of the week (so the
+ *  bar can lose its rounded end and grow an arrow there). */
+export interface CalendarSegment<T> {
+  item: T;
+  /** 0-6, Monday-first. */
+  startCol: number;
+  /** 1-7 columns. */
+  span: number;
+  /** Zero-based stacking lane within the week row. */
+  lane: number;
+  continuesBefore: boolean;
+  continuesAfter: boolean;
+}
+
+export interface CalendarWeek<T> {
+  /** The week's seven cells, in column order. */
+  days: MonthCell[];
+  segments: CalendarSegment<T>[];
+  /** Lanes in use — `max(lane) + 1`, or 0 for a week with no runs. */
+  laneCount: number;
+}
+
+/** Splits a `monthGrid` into week rows and lays each initiative's run out
+ *  as a bar spanning the days it covers, the way an all-day event reads on
+ *  a wall calendar — one segment per week the run touches, rather than a
+ *  separate chip repeated in every day cell.
+ *
+ *  Lanes are packed per week (not once for the whole grid): a week only
+ *  pays for the runs that actually cross it, which keeps the stack short
+ *  enough to fit a fixed-height cell. Segments are laid out earliest start
+ *  first, longer run first, then by name, so a run that carries over from
+ *  the previous week is placed before anything starting inside this one and
+ *  tends to hold the same lane across the weeks it spans. */
+export function calendarWeeks<T extends TimelineItem>(
+  items: T[], cells: MonthCell[],
+): CalendarWeek<T>[] {
+  const runs = items
+    .filter((i) => i.scheduled_start)
+    .map((item) => {
+      const start = parseApiDay(item.scheduled_start as string);
+      const end = item.scheduled_end ? parseApiDay(item.scheduled_end) : start;
+      return { item, start, end: end < start ? start : end };
+    })
+    .sort((a, b) => {
+      if (a.start.getTime() !== b.start.getTime()) {
+        return a.start.getTime() - b.start.getTime();
+      }
+      const aLen = a.end.getTime() - a.start.getTime();
+      const bLen = b.end.getTime() - b.start.getTime();
+      if (aLen !== bLen) return bLen - aLen;
+      return a.item.name.localeCompare(b.item.name);
+    });
+
+  const weeks: CalendarWeek<T>[] = [];
+  for (let w = 0; w < cells.length; w += 7) {
+    const days = cells.slice(w, w + 7);
+    const weekStart = days[0].date.getTime();
+    const weekEnd = days[days.length - 1].date.getTime();
+    const segments: CalendarSegment<T>[] = [];
+    // laneEnds[lane] = last column that lane is occupied through.
+    const laneEnds: number[] = [];
+
+    for (const run of runs) {
+      const from = run.start.getTime();
+      const to = run.end.getTime();
+      if (to < weekStart || from > weekEnd) continue;
+      const startCol = from <= weekStart
+        ? 0
+        : days.findIndex((d) => d.date.getTime() === from);
+      const endCol = to >= weekEnd
+        ? days.length - 1
+        : days.findIndex((d) => d.date.getTime() === to);
+      let lane = laneEnds.findIndex((end) => end < startCol);
+      if (lane === -1) lane = laneEnds.length;
+      laneEnds[lane] = endCol;
+      segments.push({
+        item: run.item,
+        startCol,
+        span: endCol - startCol + 1,
+        lane,
+        continuesBefore: from < weekStart,
+        continuesAfter: to > weekEnd,
+      });
+    }
+
+    weeks.push({ days, segments, laneCount: laneEnds.length });
+  }
+  return weeks;
+}
+
 /** Initiatives active on `day`: scheduled_start ≤ day ≤ scheduled_end,
  *  with scheduled_end defaulting to scheduled_start. Unscheduled items
  *  never match. */
@@ -208,8 +300,8 @@ export function itemsOnDay<T extends TimelineItem>(items: T[], day: Date): T[] {
   const d = dateOnly(day).getTime();
   return items.filter((i) => {
     if (!i.scheduled_start) return false;
-    const start = parseApiDate(i.scheduled_start).getTime();
-    const end = i.scheduled_end ? parseApiDate(i.scheduled_end).getTime() : start;
+    const start = parseApiDay(i.scheduled_start).getTime();
+    const end = i.scheduled_end ? parseApiDay(i.scheduled_end).getTime() : start;
     return d >= start && d <= end;
   });
 }

@@ -148,16 +148,27 @@
 
 .itl-no-dates { padding-left: 6px; color: var(--text-mute); }
 
-/* ── month calendar ───────────────────────────────────────────────── */
+/* ── month calendar ───────────────────────────────────────────────────
+ * Six week rows, each a seven-column grid of day cells with a second
+ * grid — `.itl-week-bars` — stacked on the same seven tracks above it.
+ * An initiative is one bar spanning the days it covers (a segment per
+ * week row it reaches), the way an all-day event reads on a wall
+ * calendar, rather than a chip repeated in every day cell. */
 
 .itl-month-grid {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
   gap: 1px;
   background: var(--paper-line);
   border: 1px solid var(--paper-line);
   border-radius: 16px;
   overflow: hidden;
+}
+
+.itl-weekdays,
+.itl-week {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
 }
 
 .itl-weekday {
@@ -167,14 +178,20 @@
   color: var(--text-mute);
 }
 
+/* The row is as tall as the stack it carries: --rows is set per week in
+   the page (lanes shown, plus one for a "+N more" or "Show less"), with
+   a floor that keeps a quiet week a recognizable day cell. `height`,
+   never min-height — see the file header. */
+.itl-week {
+  position: relative;
+  height: max(96px, calc(30px + var(--rows, 0) * (var(--list-chip-h) + 3px)));
+}
+
 .itl-day-cell {
   background: var(--surface);
-  height: 118px;
   padding: 6px 8px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  overflow: hidden;
   position: relative;
 }
 .itl-day-cell.muted { background: var(--surface-2); color: var(--text-mute); }
@@ -182,33 +199,63 @@
 
 .itl-day-num { align-self: flex-start; color: var(--text-mute); }
 
-.itl-day-chips {
+/* The bar layer sits below the day numbers and ignores the pointer, so
+   empty stretches still belong to the day cell underneath; each bar
+   takes the pointer back for itself. */
+.itl-week-bars {
+  position: absolute;
+  top: 26px;
+  left: 0;
+  right: 0;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-auto-rows: var(--list-chip-h);
+  gap: 3px 1px;
+  align-content: start;
+  pointer-events: none;
+}
+
+.itl-span {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  margin: 0 3px;
   overflow: hidden;
-}
-
-.itl-day-chip {
-  display: block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   text-decoration: none;
+  pointer-events: auto;
+}
+.itl-span .dot { flex: 0 0 auto; }
+.itl-span-name { overflow: hidden; text-overflow: ellipsis; }
+
+/* A run reaching past the week keeps a square edge on that side, so the
+   bar reads as carrying on into the next row rather than ending. */
+.itl-span.cont-before {
+  margin-left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.itl-span.cont-after {
+  margin-right: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
-.itl-more-wrap { position: relative; }
 .itl-more-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin-top: auto;
+  cursor: pointer;
+  color: var(--text-mute);
+  text-align: left;
+}
+
+.itl-less-btn {
+  position: absolute;
+  right: 10px;
+  bottom: 5px;
+  z-index: 1;
   background: none;
   border: 0;
   padding: 0;
   cursor: pointer;
   color: var(--text-mute);
-  text-align: left;
 }
-.itl-more-menu {
-  max-height: 240px;
-  overflow: auto;
-}
-.itl-more-menu .pop-item { text-decoration: none; }
