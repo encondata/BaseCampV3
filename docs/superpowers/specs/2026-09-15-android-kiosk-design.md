@@ -100,7 +100,7 @@ Fonts: Geologica (200–800) and Fragment Mono (regular, italic) bundled under `
 
 ### Config (`data/config`)
 
-`KioskConfig` exposes `apiUrl: Flow<String>` and `portalUrl: Flow<String>` from DataStore keys `api_url` / `portal_url`, falling back to `BuildConfig.DEFAULT_API_URL` / `DEFAULT_PORTAL_URL`. Trailing slashes are trimmed. `kioskVersion()` = `BuildConfig.KIOSK_VERSION`. The API client reads the URL per request, never at construction.
+`KioskConfig` exposes `apiUrl: Flow<String>` and `portalUrl: Flow<String>` from DataStore keys `ss.kiosk.apiUrl` / `ss.kiosk.portalUrl` (the web kiosk's `ss.kiosk.*` key convention, like every other kiosk-local value), falling back to `BuildConfig.DEFAULT_API_URL` / `DEFAULT_PORTAL_URL`. Trailing slashes are trimmed. `kioskVersion()` = `BuildConfig.KIOSK_VERSION`. The API client reads the URL per request, never at construction.
 
 ### Identity (`data/identity`)
 
