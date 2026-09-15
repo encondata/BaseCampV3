@@ -11,8 +11,9 @@ import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
-import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -23,6 +24,9 @@ import org.junit.rules.TemporaryFolder
 class SessionCoordinatorTest {
     @get:Rule val tmp = TemporaryFolder()
 
+    /** Pumps several hops of background-scope dispatch (combine collector -> heartbeat.start -> beat -> DataStore actor -> api call). */
+    private fun TestScope.settle() { repeat(5) { runCurrent() } }
+
     @Test fun heartbeatRunsOnlyWhileAuthedAndForeground() = runTest {
         val api = FakeKioskApi()
         val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = backgroundScope) { File(tmp.root, "c.preferences_pb") })
@@ -32,21 +36,21 @@ class SessionCoordinatorTest {
         val hb = Heartbeat(api, identity, config, { emptyMap() }, 60_000)
         val foreground = MutableStateFlow(true)
         SessionCoordinator(auth, hb, foreground, backgroundScope).start()
-        advanceUntilIdle()
+        runCurrent()
         assertEquals(0, api.heartbeats.size)
         auth.completePair(fakeSession())
-        advanceUntilIdle()
+        settle()
         assertEquals(1, api.heartbeats.size)
         assertEquals("link", api.heartbeats[0].login_method)
         foreground.value = false
-        advanceTimeBy(120_000); advanceUntilIdle()
+        advanceTimeBy(120_000); runCurrent()
         assertEquals(1, api.heartbeats.size)             // stopped in the background
         foreground.value = true
-        advanceUntilIdle()
+        settle()
         assertEquals(2, api.heartbeats.size)             // resumed: immediate beat, no sign_in
         assertEquals(false, api.heartbeats[1].sign_in)
         auth.completePair(fakeSession(mustChange = true))
-        advanceTimeBy(120_000); advanceUntilIdle()
+        advanceTimeBy(120_000); runCurrent()
         assertEquals(2, api.heartbeats.size)             // must-change-password: no heartbeat
     }
 }

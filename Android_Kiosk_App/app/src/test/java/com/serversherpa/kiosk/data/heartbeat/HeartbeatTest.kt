@@ -10,8 +10,9 @@ import com.serversherpa.kiosk.data.identity.Identity
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
-import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -23,6 +24,9 @@ import org.junit.rules.TemporaryFolder
 class HeartbeatTest {
     @get:Rule val tmp = TemporaryFolder()
 
+    /** Pumps several hops of background-scope dispatch (collector -> beat -> DataStore actor -> api call). */
+    private fun TestScope.settle() { repeat(5) { runCurrent() } }
+
     private fun harness(scope: kotlinx.coroutines.CoroutineScope, api: FakeKioskApi): Heartbeat {
         val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = scope) { File(tmp.root, "hb.preferences_pb") })
         val config = KioskConfig(prefs, "https://api", "https://portal", "0.1.0")
@@ -33,12 +37,12 @@ class HeartbeatTest {
         val api = FakeKioskApi()
         val hb = harness(backgroundScope, api)
         hb.start(backgroundScope, signIn = LoginMethod.PASSWORD)
-        advanceUntilIdle()
+        settle()
         assertEquals(1, api.heartbeats.size)
         assertEquals(true, api.heartbeats[0].sign_in); assertEquals("password", api.heartbeats[0].login_method)
         assertEquals("android", api.heartbeats[0].mode); assertEquals("MC2200", api.heartbeats[0].raw_info["model"])
         assertEquals(RegistrationState.OK, hb.registration.value)
-        advanceTimeBy(60_001); advanceUntilIdle()
+        advanceTimeBy(60_001); settle()
         assertEquals(2, api.heartbeats.size)
         assertEquals(false, api.heartbeats[1].sign_in)   // cleared once a beat succeeded
         assertNull(api.heartbeats[1].login_method)
@@ -52,7 +56,7 @@ class HeartbeatTest {
         api.heartbeatResult = { if (fail) throw ApiError(0, "network") else com.serversherpa.kiosk.core.model.HeartbeatResult("d", it.name, "soon", null) }
         val hb = harness(backgroundScope, api)
         hb.start(backgroundScope, signIn = LoginMethod.LINK)
-        advanceUntilIdle()
+        settle()
         assertNull(hb.registration.value)
         fail = false
         hb.now()

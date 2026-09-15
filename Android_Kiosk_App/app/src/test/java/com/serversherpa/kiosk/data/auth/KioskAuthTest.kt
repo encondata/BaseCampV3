@@ -6,7 +6,7 @@ import com.serversherpa.kiosk.data.FakeRefresher
 import com.serversherpa.kiosk.data.fakeSession
 import com.serversherpa.kiosk.data.testIdentity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -67,7 +67,7 @@ class KioskAuthTest {
         val auth = KioskAuth(FakeKioskApi(), refresher, testIdentity(tmp.root, backgroundScope), backgroundScope)
         auth.completePair(fakeSession())
         refresher.sessionEnded.tryEmit(Unit)
-        advanceUntilIdle()
+        runCurrent()
         assertEquals(AuthState.Anon, auth.state.value)
     }
 }
