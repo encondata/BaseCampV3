@@ -5,7 +5,9 @@
  */
 import { Link } from 'react-router-dom';
 
+import DataTable from '../DataTable';
 import type { UserDetailOut } from '../../lib/api';
+import { statusChip } from '../../lib/chips';
 import { describeUserAgent, longDate, relativeTime } from '../../lib/format';
 import { STATUS_META } from '../../lib/users';
 import type { DetailMode } from '../../pages/UserDetail';
@@ -13,6 +15,7 @@ import type { DetailMode } from '../../pages/UserDetail';
 const SOURCE_LABEL: Record<string, string> = {
   manual: 'Added manually',
   v2_import: 'Imported from V2',
+  import: 'Imported from V2',
 };
 
 export default function UserProfileTab({ detail, mode, onEdit, onReset, onSignOutAll }: {
@@ -93,51 +96,54 @@ export default function UserProfileTab({ detail, mode, onEdit, onReset, onSignOu
           <div className="panel-head"><h3>Memberships</h3></div>
           <div className="panel-body">
             <div className="ud-membership-head"><p className="eyebrow-sm" style={{ margin: 0 }}>Worker profile</p></div>
-            {worker ? (
-              <div className="mini-list">
-                <div className="mini-row">
-                  <div className="ud-row">
-                    <span className="cell-top">{worker.trade ?? 'No trade set'}</span>
-                    <span className="cell-sub">{worker.level_title ?? 'Unleveled'}</span>
-                    <span className="cell-sub">{worker.partner?.name ?? 'Direct hire'}</span>
-                    <Link className="mini-btn" to={`/people/workers/${person.id}`}>Open worker page</Link>
-                  </div>
-                </div>
-              </div>
-            ) : <p className="ud-note">Not a worker</p>}
+            <DataTable ariaLabel="Worker profile" emptyText="Not a worker"
+              columns={[
+                { key: 'trade', label: 'Trade' }, { key: 'level', label: 'Level' },
+                { key: 'partner', label: 'Partner' }, { key: 'status', label: 'Status' },
+                { key: 'actions', label: '' },
+              ]}
+              rows={worker ? [{
+                key: 'worker',
+                cells: [
+                  worker.trade ?? '—', worker.level_title ?? 'Unleveled',
+                  worker.partner?.name ?? 'Direct hire',
+                  statusChip(worker.status_label, worker.status_color),
+                  <Link key="open" className="mini-btn" to={`/people/workers/${person.id}`}>Open worker page</Link>,
+                ],
+              }] : []} />
 
             <div className="ud-membership-head"><p className="eyebrow-sm" style={{ margin: 0 }}>Org affiliations</p></div>
-            {orgRoles.length === 0 ? <p className="ud-note">No client or partner roles</p> : (
-              <div className="mini-list">
-                {orgRoles.map((r) => (
-                  <div key={`${r.role}:${r.org!.id}`} className="mini-row">
-                    <div className="ud-row-2">
-                      <Link className="cell-top" to={`/stakeholders/${r.org!.kind}s/${r.org!.id}`}>{r.org!.name}</Link>
-                      <span className="chip tag">{r.label}</span>
-                      <span className="mono">{longDate(r.granted_at)}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+            <DataTable ariaLabel="Org affiliations" emptyText="No client or partner roles"
+              columns={[
+                { key: 'org', label: 'Organization' }, { key: 'role', label: 'Role' },
+                { key: 'at', label: 'Granted on', mono: true },
+              ]}
+              rows={orgRoles.map((r) => ({
+                key: `${r.role}:${r.org!.id}`,
+                cells: [
+                  <Link key="org" to={`/stakeholders/${r.org!.kind}s/${r.org!.id}`}>{r.org!.name}</Link>,
+                  <span key="role" className="chip tag">{r.label}</span>,
+                  longDate(r.granted_at),
+                ],
+              }))} />
 
             <div className="ud-membership-head"><p className="eyebrow-sm" style={{ margin: 0 }}>Notification groups</p></div>
-            {groups.length === 0 ? <p className="ud-note">Not in any notification groups</p> : (
-              <div className="mini-list">
-                {groups.map((g) => (
-                  <div key={g.id} className="mini-row">
-                    <div className="ud-row-2">
-                      <Link className="cell-top" to={`/system/notifications/${g.id}`}>{g.name}</Link>
-                      <span className="chips">
-                        {g.channels.length === 0 ? <span className="chip tag">muted</span>
-                          : g.channels.map((c) => <span key={c} className="chip tag">{c}</span>)}
-                      </span>
-                      <span className="mono">{longDate(g.added_at)}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+            <DataTable ariaLabel="Notification groups" emptyText="Not in any notification groups"
+              columns={[
+                { key: 'group', label: 'Group' }, { key: 'channels', label: 'Channels' },
+                { key: 'at', label: 'Member since', mono: true },
+              ]}
+              rows={groups.map((g) => ({
+                key: g.id,
+                cells: [
+                  <Link key="group" to={`/system/notifications/${g.id}`}>{g.name}</Link>,
+                  <span key="channels" className="chips">
+                    {g.channels.length === 0 ? <span className="chip tag">muted</span>
+                      : g.channels.map((c) => <span key={c} className="chip tag">{c}</span>)}
+                  </span>,
+                  longDate(g.added_at),
+                ],
+              }))} />
           </div>
         </div>
       </div>

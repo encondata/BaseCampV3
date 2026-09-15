@@ -35,6 +35,14 @@ describe('labels', () => {
     expect(actionLabel({ ...row('device', 'd-1'), action: 'kiosk_printer_head_clean' }))
       .toBe('kiosk printer head clean');
   });
+  it('names an access groups change', () => {
+    expect(actionLabel({ ...row('person', 'p-1'), action: 'access_groups.set' }))
+      .toBe('Changed access groups');
+  });
+  it('names a sign-out-everywhere action', () => {
+    expect(actionLabel({ ...row('user_account', 'p-1'), action: 'session.revoke_all' }))
+      .toBe('Signed out everywhere');
+  });
   it("shows the kiosk's name as the target of a device row", () => {
     expect(targetLabel({ ...row('device', 'd-1'), entity_name: 'Dock Kiosk' }))
       .toBe("device 'Dock Kiosk'");

@@ -3,7 +3,7 @@
  * /people/users/:personId — hero, tabs, Profile tab panels, action gating.
  * The Access and History tabs get their own `it` blocks in later tasks.
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -94,7 +94,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-const { default: UserDetail } = await import('./UserDetail');
+const { default: UserDetail, rankLabel } = await import('./UserDetail');
 
 export function renderAt(path: string) {
   return render(
@@ -111,7 +111,9 @@ export function renderAt(path: string) {
 
 it('renders the hero, three tabs, and the Profile panels', async () => {
   renderAt('/people/users/p1');
-  expect(await screen.findByRole('heading', { level: 1, name: /Wan Worker/ })).toBeTruthy();
+  const heading = await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
+  expect(heading).toBeTruthy();
+  expect(within(heading).getByText('Staff')).toBeTruthy();      // hero rank chip (max_rank: 40)
   expect(screen.getByRole('tab', { name: 'Profile' }).getAttribute('aria-selected')).toBe('true');
   expect(screen.getByRole('tab', { name: 'Access' })).toBeTruthy();
   expect(screen.getByRole('tab', { name: 'History' })).toBeTruthy();
@@ -269,6 +271,11 @@ it('History tab refetches when personId changes while the tab is open', async ()
   await screen.findByRole('heading', { level: 1, name: /Second Person/ });
   await waitFor(() => expect(api.getUserActivity).toHaveBeenCalledWith('p2'));
   expect(api.getUserActivity).toHaveBeenCalledTimes(2);
+});
+
+it('rankLabel only names the global admin tiers', () => {
+  expect(rankLabel(10)).toBeNull();   // a worker's role rank also happens to be 10
+  expect(rankLabel(60)).toBe('Admin');
 });
 
 it('refetches history after a mutation once the History tab has been opened', async () => {

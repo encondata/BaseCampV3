@@ -5,9 +5,6 @@
 .ud-panels { display: flex; flex-direction: column; gap: 18px; margin-top: 18px; }
 .ud-membership-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 14px 0 6px; }
 .ud-membership-head:first-child { margin-top: 0; }
-.ud-row { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr) auto; gap: 12px; align-items: center; }
-.ud-row-2 { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.4fr) auto; gap: 12px; align-items: center; }
-.ud-note { color: var(--text-mute); padding: 6px 0; }
 .ud-source-ref { display: block; margin-top: 2px; }
 .ud-rank-note { border: 1px dashed var(--border, #d9dee7); border-radius: 10px; padding: 14px 16px; color: var(--text-mute); }
 .ud-confirm-card { width: min(520px, 96vw); }
@@ -17,6 +14,3 @@
 .ud-group-pick.on { border-color: var(--accent, #d38b1d); box-shadow: inset 0 0 0 1px var(--accent, #d38b1d); }
 .ud-group-pick:disabled { opacity: 0.45; cursor: not-allowed; }
 .ud-group-pick .ud-group-meta { color: var(--text-mute); }
-@media (max-width: 900px) {
-  .ud-row, .ud-row-2 { grid-template-columns: 1fr; }
-}

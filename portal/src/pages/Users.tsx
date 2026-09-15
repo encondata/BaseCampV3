@@ -540,11 +540,11 @@ export default function Users() {
                           if (isSelf) {
                             return (
                               <div className="detail-actions">
-                                {fullDetails}
                                 <span className="self-note">
                                   This is you — your details, password, and
                                   sessions live on your profile.
                                 </span>
+                                {fullDetails}
                                 <button className="mini-btn accent"
                                         onClick={() => navigate('/me')}>
                                   Go to My profile

@@ -40,9 +40,18 @@ type Action =
   | { kind: 'edit' | 'reset' | 'signout' }
   | { kind: 'state'; action: 'disable' | 'enable' | 'unlock' };
 
+/** Tier label for the hero chip — shown only for the global admin tiers
+ *  (Staff and above, rank >= 40). Below that, RANK_LABELS entries describe
+ *  org-scoped role ranks (10 -> "Org viewer", 5 -> "External") that a
+ *  member's max_rank can coincide with for unrelated reasons — e.g. a
+ *  plain worker's role rank is 10, so the chip would misleadingly read
+ *  "Org viewer". The per-role chips on the next line already say what
+ *  applies, so below the admin tiers this returns null and the chip is
+ *  simply omitted. */
 export function rankLabel(rank: number): string | null {
+  if (rank < 40) return null;
   const hit = RANK_LABELS.find(([r]) => r === rank);
-  return hit ? hit[1] : rank > 0 ? `Rank ${rank}` : null;
+  return hit ? hit[1] : `Rank ${rank}`;
 }
 
 export default function UserDetail() {
