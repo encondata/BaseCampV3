@@ -105,6 +105,12 @@ function clientSiteLine(i: InitiativeItem): string {
   return [i.client_name, i.site_name].filter(Boolean).join(' · ') || '—';
 }
 
+/** The `--chip` color for a bar or span: the initiative's own calendar
+ *  color, or its status color while it has none of its own. */
+function chipColor(i: InitiativeItem): string {
+  return i.color ?? i.status_color;
+}
+
 export default function InitiativeTimeline() {
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
@@ -335,7 +341,7 @@ function TimelineGrid({
               <div className="itl-bar" title={spanTitle(item)}
                    style={{
                      left: `${bar.left}%`, width: `${bar.width}%`,
-                     '--chip': item.status_color,
+                     '--chip': chipColor(item),
                    } as CSSProperties}>
                 {(bar.width / 100) * rightWidth >= 80 && (
                   <span className="itl-bar-label">{item.name}</span>
@@ -345,7 +351,7 @@ function TimelineGrid({
                 <div className="itl-real-bar"
                      style={{
                        left: `${realBar.left}%`, width: `${realBar.width}%`,
-                       '--chip': item.status_color,
+                       '--chip': chipColor(item),
                      } as CSSProperties} />
               )}
             </div>
@@ -497,7 +503,7 @@ function CalendarSpan({ seg }: { seg: CalendarSegment<InitiativeItem> }) {
           style={{
             gridColumn: `${seg.startCol + 1} / span ${seg.span}`,
             gridRow: seg.lane + 1,
-            '--chip': i.status_color,
+            '--chip': chipColor(i),
           } as CSSProperties}>
       <span className="dot" />
       <span className="itl-span-name">{i.name}</span>

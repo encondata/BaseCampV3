@@ -229,3 +229,47 @@ it('‹ and › move the visible range', async () => {
   expect(screen.getByText('September item', { selector: 'b' })).not.toBeNull();
   expect(screen.queryByText('August item', { selector: 'b' })).toBeNull();
 });
+
+/* ── Bar color: the initiative's own color, falling back to its status ── */
+
+it('paints the timeline bars with the initiative color, falling back to status', async () => {
+  await renderPage([
+    initiative({
+      id: 'i1', name: 'Purple run', color: '#8b3fb8',
+      scheduled_start: '2026-09-05', scheduled_end: '2026-09-10',
+      real_start_at: '2026-09-06', real_end_at: '2026-09-09',
+    }),
+    initiative({
+      id: 'i2', name: 'Uncolored run', color: null, status_color: '#2f7d4f',
+      scheduled_start: '2026-09-12', scheduled_end: '2026-09-14',
+      real_start_at: '2026-09-12', real_end_at: '2026-09-13',
+    }),
+  ]);
+  const bars = [...document.querySelectorAll('.itl-bar')] as HTMLElement[];
+  expect(bars).toHaveLength(2);
+  expect(bars[0].style.getPropertyValue('--chip')).toBe('#8b3fb8');
+  expect(bars[1].style.getPropertyValue('--chip')).toBe('#2f7d4f');
+
+  const realBars = [...document.querySelectorAll('.itl-real-bar')] as HTMLElement[];
+  expect(realBars).toHaveLength(2);
+  expect(realBars[0].style.getPropertyValue('--chip')).toBe('#8b3fb8');
+  expect(realBars[1].style.getPropertyValue('--chip')).toBe('#2f7d4f');
+});
+
+it('paints a calendar span with the initiative color, falling back to status', async () => {
+  await renderPage([
+    initiative({
+      id: 'i1', name: 'Purple run', color: '#8b3fb8',
+      scheduled_start: '2026-09-05', scheduled_end: '2026-09-05',
+    }),
+    initiative({
+      id: 'i2', name: 'Uncolored run', color: null, status_color: '#2f7d4f',
+      scheduled_start: '2026-09-12', scheduled_end: '2026-09-12',
+    }),
+  ]);
+  fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Calendar' }));
+  const spans = [...document.querySelectorAll('.itl-span')] as HTMLElement[];
+  expect(spans).toHaveLength(2);
+  expect(spans[0].style.getPropertyValue('--chip')).toBe('#8b3fb8');
+  expect(spans[1].style.getPropertyValue('--chip')).toBe('#2f7d4f');
+});
