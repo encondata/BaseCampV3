@@ -27,6 +27,14 @@ export default defineConfig({
     // the dev subdomains have to be named. A leading dot allows the host
     // and everything under it.
     allowedHosts: ['.serversherpa.com', 'localhost'],
+    // Behind a TLS-terminating proxy (nginx on :443 forwarding to this
+    // port), the browser must be told to open the HMR socket on 443 over
+    // wss — otherwise it tries ws://<host>:PORT directly, which an HTTPS
+    // page blocks as mixed content and which never reaches the proxy.
+    // Opt in with SS_PUBLIC_HTTPS=1; unset, localhost HMR is unchanged.
+    // The host is left to default to the page's own hostname, so the same
+    // setting serves portal.* and kiosk.* without naming either.
+    ...(process.env.SS_PUBLIC_HTTPS ? { hmr: { protocol: 'wss' as const, clientPort: 443 } } : {}),
     fs: { allow: [repoRoot] },
   },
   test: {
