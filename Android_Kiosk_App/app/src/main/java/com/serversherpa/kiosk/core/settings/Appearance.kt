@@ -31,11 +31,15 @@ fun clampFlashMs(value: Int?): Int = value?.coerceIn(FLASH_MS_MIN, FLASH_MS_MAX)
 
 private val json = Json { ignoreUnknownKeys = true }
 
+/** A JSON number only — a quoted "10" is not a number, exactly as the web's typeof check says. */
+private fun kotlinx.serialization.json.JsonElement.numberOrNull(): Double? =
+    (this as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull
+
 private fun hslOf(obj: JsonObject?): Hsl? {
     if (obj == null) return null
-    val h = obj["h"]?.jsonPrimitive?.doubleOrNull ?: return null
-    val s = obj["s"]?.jsonPrimitive?.doubleOrNull ?: return null
-    val l = obj["l"]?.jsonPrimitive?.doubleOrNull ?: return null
+    val h = obj["h"]?.numberOrNull() ?: return null
+    val s = obj["s"]?.numberOrNull() ?: return null
+    val l = obj["l"]?.numberOrNull() ?: return null
     if (h !in 0.0..360.0 || s !in 0.0..100.0 || l !in 0.0..100.0) return null
     return Hsl(h, s, l)
 }
@@ -45,7 +49,7 @@ fun parseAppearance(raw: String?): Appearance {
     if (raw.isNullOrBlank()) return DEFAULT_APPEARANCE
     val obj = try { json.parseToJsonElement(raw).jsonObject } catch (e: Exception) { return DEFAULT_APPEARANCE }
     fun field(name: String) = try { obj[name]?.jsonObject } catch (e: Exception) { null }
-    val flash = try { obj["flash_ms"]?.jsonPrimitive?.double?.roundToInt() } catch (e: Exception) { null }
+    val flash = try { obj["flash_ms"]?.numberOrNull()?.roundToInt() } catch (e: Exception) { null }
     return Appearance(
         goodScan = hslOf(field("good_scan")) ?: DEFAULT_APPEARANCE.goodScan,
         notFoundScan = hslOf(field("not_found_scan")) ?: DEFAULT_APPEARANCE.notFoundScan,

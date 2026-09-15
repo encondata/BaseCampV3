@@ -30,6 +30,10 @@ val DEFAULT_SOUND_SETTINGS = SoundSettings(
 
 private val json = Json { ignoreUnknownKeys = true }
 
+/** A JSON number only — a quoted "10" is not a number, exactly as the web's typeof check says. */
+private fun kotlinx.serialization.json.JsonElement.numberOrNull(): Double? =
+    (this as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull
+
 private fun choiceOf(obj: JsonObject?): SoundChoice? {
     val kind = obj?.get("kind")?.jsonPrimitive?.content ?: return null
     return when (kind) {
@@ -43,7 +47,7 @@ fun parseSoundSettings(raw: String?): SoundSettings {
     if (raw.isNullOrBlank()) return DEFAULT_SOUND_SETTINGS
     val obj = try { json.parseToJsonElement(raw).jsonObject } catch (e: Exception) { return DEFAULT_SOUND_SETTINGS }
     fun field(name: String) = try { obj[name]?.jsonObject } catch (e: Exception) { null }
-    val volume = try { obj["volume"]?.jsonPrimitive?.doubleOrNull } catch (e: Exception) { null }
+    val volume = try { obj["volume"]?.numberOrNull() } catch (e: Exception) { null }
     return SoundSettings(
         good = choiceOf(field("good")) ?: DEFAULT_SOUND_SETTINGS.good,
         notFound = choiceOf(field("not_found")) ?: DEFAULT_SOUND_SETTINGS.notFound,

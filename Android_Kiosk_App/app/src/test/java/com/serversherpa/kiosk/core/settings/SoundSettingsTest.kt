@@ -24,4 +24,8 @@ class SoundSettingsTest {
         val s = SoundSettings(SoundChoice.None, SoundChoice.Builtin(BuiltinSound.BEEP), SoundChoice.Builtin(BuiltinSound.CHIME), 0.25)
         assertEquals(s, parseSoundSettings(s.toJson()))
     }
+
+    @Test fun quotedVolumeIsNotANumber() {
+        assertEquals(DEFAULT_SOUND_SETTINGS.volume, parseSoundSettings("""{"volume":"0.2"}""").volume, 1e-9)
+    }
 }

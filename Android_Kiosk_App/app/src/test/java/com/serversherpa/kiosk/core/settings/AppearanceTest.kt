@@ -37,4 +37,10 @@ class AppearanceTest {
         assertEquals(2000, clampFlashMs(99999))
         assertEquals(350, clampFlashMs(null))
     }
+
+    @Test fun quotedNumbersAreNotNumbers() {
+        val a = parseAppearance("""{"good_scan":{"h":"10","s":"20","l":"30"},"flash_ms":"900"}""")
+        assertEquals(DEFAULT_APPEARANCE.goodScan, a.goodScan)
+        assertEquals(DEFAULT_APPEARANCE.flashMs, a.flashMs)
+    }
 }
