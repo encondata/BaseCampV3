@@ -1,9 +1,22 @@
 package com.serversherpa.kiosk.data.api
 
 import com.serversherpa.kiosk.core.ApiError
+import com.serversherpa.kiosk.core.model.ClockInIn
+import com.serversherpa.kiosk.core.model.ClockOutIn
 import com.serversherpa.kiosk.core.model.HeartbeatIn
 import com.serversherpa.kiosk.core.model.HeartbeatResult
+import com.serversherpa.kiosk.core.model.KioskAssetsSync
+import com.serversherpa.kiosk.core.model.KioskContainersSync
+import com.serversherpa.kiosk.core.model.KioskPeopleSync
+import com.serversherpa.kiosk.core.model.KioskRfidEnroll
+import com.serversherpa.kiosk.core.model.KioskRfidEnrollIn
+import com.serversherpa.kiosk.core.model.KioskScanBatchIn
+import com.serversherpa.kiosk.core.model.KioskScanBatchOut
+import com.serversherpa.kiosk.core.model.KioskSetupIn
+import com.serversherpa.kiosk.core.model.KioskSetupResult
 import com.serversherpa.kiosk.core.model.KioskSignOutIn
+import com.serversherpa.kiosk.core.model.KioskTimeclockStatus
+import com.serversherpa.kiosk.core.model.KioskTrucksSync
 import com.serversherpa.kiosk.core.model.LoginIn
 import com.serversherpa.kiosk.core.model.PairCreateIn
 import com.serversherpa.kiosk.core.model.PairCreated
@@ -12,9 +25,11 @@ import com.serversherpa.kiosk.core.model.PairPollIn
 import com.serversherpa.kiosk.core.model.PairPollOut
 import com.serversherpa.kiosk.core.model.PairStatus
 import com.serversherpa.kiosk.core.model.SessionData
+import com.serversherpa.kiosk.core.model.SetupOptions
 import com.serversherpa.kiosk.core.model.SystemStatus
 import com.serversherpa.kiosk.data.config.KioskConfig
 import java.io.IOException
+import java.net.URLEncoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.DeserializationStrategy
@@ -132,4 +147,43 @@ class OkHttpKioskApi(
             authed { url(apiUrl("/kiosk/sign-out")).post(jsonBody(KioskSignOutIn.serializer(), KioskSignOutIn(serial))) }.close()
         } catch (e: ApiError) { /* ignore */ }
     }
+
+    // ── setup & sync ────────────────────────────────────────────────
+
+    private fun q(value: String): String = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
+
+    override suspend fun setupOptions(): SetupOptions =
+        parse(authed { url(apiUrl("/kiosk/setup-options")).get() }, SetupOptions.serializer())
+
+    override suspend fun submitSetup(body: KioskSetupIn): KioskSetupResult =
+        parse(authed { url(apiUrl("/kiosk/setup")).post(jsonBody(KioskSetupIn.serializer(), body)) }, KioskSetupResult.serializer())
+
+    override suspend fun syncAssets(initiativeId: String): KioskAssetsSync =
+        parse(authed { url(apiUrl("/kiosk/sync/assets?initiative_id=${q(initiativeId)}")).get() }, KioskAssetsSync.serializer())
+
+    override suspend fun syncPeople(): KioskPeopleSync =
+        parse(authed { url(apiUrl("/kiosk/sync/people")).get() }, KioskPeopleSync.serializer())
+
+    override suspend fun syncContainers(initiativeId: String): KioskContainersSync =
+        parse(authed { url(apiUrl("/kiosk/sync/containers?initiative_id=${q(initiativeId)}")).get() }, KioskContainersSync.serializer())
+
+    override suspend fun syncTrucks(initiativeId: String): KioskTrucksSync =
+        parse(authed { url(apiUrl("/kiosk/sync/trucks?initiative_id=${q(initiativeId)}")).get() }, KioskTrucksSync.serializer())
+
+    // ── scans, RFID, timeclock ──────────────────────────────────────
+
+    override suspend fun postScans(body: KioskScanBatchIn): KioskScanBatchOut =
+        parse(authed { url(apiUrl("/kiosk/scans")).post(jsonBody(KioskScanBatchIn.serializer(), body)) }, KioskScanBatchOut.serializer())
+
+    override suspend fun postRfidEnroll(assetId: String, body: KioskRfidEnrollIn): KioskRfidEnroll =
+        parse(authed { url(apiUrl("/kiosk/assets/${q(assetId)}/rfid")).post(jsonBody(KioskRfidEnrollIn.serializer(), body)) }, KioskRfidEnroll.serializer())
+
+    override suspend fun timeclockStatus(personId: String): KioskTimeclockStatus =
+        parse(authed { url(apiUrl("/kiosk/timeclock/${q(personId)}")).get() }, KioskTimeclockStatus.serializer())
+
+    override suspend fun clockIn(body: ClockInIn): KioskTimeclockStatus =
+        parse(authed { url(apiUrl("/kiosk/timeclock/clock-in")).post(jsonBody(ClockInIn.serializer(), body)) }, KioskTimeclockStatus.serializer())
+
+    override suspend fun clockOut(body: ClockOutIn): KioskTimeclockStatus =
+        parse(authed { url(apiUrl("/kiosk/timeclock/clock-out")).post(jsonBody(ClockOutIn.serializer(), body)) }, KioskTimeclockStatus.serializer())
 }
