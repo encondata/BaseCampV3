@@ -1,0 +1,93 @@
+package com.serversherpa.kiosk
+
+import android.app.Application
+import android.content.Context
+import android.os.Build
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.datastore.preferences.preferencesDataStore
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
+import com.serversherpa.kiosk.data.api.AndroidSecretStore
+import com.serversherpa.kiosk.data.api.KioskApi
+import com.serversherpa.kiosk.data.api.OkHttpKioskApi
+import com.serversherpa.kiosk.data.api.RefreshCookieJar
+import com.serversherpa.kiosk.data.api.SecretStore
+import com.serversherpa.kiosk.data.api.SessionStore
+import com.serversherpa.kiosk.data.auth.KioskAuth
+import com.serversherpa.kiosk.data.auth.SessionCoordinator
+import com.serversherpa.kiosk.data.config.KioskConfig
+import com.serversherpa.kiosk.data.db.KioskDatabase
+import com.serversherpa.kiosk.data.heartbeat.Heartbeat
+import com.serversherpa.kiosk.data.identity.Identity
+import com.serversherpa.kiosk.data.outbox.Outbox
+import com.serversherpa.kiosk.data.outbox.RoomOutboxStore
+import com.serversherpa.kiosk.data.prefs.KioskPrefs
+import com.serversherpa.kiosk.data.sync.Sync
+import com.serversherpa.kiosk.input.ScanBus
+import com.serversherpa.kiosk.input.camera.hasCamera
+import com.serversherpa.kiosk.input.datawedge.DataWedge
+import com.serversherpa.kiosk.input.datawedge.DataWedgeReceiver
+import com.serversherpa.kiosk.ui.flash.FlashController
+import com.serversherpa.kiosk.ui.sound.SoundPlayer
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+
+private val Context.kioskDataStore by preferencesDataStore(name = "kiosk_prefs")
+
+/** Manual dependency wiring: one instance, built by KioskApplication. */
+class AppContainer(
+    private val app: Application,
+    secrets: SecretStore = AndroidSecretStore(app),
+    val db: KioskDatabase = KioskDatabase.build(app),
+) {
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val prefs = KioskPrefs(app.kioskDataStore)
+    val config = KioskConfig(prefs, BuildConfig.DEFAULT_API_URL, BuildConfig.DEFAULT_PORTAL_URL, BuildConfig.KIOSK_VERSION)
+    val identity = Identity(prefs)
+    val cookieJar = RefreshCookieJar(secrets)
+    val httpClient: OkHttpClient = OkHttpClient.Builder().cookieJar(cookieJar)
+        .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
+    val session = SessionStore(httpClient, config, scope)
+    val api: KioskApi = OkHttpKioskApi(httpClient, config, session)
+    val auth = KioskAuth(api, session, identity, scope)
+    val sync = Sync(api, db, scope)
+    val outbox = Outbox(RoomOutboxStore(db.outbox()), api, identity, scope)
+    val hasDataWedge: Boolean = DataWedge.isPresent(app)
+    val hasCamera: Boolean = hasCamera(app)
+    val heartbeat = Heartbeat(api, identity, config, deviceInfo = {
+        mapOf(
+            "manufacturer" to Build.MANUFACTURER, "model" to Build.MODEL,
+            "android_version" to Build.VERSION.RELEASE, "sdk_int" to Build.VERSION.SDK_INT.toString(),
+            "datawedge" to hasDataWedge.toString(),
+        )
+    })
+    val foreground = MutableStateFlow(false)
+    val scanBus = ScanBus()
+    val dataWedgeReceiver = DataWedgeReceiver(scanBus)
+    val flash = FlashController(scope)
+    val sound = SoundPlayer(prefs, scope)
+
+    fun start() {
+        scope.launch { identity.get(); auth.restore(); sync.hydrate() }
+        scope.launch { session.sessionEnded.collect { cookieJar.clearRefreshCookie() } }
+        SessionCoordinator(auth, heartbeat, foreground, scope).start()
+        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) { foreground.value = true; outbox.start() }
+            override fun onStop(owner: LifecycleOwner) { foreground.value = false; outbox.stop() }
+        })
+        DataWedge.configure(app)
+    }
+
+    suspend fun logout() {
+        auth.logout()
+        cookieJar.clearRefreshCookie()
+    }
+}
+
+val LocalAppContainer = staticCompositionLocalOf<AppContainer> { error("No AppContainer provided") }
