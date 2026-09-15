@@ -70,7 +70,10 @@ class OkHttpKioskApiAuthTest {
             kotlinx.coroutines.yield()   // let the collector subscribe before the emit
             h.server.enqueue(jsonResponse(401, """{"detail":{"code":"token_expired"}}"""))
             h.server.enqueue(jsonResponse(401, """{"detail":{"code":"invalid_token"}}"""))   // refresh fails
-            try { h.api.heartbeat(HeartbeatIn(serial = "s", name = "Kiosk")); fail() } catch (e: ApiError) { assertEquals(401, e.status) }
+            try { h.api.heartbeat(HeartbeatIn(serial = "s", name = "Kiosk")); fail() } catch (e: ApiError) {
+                assertEquals(401, e.status)
+                assertEquals("token_expired", e.code)
+            }
             collector.join()
             assertTrue(ended)
         }

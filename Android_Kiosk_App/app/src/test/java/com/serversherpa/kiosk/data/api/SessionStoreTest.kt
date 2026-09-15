@@ -58,6 +58,16 @@ class SessionStoreTest {
         }
     }
 
+    @Test fun malformedRefreshBodyKeepsStateAndReturnsNull() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.server.enqueue(sessionResponse())
+            h.api.login("a@b.c", "pw")
+            h.server.enqueue(jsonResponse(200, "{not json"))
+            assertNull(h.session.refresh())
+            assertEquals("tok1", h.session.accessToken())
+        }
+    }
+
     @Test fun refreshIsSingleFlight() = runBlocking {
         ApiHarness(tmp.root).use { h ->
             h.server.enqueue(sessionResponse(cookie = null, token = "slow").setBodyDelay(300, TimeUnit.MILLISECONDS))

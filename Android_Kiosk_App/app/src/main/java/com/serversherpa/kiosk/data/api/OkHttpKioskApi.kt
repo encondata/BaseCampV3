@@ -83,9 +83,11 @@ class OkHttpKioskApi(
         }
         var resp = go()
         if (resp.code == 401) {
-            resp.close()
             val refreshed = session.refresh()
-            if (refreshed != null) resp = go()
+            if (refreshed != null) {
+                resp.close()          // the retry replaces it
+                resp = go()
+            }
             if (refreshed == null || resp.code == 401) session.notifySessionEnded()
         }
         return resp

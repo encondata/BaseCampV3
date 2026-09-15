@@ -2,7 +2,6 @@ package com.serversherpa.kiosk.data.api
 
 import com.serversherpa.kiosk.core.model.SessionData
 import com.serversherpa.kiosk.data.config.KioskConfig
-import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -80,8 +79,8 @@ class SessionStore(
                 store(data)
                 data
             }
-        } catch (e: IOException) {
-            null   // network hiccup: keep local state
+        } catch (e: Exception) {
+            null   // network hiccup or an unreadable answer: keep local state
         }
     }
 }
