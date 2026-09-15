@@ -54,6 +54,7 @@ import TimeManagement from './pages/TimeManagement';
 import Trucks from './pages/Trucks';
 import Warehouse from './pages/Warehouse';
 import TruckDetail from './pages/TruckDetail';
+import UserDetail from './pages/UserDetail';
 import Users from './pages/Users';
 import Variables from './pages/Variables';
 import Workers from './pages/Workers';
@@ -128,6 +129,15 @@ export default function App() {
                   <ProtectedRoute resource="initiatives"><MoveAssetDetail /></ProtectedRoute>
                 } />
                 <Route path="/people/users" element={<ProtectedRoute resource="users"><Users /></ProtectedRoute>} />
+                <Route path="/people/users/:personId" element={
+                  <ProtectedRoute resource="users"><UserDetail /></ProtectedRoute>
+                } />
+                <Route path="/people/users/:personId/access" element={
+                  <ProtectedRoute resource="users"><UserDetail /></ProtectedRoute>
+                } />
+                <Route path="/people/users/:personId/history" element={
+                  <ProtectedRoute resource="users"><UserDetail /></ProtectedRoute>
+                } />
                 <Route path="/people/workers" element={<ProtectedRoute resource="workers"><Workers /></ProtectedRoute>} />
                 <Route path="/people/workers/:personId" element={
                   <ProtectedRoute resource="workers"><WorkerDetailPage /></ProtectedRoute>
