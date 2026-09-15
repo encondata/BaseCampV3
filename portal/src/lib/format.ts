@@ -18,7 +18,15 @@ export function relativeTime(iso: string | null): string {
 
 export function longDate(iso: string | null): string {
   if (!iso) return '—';
-  return new Date(iso).toLocaleDateString(undefined, {
+  return longDateOf(new Date(iso));
+}
+
+/** longDate for a Date that already holds the local calendar day. Use this
+ *  for a date-only API field (stored midnight UTC): `new Date(iso)` lands on
+ *  the previous evening anywhere west of UTC, so longDate would name the day
+ *  before — parse the Y-M-D digits into a local Date first. */
+export function longDateOf(d: Date): string {
+  return d.toLocaleDateString(undefined, {
     year: 'numeric', month: 'short', day: 'numeric',
   });
 }

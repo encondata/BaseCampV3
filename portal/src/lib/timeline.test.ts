@@ -7,8 +7,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  barFor, itemsOnDay, monthGrid, rangeFor, realBarFor, sortForTimeline,
-  ticksFor, type TimelineItem,
+  barFor, calendarWeeks, itemsOnDay, monthGrid, rangeFor, realBarFor,
+  sortForTimeline, ticksFor, type TimelineItem,
 } from './timeline';
 
 function item(overrides: Partial<TimelineItem>): TimelineItem {
@@ -212,5 +212,106 @@ describe('itemsOnDay', () => {
   it('excludes days outside the range and unscheduled items', () => {
     expect(itemsOnDay(items, new Date(2026, 8, 13))).toEqual([]);
     expect(itemsOnDay(items, new Date(2026, 8, 7))).toEqual([]);
+  });
+});
+
+describe('calendarWeeks', () => {
+  // September 2026: the grid starts Mon Aug 31, so week 0 is Aug 31 – Sep 6,
+  // week 1 is Sep 7-13, week 2 Sep 14-20, week 3 Sep 21-27, week 4 Sep 28 –
+  // Oct 4, and week 5 Oct 5-11.
+  const cells = monthGrid(new Date(2026, 8, 1));
+
+  it('gives one entry per week row, each holding its seven days', () => {
+    const weeks = calendarWeeks([], cells);
+    expect(weeks).toHaveLength(6);
+    expect(weeks[0].days).toHaveLength(7);
+    expect(weeks[0].days[0].date).toEqual(new Date(2026, 7, 31));
+    expect(weeks[5].days[6].date).toEqual(new Date(2026, 9, 11));
+    expect(weeks[0].segments).toEqual([]);
+    expect(weeks[0].laneCount).toBe(0);
+  });
+
+  it('turns a multi-day item into one spanning segment per week it touches', () => {
+    const items = [item({
+      name: 'Long', scheduled_start: '2026-09-10', scheduled_end: '2026-09-16',
+    })];
+    const weeks = calendarWeeks(items, cells);
+    // Sep 10 is a Thursday (column 3) in week 1; the run reaches Sunday.
+    expect(weeks[1].segments).toEqual([expect.objectContaining({
+      startCol: 3, span: 4, lane: 0,
+      continuesBefore: false, continuesAfter: true,
+    })]);
+    // Week 2 picks it up on Monday and stops on Wednesday (Sep 16).
+    expect(weeks[2].segments).toEqual([expect.objectContaining({
+      startCol: 0, span: 3, lane: 0,
+      continuesBefore: true, continuesAfter: false,
+    })]);
+    expect(weeks[0].segments).toEqual([]);
+    expect(weeks[3].segments).toEqual([]);
+  });
+
+  it('renders a single-day item as a one-column segment with no continuation', () => {
+    const items = [item({ name: 'One', scheduled_start: '2026-09-09', scheduled_end: null })];
+    const seg = calendarWeeks(items, cells)[1].segments[0];
+    expect(seg).toMatchObject({
+      startCol: 2, span: 1, lane: 0, continuesBefore: false, continuesAfter: false,
+    });
+    expect(seg.item.name).toBe('One');
+  });
+
+  it('clips a run that starts before the grid and ends after it', () => {
+    const items = [item({
+      name: 'Straddles', scheduled_start: '2026-08-01', scheduled_end: '2026-11-01',
+    })];
+    const weeks = calendarWeeks(items, cells);
+    expect(weeks[0].segments[0]).toMatchObject({
+      startCol: 0, span: 7, continuesBefore: true, continuesAfter: true,
+    });
+    expect(weeks[5].segments[0]).toMatchObject({
+      startCol: 0, span: 7, continuesBefore: true, continuesAfter: true,
+    });
+  });
+
+  it('stacks overlapping runs into separate lanes and reuses a free lane', () => {
+    const items = [
+      item({ name: 'A', scheduled_start: '2026-09-07', scheduled_end: '2026-09-09' }),
+      item({ name: 'B', scheduled_start: '2026-09-08', scheduled_end: '2026-09-10' }),
+      // Starts after A ends, so it fits beside B on A's lane.
+      item({ name: 'C', scheduled_start: '2026-09-11', scheduled_end: '2026-09-11' }),
+    ];
+    const week = calendarWeeks(items, cells)[1];
+    const byName = Object.fromEntries(week.segments.map((s) => [s.item.name, s]));
+    expect(byName.A.lane).toBe(0);
+    expect(byName.B.lane).toBe(1);
+    expect(byName.C.lane).toBe(0);
+    expect(week.laneCount).toBe(2);
+  });
+
+  it('orders lanes by start date, then by the longer run, then by name', () => {
+    const items = [
+      item({ name: 'Zed short', scheduled_start: '2026-09-07', scheduled_end: '2026-09-07' }),
+      item({ name: 'Alpha long', scheduled_start: '2026-09-07', scheduled_end: '2026-09-11' }),
+      item({ name: 'Earlier', scheduled_start: '2026-09-06', scheduled_end: '2026-09-09' }),
+    ];
+    const week = calendarWeeks(items, cells)[1];
+    const byName = Object.fromEntries(week.segments.map((s) => [s.item.name, s]));
+    // Earlier starts before the week, so it takes lane 0; the longer of the
+    // two Monday runs takes lane 1 and the short one lane 2.
+    expect(byName.Earlier.lane).toBe(0);
+    expect(byName['Alpha long'].lane).toBe(1);
+    expect(byName['Zed short'].lane).toBe(2);
+  });
+
+  it('ignores unscheduled items', () => {
+    const weeks = calendarWeeks([item({ name: 'No dates', scheduled_start: null })], cells);
+    expect(weeks.every((w) => w.segments.length === 0)).toBe(true);
+  });
+
+  it('treats an end before the start as a single day', () => {
+    const items = [item({
+      name: 'Backwards', scheduled_start: '2026-09-09', scheduled_end: '2026-09-07',
+    })];
+    expect(calendarWeeks(items, cells)[1].segments[0])
+      .toMatchObject({ startCol: 2, span: 1 });
   });
 });
