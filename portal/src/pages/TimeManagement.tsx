@@ -17,6 +17,7 @@ import {
 
 import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
+import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
 import StatusHover from '../components/StatusHover';
 import TimeEntryEditModal, { mapTimeError } from '../components/time/TimeEntryEditModal';
 import {
@@ -279,8 +280,11 @@ export default function TimeManagement() {
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
+  // The trailing track holds one RowActionsMenu trigger instead of the old
+  // Approve + Reject + Edit strip; 88px is the width the other converted
+  // lists give that trigger (Warehouse.tsx, InitiativeDetail.tsx).
   const grid = {
-    gridTemplateColumns: shownCols.map((c) => c.width).join(' ') + (canChange ? ' 210px' : ''),
+    gridTemplateColumns: shownCols.map((c) => c.width).join(' ') + (canChange ? ' 88px' : ''),
   };
 
   const haystack = useSearchHaystacks(timesheet, (e: TimeEntryItem) =>
@@ -574,26 +578,32 @@ export default function TimeManagement() {
                         <div className="cell" key={c.key}>{cellFor(e, c.key)}</div>
                       ))}
                       {canChange && (
+                        // Approve/Reject are BUILT only for a pending entry
+                        // rather than disabled on a settled one: they are not
+                        // momentarily unavailable, they do not apply at all.
+                        // `disabled` is reserved for the in-flight row.
+                        // `.row-main` here is `time-row-static` — no click
+                        // handler — so no stopPropagation wrapper is needed.
                         <div className="cell time-row-actions">
-                          {e.status === 'pending' && (
-                            <button type="button" className="mini-btn sm"
-                                    disabled={rowBusyId === e.id}
-                                    onClick={() => void doApproveRow(e.id)}>
-                              Approve
-                            </button>
-                          )}
-                          {e.status === 'pending' && (
-                            <button type="button" className="mini-btn sm danger"
-                                    disabled={rowBusyId === e.id}
-                                    onClick={() => setModal({ entry: e, mode: 'reject' })}>
-                              Reject
-                            </button>
-                          )}
-                          <button type="button" className="mini-btn sm"
-                                  disabled={rowBusyId === e.id}
-                                  onClick={() => setModal({ entry: e, mode: 'edit' })}>
-                            Edit
-                          </button>
+                          <RowActionsMenu actions={[
+                            ...(e.status === 'pending' ? [
+                              {
+                                key: 'approve', label: 'Approve',
+                                disabled: rowBusyId === e.id,
+                                onSelect: () => void doApproveRow(e.id),
+                              },
+                              {
+                                key: 'reject', label: 'Reject', destructive: true,
+                                disabled: rowBusyId === e.id,
+                                onSelect: () => setModal({ entry: e, mode: 'reject' }),
+                              },
+                            ] : []),
+                            {
+                              key: 'edit', label: 'Edit',
+                              disabled: rowBusyId === e.id,
+                              onSelect: () => setModal({ entry: e, mode: 'edit' }),
+                            },
+                          ] satisfies RowAction[]} />
                         </div>
                       )}
                     </div>

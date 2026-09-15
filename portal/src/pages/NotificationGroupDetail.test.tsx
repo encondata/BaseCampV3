@@ -352,8 +352,8 @@ it('override modal shows switch rows only for channels the member can receive', 
   renderPage();
   await screen.findByText('Ops Alerts');
 
-  const row = screen.getByRole('row', { name: /alice tech/i });
-  await user.click(within(row).getByRole('button', { name: /^edit$/i }));
+  await openRowMenu(user, /alice tech/i);
+  await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
 
   const heading = await screen.findByRole('heading', { name: /overrides — alice tech/i });
   const dialog = heading.closest('.modal-card') as HTMLElement;
@@ -374,8 +374,8 @@ it('resetting a channel override to inherit sends an explicit null', async () =>
   renderPage();
   await screen.findByText('Ops Alerts');
 
-  const row = screen.getByRole('row', { name: /bob override/i });
-  await user.click(within(row).getByRole('button', { name: /^edit$/i }));
+  await openRowMenu(user, /bob override/i);
+  await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
 
   const heading = await screen.findByRole('heading', { name: /overrides — bob override/i });
   const dialog = heading.closest('.modal-card') as HTMLElement;
@@ -425,8 +425,8 @@ it('drops a stale unreachable channel from a custom override when saving', async
   renderPage();
   await screen.findByText('Ops Alerts');
 
-  const row = screen.getByRole('row', { name: /dana stale/i });
-  await user.click(within(row).getByRole('button', { name: /^edit$/i }));
+  await openRowMenu(user, /dana stale/i);
+  await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
 
   const heading = await screen.findByRole('heading', { name: /overrides — dana stale/i });
   const dialog = heading.closest('.modal-card') as HTMLElement;
@@ -443,18 +443,104 @@ it('drops a stale unreachable channel from a custom override when saving', async
     .toHaveBeenCalledWith('g1', 'p4', { channels: ['email'] }));
 });
 
-it('removing a member requires a second click before calling the API', async () => {
+// ── Members panel row actions (Task 3) ──────────────────────────────
+
+/** Open one member row's Actions menu. Items are then queried via
+ *  `screen`, NOT `within(row)`: RowActionsMenu portals the open menu to
+ *  document.body (see RowActionsMenu.tsx and the note at
+ *  KioskDevices.test.tsx:178), so they no longer sit in the row's DOM
+ *  subtree. Only one menu is open at a time, so screen-level queries
+ *  stay unambiguous. */
+async function openRowMenu(user: ReturnType<typeof userEvent.setup>, name: RegExp) {
+  const row = screen.getByRole('row', { name });
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  return row;
+}
+
+it('member row: one Actions trigger replaces the inline Edit/Remove buttons', async () => {
   const user = userEvent.setup();
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
+  renderPage();
+  await screen.findByText('Ops Alerts');
+
+  const row = screen.getByRole('row', { name: /alice tech/i });
+  expect(within(row).queryByRole('button', { name: /^edit$/i })).toBeNull();
+  expect(within(row).queryByRole('button', { name: /^remove$/i })).toBeNull();
+
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  expect(screen.getByRole('menuitem', { name: 'Edit' })).not.toBeNull();
+  const remove = screen.getByRole('menuitem', { name: 'Remove' });
+  expect(remove.className).toContain('danger');
+});
+
+it('member row: Remove confirms through confirm() and never reflows the row', async () => {
+  const user = userEvent.setup();
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
   api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
   api.removeNotificationMember.mockResolvedValue(undefined);
   renderPage();
   await screen.findByText('Ops Alerts');
 
   const row = screen.getByRole('row', { name: /alice tech/i });
-  await user.click(within(row).getByRole('button', { name: /^remove$/i }));
-  expect(api.removeNotificationMember).not.toHaveBeenCalled();
+  const actionCell = row.querySelectorAll('td')[5] as HTMLElement;
+  const before = actionCell.innerHTML;
 
-  await user.click(within(row).getByRole('button', { name: /really remove/i }));
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Remove' }));
+
+  expect(confirmSpy).toHaveBeenCalled();
+  expect(api.removeNotificationMember).not.toHaveBeenCalled();
+  // The old inline confirm swapped the cell into Edit + "Really remove?" +
+  // Cancel, which is the only reason the column was 250px wide. The menu
+  // path must leave the cell's markup byte-identical.
+  expect(actionCell.innerHTML).toBe(before);
+  expect(screen.queryByRole('button', { name: /really remove/i })).toBeNull();
+  expect(screen.queryByRole('button', { name: /^cancel$/i })).toBeNull();
+
+  confirmSpy.mockReturnValue(true);
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Remove' }));
 
   await waitFor(() => expect(api.removeNotificationMember).toHaveBeenCalledWith('g1', 'p1'));
+  confirmSpy.mockRestore();
+});
+
+it('member row: the actions column is sized to the trigger, not to an inline confirm', async () => {
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
+  const { container } = renderPage();
+  await screen.findByText('Alice Tech');
+
+  const cols = container.querySelectorAll('.ngd-members-table col');
+  expect((cols[cols.length - 1] as HTMLElement).style.width).toBe('88px');
+});
+
+it('member row: menu items are disabled, not dropped, while the row is in flight', async () => {
+  const user = userEvent.setup();
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
+  api.removeNotificationMember.mockReturnValue(new Promise(() => {}));
+  renderPage();
+  await screen.findByText('Ops Alerts');
+
+  const row = screen.getByRole('row', { name: /alice tech/i });
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Remove' }));
+
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await waitFor(() => {
+    expect((screen.getByRole('menuitem', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('menuitem', { name: 'Remove' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+  confirmSpy.mockRestore();
+});
+
+it('member row: no Actions column at all without change permission', async () => {
+  auth.can = () => false;
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, members: [MEMBER_1] });
+  renderPage();
+  await screen.findByText('Alice Tech');
+
+  const row = screen.getByRole('row', { name: /alice tech/i });
+  expect(within(row).queryByRole('button', { name: /Actions/ })).toBeNull();
+  expect(screen.queryByRole('columnheader', { name: /actions/i })).toBeNull();
 });
