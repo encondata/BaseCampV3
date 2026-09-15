@@ -32,6 +32,59 @@ export function normalizeHex(input: string): string | null {
   return HEX_RE.test(v) ? v : null;
 }
 
+/** Hue in degrees (0-360), saturation and lightness in percent (0-100). */
+export interface Hsl { h: number; s: number; l: number }
+
+// HSL exists only so a wheel-shaped picker can move hue and lightness
+// independently (components/ColorWheel.tsx). Everything that is stored,
+// sent or rendered stays a hex string, so this pair is the whole of the
+// second representation and it never escapes the picker.
+//
+// Values are deliberately NOT rounded: hexToHsl -> hslToHex is then an
+// exact round trip for every 8-bit color, so re-reading a color the user
+// never touched can't drift it. Callers round for display.
+export function hexToHsl(input: string): Hsl | null {
+  const hex = normalizeHex(input);
+  if (!hex) return null;   // junk gets a null, never a guessed hue
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  const l = (max + min) / 2;
+  if (d === 0) return { h: 0, s: 0, l: l * 100 };   // gray: hue is undefined
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h: number;
+  if (max === r) h = ((g - b) / d) % 6;
+  else if (max === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  h *= 60;
+  if (h < 0) h += 360;
+  return { h, s: s * 100, l: l * 100 };
+}
+
+// The inverse. Out-of-range input is wrapped (hue) or clamped (s/l) rather
+// than refused, because the picker's own arithmetic runs past both ends:
+// the ring wraps at 360 and the slider is clamped by its own min/max.
+export function hslToHex({ h, s, l }: Hsl): string {
+  const hue = ((h % 360) + 360) % 360;
+  const sat = Math.min(100, Math.max(0, s)) / 100;
+  const lum = Math.min(100, Math.max(0, l)) / 100;
+  const c = (1 - Math.abs(2 * lum - 1)) * sat;
+  const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+  const m = lum - c / 2;
+  let rgb: [number, number, number];
+  if (hue < 60) rgb = [c, x, 0];
+  else if (hue < 120) rgb = [x, c, 0];
+  else if (hue < 180) rgb = [0, c, x];
+  else if (hue < 240) rgb = [0, x, c];
+  else if (hue < 300) rgb = [x, 0, c];
+  else rgb = [c, 0, x];
+  const channel = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+  return `#${channel(rgb[0])}${channel(rgb[1])}${channel(rgb[2])}`;
+}
+
 export interface InsertionPoint { after: string | null; label: string }
 
 // The gaps ARE the insertion points — "before, between, after" is one list.

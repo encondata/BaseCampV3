@@ -7,12 +7,13 @@
  * ContainerEditModal's modal conventions.
  */
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 
 import {
   ApiError,
   archiveInitiative,
   createInitiative,
+  getNextInitiativeColor,
   updateInitiative,
   type InitiativeItem,
   type OrgRef,
@@ -24,7 +25,14 @@ import {
   partnerOptionsForRole, sectionsForType, siteOptionsForClient,
   type InitiativeFormState,
 } from '../../lib/initiatives';
+import ColorWheel from '../ColorWheel';
 import ComboBox from '../ComboBox';
+
+/** What the wheel opens on when there is nothing else to open on: the
+ *  first palette color, used only while the next-color lookup is in
+ *  flight or after it failed. A failed lookup must not block the modal —
+ *  the server assigns a color on create anyway. */
+const FALLBACK_COLOR = '#1668a7';
 
 interface Props {
   initiative: InitiativeItem | null;   // null = create mode
@@ -57,7 +65,26 @@ export default function InitiativeEditModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
+  // Create mode opens the wheel on the color a create would assign, so
+  // "auto-selected, changeable" is visible before saving. A user who spins
+  // the wheel before the answer arrives keeps their own choice.
+  useEffect(() => {
+    if (!isCreateMode) return undefined;
+    let alive = true;
+    const seed = (hex: string) =>
+      alive && setForm((f) => (f.color ? f : { ...f, color: hex }));
+    void getNextInitiativeColor()
+      .then(seed)
+      .catch(() => seed(FALLBACK_COLOR));
+    return () => { alive = false; };
+  }, [isCreateMode]);
+
   const locked = saving || (!isCreateMode && !canChange);
+  // An initiative that has never been colored shows its status color —
+  // the same color the calendar paints it today — without that fallback
+  // being written back to the row unless the user actually spins.
+  const wheelColor =
+    form.color || initiative?.status_color || FALLBACK_COLOR;
   // type is picked freely on create; edits are admin-only (server-enforced)
   const typeLocked = locked || (!isCreateMode && !isAdmin);
   const sections = sectionsForType(form.initiative_type);
@@ -200,6 +227,17 @@ export default function InitiativeEditModal({
                   onChange={(v) => setField('status', v)}
                   options={statusOptions}
                 /></div>
+              <div style={{ gridColumn: '1 / -1' }}><label>Color</label>
+                <ColorWheel
+                  value={wheelColor}
+                  disabled={locked}
+                  onChange={(hex) => setField('color', hex)}
+                />
+                {isCreateMode && (
+                  <span className="page-hint">
+                    Assigned automatically — spin the wheel to choose your own.
+                  </span>
+                )}</div>
               <div style={{ gridColumn: '1 / -1' }}><label>Description</label>
                 <input value={form.description} disabled={locked}
                        onChange={(e) => setField('description', e.target.value)} /></div>
