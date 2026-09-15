@@ -4,8 +4,9 @@
  * views over the same initiatives list. Pure range/tick/bar/grid math is
  * covered by lib/timeline.test.ts; this covers what's page-specific:
  * rows + bars rendering, the unscheduled section, type/status filters,
- * cancelled hidden until the pill-check, Month view's day chips, and the
- * ‹ › range navigation.
+ * cancelled hidden until the pill-check, Month view's day chips, the
+ * ‹ › range navigation, the 45-day scale, and the month band above the
+ * day ruler.
  *
  * A scheduled row's name renders twice when its bar is wide enough for
  * an inline label (once in the sticky `.pn b` row label, once in the
@@ -272,4 +273,110 @@ it('paints a calendar span with the initiative color, falling back to status', a
   expect(spans).toHaveLength(2);
   expect(spans[0].style.getPropertyValue('--chip')).toBe('#8b3fb8');
   expect(spans[1].style.getPropertyValue('--chip')).toBe('#2f7d4f');
+});
+
+/* ── The 45-day scale and the month band above the day ruler ────────── */
+
+/** The Scale switch (Month / 45 days / Quarter / Year) is the last
+ *  `.segmented` tablist in the toolbar — it shares the label "Month" with
+ *  the View switch, so scale clicks scope to this tablist. */
+function scaleSwitch() {
+  const lists = screen.getAllByRole('tablist');
+  return lists[lists.length - 1];
+}
+
+function bandLabels() {
+  return [...document.querySelectorAll('.itl-band-seg')].map((s) => s.textContent);
+}
+
+it('offers a "45 days" scale between Month and Quarter', async () => {
+  await renderPage([initiative()]);
+  const labels = within(scaleSwitch()).getAllByRole('button').map((b) => b.textContent);
+  expect(labels).toEqual(['Month', '45 days', 'Quarter', 'Year']);
+});
+
+it('renders 45 day ticks on the 45-day scale', async () => {
+  await renderPage([initiative()]);
+  fireEvent.click(within(scaleSwitch()).getByRole('button', { name: '45 days' }));
+  const ticks = [...document.querySelectorAll('.itl-tick')];
+  // Today is Tue Sep 8 2026, so the range runs Mon Sep 7 → Wed Oct 21.
+  expect(ticks).toHaveLength(45);
+  expect(ticks[0].textContent).toBe('7');
+  expect(ticks[44].textContent).toBe('21');
+});
+
+it('‹ and › step the 45-day range by 45 days', async () => {
+  await renderPage([
+    initiative({
+      id: 'i1', name: 'September item',
+      scheduled_start: '2026-09-09', scheduled_end: '2026-09-09',
+    }),
+    initiative({
+      id: 'i2', name: 'November item',
+      scheduled_start: '2026-11-02', scheduled_end: '2026-11-03',
+    }),
+  ]);
+  fireEvent.click(within(scaleSwitch()).getByRole('button', { name: '45 days' }));
+  const firstTick = () => document.querySelector('.itl-tick')?.textContent;
+  expect(firstTick()).toBe('7'); // Mon Sep 7
+  expect(screen.getByText('September item', { selector: 'b' })).not.toBeNull();
+  expect(screen.queryByText('November item', { selector: 'b' })).toBeNull();
+
+  // Anchor Sep 8 + 45 days = Fri Oct 23, whose week begins Mon Oct 19.
+  // (A month step would land on Oct 8, whose week begins Mon Oct 5.)
+  fireEvent.click(screen.getByRole('button', { name: 'Next period' }));
+  expect(firstTick()).toBe('19');
+  expect(screen.queryByText('September item', { selector: 'b' })).toBeNull();
+  expect(screen.getByText('November item', { selector: 'b' })).not.toBeNull();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Previous period' }));
+  expect(firstTick()).toBe('7');
+  expect(screen.getByText('September item', { selector: 'b' })).not.toBeNull();
+});
+
+it('names every month the range covers above the day ruler', async () => {
+  await renderPage([initiative()]);
+
+  // Month scale: Sep 1 → Oct 1, one band.
+  expect(bandLabels()).toEqual(['Sep 2026']);
+  const header = document.querySelector('.itl-header-row') as HTMLElement;
+  const band = header.querySelector('.itl-band') as HTMLElement;
+  const ticks = header.querySelector('.itl-ticks') as HTMLElement;
+  expect(band).not.toBeNull();
+  expect(ticks).not.toBeNull();
+  // The band row sits above the day ruler, inside the sticky header.
+  expect(band.compareDocumentPosition(ticks) & Node.DOCUMENT_POSITION_FOLLOWING)
+    .toBeTruthy();
+
+  // 45-day scale: Mon Sep 7 → Oct 22, so Sep (24 days) then Oct (21).
+  fireEvent.click(within(scaleSwitch()).getByRole('button', { name: '45 days' }));
+  expect(bandLabels()).toEqual(['Sep 2026', 'Oct 2026']);
+  const segs = [...document.querySelectorAll('.itl-band-seg')] as HTMLElement[];
+  expect(parseFloat(segs[0].style.left)).toBeCloseTo(0, 0);
+  expect(parseFloat(segs[0].style.width)).toBeCloseTo((24 / 45) * 100, 0);
+  expect(parseFloat(segs[1].style.left)).toBeCloseTo((24 / 45) * 100, 0);
+  expect(parseFloat(segs[1].style.width)).toBeCloseTo((21 / 45) * 100, 0);
+
+  // Quarter scale: Jul 1 → Oct 1, three bands in order.
+  fireEvent.click(within(scaleSwitch()).getByRole('button', { name: 'Quarter' }));
+  expect(bandLabels()).toEqual(['Jul 2026', 'Aug 2026', 'Sep 2026']);
+});
+
+it('leaves the Year scale bandless — its ticks are already month names', async () => {
+  await renderPage([initiative()]);
+  expect(bandLabels()).toEqual(['Sep 2026']); // Month scale has one
+
+  fireEvent.click(within(scaleSwitch()).getByRole('button', { name: 'Year' }));
+  expect(bandLabels()).toEqual([]);
+  expect(document.querySelector('.itl-band')).toBeNull();
+  // The year ruler already names the months itself.
+  expect(document.querySelector('.itl-tick')?.textContent).toBe('Jan');
+});
+
+it('honors a remembered 45-day scale from a previous visit', async () => {
+  localStorage.setItem('initiatives-timeline.scale', '45d');
+  await renderPage([initiative()]);
+  const pill = within(scaleSwitch()).getByRole('button', { name: '45 days' });
+  expect(pill.className).toContain('on');
+  expect(document.querySelectorAll('.itl-tick')).toHaveLength(45);
 });
