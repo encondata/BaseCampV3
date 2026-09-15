@@ -19,6 +19,7 @@ import ComboBox, { type ComboOption } from '../components/ComboBox';
 import AssetEditDialog from '../components/initiatives/AssetEditDialog';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
 import RackViewModal from '../components/initiatives/RackViewModal';
+import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import InlineTextField from '../components/InlineTextField';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import ScanHistoryTable from '../components/scans/ScanHistoryTable';
@@ -88,6 +89,14 @@ import '../styles/profile.css';
  *  — slicing the ISO string (rather than toLocaleDateString) avoids the
  *  day-west-of-UTC shift documented on lib/initiatives.ts's dateOnly. */
 const dateOnly = (iso: string | null) => (iso ? iso.slice(0, 10) : null);
+
+/** Grid track reserved for a row's Actions menu. Sized to the .mini-btn
+ *  trigger reading "Actions ▾" — 12.5px Geologica-500 plus 13px of
+ *  padding and a 1px border either side — and matched to Warehouse.tsx,
+ *  the converted list with the same shape (trigger cell + a separate
+ *  30px chevron track). Replaces the 132px the two inline buttons
+ *  needed, handing 44px per list back to the flexible columns. */
+const ACTIONS_TRACK = '88px';
 
 /* ── People section — standard list machinery (mirrors Initiatives.tsx's
       COLUMNS/sortValueFor pattern; see lib/columnMenu.tsx + lib/listTools.tsx
@@ -523,7 +532,7 @@ export default function InitiativeDetail() {
     .map((i) => ({ value: i.id, label: i.name, sub: i.type_label }));
 
   const peopleGrid = { gridTemplateColumns:
-    `${peopleShownCols.map((c) => c.width).join(' ')}${canChange ? ' 132px' : ''}` };
+    `${peopleShownCols.map((c) => c.width).join(' ')}${canChange ? ` ${ACTIONS_TRACK}` : ''}` };
 
   const peopleCaret = (key: string) =>
     peopleSortKey === key
@@ -556,7 +565,7 @@ export default function InitiativeDetail() {
   };
 
   const assetsGrid = { gridTemplateColumns:
-    `${assetsShownCols.map((c) => c.width).join(' ')}${canChange ? ' 132px' : ''} 30px` };
+    `${assetsShownCols.map((c) => c.width).join(' ')}${canChange ? ` ${ACTIONS_TRACK}` : ''} 30px` };
 
   const assetsCaret = (key: string) =>
     assetsSortKey === key
@@ -820,24 +829,28 @@ export default function InitiativeDetail() {
                                  key={c.key}>{assetCellFor(a, c.key)}</div>
                           ))}
                           {canChange && (
-                            <div className="cell idet-assets-actions">
-                              <button type="button" className="mini-btn sm"
-                                      disabled={assetsBusy}
-                                      onClick={(e) => { e.stopPropagation(); setEditingAsset(a); }}>
-                                Edit
-                              </button>
-                              <button type="button" className="mini-btn sm danger"
-                                      disabled={assetsBusy}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        const label = a.asset.name
-                                          ?? a.asset.serial_number ?? 'this asset';
-                                        if (!confirm(
-                                          `Remove "${label}" from this initiative?`)) return;
-                                        void runAssets(() => removeInitiativeAsset(a.id));
-                                      }}>
-                                Remove
-                              </button>
+                            // The row toggles its expansion on click, so the
+                            // cell swallows clicks that land beside the trigger
+                            // (the trigger stops its own).
+                            <div className="cell idet-assets-actions"
+                                 onClick={(e) => e.stopPropagation()}>
+                              <RowActionsMenu actions={[
+                                {
+                                  key: 'edit', label: 'Edit', disabled: assetsBusy,
+                                  onSelect: () => setEditingAsset(a),
+                                },
+                                {
+                                  key: 'remove', label: 'Remove',
+                                  destructive: true, disabled: assetsBusy,
+                                  onSelect: () => {
+                                    const label = a.asset.name
+                                      ?? a.asset.serial_number ?? 'this asset';
+                                    if (!confirm(
+                                      `Remove "${label}" from this initiative?`)) return;
+                                    void runAssets(() => removeInitiativeAsset(a.id));
+                                  },
+                                },
+                              ]} />
                             </div>
                           )}
                           <div className="cell chevron-cell">
@@ -1012,21 +1025,24 @@ export default function InitiativeDetail() {
                           <div className="cell" key={c.key}>{personCellFor(p, c.key)}</div>
                         ))}
                         {canChange && (
+                          // No stopPropagation wrapper here: unlike the assets
+                          // list, this row has no click handler of its own.
                           <div className="cell idet-people-actions">
-                            <button type="button" className="mini-btn sm"
-                                    disabled={peopleBusy}
-                                    onClick={() => setEditingPerson(p)}>
-                              Edit
-                            </button>
-                            <button type="button" className="mini-btn sm danger"
-                                    disabled={peopleBusy}
-                                    onClick={() => {
-                                      if (!confirm(
-                                        `Remove "${p.person_name}" from this initiative?`)) return;
-                                      void runPeople(() => removeInitiativePerson(p.id));
-                                    }}>
-                              Remove
-                            </button>
+                            <RowActionsMenu actions={[
+                              {
+                                key: 'edit', label: 'Edit', disabled: peopleBusy,
+                                onSelect: () => setEditingPerson(p),
+                              },
+                              {
+                                key: 'remove', label: 'Remove',
+                                destructive: true, disabled: peopleBusy,
+                                onSelect: () => {
+                                  if (!confirm(
+                                    `Remove "${p.person_name}" from this initiative?`)) return;
+                                  void runPeople(() => removeInitiativePerson(p.id));
+                                },
+                              },
+                            ]} />
                           </div>
                         )}
                       </div>

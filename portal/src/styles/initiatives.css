@@ -181,7 +181,9 @@
 .idet-people-toolbar { margin: 0 0 12px; }
 .idet-people-list .row-main { cursor: default; }
 .idet-people-list .row-main:hover { background: none; }
-.idet-people-actions { display: flex; gap: 8px; white-space: nowrap; }
+/* One RowActionsMenu trigger, right-aligned in its track (the same
+   treatment the other converted lists give their action cell). */
+.idet-people-actions { display: flex; justify-content: flex-end; }
 
 /* .dir-list clips overflow for its 16px corner radius (directory.css), but
    that also clips the per-column filter popover (.pop-menu, chrome.css),
@@ -330,8 +332,8 @@
   white-space: nowrap;
 }
 
-/* row actions (Task 4) — same treatment as .idet-people-actions */
-.idet-assets-actions { display: flex; gap: 8px; white-space: nowrap; }
+/* row actions — same treatment as .idet-people-actions */
+.idet-assets-actions { display: flex; justify-content: flex-end; }
 
 /* ── asset edit dialog (Task 4) — a bit wider than the plain modal-card
    default to give the source/destination pairs room to breathe. ────── */
