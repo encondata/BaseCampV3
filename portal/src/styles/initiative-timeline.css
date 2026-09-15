@@ -105,6 +105,12 @@
   border-left: 1px solid var(--paper-line);
   color: var(--text-mute);
   white-space: nowrap;
+  /* One tick's slot, set per scale by the page. A label that wants more is
+     trimmed here; without the cap it printed over the following tick, which
+     is what made the quarter ruler unreadable. */
+  max-width: var(--tick-w, none);
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .itl-row {

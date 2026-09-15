@@ -55,13 +55,26 @@ describe('ticksFor', () => {
     expect(ticks[0].at).toEqual(new Date(2026, 8, 1));
   });
 
-  it('quarter scale: one tick per ISO week, Monday-aligned', () => {
+  // The label is the week number alone. It used to carry the month and day
+  // too ("Wk 28 · Jul 6"), which needed more pixels than a tick's own slot
+  // and so printed over the next tick. The month band above the ruler now
+  // names the month, and the bar tooltips carry exact dates.
+  it('quarter scale: one tick per ISO week, Monday-aligned, labeled by week', () => {
     const range = rangeFor(new Date(2026, 6, 1), 'quarter'); // Q3 2026: Jul 1 - Sep 30
     const ticks = ticksFor(range, 'quarter');
     expect(ticks.length).toBeGreaterThan(10);
     for (const t of ticks) {
       expect(t.at.getDay()).toBe(1); // every tick lands on a Monday
-      expect(t.label).toMatch(/^Wk \d+ · [A-Z][a-z]{2} \d{1,2}$/);
+      expect(t.label).toMatch(/^Wk \d+$/);
+    }
+  });
+
+  it('quarter labels stay short enough for their slot', () => {
+    const range = rangeFor(new Date(2026, 6, 1), 'quarter');
+    // 84px per tick in the page; at the ruler's font a label over ~10
+    // characters is what started overlapping the neighboring tick.
+    for (const t of ticksFor(range, 'quarter')) {
+      expect(t.label.length).toBeLessThanOrEqual(6);
     }
   });
 

@@ -380,3 +380,50 @@ it('honors a remembered 45-day scale from a previous visit', async () => {
   expect(pill.className).toContain('on');
   expect(document.querySelectorAll('.itl-tick')).toHaveLength(45);
 });
+
+/* ── Calendar hover card ────────────────────────────────────────────── */
+
+/** The calendar's bars carry a hover card (components/initiatives/
+ *  InitiativeHoverCard) instead of a native `title`. The card's own
+ *  content is covered beside the component; this is the wiring: it
+ *  reaches the calendar bars, it carries this item's details, and the
+ *  wrapper it adds leaves the bar's grid placement alone. */
+it('opens a hover card over a calendar bar, and carries no native title', async () => {
+  await renderPage([
+    initiative({ scheduled_start: '2026-09-05', scheduled_end: '2026-09-05' }),
+  ]);
+  fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Calendar' }));
+
+  const bar = document.querySelector('.itl-span') as HTMLElement;
+  expect(bar.getAttribute('title')).toBeNull(); // the card replaces it
+  expect(document.querySelector('.ihv-card')).toBeNull();
+
+  fireEvent.mouseOver(bar);
+  act(() => { vi.advanceTimersByTime(200); });
+  const card = document.querySelector('.ihv-card') as HTMLElement;
+  expect(card).not.toBeNull();
+  expect(card.textContent).toContain('Denver DC migration');
+  expect(card.textContent).toContain('Acme · DC-East');
+  expect(card.querySelectorAll('.chip.custom')).toHaveLength(2);
+
+  fireEvent.mouseOut(bar);
+  expect(document.querySelector('.ihv-card')).toBeNull();
+});
+
+it('leaves the calendar bar its own grid placement under the hover wrapper', async () => {
+  await renderPage([
+    initiative({ scheduled_start: '2026-09-05', scheduled_end: '2026-09-05' }),
+  ]);
+  fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Calendar' }));
+
+  const bar = document.querySelector('.itl-span') as HTMLElement;
+  expect(bar.parentElement?.className).toContain('ihv-wrap');
+  expect(bar.style.gridColumn).toBe('6 / span 1'); // Sat Sep 5, one day
+});
+
+it("leaves the timeline view's bars on their native title (calendar only)", async () => {
+  await renderPage([initiative()]);
+  const bar = document.querySelector('.itl-bar') as HTMLElement;
+  expect(bar.getAttribute('title')).toContain('Denver DC migration');
+  expect(document.querySelector('.ihv-wrap')).toBeNull();
+});

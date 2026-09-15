@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 
 import ComboBox from '../components/ComboBox';
+import InitiativeHoverCard from '../components/initiatives/InitiativeHoverCard';
 import {
   ApiError, listInitiatives, listInitiativeStatuses,
   type InitiativeItem, type StatusValue,
@@ -342,7 +343,10 @@ function TimelineGrid({
                 ))}
               </div>
             )}
-            <div className="itl-ticks">
+            {/* --tick-w caps every label at its own slot, so a long one is
+                trimmed rather than printed over the next tick. */}
+            <div className="itl-ticks"
+                 style={{ '--tick-w': `${rightWidth / ticks.length}px` } as CSSProperties}>
               {ticks.map((t, idx) => (
                 <span key={idx} className="itl-tick"
                       style={{ left: `${pctForDate(t.at, range) ?? 0}%` }}>
@@ -521,17 +525,22 @@ function CalendarMonth({ items, anchor }: { items: InitiativeItem[]; anchor: Dat
 function CalendarSpan({ seg }: { seg: CalendarSegment<InitiativeItem> }) {
   const i = seg.item;
   return (
-    <Link to={`/initiatives/${i.id}`}
-          className={`chip custom itl-span ${seg.continuesBefore ? 'cont-before' : ''} ` +
-                     `${seg.continuesAfter ? 'cont-after' : ''}`}
-          title={spanTitle(i)}
-          style={{
-            gridColumn: `${seg.startCol + 1} / span ${seg.span}`,
-            gridRow: seg.lane + 1,
-            '--chip': chipColor(i),
-          } as CSSProperties}>
-      <span className="dot" />
-      <span className="itl-span-name">{i.name}</span>
-    </Link>
+    // The hover card replaces the native `title` the bar used to carry:
+    // one flat line on the browser's own schedule becomes the
+    // initiative's high-level details on ours. The wrapper draws no box
+    // of its own, so the bar keeps its place in the week grid.
+    <InitiativeHoverCard item={i}>
+      <Link to={`/initiatives/${i.id}`}
+            className={`chip custom itl-span ${seg.continuesBefore ? 'cont-before' : ''} ` +
+                       `${seg.continuesAfter ? 'cont-after' : ''}`}
+            style={{
+              gridColumn: `${seg.startCol + 1} / span ${seg.span}`,
+              gridRow: seg.lane + 1,
+              '--chip': chipColor(i),
+            } as CSSProperties}>
+        <span className="dot" />
+        <span className="itl-span-name">{i.name}</span>
+      </Link>
+    </InitiativeHoverCard>
   );
 }
