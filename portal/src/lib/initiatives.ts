@@ -140,6 +140,7 @@ export function sectionsForType(
 export interface InitiativeFormState {
   name: string; description: string;
   initiative_type: string; sub_type: string; status: string;
+  color: string;                                    // '#rrggbb' or ''
   client_id: string; site_id: string; location: string;
   scheduled_start: string; scheduled_end: string;   // YYYY-MM-DD or ''
   sky_command_project_id: string;
@@ -166,6 +167,9 @@ export function formFromInitiative(
     initiative_type: i?.initiative_type ?? 'project',
     sub_type: i?.sub_type ?? '',
     status: i?.status ?? 'planned',
+    // '' stays "never colored": the modal shows the status color in the
+    // wheel, but only a deliberate spin writes a color to the row
+    color: i?.color ?? '',
     client_id: i?.client_id ?? '',
     site_id: i?.site_id ?? '',
     location: i?.location ?? '',
@@ -207,6 +211,9 @@ export function initiativePayload(
   out.status = form.status;
   put('description', form.description);
   put('sub_type', form.sub_type);
+  // blank → null: on POST the API drops it and assigns the next palette
+  // color, on PATCH it clears back to status coloring
+  put('color', form.color);
   put('client_id', form.client_id);
   put('site_id', form.site_id);
   put('location', form.location);
