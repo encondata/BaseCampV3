@@ -35,9 +35,14 @@ interface Props {
 /** Where the handle rides, as a percentage of the ring box from its center. */
 const TRACK_RADIUS = 41;
 /** The slider's ends: pure black and pure white carry no hue, so a wheel
- *  that could reach them would look broken (spin the ring, nothing moves). */
+ *  that could reach them would look broken (spin the ring, nothing moves).
+ *  This is a floor/ceiling on what the SLIDER may originate, not on what the
+ *  control may hold — a hex typed into the field keeps the exact lightness
+ *  the user asked for, and the thumb is drawn where that lightness really
+ *  is (see `clampL` and the range input's 0-100 travel below). */
 const L_MIN = 8;
 const L_MAX = 92;
+const clampL = (l: number) => Math.min(L_MAX, Math.max(L_MIN, l));
 /** Moving the ring on a near-gray color would otherwise be a dead control —
  *  hue means nothing at zero saturation. Lift it just enough to show. */
 const MIN_SATURATION = 18;
@@ -204,15 +209,21 @@ export default function ColorWheel({ value, onChange, disabled }: Props) {
 
       <div className="cw-side">
         <div className="cw-slider" style={lightnessTrack}>
+          {/* The travel is the full 0-100 so the thumb can sit where the
+              current color actually is; the 8-92 floor/ceiling is applied in
+              `onChange`, to values this slider itself originates. Clamping the
+              rendered `value` instead (what this used to do) parked the thumb
+              against an end while the real color was darker or lighter than
+              that position implied. */}
           <input
             type="range"
             aria-label="Lightness"
-            min={L_MIN}
-            max={L_MAX}
+            min={0}
+            max={100}
             step={1}
-            value={Math.round(Math.min(L_MAX, Math.max(L_MIN, hsl.l)))}
+            value={Math.round(hsl.l)}
             disabled={disabled}
-            onChange={(e) => emit({ ...hsl, l: Number(e.target.value) })}
+            onChange={(e) => emit({ ...hsl, l: clampL(Number(e.target.value)) })}
           />
         </div>
 

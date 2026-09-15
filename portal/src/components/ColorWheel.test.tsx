@@ -146,6 +146,64 @@ describe('ColorWheel', () => {
     expect(chip.style.getPropertyValue('--chip')).toBe('#8b3fb8');
   });
 
+  // The lightness slider used to advertise min=8/max=92 and render a CLAMPED
+  // `value`, so a hex darker than 8% (or lighter than 92%) put the thumb hard
+  // against an end while the real color was well past it. The thumb and the
+  // stored color now agree: the input's own travel is the full 0-100, and the
+  // 8-92 floor/ceiling is applied only to values the slider itself originates.
+  it('shows a typed near-black hex at its real lightness instead of pinning the thumb', () => {
+    const onChange = vi.fn();
+    render(<ColorWheel value="#1668a7" onChange={onChange} />);
+    const text = screen.getByLabelText(/hex/i);
+    fireEvent.change(text, { target: { value: '#04080c' } });
+    fireEvent.blur(text);
+    // The typed color is passed up untouched — no silent re-lightening.
+    expect(onChange).toHaveBeenCalledWith('#04080c');
+    const slider = screen.getByLabelText(/lightness/i) as HTMLInputElement;
+    const real = hexToHsl('#04080c')!.l;
+    expect(real).toBeLessThan(8);
+    expect(Number(slider.value)).toBe(Math.round(real));
+  });
+
+  it('shows a typed near-white hex at its real lightness too', () => {
+    const onChange = vi.fn();
+    render(<ColorWheel value="#1668a7" onChange={onChange} />);
+    const text = screen.getByLabelText(/hex/i);
+    fireEvent.change(text, { target: { value: '#f2f7fb' } });
+    fireEvent.blur(text);
+    expect(onChange).toHaveBeenCalledWith('#f2f7fb');
+    const slider = screen.getByLabelText(/lightness/i) as HTMLInputElement;
+    const real = hexToHsl('#f2f7fb')!.l;
+    expect(real).toBeGreaterThan(92);
+    expect(Number(slider.value)).toBe(Math.round(real));
+  });
+
+  it('the slider can travel the whole 0-100 range', () => {
+    render(<ColorWheel value="#1668a7" onChange={vi.fn()} />);
+    const slider = screen.getByLabelText(/lightness/i) as HTMLInputElement;
+    expect(slider.min).toBe('0');
+    expect(slider.max).toBe('100');
+  });
+
+  it('dragging the slider to an end still stops at the 8-92 floor/ceiling', () => {
+    const onChange = vi.fn();
+    render(<ColorWheel value="#1668a7" onChange={onChange} />);
+    const slider = screen.getByLabelText(/lightness/i) as HTMLInputElement;
+
+    fireEvent.change(slider, { target: { value: '0' } });
+    const dark = hexToHsl(onChange.mock.calls[0][0] as string)!;
+    expect(dark.l).toBeGreaterThan(7);
+    expect(dark.l).toBeLessThan(9);
+    // …and the thumb agrees with what was actually stored.
+    expect(Number(slider.value)).toBe(8);
+
+    fireEvent.change(slider, { target: { value: '100' } });
+    const light = hexToHsl(onChange.mock.calls[1][0] as string)!;
+    expect(light.l).toBeGreaterThan(91);
+    expect(light.l).toBeLessThan(93);
+    expect(Number(slider.value)).toBe(92);
+  });
+
   it('disabled takes the handle out of the tab order and freezes the controls', () => {
     const onChange = vi.fn();
     render(<ColorWheel value="#1668a7" onChange={onChange} disabled />);

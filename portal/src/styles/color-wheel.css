@@ -5,12 +5,18 @@
  * directory.css already owns, so no typography is declared here. See the
  * list-typography guardrail in styles/listTypography.test.ts. */
 
+/* The control sizes to its own content, not to the form row it sits in:
+   dropped into a full-width `.pf-form` cell it would otherwise stretch to
+   ~920px, giving a 775px lightness slider and a 775px hex box next to a
+   132px wheel. The cap is the ring (132) + the gap (16) + a side column
+   wide enough for its fields (292) = 440. */
 .cw {
   display: flex;
   align-items: flex-start;
   flex-wrap: wrap;
   gap: 16px;
   min-width: 0;
+  max-width: 440px;
 }
 
 /* The ring itself is the conic gradient; .cw-hole punches the middle out
@@ -59,9 +65,13 @@
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.55), 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
 
+/* Below ~410px of room the side column wraps under the ring rather than
+   squeezing; `min-width: 0` is what lets it shrink that far instead of
+   forcing a horizontal scrollbar on a narrow modal. */
 .cw-side {
-  flex: 1 1 180px;
+  flex: 1 1 260px;
   min-width: 0;
+  max-width: 292px;
 }
 
 /* The gradient lives on the wrapper and the native range rides on top of
@@ -83,6 +93,19 @@
   background: none;
   accent-color: var(--amber);
   cursor: pointer;
+}
+
+/* The hex readout is a six-character field, so it gets a six-character
+   field's width — the doubled selector beats `.pf-form input { width: 100% }`,
+   the same rule that stretched ColorField's native picker (directory.css).
+   The preview chip keeps its own row: the side column's three stacked rows
+   come to ~135px, which is the ring's own height, so the control reads as a
+   tidy 440x135 block. Moving the chip up beside the hex would not shorten
+   anything (the 132px ring sets the height either way) and would leave a
+   band of dead space under the side column instead. */
+.cw .cf-hex {
+  width: 164px;
+  max-width: 100%;
 }
 
 .cw-preview { margin-top: 12px; }
