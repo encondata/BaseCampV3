@@ -102,6 +102,8 @@ No side nav, no command palette, no notifications panel. The kiosk is full-width
 
 **Home (`/`)** is launcher-only: eyebrow, title, and the feature tiles. The kiosk identity facts that once lived on Home now live in the shell's `.kiosk-foot` footer, visible from every screen.
 
+- **Footer (revised 2026-09-15, Jimmy).** It carries context and status, never a copy of the top bar. Gone: the kiosk name and the signed-in person (both already in the top bar), the session's end (now a hover on that person), and the setup state (the launcher's own banner says it). What remains: Mode, Version, then **Registered** and **Data** as single words coloured green or red, then Move / Site / Scan when a setup selection is saved, then Dev mode when it is on. A status word names the thing and its colour answers it; the detail it used to spell out — expiry wording, row counts, the last sync time, the failure code — rides the hover title.
+
 ### Home launcher and feature placeholders (2026-09-13)
 
 Home became a launcher: eyebrow "Kiosk", title "What would you like to do?", then a `.kiosk-launcher` grid of `.kiosk-tile` links — one per entry in a new `src/lib/features.ts` registry (`FEATURES: {id, path, title, blurb, placeholder?}[]`) — each with a 40 px inline SVG icon, a title, and a blurb. Kiosk Setup (`/settings`, a gear) is first, ahead of Scanning (`/scan`, a barcode glyph), Label Printing (`/labels`, a tag), and Timeclock (`/timeclock`, a clock). Home is launcher-only now — the identity facts that used to be the whole page, then a compact strip below the tiles, moved again: they live in the shell's `.kiosk-foot` footer (see "Shell and screens").

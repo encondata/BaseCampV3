@@ -18,7 +18,7 @@ beforeEach(() => {
 });
 
 const syncMock = vi.hoisted(() => ({
-  status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; containers?: number; syncedAt?: string },
+  status: { phase: 'idle' } as { phase: string; assets?: number; people?: number; containers?: number; trucks?: number; syncedAt?: string; error?: string },
 }));
 vi.mock('../lib/sync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/sync')>();
@@ -120,23 +120,35 @@ it('the kiosk-name button navigates to the This Kiosk settings tab', async () =>
   expect(await screen.findByText('SETTINGS tab=this-kiosk')).toBeTruthy();
 });
 
-it('footer shows the kiosk facts when signed in', () => {
+it('footer carries context, and never repeats what the top bar shows', () => {
   render(
     <MemoryRouter initialEntries={['/']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
-  const footer = screen.getByRole('contentinfo');
-  const text = footer.textContent ?? '';
-  expect(text).toContain(getIdentity().name);
+  const text = screen.getByRole('contentinfo').textContent ?? '';
   expect(text).toContain('Web');
   expect(text).toContain('0.1.0');
-  expect(text).toContain('Alex Worker');
   expect(text).toContain('Registered');
-  expect(text).toContain('Session ends');
+  // the kiosk name, the person, and the session's end all live in the top
+  // bar now — the last of them as a hover on the person
+  expect(text).not.toContain(getIdentity().name);
+  expect(text).not.toContain('Alex Worker');
+  expect(text).not.toContain('Session ends');
 });
 
-it('footer shows only kiosk/mode/version when signed out', () => {
+it('the session end hovers on the signed-in person instead', () => {
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const person = document.querySelector('.kiosk-person') as HTMLElement;
+  expect(person.textContent).toBe('Alex Worker');
+  expect(person.title).toMatch(/^Session ends /);
+});
+
+it('footer drops the registration word when signed out', () => {
   auth.status = 'anon';
   auth.person = null;
   auth.registration = null;
@@ -147,9 +159,9 @@ it('footer shows only kiosk/mode/version when signed out', () => {
   );
   const footer = screen.getByRole('contentinfo');
   const text = footer.textContent ?? '';
-  expect(text).toContain(getIdentity().name);
   expect(text).toContain('Web');
   expect(text).not.toContain('Alex Worker');
+  expect(text).not.toContain('Registered');   // nothing to register against while signed out
 });
 
 it('footer shows "Dev mode" when developer mode is on', () => {
@@ -187,27 +199,18 @@ it('footer shows "Dev mode" signed out too (kiosk-local, not tied to the session
   expect(footer.textContent ?? '').toContain('Dev mode');
 });
 
-it('footer shows "Setup" + "Incomplete" by default', () => {
+it('footer carries no setup state — the launcher already says so', () => {
   render(
     <MemoryRouter initialEntries={['/']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
-  const footer = screen.getByRole('contentinfo');
-  expect(footer.textContent ?? '').toContain('Incomplete');
-  expect(document.querySelector('.kiosk-foot-setup.is-incomplete')).toBeTruthy();
-});
+  const text = screen.getByRole('contentinfo').textContent ?? '';
+  expect(text).not.toContain('Incomplete');
+  expect(document.querySelector('.kiosk-foot-setup')).toBeNull();
 
-it('footer shows "Complete" when kiosk setup state is complete', () => {
   writeSetupState('complete');
-  render(
-    <MemoryRouter initialEntries={['/']}>
-      <KioskShell><div /></KioskShell>
-    </MemoryRouter>,
-  );
-  const footer = screen.getByRole('contentinfo');
-  expect(footer.textContent ?? '').toContain('Complete');
-  expect(document.querySelector('.kiosk-foot-setup.is-complete')).toBeTruthy();
+  expect(screen.getByRole('contentinfo').textContent ?? '').not.toContain('Complete');
 });
 
 it('footer shows Move + Site + Scan items after Setup when a selection is saved', () => {
@@ -239,25 +242,66 @@ it('footer omits Move + Scan items when no selection is saved', () => {
 });
 
 
-it('footer shows a Data item with the local counts once a sync has happened', () => {
+it('Data is one green word after a sync, with the counts on hover', () => {
   syncMock.status = { phase: 'done', assets: 15, people: 4, containers: 6, syncedAt: '2026-09-13T18:14:00Z' };
   render(
     <MemoryRouter initialEntries={['/']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
-  const footer = screen.getByRole('contentinfo');
-  expect(footer.textContent ?? '').toContain('Data');
-  expect(footer.textContent ?? '').toContain('15 assets · 4 people · 6 containers');
+  const text = screen.getByRole('contentinfo').textContent ?? '';
+  expect(text).toContain('Data');
+  expect(text).not.toContain('15 assets');          // the counts moved to the tooltip
+  const item = [...document.querySelectorAll('.kiosk-foot-item.is-status')]
+    .find((el) => el.textContent === 'Data') as HTMLElement;
+  expect(item.className).toContain('is-good');
+  expect(item.title).toContain('15 assets · 4 people · 6 containers');
 });
 
-it('footer has no Data item before any sync', () => {
+it('Data is red before any sync, and says how to fix it on hover', () => {
   render(
     <MemoryRouter initialEntries={['/']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
-  expect(screen.getByRole('contentinfo').textContent ?? '').not.toContain('Data');
+  expect(screen.getByRole('contentinfo').textContent ?? '').toContain('Data');
+  const bad = [...document.querySelectorAll('.kiosk-foot-item.is-status.is-bad')] as HTMLElement[];
+  expect(bad.some((el) => el.title.includes('sync it from Kiosk Setup'))).toBe(true);
+});
+
+it('Data turns red when the last sync failed', () => {
+  syncMock.status = { phase: 'error', error: 'network', assets: 15, people: 4 };
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const bad = [...document.querySelectorAll('.kiosk-foot-item.is-status.is-bad')] as HTMLElement[];
+  expect(bad.some((el) => el.title.includes('Last sync failed (network)'))).toBe(true);
+});
+
+it('Registered is green when registered and red when not', () => {
+  const { unmount } = render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  let reg = [...document.querySelectorAll('.kiosk-foot-item.is-status')]
+    .find((el) => el.textContent === 'Registered') as HTMLElement;
+  expect(reg.className).toContain('is-good');
+  expect(reg.title).toContain('Registered with the portal');
+  unmount();
+
+  auth.registration = 'none';
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  reg = [...document.querySelectorAll('.kiosk-foot-item.is-status')]
+    .find((el) => el.textContent === 'Registered') as HTMLElement;
+  expect(reg.className).toContain('is-bad');
+  expect(reg.title).toContain('Not registered');
 });
 
 it('renders the scan flash overlay, which paints once a flash fires', () => {

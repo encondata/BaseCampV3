@@ -259,9 +259,18 @@
 .kiosk-foot-item b { font-weight: 500; letter-spacing: .1em; text-transform: uppercase; font-size: 9.5px; margin-right: 6px; color: var(--text-mute); opacity: .8; }
 .kiosk-foot-item span { color: var(--text-dark); }
 .kiosk-foot-dev span { color: var(--accent); }
-.kiosk-foot-setup.is-complete span { color: var(--c-green); }
-.kiosk-foot-setup.is-incomplete span { color: var(--c-amber); }
-.kiosk-foot-setup.is-failed span { color: var(--c-red); }
+/* A one-word status in the footer: the word names the thing, the colour
+   answers it. Detail (dates, counts, failure codes) rides the title. */
+.kiosk-foot-item.is-status { cursor: help; }
+.kiosk-foot-item.is-status b {
+  font-size: 11.5px;          /* the word carries the meaning, so not shrunk like a label */
+  letter-spacing: .04em;
+  text-transform: none;
+  margin-right: 0;
+  opacity: 1;
+}
+.kiosk-foot-item.is-status.is-good b { color: var(--c-green); }
+.kiosk-foot-item.is-status.is-bad b { color: var(--c-red); }
 .kiosk-foot-sep { opacity: .5; }
 @media (max-width: 600px) { .kiosk-foot-sep { display: none; } .kiosk-foot { gap: 4px 14px; } }
 

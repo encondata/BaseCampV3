@@ -22,20 +22,46 @@ import { FEATURES } from '../lib/features';
 import { getIdentity } from '../lib/identity';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { platform } from '../lib/platform';
-import { setupStateLabel, useKioskSetupState, type KioskSetupState } from '../lib/setupState';
 import { useSyncStatus } from '../lib/sync';
 
 const REG_CHIP: Record<RegistrationState, string> = {
   ok: 'c-green', soon: 'c-amber', expired: 'c-red', none: 'c-slate',
 };
 
-interface FootItem { label: string; value: string; className?: string }
+/** A footer entry. `value` alone renders as a labelled pair; `status`
+ *  renders as one coloured word — the word names the thing, the colour
+ *  answers it, which is all a glance needs across a cage. `title` carries
+ *  the detail that used to sit in the footer itself. */
+interface FootItem {
+  label: string;
+  value?: string;
+  status?: 'good' | 'bad';
+  title?: string;
+  className?: string;
+}
 
-const SETUP_FOOT_CLASS: Record<KioskSetupState, string> = {
-  complete: 'kiosk-foot-setup is-complete',
-  incomplete: 'kiosk-foot-setup is-incomplete',
-  failed: 'kiosk-foot-setup is-failed',
-};
+/** Hover detail for the footer's one-word statuses and the top bar's
+ *  person — everything the footer used to spell out inline. */
+function registrationTitle(reg: RegistrationState | null): string {
+  if (!reg) return 'Checking registration with the portal…';
+  if (reg === 'ok') return 'Registered with the portal';
+  if (reg === 'soon') return 'Registered — expires within a week; signing in renews it';
+  if (reg === 'expired') return 'Registration expired — sign in again to renew it';
+  return 'Not registered — sign in on this kiosk to register it';
+}
+
+function syncTitle(sync: ReturnType<typeof useSyncStatus>): string {
+  if (sync.phase === 'running') return 'Downloading move data…';
+  if (sync.phase === 'error') return `Last sync failed (${sync.error ?? 'unknown'}) — re-sync from Kiosk Setup`;
+  if (sync.assets === undefined) return 'No move data on this kiosk — sync it from Kiosk Setup';
+  const parts = [`${sync.assets} assets`, `${sync.people} people`, `${sync.containers ?? 0} containers`];
+  if (sync.trucks !== undefined) parts.push(`${sync.trucks} trucks`);
+  return `${parts.join(' · ')}${sync.syncedAt ? ` · synced ${new Date(sync.syncedAt).toLocaleString()}` : ''}`;
+}
+
+function sessionTitle(expiresAt: string | null): string | undefined {
+  return expiresAt ? `Session ends ${new Date(expiresAt).toLocaleString()}` : undefined;
+}
 
 export default function KioskShell({ children }: { children: ReactNode }) {
   const { status, person, registration, preferences, sessionExpiresAt, logout } = useKioskAuth();
@@ -43,7 +69,6 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const location = useLocation();
   const authed = status === 'authed';
   const [devMode] = useDevMode();
-  const [setupState] = useKioskSetupState();
   const [kioskSetup] = useKioskSetup();
   const sync = useSyncStatus();
 
@@ -57,22 +82,21 @@ export default function KioskShell({ children }: { children: ReactNode }) {
     (f) => location.pathname === f.path || location.pathname.startsWith(`${f.path}/`),
   );
 
+  // The kiosk name and the signed-in person are already in the top bar, so
+  // the footer doesn't repeat them; the session's end moved to a hover on
+  // that person. What's left is either context (mode, version, what this
+  // kiosk is set up for) or a status word carrying its own colour.
   const footItems: FootItem[] = [
-    { label: 'Kiosk', value: identity.name },
     { label: 'Mode', value: modeLabel },
     { label: 'Version', value: kioskVersion() },
   ];
   if (authed) {
-    footItems.push(
-      { label: 'Signed in as', value: person?.display_name ?? '—' },
-      {
-        label: 'Session ends',
-        value: sessionExpiresAt ? new Date(sessionExpiresAt).toLocaleString() : '—',
-      },
-      { label: 'Registration', value: registration ? registrationLabel(registration) : 'Checking…' },
-    );
+    footItems.push({
+      label: 'Registered',
+      status: registration === 'ok' || registration === 'soon' ? 'good' : 'bad',
+      title: registrationTitle(registration),
+    });
   }
-  footItems.push({ label: 'Setup', value: setupStateLabel(setupState), className: SETUP_FOOT_CLASS[setupState] });
   if (kioskSetup) {
     footItems.push(
       { label: 'Move', value: kioskSetup.initiativeName },
@@ -80,16 +104,11 @@ export default function KioskShell({ children }: { children: ReactNode }) {
       { label: 'Scan', value: kioskSetup.scanLabel },
     );
   }
-  // Only once the local database actually holds a download (the meta row
-  // is what `useSyncStatus` hydrates from) — a kiosk that has never
-  // synced shows no Data item at all rather than "0 assets".
-  if (sync.assets !== undefined && sync.people !== undefined) {
-    footItems.push({
-      label: 'Data',
-      value: `${sync.assets} assets · ${sync.people} people`
-        + ` · ${sync.containers ?? 0} containers`,
-    });
-  }
+  footItems.push({
+    label: 'Data',
+    status: sync.phase === 'done' ? 'good' : 'bad',
+    title: syncTitle(sync),
+  });
 
   return (
     <div className="portal-shell kiosk-shell">
@@ -110,7 +129,11 @@ export default function KioskShell({ children }: { children: ReactNode }) {
               <span className="dot" />{registrationLabel(registration)}
             </span>
           )}
-          {authed && person && <span className="kiosk-person">{person.display_name}</span>}
+          {authed && person && (
+            <span className="kiosk-person" title={sessionTitle(sessionExpiresAt)}>
+              {person.display_name}
+            </span>
+          )}
           {authed && (
             <button type="button" className="mini-btn"
                     onClick={() => void logout().then(() => navigate('/login'))}>
@@ -124,8 +147,14 @@ export default function KioskShell({ children }: { children: ReactNode }) {
         {footItems.map((item, i) => (
           <Fragment key={item.label}>
             {i > 0 && <span className="kiosk-foot-sep" aria-hidden="true">·</span>}
-            <span className={`kiosk-foot-item${item.className ? ` ${item.className}` : ''}`}>
-              <b>{item.label}</b><span>{item.value}</span>
+            <span
+              className={`kiosk-foot-item${item.status ? ` is-status is-${item.status}` : ''}`
+                + `${item.className ? ` ${item.className}` : ''}`}
+              title={item.title}
+            >
+              {item.status
+                ? <b>{item.label}</b>
+                : <><b>{item.label}</b><span>{item.value}</span></>}
             </span>
           </Fragment>
         ))}
