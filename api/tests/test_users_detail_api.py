@@ -2,7 +2,7 @@
 PUT /users/{id}/access-groups, POST /users/{id}/sessions/revoke-all."""
 
 from serversherpa.db.models import (
-    Client, NotificationGroup, NotificationGroupMember, Person, PersonRole, WorkerProfile,
+    AuditLog, Client, NotificationGroup, NotificationGroupMember, Person, PersonRole, WorkerProfile,
 )
 from tests.test_access_roles_api import login_admin
 from tests.test_users_api import _add_user, _token
@@ -132,3 +132,39 @@ async def test_detail_404_without_account_and_403_for_worker(client, db, seeded_
                     email="wan@test.example.com", role="worker")
     wan_hdrs = await _login(client, "wan@test.example.com")
     assert (await client.get(f"/users/{seeded_user.id}", headers=wan_hdrs)).status_code == 403
+
+
+# ── GET /users/{id}/activity ────────────────────────────────────────
+
+async def test_activity_requires_audit_view(client, db, seeded_user):
+    wan = await _add_user(db, first="Wan", last="Worker",
+                          email="wan@test.example.com", role="staff")
+    staff = await _login(client, "alice@test.example.com")     # staff has no audit:view
+    assert (await client.get(f"/users/{wan.id}/activity", headers=staff)).status_code == 403
+
+
+async def test_activity_rows_acted_and_about(client, db, seeded_user):
+    admin = await login_admin(client, db, seeded_user)
+    wan = await _add_user(db, first="Wan", last="Worker",
+                          email="wan@test.example.com", role="staff")
+    # about-wan row (actor = alice) via the real roles endpoint
+    assert (await client.put(f"/users/{wan.id}/roles", headers=admin,
+                             json={"roles": ["staff", "worker"]})).status_code == 200
+    # acted-by-wan row
+    db.add(AuditLog(actor_person_id=wan.id, entity_type="site", entity_id=None,
+                    action="site.create", changes={}))
+    await db.commit()
+
+    resp = await client.get(f"/users/{wan.id}/activity", headers=admin)
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    by_action = {r["action"]: r for r in rows}
+    assert by_action["role.set"]["by_me"] is False
+    assert by_action["role.set"]["actor_name"] == "Alice Anderson"
+    assert by_action["site.create"]["by_me"] is True
+    assert by_action["site.create"]["actor_name"] is None
+
+    ghost = Person(first_name="No", last_name="Account")
+    db.add(ghost)
+    await db.commit()
+    assert (await client.get(f"/users/{ghost.id}/activity", headers=admin)).status_code == 404

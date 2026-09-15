@@ -19,6 +19,7 @@ from serversherpa.api.deps import (
 from serversherpa.api.routes.notifications import effective_settings
 from serversherpa.api.schemas import (
     AccountCreateIn,
+    MyActivityItem,
     OrgRefOut,
     PartnerRef,
     PersonDetail,
@@ -46,6 +47,7 @@ from serversherpa.db.models import (
     ResourceGroupGate, Role, UserAccount, WorkerLevel, WorkerProfile,
 )
 from serversherpa.security.passwords import hash_password
+from serversherpa.services.activity import person_activity
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.sessions import live_session_rows
 from serversherpa.services.storage import presign_get
@@ -281,6 +283,23 @@ async def get_user_detail(
         access=access_block,
         sessions=sessions,
     )
+
+
+@router.get("/{person_id}/activity", response_model=list[MyActivityItem])
+async def user_activity(
+    person_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("audit", "view"),
+) -> list[MyActivityItem]:
+    """The History tab: rows this person acted in plus rows about their
+    person/account/sign-ins — the same query /auth/me/activity runs, pointed
+    at the target. `by_me` means the *target* acted."""
+    await _require_global(actor)
+    account = await db.get(UserAccount, person_id)
+    if account is None:
+        raise _err(404, "user_not_found")
+    rows = await person_activity(db, person_id, account.email, limit=100)
+    return [MyActivityItem(**row) for row in rows]
 
 
 @router.post("", response_model=UserItem, status_code=201)
