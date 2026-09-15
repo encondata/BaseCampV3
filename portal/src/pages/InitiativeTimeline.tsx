@@ -342,7 +342,10 @@ function TimelineGrid({
                 ))}
               </div>
             )}
-            <div className="itl-ticks">
+            {/* --tick-w caps every label at its own slot, so a long one is
+                trimmed rather than printed over the next tick. */}
+            <div className="itl-ticks"
+                 style={{ '--tick-w': `${rightWidth / ticks.length}px` } as CSSProperties}>
               {ticks.map((t, idx) => (
                 <span key={idx} className="itl-tick"
                       style={{ left: `${pctForDate(t.at, range) ?? 0}%` }}>

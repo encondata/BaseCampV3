@@ -129,7 +129,10 @@ export function ticksFor(range: TimelineRange, scale: TimelineScale): TimelineTi
   }
   if (scale === 'quarter') {
     for (let cur = mondayOnOrAfter(range.start); cur < range.end; cur = addDays(cur, 7)) {
-      const label = `Wk ${isoWeekNumber(cur)} · ${MONTH_ABBR[cur.getMonth()]} ${cur.getDate()}`;
+      // Week number alone. "Wk 28 · Jul 6" needed more pixels than a tick's
+      // slot and printed over its neighbor; the month band above the ruler
+      // names the month, and the bars' tooltips carry the exact dates.
+      const label = `Wk ${isoWeekNumber(cur)}`;
       ticks.push({ at: cur, label });
     }
     return ticks;
