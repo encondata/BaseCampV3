@@ -1,8 +1,11 @@
 """GET /users/{id} (aggregated detail), GET /users/{id}/activity,
 PUT /users/{id}/access-groups, POST /users/{id}/sessions/revoke-all."""
 
+from sqlalchemy import select
+
 from serversherpa.db.models import (
-    AuditLog, Client, NotificationGroup, NotificationGroupMember, Person, PersonRole, WorkerProfile,
+    AccessGroupMember, AuditLog, AuthSession, Client, NotificationGroup,
+    NotificationGroupMember, Person, PersonRole, WorkerProfile,
 )
 from tests.test_access_roles_api import login_admin
 from tests.test_users_api import _add_user, _token
@@ -168,3 +171,78 @@ async def test_activity_rows_acted_and_about(client, db, seeded_user):
     db.add(ghost)
     await db.commit()
     assert (await client.get(f"/users/{ghost.id}/activity", headers=admin)).status_code == 404
+
+
+# ── PUT /users/{id}/access-groups ───────────────────────────────────
+
+async def test_set_access_groups_diffs_and_audits(client, db, seeded_user):
+    admin = await login_admin(client, db, seeded_user)
+    wan = await _add_user(db, first="Wan", last="Worker",
+                          email="wan@test.example.com", role="staff")
+    g1 = (await client.post("/access/groups", headers=admin, json={"name": "Finance"})).json()["id"]
+    g2 = (await client.post("/access/groups", headers=admin, json={"name": "Ops"})).json()["id"]
+    assert (await client.put(f"/access/groups/{g1}/members", headers=admin,
+                             json={"person_ids": [str(wan.id)]})).status_code == 200
+
+    resp = await client.put(f"/users/{wan.id}/access-groups", headers=admin,
+                            json={"group_ids": [g2]})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"group_ids": [g2]}
+    members = list(await db.scalars(
+        select(AccessGroupMember.group_id).where(AccessGroupMember.person_id == wan.id)))
+    assert [str(m) for m in members] == [g2]
+    added = await db.scalar(select(AccessGroupMember.added_by)
+                            .where(AccessGroupMember.person_id == wan.id))
+    assert added == seeded_user.id
+
+    log = await db.scalar(select(AuditLog).where(AuditLog.action == "access_groups.set"))
+    assert log.entity_type == "person" and log.entity_id == str(wan.id)
+    assert log.changes == {"groups": {"from": ["Finance"], "to": ["Ops"]}}
+
+    # unknown group -> 404, nothing changed
+    resp = await client.put(f"/users/{wan.id}/access-groups", headers=admin,
+                            json={"group_ids": [g2, "00000000-0000-0000-0000-000000000001"]})
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "group_not_found"
+
+
+async def test_set_access_groups_guards(client, db, seeded_user):
+    admin = await login_admin(client, db, seeded_user)
+    gid = (await client.post("/access/groups", headers=admin, json={"name": "Sec"})).json()["id"]
+    # self
+    resp = await client.put(f"/users/{seeded_user.id}/access-groups", headers=admin,
+                            json={"group_ids": [gid]})
+    assert resp.json()["detail"]["code"] == "cannot_target_self"
+    # outranked target
+    boss = await _add_user(db, first="B", last="Oss",
+                           email="boss@test.example.com", role="super_admin")
+    resp = await client.put(f"/users/{boss.id}/access-groups", headers=admin,
+                            json={"group_ids": [gid]})
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "rank_too_low"
+
+
+# ── POST /users/{id}/sessions/revoke-all ────────────────────────────
+
+async def test_revoke_all_sessions(client, db, seeded_user):
+    admin = await login_admin(client, db, seeded_user)
+    wan = await _add_user(db, first="Wan", last="Worker",
+                          email="wan@test.example.com", role="staff")
+    await _token(client, email="wan@test.example.com")
+    await _token(client, email="wan@test.example.com")
+    live = list(await db.scalars(select(AuthSession).where(
+        AuthSession.person_id == wan.id, AuthSession.revoked_at.is_(None))))
+    assert len(live) >= 2
+
+    wan_id = wan.id
+    resp = await client.post(f"/users/{wan_id}/sessions/revoke-all", headers=admin)
+    assert resp.status_code == 204, resp.text
+    db.expire_all()
+    still_live = list(await db.scalars(select(AuthSession).where(
+        AuthSession.person_id == wan_id, AuthSession.revoked_at.is_(None))))
+    assert still_live == []
+    log = await db.scalar(select(AuditLog).where(AuditLog.action == "session.revoke_all"))
+    assert log.entity_type == "auth" and log.entity_id == str(wan_id)
+
+    body = (await client.get(f"/users/{wan_id}", headers=admin)).json()
+    assert body["sessions"] == []

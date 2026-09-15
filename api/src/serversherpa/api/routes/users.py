@@ -18,6 +18,8 @@ from serversherpa.api.deps import (
 )
 from serversherpa.api.routes.notifications import effective_settings
 from serversherpa.api.schemas import (
+    AccessGroupsOut,
+    AccessGroupsUpdateIn,
     AccountCreateIn,
     MyActivityItem,
     OrgRefOut,
@@ -626,6 +628,55 @@ async def set_roles(
           changes={"roles": {"from": sorted(current), "to": sorted(desired)}})
     await db.commit()
     return sorted(desired)
+
+
+@router.put("/{person_id}/access-groups", response_model=AccessGroupsOut)
+async def set_access_groups(
+    person_id: uuid.UUID,
+    body: AccessGroupsUpdateIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("access", "change"),
+) -> AccessGroupsOut:
+    """Person-centered group membership: the full desired set, diffed.
+    Same rank rules as PUT /access/groups/{id}/members, one audit row on
+    the person instead of one per group."""
+    await _load_target(db, actor, person_id)
+    desired = set(body.group_ids)
+    current_rows = list(await db.scalars(
+        select(AccessGroupMember).where(AccessGroupMember.person_id == person_id)))
+    current = {m.group_id for m in current_rows}
+    names = {g.id: g.name for g in await db.scalars(
+        select(AccessGroup).where(AccessGroup.id.in_((desired | current) or {uuid.uuid4()})))}
+    if any(gid not in names for gid in desired):
+        raise _err(404, "group_not_found")
+    if desired != current:
+        for gid in current - desired:
+            await db.execute(AccessGroupMember.__table__.delete().where(
+                AccessGroupMember.group_id == gid,
+                AccessGroupMember.person_id == person_id))
+        for gid in desired - current:
+            db.add(AccessGroupMember(group_id=gid, person_id=person_id,
+                                     added_by=actor.person.id))
+        audit(db, actor_id=actor.person.id, entity_type="person",
+              entity_id=str(person_id), action="access_groups.set",
+              changes={"groups": {"from": sorted(names[g] for g in current),
+                                  "to": sorted(names[g] for g in desired)}})
+        await db.commit()
+    return AccessGroupsOut(group_ids=sorted(desired, key=str))
+
+
+@router.post("/{person_id}/sessions/revoke-all", status_code=204)
+async def revoke_all_user_sessions(
+    person_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "change"),
+) -> None:
+    """Sign the person out everywhere without disabling them."""
+    await _load_target(db, actor, person_id)
+    await _revoke_all_sessions(db, person_id, reason="admin")
+    audit(db, actor_id=actor.person.id, entity_type="auth",
+          entity_id=str(person_id), action="session.revoke_all", changes={})
+    await db.commit()
 
 
 @router.patch("/{person_id}/profile", response_model=PersonDetail)
