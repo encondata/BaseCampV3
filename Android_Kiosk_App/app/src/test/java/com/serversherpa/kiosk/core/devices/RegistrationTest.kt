@@ -17,5 +17,6 @@ class RegistrationTest {
     @Test fun labels() {
         assertEquals("Registered", RegistrationState.OK.label)
         assertEquals("Unregistered", RegistrationState.fromWire("bogus").label)
+        assertEquals("Expires soon", registrationLabel(RegistrationState.SOON))
     }
 }

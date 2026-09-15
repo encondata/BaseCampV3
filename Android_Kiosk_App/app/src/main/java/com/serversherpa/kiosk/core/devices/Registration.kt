@@ -18,3 +18,6 @@ fun tokenExpiryState(iso: String?, nowMs: Long = System.currentTimeMillis()): Re
     if (t <= nowMs) return RegistrationState.EXPIRED
     return if (t - nowMs <= SOON_MS) RegistrationState.SOON else RegistrationState.OK
 }
+
+/** portal/src/lib/devices.ts registrationLabel. */
+fun registrationLabel(state: RegistrationState): String = state.label
