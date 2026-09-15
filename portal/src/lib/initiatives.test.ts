@@ -14,6 +14,7 @@ const row: InitiativeItem = {
   initiative_type: 'move', type_label: 'Move', type_color: '#a36207',
   sub_type: 'migration', sub_type_label: 'Migration', sub_type_color: '#0f7c86',
   status: 'in_progress', status_label: 'In progress', status_color: '#1668a7',
+  color: null,
   client_id: 'c1', client_name: 'Acme', site_id: null, site_name: null,
   location: 'Denver, CO',
   scheduled_start: '2026-09-01T00:00:00Z', scheduled_end: null,
@@ -99,6 +100,24 @@ describe('form round-trip', () => {
     expect(p.scheduled_end).toBeNull();
     expect(p.shipping_types).toEqual(['truck', 'rail']);
     expect(p.priority_devices).toBe(true);
+  });
+
+  it('starts create mode with no color and reads the stored one back', () => {
+    expect(formFromInitiative(null).color).toBe('');
+    expect(formFromInitiative({ ...row, color: '#8b3fb8' }).color)
+      .toBe('#8b3fb8');
+    // an initiative that has never been colored stays "never set" — the
+    // modal does the status-color falling back, the form state does not
+    expect(formFromInitiative({ ...row, color: null }).color).toBe('');
+  });
+
+  it('carries the color in the payload, blank meaning "no color"', () => {
+    const f = formFromInitiative({ ...row, color: '#8b3fb8' });
+    expect(initiativePayload(f).color).toBe('#8b3fb8');
+    // same contract as every other optional field here: the whole form
+    // goes on the wire, blank as null (POST drops it, PATCH clears)
+    expect(initiativePayload({ ...f, color: '' }).color).toBeNull();
+    expect(initiativePayload({ ...f, color: '   ' }).color).toBeNull();
   });
 });
 

@@ -2126,6 +2126,10 @@ export interface InitiativeItem {
   sub_type: string | null; sub_type_label: string | null;
   sub_type_color: string | null;
   status: string; status_label: string; status_color: string;
+  /** The initiative's own calendar color (`#rrggbb`), as stored — null
+   *  means "never set", and every reader falls back to `status_color`
+   *  itself rather than the API inventing one. */
+  color: string | null;
   client_id: string | null; client_name: string | null;
   site_id: string | null; site_name: string | null;
   location: string | null;
@@ -2204,6 +2208,16 @@ export async function listInitiatives(): Promise<InitiativeItem[]> {
   const resp = await apiFetch('/initiatives');
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
+}
+
+/** GET /initiatives/next-color — the color a create would assign right
+ *  now, so the create modal can open the wheel on it instead of springing
+ *  the assignment after save. Needs `initiatives:add`. */
+export async function getNextInitiativeColor(): Promise<string> {
+  const resp = await apiFetch('/initiatives/next-color');
+  if (!resp.ok) throw await errorFrom(resp);
+  const data = await resp.json() as { color: string };
+  return data.color;
 }
 
 export async function getInitiative(id: string): Promise<InitiativeDetail> {

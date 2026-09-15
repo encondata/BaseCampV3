@@ -23,8 +23,8 @@ from serversherpa.api.schemas import (
     InitiativeAssetSummary, InitiativeAssetUpdateIn, InitiativeCreateIn,
     InitiativeDetailOut, InitiativeItem, InitiativeLinkAddIn,
     InitiativeLinkRow, InitiativeLinksOut, InitiativeLinkUpdateIn,
-    InitiativePersonAddIn, InitiativePersonRow, InitiativePersonUpdateIn,
-    InitiativeUpdateIn,
+    InitiativeNextColorOut, InitiativePersonAddIn, InitiativePersonRow,
+    InitiativePersonUpdateIn, InitiativeUpdateIn,
 )
 from serversherpa.db.models import (
     Asset, AssetCategory, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
@@ -51,7 +51,7 @@ PARTNER_FIELDS = (
 )
 SITE_FIELDS = ("site_id", "origin_site_id", "destination_site_id")
 INITIATIVE_FIELDS = [
-    "name", "description", "initiative_type", "sub_type", "status",
+    "name", "description", "color", "initiative_type", "sub_type", "status",
     "client_id", "site_id", "location", "scheduled_start", "scheduled_end",
     "sky_command_project_id", "origin_site_id", "destination_site_id",
     "real_start_at", "real_end_at", "priority_devices", "shipping_types",
@@ -59,6 +59,16 @@ INITIATIVE_FIELDS = [
     *PARTNER_FIELDS,
 ]
 NON_NULLABLE_FIELDS = ("name", "initiative_type", "status")
+
+# Twelve hues spaced around the wheel, each legible through the portal's
+# `.chip.custom` rule (which clamps lightness per theme, so a stored hex
+# only has to be a reasonable hue). Migration 0065 keeps its own frozen
+# copy of this list — deliberately, so the backfill never moves when this
+# one does.
+INITIATIVE_PALETTE = [
+    "#1668a7", "#0f7c86", "#178a4c", "#5d8a17", "#a36207", "#c05a1f",
+    "#c03540", "#b3316d", "#8b3fb8", "#6d4fc4", "#3f63c4", "#51606f",
+]
 
 
 def _err(status: int, code: str, **extra) -> HTTPException:
@@ -101,6 +111,21 @@ async def _get_initiative(db: DbSession, initiative_id: uuid.UUID,
         if visible is None:
             raise _err(404, "initiative_not_found")
     return initiative
+
+
+async def _next_color(db: DbSession) -> str:
+    """The palette color held by the fewest UNARCHIVED initiatives, ties
+    broken by palette order. So the first twelve initiatives get twelve
+    different colors and the thirteenth starts the second lap. Archiving
+    an initiative frees its color; a hand-typed color outside the palette
+    simply never participates in the counting."""
+    counts = dict((await db.execute(
+        select(Initiative.color, func.count())
+        .where(Initiative.archived_at.is_(None),
+               Initiative.color.in_(INITIATIVE_PALETTE))
+        .group_by(Initiative.color)
+    )).all())
+    return min(INITIATIVE_PALETTE, key=lambda c: counts.get(c, 0))
 
 
 async def _vocab(db: DbSession) -> dict[str, dict]:
@@ -171,6 +196,7 @@ def _item(i: Initiative, vocab: dict, sites: dict, clients: dict,
         if i.sub_type is not None else (None, None))
     return {
         "id": i.id, "name": i.name, "description": i.description,
+        "color": i.color,
         "initiative_type": i.initiative_type,
         "type_label": t_label, "type_color": t_color,
         "sub_type": i.sub_type,
@@ -301,6 +327,22 @@ async def list_initiatives(
     return [InitiativeItem(**_item(i, *ctx)) for i in initiatives]
 
 
+# ── next color ─────────────────────────────────────────────────────
+# Declared ABOVE get_initiative: /initiatives/next-color must never be
+# swallowed by GET /initiatives/{initiative_id} (which would 422 on the
+# non-UUID segment), same as /trucks/map.
+
+@router.get("/next-color", response_model=InitiativeNextColorOut)
+async def next_initiative_color(
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "add"),
+) -> InitiativeNextColorOut:
+    """Exactly what a create would assign right now, so the create modal
+    can open with the wheel already on it."""
+    _require_global(actor)
+    return InitiativeNextColorOut(color=await _next_color(db))
+
+
 @router.get("/{initiative_id}", response_model=InitiativeDetailOut)
 async def get_initiative(
     initiative_id: uuid.UUID,
@@ -351,6 +393,10 @@ async def create_initiative(
     if not data.get("name"):
         raise _err(422, "name_required")
     await _check_refs(db, data)
+    # "auto select a unique color which can be changed": an omitted color
+    # takes the least-used palette color, an explicit one is honored.
+    if not data.get("color"):
+        data["color"] = await _next_color(db)
     initiative = Initiative(**data, created_by=actor.person.id)
     db.add(initiative)
     await db.flush()

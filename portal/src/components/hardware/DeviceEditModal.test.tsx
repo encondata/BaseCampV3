@@ -36,6 +36,7 @@ function move(overrides: Partial<InitiativeItem>): InitiativeItem {
     initiative_type: 'move', type_label: 'Move', type_color: '#a36207',
     sub_type: null, sub_type_label: null, sub_type_color: null,
     status: 'planned', status_label: 'Planned', status_color: '#1668a7',
+    color: null,
     client_id: null, client_name: null, site_id: null, site_name: null,
     location: null,
     scheduled_start: null, scheduled_end: null,

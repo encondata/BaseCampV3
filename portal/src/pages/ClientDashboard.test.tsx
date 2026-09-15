@@ -69,6 +69,7 @@ const initiative = (over: Partial<InitiativeItem> = {}): InitiativeItem => ({
   initiative_type: 'move', type_label: 'Move', type_color: '#1668a7',
   sub_type: null, sub_type_label: null, sub_type_color: null,
   status: 'in_progress', status_label: 'In Progress', status_color: '#1668a7',
+  color: null,
   client_id: 'c1', client_name: 'Acme',
   site_id: null, site_name: null, location: null,
   scheduled_start: '2026-09-01', scheduled_end: '2026-09-15',

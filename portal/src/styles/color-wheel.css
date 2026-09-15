@@ -1,0 +1,115 @@
+/* ColorWheel — the hue ring, the lightness slider and the preview.
+ *
+ * Layout, color and size only: every piece of text in this control (the
+ * "Hex" label, the field itself, the preview chip) wears a class that
+ * directory.css already owns, so no typography is declared here. See the
+ * list-typography guardrail in styles/listTypography.test.ts. */
+
+/* The control sizes to its own content, not to the form row it sits in:
+   dropped into a full-width `.pf-form` cell it would otherwise stretch to
+   ~920px, giving a 775px lightness slider and a 775px hex box next to a
+   132px wheel. The cap is the ring (132) + the gap (16) + a side column
+   wide enough for its fields (292) = 440. */
+.cw {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 16px;
+  min-width: 0;
+  max-width: 440px;
+}
+
+/* The ring itself is the conic gradient; .cw-hole punches the middle out
+   and doubles as a large swatch of the picked color. Drawing it this way
+   (rather than a masked circle) keeps the whole ring a real hit target for
+   the pointer, which is what makes "click anywhere on the ring" work. */
+.cw-ring {
+  position: relative;
+  flex: none;
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    hsl(0 85% 50%), hsl(30 85% 50%), hsl(60 85% 50%), hsl(90 85% 50%),
+    hsl(120 85% 50%), hsl(150 85% 50%), hsl(180 85% 50%), hsl(210 85% 50%),
+    hsl(240 85% 50%), hsl(270 85% 50%), hsl(300 85% 50%), hsl(330 85% 50%),
+    hsl(360 85% 50%));
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
+  cursor: crosshair;
+  touch-action: none;   /* the ring owns the drag; don't scroll the modal */
+}
+
+.cw-hole {
+  position: absolute;
+  inset: 26px;
+  border-radius: 50%;
+  border: 3px solid var(--surface, #fff);
+  box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+
+.cw-handle {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  border-radius: 50%;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 3px 8px -3px rgba(0, 0, 0, 0.7);
+  transform: translate(-50%, -50%);
+  cursor: grab;
+  outline: none;
+}
+.cw-handle:focus-visible {
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.55), 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+/* Below ~410px of room the side column wraps under the ring rather than
+   squeezing; `min-width: 0` is what lets it shrink that far instead of
+   forcing a horizontal scrollbar on a narrow modal. */
+.cw-side {
+  flex: 1 1 260px;
+  min-width: 0;
+  max-width: 292px;
+}
+
+/* The gradient lives on the wrapper and the native range rides on top of
+   it with a transparent track, so the slider shows what its own travel
+   does to the current hue. */
+.cw-slider {
+  border-radius: 9px;
+  border: 1px solid var(--paper-line);
+  padding: 4px 6px;
+  margin-bottom: 12px;
+}
+.cw-slider input[type="range"],
+.pf-form .cw-slider input[type="range"] {
+  display: block;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  background: none;
+  accent-color: var(--amber);
+  cursor: pointer;
+}
+
+/* The hex readout is a six-character field, so it gets a six-character
+   field's width — the doubled selector beats `.pf-form input { width: 100% }`,
+   the same rule that stretched ColorField's native picker (directory.css).
+   The preview chip keeps its own row: the side column's three stacked rows
+   come to ~135px, which is the ring's own height, so the control reads as a
+   tidy 440x135 block. Moving the chip up beside the hex would not shorten
+   anything (the 132px ring sets the height either way) and would leave a
+   band of dead space under the side column instead. */
+.cw .cf-hex {
+  width: 164px;
+  max-width: 100%;
+}
+
+.cw-preview { margin-top: 12px; }
+
+.cw-off { opacity: 0.6; }
+.cw-off .cw-ring { cursor: not-allowed; }
+.cw-off .cw-handle { cursor: not-allowed; }

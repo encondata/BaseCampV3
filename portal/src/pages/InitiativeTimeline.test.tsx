@@ -41,6 +41,7 @@ function initiative(over: Partial<InitiativeItem> = {}): InitiativeItem {
     initiative_type: 'move', type_label: 'Move', type_color: '#1668a7',
     sub_type: null, sub_type_label: null, sub_type_color: null,
     status: 'scheduled', status_label: 'Scheduled', status_color: '#1668a7',
+    color: null,
     client_id: 'c1', client_name: 'Acme',
     site_id: 's1', site_name: 'DC-East', location: null,
     scheduled_start: '2026-09-05', scheduled_end: '2026-09-10',
@@ -156,15 +157,60 @@ it('hides cancelled initiatives until "Show cancelled" is checked', async () => 
   expect(screen.getByText('Dead one', { selector: 'b' })).not.toBeNull();
 });
 
-it('switching to Month shows the grid with the item on its day', async () => {
+it('switching to Calendar shows the grid with the item on its day', async () => {
   await renderPage([
     initiative({ scheduled_start: '2026-09-05', scheduled_end: '2026-09-05' }), // single day
   ]);
-  fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Month' }));
+  fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Calendar' }));
   expect(document.querySelector('.itl-month-grid')).not.toBeNull();
-  const chip = screen.getByTitle('Denver DC migration');
-  expect(chip).not.toBeNull();
-  expect(within(chip).getByText('Denver DC migration')).not.toBeNull();
+  const bar = document.querySelector('.itl-span') as HTMLElement;
+  expect(bar).not.toBeNull();
+  expect(within(bar).getByText('Denver DC migration')).not.toBeNull();
+  // Sep 5 2026 is a Saturday: column 6 of the week, one day wide.
+  expect(bar.style.gridColumn).toBe('6 / span 1');
+});
+
+it('draws a run as one bar per week, spanning the days it covers', async () => {
+  await renderPage([
+    // Thu Sep 10 → Wed Sep 16, so two week rows.
+    initiative({ scheduled_start: '2026-09-10', scheduled_end: '2026-09-16' }),
+  ]);
+  fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Calendar' }));
+  const bars = [...document.querySelectorAll('.itl-span')] as HTMLElement[];
+  expect(bars).toHaveLength(2);
+  expect(bars[0].style.gridColumn).toBe('4 / span 4');
+  expect(bars[0].className).toContain('cont-after');
+  expect(bars[0].className).not.toContain('cont-before');
+  expect(bars[1].style.gridColumn).toBe('1 / span 3');
+  expect(bars[1].className).toContain('cont-before');
+  expect(bars[1].className).not.toContain('cont-after');
+  // Both halves link to the initiative and name it.
+  for (const bar of bars) {
+    expect(bar.getAttribute('href')).toBe('/initiatives/i1');
+    expect(within(bar).getByText('Denver DC migration')).not.toBeNull();
+  }
+});
+
+it('folds a crowded week into "+N more" and expands it on click', async () => {
+  // Five runs all crossing Tue Sep 8 — one more than the lane cap.
+  await renderPage([1, 2, 3, 4, 5].map((n) => initiative({
+    id: `i${n}`, name: `Run ${n}`,
+    scheduled_start: '2026-09-08', scheduled_end: '2026-09-09',
+  })));
+  fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Calendar' }));
+  expect(document.querySelectorAll('.itl-span')).toHaveLength(4);
+  expect(screen.queryByText('Run 5')).toBeNull();
+
+  const more = screen.getAllByRole('button', { name: /Show all initiatives/ });
+  expect(more).toHaveLength(2); // Sep 8 and Sep 9 are both crowded
+  expect(more[0].textContent).toBe('+1 more');
+
+  fireEvent.click(more[0]);
+  expect(document.querySelectorAll('.itl-span')).toHaveLength(5);
+  expect(screen.getByText('Run 5')).not.toBeNull();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Show less' }));
+  expect(document.querySelectorAll('.itl-span')).toHaveLength(4);
 });
 
 it('‹ and › move the visible range', async () => {
@@ -182,4 +228,48 @@ it('‹ and › move the visible range', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Next period' }));
   expect(screen.getByText('September item', { selector: 'b' })).not.toBeNull();
   expect(screen.queryByText('August item', { selector: 'b' })).toBeNull();
+});
+
+/* ── Bar color: the initiative's own color, falling back to its status ── */
+
+it('paints the timeline bars with the initiative color, falling back to status', async () => {
+  await renderPage([
+    initiative({
+      id: 'i1', name: 'Purple run', color: '#8b3fb8',
+      scheduled_start: '2026-09-05', scheduled_end: '2026-09-10',
+      real_start_at: '2026-09-06', real_end_at: '2026-09-09',
+    }),
+    initiative({
+      id: 'i2', name: 'Uncolored run', color: null, status_color: '#2f7d4f',
+      scheduled_start: '2026-09-12', scheduled_end: '2026-09-14',
+      real_start_at: '2026-09-12', real_end_at: '2026-09-13',
+    }),
+  ]);
+  const bars = [...document.querySelectorAll('.itl-bar')] as HTMLElement[];
+  expect(bars).toHaveLength(2);
+  expect(bars[0].style.getPropertyValue('--chip')).toBe('#8b3fb8');
+  expect(bars[1].style.getPropertyValue('--chip')).toBe('#2f7d4f');
+
+  const realBars = [...document.querySelectorAll('.itl-real-bar')] as HTMLElement[];
+  expect(realBars).toHaveLength(2);
+  expect(realBars[0].style.getPropertyValue('--chip')).toBe('#8b3fb8');
+  expect(realBars[1].style.getPropertyValue('--chip')).toBe('#2f7d4f');
+});
+
+it('paints a calendar span with the initiative color, falling back to status', async () => {
+  await renderPage([
+    initiative({
+      id: 'i1', name: 'Purple run', color: '#8b3fb8',
+      scheduled_start: '2026-09-05', scheduled_end: '2026-09-05',
+    }),
+    initiative({
+      id: 'i2', name: 'Uncolored run', color: null, status_color: '#2f7d4f',
+      scheduled_start: '2026-09-12', scheduled_end: '2026-09-12',
+    }),
+  ]);
+  fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Calendar' }));
+  const spans = [...document.querySelectorAll('.itl-span')] as HTMLElement[];
+  expect(spans).toHaveLength(2);
+  expect(spans[0].style.getPropertyValue('--chip')).toBe('#8b3fb8');
+  expect(spans[1].style.getPropertyValue('--chip')).toBe('#2f7d4f');
 });

@@ -14,7 +14,7 @@
  * session state only, per the design spec.
  */
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 
 import ComboBox from '../components/ComboBox';
@@ -22,16 +22,17 @@ import {
   ApiError, listInitiatives, listInitiativeStatuses,
   type InitiativeItem, type StatusValue,
 } from '../lib/api';
-import { longDate } from '../lib/format';
+import { longDateOf } from '../lib/format';
 import {
-  barFor, itemsOnDay, monthGrid, rangeFor, realBarFor, sortForTimeline,
-  ticksFor, type TimelineBar, type TimelineRange, type TimelineScale,
+  barFor, calendarWeeks, monthGrid, parseApiDay, rangeFor, realBarFor, sortForTimeline,
+  ticksFor, type CalendarSegment, type TimelineBar, type TimelineRange,
+  type TimelineScale,
 } from '../lib/timeline';
 import '../styles/directory.css';
 import '../styles/trucks.css'; // .pill-check — shared generic toolbar checkbox pill
 import '../styles/initiative-timeline.css';
 
-type View = 'timeline' | 'month';
+type View = 'timeline' | 'calendar';
 
 const TYPE_PILLS = [
   { key: 'all', label: 'All' },
@@ -59,8 +60,12 @@ function savePref(key: string, value: string) {
   try { localStorage.setItem(STORAGE_PREFIX + key, value); } catch { /* ignore */ }
 }
 
-function isView(v: string): v is View {
-  return v === 'timeline' || v === 'month';
+/** `month` is the pre-rename stored value for what is now `calendar` — a
+ *  browser that remembers it keeps the same view instead of silently
+ *  falling back to the timeline. */
+function readView(v: string): View {
+  if (v === 'month' || v === 'calendar') return 'calendar';
+  return 'timeline';
 }
 function isScale(v: string): v is TimelineScale {
   return v === 'month' || v === 'quarter' || v === 'year';
@@ -73,7 +78,7 @@ function startOfToday(): Date {
 
 function stepAnchor(anchor: Date, view: View, scale: TimelineScale, dir: 1 | -1): Date {
   const out = new Date(anchor);
-  if (view === 'month' || scale === 'month') {
+  if (view === 'calendar' || scale === 'month') {
     out.setMonth(out.getMonth() + dir);
   } else if (scale === 'quarter') {
     out.setMonth(out.getMonth() + dir * 3);
@@ -100,15 +105,18 @@ function clientSiteLine(i: InitiativeItem): string {
   return [i.client_name, i.site_name].filter(Boolean).join(' · ') || '—';
 }
 
+/** The `--chip` color for a bar or span: the initiative's own calendar
+ *  color, or its status color while it has none of its own. */
+function chipColor(i: InitiativeItem): string {
+  return i.color ?? i.status_color;
+}
+
 export default function InitiativeTimeline() {
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);
   const [statuses, setStatuses] = useState<StatusValue[]>([]);
   const [error, setError] = useState('');
 
-  const [view, setView] = useState<View>(() => {
-    const v = loadPref('view', 'timeline');
-    return isView(v) ? v : 'timeline';
-  });
+  const [view, setView] = useState<View>(() => readView(loadPref('view', 'timeline')));
   const [scale, setScale] = useState<TimelineScale>(() => {
     const v = loadPref('scale', 'month');
     return isScale(v) ? v : 'month';
@@ -169,7 +177,7 @@ export default function InitiativeTimeline() {
     });
   }, [initiatives, showCancelled, typePill, statusPill, clientId]);
 
-  const rangeLabel = view === 'month'
+  const rangeLabel = view === 'calendar'
     ? `${MONTH_NAMES[anchor.getMonth()]} ${anchor.getFullYear()}`
     : null;
 
@@ -180,16 +188,17 @@ export default function InitiativeTimeline() {
           <div className="eyebrow">Initiatives</div>
           <h1 className="page-title">Timeline</h1>
           <p className="page-hint">
-            Scheduled and in-flight initiatives on a timeline or a month calendar.
+            Scheduled and in-flight initiatives on a timeline or a month calendar,
+            each run drawn as one bar across the days it covers.
           </p>
         </div>
       </div>
 
       <div className="dir-toolbar">
         <div className="segmented" role="tablist">
-          {(['timeline', 'month'] as View[]).map((v) => (
+          {(['timeline', 'calendar'] as View[]).map((v) => (
             <button key={v} className={view === v ? 'on' : ''} onClick={() => setView(v)}>
-              {v === 'timeline' ? 'Timeline' : 'Month'}
+              {v === 'timeline' ? 'Timeline' : 'Calendar'}
             </button>
           ))}
         </div>
@@ -246,7 +255,7 @@ export default function InitiativeTimeline() {
         </div>
       </div>
 
-      {view === 'month' && (
+      {view === 'calendar' && (
         <div className="itl-month-nav">
           <span className="cell-top itl-month-label">{rangeLabel}</span>
           <button type="button" className="mini-btn" aria-label="Previous month"
@@ -267,8 +276,8 @@ export default function InitiativeTimeline() {
         <TimelineGrid items={filtered} anchor={anchor} scale={scale} />
       )}
 
-      {!error && initiatives !== null && view === 'month' && (
-        <MonthCalendar items={filtered} anchor={anchor} />
+      {!error && initiatives !== null && view === 'calendar' && (
+        <CalendarMonth items={filtered} anchor={anchor} />
       )}
     </div>
   );
@@ -329,11 +338,10 @@ function TimelineGrid({
             </div>
             <div className="itl-row-bars" style={{ width: rightWidth }}>
               {todayPct !== null && <div className="itl-today-line" style={{ left: `${todayPct}%` }} />}
-              <div className="itl-bar" title={`${item.name} · ${item.status_label} · ` +
-                  `${longDate(item.scheduled_start)} → ${longDate(item.scheduled_end ?? item.scheduled_start)}`}
+              <div className="itl-bar" title={spanTitle(item)}
                    style={{
                      left: `${bar.left}%`, width: `${bar.width}%`,
-                     '--chip': item.status_color,
+                     '--chip': chipColor(item),
                    } as CSSProperties}>
                 {(bar.width / 100) * rightWidth >= 80 && (
                   <span className="itl-bar-label">{item.name}</span>
@@ -343,7 +351,7 @@ function TimelineGrid({
                 <div className="itl-real-bar"
                      style={{
                        left: `${realBar.left}%`, width: `${realBar.width}%`,
-                       '--chip': item.status_color,
+                       '--chip': chipColor(item),
                      } as CSSProperties} />
               )}
             </div>
@@ -374,73 +382,131 @@ function TimelineGrid({
   );
 }
 
-/* ── Month view ───────────────────────────────────────────────────── */
+/* ── Calendar view ────────────────────────────────────────────────── */
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-function MonthCalendar({ items, anchor }: { items: InitiativeItem[]; anchor: Date }) {
+/** Stacked runs a week row shows before the rest fold into "+N more".
+ *  Four keeps the tallest week inside a cell that still shows the whole
+ *  month without the page scrolling on a laptop; a crowded week is one
+ *  click from showing every lane. */
+const MAX_LANES = 4;
+
+/** Local calendar date as YYYY-MM-DD, for a stable React key. Built from
+ *  the local parts rather than toISOString(), which names the previous day
+ *  west of UTC and would collide two rows onto one key across a month. */
+function isoDay(d: Date): string {
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+/** Bar tooltip. The dates go through parseApiDay/longDateOf, not longDate:
+ *  a date-only field arrives as midnight UTC, so `new Date(iso)` would name
+ *  the day before the one the bar is actually drawn on. */
+function spanTitle(i: InitiativeItem): string {
+  const start = parseApiDay(i.scheduled_start as string);
+  const end = i.scheduled_end ? parseApiDay(i.scheduled_end) : start;
+  const range = end.getTime() !== start.getTime()
+    ? `${longDateOf(start)} → ${longDateOf(end)}`
+    : longDateOf(start);
+  return `${i.name} · ${i.status_label} · ${range}`;
+}
+
+function CalendarMonth({ items, anchor }: { items: InitiativeItem[]; anchor: Date }) {
   const cells = useMemo(() => monthGrid(anchor), [anchor]);
-  const [openKey, setOpenKey] = useState<string | null>(null);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const weeks = useMemo(() => calendarWeeks(items, cells), [items, cells]);
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  // A month step swaps the whole grid out from under the expanded row.
+  useEffect(() => { setExpanded(null); }, [anchor]);
 
   useEffect(() => {
-    if (!openKey) return;
-    const onDown = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpenKey(null);
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented) setExpanded(null);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpenKey(null); };
-    document.addEventListener('mousedown', onDown, true);
     document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown, true);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [openKey]);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [expanded]);
 
   return (
-    <div className="itl-month-grid" ref={wrapRef}>
-      {WEEKDAY_LABELS.map((w) => <div key={w} className="itl-weekday">{w}</div>)}
-      {cells.map((cell) => {
-        const key = cell.date.toISOString().slice(0, 10);
-        const dayItems = itemsOnDay(items, cell.date);
-        const shown = dayItems.slice(0, 3);
-        const extra = dayItems.length - shown.length;
+    <div className="itl-month-grid">
+      <div className="itl-weekdays">
+        {WEEKDAY_LABELS.map((w) => <div key={w} className="itl-weekday">{w}</div>)}
+      </div>
+
+      {weeks.map((week) => {
+        const key = isoDay(week.days[0].date);
+        const isOpen = expanded === key;
+        const laneCap = isOpen ? week.laneCount : MAX_LANES;
+        const shown = week.segments.filter((s) => s.lane < laneCap);
+        const hidden = week.segments.filter((s) => s.lane >= laneCap);
+        // A day's "+N more" counts the runs crossing that day that the
+        // lane cap dropped — the count belongs to the day, the row it
+        // opens belongs to the week.
+        const hiddenOnDay = (col: number) => hidden.filter(
+          (s) => col >= s.startCol && col < s.startCol + s.span).length;
+        const rows = Math.min(week.laneCount, laneCap) + (hidden.length || isOpen ? 1 : 0);
+
         return (
-          <div key={key}
-               className={`itl-day-cell ${cell.inMonth ? '' : 'muted'} ${cell.isToday ? 'today' : ''}`}>
-            <span className="mono itl-day-num">{cell.date.getDate()}</span>
-            <div className="itl-day-chips">
-              {shown.map((i) => (
-                <Link key={i.id} to={`/initiatives/${i.id}`}
-                      className="chip custom itl-day-chip"
-                      style={{ '--chip': i.status_color } as CSSProperties}
-                      title={i.name}>
-                  <span className="dot" />{i.name}
-                </Link>
-              ))}
-              {extra > 0 && (
-                <div className="itl-more-wrap pop-wrap">
-                  <button type="button" className="itl-more-btn"
-                          onClick={() => setOpenKey(openKey === key ? null : key)}>
-                    +{extra} more
-                  </button>
-                  {openKey === key && (
-                    <div className="pop-menu itl-more-menu">
-                      {dayItems.map((i) => (
-                        <Link key={i.id} to={`/initiatives/${i.id}`} className="pop-item">
-                          <span className="chip custom" style={{ '--chip': i.status_color } as CSSProperties}>
-                            <span className="dot" />{i.name}
-                          </span>
-                        </Link>
-                      ))}
-                    </div>
+          <div className={`itl-week ${isOpen ? 'open' : ''}`} key={key}
+               style={{ '--rows': rows } as CSSProperties}>
+            {week.days.map((cell, col) => {
+              const more = hiddenOnDay(col);
+              return (
+                <div key={isoDay(cell.date)}
+                     className={`itl-day-cell ${cell.inMonth ? '' : 'muted'} ` +
+                                `${cell.isToday ? 'today' : ''}`}>
+                  <span className="mono itl-day-num">{cell.date.getDate()}</span>
+                  {more > 0 && (
+                    <button type="button" className="itl-more-btn"
+                            aria-label={'Show all initiatives for the week of ' +
+                                        longDateOf(week.days[0].date)}
+                            onClick={() => setExpanded(key)}>
+                      +{more} more
+                    </button>
                   )}
                 </div>
-              )}
+              );
+            })}
+
+            <div className="itl-week-bars">
+              {shown.map((seg) => (
+                <CalendarSpan key={seg.item.id} seg={seg} />
+              ))}
             </div>
+
+            {isOpen && (
+              <button type="button" className="itl-less-btn"
+                      onClick={() => setExpanded(null)}>
+                Show less
+              </button>
+            )}
           </div>
         );
       })}
     </div>
+  );
+}
+
+/** One run's bar across the days it covers in this week. A run reaching
+ *  past either edge keeps its square end there, so a bar that carries on
+ *  into the next week reads as continuing rather than ending on Sunday. */
+function CalendarSpan({ seg }: { seg: CalendarSegment<InitiativeItem> }) {
+  const i = seg.item;
+  return (
+    <Link to={`/initiatives/${i.id}`}
+          className={`chip custom itl-span ${seg.continuesBefore ? 'cont-before' : ''} ` +
+                     `${seg.continuesAfter ? 'cont-after' : ''}`}
+          title={spanTitle(i)}
+          style={{
+            gridColumn: `${seg.startCol + 1} / span ${seg.span}`,
+            gridRow: seg.lane + 1,
+            '--chip': chipColor(i),
+          } as CSSProperties}>
+      <span className="dot" />
+      <span className="itl-span-name">{i.name}</span>
+    </Link>
   );
 }
