@@ -18,8 +18,7 @@
 .ihv-wrap { display: contents; }
 
 .ihv-card {
-  position: fixed;
-  transform: translate(-50%, -100%);
+  position: fixed;   /* left/top are the card's own top-left, set from the cursor */
   z-index: 1200; /* above the calendar grid, below modals' scrim (2000s) */
   display: flex;
   flex-direction: column;
@@ -51,8 +50,6 @@
   --list-fs-chip: 11px;
   --chip-l: clamp(0.70, calc(l + 0.22), 0.92);
 }
-.ihv-card.below { transform: translate(-50%, 0); }
-
 .ihv-name {
   font-size: 13.5px;
   font-weight: 600;
