@@ -82,10 +82,12 @@ function stepAnchor(anchor: Date, view: View, scale: TimelineScale, dir: 1 | -1)
   if (view === 'calendar' || scale === 'month') {
     out.setMonth(out.getMonth() + dir);
   } else if (scale === '45d') {
-    // 45 days, not a month: the range is the anchor week's Monday + 45 days,
-    // so stepping the anchor by the same 45 days walks the ruler forward by
-    // (near enough) its own width while keeping the Monday alignment.
-    out.setDate(out.getDate() + dir * 45);
+    // Six whole weeks, not 45 days. The range snaps to the anchor week's
+    // Monday, so a 45-day step would land mid-week and snap back to the same
+    // Monday + 42 anyway — stepping by 42 says that outright. Consecutive
+    // views therefore share their last three days, which is a useful overlap
+    // rather than a gap: a run straddling the boundary appears in both.
+    out.setDate(out.getDate() + dir * 42);
   } else if (scale === 'quarter') {
     out.setMonth(out.getMonth() + dir * 3);
   } else {
