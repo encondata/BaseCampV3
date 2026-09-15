@@ -121,3 +121,51 @@ else about either view changes.
 - The initiatives list chip, which stays status-colored.
 - Any bulk "recolor everything" action.
 - Per-client or per-type palettes.
+
+## Outcome (2026-09-15)
+
+Built on branch `initiative-color` off `reports` @ 1bda022, five commits, each
+reviewed before the next began:
+
+| | |
+|---|---|
+| `19c9b66` | migration 0065, palette, `_next_color`, the field on all three schemas, `GET /initiatives/next-color` |
+| `141e5e6` | `ColorWheel` — hue ring, lightness slider, hex readout, `hexToHsl`/`hslToHex` |
+| `2076299` | the Color field in the edit modal, `getNextInitiativeColor`, form and payload |
+| `e9e9fd2` | `chipColor(i)` on the calendar span and both timeline bars |
+| `1aa24dc` | the color field sizes to its content; the slider thumb shows a typed color's true lightness |
+
+Suites on the finished branch: API **1730 passed, 1 skipped**; portal **1688
+passed** across 170 files; build and `tsc -b` clean.
+
+### Verified in the browser
+
+Against a throwaway copy of the dev database (`serversherpa_icolor`, stamped
+back to 0063 so this branch's chain applies) with this branch's API on 8001 and
+its portal on 5177 — the shared dev database was never touched:
+
+- The create modal opens on the color a create would assign. With NAP11 holding
+  palette[0], it offered palette[1].
+- Three initiatives created without touching the wheel took palette[1], [2] and
+  [3]; `next-color` then offered [4].
+- A hand-picked color outside the palette (`#4b860f`) saved and, as designed,
+  never entered the least-used counting.
+- Editing an initiative's color persisted it and repainted both the calendar
+  span and the timeline bars.
+- The migration backfilled the one existing initiative with palette[0].
+
+### Known and deliberate
+
+- **The ring's pointer path was exercised by dispatched `PointerEvent`s, not a
+  real mouse** — the browser pane's synthetic clicks produce mouse events
+  without pointer events. The handler path is the same one a real pointer takes.
+- `_next_color` has no advisory lock, so two simultaneous creates can land on
+  the same color. Uniqueness here is a preference, not a constraint.
+- The initiatives list chip still colors by status, on purpose.
+
+### Follow-up for whoever merges the sibling branch
+
+`0065_initiative_color.py` has `down_revision = "0063"` because the unmerged
+`timeclock` branch holds 0064 and had already applied it to the shared dev
+database. The two migrations touch different tables and have no data dependency;
+when the branches converge, re-point 0065 to `"0064"` so there is a single head.
