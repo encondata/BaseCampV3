@@ -40,16 +40,8 @@ interface FootItem {
   className?: string;
 }
 
-/** Hover detail for the footer's one-word statuses and the top bar's
- *  person — everything the footer used to spell out inline. */
-function registrationTitle(reg: RegistrationState | null): string {
-  if (!reg) return 'Checking registration with the portal…';
-  if (reg === 'ok') return 'Registered with the portal';
-  if (reg === 'soon') return 'Registered — expires within a week; signing in renews it';
-  if (reg === 'expired') return 'Registration expired — sign in again to renew it';
-  return 'Not registered — sign in on this kiosk to register it';
-}
-
+/** Hover detail for the footer's one-word status and the top bar's
+ *  person — the wording the footer no longer spells out inline. */
 function syncTitle(sync: ReturnType<typeof useSyncStatus>): string {
   if (sync.phase === 'running') return 'Downloading move data…';
   if (sync.phase === 'error') return `Last sync failed (${sync.error ?? 'unknown'}) — re-sync from Kiosk Setup`;
@@ -82,21 +74,14 @@ export default function KioskShell({ children }: { children: ReactNode }) {
     (f) => location.pathname === f.path || location.pathname.startsWith(`${f.path}/`),
   );
 
-  // The kiosk name and the signed-in person are already in the top bar, so
-  // the footer doesn't repeat them; the session's end moved to a hover on
-  // that person. What's left is either context (mode, version, what this
-  // kiosk is set up for) or a status word carrying its own colour.
+  // Anything the top bar already shows stays out of here: the kiosk name,
+  // the signed-in person, and the registration chip. The session's end
+  // moved to a hover on that person. What's left is context (mode,
+  // version, what this kiosk is set up for) plus one status word.
   const footItems: FootItem[] = [
     { label: 'Mode', value: modeLabel },
     { label: 'Version', value: kioskVersion() },
   ];
-  if (authed) {
-    footItems.push({
-      label: 'Registered',
-      status: registration === 'ok' || registration === 'soon' ? 'good' : 'bad',
-      title: registrationTitle(registration),
-    });
-  }
   if (kioskSetup) {
     footItems.push(
       { label: 'Move', value: kioskSetup.initiativeName },
@@ -105,7 +90,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
     );
   }
   footItems.push({
-    label: 'Data',
+    label: 'Data Sync',
     status: sync.phase === 'done' ? 'good' : 'bad',
     title: syncTitle(sync),
   });

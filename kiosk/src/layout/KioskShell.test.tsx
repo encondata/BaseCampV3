@@ -129,11 +129,12 @@ it('footer carries context, and never repeats what the top bar shows', () => {
   const text = screen.getByRole('contentinfo').textContent ?? '';
   expect(text).toContain('Web');
   expect(text).toContain('0.1.0');
-  expect(text).toContain('Registered');
-  // the kiosk name, the person, and the session's end all live in the top
-  // bar now — the last of them as a hover on the person
+  expect(text).toContain('Data Sync');
+  // the kiosk name, the person, the registration chip and the session's end
+  // all live in the top bar now — the last of them as a hover on the person
   expect(text).not.toContain(getIdentity().name);
   expect(text).not.toContain('Alex Worker');
+  expect(text).not.toContain('Registered');
   expect(text).not.toContain('Session ends');
 });
 
@@ -148,7 +149,7 @@ it('the session end hovers on the signed-in person instead', () => {
   expect(person.title).toMatch(/^Session ends /);
 });
 
-it('footer drops the registration word when signed out', () => {
+it('footer carries no registration state, signed in or out', () => {
   auth.status = 'anon';
   auth.person = null;
   auth.registration = null;
@@ -242,7 +243,7 @@ it('footer omits Move + Scan items when no selection is saved', () => {
 });
 
 
-it('Data is one green word after a sync, with the counts on hover', () => {
+it('Data Sync is one green word after a sync, with the counts on hover', () => {
   syncMock.status = { phase: 'done', assets: 15, people: 4, containers: 6, syncedAt: '2026-09-13T18:14:00Z' };
   render(
     <MemoryRouter initialEntries={['/']}>
@@ -250,26 +251,26 @@ it('Data is one green word after a sync, with the counts on hover', () => {
     </MemoryRouter>,
   );
   const text = screen.getByRole('contentinfo').textContent ?? '';
-  expect(text).toContain('Data');
+  expect(text).toContain('Data Sync');
   expect(text).not.toContain('15 assets');          // the counts moved to the tooltip
   const item = [...document.querySelectorAll('.kiosk-foot-item.is-status')]
-    .find((el) => el.textContent === 'Data') as HTMLElement;
+    .find((el) => el.textContent === 'Data Sync') as HTMLElement;
   expect(item.className).toContain('is-good');
   expect(item.title).toContain('15 assets · 4 people · 6 containers');
 });
 
-it('Data is red before any sync, and says how to fix it on hover', () => {
+it('Data Sync is red before any sync, and says how to fix it on hover', () => {
   render(
     <MemoryRouter initialEntries={['/']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
-  expect(screen.getByRole('contentinfo').textContent ?? '').toContain('Data');
+  expect(screen.getByRole('contentinfo').textContent ?? '').toContain('Data Sync');
   const bad = [...document.querySelectorAll('.kiosk-foot-item.is-status.is-bad')] as HTMLElement[];
   expect(bad.some((el) => el.title.includes('sync it from Kiosk Setup'))).toBe(true);
 });
 
-it('Data turns red when the last sync failed', () => {
+it('Data Sync turns red when the last sync failed', () => {
   syncMock.status = { phase: 'error', error: 'network', assets: 15, people: 4 };
   render(
     <MemoryRouter initialEntries={['/']}>
@@ -280,16 +281,15 @@ it('Data turns red when the last sync failed', () => {
   expect(bad.some((el) => el.title.includes('Last sync failed (network)'))).toBe(true);
 });
 
-it('Registered is green when registered and red when not', () => {
+it('the registration chip stays in the top bar, and follows the state', () => {
   const { unmount } = render(
     <MemoryRouter initialEntries={['/']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
-  let reg = [...document.querySelectorAll('.kiosk-foot-item.is-status')]
-    .find((el) => el.textContent === 'Registered') as HTMLElement;
-  expect(reg.className).toContain('is-good');
-  expect(reg.title).toContain('Registered with the portal');
+  let chip = document.querySelector('.kiosk-user .chip') as HTMLElement;
+  expect(chip.textContent).toContain('Registered');
+  expect(chip.className).toContain('c-green');
   unmount();
 
   auth.registration = 'none';
@@ -298,10 +298,9 @@ it('Registered is green when registered and red when not', () => {
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
-  reg = [...document.querySelectorAll('.kiosk-foot-item.is-status')]
-    .find((el) => el.textContent === 'Registered') as HTMLElement;
-  expect(reg.className).toContain('is-bad');
-  expect(reg.title).toContain('Not registered');
+  chip = document.querySelector('.kiosk-user .chip') as HTMLElement;
+  expect(chip.textContent).toContain('Unregistered');
+  expect(screen.getByRole('contentinfo').textContent ?? '').not.toContain('Registered');
 });
 
 it('renders the scan flash overlay, which paints once a flash fires', () => {
