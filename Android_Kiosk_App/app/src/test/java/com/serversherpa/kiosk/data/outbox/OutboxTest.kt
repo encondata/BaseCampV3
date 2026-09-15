@@ -6,6 +6,7 @@ import com.serversherpa.kiosk.core.model.KioskScanRejected
 import com.serversherpa.kiosk.core.outbox.EnqueueInput
 import com.serversherpa.kiosk.core.outbox.OutboxAsset
 import com.serversherpa.kiosk.core.outbox.OutboxMachine
+import com.serversherpa.kiosk.core.outbox.OutboxRow
 import com.serversherpa.kiosk.core.outbox.OutboxStatus
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.testIdentity
@@ -20,6 +21,15 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
+/** A store that fails the next N upserts/deletes, then behaves. */
+private class FlakyOutboxStore(private val inner: MemoryOutboxStore = MemoryOutboxStore()) : OutboxStore {
+    var failUpserts = 0
+    var failDeletes = 0
+    override suspend fun all() = inner.all()
+    override suspend fun upsert(rows: List<OutboxRow>) { if (failUpserts > 0) { failUpserts--; throw IllegalStateException("disk") }; inner.upsert(rows) }
+    override suspend fun delete(ids: List<String>) { if (failDeletes > 0) { failDeletes--; throw IllegalStateException("disk") }; inner.delete(ids) }
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class OutboxTest {
     @get:Rule val tmp = TemporaryFolder()
@@ -31,7 +41,7 @@ class OutboxTest {
      *  ready queue lets a chain of immediate hops (mutex -> channel -> actor) settle. */
     private fun TestScope.settle() { repeat(5) { runCurrent() } }
 
-    private fun TestScope.outbox(api: FakeKioskApi, store: MemoryOutboxStore = MemoryOutboxStore()): Outbox {
+    private fun TestScope.outbox(api: FakeKioskApi, store: OutboxStore = MemoryOutboxStore()): Outbox {
         var n = 0
         return Outbox(store, api, testIdentity(tmp.root, backgroundScope), backgroundScope, clock = { testScheduler.currentTime }, idGen = { "c${++n}" })
     }
@@ -110,5 +120,38 @@ class OutboxTest {
         assertEquals(listOf(OutboxStatus.FAILED), ob.snapshot.value.rows.map { it.status })
         ob.discardFailed()
         assertTrue(ob.snapshot.value.rows.isEmpty())
+    }
+
+    @Test fun storageFailureWhileMarkingSendingDoesNotKillTheSender() = runTest {
+        val api = FakeKioskApi()
+        val store = FlakyOutboxStore()
+        val ob = outbox(api, store); ob.start(); settle()
+        ob.enqueue(input())                       // failUpserts == 0 here: the enqueue itself persists
+        store.failUpserts = 1                      // fail the mark-sending save the 500ms flush is about to trigger
+        advanceTimeBy(600); settle()
+        // The sender loop's `while (isActive)` never sees the exception: the failed mark-sending save
+        // reverts the row instead of stranding it `sending`, and the loop retries on its own (the row
+        // is due again immediately) rather than dying. Exactly one batch — the original row, now
+        // accepted — ever reaches the API; nothing was posted from the failed attempt.
+        assertEquals(1, api.scanBatches.size)
+        assertEquals(listOf("c1"), api.scanBatches[0].scans.map { it.client_scan_id })
+        assertEquals(OutboxStatus.ACCEPTED, ob.snapshot.value.rows[0].status)
+
+        // Prove the sender is still alive afterward too, not just for the one retry above.
+        ob.enqueue(input("A-1")); advanceTimeBy(600); settle()
+        assertEquals(2, api.scanBatches.size)
+        assertEquals(OutboxStatus.ACCEPTED, ob.snapshot.value.rows[0].status)
+    }
+
+    @Test fun storageFailureInSweepDoesNotKillTheSweeper() = runTest {
+        val api = FakeKioskApi()
+        val store = FlakyOutboxStore()
+        val ob = outbox(api, store); ob.start(); settle()
+        ob.enqueue(input("zzz", matched = false))
+        store.failDeletes = 1
+        advanceTimeBy(OutboxMachine.NOMATCH_TTL_MS + OutboxMachine.NOMATCH_SWEEP_MS); settle()
+        assertEquals(1, ob.snapshot.value.counts.nomatch)   // delete threw; the sweeper kept the row rather than crash
+        advanceTimeBy(OutboxMachine.NOMATCH_SWEEP_MS); settle()   // the sweep loop is still alive and retries next tick
+        assertEquals(0, ob.snapshot.value.counts.total)
     }
 }

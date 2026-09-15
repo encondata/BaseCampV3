@@ -11,6 +11,7 @@ import com.serversherpa.kiosk.core.outbox.OutboxStatus
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.identity.Identity
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -80,7 +81,13 @@ class Outbox(
             load()
             sweep()
             while (isActive) {
-                flushOnce()
+                try {
+                    flushOnce()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Storage hiccup: the next pass retries.
+                }
                 val wait = when {
                     OutboxMachine.dueRows(all.values.toList(), clock()).isNotEmpty() -> 0L
                     else -> OutboxMachine.nextRetryDelayMs(all.values.toList(), clock()) ?: Long.MAX_VALUE
@@ -89,7 +96,16 @@ class Outbox(
             }
         }
         sweepJob = scope.launch {
-            while (isActive) { delay(OutboxMachine.NOMATCH_SWEEP_MS); sweep() }
+            while (isActive) {
+                delay(OutboxMachine.NOMATCH_SWEEP_MS)
+                try {
+                    sweep()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Storage hiccup: the next tick retries.
+                }
+            }
         }
     }
 
@@ -119,7 +135,24 @@ class Outbox(
         val batch = mutex.withLock {
             val due = OutboxMachine.dueRows(all.values.toList(), clock())
             if (due.isEmpty()) return
-            OutboxMachine.markSending(due).also { save(it) }
+            val sending = OutboxMachine.markSending(due)
+            try {
+                save(sending)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Storage failed while marking the batch `sending`: nothing went out
+                // this pass. Revert any rows the mirror did pick up so they stay
+                // eligible for the next pass instead of stranding as `sending`.
+                sending.forEach { row ->
+                    if (all[row.clientScanId]?.status == OutboxStatus.SENDING) {
+                        all[row.clientScanId] = row.copy(status = OutboxStatus.QUEUED)
+                    }
+                }
+                rebuild()
+                return
+            }
+            sending
         }
         val scans = batch.map { r ->
             KioskScanIn(r.clientScanId, r.scannedValue, r.scanType, r.scannedAt, r.asset?.id, r.siteId, r.initiativeId, r.scanStatus)
@@ -132,7 +165,9 @@ class Outbox(
             OutboxMachine.applyFailure(batch, code, clock())
         }
         mutex.withLock {
-            try { save(updated) } catch (e: Exception) {
+            try { save(updated) } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
                 // Storage failed: never leave rows `sending`, or they'd be stranded.
                 updated.filter { all[it.clientScanId]?.status == OutboxStatus.SENDING }
                     .forEach { all[it.clientScanId] = it.copy(status = OutboxStatus.QUEUED) }
@@ -141,12 +176,20 @@ class Outbox(
         }
     }
 
-    private suspend fun sweep() = mutex.withLock {
-        val stale = OutboxMachine.staleNoMatch(all.values.toList(), clock())
-        if (stale.isEmpty()) return@withLock
-        store.delete(stale.map { it.clientScanId })
-        stale.forEach { all.remove(it.clientScanId) }
-        rebuild()
+    private suspend fun sweep() {
+        try {
+            mutex.withLock {
+                val stale = OutboxMachine.staleNoMatch(all.values.toList(), clock())
+                if (stale.isEmpty()) return@withLock
+                store.delete(stale.map { it.clientScanId })
+                stale.forEach { all.remove(it.clientScanId) }
+                rebuild()
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Storage hiccup: the next tick retries.
+        }
     }
 
     suspend fun retryFailed() {
