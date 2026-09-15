@@ -51,6 +51,10 @@ export default function UserDetail() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const pd = usePendingDeletes(godMode);
+  // `can` is not guaranteed to be referentially stable across renders (it
+  // isn't in these tests' auth mock), so the history effect below depends on
+  // this boolean rather than on `can` itself.
+  const showHistory = can('audit', 'view');
 
   const tab: Tab = pathname.endsWith('/access') ? 'access'
     : pathname.endsWith('/history') ? 'history' : 'profile';
@@ -88,8 +92,8 @@ export default function UserDetail() {
   }, [personId]);
 
   useEffect(() => {
-    activityRef.current = null;
     setActivity(null);
+    activityRef.current = null;
     setActivityError('');
   }, [personId]);
 
@@ -113,9 +117,8 @@ export default function UserDetail() {
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => {
-    if (tab === 'history' && activity === null && can('audit', 'view')) void loadActivity();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+    if (tab === 'history' && activity === null && showHistory) void loadActivity();
+  }, [tab, personId, activity, showHistory, loadActivity]);
 
   const back = <Link to="/people/users" className="idet-back">← Users</Link>;
 
@@ -154,7 +157,6 @@ export default function UserDetail() {
   const status = STATUS_META[account.status] ?? { label: account.status, cls: 'tag' };
   const rank = rankLabel(detail.max_rank);
   const managed = toManagedUser(detail);
-  const showHistory = can('audit', 'view');
   const joined = [person.city, person.region].filter(Boolean).join(', ');
 
   const signOutAll = async () => {

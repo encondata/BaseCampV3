@@ -251,3 +251,34 @@ it('History tab loads the person activity lazily and names the subject', async (
   await waitFor(() => expect(api.getUserActivity).toHaveBeenCalledWith('p1'));
   expect(await screen.findAllByText('Wan Worker')).toBeTruthy();
 });
+
+it('History tab refetches when personId changes while the tab is open', async () => {
+  const p2 = { ...DETAIL, person: { ...DETAIL.person, id: 'p2', display_name: 'Second Person' } };
+  api.getUserDetail.mockImplementation(async (id: string) => (id === 'p2' ? p2 : DETAIL));
+  api.getUserActivity.mockResolvedValue([]);
+  render(
+    <MemoryRouter initialEntries={['/people/users/p1/history']}>
+      <Routes>
+        <Route path="/people/users/:personId/history" element={<><Link to="/people/users/p2/history">go p2</Link><UserDetail /></>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await screen.findByRole('heading', { name: 'User history' });
+  await waitFor(() => expect(api.getUserActivity).toHaveBeenCalledWith('p1'));
+  fireEvent.click(screen.getByText('go p2'));
+  await screen.findByRole('heading', { level: 1, name: /Second Person/ });
+  await waitFor(() => expect(api.getUserActivity).toHaveBeenCalledWith('p2'));
+  expect(api.getUserActivity).toHaveBeenCalledTimes(2);
+});
+
+it('refetches history after a mutation once the History tab has been opened', async () => {
+  api.getUserActivity.mockResolvedValue([]);
+  renderAt('/people/users/p1/history');
+  await screen.findByRole('heading', { name: 'User history' });
+  await waitFor(() => expect(api.getUserActivity).toHaveBeenCalledTimes(1));
+  fireEvent.click(screen.getByRole('tab', { name: 'Profile' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Sign out everywhere' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Sign out all sessions' }));
+  await waitFor(() => expect(api.revokeAllUserSessions).toHaveBeenCalledWith('p1'));
+  await waitFor(() => expect(api.getUserActivity).toHaveBeenCalledTimes(2));
+});
