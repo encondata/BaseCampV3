@@ -59,6 +59,37 @@
   border-right: 1px solid var(--paper-line);
 }
 
+/* The two header rows stacked to the right of the corner: the month band
+   over the day/week ruler. The corner is the header's other flex child, so
+   it stretches to whatever height this column ends up being — nothing
+   offsets from a fixed header height, and the sticky header keeps covering
+   the rows beneath it as it grows. */
+.itl-ruler { flex: 0 0 auto; }
+
+.itl-band {
+  position: relative;
+  height: 22px;
+  border-bottom: 1px solid var(--paper-line);
+}
+
+/* One segment per calendar month the range covers, placed by its own
+   left/width percentage of the range. `overflow: hidden` so a month with
+   only a few days in view clips its name instead of painting it over the
+   neighboring month. */
+.itl-band-seg {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding-left: 6px;
+  border-left: 1px solid var(--paper-line);
+  color: var(--text-mute);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
 .itl-ticks {
   position: relative;
   height: 34px;
