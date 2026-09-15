@@ -76,19 +76,24 @@ class SoundPlayer(prefs: KioskPrefs, private val scope: CoroutineScope) {
     private fun playChoice(choice: SoundChoice, volume: Double) {
         val id = (choice as? SoundChoice.Builtin)?.id ?: return
         scope.launch(Dispatchers.IO) {
-            try {
-                val pcm = Tones.pcm(id, volume)
-                val track = AudioTrack.Builder()
+            val pcm = try { Tones.pcm(id, volume) } catch (e: Exception) { return@launch }
+            val track = try {
+                AudioTrack.Builder()
                     .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
                     .setAudioFormat(AudioFormat.Builder().setSampleRate(44_100).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
                     .setBufferSizeInBytes(pcm.size * 2)
                     .setTransferMode(AudioTrack.MODE_STATIC)
                     .build()
+            } catch (e: Exception) { return@launch }
+            try {
                 track.write(pcm, 0, pcm.size)
                 track.play()
                 Thread.sleep((pcm.size * 1000L / 44_100) + 50)
+            } catch (e: Exception) {
+                /* a scan is recorded whether or not the device made a noise */
+            } finally {
                 track.release()
-            } catch (e: Exception) { /* a scan is recorded whether or not the device made a noise */ }
+            }
         }
     }
 }

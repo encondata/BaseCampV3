@@ -33,7 +33,7 @@ fun Segmented(options: List<Pair<String, String>>, selected: String, onSelect: (
                 style = MaterialTheme.typography.labelLarge,
                 color = if (on) c.ink else c.textDark,
                 modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(if (on) c.accent else c.paper2)
-                    .clickable { onSelect(value) }.heightIn(min = 42.dp).padding(horizontal = 14.dp, vertical = 10.dp)
+                    .clickable { onSelect(value) }.heightIn(min = 48.dp).padding(horizontal = 14.dp, vertical = 10.dp)
                     .wrapContentHeight(Alignment.CenterVertically),
             )
         }
