@@ -7,8 +7,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  barFor, calendarWeeks, itemsOnDay, monthGrid, rangeFor, realBarFor,
-  sortForTimeline, ticksFor, type TimelineItem,
+  barFor, calendarWeeks, itemsOnDay, monthBandsFor, monthGrid, rangeFor,
+  realBarFor, sortForTimeline, ticksFor, type TimelineItem,
 } from './timeline';
 
 function item(overrides: Partial<TimelineItem>): TimelineItem {
@@ -313,5 +313,116 @@ describe('calendarWeeks', () => {
     })];
     expect(calendarWeeks(items, cells)[1].segments[0])
       .toMatchObject({ startCol: 2, span: 1 });
+  });
+});
+
+describe('rangeFor 45-day scale', () => {
+  it('starts on the anchor day when the anchor is itself a Monday', () => {
+    // Sep 7 2026 is a Monday.
+    const { start, end } = rangeFor(new Date(2026, 8, 7), '45d');
+    expect(start).toEqual(new Date(2026, 8, 7));
+    expect(end).toEqual(new Date(2026, 9, 22)); // Sep 7 + 45 days, end-exclusive
+  });
+
+  it('backs a mid-week anchor up to the Monday of its week', () => {
+    // Sep 10 2026 is a Thursday.
+    const { start, end } = rangeFor(new Date(2026, 8, 10), '45d');
+    expect(start).toEqual(new Date(2026, 8, 7));
+    expect(end).toEqual(new Date(2026, 9, 22));
+  });
+
+  it('puts a Sunday in the week that began the previous Monday', () => {
+    // Sep 13 2026 is a Sunday — monthGrid's Monday-first convention makes it
+    // the last day of the week starting Mon Sep 7, not the first of Sep 14's.
+    const { start, end } = rangeFor(new Date(2026, 8, 13), '45d');
+    expect(start).toEqual(new Date(2026, 8, 7));
+    expect(end).toEqual(new Date(2026, 9, 22));
+  });
+
+  it('ignores the anchor time-of-day', () => {
+    const { start } = rangeFor(new Date(2026, 8, 10, 23, 45), '45d');
+    expect(start).toEqual(new Date(2026, 8, 7));
+  });
+
+  it('spans exactly 45 days', () => {
+    const { start, end } = rangeFor(new Date(2026, 8, 10), '45d');
+    const days = Math.round((end.getTime() - start.getTime()) / 86400000);
+    expect(days).toBe(45);
+  });
+});
+
+describe('ticksFor 45-day scale', () => {
+  it('returns 45 day ticks labeled with the day of the month', () => {
+    const range = rangeFor(new Date(2026, 8, 10), '45d'); // Mon Sep 7 2026
+    const ticks = ticksFor(range, '45d');
+    expect(ticks).toHaveLength(45);
+    expect(ticks[0].at).toEqual(new Date(2026, 8, 7));
+    expect(ticks[0].label).toBe('7');
+    expect(ticks[44].at).toEqual(new Date(2026, 9, 21));
+    expect(ticks[44].label).toBe('21');
+    expect(ticks[23].at).toEqual(new Date(2026, 8, 30));
+    expect(ticks[24].at).toEqual(new Date(2026, 9, 1));
+    expect(ticks[24].label).toBe('1');
+  });
+});
+
+describe('monthBandsFor', () => {
+  it('a range inside one month is a single band at 0/100', () => {
+    const bands = monthBandsFor(rangeFor(new Date(2026, 8, 15), 'month'));
+    expect(bands).toEqual([{ label: 'Sep 2026', left: 0, width: 100 }]);
+  });
+
+  it('a 45-day range crossing a month boundary yields two clipped bands', () => {
+    const range = rangeFor(new Date(2026, 8, 10), '45d'); // Sep 7 - Oct 22 2026
+    const bands = monthBandsFor(range);
+    expect(bands.map((b) => b.label)).toEqual(['Sep 2026', 'Oct 2026']);
+    expect(bands[0].left).toBe(0);
+    expect(bands[0].width).toBeCloseTo((24 / 45) * 100, 6); // Sep 7 - Sep 30
+    expect(bands[1].left).toBeCloseTo((24 / 45) * 100, 6);
+    expect(bands[1].width).toBeCloseTo((21 / 45) * 100, 6); // Oct 1 - Oct 21
+  });
+
+  it('a quarter yields three whole-month bands', () => {
+    const bands = monthBandsFor(rangeFor(new Date(2026, 7, 3), 'quarter'));
+    expect(bands.map((b) => b.label)).toEqual(['Jul 2026', 'Aug 2026', 'Sep 2026']);
+  });
+
+  it('bands are contiguous, in order, and sum to 100', () => {
+    for (const range of [
+      rangeFor(new Date(2026, 8, 10), '45d'),
+      rangeFor(new Date(2026, 7, 3), 'quarter'),
+      rangeFor(new Date(2026, 3, 9), 'year'),
+      { start: new Date(2026, 1, 20), end: new Date(2026, 4, 3) },
+    ]) {
+      const bands = monthBandsFor(range);
+      expect(bands.length).toBeGreaterThan(0);
+      expect(bands[0].left).toBe(0);
+      for (let i = 1; i < bands.length; i++) {
+        expect(bands[i].left).toBeCloseTo(bands[i - 1].left + bands[i - 1].width, 6);
+      }
+      const last = bands[bands.length - 1];
+      expect(last.left + last.width).toBeCloseTo(100, 6);
+      const total = bands.reduce((sum, b) => sum + b.width, 0);
+      expect(total).toBeCloseTo(100, 6);
+      for (const b of bands) expect(b.width).toBeGreaterThan(0);
+    }
+  });
+
+  it('names the year on every band, so a range crossing New Year stays clear', () => {
+    // Dec 15 2026 is a Tuesday; its week began Mon Dec 14.
+    const range = rangeFor(new Date(2026, 11, 15), '45d');
+    expect(range.start).toEqual(new Date(2026, 11, 14));
+    expect(range.end).toEqual(new Date(2027, 0, 28));
+    const bands = monthBandsFor(range);
+    expect(bands.map((b) => b.label)).toEqual(['Dec 2026', 'Jan 2027']);
+    expect(bands[0].width).toBeCloseTo((18 / 45) * 100, 6); // Dec 14 - Dec 31
+    expect(bands[1].width).toBeCloseTo((27 / 45) * 100, 6); // Jan 1 - Jan 27
+  });
+
+  it('a range spanning a whole year yields twelve bands', () => {
+    const bands = monthBandsFor(rangeFor(new Date(2026, 3, 9), 'year'));
+    expect(bands).toHaveLength(12);
+    expect(bands[0].label).toBe('Jan 2026');
+    expect(bands[11].label).toBe('Dec 2026');
   });
 });
