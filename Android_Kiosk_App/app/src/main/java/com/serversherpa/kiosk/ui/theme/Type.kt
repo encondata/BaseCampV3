@@ -1,4 +1,4 @@
-package com.example.serversherpakiosk.ui.theme
+package com.serversherpa.kiosk.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle

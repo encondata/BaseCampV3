@@ -1,4 +1,4 @@
-package com.example.serversherpakiosk.ui.theme
+package com.serversherpa.kiosk.ui.theme
 
 import android.app.Activity
 import android.os.Build
