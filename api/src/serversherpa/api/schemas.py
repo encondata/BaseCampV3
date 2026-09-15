@@ -1505,10 +1505,36 @@ class DbTestingEndIn(BaseModel):
 # ── initiatives ────────────────────────────────────────────────────
 
 
+_HEX_COLOR_RE = re.compile(r"#([0-9a-f]{3}|[0-9a-f]{6})\Z", re.IGNORECASE)
+
+
+def _normalize_color(v: str | None) -> str | None:
+    """Initiative color: strip; empty -> None; accept `#rgb` or `#rrggbb`
+    in any case and store lowercase `#rrggbb`. Anything else is rejected,
+    so the portal only ever has one shape to parse.
+
+    Not the `HexColor` annotated type above: this field is typed by hand
+    into a wheel's hex readout, so it has to expand the three-digit form,
+    and it reports `invalid_color` rather than a raw pattern message —
+    same shape as `_normalize_website`."""
+    if v is None:
+        return None
+    v = v.strip()
+    if not v:
+        return None
+    if not _HEX_COLOR_RE.match(v):
+        raise ValueError("invalid_color")
+    v = v.lower()
+    if len(v) == 4:
+        v = "#" + "".join(c * 2 for c in v[1:])
+    return v
+
+
 class InitiativeItem(BaseModel):
     id: uuid.UUID
     name: str
     description: str | None = None
+    color: str | None = None   # stored value, not a fallback; null = unset
     initiative_type: str
     type_label: str
     type_color: str
@@ -1588,6 +1614,12 @@ class InitiativeDetailOut(InitiativeItem):
     links_parents: list[InitiativeLinkRow] = []
 
 
+class InitiativeNextColorOut(BaseModel):
+    """Response for GET /initiatives/next-color."""
+
+    color: str
+
+
 class InitiativeLinksOut(BaseModel):
     """Response for GET /initiatives/{id}/links."""
 
@@ -1599,6 +1631,7 @@ class InitiativeCreateIn(BaseModel):
     name: str
     initiative_type: str
     description: str | None = None
+    color: str | None = None   # omitted on create -> one is assigned
     sub_type: str | None = None
     status: str | None = None
     client_id: uuid.UUID | None = None
@@ -1624,9 +1657,16 @@ class InitiativeCreateIn(BaseModel):
     destination_vendor_involved: bool | None = None
     model_config = ConfigDict(extra="forbid")
 
+    @field_validator("color")
+    @classmethod
+    def _color_normalized(cls, v: str | None) -> str | None:
+        return _normalize_color(v)
+
 
 class InitiativeUpdateIn(InitiativeCreateIn):
-    """PATCH body — same fields, everything optional."""
+    """PATCH body — same fields, everything optional. `color: null` is
+    honored as "clear it" (the route's exclude_unset dump keeps the
+    difference between omitted and explicitly null)."""
 
     name: str | None = None
     initiative_type: str | None = None

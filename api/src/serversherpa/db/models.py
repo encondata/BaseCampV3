@@ -1006,6 +1006,9 @@ class Initiative(Base):
         primary_key=True, server_default=text("gen_random_uuid()"))
     name: Mapped[str] = mapped_column(CITEXT)
     description: Mapped[str | None]
+    # '#rrggbb' lowercase; the calendar and timeline bars paint with it.
+    # NULL is legal and falls back to the status color at render time.
+    color: Mapped[str | None]
     initiative_type: Mapped[str]
     type_record_type: Mapped[str] = mapped_column(
         server_default=text("'initiative_type'"))  # GENERATED; never written
