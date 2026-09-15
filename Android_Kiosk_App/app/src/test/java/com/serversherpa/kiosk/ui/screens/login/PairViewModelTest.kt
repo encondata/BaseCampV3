@@ -24,7 +24,7 @@ class PairViewModelTest {
         val api = FakeKioskApi()
         var polls = 0
         api.pollResult = { if (++polls < 3) PairPoll(PairStatus.PENDING, null) else PairPoll(PairStatus.APPROVED, fakeSession()) }
-        val vm = PairViewModel(api, testIdentity(tmp.root, backgroundScope), backgroundScope, clock = { testScheduler.currentTime + 1_000_000_000_000L })
+        val vm = PairViewModel(api, testIdentity(tmp.root, backgroundScope), scopeOverride = backgroundScope, clock = { testScheduler.currentTime + 1_000_000_000_000L })
         var approved = false
         vm.request(); runCurrent()
         assertEquals(PairPhase.SHOWING, vm.state.value.phase)
@@ -37,12 +37,27 @@ class PairViewModelTest {
 
     @Test fun deniedAndRateLimited() = runTest {
         val api = FakeKioskApi().apply { pollResult = { PairPoll(PairStatus.DENIED, null) } }
-        val vm = PairViewModel(api, testIdentity(tmp.root, backgroundScope), backgroundScope, clock = { testScheduler.currentTime + 1_000_000_000_000L })
+        val vm = PairViewModel(api, testIdentity(tmp.root, backgroundScope), scopeOverride = backgroundScope, clock = { testScheduler.currentTime + 1_000_000_000_000L })
         vm.request(); runCurrent(); vm.startPolling {}; advanceTimeBy(2_001); runCurrent()
         assertEquals(PairPhase.DENIED, vm.state.value.phase)
         api.pairCreated = { throw ApiError(429, "pair_rate_limited") }
         vm.request(); runCurrent()
         assertEquals(PairPhase.ERROR, vm.state.value.phase)
         assertEquals("too many codes requested — wait a few minutes", vm.state.value.error)
+    }
+
+    @Test fun stopPollingHaltsTheLoop() = runTest {
+        val api = FakeKioskApi()
+        var polls = 0
+        api.pollResult = { polls++; PairPoll(PairStatus.PENDING, null) }
+        val vm = PairViewModel(api, testIdentity(tmp.root, backgroundScope), scopeOverride = backgroundScope, clock = { testScheduler.currentTime + 1_000_000_000_000L })
+        var approved = false
+        vm.request(); runCurrent()
+        vm.startPolling { approved = true }
+        vm.stopPolling()
+        val pollsAtStop = polls
+        advanceTimeBy(10_000); runCurrent()
+        assertEquals(pollsAtStop, polls)
+        assertEquals(false, approved)
     }
 }

@@ -8,15 +8,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.PairCreated
 import com.serversherpa.kiosk.core.model.PairStatus
@@ -29,12 +32,14 @@ import com.serversherpa.kiosk.ui.components.SolidButton
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import java.time.Instant
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 const val POLL_MS = 2_000L
 
@@ -43,9 +48,12 @@ enum class PairPhase { REQUESTING, SHOWING, DENIED, EXPIRED, ERROR }
 data class PairUi(val phase: PairPhase = PairPhase.REQUESTING, val pair: PairCreated? = null, val error: String = "", val remainingSec: Long = 0)
 
 class PairViewModel(
-    private val api: KioskApi, private val identity: Identity, private val scope: CoroutineScope,
+    private val api: KioskApi,
+    private val identity: Identity,
+    scopeOverride: CoroutineScope? = null,
     private val clock: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
+    private val scope = scopeOverride ?: viewModelScope
     private val _state = MutableStateFlow(PairUi())
     val state: StateFlow<PairUi> = _state
     private var generation = 0
@@ -105,6 +113,13 @@ class PairViewModel(
             }
         }
     }
+
+    /** Stops the poll loop immediately (e.g. the Link view was left). */
+    fun stopPolling() {
+        pollJob?.cancel()
+        pollJob = null
+        generation++
+    }
 }
 
 @Composable
@@ -112,6 +127,7 @@ fun PairPanel(vm: PairViewModel, portalUrl: String, onApproved: (SessionData) ->
     val ui by vm.state.collectAsStateWithLifecycle()
     LaunchedEffect(Unit) { vm.request() }
     LaunchedEffect(ui.phase, ui.pair?.code) { if (ui.phase == PairPhase.SHOWING) vm.startPolling(onApproved) }
+    DisposableEffect(Unit) { onDispose { vm.stopPolling() } }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         when (ui.phase) {
             PairPhase.REQUESTING -> Text("Getting a code…", style = MaterialTheme.typography.bodyMedium)
@@ -120,8 +136,10 @@ fun PairPanel(vm: PairViewModel, portalUrl: String, onApproved: (SessionData) ->
             PairPhase.EXPIRED -> { KioskToast("This code expired.", error = true); SolidButton("Get a new code", { vm.request() }) }
             PairPhase.SHOWING -> {
                 val pair = ui.pair!!
-                val bmp = remember(pair.code) { runCatching { qrBitmap(pair.link_url, 440) }.getOrNull() }
-                if (bmp != null) Image(bmp.asImageBitmap(), contentDescription = "QR code to link this kiosk", modifier = Modifier.size(220.dp))
+                val bmp by produceState<ImageBitmap?>(initialValue = null, pair.code) {
+                    value = withContext(Dispatchers.Default) { runCatching { qrBitmap(pair.link_url, 440).asImageBitmap() }.getOrNull() }
+                }
+                if (bmp != null) Image(bmp!!, contentDescription = "QR code to link this kiosk", modifier = Modifier.size(220.dp))
                 Text(formatCode(pair.code), fontFamily = FragmentMono, style = MaterialTheme.typography.displaySmall, modifier = Modifier.padding(top = 12.dp))
                 Text("Scan the code, or open ${portalHost(portalUrl)}/link on your phone and enter it.", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
                 Text("Expires in ${ui.remainingSec / 60}:${(ui.remainingSec % 60).toString().padStart(2, '0')}", fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 6.dp))

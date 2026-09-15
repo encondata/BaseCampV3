@@ -21,7 +21,7 @@ class LoginViewModelTest {
 
     private fun kotlinx.coroutines.test.TestScope.vm(api: FakeKioskApi): LoginViewModel {
         val auth = KioskAuth(api, FakeRefresher(), testIdentity(tmp.root, backgroundScope), backgroundScope)
-        return LoginViewModel(auth, api, backgroundScope)
+        return LoginViewModel(auth, api, scopeOverride = backgroundScope)
     }
 
     @Test fun emptyFieldsAreRejectedLocally() = runTest {

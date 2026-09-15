@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.ui.screens.login
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.SystemStatus
 import com.serversherpa.kiosk.data.api.KioskApi
@@ -30,7 +31,12 @@ val ERROR_MESSAGES = mapOf(
     "network" to "Can't reach the server. Check the kiosk's network connection.",
 )
 
-class LoginViewModel(private val auth: KioskAuth, private val api: KioskApi, private val scope: CoroutineScope) : ViewModel() {
+class LoginViewModel(
+    private val auth: KioskAuth,
+    private val api: KioskApi,
+    scopeOverride: CoroutineScope? = null,
+) : ViewModel() {
+    private val scope = scopeOverride ?: viewModelScope
     private val _state = MutableStateFlow(LoginUi())
     val state: StateFlow<LoginUi> = _state
 

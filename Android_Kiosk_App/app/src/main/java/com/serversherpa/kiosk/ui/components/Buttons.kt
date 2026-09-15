@@ -27,6 +27,6 @@ fun MiniButton(text: String, onClick: () -> Unit, enabled: Boolean = true, modif
 
 /** `.link` — an inline text action. */
 @Composable
-fun LinkButton(text: String, onClick: () -> Unit) {
-    TextButton(onClick = onClick) { Text(text, color = LocalKioskColors.current.accent) }
+fun LinkButton(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    TextButton(onClick = onClick, modifier = modifier.heightIn(min = 48.dp)) { Text(text, color = LocalKioskColors.current.accent) }
 }

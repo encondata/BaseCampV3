@@ -18,6 +18,6 @@ fun PlaceholderCard(text: String, actionText: String, onAction: () -> Unit) {
     val c = LocalKioskColors.current
     Column(Modifier.fillMaxWidth().border(1.dp, c.paperLine, RoundedCornerShape(14.dp)).padding(20.dp)) {
         Text(text, style = MaterialTheme.typography.bodyLarge, color = c.textMute)
-        LinkButton(actionText, onAction)
+        LinkButton(actionText, onClick = onAction)
     }
 }

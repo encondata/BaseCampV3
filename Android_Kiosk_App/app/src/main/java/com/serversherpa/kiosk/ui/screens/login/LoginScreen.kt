@@ -47,8 +47,8 @@ import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 fun LoginScreen(nav: NavHostController) {
     val container = LocalAppContainer.current
     val c = LocalKioskColors.current
-    val vm = kioskViewModel { LoginViewModel(container.auth, container.api, container.scope) }
-    val pairVm = kioskViewModel { PairViewModel(container.api, container.identity, container.scope) }
+    val vm = kioskViewModel { LoginViewModel(container.auth, container.api) }
+    val pairVm = kioskViewModel { PairViewModel(container.api, container.identity) }
     val ui by vm.state.collectAsStateWithLifecycle()
     val identity by container.identity.identity.collectAsStateWithLifecycle(initialValue = KioskIdentity("", ""))
     val portalUrl by container.config.portalUrl.collectAsStateWithLifecycle(initialValue = "")
@@ -57,32 +57,34 @@ fun LoginScreen(nav: NavHostController) {
 
     Column(Modifier.fillMaxSize().background(c.paper).verticalScroll(rememberScrollState())) {
         // ── brand band ──
-        Row(Modifier.fillMaxWidth().background(c.ink).statusBarsPadding().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = null, modifier = Modifier.size(40.dp))
-            Row(Modifier.padding(start = 10.dp).weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                Text("Server", color = c.snow, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleLarge)
-                Text("Sherpa", color = c.accent, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleLarge)
-                Text("  ·  ${identity.name}", fontFamily = FragmentMono, style = MaterialTheme.typography.labelSmall, color = c.accentSoft, modifier = Modifier.padding(start = 6.dp))
+        Row(Modifier.fillMaxWidth().background(c.ink).statusBarsPadding().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = null, modifier = Modifier.size(56.dp))
+            Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                Row { Text("Server", color = c.snow, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.headlineSmall); Text("Sherpa", color = c.accent, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.headlineSmall) }
+                Text("KIOSK · ANDROID", fontFamily = FragmentMono, style = MaterialTheme.typography.labelSmall, color = c.accentSoft)
+                Text(identity.name, fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.snow)
             }
             IconButton(onClick = { nav.navigate(Routes.settings("this-kiosk")) }) { Text("⚙", color = c.snow) }
         }
-        Column(Modifier.padding(12.dp)) {
+        Column(Modifier.padding(20.dp)) {
             if (ui.status.read_only) KioskToast(if (ui.status.read_only_message.isNotBlank()) "Read-only maintenance mode — ${ui.status.read_only_message}" else "Read-only maintenance mode", error = true)
             ui.status.banner?.let { KioskToast(it) }
-            Text("Sign in", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(bottom = 4.dp))
+            Text("Sign in", style = MaterialTheme.typography.displaySmall, modifier = Modifier.padding(bottom = 12.dp))
 
             if (ui.view == LoginView.PASSWORD || ui.view == LoginView.CHOOSER) {
                 OutlinedTextField(ui.email, vm::setEmail, label = { Text("Email") }, placeholder = { Text("you@company.com") }, isError = ui.invalidEmail, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(ui.password, vm::setPassword, label = { Text("Password") }, isError = ui.invalidPassword, singleLine = true,
                     visualTransformation = if (ui.showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = { LinkButton(if (ui.showPassword) "Hide" else "Show") { vm.togglePassword() } },
-                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
                 KioskToast(ui.error, error = true)
-                SolidButton(if (ui.loading) "Signing in…" else "Sign in", onClick = { vm.submitPassword(goHome) }, enabled = !ui.loading, modifier = Modifier.fillMaxWidth().padding(top = 2.dp))
-                Text("Forgot your password? Reset it in the portal.", style = MaterialTheme.typography.bodySmall, color = c.textMute)
-                HorizontalDivider(Modifier.fillMaxWidth().padding(vertical = 6.dp))
+                SolidButton(if (ui.loading) "Signing in…" else "Sign in", onClick = { vm.submitPassword(goHome) }, enabled = !ui.loading, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+                Text("Forgot your password? Reset it in the portal.", style = MaterialTheme.typography.bodySmall, color = c.textMute, modifier = Modifier.padding(top = 8.dp))
+                Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    HorizontalDivider(Modifier.weight(1f)); Text("  or  ", color = c.textMute); HorizontalDivider(Modifier.weight(1f))
+                }
                 if (ui.view == LoginView.PASSWORD) MiniButton("Other ways to sign in", { vm.setView(LoginView.CHOOSER) }, modifier = Modifier.fillMaxWidth())
-                else Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                else Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     MiniButton("Link with phone", { vm.setView(LoginView.LINK) }, modifier = Modifier.fillMaxWidth())
                     MiniButton("Move password", { vm.setView(LoginView.MOVE) }, modifier = Modifier.fillMaxWidth())
                 }
