@@ -659,6 +659,117 @@ class PartnerRef(BaseModel):
     name: str
 
 
+# ── user detail page (GET /users/{id}) ─────────────────────────────
+
+class PersonRef(BaseModel):
+    id: uuid.UUID
+    display_name: str
+
+
+class OrgRefOut(BaseModel):
+    kind: str            # "client" | "partner"
+    id: uuid.UUID
+    name: str
+
+
+class UserDetailPerson(PersonDetail):
+    source: str
+    source_ref: str | None
+    archived_at: datetime | None
+
+
+class UserDetailAccount(BaseModel):
+    login_email: str | None
+    status: str                          # active | locked | disabled
+    must_change_password: bool
+    last_login_at: datetime | None
+    created_at: datetime
+    password_updated_at: datetime | None
+
+
+class UserRoleGrant(BaseModel):
+    role: str
+    label: str
+    rank: int
+    scope_anchor: str
+    org: OrgRefOut | None
+    granted_by: PersonRef | None
+    granted_at: datetime
+
+
+class UserWorkerCard(BaseModel):
+    trade: str | None
+    level: str | None
+    level_title: str | None
+    level_color: str | None
+    partner: PartnerRef | None
+    status: str
+    status_label: str
+    status_color: str
+
+
+class UserNotificationGroup(BaseModel):
+    id: uuid.UUID
+    name: str
+    channels: list[str]
+    added_at: datetime
+
+
+class UserAccessGroupRow(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str
+    gate_count: int
+    gated_pages: list[str]
+    added_by: PersonRef | None
+    added_at: datetime
+
+
+class UserOverrideRow(BaseModel):
+    resource: str
+    resource_label: str
+    action: str
+    allow: bool
+    set_by: PersonRef | None
+    set_at: datetime
+
+
+class UserAccessBlock(BaseModel):
+    groups: list[UserAccessGroupRow]
+    overrides: list[UserOverrideRow]
+    scope: dict
+    scope_orgs: list[OrgRefOut]
+    cells: dict
+
+
+class UserSessionRow(BaseModel):
+    family_id: uuid.UUID
+    started_at: datetime
+    last_active_at: datetime
+    expires_at: datetime
+    ip_address: str | None
+    user_agent: str | None
+
+
+class UserDetailOut(BaseModel):
+    person: UserDetailPerson
+    account: UserDetailAccount
+    roles: list[UserRoleGrant]
+    max_rank: int
+    worker: UserWorkerCard | None
+    notification_groups: list[UserNotificationGroup]
+    access: UserAccessBlock | None       # None below rank 60 unless viewing yourself
+    sessions: list[UserSessionRow] | None  # None without users:change (global)
+
+
+class AccessGroupsUpdateIn(BaseModel):
+    group_ids: list[uuid.UUID]
+
+
+class AccessGroupsOut(BaseModel):
+    group_ids: list[uuid.UUID]
+
+
 class WorkerItem(BaseModel):
     person_id: uuid.UUID
     display_name: str
