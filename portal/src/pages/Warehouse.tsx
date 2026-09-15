@@ -602,8 +602,9 @@ function ComboBoxSiteSelector({ options, value, onChange }: {
   );
 }
 
-/* ── expanded container contents: assets + stock, each with its own
- * Edit (and, for stock, Move) mini-btn. Read-only otherwise. ────────── */
+/* ── expanded container contents: assets + stock. An asset row keeps its
+ * single Edit mini-btn; a stock row's Edit + Move live in a RowActionsMenu.
+ * Read-only otherwise. ──────────────────────────────────────────────── */
 function ContainerMiniList({
   container, canChangeAsset, canChangeStock, onEditAsset, onEditStock, onMoveStock,
 }: {
@@ -643,13 +644,15 @@ function ContainerMiniList({
           </span>
           <span className="mono">{s.quantity} {s.unit}</span>
           <span className="cell-top">—</span>
+          {/* MINI_GRID's trailing track is `auto`, so there's no fixed width
+              to reclaim here — the menu is for consistency with every other
+              converted list. The mini-row isn't clickable (it lives in the
+              row's .detail, not .row-main), so no stopPropagation wrapper. */}
           <span className="mini-row-actions">
-            {canChangeStock && (
-              <button type="button" className="mini-btn" onClick={() => onEditStock(s)}>Edit</button>
-            )}
-            {canChangeStock && (
-              <button type="button" className="mini-btn" onClick={() => onMoveStock(s)}>Move</button>
-            )}
+            <RowActionsMenu actions={canChangeStock ? [
+              { key: 'edit', label: 'Edit', onSelect: () => onEditStock(s) },
+              { key: 'move', label: 'Move', onSelect: () => onMoveStock(s) },
+            ] : []} />
           </span>
         </div>
       ))}

@@ -210,3 +210,112 @@ it('columns button hides a column', async () => {
   // Unrelated columns stay put.
   expect(within(header).queryByText('Name')).not.toBeNull();
 });
+
+// ── Rules tab row actions (Task 3) ──────────────────────────────────
+
+/** Open one rule row's Actions menu. Items are then queried via
+ *  `screen`, NOT `within(row)`: RowActionsMenu portals the open menu to
+ *  document.body (see RowActionsMenu.tsx and the note at
+ *  KioskDevices.test.tsx:178), so they leave the row's DOM subtree once
+ *  open. Only one menu is open at a time here. */
+async function openRuleMenu(user: ReturnType<typeof userEvent.setup>, name: string) {
+  const row = screen.getByText(name).closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  return row;
+}
+
+it('rule row: one Actions trigger replaces the inline Edit/Duplicate/Delete buttons', async () => {
+  const user = userEvent.setup();
+  render(<StatusRules />);
+  await screen.findByText('High priority');
+
+  const row = screen.getByText('High priority').closest('.dir-row') as HTMLElement;
+  expect(within(row).queryByRole('button', { name: 'Edit' })).toBeNull();
+  expect(within(row).queryByRole('button', { name: 'Duplicate' })).toBeNull();
+  expect(within(row).queryByRole('button', { name: 'Delete' })).toBeNull();
+
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  expect(screen.getByRole('menuitem', { name: 'Edit' })).not.toBeNull();
+  expect(screen.getByRole('menuitem', { name: 'Duplicate' })).not.toBeNull();
+  const del = screen.getByRole('menuitem', { name: 'Delete' });
+  expect(del.className).toContain('danger');
+});
+
+it('rule row: Actions → Edit opens the rule editor modal', async () => {
+  const user = userEvent.setup();
+  render(<StatusRules />);
+  await screen.findByText('High priority');
+
+  await openRuleMenu(user, 'High priority');
+  await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
+
+  expect(await screen.findByRole('heading', { name: /edit — high priority/i })).not.toBeNull();
+});
+
+it('rule row: Actions → Duplicate posts a disabled copy and reloads', async () => {
+  const user = userEvent.setup();
+  api.createStatusRule.mockResolvedValue(RULES[0]);
+  render(<StatusRules />);
+  await screen.findByText('High priority');
+
+  await openRuleMenu(user, 'High priority');
+  await user.click(screen.getByRole('menuitem', { name: 'Duplicate' }));
+
+  await waitFor(() => expect(api.createStatusRule).toHaveBeenCalledWith(
+    expect.objectContaining({ name: 'High priority (Copy)', enabled: false }),
+  ));
+  await waitFor(() => expect(api.listStatusRules).toHaveBeenCalledTimes(2));
+});
+
+it('rule row: Actions → Delete still confirms first', async () => {
+  const user = userEvent.setup();
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  api.deleteStatusRule.mockResolvedValue(undefined);
+  render(<StatusRules />);
+  await screen.findByText('High priority');
+
+  await openRuleMenu(user, 'High priority');
+  await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
+  expect(confirmSpy).toHaveBeenCalled();
+  expect(api.deleteStatusRule).not.toHaveBeenCalled();
+
+  confirmSpy.mockReturnValue(true);
+  await openRuleMenu(user, 'High priority');
+  await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
+
+  await waitFor(() => expect(api.deleteStatusRule).toHaveBeenCalledWith('r1'));
+  confirmSpy.mockRestore();
+});
+
+it('rule row: each item keeps its own permission gate', async () => {
+  const user = userEvent.setup();
+  auth.can = (resource, action) => resource === 'status_rules' && action === 'delete';
+  render(<StatusRules />);
+  await screen.findByText('High priority');
+
+  await openRuleMenu(user, 'High priority');
+  expect(screen.getByRole('menuitem', { name: 'Delete' })).not.toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Edit' })).toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Duplicate' })).toBeNull();
+});
+
+it('rule row: no trigger and no action track when no permission applies', async () => {
+  auth.can = () => false;
+  render(<StatusRules />);
+  await screen.findByText('High priority');
+
+  const row = screen.getByText('High priority').closest('.dir-row') as HTMLElement;
+  expect(within(row).queryByRole('button', { name: /Actions/ })).toBeNull();
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(main.style.gridTemplateColumns.includes('200px')).toBe(false);
+  expect(main.style.gridTemplateColumns.endsWith('88px')).toBe(false);
+});
+
+it('rule list: the action track is trigger-sized', async () => {
+  render(<StatusRules />);
+  await screen.findByText('High priority');
+
+  const row = screen.getByText('High priority').closest('.dir-row') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(main.style.gridTemplateColumns.endsWith('88px')).toBe(true);
+});

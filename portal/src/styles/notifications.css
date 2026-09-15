@@ -113,11 +113,13 @@
   margin: 10px 0 4px;
 }
 
-/* Actions column width — Edit + "Really remove?" + Cancel (all
-   .mini-btn.sm: height 26px, padding 0 10px, font-size 11.5px, 1px
-   border, gapped 8px inside .ngd-row-actions) needs room so confirming
-   Remove never reflows the rest of the row. Set via the Actions column's
-   `width` prop on <DataTable> in MembersPanel.tsx, not here. */
+/* Actions column width — one RowActionsMenu trigger, 88px, matching the
+   other lists converted to that menu (Warehouse.tsx, InitiativeDetail.tsx).
+   It used to be 250px because Remove swapped the cell into an inline
+   Edit + "Really remove?" + Cancel strip; Remove now confirms through
+   window.confirm(), so the cell's contents never change and the row can't
+   reflow. Set via the Actions column's `width` prop on <DataTable> in
+   MembersPanel.tsx, not here. */
 
 .ngd-nowrap {
   white-space: nowrap;
@@ -159,11 +161,13 @@
   flex-wrap: wrap;
 }
 
+/* Holds a single RowActionsMenu trigger, right-aligned in its 88px
+   column — the gap and wrap the old two/three-button strip needed went
+   with the strip. */
 .ngd-row-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 /* OverrideEditorModal dropped all of its per-section .modal-section

@@ -164,10 +164,33 @@ it('Approve calls the API and the row disappears after refetch', async () => {
   await screen.findByText('Pending requests');
 
   api.listMembershipRequests.mockResolvedValue([]);
-  await user.click(screen.getByRole('button', { name: 'Approve' }));
+  // Approve lives in the row's RowActionsMenu now; the open menu is
+  // portaled to document.body, so the item is queried via `screen`.
+  await user.click(screen.getByRole('button', { name: /actions/i }));
+  await user.click(await screen.findByRole('menuitem', { name: 'Approve' }));
 
   expect(api.approveMembershipRequest).toHaveBeenCalledWith('r1');
   await waitFor(() => expect(screen.queryByText('Pending requests')).toBeNull());
+});
+
+it('a request row folds Approve and Reject into one Actions menu', async () => {
+  const user = userEvent.setup();
+  api.listMembershipRequests.mockResolvedValue(REQUESTS);
+  render(<Notifications />);
+  await screen.findByText('Pending requests');
+
+  expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Reject' })).toBeNull();
+
+  await user.click(screen.getByRole('button', { name: /actions/i }));
+
+  expect(await screen.findByRole('menuitem', { name: 'Approve' })).not.toBeNull();
+  expect(screen.getByRole('menuitem', { name: 'Reject' }).className).toMatch(/danger/);
+
+  // the action column is sized to the trigger, not to a button strip
+  const cols = [...document.querySelectorAll<HTMLTableColElement>(
+    'table[aria-label="Pending membership requests"] colgroup col')];
+  expect(cols.at(-1)?.style.width).toBe('88px');
 });
 
 it('Reject reveals an inline note field; confirming sends the note and refetches', async () => {
@@ -176,13 +199,33 @@ it('Reject reveals an inline note field; confirming sends the note and refetches
   render(<Notifications />);
   await screen.findByText('Pending requests');
 
-  await user.click(screen.getByRole('button', { name: 'Reject' }));
+  await user.click(screen.getByRole('button', { name: /actions/i }));
+  await user.click(await screen.findByRole('menuitem', { name: 'Reject' }));
   await user.type(screen.getByPlaceholderText('Reason (optional)'), 'no room');
   api.listMembershipRequests.mockResolvedValue([]);
   await user.click(screen.getByRole('button', { name: 'Confirm reject' }));
 
   expect(api.rejectMembershipRequest).toHaveBeenCalledWith('r1', 'no room');
   await waitFor(() => expect(screen.queryByText('Pending requests')).toBeNull());
+});
+
+it('Cancel leaves the reject flow and restores the row to its Actions menu', async () => {
+  const user = userEvent.setup();
+  api.listMembershipRequests.mockResolvedValue(REQUESTS);
+  render(<Notifications />);
+  await screen.findByText('Pending requests');
+
+  await user.click(screen.getByRole('button', { name: /actions/i }));
+  await user.click(await screen.findByRole('menuitem', { name: 'Reject' }));
+  expect(screen.getByPlaceholderText('Reason (optional)')).not.toBeNull();
+  expect(screen.queryByRole('button', { name: /actions/i })).toBeNull();
+
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+  expect(screen.queryByPlaceholderText('Reason (optional)')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Confirm reject' })).toBeNull();
+  expect(screen.getByRole('button', { name: /actions/i })).not.toBeNull();
+  expect(api.rejectMembershipRequest).not.toHaveBeenCalled();
 });
 
 it('hides the panel without the notifications:change permission even with pending requests', async () => {

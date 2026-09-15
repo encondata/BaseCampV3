@@ -176,3 +176,65 @@ it('when menu flips upward (spaceBelow < 200px), clears the CSS class top rule b
   // Verify bottom is a numeric value (the portal position is calculated)
   expect(Number.isFinite(parseFloat(menu.style.bottom))).toBe(true);
 });
+
+it('a disabled item renders disabled, does not fire onSelect, and leaves the menu open', async () => {
+  const user = userEvent.setup();
+  const onSelect = vi.fn();
+  render(
+    <RowActionsMenu
+      actions={[
+        { key: 'remove', label: 'Remove', onSelect, disabled: true },
+        { key: 'edit', label: 'Edit', onSelect: vi.fn() },
+      ]}
+    />,
+  );
+
+  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+
+  const item = screen.getByRole('menuitem', { name: 'Remove' }) as HTMLButtonElement;
+  expect(item.disabled).toBe(true);
+
+  await user.click(item);
+
+  expect(onSelect).not.toHaveBeenCalled();
+  // The row is busy, not finished: the menu stays open so the user can
+  // pick something else or watch the item come back.
+  expect(screen.queryAllByRole('menuitem')).not.toHaveLength(0);
+});
+
+it('a destructive item can also be disabled and keeps its danger class', async () => {
+  const user = userEvent.setup();
+  render(
+    <RowActionsMenu
+      actions={[{ key: 'delete', label: 'Delete', destructive: true, disabled: true, onSelect: vi.fn() }]}
+    />,
+  );
+
+  await user.click(screen.getByRole('button', { name: 'Actions ▾' }));
+
+  const item = screen.getByRole('menuitem', { name: 'Delete' }) as HTMLButtonElement;
+  expect(item.disabled).toBe(true);
+  expect(item.className).toContain('danger');
+});
+
+it('still renders the trigger when every item is disabled', async () => {
+  const user = userEvent.setup();
+  // "All disabled" is not "empty": dropping the items would make the
+  // trigger vanish mid-action on a single-action row.
+  render(
+    <RowActionsMenu
+      actions={[
+        { key: 'download', label: 'Download', onSelect: vi.fn(), disabled: true },
+        { key: 'delete', label: 'Delete', destructive: true, onSelect: vi.fn(), disabled: true },
+      ]}
+    />,
+  );
+
+  const trigger = screen.getByRole('button', { name: 'Actions ▾' });
+  expect(trigger).not.toBeNull();
+
+  await user.click(trigger);
+  const items = screen.getAllByRole('menuitem') as HTMLButtonElement[];
+  expect(items.map((i) => i.textContent)).toEqual(['Download', 'Delete']);
+  expect(items.every((i) => i.disabled)).toBe(true);
+});
