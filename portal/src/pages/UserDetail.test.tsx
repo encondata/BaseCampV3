@@ -192,3 +192,48 @@ it('ignores a stale response when personId changes mid-load', async () => {
   expect(screen.getByRole('heading', { level: 1, name: /Second Person/ })).toBeTruthy();
   expect(screen.queryByRole('heading', { level: 1, name: /Wan Worker/ })).toBeNull();
 });
+
+it('Access tab renders four panels with real tables', async () => {
+  renderAt('/people/users/p1/access');
+  await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
+  expect(screen.getByRole('tab', { name: 'Access' }).getAttribute('aria-selected')).toBe('true');
+  expect(await screen.findByRole('table', { name: 'Roles' })).toBeTruthy();
+  expect(screen.getByRole('table', { name: 'Access groups' })).toBeTruthy();
+  expect(screen.getByRole('table', { name: 'Overrides' })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Effective permissions' })).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Finance' }).getAttribute('href')).toBe('/access?tab=groups&group=g1');
+  expect(screen.getByText('Money people')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Manage roles' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Manage groups' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Edit overrides' })).toBeTruthy();
+});
+
+it('Access tab shows the rank note when the access block is null but keeps Manage roles', async () => {
+  api.getUserDetail.mockResolvedValue({ ...DETAIL, access: null });
+  renderAt('/people/users/p1/access');
+  await screen.findByRole('table', { name: 'Roles' });
+  expect(screen.getByText(/visible to admins at rank 60 and above/)).toBeTruthy();
+  expect(screen.queryByRole('table', { name: 'Access groups' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Manage roles' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Manage groups' })).toBeNull();
+});
+
+it('Manage groups toggles and saves the full id list', async () => {
+  renderAt('/people/users/p1/access');
+  fireEvent.click(await screen.findByRole('button', { name: 'Manage groups' }));
+  const ops = await screen.findByRole('button', { name: /^Ops/ });
+  fireEvent.click(ops);                                   // add Ops (Finance already on)
+  fireEvent.click(screen.getByRole('button', { name: 'Save groups' }));
+  await waitFor(() => expect(api.setUserAccessGroups).toHaveBeenCalledWith('p1', ['g1', 'g2']));
+  await waitFor(() => expect(api.getUserDetail).toHaveBeenCalledTimes(2));
+});
+
+it('Manage groups surfaces rank_too_low', async () => {
+  const { ApiError } = await import('../lib/api');
+  api.setUserAccessGroups.mockRejectedValueOnce(new ApiError(403, 'rank_too_low'));
+  renderAt('/people/users/p1/access');
+  fireEvent.click(await screen.findByRole('button', { name: 'Manage groups' }));
+  fireEvent.click(await screen.findByRole('button', { name: /^Finance/ }));   // remove Finance
+  fireEvent.click(screen.getByRole('button', { name: 'Save groups' }));
+  expect(await screen.findByText(/rank is at or above yours/)).toBeTruthy();
+});

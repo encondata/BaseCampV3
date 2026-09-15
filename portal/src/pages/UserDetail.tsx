@@ -13,6 +13,7 @@ import GodDeleteButton from '../components/GodDeleteButton';
 import {
   AccountStateModal, AdminEditProfileModal, ResetPasswordModal,
 } from '../components/UserAdminModals';
+import UserAccessTab from '../components/users/UserAccessTab';
 import UserProfileTab from '../components/users/UserProfileTab';
 import { canTouchRank, RANK_LABELS } from '../lib/access';
 import { ApiError, getUserDetail, revokeAllUserSessions, type UserDetailOut } from '../lib/api';
@@ -224,7 +225,10 @@ export default function UserDetail() {
                         onReset={() => setAction({ kind: 'reset' })}
                         onSignOutAll={() => setAction({ kind: 'signout' })} />
       )}
-      {/* Task 7 adds: tab === 'access' && <UserAccessTab … /> */}
+      {tab === 'access' && (
+        <UserAccessTab detail={detail} canManageAccess={canManageAccess}
+                       selfId={me?.id ?? null} maxRank={maxRank} onChanged={() => void load()} />
+      )}
       {/* Task 8 adds: tab === 'history' && showHistory && <UserHistoryTab … /> */}
 
       {action?.kind === 'edit' && (
