@@ -18,6 +18,7 @@ import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.ui.flash.ScanFlash
 import com.serversherpa.kiosk.ui.guards.KioskGuard
 import com.serversherpa.kiosk.ui.guards.SetupGate
+import com.serversherpa.kiosk.ui.screens.home.HomeScreen
 import com.serversherpa.kiosk.ui.screens.login.LoginScreen
 import com.serversherpa.kiosk.ui.screens.placeholder.FeaturePlaceholderScreen
 import com.serversherpa.kiosk.ui.shell.KioskShell
@@ -33,7 +34,7 @@ fun KioskApp() {
         Box(androidx.compose.ui.Modifier.fillMaxSize()) {
             NavHost(nav, startDestination = Routes.HOME) {
                 composable(Routes.LOGIN) { LoginScreen(nav) }
-                composable(Routes.HOME) { KioskGuard(nav) { KioskShell(nav) { FeaturePlaceholderScreen(feature(FeatureId.SETUP), nav) } } } // Task 19: HomeScreen(nav)
+                composable(Routes.HOME) { KioskGuard(nav) { KioskShell(nav) { HomeScreen(nav) } } }
                 composable(Routes.SETUP) { KioskGuard(nav) { KioskShell(nav) { FeaturePlaceholderScreen(feature(FeatureId.SETUP), nav) } } } // Task 20: KioskSetupScreen(nav)
                 composable(Routes.SETTINGS, arguments = listOf(navArgument("tab") { type = NavType.StringType; nullable = true })) { entry ->
                     KioskShell(nav) { FeaturePlaceholderScreen(feature(FeatureId.SETTINGS), nav) }                     // Task 21: SettingsScreen(nav, entry.arguments?.getString("tab"))
