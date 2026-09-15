@@ -184,6 +184,46 @@ it('expanding a container row reveals its asset and stock contents', async () =>
   expect(screen.getByText('PDU, 30A')).not.toBeNull();
 });
 
+it('a container stock line folds Edit and Move into one Actions menu', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('Pallet A-01');
+  await user.click(screen.getByText('Pallet A-01'));
+
+  const miniRow = (await screen.findByText('PDU, 30A')).closest('.mini-row') as HTMLElement;
+  expect(within(miniRow).queryByRole('button', { name: 'Edit' })).toBeNull();
+  expect(within(miniRow).queryByRole('button', { name: 'Move' })).toBeNull();
+
+  // the portaled menu is queried via `screen`, never within(miniRow)
+  await user.click(within(miniRow).getByRole('button', { name: /actions/i }));
+  expect(await screen.findByRole('menuitem', { name: 'Edit' })).not.toBeNull();
+  await user.click(screen.getByRole('menuitem', { name: 'Move' }));
+
+  expect(await screen.findByText('Move — PDU, 30A')).not.toBeNull();
+});
+
+it('a container asset row keeps its single inline Edit button', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('Pallet A-01');
+  await user.click(screen.getByText('Pallet A-01'));
+
+  const miniRow = (await screen.findByText('SN-IN')).closest('.mini-row') as HTMLElement;
+  expect(within(miniRow).getByRole('button', { name: 'Edit' })).not.toBeNull();
+  expect(within(miniRow).queryByRole('button', { name: /actions/i })).toBeNull();
+});
+
+it('a container stock line shows no Actions trigger without warehouse:change', async () => {
+  auth.can = (r: string) => r !== 'warehouse';
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('Pallet A-01');
+  await user.click(screen.getByText('Pallet A-01'));
+
+  const miniRow = (await screen.findByText('PDU, 30A')).closest('.mini-row') as HTMLElement;
+  expect(within(miniRow).queryByRole('button', { name: /actions/i })).toBeNull();
+});
+
 it('+ Add stock opens the modal, posts the expected payload, and refetches', async () => {
   const user = userEvent.setup();
   renderPage();

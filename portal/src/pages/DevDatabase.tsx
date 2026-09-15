@@ -27,6 +27,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import DbTestingTab from '../components/dev/DbTestingTab';
+import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import {
   ApiError,
   createDbBackup,
@@ -64,7 +65,13 @@ function typeLabel(entityType: string): string {
   return entityType.replace(/_/g, ' ');
 }
 
-const GRID = { gridTemplateColumns: '2fr 1fr 1fr 1.3fr 150px' };
+/** Trailing track for a row's RowActionsMenu — the "Actions ▾" trigger
+ *  measures 85px, so 88px holds it without clipping and hands the rest of
+ *  the old button-strip width back to the flexible columns. Same value as
+ *  Warehouse.tsx:330 and InitiativeDetail.tsx's ACTIONS_TRACK. */
+const ACTIONS_TRACK = '88px';
+
+const GRID = { gridTemplateColumns: `2fr 1fr 1fr 1.3fr ${ACTIONS_TRACK}` };
 
 /** Reconcile tab body — unchanged from the pre-tab page other than the
  *  outer `.portal-page`/`.dir-head` wrapper, which the shell (below) now
@@ -295,23 +302,25 @@ function ReconcileTab() {
                 <div className="cell">
                   <span className="cell-top">{item.marked_by_name ?? 'Unknown'}</span>
                 </div>
-                <div className="cell" style={{ display: 'flex', gap: 8 }}>
-                  <button
-                    type="button"
-                    className="mini-btn sm"
-                    disabled={busyId === item.id}
-                    onClick={() => void handleUndo(item)}
-                  >
-                    Undo
-                  </button>
-                  <button
-                    type="button"
-                    className="mini-btn sm danger"
-                    disabled={busyId === item.id}
-                    onClick={() => void handleDeleteOne(item)}
-                  >
-                    Delete
-                  </button>
+                {/* The row itself isn't clickable, so no stopPropagation
+                    wrapper is needed here. Both items stay present while the
+                    row is in flight — disabled, not dropped. */}
+                <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <RowActionsMenu actions={[
+                    {
+                      key: 'undo',
+                      label: 'Undo',
+                      onSelect: () => void handleUndo(item),
+                      disabled: busyId === item.id,
+                    },
+                    {
+                      key: 'delete',
+                      label: 'Delete',
+                      destructive: true,
+                      onSelect: () => void handleDeleteOne(item),
+                      disabled: busyId === item.id,
+                    },
+                  ]} />
                 </div>
               </div>
             </div>
@@ -324,7 +333,7 @@ function ReconcileTab() {
 
 // ── backups ──────────────────────────────────────────────────────────
 
-const BACKUP_GRID = { gridTemplateColumns: '2fr 1.2fr 1fr 1.3fr 170px' };
+const BACKUP_GRID = { gridTemplateColumns: `2fr 1.2fr 1fr 1.3fr ${ACTIONS_TRACK}` };
 
 const DECRYPT_HINT =
   'openssl enc -d -aes-256-cbc -pbkdf2 -md sha256 -in <file> -out backup.sql';
@@ -530,25 +539,25 @@ function BackupsTab() {
               <div className="cell">
                 <span className="cell-top">{b.created_by_name ?? 'Unknown'}</span>
               </div>
-              <div className="cell" style={{ display: 'flex', gap: 8 }}>
-                <button
-                  type="button"
-                  className="mini-btn sm"
-                  disabled={busyId === b.id}
-                  onClick={() => void handleDownload(b)}
-                >
-                  Download
-                </button>
-                {canChange && (
-                  <button
-                    type="button"
-                    className="mini-btn sm danger"
-                    disabled={busyId === b.id}
-                    onClick={() => void handleDelete(b)}
-                  >
-                    Delete
-                  </button>
-                )}
+              {/* Download stays visible while it's in flight (disabled, not
+                  dropped) — dropping it would take the whole trigger away
+                  mid-download for a user without devtools:change. */}
+              <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <RowActionsMenu actions={[
+                  {
+                    key: 'download',
+                    label: 'Download',
+                    onSelect: () => void handleDownload(b),
+                    disabled: busyId === b.id,
+                  },
+                  ...(canChange ? [{
+                    key: 'delete',
+                    label: 'Delete',
+                    destructive: true,
+                    onSelect: () => void handleDelete(b),
+                    disabled: busyId === b.id,
+                  }] : []),
+                ]} />
               </div>
             </div>
           </div>
