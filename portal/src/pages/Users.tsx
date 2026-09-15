@@ -531,9 +531,16 @@ export default function Users() {
                           const canTouch = !isSelf && canTouchRank(maxRank, u.max_rank);
                           const canManageUsers = canTouch && can('users', 'change');
                           const canManageRoles = canTouch && can('access', 'change');
+                          const fullDetails = (
+                            <button className="mini-btn accent"
+                                    onClick={() => navigate(`/people/users/${u.person_id}`)}>
+                              Full details
+                            </button>
+                          );
                           if (isSelf) {
                             return (
                               <div className="detail-actions">
+                                {fullDetails}
                                 <span className="self-note">
                                   This is you — your details, password, and
                                   sessions live on your profile.
@@ -551,54 +558,60 @@ export default function Users() {
                                 <span className="self-note">
                                   Read-only — {u.display_name}'s rank is at or above yours.
                                 </span>
+                                {fullDetails}
                               </div>
                             );
                           }
-                          if (!canManageUsers && !canManageRoles && !godMode) return null;
+                          const manageable = canManageUsers || canManageRoles || godMode;
                           const guard = (title: string) => title;
                           return (
                             <div className="detail-actions">
-                              {canManageUsers && (
-                                <button className="mini-btn accent"                                       title={guard('Edit identity fields')}
-                                        onClick={() => setManage({ kind: 'edit', user: u })}>
-                                  Edit profile
-                                </button>
+                              {fullDetails}
+                              {manageable && (
+                                <>
+                                  {canManageUsers && (
+                                    <button className="mini-btn accent"                                       title={guard('Edit identity fields')}
+                                            onClick={() => setManage({ kind: 'edit', user: u })}>
+                                      Edit profile
+                                    </button>
+                                  )}
+                                  {canManageUsers && (
+                                    <button className="mini-btn"                                       title={guard('Set a temporary password')}
+                                            onClick={() => setManage({ kind: 'reset', user: u })}>
+                                      Reset password
+                                    </button>
+                                  )}
+                                  {canManageRoles && (
+                                    <button className="mini-btn"                                       title={guard('Grant or revoke roles')}
+                                            onClick={() => setManage({ kind: 'roles', user: u })}>
+                                      Manage roles
+                                    </button>
+                                  )}
+                                  {canManageUsers && u.status === 'locked' && (
+                                    <button className="mini-btn"                                         title={guard('Clear the failed-attempt lockout')}
+                                            onClick={() => setManage({ kind: 'state', action: 'unlock', user: u })}>
+                                      Unlock
+                                    </button>
+                                  )}
+                                  {canManageUsers && (u.status === 'disabled' ? (
+                                    <button className="mini-btn"                                         title={guard('Restore sign-in')}
+                                            onClick={() => setManage({ kind: 'state', action: 'enable', user: u })}>
+                                      Enable account
+                                    </button>
+                                  ) : (
+                                    <button className="mini-btn danger"                                         title={guard('Block sign-in and revoke sessions')}
+                                            onClick={() => setManage({ kind: 'state', action: 'disable', user: u })}>
+                                      Disable account
+                                    </button>
+                                  ))}
+                                  <GodDeleteButton visible={godMode} entityType="person"
+                                                   entityId={u.person_id} label={u.display_name}
+                                                   pending={pd.pendingIds.has(u.person_id)}
+                                                   onChange={pd.pendingIds.has(u.person_id)
+                                                     ? () => pd.unmark(u.person_id)
+                                                     : () => pd.mark('person', u.person_id, u.display_name)} />
+                                </>
                               )}
-                              {canManageUsers && (
-                                <button className="mini-btn"                                       title={guard('Set a temporary password')}
-                                        onClick={() => setManage({ kind: 'reset', user: u })}>
-                                  Reset password
-                                </button>
-                              )}
-                              {canManageRoles && (
-                                <button className="mini-btn"                                       title={guard('Grant or revoke roles')}
-                                        onClick={() => setManage({ kind: 'roles', user: u })}>
-                                  Manage roles
-                                </button>
-                              )}
-                              {canManageUsers && u.status === 'locked' && (
-                                <button className="mini-btn"                                         title={guard('Clear the failed-attempt lockout')}
-                                        onClick={() => setManage({ kind: 'state', action: 'unlock', user: u })}>
-                                  Unlock
-                                </button>
-                              )}
-                              {canManageUsers && (u.status === 'disabled' ? (
-                                <button className="mini-btn"                                         title={guard('Restore sign-in')}
-                                        onClick={() => setManage({ kind: 'state', action: 'enable', user: u })}>
-                                  Enable account
-                                </button>
-                              ) : (
-                                <button className="mini-btn danger"                                         title={guard('Block sign-in and revoke sessions')}
-                                        onClick={() => setManage({ kind: 'state', action: 'disable', user: u })}>
-                                  Disable account
-                                </button>
-                              ))}
-                              <GodDeleteButton visible={godMode} entityType="person"
-                                               entityId={u.person_id} label={u.display_name}
-                                               pending={pd.pendingIds.has(u.person_id)}
-                                               onChange={pd.pendingIds.has(u.person_id)
-                                                 ? () => pd.unmark(u.person_id)
-                                                 : () => pd.mark('person', u.person_id, u.display_name)} />
                             </div>
                           );
                         })()}
@@ -639,8 +652,7 @@ export default function Users() {
           onClose={() => setAddOpen(false)}
           onCreated={(personId) => {
             setAddOpen(false);
-            deepLinkTarget.current = null;
-            void load().then(() => setOpenId(personId));
+            navigate(`/people/users/${personId}`);
           }}
         />
       )}

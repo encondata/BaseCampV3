@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import ActivityHistory from '../components/ActivityHistory';
 import AvatarUpload from '../components/AvatarUpload';
 import GodDeleteButton from '../components/GodDeleteButton';
 import {
@@ -16,7 +17,10 @@ import {
 import UserAccessTab from '../components/users/UserAccessTab';
 import UserProfileTab from '../components/users/UserProfileTab';
 import { canTouchRank, RANK_LABELS } from '../lib/access';
-import { ApiError, getUserDetail, revokeAllUserSessions, type UserDetailOut } from '../lib/api';
+import {
+  ApiError, getUserActivity, getUserDetail, revokeAllUserSessions,
+  type MyActivityItem, type UserDetailOut,
+} from '../lib/api';
 import { longDate } from '../lib/format';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { ROLE_CLS, STATUS_META, toManagedUser } from '../lib/users';
@@ -58,6 +62,37 @@ export default function UserDetail() {
   const [action, setAction] = useState<Action | null>(null);
   const [signingOut, setSigningOut] = useState(false);
 
+  // History is lazy-loaded (only once the tab is opened) and refreshed after
+  // any mutation on this page, but only once it has already been fetched —
+  // `activityRef` mirrors `activity` so `load` can check that without taking
+  // a dependency on the state itself (which would recreate `load` on every
+  // history refresh and re-trigger the mount effect in a loop).
+  const [activity, setActivity] = useState<MyActivityItem[] | null>(null);
+  const [activityError, setActivityError] = useState('');
+  const activityRef = useRef<MyActivityItem[] | null>(null);
+  const actSeq = useRef(0);
+  const loadActivity = useCallback(async () => {
+    const seq = ++actSeq.current;
+    setActivityError('');
+    try {
+      const rows = await getUserActivity(personId);
+      if (seq !== actSeq.current) return;
+      activityRef.current = rows;
+      setActivity(rows);
+    } catch {
+      if (seq !== actSeq.current) return;
+      activityRef.current = [];
+      setActivity([]);
+      setActivityError('Could not load history.');
+    }
+  }, [personId]);
+
+  useEffect(() => {
+    activityRef.current = null;
+    setActivity(null);
+    setActivityError('');
+  }, [personId]);
+
   const reqSeq = useRef(0);
   const load = useCallback(async () => {
     const seq = ++reqSeq.current;
@@ -67,14 +102,20 @@ export default function UserDetail() {
       if (seq !== reqSeq.current) return;      // a newer load superseded this one
       setDetail(next);
       setMissing(false);
+      if (activityRef.current !== null) void loadActivity();
     } catch (err) {
       if (seq !== reqSeq.current) return;
       if (err instanceof ApiError && (err.status === 404 || err.status === 403)) setMissing(true);
       else setLoadError('Could not load this user.');
     }
-  }, [personId]);
+  }, [personId, loadActivity]);
 
   useEffect(() => { void load(); }, [load]);
+
+  useEffect(() => {
+    if (tab === 'history' && activity === null && can('audit', 'view')) void loadActivity();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   const back = <Link to="/people/users" className="idet-back">← Users</Link>;
 
@@ -229,7 +270,16 @@ export default function UserDetail() {
         <UserAccessTab detail={detail} canManageAccess={canManageAccess}
                        selfId={me?.id ?? null} maxRank={maxRank} onChanged={() => void load()} />
       )}
-      {/* Task 8 adds: tab === 'history' && showHistory && <UserHistoryTab … /> */}
+      {tab === 'history' && showHistory && (
+        activityError
+          ? (
+            <div className="dir-empty" style={{ marginTop: 16 }}>
+              <b>{activityError}</b>
+              <button className="mini-btn" style={{ marginTop: 8 }} onClick={() => void loadActivity()}>Retry</button>
+            </div>
+          )
+          : <ActivityHistory rows={activity ?? []} subjectName={person.display_name} />
+      )}
 
       {action?.kind === 'edit' && (
         <AdminEditProfileModal user={managed}

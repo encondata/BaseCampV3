@@ -19,6 +19,7 @@ interface Props {
   summary: AccessSummary;
   canEdit: boolean;
   onChanged: () => void;
+  initialGroupId?: string | null;
 }
 
 /** access + devtools are hard-wired and can never be group-gated. */
@@ -46,8 +47,8 @@ const GROUP_GLYPH = (
   </svg>
 );
 
-export default function GroupsTab({ summary, canEdit, onChanged }: Props) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+export default function GroupsTab({ summary, canEdit, onChanged, initialGroupId }: Props) {
+  const [selectedId, setSelectedId] = useState<string | null>(initialGroupId ?? null);
   const [createOpen, setCreateOpen] = useState(false);
   const [gateResource, setGateResource] = useState<AccessResourceOut | null>(null);
 

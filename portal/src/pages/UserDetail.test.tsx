@@ -7,7 +7,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { UserDetailOut } from '../lib/api';
+import type { MyActivityItem, UserDetailOut } from '../lib/api';
 
 const auth = vi.hoisted(() => ({
   personId: 'me-1',
@@ -31,7 +31,7 @@ vi.mock('../auth/AuthContext', () => ({
 
 const api = vi.hoisted(() => ({
   getUserDetail: vi.fn(),
-  getUserActivity: vi.fn(async () => []),
+  getUserActivity: vi.fn(async (): Promise<MyActivityItem[]> => []),
   getAccessSummary: vi.fn(async () => ({
     stats: { members: 0, roles: 0, groups: 0, gated_resources: 0, overrides: 0 },
     resources: [{ id: 'clients', label: 'Clients', developer_only: false, always_viewable: false, gated_by: ['g1'] }],
@@ -236,4 +236,18 @@ it('Manage groups surfaces rank_too_low', async () => {
   fireEvent.click(await screen.findByRole('button', { name: /^Finance/ }));   // remove Finance
   fireEvent.click(screen.getByRole('button', { name: 'Save groups' }));
   expect(await screen.findByText(/rank is at or above yours/)).toBeTruthy();
+});
+
+it('History tab loads the person activity lazily and names the subject', async () => {
+  api.getUserActivity.mockResolvedValue([
+    { id: 'r1', at: '2026-09-15T10:00:00Z', action: 'site.create', entity_type: 'site', entity_id: null,
+      ip: null, by_me: true, actor_name: null, changes: {}, entity_name: null, entity_summary: {} },
+  ]);
+  renderAt('/people/users/p1');
+  await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
+  expect(api.getUserActivity).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('tab', { name: 'History' }));
+  expect(await screen.findByRole('heading', { name: 'User history' })).toBeTruthy();
+  await waitFor(() => expect(api.getUserActivity).toHaveBeenCalledWith('p1'));
+  expect(await screen.findAllByText('Wan Worker')).toBeTruthy();
 });
