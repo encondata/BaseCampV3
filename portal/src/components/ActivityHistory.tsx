@@ -31,8 +31,8 @@ function targetLabel(row: MyActivityItem): string {
   return sharedTargetLabel(row, { hideAuthTarget: row.by_me });
 }
 
-function whoLabel(row: MyActivityItem): string {
-  return row.by_me ? 'You' : (row.actor_name ?? 'System');
+function whoLabel(row: MyActivityItem, subject: string): string {
+  return row.by_me ? subject : (row.actor_name ?? 'System');
 }
 
 const COLUMNS: ColumnDef[] = [
@@ -44,7 +44,10 @@ const COLUMNS: ColumnDef[] = [
 
 type SortKey = 'at' | 'who' | 'action' | 'target' | 'ip';
 
-export default function ActivityHistory({ rows }: { rows: MyActivityItem[] }) {
+export default function ActivityHistory(
+  { rows, subjectName }: { rows: MyActivityItem[]; subjectName?: string },
+) {
+  const subject = subjectName ?? 'You';
   const [facets, setFacets] = useState<FacetState>({});
   const [sortKey, setSortKey] = useState<SortKey>('at');
   const [sortDir, setSortDir] = useState<1 | -1>(-1);   // newest first
@@ -64,14 +67,14 @@ export default function ActivityHistory({ rows }: { rows: MyActivityItem[] }) {
         .map(([value, label]) => ({ value, label }));
     return [
       { key: 'who', title: 'Actor', options: [
-        { value: 'you', label: 'You' },
+        { value: 'you', label: subject },
         { value: 'someone', label: 'Someone else' },
         { value: 'system', label: 'System' },
       ] },
       { key: 'action', title: 'Action', options: opts(actions) },
       { key: 'entity', title: 'Record type', options: opts(entities) },
     ];
-  }, [rows]);
+  }, [rows, subject]);
 
   const facetValues = (r: MyActivityItem) => (groupKey: string): string[] => {
     switch (groupKey) {
@@ -85,7 +88,7 @@ export default function ActivityHistory({ rows }: { rows: MyActivityItem[] }) {
   const sortVal = (r: MyActivityItem): string => {
     switch (sortKey) {
       case 'at': return r.at;
-      case 'who': return whoLabel(r);
+      case 'who': return whoLabel(r, subject);
       case 'action': return actionLabel(r);
       case 'target': return targetLabel(r);
       case 'ip': return r.ip ?? '';
@@ -112,7 +115,7 @@ export default function ActivityHistory({ rows }: { rows: MyActivityItem[] }) {
 
   const cellFor = (r: MyActivityItem, key: string): ReactElement => {
     switch (key) {
-      case 'who': return <span className="cell-top">{whoLabel(r)}</span>;
+      case 'who': return <span className="cell-top">{whoLabel(r, subject)}</span>;
       case 'action': return <span className="cell-top">{actionLabel(r)}</span>;
       case 'target': return <span className="cell-top">{targetLabel(r)}</span>;
       case 'ip': return <span className="mono">{r.ip ?? '—'}</span>;
@@ -131,7 +134,7 @@ export default function ActivityHistory({ rows }: { rows: MyActivityItem[] }) {
             'user-history',
             [
               ['At', (r) => r.at],
-              ['Actor', (r) => whoLabel(r)],
+              ['Actor', (r) => whoLabel(r, subject)],
               ['Action', (r) => actionLabel(r)],
               ['Record type', (r) => r.entity_type],
               ['Record id', (r) => r.entity_id ?? ''],
@@ -198,7 +201,7 @@ export default function ActivityHistory({ rows }: { rows: MyActivityItem[] }) {
                         <dl className="kv">
                           <dt>Exact time</dt>
                           <dd className="mono">{new Date(r.at).toLocaleString()}</dd>
-                          <dt>Actor</dt><dd>{whoLabel(r)}</dd>
+                          <dt>Actor</dt><dd>{whoLabel(r, subject)}</dd>
                           <dt>Action</dt><dd className="mono">{r.action}</dd>
                           <dt>Record</dt>
                           <dd className="mono" title={recordTooltip(r)}>

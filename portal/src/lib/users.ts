@@ -2,9 +2,48 @@
  *  so it's shared with this module without a component import), the
  *  profile-PATCH error map, and the god-edit descriptor table. */
 
-import type { PersonDetail } from './api';
+import type { MemberItem, PersonDetail, UserDetailOut } from './api';
+import type { ManagedUser } from '../components/UserAdminModals';
 import type { GodField } from './godEdit';
 import { longDate, relativeTime } from './format';
+
+/** Role chip palette — shared by the Users list and the user detail page. */
+export const ROLE_CLS: Record<string, string> = {
+  admin: 'c-amber', staff: 'c-blue', worker: 'c-green',
+  client: 'c-violet', vendor: 'c-violet', external: 'c-blue',
+};
+
+/** The shape UserAdminModals (edit / reset / roles / state) expect. */
+export function toManagedUser(d: UserDetailOut): ManagedUser {
+  return {
+    person_id: d.person.id,
+    display_name: d.person.display_name,
+    first_name: d.person.first_name,
+    last_name: d.person.last_name,
+    preferred_name: d.person.preferred_name,
+    job_title: d.person.job_title,
+    contact_email: d.person.email,
+    phone: d.person.phone,
+    roles: d.roles.map((r) => r.role),
+    status: d.account.status,
+    max_rank: d.max_rank,
+    avatar_url: d.person.avatar_url,
+  };
+}
+
+/** The shape OverrideEditor's `member` prop expects. */
+export function toMemberItem(d: UserDetailOut): MemberItem {
+  return {
+    person_id: d.person.id,
+    display_name: d.person.display_name,
+    job_title: d.person.job_title,
+    login_email: d.account.login_email,
+    status: d.account.status,
+    roles: d.roles.map((r) => r.role),
+    max_rank: d.max_rank,
+    avatar_url: d.person.avatar_url,
+  };
+}
 
 export interface UserItem {
   person_id: string;

@@ -26,8 +26,8 @@ import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
-  applyUserPatch, STATUS_META, USER_ERRORS, USER_GOD_FIELDS, userCellText, userSearchText,
-  type UserItem,
+  applyUserPatch, ROLE_CLS, STATUS_META, USER_ERRORS, USER_GOD_FIELDS, userCellText,
+  userSearchText, type UserItem,
 } from '../lib/users';
 import { avatarGradient, initials, longDate, relativeTime } from '../lib/format';
 import {
@@ -39,11 +39,6 @@ import { naturalCompare } from '../lib/sites';
 import '../styles/directory.css';
 import '../styles/profile.css';   /* .pf-form, .btn-solid */
 import '../styles/settings.css';  /* .set-note */
-
-const ROLE_CLS: Record<string, string> = {
-  admin: 'c-amber', staff: 'c-blue', worker: 'c-green',
-  client: 'c-violet', vendor: 'c-violet', external: 'c-blue',
-};
 
 const ALL_ROLES = ['admin', 'staff', 'worker', 'client', 'vendor', 'external'];
 const PILLS = [

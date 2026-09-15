@@ -491,6 +491,104 @@ export async function adminUpdateProfileRequest(
   return resp.json();
 }
 
+/* ── user detail page (GET /users/{id}) ────────────────────────── */
+
+export interface PersonRef { id: string; display_name: string }
+export interface OrgRefOut { kind: 'client' | 'partner'; id: string; name: string }
+
+export interface UserDetailPerson extends PersonDetail {
+  source: string;
+  source_ref: string | null;
+  archived_at: string | null;
+}
+
+export interface UserDetailAccount {
+  login_email: string | null;
+  status: string;
+  must_change_password: boolean;
+  last_login_at: string | null;
+  created_at: string;
+  password_updated_at: string | null;
+}
+
+export interface UserRoleGrant {
+  role: string; label: string; rank: number; scope_anchor: string;
+  org: OrgRefOut | null; granted_by: PersonRef | null; granted_at: string;
+}
+
+export interface UserWorkerCard {
+  trade: string | null; level: string | null; level_title: string | null;
+  level_color: string | null; partner: { id: string; name: string } | null;
+  status: string; status_label: string; status_color: string;
+}
+
+export interface UserNotificationGroup {
+  id: string; name: string; channels: string[]; added_at: string;
+}
+
+export interface UserAccessGroupRow {
+  id: string; name: string; description: string; gate_count: number;
+  gated_pages: string[]; added_by: PersonRef | null; added_at: string;
+}
+
+export interface UserOverrideRow {
+  resource: string; resource_label: string; action: string; allow: boolean;
+  set_by: PersonRef | null; set_at: string;
+}
+
+export interface UserAccessBlock {
+  groups: UserAccessGroupRow[];
+  overrides: UserOverrideRow[];
+  scope: ScopeInfo;
+  scope_orgs: OrgRefOut[];
+  cells: Record<string, Record<Action, EffectiveCell>>;
+}
+
+export interface UserSessionRow {
+  family_id: string; started_at: string; last_active_at: string; expires_at: string;
+  ip_address: string | null; user_agent: string | null;
+}
+
+export interface UserDetailOut {
+  person: UserDetailPerson;
+  account: UserDetailAccount;
+  roles: UserRoleGrant[];
+  max_rank: number;
+  worker: UserWorkerCard | null;
+  notification_groups: UserNotificationGroup[];
+  access: UserAccessBlock | null;
+  sessions: UserSessionRow[] | null;
+}
+
+export async function getUserDetail(personId: string): Promise<UserDetailOut> {
+  const resp = await apiFetch(`/users/${personId}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getUserActivity(personId: string): Promise<MyActivityItem[]> {
+  const resp = await apiFetch(`/users/${personId}/activity`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function setUserAccessGroups(
+  personId: string, groupIds: string[],
+): Promise<string[]> {
+  const resp = await apiFetch(`/users/${personId}/access-groups`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ group_ids: groupIds }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return (await resp.json()).group_ids as string[];
+}
+
+export async function revokeAllUserSessions(personId: string): Promise<void> {
+  const resp = await apiFetch(`/users/${personId}/sessions/revoke-all`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
 /** Slim projection of GET /users for pickers (the Users page reads the
  *  full payload itself). */
 export interface UserSummary {
