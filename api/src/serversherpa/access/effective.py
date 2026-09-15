@@ -42,8 +42,7 @@ async def effective_cells(db: AsyncSession, person_id: uuid.UUID) -> EffectiveAc
     group_rows = (await db.execute(
         select(AccessGroup.id, AccessGroup.name)
         .join(AccessGroupMember, AccessGroupMember.group_id == AccessGroup.id)
-        .where(AccessGroupMember.person_id == person_id)
-        .order_by(AccessGroup.name))).all()
+        .where(AccessGroupMember.person_id == person_id))).all()
     gated = {res for (res,) in (await db.execute(
         select(ResourceGroupGate.resource).distinct())).all()}
     member_res: set[str] = set()
