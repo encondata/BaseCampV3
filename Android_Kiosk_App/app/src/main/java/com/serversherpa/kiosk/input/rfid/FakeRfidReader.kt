@@ -52,22 +52,41 @@ class FakeRfidReader(name: String = "Fake RFD40") : RfidReader {
     }
 
     override suspend fun apply(settings: RfidSettings): Result<Unit> {
+        if (_connection.value !is RfidConnection.Connected) {
+            return Result.failure(IllegalStateException("Can't apply settings: the reader isn't connected."))
+        }
         applied = settings
         return applyResult
     }
 
     override suspend fun startInventory(): Result<Unit> {
+        if (_connection.value !is RfidConnection.Connected) {
+            return Result.failure(IllegalStateException("Can't start an inventory: the reader isn't connected."))
+        }
         inventoryRunning = true
         return Result.success(Unit)
     }
 
+    // A sled that has just dropped no longer has an inventory to stop, and an
+    // operator tapping "stop" after a disconnect shouldn't see an error — so
+    // this is a harmless no-op rather than a failure when disconnected.
     override suspend fun stopInventory(): Result<Unit> {
         inventoryRunning = false
         return Result.success(Unit)
     }
 
     // ── what a test or the Developer tab drives ──
-    fun emitTrigger(event: TriggerEvent) { _triggers.tryEmit(event) }
-    fun emitTag(epc: String) { _tags.tryEmit(epc) }
+    // MutableSharedFlow buffers up to its extraBufferCapacity even with zero
+    // subscribers, so tryEmit alone would only fail once that buffer fills —
+    // it would stay silently green for the much more common "no collector
+    // yet" case. Checking subscriptionCount first makes that case loud too.
+    fun emitTrigger(event: TriggerEvent) {
+        check(_triggers.subscriptionCount.value > 0) { "Dropped trigger event $event: nothing was collecting." }
+        check(_triggers.tryEmit(event)) { "Dropped trigger event $event: nothing was collecting." }
+    }
+    fun emitTag(epc: String) {
+        check(_tags.subscriptionCount.value > 0) { "Dropped tag $epc: nothing was collecting." }
+        check(_tags.tryEmit(epc)) { "Dropped tag $epc: nothing was collecting." }
+    }
     fun setConnection(c: RfidConnection) { _connection.value = c }
 }
