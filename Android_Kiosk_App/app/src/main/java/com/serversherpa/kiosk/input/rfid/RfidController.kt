@@ -13,6 +13,7 @@ import com.serversherpa.kiosk.core.rfid.queuedAfter
 import com.serversherpa.kiosk.core.rfid.startSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,8 +33,9 @@ import kotlinx.coroutines.sync.withLock
  * values and stops there. `ScanViewModel` does the matching and the queueing,
  * so the RFID commit rules sit beside the barcode commit rules.
  *
- * `start()` launches four independent collectors (settings, triggers, tags,
- * connection) on `scope`, which in production is a real thread pool
+ * `start()` launches five independent collectors (settings, triggers, tags,
+ * connection, and the [commands] consumer) on `scope`, which in production
+ * is a real thread pool
  * (`Dispatchers.Default`), not a confined dispatcher — so every one of them
  * can run concurrently with every other, and with `arm()`/`disarm()`/
  * `stopBurst()`/`connectNow()`/`disconnectNow()` called from the UI thread.
@@ -54,6 +56,31 @@ import kotlinx.coroutines.sync.withLock
  * its own queue-or-discard preference), stop the reader with the lock
  * released so `onTag` stays free, then re-acquire the lock to claim the
  * session, update `queued`, and decide whether to emit.
+ *
+ * `arm()`, `disarm()` and `stopBurst()` are called from the UI thread and
+ * must stay non-suspending, but their real work still has to happen on
+ * `scope`. Dispatching each with its own `scope.launch` gives no ordering
+ * guarantee between two calls — a fast appear-then-disappear pair could run
+ * disarm's body before arm's — so instead all three are just enqueued onto
+ * [commands], a single unlimited-capacity `Channel` drained by one consumer
+ * coroutine started in [start]. One consumer processing one queue in
+ * receive order is what makes "arm() then disarm()" and "disarm() then
+ * arm()" deterministic regardless of how the dispatcher happens to schedule
+ * things. Unlimited capacity means `trySend` never suspends and never
+ * fails for lack of room, so a command can never be silently dropped under
+ * load, and the channel exists as a constructor property (not something
+ * `start()` creates) so a command sent before `start()` runs is buffered,
+ * not lost.
+ *
+ * [stopGate] is a second, narrower lock than `mutex`: it is held by
+ * [endBurst] for the entire window it owns a stop, `reader.stopInventory()`
+ * included, and [onTrigger] waits on it before evaluating anything. Without
+ * it, a trigger event landing in the gap where `mutex` is released around
+ * `reader.stopInventory()` would see the still-open session and read a
+ * would-be START as NONE or STOP, so the operator's next pull does nothing.
+ * `onTag` never touches `stopGate` — only trigger evaluation waits for a
+ * stop to finish; tags keep folding into the still-open session for the
+ * whole vendor round trip, same as before.
  */
 class RfidController(
     private val reader: RfidReader,
@@ -103,6 +130,23 @@ class RfidController(
      *  dropped. */
     private var queueOnStop: Boolean = false
 
+    /** Serializes `reader.stopInventory()` (and the session claim right
+     *  after it) against trigger evaluation — see the class doc. Never held
+     *  across anything `onTag` needs. */
+    private val stopGate = Mutex()
+
+    private sealed interface Command {
+        data object Arm : Command
+        data object Disarm : Command
+        data object Stop : Command
+    }
+
+    /** Unlimited so `arm()`/`disarm()`/`stopBurst()` can never block their UI
+     *  caller and never drop a command for lack of buffer room; a
+     *  constructor property, not something `start()` allocates, so a
+     *  command sent before `start()` runs is queued, not lost. */
+    private val commands = Channel<Command>(Channel.UNLIMITED)
+
     fun start() {
         scope.launch {
             settings.collect { s ->
@@ -126,10 +170,15 @@ class RfidController(
         scope.launch { reader.triggers.collect { onTrigger(it) } }
         scope.launch { reader.tags.collect { onTag(it) } }
         scope.launch {
-            // Tracked locally rather than re-derived from reader.connection.value
-            // at call time, so a battery-level update between two Connected
-            // states is never mistaken for a fresh connection.
-            var wasConnected = reader.connection.value is RfidConnection.Connected
+            // Seeded false, not from reader.connection.value: a reader that
+            // is already Connected before start() runs must still have its
+            // first observed Connected treated as a transition, or its
+            // settings are never pushed and it is left running firmware
+            // defaults until an unrelated setting happens to change.
+            // StateFlow.collect always replays the current value first, so
+            // this costs nothing when the reader really is starting
+            // disconnected — that first replay just reads as "no change."
+            var wasConnected = false
             reader.connection.collect { c ->
                 val nowConnected = c is RfidConnection.Connected
                 if (!nowConnected) {
@@ -147,36 +196,55 @@ class RfidController(
                 wasConnected = nowConnected
             }
         }
+        // Single consumer of `commands`, so arm()/disarm()/stopBurst() run in
+        // exactly the order they were sent — see the class doc.
+        scope.launch {
+            for (command in commands) {
+                when (command) {
+                    Command.Arm -> armNow()
+                    Command.Disarm -> disarmNow()
+                    Command.Stop -> endBurst(stopReader = true, queue = true)
+                }
+            }
+        }
     }
 
     /** Only the Scanning screen calls this, while it is composed. */
     fun arm() {
-        scope.launch {
-            mutex.withLock {
-                // `queued` is "what this visit to the screen already sent"; a
-                // *new* visit starts that over, or a repeat-sweep policy
-                // would drop every tag on the operator's next sweep forever.
-                // But a re-arm within the same visit — a lifecycle-aware
-                // collector re-firing, or a return from a dialog — must not
-                // wipe the sweep history the operator is mid-visit through.
-                if (!armed) queued = emptySet()
-                armed = true
-            }
+        check(commands.trySend(Command.Arm).isSuccess) {
+            "Couldn't queue arm(): the command channel is closed."
         }
     }
 
     /** Leaving the screen ends any read in progress. Its tags are dropped: the
      *  screen that would queue them is gone. */
     fun disarm() {
-        scope.launch {
-            mutex.withLock { armed = false }
-            endBurst(stopReader = true, queue = false)
+        check(commands.trySend(Command.Disarm).isSuccess) {
+            "Couldn't queue disarm(): the command channel is closed."
         }
     }
 
     /** The Stop button, for a latched or toggled read. */
     fun stopBurst() {
-        scope.launch { endBurst(stopReader = true, queue = true) }
+        check(commands.trySend(Command.Stop).isSuccess) {
+            "Couldn't queue stopBurst(): the command channel is closed."
+        }
+    }
+
+    private suspend fun armNow() = mutex.withLock {
+        // `queued` is "what this visit to the screen already sent"; a
+        // *new* visit starts that over, or a repeat-sweep policy
+        // would drop every tag on the operator's next sweep forever.
+        // But a re-arm within the same visit — a lifecycle-aware
+        // collector re-firing, or a return from a dialog — must not
+        // wipe the sweep history the operator is mid-visit through.
+        if (!armed) queued = emptySet()
+        armed = true
+    }
+
+    private suspend fun disarmNow() {
+        mutex.withLock { armed = false }
+        endBurst(stopReader = true, queue = false)
     }
 
     suspend fun connectNow(): Result<Unit> = reader.connect()
@@ -204,6 +272,15 @@ class RfidController(
     }
 
     private suspend fun onTrigger(event: TriggerEvent) {
+        // Wait for any in-flight stop to finish before evaluating anything.
+        // `endBurst` releases `mutex` across `reader.stopInventory()` (see
+        // the class doc), so without this a trigger landing in that window
+        // would see the session as still open and read a would-be START as
+        // NONE or STOP — the operator's next pull would do nothing. This
+        // only gates trigger evaluation: `onTag` never touches `stopGate`,
+        // so tags keep folding into the still-open session for the whole
+        // vendor round trip.
+        stopGate.withLock {}
         var stopRequested = false
         mutex.withLock {
             if (!armed) return@withLock
@@ -266,22 +343,30 @@ class RfidController(
         }
         if (!owns) return
 
-        if (stopReader) {
-            try {
-                reader.stopInventory()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // the reader is already gone; the tags still count
+        // Held for the whole ownership window — the vendor stop plus the
+        // session claim right after it — so a trigger racing this call (see
+        // onTrigger) waits until the burst has genuinely finished before it
+        // evaluates anything. Released before the emit below, since a slow
+        // `bursts` collector must not hold up a trigger that was only
+        // waiting on the stop, not on delivery.
+        val (done, shouldQueue) = stopGate.withLock {
+            if (stopReader) {
+                try {
+                    reader.stopInventory()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // the reader is already gone; the tags still count
+                }
             }
-        }
 
-        val (done, shouldQueue) = mutex.withLock {
-            val d = _session.getAndUpdate { null }
-            val q = queueOnStop
-            stoppingBurst = false
-            if (d != null && q) queued = queuedAfter(queued, d)
-            d to q
+            mutex.withLock {
+                val d = _session.getAndUpdate { null }
+                val q = queueOnStop
+                stoppingBurst = false
+                if (d != null && q) queued = queuedAfter(queued, d)
+                d to q
+            }
         }
         // Emitting outside the lock: a slow collector on `bursts` must not
         // stall trigger and tag handling for everyone else.

@@ -154,6 +154,37 @@ class RfidControllerTest {
         assertNull("a setting the reader took leaves no complaint", r.controller.applyError.value)
     }
 
+    /**
+     * Regression test for a controller whose reader is already `Connected`
+     * before `start()` ever runs — a reused `RfidReader` instance, or a
+     * `start()` called late. The connection collector used to seed its
+     * "was connected" memory from `reader.connection.value` itself, so that
+     * already-Connected state read as "no transition happened" and nothing
+     * was pushed; the radio was left on firmware defaults until an unrelated
+     * setting happened to change.
+     *
+     * `settings` is deliberately identical to the controller's own initial
+     * `current` (`DEFAULT_RFID_SETTINGS`), so the settings collector's own
+     * change-detection — which pushes independently whenever the *first*
+     * collected value differs from `current` — never fires. Any push
+     * observed here can only have come from the connection collector's
+     * "just connected" transition, which is the exact path this test pins.
+     */
+    @Test fun aControllerStartedAgainstAnAlreadyConnectedReaderPushesSettingsWithoutWaitingForAChange() = runTest {
+        val reader = FakeRfidReader()
+        reader.connect()
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS)
+        val controller = RfidController(reader, settings, backgroundScope)
+
+        controller.start(); settle()
+
+        assertEquals(
+            "a reader already connected when start() runs must still get its settings pushed",
+            DEFAULT_RFID_SETTINGS,
+            reader.applied,
+        )
+    }
+
     /** A reader that refuses a setting must say so rather than leaving the
      *  operator looking at a number the radio never took. */
     @Test fun aSettingTheReaderRefusesIsReported() = runTest {
@@ -269,10 +300,22 @@ class RfidControllerTest {
          *  actually return. */
         val proceedStop = CompletableDeferred<Unit>()
 
+        /** How many times `startInventory()` has been called — `inner`'s own
+         *  `inventoryRunning` can't tell a fresh start from one already in
+         *  progress apart (it is still `true` for the whole window a stop is
+         *  in flight, since `inner.stopInventory()` is only reached after
+         *  `proceedStop` completes), so a test that needs to know whether a
+         *  *new* read started mid-stop needs this instead. */
+        var startInventoryCalls = 0
+            private set
+
         override suspend fun connect() = inner.connect()
         override suspend fun disconnect() = inner.disconnect()
         override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
-        override suspend fun startInventory() = inner.startInventory()
+        override suspend fun startInventory(): Result<Unit> {
+            startInventoryCalls++
+            return inner.startInventory()
+        }
         override suspend fun stopInventory(): Result<Unit> {
             stopStarted.complete(Unit)
             proceedStop.await()
@@ -326,6 +369,65 @@ class RfidControllerTest {
         slowStop.proceedStop.complete(Unit); settle()
 
         assertEquals(listOf(listOf("100600", "100601")), bursts)
+    }
+
+    /**
+     * Regression test for a trigger pull landing in the same window as the
+     * tag-during-stop test above, but on the *trigger* collector instead of
+     * the tag collector. `endBurst` releases `mutex` across
+     * `reader.stopInventory()`, and before this fix `onTrigger` read state
+     * during that gap: the session was still open, so a PRESSED arriving
+     * mid-stop was read (in HOLD mode) as `NONE` — nothing happened, and
+     * once the stop actually finished nothing restarted the read. The
+     * operator's second pull did nothing.
+     *
+     * The fix makes `onTrigger` wait on `stopGate` until the in-flight stop
+     * has fully finished before it evaluates anything, so the same PRESSED
+     * event is instead evaluated against `reading = false` once the stop
+     * completes, and correctly reads as `START`.
+     */
+    @Test fun aTriggerPullArrivingWhileAStopIsInFlightStartsANewReadOnceTheStopCompletes() = runTest {
+        val inner = FakeRfidReader()
+        val slowStop = SlowStopReader(inner)
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+        val controller = RfidController(slowStop, settings, backgroundScope) { 0L }
+        controller.start(); controller.arm(); settle()
+        controller.connectNow(); settle()
+
+        inner.emitTrigger(TriggerEvent.PRESSED); settle()
+        assertEquals("the first pull should have started one inventory", 1, slowStop.startInventoryCalls)
+
+        controller.stopBurst(); settle()
+        assertTrue("stopInventory() should have been called", slowStop.stopStarted.isCompleted)
+        assertTrue(
+            "the burst must still be open while the stop is in flight",
+            controller.session.value != null,
+        )
+
+        // A second trigger pull lands while stopInventory() is still
+        // suspended on proceedStop — the exact window the tag-during-stop
+        // test above exercises for onTag. Before the fix, onTrigger would
+        // see the still-open session here and read this PRESSED as NONE,
+        // permanently losing the pull. `inner.inventoryRunning` can't tell
+        // this apart from the first read still nominally being "on" (it
+        // only flips once `inner.stopInventory()` itself runs, which is
+        // gated behind `proceedStop`), so this checks the call count
+        // instead: it must still be 1 — no new read has started yet.
+        inner.emitTrigger(TriggerEvent.PRESSED); settle()
+        assertEquals(
+            "a trigger arriving mid-stop must not start a read before the stop has finished",
+            1,
+            slowStop.startInventoryCalls,
+        )
+
+        slowStop.proceedStop.complete(Unit); settle()
+
+        assertEquals(
+            "the trigger that arrived mid-stop should start a new read once the stop completes",
+            2,
+            slowStop.startInventoryCalls,
+        )
+        assertTrue("the new read should be running", inner.inventoryRunning)
     }
 
     /**
@@ -474,6 +576,99 @@ class RfidControllerTest {
                 false,
                 reader.inventoryRunning,
             )
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    /**
+     * Regression test for `arm()`/`disarm()` losing their ordering: each used
+     * to be its own `scope.launch`, which gives no guarantee that two
+     * launches run in the order they were submitted. A fast appear-then-
+     * disappear pair (a quick resume then pause) could run disarm's body
+     * first, leaving `armed` true after the screen is gone.
+     *
+     * `TestScope` is single-threaded and cooperatively scheduled, so it
+     * cannot reproduce a reordering race — it always runs launched
+     * coroutines in submission order. This drives the controller on a real
+     * `Dispatchers.Default` scope (as `AppContainer` does in production),
+     * calls `arm()` immediately followed by `disarm()` with nothing in
+     * between to force a particular schedule, and repeats it many times: the
+     * outcome must be disarmed every single time, not just on average.
+     */
+    @Test fun armImmediatelyFollowedByDisarmAlwaysEndsDisarmedRegardlessOfScheduling() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val reader = FakeRfidReader()
+            val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+            val controller = RfidController(reader, settings, scope)
+            runBlocking {
+                controller.start()
+                controller.connectNow()
+                delay(50)
+
+                val iterations = 50
+                repeat(iterations) { i ->
+                    controller.arm()
+                    controller.disarm()
+                    delay(30)
+
+                    reader.emitTrigger(TriggerEvent.PRESSED)
+                    delay(30)
+                    assertEquals(
+                        "iteration $i: arm() then disarm() must leave the controller disarmed, " +
+                            "no matter which dispatched command happened to run first",
+                        false,
+                        reader.inventoryRunning,
+                    )
+                    if (reader.inventoryRunning) {
+                        // Leave a clean slate for the next iteration even if
+                        // this one failed.
+                        controller.stopBurst()
+                        delay(30)
+                    }
+                }
+            }
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    /** The mirror image of the test above: `disarm()` immediately followed
+     *  by `arm()` must leave the controller armed every time. */
+    @Test fun disarmImmediatelyFollowedByArmAlwaysEndsArmedRegardlessOfScheduling() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val reader = FakeRfidReader()
+            val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+            val controller = RfidController(reader, settings, scope)
+            runBlocking {
+                controller.start()
+                controller.connectNow()
+                delay(50)
+
+                val iterations = 50
+                repeat(iterations) { i ->
+                    controller.disarm()
+                    controller.arm()
+                    delay(30)
+
+                    reader.emitTrigger(TriggerEvent.PRESSED)
+                    delay(30)
+                    assertEquals(
+                        "iteration $i: disarm() then arm() must leave the controller armed, " +
+                            "no matter which dispatched command happened to run first",
+                        true,
+                        reader.inventoryRunning,
+                    )
+                    // Reset for the next iteration regardless of outcome: end
+                    // whatever read is open and disarm, the way a real
+                    // screen visit ending would.
+                    controller.stopBurst()
+                    controller.disarm()
+                    delay(30)
+                }
+            }
         } finally {
             scope.cancel()
         }
