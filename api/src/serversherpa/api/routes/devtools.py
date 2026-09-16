@@ -10,14 +10,13 @@ The words live in SS_GOD_MODE_WORDS (server-side). A VITE_* equivalent
 would be inlined into the portal bundle and readable from devtools.
 """
 
-import re
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, HTTPException, Response
-from sqlalchemy import CheckConstraint, String, cast, delete, func, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.schema import Table
 
@@ -30,10 +29,11 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    Asset, AssetModel, AuditLog, Base, Client, Container, DbBackup,
+    Asset, AssetModel, AuditLog, Client, Container, DbBackup,
     DbTestingSession, Initiative, Partner, PendingDelete, Person,
     ProcessedScan, Site, SystemConfig, SystemProcess,
 )
+from serversherpa.devtools.cascade import check_guarded, label_expr, references_to
 from serversherpa.devtools.testing.jobs import WORKING_STATUSES
 from serversherpa.security.passwords import verify_password
 from serversherpa.services.audit import audit
@@ -169,11 +169,6 @@ async def unmark_pending_delete(
     await db.commit()
 
 
-# Frozen label-column map for reference discovery: how to render a human
-# label for a row in a referencing table. Unmapped tables fall back to the
-# row's own primary key, stringified — never blank.
-_NAME_LABELED = {"initiatives", "sites", "containers", "clients", "partners"}
-
 # Pure association tables: rows here carry no data of their own beyond the
 # link, so force mode may DELETE them outright (a non-nullable FK on a join
 # row can never be nulled). Frozen — never derived from the schema, because
@@ -187,42 +182,6 @@ PURGE_ROW_TABLES = frozenset({
 # Actor/audit-ish columns that make poor label joins on association rows.
 _ACTOR_COLUMNS = frozenset({"created_by", "marked_by", "added_by", "granted_by",
                             "audit_by", "revoked_by", "linked_by"})
-
-
-def _label_expr(table: Table):
-    if table.name in _NAME_LABELED:
-        return table.c.name
-    if table.name == "assets":
-        return func.coalesce(table.c.serial_number, table.c.name)
-    if table.name == "people":
-        return table.c.first_name + " " + table.c.last_name
-    if table.name == "asset_models":
-        return table.c.make + " " + table.c.model
-    pk = next(iter(table.primary_key.columns))
-    return cast(pk, String)
-
-
-def _references_to(model: type):
-    """Yields (table, column) for every column anywhere in the schema whose
-    foreign key targets `model`'s primary key — the mechanism behind both
-    reference discovery and force-null."""
-    target_pk = next(iter(model.__table__.primary_key.columns))
-    for table in Base.metadata.tables.values():
-        for fk in table.foreign_keys:
-            if fk.column is target_pk:
-                yield table, fk.parent
-
-
-def _check_guarded(table: Table, col) -> bool:
-    """True when a CHECK constraint on `table` mentions `col` — the column
-    may be nullable, yet force-nulling it can trip the CHECK and roll the
-    whole force delete back (processed_scans_match_target_chk keeps the
-    match_type target FK non-null). Surfaced so a failure report doesn't
-    read as "nullable, so force should have cleared it"."""
-    return any(
-        isinstance(constraint, CheckConstraint)
-        and re.search(rf"\b{re.escape(col.name)}\b", str(constraint.sqltext))
-        for constraint in table.constraints)
 
 
 def _other_fk(table: Table, matching_col):
@@ -242,12 +201,12 @@ async def _find_references(
     and reports which ones currently have rows pointing at `entity_id` —
     the "what's still using this" detail behind an fk_violation failure."""
     refs: list[PendingDeleteReference] = []
-    for table, col in _references_to(model):
+    for table, col, _parent in references_to(model.__table__):
         count = await db.scalar(
             select(func.count()).select_from(table).where(col == entity_id))
         if not count:
             continue
-        label_query = (select(_label_expr(table)).select_from(table)
+        label_query = (select(label_expr(table)).select_from(table)
                        .where(col == entity_id).limit(3))
         if table.name in PURGE_ROW_TABLES:
             # a join row's own PK means nothing to a human — label it by
@@ -255,7 +214,7 @@ async def _find_references(
             other = _other_fk(table, col)
             if other is not None:
                 label_query = (
-                    select(_label_expr(other.column.table))
+                    select(label_expr(other.column.table))
                     .select_from(table.join(
                         other.column.table, other.parent == other.column))
                     .where(col == entity_id).limit(3))
@@ -263,7 +222,7 @@ async def _find_references(
         refs.append(PendingDeleteReference(
             table=table.name, column=col.name, nullable=col.nullable,
             purgeable=table.name in PURGE_ROW_TABLES,
-            check_guarded=_check_guarded(table, col),
+            check_guarded=check_guarded(table, col),
             count=count, labels=[str(v) for v in labels]))
     return refs
 
@@ -279,7 +238,7 @@ async def _detach_references(
     below reports it as a reference like any other failure."""
     nulled: dict[str, int] = {}
     removed: dict[str, int] = {}
-    for table, col in _references_to(model):
+    for table, col, _parent in references_to(model.__table__):
         if table.name in PURGE_ROW_TABLES:
             result = await db.execute(delete(table).where(col == entity_id))
             if result.rowcount:
