@@ -41,7 +41,7 @@ const OPTIONS = {
     {
       id: 'i-1', name: 'NAP11 Hall Migration (demo)', status: 'planned',
       status_label: 'Planned', client_name: 'Acme Corp',
-      scheduled_start: null, scheduled_end: null,
+      scheduled_start: '2026-09-20', scheduled_end: null,
       source_site: { id: 's-1', name: 'NAP11 Hall' },
       destination_site: { id: 's-2', name: 'NAP22 Hall' },
     },
@@ -125,6 +125,25 @@ it('loads options and renders each move as a card with name, status chip, client
 
   // no native <select> anywhere in the wizard
   expect(container.querySelector('select')).toBeNull();
+});
+
+it('renders a move\'s scheduled_start without shifting it west of UTC', async () => {
+  // scheduled_start is a date-only field (midnight UTC for a plain
+  // YYYY-MM-DD input), the kiosk API serves it exactly like the portal's
+  // scheduled_start (see api/routes/kiosk.py). vitest inherits whatever
+  // TZ the shell has, so pin a west-of-UTC zone here — on a UTC host a
+  // bare `new Date(iso)` bug and the parseApiDay-style fix would agree,
+  // proving nothing.
+  const prevTz = process.env.TZ;
+  process.env.TZ = 'America/Denver';
+  try {
+    renderPage();
+    const napCard = await screen.findByText('NAP11 Hall Migration (demo)');
+    expect(within(napCard.closest('button')!).getByText('Starts Sep 20')).toBeTruthy();
+    expect(within(napCard.closest('button')!).queryByText('Starts Sep 19')).toBeNull();
+  } finally {
+    process.env.TZ = prevTz;
+  }
 });
 
 it('clicking a move advances to the site step, listing the move\'s sites with roles', async () => {

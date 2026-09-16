@@ -28,8 +28,15 @@ import { formatSyncedAt, runSync, useSyncStatus } from '../lib/sync';
 
 type Step = 1 | 2 | 3;
 
+/** scheduled_start/scheduled_end are date-only fields (midnight UTC for a
+ *  plain YYYY-MM-DD input) — read the Y-M-D digits into a local Date
+ *  first, since `new Date(iso)` would land on the previous evening west
+ *  of UTC and name the day before. `kiosk/` has no `lib/timeline.ts` to
+ *  import `parseApiDay` from (it is a separate Vite app from `portal/`),
+ *  so the parse is inlined here. */
 function formatMoveDate(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const [y, m, d] = iso.slice(0, 10).split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function formatMoveDates(initiative: SetupOptionInitiative): string | null {
