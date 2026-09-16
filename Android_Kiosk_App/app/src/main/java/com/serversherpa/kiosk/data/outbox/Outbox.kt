@@ -162,6 +162,39 @@ class Outbox(
         return row
     }
 
+    /**
+     * Builds every row for a finished burst and persists them all in ONE
+     * `save()` under the mutex, instead of the caller doing its own loop of
+     * individual `enqueue()` calls. Two problems that fixes: a caller-scoped
+     * loop (e.g. a screen-scoped ViewModel's `scope.launch`) can be cancelled
+     * partway through — the operator navigates away right as the count settles
+     * — silently losing the tail of the burst; and N separate `save()` calls
+     * mean N full outbox rebuilds/sorts/snapshot publishes for one sweep.
+     *
+     * Wrapped in `NonCancellable` so the persistence itself survives even if
+     * the calling coroutine is cancelled the instant after this call starts —
+     * the same durability idiom `flushOnce`'s terminal `save(updated)` already
+     * uses for exactly this reason (a POST that already went out must not
+     * strand its outcome unsaved because the sender was stopped).
+     *
+     * This makes a burst's persistence all-or-nothing rather than isolating
+     * each tag's write — a deliberate change from how `enqueue()` in a loop
+     * used to behave; see `ScanViewModel.onBurst`'s doc for the caller-side
+     * half of this trade.
+     */
+    suspend fun enqueueAll(inputs: List<EnqueueInput>): List<OutboxRow> {
+        load()
+        val rows = withContext(NonCancellable) {
+            mutex.withLock {
+                val rs = inputs.map { OutboxMachine.newRow(it, idGen(), nextSeq++, clock()) }
+                save(rs)
+                rs
+            }
+        }
+        if (rows.any { it.matched }) scheduleFlush(OutboxMachine.BATCH_DELAY_MS)
+        return rows
+    }
+
     private suspend fun flushOnce() {
         val serial = identity.get().serial
         val batch = mutex.withLock {

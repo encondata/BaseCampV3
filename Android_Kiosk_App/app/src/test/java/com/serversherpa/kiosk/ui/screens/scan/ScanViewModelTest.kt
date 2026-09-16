@@ -17,9 +17,13 @@ import com.serversherpa.kiosk.data.outbox.OutboxStore
 import com.serversherpa.kiosk.core.outbox.OutboxRow
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.sync.Sync
+import com.serversherpa.kiosk.input.rfid.FakeRfidReader
+import com.serversherpa.kiosk.input.rfid.RfidController
+import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
 import com.serversherpa.kiosk.ui.flash.FlashController
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -52,7 +56,8 @@ class ScanViewModelTest {
         val api = FakeKioskApi()
         val outbox = Outbox(MemoryOutboxStore(), api, Identity(prefs), backgroundScope, clock = { testScheduler.currentTime })
         val flash = FlashController(backgroundScope)
-        val vm = ScanViewModel(db, Sync(api, db, backgroundScope), outbox, prefs, flash, sound = null, scopeOverride = backgroundScope)
+        val rfid = RfidController(FakeRfidReader(), MutableStateFlow(DEFAULT_RFID_SETTINGS), backgroundScope)
+        val vm = ScanViewModel(db, Sync(api, db, backgroundScope), outbox, rfid, prefs, flash, sound = null, scopeOverride = backgroundScope)
         settle()
         assertEquals(LoadStatus.READY, vm.state.value.loadStatus); assertEquals(1, vm.state.value.rosterSize)
         vm.onScan("100348"); settle()
@@ -93,7 +98,8 @@ class ScanViewModelTest {
         val api = FakeKioskApi()
         val outbox = Outbox(ThrowingOutboxStore(), api, Identity(prefs), backgroundScope, clock = { testScheduler.currentTime })
         val flash = FlashController(backgroundScope)
-        val vm = ScanViewModel(db, Sync(api, db, backgroundScope), outbox, prefs, flash, sound = null, scopeOverride = backgroundScope)
+        val rfid = RfidController(FakeRfidReader(), MutableStateFlow(DEFAULT_RFID_SETTINGS), backgroundScope)
+        val vm = ScanViewModel(db, Sync(api, db, backgroundScope), outbox, rfid, prefs, flash, sound = null, scopeOverride = backgroundScope)
         settle()
         vm.onScan("A-1"); settle()
         assertEquals("Couldn't save this scan on the kiosk. Check its storage.", vm.state.value.storageError)

@@ -12,6 +12,7 @@ import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.testIdentity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -29,6 +30,32 @@ private class FlakyOutboxStore(private val inner: MemoryOutboxStore = MemoryOutb
     override suspend fun all() = inner.all()
     override suspend fun upsert(rows: List<OutboxRow>) { if (failUpserts > 0) { failUpserts--; throw IllegalStateException("disk") }; inner.upsert(rows) }
     override suspend fun delete(ids: List<String>) { if (failDeletes > 0) { failDeletes--; throw IllegalStateException("disk") }; inner.delete(ids) }
+}
+
+/** A store that just counts `upsert()` calls, for proving `enqueueAll`
+ *  persists a whole batch in one call instead of one per row. */
+private class CountingOutboxStore(private val inner: OutboxStore = MemoryOutboxStore()) : OutboxStore {
+    var upsertCalls = 0
+    override suspend fun all() = inner.all()
+    override suspend fun upsert(rows: List<OutboxRow>) { upsertCalls++; inner.upsert(rows) }
+    override suspend fun delete(ids: List<String>) = inner.delete(ids)
+}
+
+/** A store whose `upsert()` announces it has started (via [entered]), then
+ *  suspends on [gate] until the test releases it — lets a test land a
+ *  cancellation of the *calling* coroutine while the write is genuinely
+ *  in flight, the same timing trick `stopMidPostThenStartResendsTheBatch`
+ *  uses for the sender's POST. */
+private class GatedUpsertOutboxStore(private val inner: MemoryOutboxStore = MemoryOutboxStore()) : OutboxStore {
+    val entered = CompletableDeferred<Unit>()
+    val gate = CompletableDeferred<Unit>()
+    override suspend fun all() = inner.all()
+    override suspend fun upsert(rows: List<OutboxRow>) {
+        entered.complete(Unit)
+        gate.await()
+        inner.upsert(rows)
+    }
+    override suspend fun delete(ids: List<String>) = inner.delete(ids)
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -59,6 +86,47 @@ class OutboxTest {
         assertEquals(OutboxStatus.ACCEPTED, ob.snapshot.value.rows[0].status)
         assertEquals(2, ob.snapshot.value.counts.accepted)
         assertEquals(2L, ob.snapshot.value.rows[0].seq)   // newest first
+    }
+
+    @Test fun enqueueAllPersistsEveryRowInOneStoreCallAndOneRebuild() = runTest {
+        val api = FakeKioskApi()
+        val store = CountingOutboxStore()
+        val ob = outbox(api, store); ob.start(); settle()
+        val inputs = (1..5).map { input("A-$it") }
+        val rows = ob.enqueueAll(inputs); settle()
+        // One upsert for the whole batch, not one per row.
+        assertEquals(1, store.upsertCalls)
+        assertEquals(5, rows.size)
+        assertEquals(5, ob.snapshot.value.rows.size)
+        val seqs = ob.snapshot.value.rows.map { it.seq }
+        assertEquals(seqs.toSet().size, seqs.size)           // every seq distinct
+        assertEquals(listOf(1L, 2L, 3L, 4L, 5L), rows.map { it.seq })   // increasing, in input order
+    }
+
+    /** The real regression proof for I2: a caller-scoped coroutine (like a
+     *  screen-scoped ViewModel's `scope.launch`) can be cancelled the instant
+     *  after it calls `enqueueAll`. The write must still land — that is what
+     *  `enqueueAll`'s `NonCancellable` section is for. */
+    @Test fun enqueueAllSurvivesCancellationOfTheCallingCoroutine() = runTest {
+        val api = FakeKioskApi()
+        val store = GatedUpsertOutboxStore()
+        val ob = outbox(api, store); ob.start(); settle()
+
+        val job = backgroundScope.launch { ob.enqueueAll(listOf(input("A-1"), input("A-2"))) }
+        runCurrent()
+        // The write is genuinely in flight (blocked inside upsert on the gate)
+        // before we cancel the coroutine that called enqueueAll.
+        assertTrue(store.entered.isCompleted)
+        assertEquals(0, ob.snapshot.value.rows.size)
+
+        job.cancel()
+        runCurrent()
+        store.gate.complete(Unit)
+        settle()
+
+        // The rows landed anyway: cancelling the caller did not lose them.
+        assertEquals(2, ob.snapshot.value.rows.size)
+        assertEquals(setOf("A-1", "A-2"), ob.snapshot.value.rows.map { it.scannedValue }.toSet())
     }
 
     @Test fun unmatchedNeverLeavesAndExpiresAfterTtl() = runTest {

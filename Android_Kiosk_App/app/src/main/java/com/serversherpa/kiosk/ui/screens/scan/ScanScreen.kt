@@ -52,7 +52,7 @@ fun ScanScreen(nav: NavHostController) {
     val container = LocalAppContainer.current
     val c = LocalKioskColors.current
     val context = LocalContext.current
-    val vm = kioskViewModel { ScanViewModel(container.db, container.sync, container.outbox, container.prefs, container.flash, container.sound) }
+    val vm = kioskViewModel { ScanViewModel(container.db, container.sync, container.outbox, container.rfid, container.prefs, container.flash, container.sound) }
     val ui by vm.state.collectAsStateWithLifecycle()
     val snapshot by vm.outboxSnapshot.collectAsStateWithLifecycle()
     val setup by container.prefs.setupSelection.collectAsStateWithLifecycle(initialValue = null)

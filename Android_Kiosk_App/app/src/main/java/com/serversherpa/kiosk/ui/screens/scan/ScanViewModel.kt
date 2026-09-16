@@ -20,6 +20,7 @@ import com.serversherpa.kiosk.data.outbox.OutboxSnapshot
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.sync.Sync
 import com.serversherpa.kiosk.data.sync.SyncPhase
+import com.serversherpa.kiosk.input.rfid.RfidController
 import com.serversherpa.kiosk.ui.flash.FlashController
 import com.serversherpa.kiosk.ui.sound.ScanSoundKind
 import com.serversherpa.kiosk.ui.sound.SoundPlayer
@@ -59,8 +60,9 @@ fun scanTime(iso: String): String = try {
 
 /** kiosk/src/pages/Scan.tsx: match locally, flash + sound, queue in the outbox. */
 class ScanViewModel(
-    private val db: KioskDatabase, private val sync: Sync, private val outbox: Outbox, private val prefs: KioskPrefs,
-    private val flash: FlashController, private val sound: SoundPlayer?, scopeOverride: CoroutineScope? = null,
+    private val db: KioskDatabase, private val sync: Sync, private val outbox: Outbox, private val rfid: RfidController,
+    private val prefs: KioskPrefs, private val flash: FlashController, private val sound: SoundPlayer?,
+    scopeOverride: CoroutineScope? = null,
 ) : ViewModel() {
     private val scope = scopeOverride ?: viewModelScope
     private val _state = MutableStateFlow(ScanUi())
@@ -124,14 +126,23 @@ class ScanViewModel(
      * queue, and give one piece of feedback for the whole burst rather than one
      * per tag. Fifty flashes and fifty beeps is not feedback, it is a strobe.
      *
-     * Each tag's outbox write is isolated in its own try/catch rather than one
-     * try around the whole loop: a sweep can be dozens of tags, and a single
-     * write failure (most likely a systemic storage problem, but possibly a
-     * one-off) must not cost the operator every tag that would have queued fine
-     * after it. Every tag still gets a queue attempt; whatever succeeds stays
-     * queued. If any write failed, storageError is set exactly as it is for a
-     * single scan, so the operator sees the same toast rather than the burst
-     * being silently short. The end-of-burst flash/sound still reflects whether
+     * The whole burst is persisted in one `outbox.enqueueAll` call rather than
+     * a per-tag loop of `enqueue()` calls, each isolated in its own try/catch.
+     * That used to be deliberate, but it had two costs: this coroutine runs on
+     * a screen-scoped `scope`, so a loop of individual awaited writes can be
+     * cancelled partway through by the operator navigating away right as the
+     * burst lands, silently losing whichever tags hadn't been persisted yet;
+     * and a forty-tag sweep meant forty separate Room transactions, each
+     * re-sorting and re-publishing the whole outbox. `enqueueAll` fixes both:
+     * it persists every row in one transaction under one `NonCancellable`
+     * section, so the write survives even if this coroutine is cancelled the
+     * instant after it starts. The trade is that a burst's persistence is now
+     * all-or-nothing rather than per-tag-isolated — a single storage hiccup
+     * costs the whole sweep instead of just the one tag it hit. If the write
+     * fails, `rfid.forgetQueued` undoes the controller's "queued this visit"
+     * bookkeeping for these values, so a repeat sweep under a non-ALWAYS_QUEUE
+     * repeat policy isn't silently skipped as "already sent" when it never
+     * actually was. The end-of-burst flash/sound still reflects whether
      * anything in the sweep matched the roster, matching onScan's convention
      * that feedback is about recognition, not persistence.
      */
@@ -148,20 +159,30 @@ class ScanViewModel(
         _state.update { it.copy(error = null) }
         scope.launch {
             var matched = 0
-            var hadError = false
-            for (value in values) {
+            val inputs = values.map { value ->
                 val hit = matchScan(idx, value)
                 if (hit != null) matched++
-                try {
-                    outbox.enqueue(EnqueueInput(
-                        scannedValue = value, scanType = "rfid",
-                        asset = hit?.asset?.toOutboxAsset(), siteId = sel.siteId,
-                        initiativeId = sel.initiativeId, scanStatus = sel.scanStatus,
-                    ))
-                } catch (e: CancellationException) { throw e
-                } catch (e: Exception) { hadError = true }
+                EnqueueInput(
+                    scannedValue = value, scanType = "rfid",
+                    asset = hit?.asset?.toOutboxAsset(), siteId = sel.siteId,
+                    initiativeId = sel.initiativeId, scanStatus = sel.scanStatus,
+                )
             }
-            _state.update { it.copy(storageError = if (hadError) STORAGE_ERROR else null) }
+            try {
+                outbox.enqueueAll(inputs)
+                _state.update { it.copy(storageError = null) }
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) {
+                // The whole burst failed to persist together (enqueueAll is
+                // all-or-nothing, unlike the old per-tag loop) — the controller
+                // already marked every one of these values as "queued this
+                // visit" the instant the burst ended, before this write was
+                // even attempted. Undo that so a repeat sweep of the same tags
+                // (under a non-ALWAYS_QUEUE repeat policy) is not silently
+                // skipped as "already sent" when it was never actually sent.
+                rfid.forgetQueued(values)
+                _state.update { it.copy(storageError = STORAGE_ERROR) }
+            }
             if (matched > 0) {
                 flash.flash(hslToArgb(a.goodScan), a.flashMs); sound?.play(ScanSoundKind.GOOD)
             } else {
