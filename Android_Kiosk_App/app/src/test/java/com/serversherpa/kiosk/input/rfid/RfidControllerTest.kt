@@ -322,6 +322,8 @@ class RfidControllerTest {
             proceedStop.await()
             return inner.stopInventory()
         }
+        override suspend fun regions() = inner.regions()
+        override suspend fun setRegion(code: String, hopping: Boolean?) = inner.setRegion(code, hopping)
 
         fun emitTag(epc: String) {
             check(_tags.tryEmit(epc)) { "Dropped tag $epc: nothing was collecting." }
@@ -524,6 +526,8 @@ class RfidControllerTest {
         override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
         override suspend fun startInventory() = inner.startInventory()
         override suspend fun stopInventory(): Result<Unit> = throw OutOfMemoryError("simulated vendor Error")
+        override suspend fun regions() = inner.regions()
+        override suspend fun setRegion(code: String, hopping: Boolean?) = inner.setRegion(code, hopping)
     }
 
     /**
@@ -605,6 +609,8 @@ class RfidControllerTest {
             return inner.startInventory()
         }
         override suspend fun stopInventory() = inner.stopInventory()
+        override suspend fun regions() = inner.regions()
+        override suspend fun setRegion(code: String, hopping: Boolean?) = inner.setRegion(code, hopping)
     }
 
     /**
@@ -694,6 +700,8 @@ class RfidControllerTest {
         override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
         override suspend fun startInventory() = inner.startInventory()
         override suspend fun stopInventory() = inner.stopInventory()
+        override suspend fun regions() = inner.regions()
+        override suspend fun setRegion(code: String, hopping: Boolean?) = inner.setRegion(code, hopping)
     }
 
     /**
@@ -725,6 +733,8 @@ class RfidControllerTest {
         }
         override suspend fun startInventory() = inner.startInventory()
         override suspend fun stopInventory() = inner.stopInventory()
+        override suspend fun regions() = inner.regions()
+        override suspend fun setRegion(code: String, hopping: Boolean?) = inner.setRegion(code, hopping)
     }
 
     /**

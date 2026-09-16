@@ -4,6 +4,7 @@ import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
 import com.serversherpa.kiosk.core.rfid.RepeatSweepPolicy
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidReadSession
+import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.TriggerAction
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
@@ -521,6 +522,30 @@ class RfidController(
     }
 
     suspend fun disconnectNow() = disconnectNowImpl()
+
+    /** The regions this reader allows and the one in force — a plain
+     *  passthrough to [RfidReader.regions]. Region is a compliance setting,
+     *  not part of [RfidSettings]/[push]: it is never pushed automatically,
+     *  only read or set on explicit admin action. No controller state guards
+     *  it, so this never touches `mutex`; the reader itself reports "not
+     *  connected" when there is nothing to read (see
+     *  `neitherCallWorksWhileDisconnected`). */
+    suspend fun loadRegions(): Result<RfidRegions> = reader.regions()
+
+    /** Set the regulatory domain. Refused while a burst is open — changing
+     *  the radio's regulatory domain mid-sweep is not something to find out
+     *  about experimentally — in which case [RfidReader.setRegion] is never
+     *  called. The open-burst check is a snapshot taken under `mutex`; the
+     *  vendor round trip itself runs after `mutex` is released, the same
+     *  discipline [push] and [connectWithTimeout] follow for their own
+     *  vendor calls — see the class doc. */
+    suspend fun setRegion(code: String, hopping: Boolean?): Result<Unit> {
+        val burstOpen = mutex.withLock { _session.value != null }
+        if (burstOpen) {
+            return Result.failure(IllegalStateException("Finish the current read before changing the region."))
+        }
+        return reader.setRegion(code, hopping)
+    }
 
     // Shared by disconnectNow() (runs in the caller's own coroutine, so a
     // caller that gets cancelled — e.g. a screen's viewModelScope cleared on

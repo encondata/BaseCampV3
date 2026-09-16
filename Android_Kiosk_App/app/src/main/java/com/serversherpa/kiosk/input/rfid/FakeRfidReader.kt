@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.input.rfid
 
 import com.serversherpa.kiosk.core.rfid.RfidConnection
+import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -77,6 +78,33 @@ class FakeRfidReader(name: String = "Fake RFD40") : RfidReader {
     override suspend fun stopInventory(): Result<Unit> {
         inventoryRunning = false
         return Result.success(Unit)
+    }
+
+    /** What this fake claims to support. Set it in a test before connecting. */
+    var reportedRegions: RfidRegions = RfidRegions(emptyList(), null)
+
+    /** The last region a caller set, for a test to assert on. */
+    var lastRegionSet: Pair<String, Boolean?>? = null
+        private set
+
+    /** Set this to make the next setRegion fail. */
+    var regionResult: Result<Unit> = Result.success(Unit)
+
+    override suspend fun regions(): Result<RfidRegions> {
+        if (_connection.value !is RfidConnection.Connected) {
+            return Result.failure(IllegalStateException("The reader is not connected."))
+        }
+        return Result.success(reportedRegions)
+    }
+
+    override suspend fun setRegion(code: String, hopping: Boolean?): Result<Unit> {
+        if (_connection.value !is RfidConnection.Connected) {
+            return Result.failure(IllegalStateException("The reader is not connected."))
+        }
+        return regionResult.onSuccess {
+            lastRegionSet = code to hopping
+            reportedRegions = reportedRegions.copy(active = code)
+        }
     }
 
     // ── what a test or the Developer tab drives ──

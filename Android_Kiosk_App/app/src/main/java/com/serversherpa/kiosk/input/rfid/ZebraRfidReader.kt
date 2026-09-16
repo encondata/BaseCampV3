@@ -3,6 +3,8 @@ package com.serversherpa.kiosk.input.rfid
 import android.content.Context
 import android.util.Log
 import com.serversherpa.kiosk.core.rfid.RfidConnection
+import com.serversherpa.kiosk.core.rfid.RfidRegion
+import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSession
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.SledBeeper
@@ -15,6 +17,7 @@ import com.zebra.rfid.api3.ENUM_TRIGGER_MODE
 import com.zebra.rfid.api3.HANDHELD_TRIGGER_EVENT_TYPE
 import com.zebra.rfid.api3.RFIDReader
 import com.zebra.rfid.api3.Readers
+import com.zebra.rfid.api3.RegulatoryConfig
 import com.zebra.rfid.api3.RfidEventsListener
 import com.zebra.rfid.api3.RfidReadEvents
 import com.zebra.rfid.api3.RfidStatusEvents
@@ -437,6 +440,67 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
             runInterruptible {
                 val rfid = reader ?: error("The reader is not connected.")
                 rfid.Actions.Inventory.stop()
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        } catch (e: LinkageError) {
+            Result.failure(e)
+        }
+    }
+
+    /** The regions this reader allows and the one in force. Built from
+     *  `ReaderCapabilities.SupportedRegions` (a plain field, like `Config`/
+     *  `Events`/`Actions` elsewhere in this file — not a getter) and
+     *  `Config.getRegulatoryConfig().getRegion()`. Region is a compliance
+     *  setting, never pushed by [apply] and never re-asserted on reconnect —
+     *  only read or set on explicit admin action. */
+    final override suspend fun regions(): Result<RfidRegions> = withContext(Dispatchers.IO) {
+        try {
+            val result = runInterruptible {
+                val rfid = reader ?: error("The reader is not connected.")
+                val supported = rfid.ReaderCapabilities.SupportedRegions
+                val regions = (0 until supported.length()).map { i ->
+                    val info = supported.getRegionInfo(i)
+                    RfidRegion(
+                        code = info.regionCode,
+                        name = info.name,
+                        hoppingConfigurable = info.isHoppingConfigurable,
+                        channels = info.supportedChannels?.toList().orEmpty(),
+                    )
+                }
+                val active = rfid.Config.getRegulatoryConfig()?.region
+                RfidRegions(regions, active)
+            }
+            Result.success(result)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        } catch (e: LinkageError) {
+            Result.failure(e)
+        }
+    }
+
+    /** Set the regulatory domain. `RegulatoryConfig` has a public
+     *  constructor (unlike `StartTrigger`/`StopTrigger` in
+     *  [openVendorConnection]), so this builds a fresh one rather than
+     *  get-mutate-set. `hopping` is applied via the explicit
+     *  `setIsHoppingOn(boolean)` call — its getter is `isHoppingon()` (note
+     *  the lowercase "on"), a case mismatch that keeps Kotlin from
+     *  synthesizing a property the way `setDPOState`'s mismatch does in
+     *  [apply] — only when non-null, leaving the reader's own hopping state
+     *  alone otherwise. */
+    final override suspend fun setRegion(code: String, hopping: Boolean?): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            runInterruptible {
+                val rfid = reader ?: error("The reader is not connected.")
+                val regulatoryConfig = RegulatoryConfig()
+                regulatoryConfig.region = code
+                if (hopping != null) regulatoryConfig.setIsHoppingOn(hopping)
+                rfid.Config.setRegulatoryConfig(regulatoryConfig)
             }
             Result.success(Unit)
         } catch (e: CancellationException) {

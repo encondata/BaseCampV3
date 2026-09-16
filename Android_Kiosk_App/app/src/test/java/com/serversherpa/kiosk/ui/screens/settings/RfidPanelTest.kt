@@ -25,6 +25,7 @@ import androidx.test.ext.junit.rules.ActivityScenarioRule
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.rfid.RfidConnection
+import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.RfidTriggerMode
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
@@ -146,6 +147,8 @@ class RfidPanelTest {
         override suspend fun apply(settings: RfidSettings): Result<Unit> = Result.success(Unit)
         override suspend fun startInventory(): Result<Unit> = Result.success(Unit)
         override suspend fun stopInventory(): Result<Unit> = Result.success(Unit)
+        override suspend fun regions(): Result<RfidRegions> = Result.success(RfidRegions(emptyList(), null))
+        override suspend fun setRegion(code: String, hopping: Boolean?): Result<Unit> = Result.success(Unit)
     }
 
     /**
