@@ -118,6 +118,57 @@ class ScanViewModel(
         }
     }
 
+    /**
+     * A finished RFID sweep. The controller has already reduced it to each tag
+     * once, so this does what `onScan` does, in a single pass: match locally,
+     * queue, and give one piece of feedback for the whole burst rather than one
+     * per tag. Fifty flashes and fifty beeps is not feedback, it is a strobe.
+     *
+     * Each tag's outbox write is isolated in its own try/catch rather than one
+     * try around the whole loop: a sweep can be dozens of tags, and a single
+     * write failure (most likely a systemic storage problem, but possibly a
+     * one-off) must not cost the operator every tag that would have queued fine
+     * after it. Every tag still gets a queue attempt; whatever succeeds stays
+     * queued. If any write failed, storageError is set exactly as it is for a
+     * single scan, so the operator sees the same toast rather than the burst
+     * being silently short. The end-of-burst flash/sound still reflects whether
+     * anything in the sweep matched the roster, matching onScan's convention
+     * that feedback is about recognition, not persistence.
+     */
+    fun onBurst(values: List<String>) {
+        if (values.isEmpty()) return
+        val idx = index
+        val sel = setup
+        val a = appearance
+        if (idx == null || sel == null || _state.value.rosterSize == 0) {
+            flash.flash(hslToArgb(a.notFoundScan), a.flashMs); sound?.play(ScanSoundKind.NOT_FOUND)
+            _state.update { it.copy(error = NO_MOVE_DATA) }
+            return
+        }
+        scope.launch {
+            var matched = 0
+            var hadError = false
+            for (value in values) {
+                val hit = matchScan(idx, value)
+                if (hit != null) matched++
+                try {
+                    outbox.enqueue(EnqueueInput(
+                        scannedValue = value, scanType = "rfid",
+                        asset = hit?.asset?.toOutboxAsset(), siteId = sel.siteId,
+                        initiativeId = sel.initiativeId, scanStatus = sel.scanStatus,
+                    ))
+                } catch (e: CancellationException) { throw e
+                } catch (e: Exception) { hadError = true }
+            }
+            _state.update { it.copy(storageError = if (hadError) STORAGE_ERROR else null) }
+            if (matched > 0) {
+                flash.flash(hslToArgb(a.goodScan), a.flashMs); sound?.play(ScanSoundKind.GOOD)
+            } else {
+                flash.flash(hslToArgb(a.notFoundScan), a.flashMs); sound?.play(ScanSoundKind.NOT_FOUND)
+            }
+        }
+    }
+
     fun retryFailed() {
         scope.launch {
             try { outbox.retryFailed(); _state.update { it.copy(storageError = null) } }
