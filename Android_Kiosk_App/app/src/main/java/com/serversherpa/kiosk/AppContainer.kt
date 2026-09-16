@@ -30,6 +30,10 @@ import com.serversherpa.kiosk.input.ScanBus
 import com.serversherpa.kiosk.input.camera.hasCamera
 import com.serversherpa.kiosk.input.datawedge.DataWedge
 import com.serversherpa.kiosk.input.datawedge.DataWedgeReceiver
+import com.serversherpa.kiosk.input.rfid.FakeRfidReader
+import com.serversherpa.kiosk.input.rfid.RfidController
+import com.serversherpa.kiosk.input.rfid.RfidPermissions
+import com.serversherpa.kiosk.input.rfid.RfidReader
 import com.serversherpa.kiosk.ui.flash.FlashController
 import com.serversherpa.kiosk.ui.sound.SoundPlayer
 import java.util.concurrent.TimeUnit
@@ -37,6 +41,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
@@ -48,6 +53,7 @@ class AppContainer(
     secrets: SecretStore? = null,
     val db: KioskDatabase = KioskDatabase.build(app),
     dataStore: DataStore<Preferences> = app.kioskDataStore,
+    rfidReaderOverride: RfidReader? = null,
 ) {
     /** EncryptedSharedPreferences unlocks an Android Keystore key — too slow for
      *  Application.onCreate. The jar's first use builds it, on whatever OkHttp
@@ -85,6 +91,11 @@ class AppContainer(
     val flash = FlashController(scope)
     val sound = SoundPlayer(prefs, scope)
 
+    // The Zebra adapter arrives in the next task; until then, and in every test,
+    // this is the fake. Nothing above the interface can tell the difference.
+    val rfidReader: RfidReader = rfidReaderOverride ?: FakeRfidReader()
+    val rfid = RfidController(rfidReader, prefs.rfid, scope)
+
     fun start() {
         // Two launches: the footer's sync line must not wait on auth's network call.
         scope.launch { identity.get(); auth.restore() }
@@ -92,10 +103,19 @@ class AppContainer(
         scope.launch { session.sessionEnded.collect { cookieJar.clearRefreshCookie() } }
         SessionCoordinator(auth, heartbeat, foreground, scope).start()
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onStart(owner: LifecycleOwner) { foreground.value = true; outbox.start() }
-            override fun onStop(owner: LifecycleOwner) { foreground.value = false; outbox.stop() }
+            override fun onStart(owner: LifecycleOwner) {
+                foreground.value = true
+                outbox.start()
+                scope.launch { if (prefs.rfid.first().enabled && RfidPermissions.granted(app)) rfid.connectNow() }
+            }
+            override fun onStop(owner: LifecycleOwner) {
+                foreground.value = false
+                scope.launch { rfid.disconnectNow() }
+                outbox.stop()
+            }
         })
         DataWedge.configure(app)
+        rfid.start()
     }
 
     suspend fun logout() {

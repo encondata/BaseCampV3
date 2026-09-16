@@ -7,6 +7,16 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
+    <!-- The RFD40 pairs over Bluetooth. The legacy pair is capped at API 30
+         because 31+ replaced them; ACCESS_FINE_LOCATION is what Zebra's library
+         wants for its Bluetooth configuration on Google reference platforms. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+
     <!-- The Zebra RFIDAPI3 .aar (project(":RFIDAPI3Library")) ships its own manifest
          declaring android:allowBackup="true"; without tools:replace below, the manifest
          merge fails outright and the app will not build. -->
