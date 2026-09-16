@@ -278,7 +278,7 @@ export default function Users() {
   const headerDrag = useReorderDrag(reorder, 'x', { ignoreFrom: '.pop-menu' });
   const menuDrag = useReorderDrag(reorder, 'y');
   const grid = {
-    gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px`,
+    gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 100px 30px`,
   };
 
   const caret = (key: string) =>
@@ -327,6 +327,53 @@ export default function Users() {
       default:
         return null;
     }
+  };
+
+  // Actions available for the row's own trailing RowActionsMenu — same
+  // gating d1b697a defined for the expansion's menu, now driving the
+  // inline trigger instead. Full details is always offered; the self
+  // and read-only branches stop there (self gets a link to /me instead
+  // of manage actions; a rank-locked target gets nothing else).
+  const rowActions = (u: UserItem): RowAction[] => {
+    const detailsAction: RowAction = {
+      key: 'details', label: 'Full details',
+      onSelect: () => navigate(`/people/users/${u.person_id}`),
+    };
+    const isSelf = u.person_id === mePerson?.id;
+    if (isSelf) {
+      return [detailsAction, { key: 'me', label: 'Go to My profile', onSelect: () => navigate('/me') }];
+    }
+    if (!canTouchRank(maxRank, u.max_rank)) {
+      return [detailsAction];
+    }
+    const canManageUsers = can('users', 'change');
+    const canManageRoles = can('access', 'change');
+    return [
+      detailsAction,
+      ...(canManageUsers ? [{
+        key: 'edit', label: 'Edit profile',
+        onSelect: () => setManage({ kind: 'edit', user: u }),
+      }] : []),
+      ...(canManageUsers ? [{
+        key: 'reset', label: 'Reset password',
+        onSelect: () => setManage({ kind: 'reset', user: u }),
+      }] : []),
+      ...(canManageRoles ? [{
+        key: 'roles', label: 'Manage roles',
+        onSelect: () => setManage({ kind: 'roles', user: u }),
+      }] : []),
+      ...(canManageUsers && u.status === 'locked' ? [{
+        key: 'unlock', label: 'Unlock',
+        onSelect: () => setManage({ kind: 'state', action: 'unlock', user: u }),
+      }] : []),
+      ...(canManageUsers ? [u.status === 'disabled' ? {
+        key: 'enable', label: 'Enable account',
+        onSelect: () => setManage({ kind: 'state', action: 'enable', user: u }),
+      } : {
+        key: 'disable', label: 'Disable account', destructive: true,
+        onSelect: () => setManage({ kind: 'state', action: 'disable', user: u }),
+      }] : []),
+    ];
   };
 
   return (
@@ -448,6 +495,7 @@ export default function Users() {
                           onSort={(dir) => setSort(c.key, dir)} />
             </span>
           ))}
+          <span className="col-head" aria-hidden="true" />
           <ColumnMenu colKey="must_change" label="Password change required"
                       allRows={users ?? []} filters={filters}
                       text={userCellText}
@@ -488,6 +536,10 @@ export default function Users() {
                 {shownCols.map((c) => (
                   <div className="cell" key={c.key}>{cellFor(u, c.key)}</div>
                 ))}
+                <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}
+                     onClick={(e) => e.stopPropagation()}>
+                  <RowActionsMenu actions={rowActions(u)} />
+                </div>
                 <div className="cell chevron-cell">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                        strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
@@ -530,12 +582,6 @@ export default function Users() {
                         {(() => {
                           const isSelf = u.person_id === mePerson?.id;
                           const canTouch = !isSelf && canTouchRank(maxRank, u.max_rank);
-                          const canManageUsers = canTouch && can('users', 'change');
-                          const canManageRoles = canTouch && can('access', 'change');
-                          const detailsAction: RowAction = {
-                            key: 'details', label: 'Full details',
-                            onSelect: () => navigate(`/people/users/${u.person_id}`),
-                          };
                           if (isSelf) {
                             return (
                               <div className="detail-actions">
@@ -543,10 +589,6 @@ export default function Users() {
                                   This is you — your details, password, and
                                   sessions live on your profile.
                                 </span>
-                                <RowActionsMenu actions={[
-                                  detailsAction,
-                                  { key: 'me', label: 'Go to My profile', onSelect: () => navigate('/me') },
-                                ]} />
                               </div>
                             );
                           }
@@ -556,48 +598,18 @@ export default function Users() {
                                 <span className="self-note">
                                   Read-only — {u.display_name}'s rank is at or above yours.
                                 </span>
-                                <RowActionsMenu actions={[detailsAction]} />
                               </div>
                             );
                           }
-                          const manageable = canManageUsers || canManageRoles || godMode;
-                          const actions: RowAction[] = [
-                            detailsAction,
-                            ...(canManageUsers ? [{
-                              key: 'edit', label: 'Edit profile',
-                              onSelect: () => setManage({ kind: 'edit', user: u }),
-                            }] : []),
-                            ...(canManageUsers ? [{
-                              key: 'reset', label: 'Reset password',
-                              onSelect: () => setManage({ kind: 'reset', user: u }),
-                            }] : []),
-                            ...(canManageRoles ? [{
-                              key: 'roles', label: 'Manage roles',
-                              onSelect: () => setManage({ kind: 'roles', user: u }),
-                            }] : []),
-                            ...(canManageUsers && u.status === 'locked' ? [{
-                              key: 'unlock', label: 'Unlock',
-                              onSelect: () => setManage({ kind: 'state', action: 'unlock', user: u }),
-                            }] : []),
-                            ...(canManageUsers ? [u.status === 'disabled' ? {
-                              key: 'enable', label: 'Enable account',
-                              onSelect: () => setManage({ kind: 'state', action: 'enable', user: u }),
-                            } : {
-                              key: 'disable', label: 'Disable account', destructive: true,
-                              onSelect: () => setManage({ kind: 'state', action: 'disable', user: u }),
-                            }] : []),
-                          ];
+                          if (!godMode) return null;
                           return (
                             <div className="detail-actions">
-                              <RowActionsMenu actions={actions} />
-                              {manageable && (
-                                <GodDeleteButton visible={godMode} entityType="person"
-                                                 entityId={u.person_id} label={u.display_name}
-                                                 pending={pd.pendingIds.has(u.person_id)}
-                                                 onChange={pd.pendingIds.has(u.person_id)
-                                                   ? () => pd.unmark(u.person_id)
-                                                   : () => pd.mark('person', u.person_id, u.display_name)} />
-                              )}
+                              <GodDeleteButton visible={godMode} entityType="person"
+                                               entityId={u.person_id} label={u.display_name}
+                                               pending={pd.pendingIds.has(u.person_id)}
+                                               onChange={pd.pendingIds.has(u.person_id)
+                                                 ? () => pd.unmark(u.person_id)
+                                                 : () => pd.mark('person', u.person_id, u.display_name)} />
                             </div>
                           );
                         })()}

@@ -26,7 +26,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 const { default: Users } = await import('./Users');
 
-it('the expansion shows a Full details link to /people/users/:id', async () => {
+it('the Actions menu shows a Full details link to /people/users/:id, without expanding the row', async () => {
   render(
     <MemoryRouter initialEntries={['/people/users']}>
       <Routes>
@@ -35,8 +35,8 @@ it('the expansion shows a Full details link to /people/users/:id', async () => {
       </Routes>
     </MemoryRouter>,
   );
-  fireEvent.click(await screen.findByText('Wan Worker'));
-  fireEvent.click(screen.getByRole('button', { name: /actions/i }));
+  await screen.findByText('Wan Worker');
+  fireEvent.click(screen.getAllByRole('button', { name: /actions/i })[0]);
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Full details' }));
   expect(await screen.findByText('DETAIL PAGE')).toBeTruthy();
 });
@@ -50,11 +50,31 @@ it('a manage-able row lists Full details, Edit profile, Reset password, Manage r
       </Routes>
     </MemoryRouter>,
   );
-  fireEvent.click(await screen.findByText('Wan Worker'));
-  fireEvent.click(screen.getByRole('button', { name: /actions/i }));
+  await screen.findByText('Wan Worker');
+  fireEvent.click(screen.getAllByRole('button', { name: /actions/i })[0]);
   expect(await screen.findByRole('menuitem', { name: 'Full details' })).toBeTruthy();
   expect(screen.getByRole('menuitem', { name: 'Edit profile' })).toBeTruthy();
   expect(screen.getByRole('menuitem', { name: 'Reset password' })).toBeTruthy();
   expect(screen.getByRole('menuitem', { name: 'Manage roles' })).toBeTruthy();
   expect(screen.getByRole('menuitem', { name: 'Disable account' })).toBeTruthy();
+});
+
+it('clicking the Actions trigger does not expand the row', async () => {
+  const { container } = render(
+    <MemoryRouter initialEntries={['/people/users']}>
+      <Routes>
+        <Route path="/people/users" element={<Users />} />
+        <Route path="/people/users/:personId" element={<div>DETAIL PAGE</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await screen.findByText('Wan Worker');
+  fireEvent.click(screen.getAllByRole('button', { name: /actions/i })[0]);
+  await screen.findByRole('menuitem', { name: 'Full details' });
+  // Expansion is driven by the `open` class on `.dir-row` (CSS
+  // grid-rows collapse, not conditional mounting), so the real signal
+  // that the row did NOT expand is the class staying off, not the
+  // detail markup's absence from the tree.
+  const row = container.querySelector('.dir-row');
+  expect(row?.className).not.toMatch(/\bopen\b/);
 });
