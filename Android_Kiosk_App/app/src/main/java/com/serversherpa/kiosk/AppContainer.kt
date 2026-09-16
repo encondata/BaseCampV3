@@ -30,10 +30,10 @@ import com.serversherpa.kiosk.input.ScanBus
 import com.serversherpa.kiosk.input.camera.hasCamera
 import com.serversherpa.kiosk.input.datawedge.DataWedge
 import com.serversherpa.kiosk.input.datawedge.DataWedgeReceiver
-import com.serversherpa.kiosk.input.rfid.FakeRfidReader
 import com.serversherpa.kiosk.input.rfid.RfidController
 import com.serversherpa.kiosk.input.rfid.RfidPermissions
 import com.serversherpa.kiosk.input.rfid.RfidReader
+import com.serversherpa.kiosk.input.rfid.ZebraRfidReader
 import com.serversherpa.kiosk.ui.flash.FlashController
 import com.serversherpa.kiosk.ui.sound.SoundPlayer
 import java.util.concurrent.TimeUnit
@@ -91,9 +91,10 @@ class AppContainer(
     val flash = FlashController(scope)
     val sound = SoundPlayer(prefs, scope)
 
-    // The Zebra adapter arrives in the next task; until then, and in every test,
-    // this is the fake. Nothing above the interface can tell the difference.
-    val rfidReader: RfidReader = rfidReaderOverride ?: FakeRfidReader()
+    // Every test passes rfidReaderOverride (see TestContainer.kt) so it never
+    // constructs the real Zebra reader. Nothing above the interface can tell
+    // the difference between this and the fake.
+    val rfidReader: RfidReader = rfidReaderOverride ?: ZebraRfidReader(app, scope)
     val rfid = RfidController(rfidReader, prefs.rfid, scope)
 
     fun start() {
