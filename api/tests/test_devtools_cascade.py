@@ -42,7 +42,11 @@ async def _person_with_everything(db, *, first="Doomed", last="Person"):
     db.add(group)
     await db.flush()
     db.add(AccessGroupMember(group_id=group.id, person_id=person.id))
-    db.add(TimeEntry(person_id=person.id, clock_in_at=datetime.now(UTC)))
+    # approved_by=person.id (alongside person_id=person.id) makes this one
+    # row both purged (via person_id) and cleared (via approved_by) —
+    # the regression case for clear-before-purge ordering.
+    db.add(TimeEntry(person_id=person.id, approved_by=person.id,
+                     clock_in_at=datetime.now(UTC)))
     await db.flush()
     first_session = AuthSession(
         person_id=person.id, family_id=uuid.uuid4(), token_hash=f"{first}-a",
@@ -176,6 +180,12 @@ async def test_execute_removes_exactly_the_planned_rows(db, seeded_user):
     assert result["deleted_rows"]["user_accounts"] == 1
     assert result["deleted_rows"]["auth_sessions"] == 2
     assert result["deleted_rows"]["time_entries"] == 1
+    # time_entries.approved_by=person.id on the person's own time entry (see
+    # _person_with_everything) is both cleared and, on the same row,
+    # purged via person_id — this only comes out right if clears run
+    # before purges, which is exactly what this pins down.
+    assert result["cleared_references"]["time_entries.approved_by"] == 1
+    assert result["cleared_references"]["audit_log.actor_person_id"] == 1
     assert await db.get(Person, doomed.id) is None
     for model, col in ((UserAccount, UserAccount.person_id),
                        (PersonRole, PersonRole.person_id),

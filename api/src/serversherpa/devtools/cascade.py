@@ -278,6 +278,14 @@ async def execute_cascade(
     # replaced_by, say — never shows up here: collect_levels skips it
     # because the purge below deletes both ends of that reference in the
     # same statement.)
+    #
+    # The order here is load-bearing, not incidental — a single row can be
+    # both cleared and purged. A time entry the doomed person clocked AND
+    # approved (person_id and approved_by both point at them) needs
+    # approved_by nulled before the purge deletes the row out from under
+    # it; run purges first and the clear finds nothing left to touch.
+    # test_execute_removes_exactly_the_planned_rows pins this down via
+    # cleared_references["time_entries.approved_by"].
     for level in (lvl for lvl in levels if lvl.action == "clear"):
         result = await db.execute(
             update(level.table)
