@@ -29,10 +29,12 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class LoadStatus { LOADING, READY, ERROR }
 
@@ -145,6 +147,13 @@ class ScanViewModel(
      * actually was. The end-of-burst flash/sound still reflects whether
      * anything in the sweep matched the roster, matching onScan's convention
      * that feedback is about recognition, not persistence.
+     *
+     * `enqueueAll`'s own `NonCancellable` protection only begins once
+     * `enqueueAll` is actually entered — a cancellation landing earlier (e.g.
+     * while still matching tags above, or inside `Outbox.load()`) still loses
+     * the burst silently, same as any other cancelled coroutine. That is a
+     * much smaller residual window than the one I2 closed (the whole per-tag
+     * loop), and closing it further is out of scope here.
      */
     fun onBurst(values: List<String>) {
         if (values.isEmpty()) return
@@ -180,7 +189,13 @@ class ScanViewModel(
                 // even attempted. Undo that so a repeat sweep of the same tags
                 // (under a non-ALWAYS_QUEUE repeat policy) is not silently
                 // skipped as "already sent" when it was never actually sent.
-                rfid.forgetQueued(values)
+                // NonCancellable: this coroutine runs on a screen-scoped `scope`
+                // that navigating away can cancel at any point, including the
+                // instant this catch block starts running — without this,
+                // forgetQueued's own `mutex.withLock` would throw
+                // CancellationException before undoing anything, silently
+                // re-introducing the I6 symptom for this one burst.
+                withContext(NonCancellable) { rfid.forgetQueued(values) }
                 _state.update { it.copy(storageError = STORAGE_ERROR) }
             }
             if (matched > 0) {

@@ -71,12 +71,15 @@ import kotlinx.coroutines.withTimeoutOrNull
  * sequential vendor round trips, and unlike `connect()`/`disconnect()` it
  * used to have no timeout at all — a soft-hung vendor stack would wedge
  * whatever held the lock across it forever. [applyGate], a second, narrow
- * `Mutex`, is what lets [push] stay off `mutex` entirely: it serializes
- * `apply()` against `startInventory()` on the vendor link (see the nesting in
- * [onTrigger]'s `TriggerAction.START` branch) without making tag/trigger
- * evaluation — which only ever needs `mutex` — wait on a slow or hung
- * settings push. Nothing that holds `applyGate` (i.e. [push]) ever tries to
- * acquire `mutex`, so nesting `mutex` outside `applyGate` at that one call
+ * `Mutex`, is what lets [push] stay off `mutex` entirely: a slow or hung
+ * settings push never blocks a tag report, an arm/disarm, or [endBurst] —
+ * those only ever need `mutex`, which [push] never holds. A trigger START is
+ * the one exception: it deliberately serializes against a concurrent push on
+ * the vendor link by waiting on `applyGate` *while still holding `mutex`*
+ * (see the nesting in [onTrigger]'s `TriggerAction.START` branch), so a start
+ * can be delayed — bounded by `VENDOR_TIMEOUT_MS` in the worst case — behind
+ * an in-flight push. Nothing that holds `applyGate` (i.e. [push]) ever tries
+ * to acquire `mutex`, so nesting `mutex` outside `applyGate` at that one call
  * site cannot deadlock.
  *
  * `arm()`, `disarm()` and `stopBurst()` are called from the UI thread and
@@ -236,12 +239,14 @@ class RfidController(
     /** A second, narrow lock so [push] never has to hold `mutex` across
      *  `reader.apply()` — see the class doc. It exists purely to serialize
      *  `apply()` against `startInventory()` on the vendor link (the nesting
-     *  in [onTrigger]'s `TriggerAction.START` branch); tag/trigger
-     *  evaluation, which only ever needs `mutex`, never waits on it, so a
-     *  slow or hung settings push can delay a later push but nothing else —
-     *  not a tag, a trigger, an arm/disarm, or `endBurst`. Nothing that
-     *  holds `applyGate` ever tries to acquire `mutex`, so nesting `mutex`
-     *  outside it at that one call site cannot deadlock. */
+     *  in [onTrigger]'s `TriggerAction.START` branch): a slow or hung
+     *  settings push can delay a later push, and can delay a trigger START
+     *  specifically (bounded by `VENDOR_TIMEOUT_MS` in the worst case, since
+     *  START waits on `applyGate` while holding `mutex`), but nothing else —
+     *  not a tag report, an arm/disarm, or `endBurst`, all of which only
+     *  ever need `mutex`, which [push] never holds. Nothing that holds
+     *  `applyGate` ever tries to acquire `mutex`, so nesting `mutex` outside
+     *  it at that one call site cannot deadlock. */
     private val applyGate = Mutex()
 
     private sealed interface Command {
@@ -649,8 +654,12 @@ class RfidController(
                         reader.stopInventory()
                     } catch (e: CancellationException) {
                         throw e
-                    } catch (e: Exception) {
-                        // the reader is already gone; the tags still count
+                    } catch (e: Throwable) {
+                        // the reader is already gone, or something worse went
+                        // wrong (e.g. an Error during a large sweep) — the
+                        // tags still count; the claim below must still run or
+                        // the controller wedges for the process's remaining
+                        // lifetime.
                     }
                 }
 

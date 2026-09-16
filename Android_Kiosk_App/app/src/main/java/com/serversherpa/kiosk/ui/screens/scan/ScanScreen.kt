@@ -108,8 +108,27 @@ fun ScanScreen(nav: NavHostController) {
         // The grey empty-roster line above already says it; the red toast is for a scan that arrived anyway.
         if (ui.error != null && !empty) KioskToast(ui.error, error = true)
         KioskToast(ui.storageError, error = true)
-        val rfidFailure = (rfidConnection as? RfidConnection.Failed)?.reason
-        KioskToast(rfidFailure, error = true)
+        // A transition into Failed, not a static read of the current state: a
+        // reader already Failed before this screen was ever opened (e.g.
+        // enabled but never paired — AppContainer retries the connect on
+        // every foreground) must not pin a permanent red banner here. Seeded
+        // from the first composition's own value so that case shows nothing,
+        // then updated only on a later PRESSED-like transition into Failed;
+        // it clears again once the connection leaves Failed. KioskToast never
+        // auto-dismisses, so this is the only thing keeping the message from
+        // sitting forever.
+        var shownRfidFailure by remember { mutableStateOf<String?>(null) }
+        var rfidWasFailed by remember { mutableStateOf(rfidConnection is RfidConnection.Failed) }
+        LaunchedEffect(rfidConnection) {
+            val nowFailed = rfidConnection is RfidConnection.Failed
+            shownRfidFailure = when {
+                nowFailed && !rfidWasFailed -> (rfidConnection as RfidConnection.Failed).reason
+                !nowFailed -> null
+                else -> shownRfidFailure
+            }
+            rfidWasFailed = nowFailed
+        }
+        KioskToast(shownRfidFailure, error = true)
         ScanTools(showTrigger = container.hasDataWedge, onTrigger = { DataWedge.softScan(context, true) })
         val counts = snapshot.counts
         Text("Queued ${counts.queued} · Sent ${counts.accepted} · Failed ${counts.failed} · No match ${counts.nomatch}", fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.textMute, modifier = Modifier.padding(top = 8.dp))

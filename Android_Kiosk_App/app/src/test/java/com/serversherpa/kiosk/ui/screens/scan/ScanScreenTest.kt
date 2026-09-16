@@ -1,8 +1,10 @@
 package com.serversherpa.kiosk.ui.screens.scan
 
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.navigation.compose.rememberNavController
 import com.serversherpa.kiosk.LocalAppContainer
@@ -42,5 +44,25 @@ class ScanScreenTest {
         compose.waitForIdle()
 
         compose.onNodeWithText("The reader disconnected.").assertIsDisplayed()
+    }
+
+    /** I7 follow-up: a `Failed` connection already present before the screen is
+     *  ever composed is not a transition, so it must show nothing — otherwise
+     *  a kiosk whose reader is enabled but never paired gets a permanent red
+     *  banner over the scan tools, unrelated to anything the operator did. */
+    @Test fun aReaderAlreadyFailedBeforeTheScreenOpensShowsNoToast() {
+        val reader = FakeRfidReader()
+        reader.setConnection(RfidConnection.Failed("No RFID reader found. Pair the RFD40 in Android's Bluetooth settings first."))
+        val c = testContainer(reader)
+        compose.setContent {
+            CompositionLocalProvider(LocalAppContainer provides c) {
+                KioskTheme { ScanScreen(rememberNavController()) }
+            }
+        }
+        compose.waitForIdle()
+
+        compose.onAllNodesWithText(
+            "No RFID reader found. Pair the RFD40 in Android's Bluetooth settings first.",
+        ).assertCountEquals(0)
     }
 }

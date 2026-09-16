@@ -510,6 +510,80 @@ class RfidControllerTest {
         assertEquals(listOf(listOf("100700"), listOf("100701")), bursts)
     }
 
+    /** A reader whose `stopInventory()` throws a non-`Exception` `Throwable`
+     *  directly (an `Error`, as a real vendor stack's `OutOfMemoryError`
+     *  during a large sweep would), instead of returning a failed `Result` —
+     *  the seam the I8 regression test below needs and `FakeRfidReader` has
+     *  no reason to support. Everything else delegates straight to [inner]. */
+    private class ThrowingStopReader(private val inner: FakeRfidReader) : RfidReader {
+        override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val tags: Flow<String> get() = inner.tags
+        override val triggers: Flow<TriggerEvent> get() = inner.triggers
+        override suspend fun connect() = inner.connect()
+        override suspend fun disconnect() = inner.disconnect()
+        override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
+        override suspend fun startInventory() = inner.startInventory()
+        override suspend fun stopInventory(): Result<Unit> = throw OutOfMemoryError("simulated vendor Error")
+    }
+
+    /**
+     * I8 (Critical, missed by the original Task 1 brief — see the fix-wave
+     * report): before this fix, `endBurst`'s inner `try`/`catch` around
+     * `reader.stopInventory()` only caught `Exception`, so a non-`Exception`
+     * `Throwable` — realistically an `OutOfMemoryError` during a large sweep —
+     * escaped it entirely, then escaped the outer `catch (CancellationException)`
+     * around the whole `stopGate.withLock { ... }` block too (that one only
+     * catches `CancellationException`), and propagated all the way out of
+     * `endBurst` uncaught. `endBurst` in this path runs inside the single
+     * consumer that drains [commands] (`arm()`/`disarm()`/`stopBurst()`), so an
+     * uncaught `Throwable` here could kill that whole consumer coroutine:
+     * `stoppingBurst` stays `true`, `_session` stays non-null, and nothing is
+     * left to drain `commands` at all — every later `arm()`/`disarm()`/
+     * `stopBurst()` silently does nothing, forever.
+     *
+     * The fix widens the inner catch to `Throwable` (rethrowing
+     * `CancellationException` first, unchanged). This drives a burst through a
+     * reader whose `stopInventory()` throws an `Error` directly and asserts the
+     * controller is not left wedged: the session closes, and a following
+     * trigger press starts a fresh inventory normally.
+     *
+     * Against the pre-fix code, this test still fails as an `AssertionError`
+     * rather than crashing the JVM/test worker outright — `runTest` catches
+     * the `OutOfMemoryError` that kills the consumer coroutine and attaches
+     * it as a *suppressed* exception on the test's own failure — but the
+     * failure itself is exactly the wedge symptom the finding describes:
+     * `assertNull(controller.session.value)` fails because the session was
+     * left open (`stoppingBurst`/`_session` never got claimed), with the
+     * `OutOfMemoryError` visible underneath as
+     * `Suppressed: java.lang.OutOfMemoryError: simulated vendor Error`. See
+     * the fix-wave report for the exact captured output.
+     */
+    @Test fun aStopThrowingAnErrorFromStopInventoryDoesNotWedgeTheController() = runTest {
+        val inner = FakeRfidReader()
+        val throwingStop = ThrowingStopReader(inner)
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+        val controller = RfidController(throwingStop, settings, backgroundScope) { 0L }
+        controller.start(); controller.arm(); settle()
+        controller.connectNow(); settle()
+
+        inner.emitTrigger(TriggerEvent.PRESSED); settle()
+        inner.emitTag("100999"); settle()
+        assertEquals(1, controller.session.value?.totalReads)
+
+        controller.stopBurst(); settle()
+
+        assertNull(
+            "a stopInventory() that threw an Error must still leave the session claimed, not stuck open",
+            controller.session.value,
+        )
+
+        // The consumer that drains `commands` must still be alive: a fresh
+        // trigger press must start a new inventory normally, not silently
+        // no-op the way it would if the Error had killed that coroutine.
+        inner.emitTrigger(TriggerEvent.PRESSED); settle()
+        assertTrue("the controller must not be wedged: a new read should start", inner.inventoryRunning)
+    }
+
     /**
      * A reader whose `connect()` signals [connectStarted] and then hangs on
      * [proceedConnect] until the test releases it — [SlowStopReader]'s
