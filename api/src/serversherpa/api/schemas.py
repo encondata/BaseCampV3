@@ -1235,6 +1235,25 @@ class AssetUpdateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AssetMoveRow(BaseModel):
+    """One move roster row an asset has appeared on — the compact history
+    line. Rack, RU, disposition and verification live on the move-row page
+    this links to, deliberately not here."""
+
+    row_id: uuid.UUID            # initiative_assets.id — the move-row page key
+    initiative_id: uuid.UUID
+    initiative_name: str
+    initiative_status: str
+    initiative_status_label: str
+    initiative_status_color: str
+    asset_status: str
+    asset_status_label: str
+    asset_status_color: str
+    scheduled_start: datetime | None
+    scheduled_end: datetime | None
+    added_at: datetime
+
+
 class ContainerItem(BaseModel):
     id: uuid.UUID
     name: str
