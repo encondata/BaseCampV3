@@ -567,9 +567,18 @@ class RfidController(
                             reader.startInventory()
                         } catch (e: CancellationException) {
                             throw e
-                        } catch (e: Exception) {
-                            // The reader may already be gone; the session stays
-                            // open and endBurst()'s own try/catch covers the stop.
+                        } catch (e: Throwable) {
+                            // The reader may already be gone, or something worse
+                            // went wrong (e.g. an Error from the vendor stack) —
+                            // the session stays open and endBurst()'s own
+                            // try/catch covers the stop. `Throwable` rather than
+                            // `Exception` for the same reason endBurst catches
+                            // `Throwable` around its own vendor call: this runs
+                            // inside the single `reader.triggers` collector
+                            // launched in start(), so anything escaping here
+                            // kills that collector and leaves every later
+                            // trigger event undelivered for the rest of the
+                            // process's life.
                         }
                     }
                 }

@@ -584,6 +584,87 @@ class RfidControllerTest {
         assertTrue("the controller must not be wedged: a new read should start", inner.inventoryRunning)
     }
 
+    /** A reader whose *first* `startInventory()` throws a non-`Exception`
+     *  `Throwable` directly (an `Error`, as a real vendor stack's
+     *  `OutOfMemoryError` would), instead of returning a failed `Result` —
+     *  [ThrowingStopReader]'s mirror for the start side. Only the first call
+     *  throws: the test needs a later trigger to reach a working
+     *  `startInventory()` so it can tell "the collector survived" from "the
+     *  collector died", which one that always threw could not. Everything
+     *  else delegates straight to [inner]. */
+    private class ThrowingStartReader(private val inner: FakeRfidReader) : RfidReader {
+        private var starts = 0
+        override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val tags: Flow<String> get() = inner.tags
+        override val triggers: Flow<TriggerEvent> get() = inner.triggers
+        override suspend fun connect() = inner.connect()
+        override suspend fun disconnect() = inner.disconnect()
+        override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
+        override suspend fun startInventory(): Result<Unit> {
+            if (starts++ == 0) throw OutOfMemoryError("simulated vendor Error")
+            return inner.startInventory()
+        }
+        override suspend fun stopInventory() = inner.stopInventory()
+    }
+
+    /**
+     * I8's twin on the start side, found by review during the I8 fix wave and
+     * deferred as out of scope for it: `onTrigger`'s `TriggerAction.START`
+     * branch wrapped `reader.startInventory()` in a `try`/`catch` that caught
+     * only `Exception`, so a non-`Exception` `Throwable` — realistically an
+     * `OutOfMemoryError` from the vendor stack — escaped it, escaped
+     * `onTrigger` entirely, and propagated out of the
+     * `reader.triggers.collect { onTrigger(it) }` coroutine launched in
+     * `start()`. That collector is the only thing delivering trigger events, so
+     * killing it means every later press and release is silently undelivered —
+     * the operator's trigger does nothing at all, with nothing on screen
+     * explaining it, until the process restarts.
+     *
+     * The fix is I8's, applied here: widen the inner catch to `Throwable`,
+     * keeping the `catch (CancellationException) { throw e }` ahead of it
+     * unchanged. This drives a press whose `startInventory()` throws an `Error`
+     * and then asserts trigger handling still works end to end: the release
+     * still ends the burst and queues its tags, and a following press starts a
+     * fresh inventory.
+     *
+     * Against the pre-fix code it fails even earlier than the assertions, and
+     * more directly than the I8 test does: `FakeRfidReader.emitTrigger` refuses
+     * to emit when nothing is subscribed, so the RELEASED emit throws
+     * `IllegalStateException: Dropped trigger event RELEASED: nothing was
+     * collecting.` — the dead collector itself, named out loud. The assertions
+     * below it are what keeps the test honest once the collector survives.
+     */
+    @Test fun aTriggerWhoseStartInventoryThrowsAnErrorDoesNotKillTriggerHandling() = runTest {
+        val inner = FakeRfidReader()
+        val throwingStart = ThrowingStartReader(inner)
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+        val controller = RfidController(throwingStart, settings, backgroundScope) { 0L }
+        val bursts = mutableListOf<List<String>>()
+        backgroundScope.launch { controller.bursts.collect { bursts += it } }
+        controller.start(); controller.arm(); settle()
+        controller.connectNow(); settle()
+
+        // The press opens the session before it asks the radio, so the session
+        // is open either way; what the Error decides is whether the collector
+        // that opened it is still alive to see anything after this.
+        inner.emitTrigger(TriggerEvent.PRESSED); settle()
+        inner.emitTag("100800"); settle()
+        assertEquals(1, controller.session.value?.totalReads)
+
+        // Pre-fix, this release never reaches `onTrigger` at all.
+        inner.emitTrigger(TriggerEvent.RELEASED); settle()
+        assertNull(
+            "a startInventory() that threw an Error must not stop the release from ending the burst",
+            controller.session.value,
+        )
+        assertEquals(listOf(listOf("100800")), bursts)
+
+        // And the collector must still be delivering: the next press starts a
+        // fresh inventory on the reader instead of silently going nowhere.
+        inner.emitTrigger(TriggerEvent.PRESSED); settle()
+        assertTrue("trigger handling must survive the Error: a new read should start", inner.inventoryRunning)
+    }
+
     /**
      * A reader whose `connect()` signals [connectStarted] and then hangs on
      * [proceedConnect] until the test releases it — [SlowStopReader]'s
