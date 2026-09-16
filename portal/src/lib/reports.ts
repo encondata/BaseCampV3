@@ -1,5 +1,6 @@
 /** Reports helpers shared by the page and the Generate modal. */
 import type { InitiativeItem } from './api';
+import { parseApiDay } from './timeline';
 
 export interface ReportSection { key: string; title: string; description: string }
 
@@ -64,5 +65,10 @@ export function formatBytes(n: number | null): string {
 }
 
 /** Shared by GenerateReportModal's pick step (scheduled dates) and
- *  MoveScanHistoryOptions' preview card (scheduled start). */
-export const fmtDate = (s: string | null): string => (s ? new Date(s).toLocaleDateString() : '—');
+ *  ReportOptionsLayout's preview card (scheduled start/end) — both are the
+ *  date-only scheduled_start/scheduled_end fields, stored as midnight UTC
+ *  for a plain YYYY-MM-DD input. Parse the Y-M-D digits into a local Date
+ *  first: `new Date(s)` would land on the previous evening west of UTC and
+ *  name the day before. The bare `toLocaleDateString()` call is kept as-is
+ *  so the rendered format doesn't change. */
+export const fmtDate = (s: string | null): string => (s ? parseApiDay(s).toLocaleDateString() : '—');

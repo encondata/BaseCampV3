@@ -23,8 +23,9 @@ import {
 import { statusChip as chip } from '../lib/chips';
 import { assetDistribution, sortClientInitiatives } from '../lib/clientDashboard';
 import { moveAssetProgress } from '../lib/initiatives';
-import { avatarGradient, initials, longDate, relativeTime } from '../lib/format';
+import { avatarGradient, initials, longDateOf, relativeTime } from '../lib/format';
 import { STATUS_META, type OrgItem } from '../lib/orgs';
+import { parseApiDay } from '../lib/timeline';
 import { Distribution } from '../components/dashboard/charts';
 import '../styles/directory.css';
 import '../styles/dashboard.css';
@@ -48,6 +49,14 @@ const skel = <span className="dash-skel" aria-label="loading" />;
 const TIER_META: Record<string, string> = {
   standard: 'tag', preferred: 'c-blue', strategic: 'c-amber',
 };
+
+/** scheduled_start/scheduled_end are date-only fields (midnight UTC for a
+ *  plain YYYY-MM-DD input) — parse the Y-M-D digits into a local Date
+ *  first, since `longDate` (built on `new Date(iso)`) would name the day
+ *  before anywhere west of UTC. Null keeps `longDate`'s '—'. */
+function scheduledDate(iso: string | null): string {
+  return iso ? longDateOf(parseApiDay(iso)) : '—';
+}
 
 export default function ClientDashboard() {
   const { can } = useAuth();
@@ -333,7 +342,7 @@ export default function ClientDashboard() {
                     {chip(i.type_label, i.type_color)}
                     {chip(i.status_label, i.status_color)}
                     <span className="cdash-init-dates mono">
-                      {longDate(i.scheduled_start)} – {longDate(i.scheduled_end)}
+                      {scheduledDate(i.scheduled_start)} – {scheduledDate(i.scheduled_end)}
                     </span>
                     {i.origin_site_name && i.destination_site_name && (
                       <span className="cdash-init-dates cell-sub">

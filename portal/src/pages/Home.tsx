@@ -22,6 +22,7 @@ import {
 import { moveAssetProgress } from '../lib/initiatives';
 import { actionLabel, targetLabel } from '../lib/auditFormat';
 import { relativeTime } from '../lib/format';
+import { parseApiDay } from '../lib/timeline';
 import { DailyBars, Distribution, Sparkline, type DistEntry } from '../components/dashboard/charts';
 import DashSitesMap from '../components/dashboard/DashSitesMap';
 import TransitMap from '../components/dashboard/TransitMap';
@@ -51,7 +52,11 @@ function windowLines(start: string | null, end: string | null): string[] {
   if (!start && !end) return ['unscheduled'];
   const thisYear = new Date().getFullYear();
   const fmt = (iso: string) => {
-    const d = new Date(iso);
+    // scheduled_start/scheduled_end are date-only fields (midnight UTC for
+    // a plain YYYY-MM-DD input) — parseApiDay reads the Y-M-D digits into
+    // a local Date, since `new Date(iso)` would land on the previous
+    // evening west of UTC and name the day before.
+    const d = parseApiDay(iso);
     return d.toLocaleDateString(undefined, {
       month: 'short', day: 'numeric',
       ...(d.getFullYear() !== thisYear ? { year: 'numeric' } : {}),

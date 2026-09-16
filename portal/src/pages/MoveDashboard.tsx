@@ -28,6 +28,8 @@ import {
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
+import { longDateOf } from '../lib/format';
+import { parseApiDay } from '../lib/timeline';
 import RackViewModal from '../components/initiatives/RackViewModal';
 import StatusHover from '../components/StatusHover';
 import { Distribution, type DistEntry } from '../components/dashboard/charts';
@@ -84,11 +86,14 @@ function moveOrder(a: InitiativeItem, b: InitiativeItem): number {
   return Date.parse(b.created_at) - Date.parse(a.created_at);
 }
 
+/** scheduled_start/scheduled_end are date-only fields (midnight UTC for a
+ *  plain YYYY-MM-DD input) — parseApiDay reads the Y-M-D digits into a
+ *  local Date, since `new Date(iso)` would land on the previous evening
+ *  west of UTC and name the day before. These options already match
+ *  longDateOf's, so the rendered format is unchanged. */
 function fmtDate(iso: string | null): string {
   if (!iso) return '—';
-  return new Date(iso).toLocaleDateString(undefined, {
-    month: 'short', day: 'numeric', year: 'numeric',
-  });
+  return longDateOf(parseApiDay(iso));
 }
 
 export default function MoveDashboard() {

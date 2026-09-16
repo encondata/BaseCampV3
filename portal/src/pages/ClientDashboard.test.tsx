@@ -206,3 +206,22 @@ it('activity rows render with status label and relative time', async () => {
   await waitFor(() => expect(screen.queryByText('core-sw-01')).not.toBeNull());
   expect(screen.queryByText('In Transit')).not.toBeNull();
 });
+
+it('renders an initiative\'s scheduled dates without shifting them west of UTC', async () => {
+  // scheduled_start/scheduled_end are date-only fields (midnight UTC for a
+  // plain YYYY-MM-DD input). vitest inherits whatever TZ the shell has, so
+  // pin a west-of-UTC zone here rather than trusting the host — on a UTC
+  // host `new Date(iso)` and the parseApiDay+longDateOf fix agree even
+  // when buggy, which would prove nothing.
+  const prevTz = process.env.TZ;
+  process.env.TZ = 'America/New_York';
+  try {
+    render(<MemoryRouter><ClientDashboard /></MemoryRouter>);
+    // Both fixture initiatives share the same scheduled_start, so more
+    // than one row shows the date — assert on the set, not a single match.
+    expect((await screen.findAllByText(/Sep 1, 2026/)).length).toBeGreaterThan(0);
+    expect(screen.queryAllByText(/Aug 31, 2026/).length).toBe(0);
+  } finally {
+    process.env.TZ = prevTz;
+  }
+});
