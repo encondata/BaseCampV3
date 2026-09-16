@@ -94,6 +94,14 @@ it("renders the move's scheduled window without shifting it west of UTC", async 
     expect(await screen.findByText(/Sep 15, 2026/)).toBeTruthy();
     expect(screen.queryByText(/Aug 31, 2026/)).toBeNull();
   } finally {
-    process.env.TZ = prevTz;
+    if (prevTz === undefined) delete process.env.TZ; else process.env.TZ = prevTz;
   }
+});
+
+it('renders a dash for a move with no scheduled dates', async () => {
+  api.listInitiatives.mockResolvedValue([move({ scheduled_start: null, scheduled_end: null })]);
+  api.listInitiativeAssets.mockResolvedValue([]);
+  api.listAssetStatuses.mockResolvedValue([]);
+  render(<MemoryRouter><MoveDashboard /></MemoryRouter>);
+  expect(await screen.findByText('— → —')).toBeTruthy();
 });

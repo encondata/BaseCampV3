@@ -66,7 +66,7 @@ it('renders the scheduled day without shifting it west of UTC', async () => {
     expect(screen.queryByText(/31 May|May 31/)).toBeNull();
     expect(screen.getByText(/Jun(e)? 1|1 Jun/)).toBeTruthy();
   } finally {
-    process.env.TZ = prevTz;
+    if (prevTz === undefined) delete process.env.TZ; else process.env.TZ = prevTz;
   }
 });
 

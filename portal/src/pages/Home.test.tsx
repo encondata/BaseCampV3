@@ -55,6 +55,7 @@ const { default: Home } = await import('./Home');
 
 afterEach(() => {
   cleanup();
+  vi.clearAllMocks();
   auth.can = () => false;
   auth.mustChangePassword = false;
   auth.scope = null;
@@ -132,6 +133,28 @@ it('flight board renders scheduled_start without shifting it west of UTC', async
     expect(await screen.findByText(/Sep 1/)).toBeTruthy();
     expect(screen.queryByText(/Aug 31/)).toBeNull();
   } finally {
-    process.env.TZ = prevTz;
+    if (prevTz === undefined) delete process.env.TZ; else process.env.TZ = prevTz;
   }
+});
+
+it("flight board's window covers the unscheduled, from-only, and by-only branches", async () => {
+  auth.scope = { global: true, client_ids: [], partner_ids: [] };
+  auth.can = (r: string) => r === 'initiatives';
+  api.listInitiatives.mockResolvedValue([
+    boardInitiative({ id: 'i1', name: 'No dates', scheduled_start: null, scheduled_end: null }),
+    boardInitiative({ id: 'i2', name: 'Start only', scheduled_start: '2026-09-01', scheduled_end: null }),
+    boardInitiative({ id: 'i3', name: 'End only', scheduled_start: null, scheduled_end: '2026-09-15' }),
+  ]);
+  api.listAssetStatuses.mockResolvedValue([]);
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <Routes>
+        <Route path="/" element={<Home />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await screen.findByText('No dates');
+  expect(screen.getByText('unscheduled')).toBeTruthy();
+  expect(screen.getByText('from Sep 1')).toBeTruthy();
+  expect(screen.getByText('by Sep 15')).toBeTruthy();
 });

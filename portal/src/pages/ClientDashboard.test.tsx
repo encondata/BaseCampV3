@@ -8,7 +8,7 @@
  * follows Home.tsx.
  */
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -222,6 +222,16 @@ it('renders an initiative\'s scheduled dates without shifting them west of UTC',
     expect((await screen.findAllByText(/Sep 1, 2026/)).length).toBeGreaterThan(0);
     expect(screen.queryAllByText(/Aug 31, 2026/).length).toBe(0);
   } finally {
-    process.env.TZ = prevTz;
+    if (prevTz === undefined) delete process.env.TZ; else process.env.TZ = prevTz;
   }
+});
+
+it('renders a dash for an initiative with no scheduled dates', async () => {
+  api.listInitiatives.mockResolvedValue([
+    initiative({ id: 'i3', name: 'Unscheduled move', scheduled_start: null, scheduled_end: null }),
+  ]);
+  render(<MemoryRouter><ClientDashboard /></MemoryRouter>);
+  const nameEl = await screen.findByText('Unscheduled move');
+  const row = nameEl.closest('.cdash-init-row') as HTMLElement;
+  expect(within(row).getByText('— – —')).toBeTruthy();
 });
