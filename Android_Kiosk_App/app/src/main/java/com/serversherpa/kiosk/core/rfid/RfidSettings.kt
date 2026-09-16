@@ -6,7 +6,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /** How the sled's trigger drives an inventory. */
@@ -93,10 +92,13 @@ fun RfidSettings.toJson(): String = buildJsonObject {
 fun parseRfidSettings(raw: String?): RfidSettings {
     val obj = try { raw?.let { json.parseToJsonElement(it).jsonObject } } catch (e: Exception) { null }
         ?: return DEFAULT_RFID_SETTINGS
-    fun prim(key: String) = obj[key]?.jsonPrimitive
+    // A field can hold a JSON object or array instead of a primitive (an older
+    // build, or a corrupted document); `as?` returns null there instead of
+    // throwing the way the `.jsonPrimitive` extension would.
+    fun prim(key: String) = obj[key] as? JsonPrimitive
     fun str(key: String) = prim(key)?.takeIf { it.isString }?.content
     fun int(key: String) = prim(key)?.takeIf { !it.isString }?.intOrNull
-    fun bool(key: String) = (prim(key) as? JsonPrimitive)?.booleanOrNull
+    fun bool(key: String) = prim(key)?.takeIf { !it.isString }?.booleanOrNull
     val d = DEFAULT_RFID_SETTINGS
     return RfidSettings(
         enabled = bool("enabled") ?: d.enabled,

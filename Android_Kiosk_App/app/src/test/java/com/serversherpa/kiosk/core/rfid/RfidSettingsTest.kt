@@ -53,4 +53,25 @@ class RfidSettingsTest {
         assertEquals(50, powerToTenths(5))
         assertEquals(300, powerToTenths(99))
     }
+
+    /** A field holding a JSON object must fall back to its default, and must not
+     *  take the rest of the document down with it. */
+    @Test fun objectValuedFieldFallsBackWithoutLosingOtherFields() {
+        val result = parseRfidSettings("""{"enabled":{"nested":true},"powerDbm":19}""")
+        assertEquals(DEFAULT_RFID_SETTINGS.enabled, result.enabled)
+        assertEquals(19, result.powerDbm)
+    }
+
+    /** Same as above, but for a JSON array value instead of an object. */
+    @Test fun arrayValuedFieldFallsBackWithoutLosingOtherFields() {
+        val result = parseRfidSettings("""{"enabled":[1,2,3],"powerDbm":21}""")
+        assertEquals(DEFAULT_RFID_SETTINGS.enabled, result.enabled)
+        assertEquals(21, result.powerDbm)
+    }
+
+    /** A quoted "true" is a string, not a boolean, and must not be accepted. */
+    @Test fun quotedBooleanFallsBackToTheDefault() {
+        val result = parseRfidSettings("""{"enabled":"true"}""")
+        assertEquals(DEFAULT_RFID_SETTINGS.enabled, result.enabled)
+    }
 }
