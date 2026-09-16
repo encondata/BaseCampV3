@@ -38,8 +38,9 @@ class KioskShellTest {
             }
         }
         compose.onNodeWithText("page body").assertIsDisplayed()
-        // The one-row bar drops the wordmark; the logo carries the brand and its name.
-        compose.onNodeWithContentDescription("ServerSherpa").assertIsDisplayed()
+        // The brand is one string, not a logo plus two nudged Texts: a nudged pair
+        // overlapped on a real device and read "ServeSherpa".
+        compose.onNodeWithText("ServerSherpa").assertIsDisplayed()
         compose.onNodeWithText("Move A", substring = true).assertIsDisplayed()
         compose.onNodeWithText("Dock 4", substring = true).assertIsDisplayed()
         // The footer carries the move context and nothing else: mode, version and the

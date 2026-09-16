@@ -6,14 +6,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.rememberScrollState
@@ -79,34 +80,52 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
 
     Column(Modifier.fillMaxSize().background(c.paper2)) {
         // ── top bar ──
-        // One row: the logo carries the brand, the mono name says which kiosk this
-        // is, the person says who is on it, and Sign out doubles as the registration
-        // light. The mode chip and the section title are deliberately absent — every
-        // page prints its own title below.
+        // Two stacked lines on the left — the brand, then which kiosk this is and who
+        // is on it — with Sign out on the right drawn as tall as the pair. The mode
+        // chip and the section title are deliberately absent: every page prints its
+        // own title below.
         Row(
             Modifier.fillMaxWidth().background(c.ink).statusBarsPadding()
-                .padding(start = 14.dp, end = 10.dp, top = 4.dp, bottom = 4.dp),
+                .padding(start = 14.dp, end = 10.dp, top = 6.dp, bottom = 6.dp)
+                .height(IntrinsicSize.Min),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            androidx.compose.foundation.Image(
-                painterResource(R.mipmap.ic_launcher_foreground), contentDescription = "ServerSherpa",
-                modifier = Modifier.size(26.dp),
-            )
-            // The kiosk's own name, then who is on it. The person gives way first, so
-            // "Sign out" is never the thing that gets clipped on a narrow screen.
-            Text(
-                identity.name, fontFamily = FragmentMono, color = c.snow,
-                style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.clickable { nav.navigate(Routes.settings("this-kiosk")) }
-                    .padding(vertical = 12.dp, horizontal = 8.dp),
-            )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    androidx.compose.foundation.Image(
+                        painterResource(R.mipmap.ic_launcher_foreground), contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                    )
+                    // One string, not two Texts nudged together: the nudged pair
+                    // overlapped and read "ServeSherpa" on a real device.
+                    Text(
+                        buildAnnotatedString {
+                            append("Server")
+                            withStyle(SpanStyle(color = c.accent)) { append("Sherpa") }
+                        },
+                        color = c.snow, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                // The kiosk's own name, then who is on it. The person gives way first,
+                // so the kiosk's name is never the thing that gets clipped.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        identity.name, fontFamily = FragmentMono, color = c.snow,
+                        style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.clickable { nav.navigate(Routes.settings("this-kiosk")) },
+                    )
+                    authed?.let {
+                        Text(" · ", color = c.textMute, style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            it.person.display_name, color = c.textMute, style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                    }
+                }
+            }
             if (authed != null) {
-                Text(" · ", color = c.textMute, style = MaterialTheme.typography.labelMedium)
-                Text(
-                    authed.person.display_name, color = c.snow, style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f).padding(end = 8.dp),
-                )
                 // The way out doubles as the status light: its outline is the kiosk's
                 // registration state (green registered, amber expiring, red expired,
                 // slate unregistered), so the bar needs no separate chip for it.
@@ -114,7 +133,7 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
                     "Sign out",
                     onClick = { confirmSignOut = true },
                     borderColor = registration?.let { REG_TONE.getValue(it).text },
-                    modifier = Modifier.semantics {
+                    modifier = Modifier.padding(start = 8.dp).fillMaxHeight().semantics {
                         contentDescription = registration?.let { "Sign out. Kiosk ${it.label.lowercase()}" } ?: "Sign out"
                     },
                 )
