@@ -19,7 +19,9 @@ import com.zebra.rfid.api3.RfidEventsListener
 import com.zebra.rfid.api3.RfidReadEvents
 import com.zebra.rfid.api3.RfidStatusEvents
 import com.zebra.rfid.api3.SESSION
+import com.zebra.rfid.api3.START_TRIGGER_TYPE
 import com.zebra.rfid.api3.STATUS_EVENT_TYPE
+import com.zebra.rfid.api3.STOP_TRIGGER_TYPE
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -102,7 +104,11 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
     private val listener = object : RfidEventsListener {
         override fun eventReadNotify(event: RfidReadEvents) {
             // Never touch the reader from in here; just hand the value on.
-            val epc = event.readEventData?.tagData?.tagID ?: return
+            val epc = event.readEventData?.tagData?.tagID
+            if (epc == null) {
+                Log.w(TAG, "Dropped a tag read with no tag ID.")
+                return
+            }
             if (!_tags.tryEmit(epc)) {
                 // The tags flow buffers 512 — this only fires if nothing is
                 // draining it fast enough. Silent drops here mean scans the
@@ -151,7 +157,7 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         private const val TAG = "ZebraRfidReader"
     }
 
-    override suspend fun connect(): Result<Unit> = withContext(Dispatchers.IO) {
+    final override suspend fun connect(): Result<Unit> = withContext(Dispatchers.IO) {
         _connection.value = RfidConnection.Connecting
         try {
             val readerName = runInterruptible {
@@ -184,7 +190,7 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
             // survives to be torn down here.
             withContext(NonCancellable) {
                 runInterruptible { closeVendorConnection() }
-                _connection.value = RfidConnection.Failed("Connecting to the reader was cancelled.")
+                _connection.value = RfidConnection.Failed("Connecting to the reader was canceled.")
             }
             throw e
         } catch (e: Exception) {
@@ -250,9 +256,24 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         rfid.Events.setHandheldEvent(true)
         rfid.Events.setTagReadEvent(true)
         rfid.Events.setBatteryEvent(true)
+        rfid.Events.setAttachTagDataWithReadEvent(true)
         // RFID_MODE with updateScannerPlugin = true puts the physical trigger
         // on the radio rather than the barcode imager.
         rfid.Config.setTriggerMode(ENUM_TRIGGER_MODE.RFID_MODE, true)
+        // Pin the reader's own start/stop trigger behavior to immediate: a
+        // sled left on HANDHELD (its 123RFID Mobile default) would let its
+        // own firmware decide when an inventory starts and stops, defeating
+        // RfidTrigger's latch/toggle modes and letting it transmit even
+        // while the controller is disarmed. StartTrigger/StopTrigger have no
+        // public constructor, so this follows the same get-mutate-set
+        // pattern as the antenna/singulation config in apply() below.
+        val startTrigger = rfid.Config.getStartTrigger()
+        startTrigger.triggerType = START_TRIGGER_TYPE.START_TRIGGER_TYPE_IMMEDIATE
+        rfid.Config.setStartTrigger(startTrigger)
+
+        val stopTrigger = rfid.Config.getStopTrigger()
+        stopTrigger.triggerType = STOP_TRIGGER_TYPE.STOP_TRIGGER_TYPE_IMMEDIATE
+        rfid.Config.setStopTrigger(stopTrigger)
         return device.name ?: "RFID reader"
     }
 
@@ -288,7 +309,7 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         }
     }
 
-    override suspend fun disconnect() {
+    final override suspend fun disconnect() {
         withContext(Dispatchers.IO) {
             try {
                 runInterruptible { closeVendorConnection() }
@@ -347,7 +368,7 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         readers = null
     }
 
-    override suspend fun apply(settings: RfidSettings): Result<Unit> = withContext(Dispatchers.IO) {
+    final override suspend fun apply(settings: RfidSettings): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             runInterruptible {
                 val rfid = reader ?: error("The reader is not connected.")
@@ -395,7 +416,7 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         }
     }
 
-    override suspend fun startInventory(): Result<Unit> = withContext(Dispatchers.IO) {
+    final override suspend fun startInventory(): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             runInterruptible {
                 val rfid = reader ?: error("The reader is not connected.")
@@ -411,7 +432,7 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         }
     }
 
-    override suspend fun stopInventory(): Result<Unit> = withContext(Dispatchers.IO) {
+    final override suspend fun stopInventory(): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             runInterruptible {
                 val rfid = reader ?: error("The reader is not connected.")
