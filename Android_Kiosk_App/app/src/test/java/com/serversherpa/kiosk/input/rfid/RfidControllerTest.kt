@@ -713,6 +713,74 @@ class RfidControllerTest {
         }
     }
 
+    /**
+     * Regression test for `AppContainer`'s `ProcessLifecycleOwner` observer:
+     * `onStart` and `onStop` used to each fire an *independent*
+     * `scope.launch` calling `connectNow()`/`disconnectNow()`, with nothing
+     * ordering one launch against the other -- and `onStart`'s launch
+     * suspended first, on a prefs read, before ever reaching `connectNow()`.
+     * A fast background/foreground/background flurry (an incoming call, the
+     * notification shade, a screen lock) could let an earlier `onStop`'s
+     * disconnect land *after* a later `onStart`'s connect, or the reverse: a
+     * sled left connected and drawing power in the background, or a
+     * foreground kiosk silently missing its reader. (Confirmed: this test,
+     * run with `connectNow()`/`disconnectNow()` fired from independent
+     * `scope.launch` blocks the way `AppContainer` used to, fails within the
+     * first few dozen iterations -- see the fix-wave report.)
+     *
+     * [RfidController.connectForLifecycle] and
+     * [RfidController.disconnectForLifecycle] fix this by enqueueing onto
+     * the same command channel `arm()`/`disarm()`/`stopBurst()` use, so this
+     * drives them the way `AppContainer` now actually calls them: directly,
+     * never from inside their own `scope.launch`, on a real
+     * `Dispatchers.Default` scope. `connectForLifecycle`'s `gate` is given a
+     * jittered `delay()` standing in for the real prefs/permission read
+     * `AppContainer` performs -- since that gate runs on the consumer, after
+     * the command is already queued, its suspension must not be able to
+     * reorder anything. The reader's final state must match whichever call
+     * was issued last, every time, across many iterations of both orderings.
+     */
+    @Test fun lifecycleStyleConnectAndDisconnectLandInTheOrderIssued() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val reader = FakeRfidReader()
+            val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+            val controller = RfidController(reader, settings, scope)
+            runBlocking {
+                controller.start()
+                delay(50)
+
+                val iterations = 300
+                repeat(iterations) { i ->
+                    // Alternate which call is issued last so both orderings
+                    // -- connect-after-disconnect and disconnect-after-connect
+                    // -- get exercised, not just one.
+                    val connectLast = i % 2 == 0
+                    val jitterMs = (i % 7).toLong() // 0..6ms: onStart's prefs
+                    // read sometimes resolves near-instantly and sometimes
+                    // takes a beat; the fix must hold either way.
+                    if (connectLast) {
+                        controller.disconnectForLifecycle()
+                        controller.connectForLifecycle { delay(jitterMs); true }
+                    } else {
+                        controller.connectForLifecycle { delay(jitterMs); true }
+                        controller.disconnectForLifecycle()
+                    }
+                    delay(30)
+                    assertEquals(
+                        "iteration $i: the reader's final state must match whichever of " +
+                            "connect/disconnect was issued last (lifecycle order), not " +
+                            "whichever happened to finish last",
+                        connectLast,
+                        reader.connection.value is RfidConnection.Connected,
+                    )
+                }
+            }
+        } finally {
+            scope.cancel()
+        }
+    }
+
     /** The mirror image of the test above: `disarm()` immediately followed
      *  by `arm()` must leave the controller armed every time. */
     @Test fun disarmImmediatelyFollowedByArmAlwaysEndsArmedRegardlessOfScheduling() {

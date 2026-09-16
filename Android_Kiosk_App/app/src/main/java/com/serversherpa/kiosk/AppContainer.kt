@@ -106,11 +106,23 @@ class AppContainer(
             override fun onStart(owner: LifecycleOwner) {
                 foreground.value = true
                 outbox.start()
-                scope.launch { if (prefs.rfid.first().enabled && RfidPermissions.granted(app)) rfid.connectNow() }
+                // Called directly here, not from inside a scope.launch: a
+                // fast background/foreground/background flurry (an incoming
+                // call, the notification shade, a screen lock) must not let
+                // this land after a disconnectForLifecycle() a later onStop
+                // issues, or the reverse. connectForLifecycle() enqueues
+                // synchronously onto RfidController's own command channel —
+                // the same one arm()/disarm()/stopBurst() use — so as long
+                // as onStart/onStop each call straight in like this, the
+                // order those calls land in that channel always matches the
+                // order Android delivered the lifecycle events, regardless
+                // of how long the enabled/permission check or the connect
+                // itself then takes. See RfidController's class doc.
+                rfid.connectForLifecycle { prefs.rfid.first().enabled && RfidPermissions.granted(app) }
             }
             override fun onStop(owner: LifecycleOwner) {
                 foreground.value = false
-                scope.launch { rfid.disconnectNow() }
+                rfid.disconnectForLifecycle()
                 outbox.stop()
             }
         })
