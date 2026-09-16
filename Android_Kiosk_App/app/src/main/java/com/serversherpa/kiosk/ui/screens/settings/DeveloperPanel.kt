@@ -17,17 +17,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.core.setup.SetupState
 import com.serversherpa.kiosk.data.db.AssetEntity
 import com.serversherpa.kiosk.data.db.PersonEntity
 import com.serversherpa.kiosk.data.sync.Sync
 import com.serversherpa.kiosk.data.sync.SyncPhase
+import com.serversherpa.kiosk.input.rfid.FakeRfidReader
 import com.serversherpa.kiosk.ui.components.KioskToast
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.Segmented
 import com.serversherpa.kiosk.ui.components.SettingsRow
 import com.serversherpa.kiosk.ui.theme.FragmentMono
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val INSPECT_CAP = 200
@@ -51,6 +54,28 @@ fun DeveloperPanel() {
         SettingsRow("Local data", if (sync.phase == SyncPhase.DONE) "${sync.assets ?: 0} assets · ${sync.people ?: 0} people · ${sync.containers ?: 0} containers · ${sync.trucks ?: 0} trucks" + (sync.syncedAt?.let { " · synced ${Sync.formatSyncedAt(it)}" } ?: "") else "Nothing downloaded yet.") {
             if (clearError) KioskToast("Couldn't clear local data.", error = true)
             MiniButton("Clear local data", { scope.launch { try { container.sync.clearLocalData() } catch (e: Exception) { clearError = true } } })
+        }
+        val fakeReader = container.rfidReader as? FakeRfidReader
+        if (fakeReader != null) {
+            // A real device never has a FakeRfidReader (AppContainer only installs
+            // one when a test overrides it), so this row simply does not render
+            // there — nothing to gate or explain on hardware.
+            SettingsRow(
+                "Simulate an RFID connection",
+                "Connects a synthetic reader and drives it through a full trigger-and-tag burst, proving the RFID adapter and its settings push work with no sled attached. RFID reading itself only ever happens on the Scanning screen, once a reader — fake or real — is armed there, so this control does not reach that screen's live panel and queues nothing to the outbox.",
+            ) {
+                MiniButton("Simulate an RFID sweep", {
+                    scope.launch {
+                        fakeReader.connect()
+                        fakeReader.emitTrigger(TriggerEvent.PRESSED)
+                        for (tag in listOf("100348", "100349", "100350", "100348")) {
+                            fakeReader.emitTag(tag)
+                            delay(120)
+                        }
+                        fakeReader.emitTrigger(TriggerEvent.RELEASED)
+                    }
+                })
+            }
         }
         LocalDataInspector()
     }
