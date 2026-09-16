@@ -13,6 +13,7 @@ from decimal import Decimal
 from typing import NamedTuple
 
 from serversherpa.db.models import Initiative, Site
+from serversherpa.labels.tags import LABEL_TAG_LABELS
 # No longer read by this module's own logic (move_date/move_date_long now
 # read the UTC date parts directly — see _stored_day) but kept importable
 # so test_label_generate_values.py can monkeypatch it to prove that: the
@@ -39,6 +40,32 @@ class AssetRow(NamedTuple):
     destination_rack: str | None
     destination_ru: Decimal | None
     destination_position: str | None
+
+    @property
+    def entity_id(self) -> object:
+        """The `generated_labels.entity_id` for this row. Named the same on
+        ContainerRow so the runner never branches on row type."""
+        return self.asset_id
+
+
+# The word an untagged container prints in its tag bar. A design template
+# cannot omit an element, so the bar would otherwise print solid black with
+# nothing in it — see the 2026-09-16 design's "Empty tag" decision.
+UNTAGGED_LABEL = "CONTAINER"
+
+
+class ContainerRow(NamedTuple):
+    """One container's worth of fields `container_placeholder_values` needs —
+    built by the runner from the Container table."""
+
+    container_uuid: object              # uuid.UUID — GeneratedLabel.entity_id
+    legacy_id: int | None
+    name: str | None
+    label_tag: str | None
+
+    @property
+    def entity_id(self) -> object:
+        return self.container_uuid
 
 
 @dataclass(frozen=True)
@@ -131,6 +158,15 @@ def _apply_length_limits(out: dict[str, str], rules: dict) -> None:
             out[field] = out[field][:limit]
 
 
+def _move_dates(initiative: Initiative) -> tuple[str, str]:
+    """`move_date` and `move_date_long`, shared by both row kinds."""
+    if initiative.scheduled_start is None:
+        return "", ""
+    day = _stored_day(initiative.scheduled_start)
+    return (day.strftime("%m/%d/%Y"),
+            f"{day.day:02d}-{_MONTHS_UPPER[day.month - 1]}-{day.year}")
+
+
 def placeholder_values(
     asset_row: AssetRow, initiative: Initiative, sites: Sites,
     catalog_keys: list[str], *, generation_rules: dict | None = None,
@@ -147,12 +183,7 @@ def placeholder_values(
     source_raw = asset_row.source_position or asset_row.source_rack or ""
     destination_raw = asset_row.destination_position or asset_row.destination_rack or ""
 
-    move_date = move_date_long = ""
-    if initiative.scheduled_start is not None:
-        day = _stored_day(initiative.scheduled_start)
-        move_date = day.strftime("%m/%d/%Y")
-        move_date_long = (f"{day.day:02d}-{_MONTHS_UPPER[day.month - 1]}-"
-                          f"{day.year}")
+    move_date, move_date_long = _move_dates(initiative)
 
     computed = {
         "asset_id": str(asset_row.legacy_id) if asset_row.legacy_id is not None else "",
@@ -181,3 +212,42 @@ def placeholder_values(
                               destination_raw=destination_raw)
         _apply_length_limits(out, generation_rules)
     return out
+
+
+def container_placeholder_values(
+    row: ContainerRow, initiative: Initiative, sites: Sites,
+    catalog_keys: list[str], *, generation_rules: dict | None = None,
+) -> dict[str, str]:
+    """The container counterpart of `placeholder_values`. Same contract:
+    every requested catalog key is present, and anything this row kind has
+    no value for resolves to "" rather than raising — so an asset-only key
+    on a container template is blank, not an error."""
+    move_date, move_date_long = _move_dates(initiative)
+    tag = row.label_tag or ""
+    computed = {
+        "container_name": row.name or "",
+        "container_id": str(row.legacy_id) if row.legacy_id is not None else "",
+        "label_tag": (LABEL_TAG_LABELS.get(tag, tag) or UNTAGGED_LABEL).upper(),
+        "source_site": sites.origin.name if sites.origin else "",
+        "destination_site": sites.destination.name if sites.destination else "",
+        "move_name": initiative.name or "",
+        "move_date": move_date,
+        "move_date_long": move_date_long,
+    }
+    out = {key: computed.get(key, "") for key in catalog_keys}
+    if generation_rules:
+        _apply_length_limits(out, generation_rules)
+    return out
+
+
+def values_for_row(
+    row, initiative: Initiative, sites: Sites, catalog_keys: list[str],
+    *, generation_rules: dict | None = None,
+) -> dict[str, str]:
+    """Dispatch a roster row to its own value builder, so the runner stays
+    free of row-kind branching."""
+    if isinstance(row, ContainerRow):
+        return container_placeholder_values(
+            row, initiative, sites, catalog_keys, generation_rules=generation_rules)
+    return placeholder_values(
+        row, initiative, sites, catalog_keys, generation_rules=generation_rules)

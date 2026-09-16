@@ -173,3 +173,63 @@ def test_generation_rules_length_limit_on_position_token():
 def test_generation_rules_empty_dict_is_a_no_op():
     values = placeholder_values(_row(), _initiative(), _sites(), CATALOG, generation_rules={})
     assert "nap" not in values
+
+
+from serversherpa.labels.generate.values import (
+    ContainerRow, container_placeholder_values, values_for_row,
+)
+
+CONTAINER_CATALOG = ["container_name", "container_id", "label_tag",
+                     "move_name", "move_date", "move_date_long",
+                     "source_site", "destination_site", "asset_name"]
+
+
+def _container(name="crate-17", legacy_id=17, label_tag="priority"):
+    return ContainerRow(container_uuid="c-uuid", legacy_id=legacy_id,
+                        name=name, label_tag=label_tag)
+
+
+def test_container_values_cover_the_container_catalog():
+    out = container_placeholder_values(_container(), _initiative(), _sites(),
+                                       CONTAINER_CATALOG)
+    assert out["container_name"] == "crate-17"
+    assert out["container_id"] == "17"
+    assert out["label_tag"] == "PRIORITY"
+    assert out["move_date_long"] == "15-SEP-2026"
+    # asset-only keys resolve empty for a container, never raise
+    assert out["asset_name"] == ""
+
+
+def test_an_untagged_container_falls_back_to_the_word_container():
+    """A static template cannot omit the tag bar, so the bar must never be
+    blank — see the phase-one design's 'Empty tag' decision."""
+    out = container_placeholder_values(_container(label_tag=None), _initiative(),
+                                       _sites(), CONTAINER_CATALOG)
+    assert out["label_tag"] == "CONTAINER"
+
+
+def test_label_tag_uses_the_display_label_upper_cased():
+    out = container_placeholder_values(_container(label_tag="ewaste"), _initiative(),
+                                       _sites(), CONTAINER_CATALOG)
+    assert out["label_tag"] == "E-WASTE"
+
+
+def test_a_container_without_a_legacy_id_has_an_empty_container_id():
+    out = container_placeholder_values(_container(legacy_id=None), _initiative(),
+                                       _sites(), CONTAINER_CATALOG)
+    assert out["container_id"] == ""
+
+
+def test_values_for_row_dispatches_on_row_type():
+    ini, sites = _initiative(), _sites()
+    keys = ["container_name", "asset_name"]
+    from_container = values_for_row(_container(), ini, sites, keys)
+    from_asset = values_for_row(_row(), ini, sites, keys)
+    assert from_container["container_name"] == "crate-17"
+    assert from_container["asset_name"] == ""
+    assert from_asset["container_name"] == ""
+
+
+def test_both_row_types_expose_entity_id():
+    assert _container().entity_id == "c-uuid"
+    assert _row().entity_id == _row().asset_id
