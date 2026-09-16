@@ -510,6 +510,102 @@ class RfidControllerTest {
     }
 
     /**
+     * A reader whose `connect()` signals [connectStarted] and then hangs on
+     * [proceedConnect] until the test releases it — [SlowStopReader]'s
+     * mirror for the connect side, so it lives here for the same reason:
+     * `FakeRfidReader` has no need for this seam. `disconnect`/`apply`/
+     * `startInventory`/`stopInventory` and `triggers`/`tags` all delegate to
+     * a real `FakeRfidReader`.
+     */
+    private class SlowConnectReader(private val inner: FakeRfidReader) : RfidReader {
+        override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val tags: Flow<String> get() = inner.tags
+        override val triggers: Flow<TriggerEvent> get() = inner.triggers
+
+        /** Completes the instant `connect()` is called. */
+        val connectStarted = CompletableDeferred<Unit>()
+
+        /** The test completes this once it wants `connect()` to actually
+         *  return. */
+        val proceedConnect = CompletableDeferred<Unit>()
+
+        override suspend fun connect(): Result<Unit> {
+            connectStarted.complete(Unit)
+            proceedConnect.await()
+            return inner.connect()
+        }
+        override suspend fun disconnect() = inner.disconnect()
+        override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
+        override suspend fun startInventory() = inner.startInventory()
+        override suspend fun stopInventory() = inner.stopInventory()
+    }
+
+    /**
+     * The regression test for the finding this fix wave closes: before the
+     * fix, `connectForLifecycle()`/`disconnectForLifecycle()` and
+     * `arm()`/`disarm()`/`stopBurst()` all funneled through the same single
+     * `commands` channel, drained by one consumer. A lifecycle connect that
+     * blocks inside `reader.connect()` — on real hardware, a Bluetooth
+     * vendor call that can take seconds when the sled is out of range, the
+     * radio is busy, or the stack soft-hangs — sat at the front of that
+     * queue and starved everything queued behind it. The Scanning screen's
+     * `arm()`, issued a moment later, would then wait on the same stuck
+     * consumer: `armed` stayed false, and every trigger pull was a silent
+     * no-op with nothing on screen explaining it.
+     *
+     * The fix gives connect/disconnect their own queue and consumer, so
+     * `arm()` (on the original `commands` queue) is drained by its own
+     * dedicated consumer and never has to wait behind a stuck connect.
+     * This proves it directly: `connectForLifecycle()` is issued against a
+     * reader whose `connect()` never returns within the test, `arm()`
+     * follows immediately after, and a trigger fired right after that must
+     * open the live panel — the one observable proof that `armed` actually
+     * flipped true — without ever waiting for the stuck connect to finish.
+     *
+     * Against the pre-fix single-queue code, `armNow()` sits behind the
+     * blocked `Command.Connect` in the same channel and never runs before
+     * the assertion below, so `armed` stays false and the trigger fired
+     * here is silently dropped — `session.value` stays null and this test
+     * fails.
+     */
+    @Test fun aSlowLifecycleConnectDoesNotStarveArm() = runTest {
+        val inner = FakeRfidReader()
+        val slowConnect = SlowConnectReader(inner)
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+        val controller = RfidController(slowConnect, settings, backgroundScope) { 0L }
+        controller.start(); settle()
+
+        controller.connectForLifecycle { true }; settle()
+        assertTrue("connect() should have been called", slowConnect.connectStarted.isCompleted)
+        assertEquals(
+            "the reader must still look mid-connect: connect() hasn't returned yet",
+            false,
+            inner.connection.value is RfidConnection.Connected,
+        )
+
+        // arm() lands on the separate arm/disarm/stop queue. Before the fix,
+        // this sat behind the still-blocked Command.Connect in the one
+        // shared queue and never ran.
+        controller.arm(); settle()
+
+        // A trigger pull is the observable proof that arm() actually took
+        // effect: onTrigger only opens the live panel when `armed` is true.
+        // The reader is not Connected yet (SlowConnectReader is still stuck
+        // on proceedConnect), so reader.startInventory() will fail inside
+        // onTrigger's try/catch — that's expected and irrelevant here; the
+        // session still opens before that call is even attempted.
+        inner.emitTrigger(TriggerEvent.PRESSED); settle()
+        assertTrue(
+            "arm() must take effect promptly and not wait for the stuck " +
+                "lifecycle connect to finish",
+            controller.session.value != null,
+        )
+
+        // Let the stuck connect() finish so it doesn't leak past the test.
+        slowConnect.proceedConnect.complete(Unit)
+    }
+
+    /**
      * `TestScope` is single-threaded, so it cannot reproduce the races fixed
      * in `RfidController`: they need two collectors, or a collector and a
      * UI-thread call, genuinely running at once. This drives the controller
