@@ -278,3 +278,20 @@ The dev API (`https://api.dev.serversherpa.com`, Nginx Proxy Manager → 10.10.4
 ## Out of scope (deliberately)
 
 Containers, Trucks, Label Printing and printer tools, sound uploads, move password, delta or periodic sync, background sending (WorkManager), tile permission gating, Zebra RFID sled / RFD40 support, NFC, density and text-size preferences, tablet layouts, the iOS app, Play Store packaging and signing.
+
+## Implementation notes (2026-09-15)
+
+- The 401 → refresh → retry rule lives in `OkHttpKioskApi.authed()` rather than an OkHttp interceptor (`AuthInterceptor.kt` in the file list was not created); same behavior as `apiFetch` in the web kiosk, simpler to test with MockWebServer.
+- `DataWedgeReceiver` is registered dynamically in `MainActivity.onStart/onStop` only — DataWedge's broadcast is implicit, so a manifest receiver would not receive it on Android 8+.
+- The scaffold's generated library versions (core 1.19.0, lifecycle 2.11.0, activity-compose 1.13.0) required compileSdk 37 / AGP 9.1 and were pinned down (1.16.0 / 2.9.2 / 1.10.1) to keep compileSdk 36 on the installed SDK.
+- Fonts are the Google Fonts variable TTFs (Geologica variable, Fragment Mono regular + italic); `Font(variationSettings=…)` needs `@OptIn(ExperimentalTextApi::class)` on this Compose version.
+- Sound uploads, the container/truck checkpoint rows, and the label vocabulary endpoint are not wired (out of scope).
+- ViewModels use `viewModelScope` (constructor `scopeOverride: CoroutineScope? = null`); nothing screen-scoped is launched on `AppContainer.scope`.
+- Scan screens collect `ScanBus.events` in a screen-level `LaunchedEffect`, never in a ViewModel `init`, so a scan cannot land on a screen that is not on top; every outbox/Room write from a ViewModel surfaces a `storageError`/error line instead of throwing.
+- The outbox rethrows `CancellationException`, persists a batch's outcome under `NonCancellable`, and runs `recoverStranded` on every `start()` (a background/foreground cycle mid-POST resends the batch; ingest is idempotent).
+- `EncryptedSharedPreferences` is created lazily on first cookie use, not in `Application.onCreate`.
+- DataStore keys for the API/portal URL are `ss.kiosk.apiUrl` / `ss.kiosk.portalUrl` (the spec was aligned).
+- `installForegroundRefresh` was not implemented: `tokenIsStale()` on the next authenticated call covers it.
+- Scanning placeholder copy is "Scan or type an asset ID, serial, or tag" (web: "Scan or type a serial, asset ID, or RFID") — sanctioned by the spec.
+- The Robolectric test config sets `application=android.app.Application` so tests never build the real `KioskApplication`; `testContainer()` injects a per-test DataStore and a `MemorySecretStore`.
+- Deferred to the next pass: clearing the refresh cookie of a PREVIOUS API host when the URL changes (needs `SecretStore` key enumeration); Compose tests for the screen-level bus collection; a Room migration strategy; background sending (WorkManager); `KioskGuard` does not remember the intended route; the camera reticle is unstyled.
