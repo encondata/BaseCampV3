@@ -7,7 +7,8 @@
  *  the list can never drift from the engine's vocabulary. "+ New rule"
  *  and row Edit open RuleEditorModal, schema-driven off the same
  *  /status-rules/schema payload this tab already loads. The trailing
- *  Edit/Duplicate/Delete cell stays outside the column system, the way
+ *  Actions cell (Edit / Duplicate / Delete, folded into one
+ *  RowActionsMenu) stays outside the column system, the way
  *  Notifications' chevron column does. */
 
 import {
@@ -15,6 +16,7 @@ import {
 } from 'react';
 
 import { useAuth } from '../../auth/AuthContext';
+import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
 import {
   ApiError, createStatusRule, deleteStatusRule, getStatusRuleExecStats,
   getStatusRuleSchema, listStatusRules, toggleStatusRule,
@@ -166,7 +168,16 @@ export default function RulesTab({ onCount }: {
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 200px` };
+  // The trailing track holds one RowActionsMenu trigger instead of the old
+  // Edit + Duplicate + Delete strip. 88px is the width the other converted
+  // lists use for that trigger (Warehouse.tsx, InitiativeDetail.tsx). When
+  // no permission grants any item, RowActionsMenu renders nothing — so the
+  // track goes away with it rather than reserving dead width.
+  const anyRowAction = canChange || canAdd || canDelete;
+  const grid = {
+    gridTemplateColumns:
+      `${shownCols.map((c) => c.width).join(' ')}${anyRowAction ? ' 88px' : ''}`,
+  };
 
   const CSV_COLUMNS = useMemo<[string, (r: StatusRule) => string][]>(() => [
     ['ID', (r) => r.id],
@@ -314,7 +325,7 @@ export default function RulesTab({ onCount }: {
                             onSort={(dir) => setSort(c.key, dir)} />
               </span>
             ))}
-            <span />
+            {anyRowAction && <span />}
           </div>
 
           {visible.length === 0 && (
@@ -338,22 +349,24 @@ export default function RulesTab({ onCount }: {
                   {shownCols.map((c) => (
                     <div className="cell" key={c.key}>{cellFor(rule, c.key)}</div>
                   ))}
-                  <div className="cell" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                    {canChange && (
-                      <button className="mini-btn" onClick={() => setEditing(rule)}>
-                        Edit
-                      </button>
-                    )}
-                    {canAdd && (
-                      <button className="mini-btn" onClick={() => void duplicate(rule)}>
-                        Duplicate
-                      </button>
-                    )}
-                    {canDelete && (
-                      <button className="mini-btn danger" onClick={() => void remove(rule)}>
-                        Delete
-                      </button>
-                    )}
+                  {/* Items stay independently gated — a user with only
+                      status_rules:delete sees Delete and nothing else, and
+                      RowActionsMenu renders no trigger at all when the
+                      array comes out empty. The row itself has no click
+                      handler, so no stopPropagation wrapper is needed. */}
+                  <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <RowActionsMenu actions={[
+                      ...(canChange ? [{
+                        key: 'edit', label: 'Edit', onSelect: () => setEditing(rule),
+                      }] : []),
+                      ...(canAdd ? [{
+                        key: 'duplicate', label: 'Duplicate', onSelect: () => void duplicate(rule),
+                      }] : []),
+                      ...(canDelete ? [{
+                        key: 'delete', label: 'Delete', destructive: true,
+                        onSelect: () => void remove(rule),
+                      }] : []),
+                    ] satisfies RowAction[]} />
                   </div>
                 </div>
               </div>

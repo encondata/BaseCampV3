@@ -17,6 +17,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import DataTable, { type DataTableColumn, type DataTableRow } from '../components/DataTable';
+import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import {
   ApiError, approveMembershipRequest, createNotificationGroup, listMembershipRequests,
   listNotificationGroups, rejectMembershipRequest,
@@ -138,7 +139,12 @@ const REQUEST_COLUMNS: DataTableColumn[] = [
   { key: 'group', label: 'Group' },
   { key: 'note', label: 'Note' },
   { key: 'requested', label: 'Requested', mono: true },
-  { key: 'actions', label: 'Actions' },
+  // 88px is the "Actions ▾" trigger's track everywhere else on the branch.
+  // `.data-table` is table-layout: auto (directory.css:585), so this is a
+  // preferred width, not a cap: the rejecting row — which swaps the cell for
+  // a reason input plus Confirm reject / Cancel — still forces the column
+  // out to its own content width. One constant covers both states.
+  { key: 'actions', label: 'Actions', width: '88px' },
 ];
 
 const msgFor = (err: unknown): string =>
@@ -321,15 +327,25 @@ export default function Notifications() {
           </button>
         </span>
       ) : (
-        <span key="actions" style={{ display: 'flex', gap: 6 }}>
-          <button type="button" className="mini-btn sm" disabled={busyRequestId === r.id}
-                  onClick={() => void approveRequestRow(r.id)}>
-            Approve
-          </button>
-          <button type="button" className="mini-btn sm danger" disabled={busyRequestId === r.id}
-                  onClick={() => { setRejectingId(r.id); setRejectNote(''); setRequestError(''); }}>
-            Reject
-          </button>
+        // Reject only *enters* the reject flow — the row then swaps to the
+        // reason input above, which keeps its own Confirm reject / Cancel
+        // buttons rather than a menu.
+        <span key="actions" style={{ display: 'flex' }}>
+          <RowActionsMenu actions={[
+            {
+              key: 'approve',
+              label: 'Approve',
+              onSelect: () => void approveRequestRow(r.id),
+              disabled: busyRequestId === r.id,
+            },
+            {
+              key: 'reject',
+              label: 'Reject',
+              destructive: true,
+              onSelect: () => { setRejectingId(r.id); setRejectNote(''); setRequestError(''); },
+              disabled: busyRequestId === r.id,
+            },
+          ]} />
         </span>
       ),
     ],

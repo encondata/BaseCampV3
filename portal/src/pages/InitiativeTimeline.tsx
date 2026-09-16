@@ -18,14 +18,15 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 
 import ComboBox from '../components/ComboBox';
+import InitiativeHoverCard from '../components/initiatives/InitiativeHoverCard';
 import {
   ApiError, listInitiatives, listInitiativeStatuses,
   type InitiativeItem, type StatusValue,
 } from '../lib/api';
 import { longDateOf } from '../lib/format';
 import {
-  barFor, calendarWeeks, monthGrid, parseApiDay, rangeFor, realBarFor, sortForTimeline,
-  ticksFor, type CalendarSegment, type TimelineBar, type TimelineRange,
+  barFor, calendarWeeks, monthBandsFor, monthGrid, parseApiDay, rangeFor, realBarFor,
+  sortForTimeline, ticksFor, type CalendarSegment, type TimelineBar, type TimelineRange,
   type TimelineScale,
 } from '../lib/timeline';
 import '../styles/directory.css';
@@ -43,6 +44,7 @@ const TYPE_PILLS = [
 
 const SCALES: { key: TimelineScale; label: string }[] = [
   { key: 'month', label: 'Month' },
+  { key: '45d', label: '45 days' },
   { key: 'quarter', label: 'Quarter' },
   { key: 'year', label: 'Year' },
 ];
@@ -68,7 +70,7 @@ function readView(v: string): View {
   return 'timeline';
 }
 function isScale(v: string): v is TimelineScale {
-  return v === 'month' || v === 'quarter' || v === 'year';
+  return v === 'month' || v === '45d' || v === 'quarter' || v === 'year';
 }
 
 function startOfToday(): Date {
@@ -80,6 +82,13 @@ function stepAnchor(anchor: Date, view: View, scale: TimelineScale, dir: 1 | -1)
   const out = new Date(anchor);
   if (view === 'calendar' || scale === 'month') {
     out.setMonth(out.getMonth() + dir);
+  } else if (scale === '45d') {
+    // Six whole weeks, not 45 days. The range snaps to the anchor week's
+    // Monday, so a 45-day step would land mid-week and snap back to the same
+    // Monday + 42 anyway — stepping by 42 says that outright. Consecutive
+    // views therefore share their last three days, which is a useful overlap
+    // rather than a gap: a run straddling the boundary appears in both.
+    out.setDate(out.getDate() + dir * 42);
   } else if (scale === 'quarter') {
     out.setMonth(out.getMonth() + dir * 3);
   } else {
@@ -290,6 +299,11 @@ function TimelineGrid({
 }: { items: InitiativeItem[]; anchor: Date; scale: TimelineScale }) {
   const range = useMemo(() => rangeFor(anchor, scale), [anchor, scale]);
   const ticks = useMemo(() => ticksFor(range, scale), [range, scale]);
+  // The day/week rulers read as "… 29 30 1 2 …" across a month boundary, so
+  // they get a band naming each month above them. The year ruler's ticks are
+  // already month names, so a band there would only repeat them.
+  const bands = useMemo(
+    () => (scale === 'year' ? [] : monthBandsFor(range)), [range, scale]);
   const today = useMemo(() => startOfToday(), []);
   const todayPct = useMemo(() => pctForDate(today, range), [today, range]);
 
@@ -303,7 +317,7 @@ function TimelineGrid({
   }, [sorted, range, today]);
   const unscheduledRows = useMemo(() => sorted.filter((i) => !i.scheduled_start), [sorted]);
 
-  const rightWidth = scale === 'month'
+  const rightWidth = scale === 'month' || scale === '45d'
     ? Math.max(760, ticks.length * 32)
     : scale === 'quarter'
       ? Math.max(760, ticks.length * 84)
@@ -318,13 +332,28 @@ function TimelineGrid({
       <div className="itl-inner" style={{ width: 260 + rightWidth }}>
         <div className="itl-header-row">
           <div className="itl-corner" />
-          <div className="itl-ticks" style={{ width: rightWidth }}>
-            {ticks.map((t, idx) => (
-              <span key={idx} className="itl-tick"
-                    style={{ left: `${pctForDate(t.at, range) ?? 0}%` }}>
-                {t.label}
-              </span>
-            ))}
+          <div className="itl-ruler" style={{ width: rightWidth }}>
+            {bands.length > 0 && (
+              <div className="itl-band">
+                {bands.map((b, idx) => (
+                  <span key={idx} className="cell-top itl-band-seg"
+                        style={{ left: `${b.left}%`, width: `${b.width}%` }}>
+                    {b.label}
+                  </span>
+                ))}
+              </div>
+            )}
+            {/* --tick-w caps every label at its own slot, so a long one is
+                trimmed rather than printed over the next tick. */}
+            <div className="itl-ticks"
+                 style={{ '--tick-w': `${rightWidth / ticks.length}px` } as CSSProperties}>
+              {ticks.map((t, idx) => (
+                <span key={idx} className="itl-tick"
+                      style={{ left: `${pctForDate(t.at, range) ?? 0}%` }}>
+                  {t.label}
+                </span>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -496,17 +525,22 @@ function CalendarMonth({ items, anchor }: { items: InitiativeItem[]; anchor: Dat
 function CalendarSpan({ seg }: { seg: CalendarSegment<InitiativeItem> }) {
   const i = seg.item;
   return (
-    <Link to={`/initiatives/${i.id}`}
-          className={`chip custom itl-span ${seg.continuesBefore ? 'cont-before' : ''} ` +
-                     `${seg.continuesAfter ? 'cont-after' : ''}`}
-          title={spanTitle(i)}
-          style={{
-            gridColumn: `${seg.startCol + 1} / span ${seg.span}`,
-            gridRow: seg.lane + 1,
-            '--chip': chipColor(i),
-          } as CSSProperties}>
-      <span className="dot" />
-      <span className="itl-span-name">{i.name}</span>
-    </Link>
+    // The hover card replaces the native `title` the bar used to carry:
+    // one flat line on the browser's own schedule becomes the
+    // initiative's high-level details on ours. The wrapper draws no box
+    // of its own, so the bar keeps its place in the week grid.
+    <InitiativeHoverCard item={i}>
+      <Link to={`/initiatives/${i.id}`}
+            className={`chip custom itl-span ${seg.continuesBefore ? 'cont-before' : ''} ` +
+                       `${seg.continuesAfter ? 'cont-after' : ''}`}
+            style={{
+              gridColumn: `${seg.startCol + 1} / span ${seg.span}`,
+              gridRow: seg.lane + 1,
+              '--chip': chipColor(i),
+            } as CSSProperties}>
+        <span className="dot" />
+        <span className="itl-span-name">{i.name}</span>
+      </Link>
+    </InitiativeHoverCard>
   );
 }

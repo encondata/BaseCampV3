@@ -143,10 +143,12 @@
 }
 .time-row-static { cursor: default; }
 .time-row-static:hover { background: none; }
+/* Holds a single RowActionsMenu trigger (Approve / Reject / Edit folded
+   into one menu), right-aligned in its 88px track — the `gap` the old
+   three-button strip needed is gone with the strip. */
 .time-row-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
   justify-content: flex-end;
 }
 

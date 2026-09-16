@@ -13,6 +13,7 @@ import type { ZebraPrinter } from '../../lib/useZebraPrinter';
 import { deleteObject, directoryQuery, downloadFontHeader, fontObjectName, isTrueType } from '../../labels/zebraCommands';
 import { parseDirectory, type DirectoryListing } from '../../labels/zebraUsb';
 import DataTable from '../DataTable';
+import { RowActionsMenu } from '../hardware/RowActionsMenu';
 
 export type FontState = 'installed' | 'missing' | 'printer-only';
 
@@ -173,11 +174,25 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
         <span className="zp-chips" key="u">{f.used_by.length === 0 ? <span className="cell-sub">—</span> : f.used_by.map((u) => <span key={u.template_id} className="chip tag">{u.template_name}</span>)}</span>,
         <span className="mono" key="t">{relativeTime(f.created_at)}</span>,
         <span key="p">{state && !progress[f.id] ? <span className={`chip ${state === 'installed' ? 'c-green' : 'c-amber'}`}>{state === 'installed' ? 'Installed' : 'Missing'}</span> : progressCell(f)}</span>,
+        // Items are pre-gated: an unreachable action isn't passed at all, so
+        // a row with nothing to offer renders no trigger. `busy`/`batching`
+        // disable rather than drop, keeping the trigger steady mid-install.
         <span className="zp-inline-actions" key="a">
-          {printer.connected && state && (
-            <button type="button" className="mini-btn" disabled={busy || batching} onClick={() => void install(f)}>{state === 'installed' ? 'Reinstall' : 'Install'}</button>
-          )}
-          {canDelete && <button type="button" className="mini-btn danger" disabled={busy || batching} onClick={() => setConfirmDelete(f)}>Remove</button>}
+          <RowActionsMenu actions={[
+            ...(printer.connected && state ? [{
+              key: 'install',
+              label: state === 'installed' ? 'Reinstall' : 'Install',
+              onSelect: () => void install(f),
+              disabled: busy || batching,
+            }] : []),
+            ...(canDelete ? [{
+              key: 'remove',
+              label: 'Remove',
+              destructive: true,
+              onSelect: () => setConfirmDelete(f),
+              disabled: busy || batching,
+            }] : []),
+          ]} />
         </span>,
       ],
     };
@@ -238,7 +253,7 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
                   { key: 'used', label: 'Used by', width: 'minmax(160px, 1.2fr)' },
                   { key: 'when', label: 'Uploaded', width: '110px', mono: true },
                   { key: 'state', label: 'On printer', width: '150px' },
-                  { key: 'actions', label: '', width: '190px', align: 'right' },
+                  { key: 'actions', label: '', width: '88px', align: 'right' },
                 ]} /></div>
               )}
               {confirmDelete && (
@@ -271,6 +286,8 @@ export default function InstallFontsModal({ printer, fonts, canAdd, canDelete, o
                         { key: 'name', label: 'Name', width: 'minmax(200px, 1.4fr)', mono: true },
                         { key: 'size', label: 'Size', width: '90px', mono: true, align: 'right' },
                         { key: 'state', label: 'State', width: '130px' },
+                        /* single-action cell — a menu would turn one click
+                           into two and reclaim nothing worth having */
                         { key: 'remove', label: '', width: '190px', align: 'right' },
                       ]} /></div>
                     )}

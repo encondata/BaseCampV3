@@ -10,6 +10,21 @@
  * become "re-tag that". **Step two** reads the tag itself, against a
  * card showing which asset is about to get it.
  *
+ * Between the two, an asset that ALREADY carries a tag stops on a
+ * confirmation card instead of dropping straight into the tag box: its
+ * details and current tag are shown, and only an explicit **Update RFID
+ * Value** press opens the box. Focus parks on the card, which is not a
+ * control, so a second scan of the same barcode types into nothing and
+ * its Enter presses nothing — the double scan this screen is most
+ * likely to see cannot retag anything by itself.
+ *
+ * The tag box has its own gate (`lib/enrollGate.ts`): an entry that is
+ * really an asset ID or serial is refused by name, and so is a tag the
+ * roster or this session's log (`lib/enrollLog.ts`) already has on
+ * another asset. The save still runs its own check — a 409 the gate
+ * could not have known about is fed back into the log, so the retry is
+ * refused locally.
+ *
  * A tag is stored as 24 characters, zero-padded (`lib/rfid.ts`). The
  * padding is shown under the box as it is typed so the operator sees
  * exactly what will be written, and the endpoint pads again itself —
@@ -38,6 +53,8 @@ import { displayRfid } from '@portal/lib/format';
 import { ApiError, postRfidEnroll } from '../lib/api';
 import { hslCss, useAppearance } from '../lib/appearance';
 import { useCheckpoint } from '../lib/checkpointSettings';
+import { checkTagEntry } from '../lib/enrollGate';
+import { noteTagHolder, recordEnrollment, tagHolder } from '../lib/enrollLog';
 import { flash } from '../lib/flash';
 import { getIdentity, uuid } from '../lib/identity';
 import { useKioskSetup } from '../lib/kioskSetup';
@@ -50,6 +67,11 @@ import { playScanSound } from '../lib/sound';
 import { useSyncStatus } from '../lib/sync';
 
 type LoadStatus = 'loading' | 'ready' | 'error';
+
+/** Which of the screen's three faces is showing. `confirm` only ever
+ *  appears for an asset that already has a tag — the gate between a
+ *  scan and a replacement. */
+type Step = 'asset' | 'confirm' | 'tag';
 
 /** One row of the session-only "what did I just enroll" list below the
  *  input. Not the portal's `KioskRfidEnroll` shape verbatim — `at` is
@@ -73,18 +95,29 @@ const KEEPS_FOCUS = new Set(['INPUT', 'BUTTON', 'SELECT', 'TEXTAREA', 'A']);
 const TOAST_MS = 5_000;
 const ERROR_MS = 4_000;
 
+/** The asset a 409 `rfid_in_use` says actually holds the tag, when the
+ *  portal named one. Null for every other failure — including a 409
+ *  whose detail did not arrive in the shape the endpoint documents. */
+function rfidClash(err: unknown): { assetId: string; assetName: string } | null {
+  if (!(err instanceof ApiError) || err.code !== 'rfid_in_use') return null;
+  const detail = err.detail;
+  if (!detail || typeof detail !== 'object') return null;
+  const { asset_id: id, asset_name: name } = detail as {
+    asset_id?: unknown; asset_name?: unknown;
+  };
+  if (typeof id !== 'string' || !id) return null;
+  return { assetId: id, assetName: typeof name === 'string' && name ? name : 'another asset' };
+}
+
 /** What a refused save says out loud. The portal's own code is kept in
- *  the fallback so an unexpected answer is still reportable. */
+ *  the fallback so an unexpected answer is still reportable. The
+ *  `rfid_in_use` wording matches the local gate's, because the operator
+ *  is being told the same thing either way. */
 function saveErrorText(err: unknown): string {
   const code = err instanceof ApiError ? err.code : 'unknown_error';
   const status = err instanceof ApiError ? err.status : 0;
   if (code === 'rfid_in_use') {
-    const detail = err instanceof ApiError ? err.detail : null;
-    const name = (detail && typeof detail === 'object'
-      && typeof (detail as { asset_name?: unknown }).asset_name === 'string')
-      ? (detail as { asset_name: string }).asset_name
-      : 'another asset';
-    return `That tag is already on ${name}.`;
+    return `That tag is already on ${rfidClash(err)?.assetName ?? 'another asset'}.`;
   }
   if (code === 'bad_rfid') return rfidProblemText('not_alphanumeric');
   if (code === 'rfid_too_long') return rfidProblemText('too_long');
@@ -111,6 +144,7 @@ export default function Enroll() {
   const [rows, setRows] = useState<ScanAsset[]>([]);
   const [loadStatus, setLoadStatus] = useState<LoadStatus>('loading');
   const [asset, setAsset] = useState<ScanAsset | null>(null);
+  const [step, setStep] = useState<Step>('asset');
   const [value, setValue] = useState('');
   const [tagValue, setTagValue] = useState('');
   const [saving, setSaving] = useState(false);
@@ -120,6 +154,7 @@ export default function Enroll() {
 
   const assetRef = useRef<HTMLInputElement>(null);
   const tagRef = useRef<HTMLInputElement>(null);
+  const confirmRef = useRef<HTMLDivElement>(null);
   const loadId = useRef(0);
   const firstLoad = useRef(true);
   const errorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -162,17 +197,27 @@ export default function Enroll() {
 
   const empty = loadStatus === 'ready' && rows.length === 0;
   const disabled = loadStatus !== 'ready' || empty || !setup;
-  const onTagStep = asset !== null;
+
+  // The confirmation card is focusable but is NOT a control: parking
+  // focus there is what makes a stray second scan harmless.
+  const stepTarget = (): HTMLElement | null => {
+    if (step === 'tag') return tagRef.current;
+    if (step === 'confirm') return confirmRef.current;
+    return assetRef.current;
+  };
+  const focusable = (el: HTMLElement | null): el is HTMLElement => (
+    el !== null && !(el as Partial<HTMLInputElement>).disabled
+  );
 
   const focusStep = () => {
-    const el = onTagStep ? tagRef.current : assetRef.current;
-    if (el && !el.disabled) el.focus();
+    const el = stepTarget();
+    if (focusable(el)) el.focus();
   };
 
   useEffect(() => {
     if (!disabled) focusStep();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- focusStep reads the step
-  }, [disabled, onTagStep]);
+  }, [disabled, step]);
 
   // Focus is the whole interaction: a scanner types into whatever has
   // it. `focusout` fires before the new element is focused, so the check
@@ -180,8 +225,8 @@ export default function Enroll() {
   useEffect(() => {
     if (disabled) return undefined;
     const reclaim = () => {
-      const el = onTagStep ? tagRef.current : assetRef.current;
-      if (!el || el.disabled || document.activeElement === el) return;
+      const el = stepTarget();
+      if (!focusable(el) || document.activeElement === el) return;
       const active = document.activeElement;
       if (active && active !== document.body && KEEPS_FOCUS.has(active.tagName)) return;
       el.focus();
@@ -193,7 +238,8 @@ export default function Enroll() {
       document.removeEventListener('focusout', onFocusOut);
       document.removeEventListener('visibilitychange', reclaim);
     };
-  }, [disabled, onTagStep]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stepTarget reads the step
+  }, [disabled, step]);
 
   const showError = (text: string, ms = ERROR_MS) => {
     if (errorTimer.current) clearTimeout(errorTimer.current);
@@ -216,9 +262,18 @@ export default function Enroll() {
   const toAssetStep = () => {
     clearError();
     setAsset(null);
+    setStep('asset');
     setValue('');
     setTagValue('');
     setSaving(false);
+  };
+
+  /** The deliberate press that opens the tag box for an asset that
+   *  already has one. Nothing a scanner can do reaches this. */
+  const toTagStep = () => {
+    clearError();
+    setTagValue('');
+    setStep('tag');
   };
 
   const submitAsset = () => {
@@ -230,6 +285,17 @@ export default function Enroll() {
       clearError();
       setTagValue('');
       setAsset(hit.asset);
+      // An asset that already carries a tag stops for a look first; only
+      // an untagged one drops straight into the box. A repeat of an
+      // asset THIS session tagged is the duplicate outcome the
+      // Containers and Trucks screens use — a third signal for "you
+      // already did this", distinct from good and not-found.
+      const tagged = Boolean(hit.asset.rfid);
+      setStep(tagged ? 'confirm' : 'tag');
+      if (tagged && tagHolder(hit.asset.rfid!)?.assetId === hit.asset.id) {
+        flash(hslCss(appearance.duplicate_scan), appearance.flash_ms);
+        playScanSound('duplicate');
+      }
       return;
     }
     flash(hslCss(appearance.not_found_scan), appearance.flash_ms);
@@ -268,6 +334,13 @@ export default function Enroll() {
         });
         showToast(`Enrolled ${result.asset_name ?? target.name ?? target.asset_id}`
           + ` → ${displayRfid(result.rfid_tag)}`);
+        // The gate's fast half learns the tag now, so re-waving it at
+        // the next asset is refused without a round trip.
+        recordEnrollment({
+          tag: result.rfid_tag,
+          assetId: target.id,
+          assetName: result.asset_name ?? target.name ?? target.asset_id,
+        });
         // "Replaced" means the asset walked in with a different tag
         // already on it — not the already_had_tag case, where the same
         // tag was re-scanned and nothing actually changed.
@@ -289,19 +362,28 @@ export default function Enroll() {
         playScanSound('not_found');
         setSaving(false);
         setTagValue('');
+        // A 409 names the asset that actually holds the tag; remember it
+        // so an immediate re-scan is refused here instead of asking the
+        // portal the same question again.
+        const clash = rfidClash(err);
+        if (clash) noteTagHolder(tag, clash.assetId, clash.assetName);
         showError(saveErrorText(err));
       },
     );
   };
 
   const submitTag = () => {
-    const { tag, problem } = padRfid(tagValue);
-    if (problem) {
-      setTagValue('');
-      showError(rfidProblemText(problem));
+    const raw = tagValue;
+    if (!raw.trim() || saving) return;          // an empty Enter is a no-op
+    const gate = checkTagEntry(index, asset!, raw);
+    setTagValue('');
+    if (!gate.ok) {
+      flash(hslCss(appearance.not_found_scan), appearance.flash_ms);
+      playScanSound('not_found');
+      showError(gate.message);
       return;
     }
-    save(tag!);
+    save(gate.tag);
   };
 
   // Enter is handled on the key, not left to the form's implicit
@@ -314,6 +396,11 @@ export default function Enroll() {
     e.preventDefault();
     submit();
   };
+
+  /** Set when THIS kiosk gave the asset the tag it is wearing — the
+   *  double-scan case, worth saying out loud on the confirmation card. */
+  const thisSession = (asset?.rfid && tagHolder(asset.rfid)?.assetId === asset.id)
+    ? tagHolder(asset.rfid) : null;
 
   const preview = padRfid(tagValue).tag;
   const subtitle = setup ? `${setup.initiativeName} · ${setup.siteName}` : '';
@@ -334,37 +421,64 @@ export default function Enroll() {
       )}
       {toast && <p className="tc-toast" role="status">{toast}</p>}
 
-      {onTagStep && asset ? (
-        <>
-          <div className="enroll-card">
-            <div className="enroll-card-name">{asset.name || 'Unnamed asset'}</div>
-            <dl className="enroll-facts">
-              <div>
-                <dt>Asset ID</dt>
-                <dd className="mono">{asset.asset_id || '—'}</dd>
-              </div>
-              <div>
-                <dt>Serial</dt>
-                <dd className="mono">{asset.serial_number || '—'}</dd>
-              </div>
-              <div>
-                <dt>Make / Model</dt>
-                <dd>{asset.make_model || '—'}</dd>
-              </div>
-              {asset.rfid && (
-                <div>
-                  <dt>Current tag</dt>
-                  <dd className="mono" title={asset.rfid}>{displayRfid(asset.rfid)}</dd>
-                </div>
-              )}
-            </dl>
+      {asset && (step === 'confirm' || step === 'tag') && (
+        <div
+          className={`enroll-card${step === 'confirm' ? ' is-confirm' : ''}`}
+          ref={confirmRef}
+          // Focusable but not a control: on the confirmation step a
+          // stray scan types into nothing and its Enter presses nothing.
+          tabIndex={step === 'confirm' ? -1 : undefined}
+          role={step === 'confirm' ? 'group' : undefined}
+          aria-label={step === 'confirm' ? 'Asset already tagged' : undefined}
+        >
+          <div className="enroll-card-name">{asset.name || 'Unnamed asset'}</div>
+          <dl className="enroll-facts">
+            <div>
+              <dt>Asset ID</dt>
+              <dd className="mono">{asset.asset_id || '—'}</dd>
+            </div>
+            <div>
+              <dt>Serial</dt>
+              <dd className="mono">{asset.serial_number || '—'}</dd>
+            </div>
+            <div>
+              <dt>Make / Model</dt>
+              <dd>{asset.make_model || '—'}</dd>
+            </div>
             {asset.rfid && (
-              <p className="enroll-replace">
-                This asset already has a tag — scanning a new one replaces it.
-              </p>
+              <div>
+                <dt>Current tag</dt>
+                <dd className="mono" title={asset.rfid}>{displayRfid(asset.rfid)}</dd>
+              </div>
             )}
-          </div>
+          </dl>
+          {step === 'confirm' && (
+            <>
+              <p className="enroll-replace">
+                {thisSession
+                  ? `This kiosk tagged it at ${enrolledAt(thisSession.at)}.`
+                  : 'This asset already has a tag.'}
+                {' '}
+                Updating it replaces the tag on the portal.
+              </p>
+              <div className="enroll-actions">
+                <button type="button" className="btn-solid" onClick={toTagStep}>
+                  Update RFID Value
+                </button>
+                <button type="button" className="mini-btn" onClick={toAssetStep}>Cancel</button>
+              </div>
+            </>
+          )}
+          {step === 'tag' && asset.rfid && (
+            <p className="enroll-replace">
+              Scanning a new tag replaces the one above.
+            </p>
+          )}
+        </div>
+      )}
 
+      {step === 'tag' && asset ? (
+        <>
           <input
             id="enroll-tag-input"
             ref={tagRef}
@@ -391,7 +505,7 @@ export default function Enroll() {
             <button type="button" className="mini-btn" onClick={toAssetStep}>Cancel</button>
           </div>
         </>
-      ) : (
+      ) : step === 'asset' ? (
         <>
           <input
             id="enroll-asset-input"
@@ -411,6 +525,8 @@ export default function Enroll() {
           />
           {error && <p className="form-error" role="alert">{error}</p>}
         </>
+      ) : (
+        error && <p className="form-error" role="alert">{error}</p>
       )}
 
       {enrollments.length > 0 && (

@@ -1,0 +1,75 @@
+/* InitiativeHoverCard — the hover card on a calendar bar
+   (components/initiatives/InitiativeHoverCard.tsx).
+
+   Class prefix: `ihv-`, deliberately NOT `itl-`. The timeline page's
+   `.itl-row` makes `itl` a list family for listTypography.test.ts, and a
+   list-ish selector may not set font-size/font-family/font-weight/
+   line-height/min-height. This card is a tooltip, not a list, and needs
+   its own type — so it keeps its own prefix and its own file, the same
+   way status-hover.css does. */
+
+/* The bar this wraps is a grid item placed by its week row
+   (grid-column/grid-row from the page). A wrapper with a box of its own
+   would become the grid item and take that placement away, so it
+   generates no box at all: the bar stays the grid item, layout is
+   untouched, and the wrapper still sees the mouseenter/mouseleave that
+   bubble through it. The card anchors off the bar's rect, not the
+   wrapper's (which has none). */
+.ihv-wrap { display: contents; }
+
+.ihv-card {
+  position: fixed;   /* left/top are the card's own top-left, set from the cursor */
+  z-index: 1200; /* above the calendar grid, below modals' scrim (2000s) */
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 280px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--ink, #0c1117);
+  color: var(--snow, #e8edf4);
+  font-family: var(--font-display, sans-serif);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: normal;
+  text-align: left;
+  pointer-events: none;
+  box-shadow: 0 6px 20px rgba(12, 17, 23, 0.35);
+
+  /* The card is portaled to <body>, outside `.portal-shell` — where the
+     list tokens and the chip's per-theme lightness live. Without them a
+     `.chip.custom` inside would lose its height and its size, and paint
+     its light-theme text color on this always-dark card. Restate both
+     here: a fixed chip size (a tooltip doesn't follow the user's list
+     text size — it isn't a list) and the dark-theme lightness curve from
+     directory.css. */
+  --list-chip-h: 22px;
+  --list-fs-chip: 11px;
+  --chip-l: clamp(0.70, calc(l + 0.22), 0.92);
+}
+.ihv-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.ihv-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 1px 0 2px;
+}
+
+.ihv-line { color: rgba(232, 237, 244, 0.82); }
+
+.ihv-label {
+  color: rgba(232, 237, 244, 0.55);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10.5px;
+}
+
+.ihv-route { color: var(--amber-soft, #ffc06b); }

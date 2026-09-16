@@ -22,6 +22,12 @@ export interface RowAction {
   label: string;
   onSelect: () => void;
   destructive?: boolean;
+  /** Greyed out and inert — for an action that is momentarily
+   *  unavailable (the row is in flight). Prefer this over dropping the
+   *  item: on a single-action row a dropped item would take the whole
+   *  trigger away mid-action. An action the user may never use is still
+   *  passed pre-gated, i.e. not passed at all. */
+  disabled?: boolean;
 }
 
 interface MenuPos { top: number | 'auto'; bottom: number | 'auto'; right: number }
@@ -138,7 +144,16 @@ export function RowActionsMenu({ label, actions }: {
           {actions.map((a) => (
             <button key={a.key} type="button" role="menuitem"
                     className={`pop-item${a.destructive ? ' danger' : ''}`}
-                    onClick={(e) => { e.stopPropagation(); setOpen(false); a.onSelect(); }}>
+                    disabled={a.disabled}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      // Belt and braces: a disabled button fires no click
+                      // in a browser, but a programmatic dispatch still
+                      // reaches React's root listener.
+                      if (a.disabled) return;
+                      setOpen(false);
+                      a.onSelect();
+                    }}>
               {a.label}
             </button>
           ))}

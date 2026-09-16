@@ -61,7 +61,10 @@ describe('InstallFontsModal', () => {
     const { printer, onFetchBytes } = setup();
     await screen.findByText('Missing');
     const row = screen.getByText('ARIAL_B.TTF').closest('tr') as HTMLElement;
-    await userEvent.click(within(row).getByRole('button', { name: 'Install' }));
+    // The row's actions live in a RowActionsMenu now, portaled to
+    // document.body — open the trigger, then query the item via `screen`.
+    await userEvent.click(within(row).getByRole('button', { name: /actions/i }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Install' }));
     await waitFor(() => expect(printer.sendBytes).toHaveBeenCalled());
     expect(onFetchBytes).toHaveBeenCalledWith('f2');
     expect(printer.send).toHaveBeenCalledWith('~DYE:ARIAL_B.TTF,B,T,6,,');
@@ -99,20 +102,60 @@ describe('InstallFontsModal', () => {
   it('removes a library font after inline confirmation', async () => {
     const { onDeleteFont } = setup();
     const row = screen.getByText('ARIAL_B.TTF').closest('tr') as HTMLElement;
-    await userEvent.click(within(row).getByRole('button', { name: 'Remove' }));
+    await userEvent.click(within(row).getByRole('button', { name: /actions/i }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Remove' }));
     expect(screen.getByText('Remove ARIAL_B.TTF from the library? Printers keep their copy.')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Yes, remove' }));
     expect(onDeleteFont).toHaveBeenCalledWith('f2');
   });
-  it('without a printer the install column explains and hides install buttons', () => {
+  it('a library row folds Install and Remove into one Actions menu', async () => {
+    setup();
+    await screen.findByText('Missing');
+    const row = screen.getByText('ARIAL_B.TTF').closest('tr') as HTMLElement;
+    expect(within(row).queryByRole('button', { name: 'Install' })).toBeNull();
+    expect(within(row).queryByRole('button', { name: 'Remove' })).toBeNull();
+
+    await userEvent.click(within(row).getByRole('button', { name: /actions/i }));
+    expect(await screen.findByRole('menuitem', { name: 'Install' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Remove' }).className).toMatch(/danger/);
+  });
+  it('an installed library font offers Reinstall, not Install', async () => {
+    setup();
+    await screen.findByText('Installed');
+    const row = screen.getByText('85620388.TTF').closest('tr') as HTMLElement;
+    await userEvent.click(within(row).getByRole('button', { name: /actions/i }));
+    expect(await screen.findByRole('menuitem', { name: 'Reinstall' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Install' })).toBeNull();
+  });
+  it('the library action column is trigger-sized and the printer-objects table keeps its button', async () => {
+    setup();
+    await screen.findByText('Printer only');
+    const cols = (name: string) => [...document.querySelectorAll<HTMLTableColElement>(
+      `table[aria-label="${name}"] colgroup col`)];
+    expect(cols('Font library').at(-1)?.style.width).toBe('88px');
+    // deliberately left as a single inline button — a menu would turn one
+    // click into two and buy nothing back
+    expect(cols('Printer objects').at(-1)?.style.width).toBe('190px');
+    const row = screen.getByText('TT0003M_.TTF').closest('tr') as HTMLElement;
+    expect(within(row).getByRole('button', { name: 'Remove from printer' })).toBeTruthy();
+  });
+  it('without a printer the install column explains and hides install buttons', async () => {
     setup({ printer: fakePrinter(false) });
     expect(screen.getByText('Connect a printer to install fonts.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Install' })).toBeNull();
+    const row = screen.getByText('ARIAL_B.TTF').closest('tr') as HTMLElement;
+    await userEvent.click(within(row).getByRole('button', { name: /actions/i }));
+    expect(screen.queryByRole('menuitem', { name: 'Install' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: 'Remove' })).toBeTruthy();
   });
-  it('hides upload/remove without permissions', () => {
+  it('hides upload/remove without permissions', async () => {
     setup({ canAdd: false, canDelete: false });
+    await screen.findByText('Missing');
     expect(screen.queryByLabelText('TrueType font file')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
+    const row = screen.getByText('ARIAL_B.TTF').closest('tr') as HTMLElement;
+    await userEvent.click(within(row).getByRole('button', { name: /actions/i }));
+    expect(screen.queryByRole('menuitem', { name: 'Remove' })).toBeNull();
   });
   it('reads the printer directory once on mount and only re-reads on connect/disconnect, not on every parent re-render', async () => {
     const printer = fakePrinter();

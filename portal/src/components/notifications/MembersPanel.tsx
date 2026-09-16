@@ -7,8 +7,9 @@
  * `<DataTable>` ('—' per empty cell) with warning chips for channels a
  * member can't actually receive and
  * "Override" markers wherever a per-member override shadows the group
- * default. Per-row Edit opens OverrideEditorModal; Remove is a two-click
- * inline confirm, mirroring the page's own Delete button.
+ * default. Per-row Edit and Remove live in one RowActionsMenu; Remove
+ * confirms through window.confirm() rather than swapping the cell into an
+ * inline "Really remove?" pair, so invoking it never reflows the row.
  */
 
 import { useMemo, useRef, useState } from 'react';
@@ -23,6 +24,7 @@ import {
 } from '../../lib/notifications';
 import ComboBox, { type ComboOption } from '../ComboBox';
 import DataTable from '../DataTable';
+import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
 import OverrideEditorModal from './OverrideEditorModal';
 
 const msgFor = (err: unknown): string =>
@@ -60,7 +62,6 @@ export default function MembersPanel({ group, canChange, reload }: {
 
   const [editingMember, setEditingMember] = useState<NotificationMember | null>(null);
 
-  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [rowBusy, setRowBusy] = useState<Record<string, boolean>>({});
   const [rowError, setRowError] = useState<Record<string, string>>({});
 
@@ -99,16 +100,20 @@ export default function MembersPanel({ group, canChange, reload }: {
     }
   };
 
-  const handleRemove = async (personId: string) => {
+  const handleRemove = async (member: NotificationMember) => {
+    const personId = member.person_id;
+    // A plain confirm() rather than the old inline two-click swap: the
+    // confirm used to replace the cell's Remove button with a
+    // "Really remove?" + Cancel pair, which is the only reason this
+    // column had to reserve 250px so the row wouldn't reflow.
+    if (!window.confirm(`Remove ${member.display_name} from this group?`)) return;
     setRowBusy((b) => ({ ...b, [personId]: true }));
     setRowError((e) => ({ ...e, [personId]: '' }));
     try {
       await removeNotificationMember(group.id, personId);
-      setConfirmRemove(null);
       await reload();
     } catch (err) {
       setRowError((e) => ({ ...e, [personId]: msgFor(err) }));
-      setConfirmRemove(null);
     } finally {
       setRowBusy((b) => ({ ...b, [personId]: false }));
     }
@@ -148,7 +153,11 @@ export default function MembersPanel({ group, canChange, reload }: {
             { key: 'channels', label: 'Channels' },
             { key: 'quiet', label: 'Quiet hours' },
             { key: 'days', label: 'Days' },
-            ...(canChange ? [{ key: 'actions', label: 'Actions', width: '250px' }] : []),
+            // 88px: the width the other converted lists give a single
+            // RowActionsMenu trigger. The old 250px existed only to keep
+            // the inline "Really remove?" confirm from reflowing the row,
+            // and that confirm is now a window.confirm().
+            ...(canChange ? [{ key: 'actions', label: 'Actions', width: '88px' }] : []),
           ]}
           rows={group.members.map((m) => ({
             key: m.person_id,
@@ -194,27 +203,18 @@ export default function MembersPanel({ group, canChange, reload }: {
               ...(canChange ? [(
                 <>
                   <div className="ngd-row-actions">
-                    <button className="mini-btn sm" disabled={rowBusy[m.person_id]}
-                            onClick={() => setEditingMember(m)}>
-                      Edit
-                    </button>
-                    {confirmRemove === m.person_id ? (
-                      <>
-                        <button className="mini-btn sm danger" disabled={rowBusy[m.person_id]}
-                                onClick={() => void handleRemove(m.person_id)}>
-                          {rowBusy[m.person_id] ? 'Removing…' : 'Really remove?'}
-                        </button>
-                        <button className="mini-btn sm" disabled={rowBusy[m.person_id]}
-                                onClick={() => setConfirmRemove(null)}>
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      <button className="mini-btn sm danger" disabled={rowBusy[m.person_id]}
-                              onClick={() => setConfirmRemove(m.person_id)}>
-                        Remove
-                      </button>
-                    )}
+                    <RowActionsMenu actions={[
+                      {
+                        key: 'edit', label: 'Edit',
+                        disabled: rowBusy[m.person_id],
+                        onSelect: () => setEditingMember(m),
+                      },
+                      {
+                        key: 'remove', label: 'Remove', destructive: true,
+                        disabled: rowBusy[m.person_id],
+                        onSelect: () => void handleRemove(m),
+                      },
+                    ] satisfies RowAction[]} />
                   </div>
                   {rowError[m.person_id] && (
                     <span className="pf-error" style={{ display: 'block', marginTop: 4 }}>

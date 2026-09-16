@@ -7,7 +7,7 @@
  * have without worrying about time-of-day skew.
  */
 
-export type TimelineScale = 'month' | 'quarter' | 'year';
+export type TimelineScale = 'month' | '45d' | 'quarter' | 'year';
 
 /** End-exclusive: `end` is the first instant NOT in the range. */
 export interface TimelineRange { start: Date; end: Date }
@@ -15,6 +15,10 @@ export interface TimelineRange { start: Date; end: Date }
 export interface TimelineTick { at: Date; label: string }
 
 export interface TimelineBar { left: number; width: number }
+
+/** One calendar month's slice of a range, as percentages of the range's
+ *  full width — for the month band that sits above the day ruler. */
+export interface TimelineMonthBand { label: string; left: number; width: number }
 
 /** The subset of InitiativeItem this module actually needs — kept
  *  independent of lib/api.ts so this stays a standalone, DOM-free
@@ -62,6 +66,13 @@ function addMonths(d: Date, n: number): Date {
   return out;
 }
 
+/** Monday on or before `d` (Monday-first weeks, matching monthGrid: a
+ *  Sunday belongs to the week that began the previous Monday). */
+function mondayOnOrBefore(d: Date): Date {
+  const dow = d.getDay(); // 0 = Sun .. 6 = Sat
+  return addDays(d, dow === 0 ? -6 : -(dow - 1));
+}
+
 /** Monday on or after `d` (Monday-first weeks, matching monthGrid). */
 function mondayOnOrAfter(d: Date): Date {
   const dow = d.getDay(); // 0 = Sun .. 6 = Sat
@@ -84,12 +95,17 @@ function isoWeekNumber(d: Date): number {
 
 /** Calendar range for a scale, anchored at any date within it. Month is
  *  the calendar month, quarter the calendar quarter (Jan-Mar, Apr-Jun,
- *  Jul-Sep, Oct-Dec), year the calendar year — all end-exclusive. */
+ *  Jul-Sep, Oct-Dec), year the calendar year; 45d is the 45 days from the
+ *  Monday of the anchor's week — all end-exclusive. */
 export function rangeFor(anchor: Date, scale: TimelineScale): TimelineRange {
   const a = dateOnly(anchor);
   if (scale === 'month') {
     const start = new Date(a.getFullYear(), a.getMonth(), 1);
     return { start, end: addMonths(start, 1) };
+  }
+  if (scale === '45d') {
+    const start = mondayOnOrBefore(a);
+    return { start, end: addDays(start, 45) };
   }
   if (scale === 'quarter') {
     const qStartMonth = Math.floor(a.getMonth() / 3) * 3;
@@ -100,11 +116,12 @@ export function rangeFor(anchor: Date, scale: TimelineScale): TimelineRange {
   return { start, end: new Date(a.getFullYear() + 1, 0, 1) };
 }
 
-/** Header ticks for the timeline's right pane: one per day (Month scale),
- *  one per ISO week (Quarter scale), one per month (Year scale). */
+/** Header ticks for the timeline's right pane: one per day (Month and
+ *  45-day scales), one per ISO week (Quarter scale), one per month (Year
+ *  scale). */
 export function ticksFor(range: TimelineRange, scale: TimelineScale): TimelineTick[] {
   const ticks: TimelineTick[] = [];
-  if (scale === 'month') {
+  if (scale === 'month' || scale === '45d') {
     for (let cur = range.start; cur < range.end; cur = addDays(cur, 1)) {
       ticks.push({ at: cur, label: String(cur.getDate()) });
     }
@@ -112,7 +129,10 @@ export function ticksFor(range: TimelineRange, scale: TimelineScale): TimelineTi
   }
   if (scale === 'quarter') {
     for (let cur = mondayOnOrAfter(range.start); cur < range.end; cur = addDays(cur, 7)) {
-      const label = `Wk ${isoWeekNumber(cur)} · ${MONTH_ABBR[cur.getMonth()]} ${cur.getDate()}`;
+      // Week number alone. "Wk 28 · Jul 6" needed more pixels than a tick's
+      // slot and printed over its neighbor; the month band above the ruler
+      // names the month, and the bars' tooltips carry the exact dates.
+      const label = `Wk ${isoWeekNumber(cur)}`;
       ticks.push({ at: cur, label });
     }
     return ticks;
@@ -121,6 +141,32 @@ export function ticksFor(range: TimelineRange, scale: TimelineScale): TimelineTi
     ticks.push({ at: cur, label: MONTH_ABBR[cur.getMonth()] });
   }
   return ticks;
+}
+
+/** The calendar months a range covers, each as a `{ left, width }` slice
+ *  of the range in percent — the day numbers alone read as "29 30 1 2"
+ *  across a boundary, so the ruler names the month above them. One entry
+ *  per month the range intersects, in order and contiguous (widths sum to
+ *  100), with the first and last clipped to the range's own edges. The
+ *  label carries the year (`Sep 2026`) so a range crossing New Year stays
+ *  unambiguous. */
+export function monthBandsFor(range: TimelineRange): TimelineMonthBand[] {
+  const bands: TimelineMonthBand[] = [];
+  if (range.end <= range.start) return bands;
+  const totalMs = range.end.getTime() - range.start.getTime();
+  let cur = range.start;
+  while (cur < range.end) {
+    const monthStart = new Date(cur.getFullYear(), cur.getMonth(), 1);
+    const nextMonth = addMonths(monthStart, 1);
+    const sliceEnd = nextMonth > range.end ? range.end : nextMonth;
+    bands.push({
+      label: `${MONTH_ABBR[cur.getMonth()]} ${cur.getFullYear()}`,
+      left: ((cur.getTime() - range.start.getTime()) / totalMs) * 100,
+      width: ((sliceEnd.getTime() - cur.getTime()) / totalMs) * 100,
+    });
+    cur = nextMonth;
+  }
+  return bands;
 }
 
 /** Shared clip-to-range math for barFor/realBarFor: a [start, endInclusive]
