@@ -311,9 +311,18 @@ it('does not count a database-handled reference as a blocker', async () => {
   ]);
   expect(await screen.findByText(/handled automatically by the database/)).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Force delete — detach references' })).toBeTruthy();
+  expect(screen.getByRole('button', {
+    name: 'Override — delete this and everything attached' })).toBeTruthy();
 });
 
 it('opens the override modal and refreshes after it deletes', async () => {
+  api.getCascadePreview.mockResolvedValue({
+    entity_type: 'asset', entity_id: 'a1', label: 'SN-0001',
+    steps: [{ table: 'person_roles', column: 'person_id', action: 'purge', count: 1, labels: [], depth: 1 }],
+    blocked: [], total_rows_deleted: 1, total_rows_cleared: 0,
+  });
+  api.cascadeDelete.mockResolvedValue({ deleted: 1, failed: [] });
+
   await renderReconcileWithFailure([
     { table: 'person_roles', column: 'person_id', nullable: false, purgeable: false,
       check_guarded: false, db_handled: false, count: 1, labels: [] },
@@ -321,4 +330,18 @@ it('opens the override modal and refreshes after it deletes', async () => {
   fireEvent.click(await screen.findByRole('button', {
     name: 'Override — delete this and everything attached' }));
   expect(await screen.findByRole('dialog', { name: 'Cascade delete' })).toBeTruthy();
+
+  const confirmInput = await screen.findByLabelText('Type SN-0001 to confirm');
+  const destroyBtn = screen.getByRole('button', { name: 'Delete permanently' });
+  fireEvent.change(confirmInput, { target: { value: 'SN-0001' } });
+  await waitFor(() => expect((destroyBtn as HTMLButtonElement).disabled).toBe(false));
+
+  const listCallsBefore = api.listPendingDeletes.mock.calls.length;
+  fireEvent.click(destroyBtn);
+
+  await waitFor(() => expect(api.cascadeDelete).toHaveBeenCalledWith('pd1', 'SN-0001'));
+  await waitFor(() => expect(api.listPendingDeletes.mock.calls.length).toBeGreaterThan(listCallsBefore));
+
+  const heading = await screen.findByText('Reconcile complete');
+  expect(heading.closest('.dir-empty')?.textContent).toMatch(/1 deleted/);
 });
