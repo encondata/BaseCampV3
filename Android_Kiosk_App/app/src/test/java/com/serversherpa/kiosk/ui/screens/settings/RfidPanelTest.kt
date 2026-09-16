@@ -32,14 +32,13 @@ import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.settings.SETTINGS_TABS
 import com.serversherpa.kiosk.core.settings.SettingsTabId
 import com.serversherpa.kiosk.core.settings.visibleTabs
+import com.serversherpa.kiosk.input.rfid.FakeRfidReader
 import com.serversherpa.kiosk.input.rfid.RfidPermissions
 import com.serversherpa.kiosk.input.rfid.RfidReader
 import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -112,16 +111,18 @@ class RfidPanelTest {
      * A reader whose `connect()` can be told to hang until the test releases
      * it. `FakeRfidReader` gives no seam for that (its `connect()` always
      * resolves on the current suspension point with whatever `connectResult`
-     * says) and must not gain one just for this test, so this is a small
-     * test-local stand-in — same idiom as `RfidControllerTest`'s
-     * `SlowConnectReader`, minus the parts this test doesn't need
-     * (triggers/tags collection, an inner fake to delegate to).
+     * says), so this is a small test-local stand-in — same idiom as
+     * `RfidControllerTest`'s `SlowConnectReader`: an inner `FakeRfidReader`
+     * owns `connection`/`tags`/`triggers` and every call this class doesn't
+     * need to intercept, so `setRegion()` (and everything else) gets the
+     * real fake's connected-state checks for free instead of a stub that
+     * would silently disagree with them.
      */
     private class GatedConnectReader : RfidReader {
-        private val _connection = MutableStateFlow<RfidConnection>(RfidConnection.Disconnected)
-        override val connection: StateFlow<RfidConnection> = _connection
-        override val tags: Flow<String> = MutableSharedFlow()
-        override val triggers: Flow<TriggerEvent> = MutableSharedFlow()
+        private val inner = FakeRfidReader()
+        override val connection: StateFlow<RfidConnection> = inner.connection
+        override val tags: Flow<String> = inner.tags
+        override val triggers: Flow<TriggerEvent> = inner.triggers
 
         /** What the next `connect()` resolves to, once its gate (if any) opens. */
         var connectResult: Result<Unit> = Result.success(Unit)
@@ -132,23 +133,28 @@ class RfidPanelTest {
         var connectGate: CompletableDeferred<Unit>? = null
 
         override suspend fun connect(): Result<Unit> {
-            _connection.value = RfidConnection.Connecting
+            inner.setConnection(RfidConnection.Connecting)
             connectGate?.await()
             return connectResult
-                .onSuccess { _connection.value = RfidConnection.Connected("Fake RFD40", 80) }
+                .onSuccess { inner.setConnection(RfidConnection.Connected("Fake RFD40", 80)) }
                 // Deliberately NOT derived from connectResult's exception message: the
                 // status line (connectionLine(connection)) and the red error line
                 // (RfidController.connectionError, built from the same Result this
                 // method returns) would otherwise carry identical text, and the test
                 // below needs to find the error line by text alone, unambiguously.
-                .onFailure { _connection.value = RfidConnection.Failed("connect() reported a failure") }
+                .onFailure { inner.setConnection(RfidConnection.Failed("connect() reported a failure")) }
         }
-        override suspend fun disconnect() { _connection.value = RfidConnection.Disconnected }
-        override suspend fun apply(settings: RfidSettings): Result<Unit> = Result.success(Unit)
-        override suspend fun startInventory(): Result<Unit> = Result.success(Unit)
-        override suspend fun stopInventory(): Result<Unit> = Result.success(Unit)
-        override suspend fun regions(): Result<RfidRegions> = Result.success(RfidRegions(emptyList(), null))
-        override suspend fun setRegion(code: String, hopping: Boolean?): Result<Unit> = Result.success(Unit)
+        override suspend fun disconnect() = inner.disconnect()
+        override suspend fun apply(settings: RfidSettings): Result<Unit> = inner.apply(settings)
+        override suspend fun startInventory(): Result<Unit> = inner.startInventory()
+        override suspend fun stopInventory(): Result<Unit> = inner.stopInventory()
+        override suspend fun regions(): Result<RfidRegions> = inner.regions()
+        // Delegating rather than stubbing success unconditionally: the real
+        // reader (and FakeRfidReader) refuses this while disconnected, and a
+        // stub that always succeeded would disagree with that in any test
+        // that called it before connect() resolved.
+        override suspend fun setRegion(code: String, hopping: Boolean?): Result<Unit> =
+            inner.setRegion(code, hopping)
     }
 
     /**

@@ -74,14 +74,17 @@ import kotlinx.coroutines.withTimeoutOrNull
  * whatever held the lock across it forever. [applyGate], a second, narrow
  * `Mutex`, is what lets [push] stay off `mutex` entirely: a slow or hung
  * settings push never blocks a tag report, an arm/disarm, or [endBurst] —
- * those only ever need `mutex`, which [push] never holds. A trigger START is
- * the one exception: it deliberately serializes against a concurrent push on
- * the vendor link by waiting on `applyGate` *while still holding `mutex`*
- * (see the nesting in [onTrigger]'s `TriggerAction.START` branch), so a start
- * can be delayed — bounded by `VENDOR_TIMEOUT_MS` in the worst case — behind
- * an in-flight push. Nothing that holds `applyGate` (i.e. [push]) ever tries
- * to acquire `mutex`, so nesting `mutex` outside `applyGate` at that one call
- * site cannot deadlock.
+ * those only ever need `mutex`, which [push] never holds. A trigger START and
+ * [setRegion] are the two exceptions: each deliberately serializes against a
+ * concurrent push — and against each other — on the vendor link by acquiring
+ * `applyGate` *while still holding `mutex`* (see the nesting in [onTrigger]'s
+ * `TriggerAction.START` branch and in [setRegion]), so a start or a region
+ * write can be delayed — bounded by `VENDOR_TIMEOUT_MS` in the worst case —
+ * behind an in-flight push or region write. Nothing that holds `applyGate`
+ * (i.e. [push] or [setRegion]) ever tries to acquire `mutex`, so nesting
+ * `mutex` outside `applyGate` at either call site cannot deadlock: the lock
+ * order is always `mutex` before `applyGate`, never the reverse, so there is
+ * no cycle for two callers to deadlock on.
  *
  * `arm()`, `disarm()` and `stopBurst()` are called from the UI thread and
  * must stay non-suspending, but their real work still has to happen on
@@ -239,15 +242,18 @@ class RfidController(
 
     /** A second, narrow lock so [push] never has to hold `mutex` across
      *  `reader.apply()` — see the class doc. It exists purely to serialize
-     *  `apply()` against `startInventory()` on the vendor link (the nesting
-     *  in [onTrigger]'s `TriggerAction.START` branch): a slow or hung
-     *  settings push can delay a later push, and can delay a trigger START
+     *  `apply()` against `startInventory()` and against [setRegion] on the
+     *  vendor link (the nesting in [onTrigger]'s `TriggerAction.START`
+     *  branch, and in [setRegion] itself): a slow or hung settings push can
+     *  delay a later push, and can delay a trigger START or a region write
      *  specifically (bounded by `VENDOR_TIMEOUT_MS` in the worst case, since
-     *  START waits on `applyGate` while holding `mutex`), but nothing else —
+     *  both wait on `applyGate` while holding `mutex`), but nothing else —
      *  not a tag report, an arm/disarm, or `endBurst`, all of which only
      *  ever need `mutex`, which [push] never holds. Nothing that holds
-     *  `applyGate` ever tries to acquire `mutex`, so nesting `mutex` outside
-     *  it at that one call site cannot deadlock. */
+     *  `applyGate` (`push()` or `setRegion()`) ever tries to acquire
+     *  `mutex`, so nesting `mutex` outside it at either call site cannot
+     *  deadlock: `mutex` is always acquired first and `applyGate` second,
+     *  by every caller, so there is no cycle. */
     private val applyGate = Mutex()
 
     private sealed interface Command {
@@ -527,24 +533,64 @@ class RfidController(
      *  passthrough to [RfidReader.regions]. Region is a compliance setting,
      *  not part of [RfidSettings]/[push]: it is never pushed automatically,
      *  only read or set on explicit admin action. No controller state guards
-     *  it, so this never touches `mutex`; the reader itself reports "not
-     *  connected" when there is nothing to read (see
-     *  `neitherCallWorksWhileDisconnected`). */
-    suspend fun loadRegions(): Result<RfidRegions> = reader.regions()
+     *  it, so this never touches `mutex` or `applyGate`; the reader itself
+     *  reports "not connected" when there is nothing to read (see
+     *  `neitherCallWorksWhileDisconnected`). Wrapped in the same
+     *  `VENDOR_TIMEOUT_MS` defense [push]/[connectWithTimeout]/
+     *  [disconnectWithTimeout]/[setRegion] use for their own vendor calls,
+     *  so a soft-hung vendor stack is reported rather than leaving the
+     *  caller suspended forever. */
+    suspend fun loadRegions(): Result<RfidRegions> =
+        withTimeoutOrNull(VENDOR_TIMEOUT_MS) { reader.regions() }
+            ?: Result.failure(IllegalStateException("Loading the reader's regions timed out."))
 
     /** Set the regulatory domain. Refused while a burst is open — changing
      *  the radio's regulatory domain mid-sweep is not something to find out
      *  about experimentally — in which case [RfidReader.setRegion] is never
-     *  called. The open-burst check is a snapshot taken under `mutex`; the
-     *  vendor round trip itself runs after `mutex` is released, the same
-     *  discipline [push] and [connectWithTimeout] follow for their own
-     *  vendor calls — see the class doc. */
+     *  called.
+     *
+     *  The open-burst check and the [applyGate] acquisition both happen
+     *  under `mutex` — `applyGate` inner, `mutex` outer, exactly the nesting
+     *  [onTrigger]'s `TriggerAction.START` branch uses for
+     *  `startInventory()` — then `mutex` is released and the vendor round
+     *  trip runs under `applyGate` alone. A check-then-act refusal that
+     *  released `mutex` before the vendor call (the previous shape) left a
+     *  gap where a trigger START could land in between: it would see no
+     *  session open, open one, and call `startInventory()` while this call's
+     *  `reader.setRegion()` was still in flight — the radio would begin
+     *  transmitting while its regulatory domain was being rewritten
+     *  underneath it, the exact hazard the open-burst refusal exists to
+     *  prevent, and the same gap let a region write interleave with
+     *  [push]'s own sequence of vendor round trips. Acquiring `applyGate`
+     *  before releasing `mutex` closes it: START's own `applyGate.withLock`
+     *  (taken after this call has already moved `_session` past the check
+     *  and released `mutex`, so START still opens its session) cannot
+     *  proceed to `startInventory()` until this call's `applyGate.unlock()`
+     *  runs, and a concurrent [push] is held off the same way. Nothing that
+     *  holds `applyGate` — [push] or this call itself — ever tries to
+     *  acquire `mutex`, and every caller acquires `mutex` before `applyGate`,
+     *  never the reverse, so there is no cycle and this cannot deadlock —
+     *  see the class doc.
+     *
+     *  Wrapped in the same `VENDOR_TIMEOUT_MS` defense [push] uses: without
+     *  it, a soft-hung vendor stack would wedge `applyGate` — and therefore
+     *  every later trigger START and settings push — forever, not just this
+     *  call. */
     suspend fun setRegion(code: String, hopping: Boolean?): Result<Unit> {
-        val burstOpen = mutex.withLock { _session.value != null }
-        if (burstOpen) {
+        val holdingGate = mutex.withLock {
+            if (_session.value != null) return@withLock false
+            applyGate.lock()
+            true
+        }
+        if (!holdingGate) {
             return Result.failure(IllegalStateException("Finish the current read before changing the region."))
         }
-        return reader.setRegion(code, hopping)
+        return try {
+            withTimeoutOrNull(VENDOR_TIMEOUT_MS) { reader.setRegion(code, hopping) }
+                ?: Result.failure(IllegalStateException("Setting the region timed out."))
+        } finally {
+            applyGate.unlock()
+        }
     }
 
     // Shared by disconnectNow() (runs in the caller's own coroutine, so a
