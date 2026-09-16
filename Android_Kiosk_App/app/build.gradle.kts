@@ -118,6 +118,34 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation(project(":RFIDAPI3Library"))
+    // The RFIDAPI3 .aar is wired in as a raw local artifact (see
+    // RFIDAPI3Library/build.gradle), not a real Maven/AAR dependency, and its
+    // Readers/API3Service/API3UsbService classes call four methods on the
+    // OLD android.support.v4.content.LocalBroadcastManager (getInstance,
+    // registerReceiver, unregisterReceiver, sendBroadcast) — confirmed by
+    // javap against classes.jar; that's the entire support-library surface
+    // the vendor code touches. AGP's Jetifier *does* still transform this
+    // artifact (verified: it rewrites those refs to
+    // androidx/localbroadcastmanager/content/LocalBroadcastManager), but
+    // flipping android.enableJetifier on doesn't supply that androidx class
+    // either — Jetifier only rewrites bytecode, it never adds the target
+    // dependency, so without this the app would just trade one
+    // NoClassDefFoundError for another. Depending directly on the real
+    // legacy artifact instead sidesteps Jetifier and rewriting entirely: the
+    // vendor .aar's bytecode is left completely alone, and the exact old
+    // package name it expects resolves as-is.
+    //
+    // localbroadcastmanager is its own standalone artifact, not bundled in
+    // support-compat (checked: support-compat 27.1.1 and 28.0.0 both lack
+    // the class; it only showed up pulled in transitively under
+    // support-core-utils, which also drags in support-compat, documentfile,
+    // loader and print — support-compat's manifest overrides
+    // android:appComponentFactory and collides with androidx-core's, which
+    // fails the manifest merge). Depending on localbroadcastmanager alone
+    // avoids all of that: it pulls in only support-annotations (a
+    // plain-jar, manifest-free annotations library), and its own manifest
+    // declares nothing that conflicts with AndroidX.
+    implementation("com.android.support:localbroadcastmanager:28.0.0")
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

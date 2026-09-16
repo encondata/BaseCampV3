@@ -59,16 +59,31 @@ import kotlinx.coroutines.withContext
  * the coroutine complete as if it were never cancelled — exactly the bug this
  * file exists to avoid.
  *
- * Every vendor call site also catches `LinkageError` alongside `Exception`:
- * the RFIDAPI3 `.aar` is wired in as a raw local artifact (see
- * `RFIDAPI3Library/build.gradle`), which bypasses AGP's Jetifier, so a class
- * it references from the old `android.support.v4` package (observed:
- * `android.support.v4.content.LocalBroadcastManager`, thrown from
- * `Readers`'s constructor) can be genuinely absent from this app's classpath.
- * That surfaces as `NoClassDefFoundError`, a `LinkageError`, not an
- * `Exception` — a bare `catch (e: Exception)` would let it fall straight
- * through as an uncaught crash, breaking the "connect() never throws, it
- * reports" contract the rest of the app leans on.
+ * Every vendor call site also catches `LinkageError` alongside `Exception`,
+ * kept as a belt-and-braces guard even though the specific cause below is
+ * fixed: the RFIDAPI3 `.aar` is wired in as a raw local artifact (see
+ * `RFIDAPI3Library/build.gradle`), and its `Readers`/`API3Service`/
+ * `API3UsbService` classes call four methods (`getInstance`,
+ * `registerReceiver`, `unregisterReceiver`, `sendBroadcast`) on the *old*
+ * `android.support.v4.content.LocalBroadcastManager` — a class this
+ * AndroidX-only app doesn't otherwise have on its classpath. `app/build.
+ * gradle.kts` now depends directly on the real
+ * `com.android.support:localbroadcastmanager:28.0.0` artifact to supply it
+ * (see that dependency's comment for why: Jetifier does transform this raw
+ * artifact, but only rewrites the *reference* — it never supplies the
+ * androidx class the rewrite would then require, so flipping
+ * `enableJetifier` on alone just trades one `NoClassDefFoundError` for
+ * another). `ZebraReadersConstructibleTest` asserts `Readers` construction
+ * never throws a `LinkageError`/`NoClassDefFoundError`, so a regression here
+ * — this dependency going missing, or a future vendor `.aar` update needing
+ * some other class this app doesn't have — fails a build-time test, not
+ * just a real device. The runtime catch stays anyway: it's what keeps the
+ * "connect() never throws, it reports" contract true for any other
+ * classloading gap the test doesn't happen to exercise (a different reader
+ * model's code path, a different Android version, a future SDK bump) —
+ * `NoClassDefFoundError` and `UnsatisfiedLinkError` (a missing native `.so`)
+ * are both `LinkageError`, not `Exception`, so a bare `catch (e: Exception)`
+ * would let either fall straight through as an uncaught crash.
  */
 class ZebraRfidReader(private val context: Context, private val scope: CoroutineScope) : RfidReader {
     private val _connection = MutableStateFlow<RfidConnection>(RfidConnection.Disconnected)
