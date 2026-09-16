@@ -140,6 +140,7 @@ async def test_container_info_compiles_with_the_qr_and_rfid_zone(db):
 _FO = re.compile(r"\^FO(\d+),(\d+)")
 _GB = re.compile(r"\^GB(\d+),(\d+),(\d+)")
 _BY = re.compile(r"\^BY(\d+)")
+_BQ = re.compile(r"\^BQ[NRIB],\d+,(\d+)")
 
 
 # Positions and box sizes are large numbers, so one dot at the coarser
@@ -152,7 +153,15 @@ _BY = re.compile(r"\^BY(\d+)")
 # 0.0099in vs 0.0067in, only 0.0032in apart. That is precisely the bug this
 # test exists to catch, so `by` gets half a coarse dot. The real difference
 # between the two correct designs is 0.0001in, so this is still 16x headroom.
-_TOLERANCE_IN = {"fo": 1 / 203, "gb": 1 / 203, "by": 0.5 / 203}
+# A QR magnification is coarser still: ^BQ sizes in whole 25-dot steps,
+# so the finest grid a QR can land on is 25/203 = 0.1232in at 203 dpi and
+# 25/300 = 0.0833in at 300 dpi. No width makes the two agree exactly; the
+# closest any width gets is magnification 6 vs 9 (0.7389in vs 0.7500in),
+# 0.0111in apart. Four coarse dots (0.0197in) leaves that a comfortable
+# 1.8x of headroom while still rejecting every other choice: the next
+# closest pairing is 0.0287in apart, and the capped ^BQN,2,10-at-both-dpi
+# bug the seeded 1.2in QR had lands 0.3982in apart.
+_TOLERANCE_IN = {"fo": 1 / 203, "gb": 1 / 203, "by": 0.5 / 203, "bq": 4 / 203}
 
 
 def _inches(zpl: str, dpi: int) -> dict[str, list[float]]:
@@ -161,6 +170,9 @@ def _inches(zpl: str, dpi: int) -> dict[str, list[float]]:
         "fo": [v / dpi for m in _FO.finditer(zpl) for v in map(int, m.groups())],
         "gb": [v / dpi for m in _GB.finditer(zpl) for v in map(int, m.groups())],
         "by": [v / dpi for m in _BY.finditer(zpl) for v in map(int, m.groups())],
+        # ^BQ magnification is a multiplier on a 25-dot module block, so the
+        # printed square is mag * 25 dots wide, not mag dots.
+        "bq": [v * 25 / dpi for m in _BQ.finditer(zpl) for v in map(int, m.groups())],
     }
 
 
@@ -168,7 +180,9 @@ def _inches(zpl: str, dpi: int) -> dict[str, list[float]]:
 async def test_both_dpi_describe_the_same_physical_label(db, base):
     """A 203 and a 300 dpi version must place ink in the same physical
     places. This is the test that would have caught the hardcoded ^BY2,
-    which made a barcode 1.5x narrower at 300 dpi than at 203."""
+    which made a barcode 1.5x narrower at 300 dpi than at 203, and the
+    capped ^BQ magnification, which made the QR 1.23in at 203 dpi but
+    only 0.83in at 300."""
     subs = {"label_tag": "PRIORITY", "container_name": "crate-17",
             "move_name": "NAP11 Migration", "source_site": "NAP7",
             "destination_site": "NAP11", "move_date_long": "15-SEP-2026"}

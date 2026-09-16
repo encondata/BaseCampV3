@@ -56,14 +56,14 @@ CONTAINER_DESIGN = {
          "fontSizePt": 24, "bold": True, "align": "center", "lines": 2},
         {"id": "move_name", "type": "text", "x": 0.2, "y": 5.55, "w": 3.6,
          "h": 0.2, "rotation": 0, "content": "{move_name}",
-         "fontSizePt": 10, "bold": False, "align": "center"},
+         "fontSizePt": 10, "bold": False, "align": "center", "lines": 2},
     ],
 }
 
 CONTAINER_INFO_DESIGN = {
     "size": {"w": 4, "h": 6},
     "elements": [
-        {"id": "qr", "type": "qr", "x": 2.5, "y": 0.3, "w": 1.2, "h": 1.2,
+        {"id": "qr", "type": "qr", "x": 2.95, "y": 0.3, "w": 0.75, "h": 0.75,
          "rotation": 0, "data": "{container_name}"},
         {"id": "source_label", "type": "text", "x": 0.3, "y": 0.4, "w": 1.9,
          "h": 0.25, "rotation": 0, "content": "Source:", "fontSizePt": 14,
