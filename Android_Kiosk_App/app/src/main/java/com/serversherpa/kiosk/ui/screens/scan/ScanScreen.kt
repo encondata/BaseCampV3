@@ -28,6 +28,7 @@ import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.input.datawedge.DataWedge
 import com.serversherpa.kiosk.ui.components.KioskChip
+import com.serversherpa.kiosk.ui.components.CameraFieldButton
 import com.serversherpa.kiosk.ui.components.KioskToast
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.PageHeader
@@ -58,17 +59,22 @@ fun ScanScreen(nav: NavHostController) {
 
     LaunchedEffect(Unit) { container.scanBus.events.collect { vm.onScan(it.value) } }
 
-    if (camera) { CameraScanSheet(onScan = { container.scanBus.publish(it) }, onDismiss = { camera = false }); return }
+    // A full-screen dialog: it floats over this page rather than replacing it.
+    if (camera) CameraScanSheet(onScan = { container.scanBus.publish(it) }, onDismiss = { camera = false })
 
     Column {
         PageHeader("Kiosk · Scanning", "Scanning", setup?.let { "${it.initiativeName} · ${it.siteName} · ${it.scanLabel}" } ?: "Finish Kiosk Setup first.")
         if (ui.loadStatus == LoadStatus.ERROR) KioskToast("Couldn't read this kiosk's local data.", error = true)
         if (empty) Text("No move data on this kiosk. Sync from Kiosk Setup.", color = c.textMute)
-        ScanInput(ui.value, vm::setValue, onSubmit = { vm.onScan(it) }, placeholder = "Scan or type an asset ID, serial, or tag", enabled = !disabled, keepFocus = !camera)
+        ScanInput(
+            ui.value, vm::setValue, onSubmit = { vm.onScan(it) },
+            placeholder = "Scan or type an asset ID, serial, or tag", enabled = !disabled, keepFocus = !camera,
+            trailingIcon = if (container.hasCamera) ({ CameraFieldButton(!disabled) { camera = true } }) else null,
+        )
         // The grey empty-roster line above already says it; the red toast is for a scan that arrived anyway.
         if (ui.error != null && !empty) KioskToast(ui.error, error = true)
         KioskToast(ui.storageError, error = true)
-        ScanTools(showCamera = container.hasCamera, onCamera = { camera = true }, showTrigger = container.hasDataWedge, onTrigger = { DataWedge.softScan(context, true) })
+        ScanTools(showTrigger = container.hasDataWedge, onTrigger = { DataWedge.softScan(context, true) })
         val counts = snapshot.counts
         Text("Queued ${counts.queued} · Sent ${counts.accepted} · Failed ${counts.failed} · No match ${counts.nomatch}", fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.textMute, modifier = Modifier.padding(top = 8.dp))
         Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

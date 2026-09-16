@@ -6,6 +6,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -36,6 +37,18 @@ class ComponentsTest {
         compose.onNodeWithTag("scan-input").performTextInput("  A-100 ")
         compose.onNodeWithTag("scan-input").performImeAction()
         assertEquals("A-100", submitted)
+    }
+
+    @Test fun scanInputCarriesTheCameraInsideTheBox() {
+        var opened = 0
+        compose.setContent {
+            KioskTheme {
+                ScanInput(value = "", onValueChange = {}, onSubmit = {}, placeholder = "Scan",
+                    trailingIcon = { CameraFieldButton(enabled = true) { opened++ } })
+            }
+        }
+        compose.onNodeWithContentDescription("Scan with the camera").performClick()
+        assertEquals(1, opened)
     }
 
     @Test fun segmentedSelects() {

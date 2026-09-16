@@ -22,14 +22,25 @@ fun KioskTheme(theme: String = "light", accent: String = "amber", content: @Comp
         val (a, soft) = accentFor(accent)
         (if (dark) DarkPalette else LightPalette).copy(accent = a, accentSoft = soft)
     }
+    // The surfaceContainer roles matter: dialogs and menus paint themselves with
+    // them, and Material's untouched defaults are a lilac that has nothing to do
+    // with this palette. Point them all at paper so a dialog reads as kiosk paper.
     val scheme = if (dark) darkColorScheme(
         primary = colors.accent, onPrimary = colors.ink, background = colors.paper2,
         onBackground = colors.textDark, surface = colors.paper, onSurface = colors.textDark,
         surfaceVariant = colors.paper2, onSurfaceVariant = colors.textMute, outline = colors.paperLine,
+        surfaceTint = colors.paper,
+        surfaceContainerLowest = colors.paper2, surfaceContainerLow = colors.paper,
+        surfaceContainer = colors.paper, surfaceContainerHigh = colors.paper,
+        surfaceContainerHighest = colors.paper2,
     ) else lightColorScheme(
         primary = colors.accent, onPrimary = colors.ink, background = colors.paper2,
         onBackground = colors.textDark, surface = colors.paper, onSurface = colors.textDark,
         surfaceVariant = colors.paper2, onSurfaceVariant = colors.textMute, outline = colors.paperLine,
+        surfaceTint = colors.paper,
+        surfaceContainerLowest = colors.paper2, surfaceContainerLow = colors.paper,
+        surfaceContainer = colors.paper, surfaceContainerHigh = colors.paper,
+        surfaceContainerHighest = colors.paper2,
     )
     CompositionLocalProvider(LocalKioskColors provides colors) {
         MaterialTheme(colorScheme = scheme, typography = KioskTypography, content = content)

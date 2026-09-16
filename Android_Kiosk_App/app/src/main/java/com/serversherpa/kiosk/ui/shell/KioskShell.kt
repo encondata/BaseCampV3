@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -17,15 +18,25 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -39,7 +50,6 @@ import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.identity.KioskIdentity
 import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.ui.Routes
-import com.serversherpa.kiosk.ui.components.KioskChip
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
@@ -64,29 +74,52 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
     val feature = featureForRoute(backStack?.destination?.route)
     val scope = rememberCoroutineScope()
     val authed = auth as? AuthState.Authed
+    val outbox by container.outbox.snapshot.collectAsStateWithLifecycle()
+    // Signing out ends the shift's session from a button anyone can brush past, so
+    // it asks first — and says so when scans are still waiting to be sent.
+    var confirmSignOut by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().background(c.paper2)) {
         // ── top bar ──
-        Column(Modifier.fillMaxWidth().background(c.ink).statusBarsPadding().padding(horizontal = 14.dp, vertical = 8.dp)) {
-            // Both rows flow: on a 360 dp phone the brand line and the identity line
-            // wrap rather than pushing "Sign out" or the registration chip off-screen.
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                androidx.compose.foundation.Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = null, modifier = Modifier.size(26.dp).align(Alignment.CenterVertically))
-                Text(buildString { append("Server") }, color = c.snow, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.CenterVertically))
-                Text("Sherpa", color = c.accent, fontWeight = FontWeight.SemiBold, modifier = Modifier.offset(x = (-8).dp).align(Alignment.CenterVertically))
-                Text("KIOSK · ANDROID", fontFamily = FragmentMono, style = MaterialTheme.typography.labelSmall, color = c.accentSoft, modifier = Modifier.align(Alignment.CenterVertically))
-                if (feature != null) Text(feature.title, fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.snow, modifier = Modifier.align(Alignment.CenterVertically))
-            }
-            FlowRow(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(identity.name, fontFamily = FragmentMono, color = c.snow, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.clickable { nav.navigate(Routes.settings("this-kiosk")) }.padding(6.dp).align(Alignment.CenterVertically))
-                if (authed != null) {
-                    registration?.let { KioskChip(it.label, REG_TONE.getValue(it)) }
-                    // Shrinks (never grows) so the chip and "Sign out" always fit.
-                    Text(authed.person.display_name, color = c.snow, style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).align(Alignment.CenterVertically))
-                    MiniButton("Sign out", onClick = { scope.launch { container.logout(); nav.navigate(Routes.LOGIN) { popUpTo(0) } } })
-                }
+        // One row: the logo carries the brand, the mono name says which kiosk this
+        // is, the person says who is on it, and Sign out doubles as the registration
+        // light. The mode chip and the section title are deliberately absent — the
+        // footer says "MODE Android" and every page prints its own title below.
+        Row(
+            Modifier.fillMaxWidth().background(c.ink).statusBarsPadding()
+                .padding(start = 14.dp, end = 10.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            androidx.compose.foundation.Image(
+                painterResource(R.mipmap.ic_launcher_foreground), contentDescription = "ServerSherpa",
+                modifier = Modifier.size(26.dp),
+            )
+            // The kiosk's own name, then who is on it. The person gives way first, so
+            // "Sign out" is never the thing that gets clipped on a narrow screen.
+            Text(
+                identity.name, fontFamily = FragmentMono, color = c.snow,
+                style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.clickable { nav.navigate(Routes.settings("this-kiosk")) }
+                    .padding(vertical = 12.dp, horizontal = 8.dp),
+            )
+            if (authed != null) {
+                Text(" · ", color = c.textMute, style = MaterialTheme.typography.labelMedium)
+                Text(
+                    authed.person.display_name, color = c.snow, style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(end = 8.dp),
+                )
+                // The way out doubles as the status light: its outline is the kiosk's
+                // registration state (green registered, amber expiring, red expired,
+                // slate unregistered), so the bar needs no separate chip for it.
+                MiniButton(
+                    "Sign out",
+                    onClick = { confirmSignOut = true },
+                    borderColor = registration?.let { REG_TONE.getValue(it).text },
+                    modifier = Modifier.semantics {
+                        contentDescription = registration?.let { "Sign out. Kiosk ${it.label.lowercase()}" } ?: "Sign out"
+                    },
+                )
             }
         }
         // ── page ──
@@ -100,6 +133,32 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
             Text("Data Sync", fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = if (good) ChipTone.GREEN.text else ChipTone.RED.text)
             if (devMode) FootItem("Dev mode", "On", valueColor = c.accent)
         }
+    }
+
+    if (confirmSignOut) {
+        val waiting = outbox.counts.queued + outbox.counts.failed
+        AlertDialog(
+            onDismissRequest = { confirmSignOut = false },
+            title = { Text("Sign out of this kiosk?") },
+            text = {
+                Text(
+                    buildString {
+                        append("Whoever uses this kiosk next has to sign in again.")
+                        when {
+                            waiting == 1 -> append(" One scan here hasn't reached the portal yet; it waits on this kiosk until someone signs in.")
+                            waiting > 1 -> append(" $waiting scans here haven't reached the portal yet; they wait on this kiosk until someone signs in.")
+                        }
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmSignOut = false
+                    scope.launch { container.logout(); nav.navigate(Routes.LOGIN) { popUpTo(0) } }
+                }) { Text("Sign out") }
+            },
+            dismissButton = { TextButton(onClick = { confirmSignOut = false }) { Text("Cancel") } },
+        )
     }
 }
 

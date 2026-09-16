@@ -2,14 +2,18 @@ package com.serversherpa.kiosk.ui.screens.home
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
@@ -38,10 +42,21 @@ fun HomeScreen(nav: NavHostController) {
         if (!complete && devMode) KioskToast("Developer mode: all features are available while kiosk setup is ${setupState.wire}.")
         if (!complete && !devMode) KioskToast(if (failed) "Kiosk setup failed. Open Kiosk Setup to try again." else "Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.", error = failed)
         FEATURES.chunked(2).forEach { pair ->
-            Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            // IntrinsicSize.Min + fillMaxHeight: both tiles in a row take the height of the
+            // taller one, so a tile without the "Finish Kiosk Setup first." line (Kiosk Setup,
+            // Settings) is not visibly shorter than the locked tile beside it.
+            Row(
+                Modifier.fillMaxWidth().height(IntrinsicSize.Min).padding(top = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 for (f in pair) {
                     val available = featureAvailable(f, setupState, devMode)
-                    SetupCard(selected = false, enabled = available, onClick = { nav.navigate(f.route) }, modifier = Modifier.weight(1f)) {
+                    SetupCard(
+                        selected = false,
+                        enabled = available,
+                        onClick = { nav.navigate(f.route) },
+                        modifier = Modifier.weight(1f).fillMaxHeight().testTag("tile-${f.id.name}"),
+                    ) {
                         FeatureIcon(f.id, c.accent)
                         Text(f.title, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(top = 8.dp))
                         Text(f.blurb, style = MaterialTheme.typography.bodySmall, color = c.textMute, modifier = Modifier.padding(top = 4.dp))

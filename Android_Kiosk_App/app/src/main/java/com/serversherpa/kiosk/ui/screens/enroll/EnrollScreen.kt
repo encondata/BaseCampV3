@@ -24,6 +24,7 @@ import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.core.scan.padRfid
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.input.datawedge.DataWedge
+import com.serversherpa.kiosk.ui.components.CameraFieldButton
 import com.serversherpa.kiosk.ui.components.KioskToast
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.PageHeader
@@ -50,7 +51,8 @@ fun EnrollScreen(nav: NavHostController) {
 
     LaunchedEffect(Unit) { container.scanBus.events.collect { vm.onScan(it.value) } }
 
-    if (camera) { CameraScanSheet(onScan = { container.scanBus.publish(it) }, onDismiss = { camera = false }); return }
+    // A full-screen dialog: it floats over this page rather than replacing it.
+    if (camera) CameraScanSheet(onScan = { container.scanBus.publish(it) }, onDismiss = { camera = false })
 
     Column {
         PageHeader("Kiosk · RFID Enroll", "RFID Enroll", setup?.let { "${it.initiativeName} · ${it.siteName}" } ?: "Finish Kiosk Setup first.")
@@ -64,16 +66,25 @@ fun EnrollScreen(nav: NavHostController) {
                 Fact("Asset ID", asset.assetId.ifBlank { "—" }); Fact("Serial", asset.serialNumber ?: "—"); Fact("Make / Model", asset.makeModel.ifBlank { "—" })
                 asset.rfid?.let { Fact("Current tag", displayRfid(it)); Text("This asset already has a tag — scanning a new one replaces it.", style = MaterialTheme.typography.bodySmall, color = c.textMute) }
             }
-            ScanInput(ui.tagValue, vm::setTagValue, onSubmit = { vm.submitTag(it) }, placeholder = "Scan the RFID tag", enabled = !ui.saving, keepFocus = !camera, modifier = Modifier.padding(top = 12.dp))
+            ScanInput(
+                ui.tagValue, vm::setTagValue, onSubmit = { vm.submitTag(it) },
+                placeholder = "Scan the RFID tag", enabled = !ui.saving, keepFocus = !camera,
+                modifier = Modifier.padding(top = 12.dp),
+                trailingIcon = if (container.hasCamera) ({ CameraFieldButton(!ui.saving) { camera = true } }) else null,
+            )
             val preview = padRfid(ui.tagValue).tag
             if (preview != null) Row { Text("Will be stored as ", style = MaterialTheme.typography.bodySmall, color = c.textMute); Text(preview, fontFamily = FragmentMono, style = MaterialTheme.typography.bodySmall) }
             else Text("24 characters, zero-padded.", style = MaterialTheme.typography.bodySmall, color = c.textMute)
-            ScanTools(container.hasCamera, { camera = true }, container.hasDataWedge) { DataWedge.softScan(context, true) }
+            ScanTools(container.hasDataWedge) { DataWedge.softScan(context, true) }
             KioskToast(ui.error, error = true)
             MiniButton("Cancel", { vm.cancel() })
         } else {
-            ScanInput(ui.value, vm::setValue, onSubmit = { vm.submitAsset(it) }, placeholder = "Scan a serial or asset ID", enabled = !disabled, keepFocus = !camera)
-            ScanTools(container.hasCamera, { camera = true }, container.hasDataWedge) { DataWedge.softScan(context, true) }
+            ScanInput(
+                ui.value, vm::setValue, onSubmit = { vm.submitAsset(it) },
+                placeholder = "Scan a serial or asset ID", enabled = !disabled, keepFocus = !camera,
+                trailingIcon = if (container.hasCamera) ({ CameraFieldButton(!disabled) { camera = true } }) else null,
+            )
+            ScanTools(container.hasDataWedge) { DataWedge.softScan(context, true) }
             KioskToast(ui.error, error = true)
         }
         if (ui.enrollments.isNotEmpty()) {

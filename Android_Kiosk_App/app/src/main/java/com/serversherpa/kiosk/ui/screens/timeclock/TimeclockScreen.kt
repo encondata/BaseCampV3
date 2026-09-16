@@ -35,6 +35,7 @@ import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.input.datawedge.DataWedge
 import com.serversherpa.kiosk.ui.components.KioskChip
+import com.serversherpa.kiosk.ui.components.CameraFieldButton
 import com.serversherpa.kiosk.ui.components.KioskToast
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.PageHeader
@@ -66,7 +67,8 @@ fun TimeclockScreen(nav: NavHostController) {
 
     LaunchedEffect(Unit) { container.scanBus.events.collect { vm.onScan(it.value) } }
 
-    if (camera) { CameraScanSheet(onScan = { container.scanBus.publish(it) }, onDismiss = { camera = false }); return }
+    // A full-screen dialog: it floats over this page rather than replacing it.
+    if (camera) CameraScanSheet(onScan = { container.scanBus.publish(it) }, onDismiss = { camera = false })
 
     Column(Modifier.pointerInput(Unit) { awaitPointerEventScope { while (true) { awaitPointerEvent(); vm.bumpIdle() } } }) {
         PageHeader("Kiosk · Timeclock", "Timeclock", setup?.let { "${it.initiativeName} · ${it.siteName}" } ?: "Finish Kiosk Setup first.")
@@ -103,8 +105,12 @@ fun TimeclockScreen(nav: NavHostController) {
             }
             KioskToast(ui.error, error = true)
         } else {
-            ScanInput(ui.value, vm::onChange, onSubmit = { vm.onEnter(it) }, placeholder = "Scan a badge or type a name", enabled = !disabled, keepFocus = !camera)
-            ScanTools(container.hasCamera, { camera = true }, container.hasDataWedge) { DataWedge.softScan(context, true) }
+            ScanInput(
+                ui.value, vm::onChange, onSubmit = { vm.onEnter(it) },
+                placeholder = "Scan a badge or type a name", enabled = !disabled, keepFocus = !camera,
+                trailingIcon = if (container.hasCamera) ({ CameraFieldButton(!disabled) { camera = true } }) else null,
+            )
+            ScanTools(container.hasDataWedge) { DataWedge.softScan(context, true) }
             KioskToast(ui.error, error = true)
             for (p in ui.results) {
                 Row(Modifier.fillMaxWidth().clickable { vm.select(p) }.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
