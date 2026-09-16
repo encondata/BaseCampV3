@@ -35,8 +35,11 @@ ACTIVE_STATUSES = ("queued", "running")
 
 # Vocab `type` keys that are NOT asset/device labels — excluded from Generate
 # Labels (the preview's type list and run validation). Container labels have
-# their own page and report (Avery sheets), see reports/container_labels.
-CONTAINER_LABEL_TYPES: frozenset[str] = frozenset({"container"})
+# their own page and report (Avery sheets, see reports/container_labels) and
+# their own 4x6 ZPL templates (migration 0066); the runner here only walks
+# assets, so every container type must be listed or it would emit one label
+# per ASSET with empty container placeholders.
+CONTAINER_LABEL_TYPES: frozenset[str] = frozenset({"container", "container_info"})
 
 class InvalidLabelTypes(ValueError):
     """One or more requested label types are not active `type` vocab
@@ -126,7 +129,8 @@ async def enqueue_run(
         raise InvalidLabelTypes([])
     # Generate Labels renders asset/device labels only. Container labels are
     # Avery sheets produced by the Container Labels page / report, so the
-    # `container` vocab type is never a valid asset run type even when active.
+    # `container` and `container_info` vocab types are never valid asset run
+    # types even when active.
     container_keys = [k for k in requested if k in CONTAINER_LABEL_TYPES]
     if container_keys:
         raise InvalidLabelTypes(

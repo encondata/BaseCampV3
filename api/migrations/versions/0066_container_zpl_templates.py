@@ -139,9 +139,17 @@ def _seed_statements() -> list[str]:
                 '{"default_copies": 1}', 5)
         ON CONFLICT (kind, key) DO NOTHING
         """,
+        # Both `default_copies` values are force-applied, not left to the
+        # INSERT above: a re-run over a database whose `container_info` row
+        # predates the key (or had it edited away) must still repair it,
+        # exactly as it does for the pre-existing `container` row.
         """
         UPDATE label_vocab SET meta = meta || '{"default_copies": 5}'::jsonb
         WHERE kind = 'type' AND key = 'container'
+        """,
+        """
+        UPDATE label_vocab SET meta = meta || '{"default_copies": 1}'::jsonb
+        WHERE kind = 'type' AND key = 'container_info'
         """,
         # Placeholder scoping: the info label needs the site names, and
         # both container types need everything the `container` type

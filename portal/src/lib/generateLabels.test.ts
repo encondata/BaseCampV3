@@ -2,9 +2,9 @@ import { expect, it } from 'vitest';
 
 import type { InitiativeItem, LabelGeneratePreviewType } from './api';
 import {
-  candidateScopeText, canGenerate, firstUnresolvedType, hasHiddenErrors, isRunActive, isValidToken,
-  jsonToRuleRows, progressPct, resolvedTemplateId, ruleRowsToJson, sortedErrorSummary,
-  templatesPayloadFor, validateRuleRows, visibleInitiativesForGenerate,
+  candidateScopeText, canGenerate, firstUnresolvedType, hasHiddenErrors, isAssetLabelType,
+  isRunActive, isValidToken, jsonToRuleRows, progressPct, resolvedTemplateId, ruleRowsToJson,
+  sortedErrorSummary, templatesPayloadFor, validateRuleRows, visibleInitiativesForGenerate,
 } from './generateLabels';
 
 const ini = (id: string, status: string, createdAt: string, archived: string | null = null) => ({
@@ -154,4 +154,14 @@ it('validateRuleRows rejects a non-numeric position and a non-positive length li
   expect(validateRuleRows({
     destination: [], source: [], lengthLimits: [{ token: 'asset_name', limit: '0' }],
   })).toMatch(/positive whole number/);
+});
+
+// Generate Labels and Print Labels both filter their type vocab through
+// isAssetLabelType, and the runner behind them only ever walks assets — so
+// EVERY container type has to be filtered out, not just the Avery one.
+// Migration 0066 seeds a second, active one: `container_info`.
+it('isAssetLabelType keeps asset types and drops every container type', () => {
+  expect(['top', 'front', 'rail'].filter(isAssetLabelType)).toEqual(['top', 'front', 'rail']);
+  expect(['top', 'container', 'container_info', 'rail'].filter(isAssetLabelType))
+    .toEqual(['top', 'rail']);
 });

@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from serversherpa.db.models import LabelPlaceholder, LabelTemplate, LabelVocab
 from serversherpa.labels.model import parse_design
@@ -82,6 +82,56 @@ async def test_the_4x6_size_row_is_portrait(db):
 
 
 async def test_container_types_carry_their_default_copies(db):
+    assert (await db.get(LabelVocab, ("type", "container"))).meta["default_copies"] == 5
+    assert (await db.get(LabelVocab, ("type", "container_info"))).meta["default_copies"] == 1
+
+
+async def _label_snapshot(db) -> dict[str, list[tuple]]:
+    """Every row of the three seeded label tables, ordered, as plain tuples —
+    enough to tell whether a second pass of `seed()` changed anything."""
+    db.expire_all()
+    return {
+        "vocab": [tuple(r) for r in (await db.execute(text(
+            "SELECT kind, key, label, description, meta::text, sort_order, is_active "
+            "FROM label_vocab ORDER BY kind, key"))).all()],
+        "placeholders": [tuple(r) for r in (await db.execute(text(
+            "SELECT key, label, description, sample_value, applies_to::text, sort_order "
+            "FROM label_placeholders ORDER BY key"))).all()],
+        "templates": [tuple(r) for r in (await db.execute(text(
+            "SELECT name, label_type, size_key, dpi_key, design::text, "
+            "generation_rules::text, is_active FROM label_templates ORDER BY name"))).all()],
+    }
+
+
+async def test_seed_is_idempotent_on_top_of_the_conftest_baseline(db):
+    """conftest.py's label baseline is 0042's seeds as 0066 leaves them — it
+    mirrors a migrated production database — and the autouse fixture above
+    has already run `seed()` once over it. A further pass must change
+    nothing at all, including the unconditional `default_copies` UPDATEs,
+    which are the only statements with no ON CONFLICT guard."""
+    before = await _label_snapshot(db)
+    migration = _load_migration_0066()
+    await db.run_sync(lambda session: migration.seed(session.connection()))
+    await db.commit()
+    assert await _label_snapshot(db) == before
+
+
+async def test_seed_repairs_container_types_missing_default_copies(db):
+    """Both `default_copies` are force-applied, so a row that predates the
+    key (or had it edited away) is repaired on a re-run. `container_info`
+    arrives via an INSERT ... ON CONFLICT DO NOTHING, which on its own would
+    never touch an existing row — it needs its own UPDATE, exactly like the
+    pre-existing `container` row has."""
+    await db.execute(text(
+        "UPDATE label_vocab SET meta = meta - 'default_copies' "
+        "WHERE kind = 'type' AND key IN ('container', 'container_info')"))
+    await db.commit()
+
+    migration = _load_migration_0066()
+    await db.run_sync(lambda session: migration.seed(session.connection()))
+    await db.commit()
+    db.expire_all()
+
     assert (await db.get(LabelVocab, ("type", "container"))).meta["default_copies"] == 5
     assert (await db.get(LabelVocab, ("type", "container_info"))).meta["default_copies"] == 1
 
@@ -153,6 +203,12 @@ _BQ = re.compile(r"\^BQ[NRIB],\d+,(\d+)")
 # 0.0099in vs 0.0067in, only 0.0032in apart. That is precisely the bug this
 # test exists to catch, so `by` gets half a coarse dot. The real difference
 # between the two correct designs is 0.0001in, so this is still 16x headroom.
+# A ^GB stroke thickness is the same trap under a different command: the
+# RFID rules are 0.01in thick, so bucketing them with the 3.6in tag bar and
+# applying the large-number tolerance would wave through a hardcoded 2-dot
+# stroke by the identical 0.0032in-vs-0.0049in arithmetic. Stroke therefore
+# gets its own bucket at half a coarse dot; the 0.8in tag-bar stroke is the
+# widest correct value and differs by only 0.0020in, so it still passes.
 # A QR magnification is coarser still: ^BQ sizes in whole 25-dot steps,
 # so the finest grid a QR can land on is 25/203 = 0.1232in at 203 dpi and
 # 25/300 = 0.0833in at 300 dpi. No width makes the two agree exactly; the
@@ -161,14 +217,19 @@ _BQ = re.compile(r"\^BQ[NRIB],\d+,(\d+)")
 # 1.8x of headroom while still rejecting every other choice: the next
 # closest pairing is 0.0287in apart, and the capped ^BQN,2,10-at-both-dpi
 # bug the seeded 1.2in QR had lands 0.3982in apart.
-_TOLERANCE_IN = {"fo": 1 / 203, "gb": 1 / 203, "by": 0.5 / 203, "bq": 4 / 203}
+_TOLERANCE_IN = {"fo": 1 / 203, "gb": 1 / 203, "stroke": 0.5 / 203,
+                 "by": 0.5 / 203, "bq": 4 / 203}
 
 
 def _inches(zpl: str, dpi: int) -> dict[str, list[float]]:
-    """Every geometric number in the ZPL, converted back to inches."""
+    """Every geometric number in the ZPL, converted back to inches. ^GB is
+    split: its width/height are large numbers, its third argument — the
+    stroke thickness — is not, so they cannot share a tolerance."""
+    boxes = [tuple(map(int, m.groups())) for m in _GB.finditer(zpl)]
     return {
         "fo": [v / dpi for m in _FO.finditer(zpl) for v in map(int, m.groups())],
-        "gb": [v / dpi for m in _GB.finditer(zpl) for v in map(int, m.groups())],
+        "gb": [v / dpi for w, h, _t in boxes for v in (w, h)],
+        "stroke": [t / dpi for _w, _h, t in boxes],
         "by": [v / dpi for m in _BY.finditer(zpl) for v in map(int, m.groups())],
         # ^BQ magnification is a multiplier on a 25-dot module block, so the
         # printed square is mag * 25 dots wide, not mag dots.
