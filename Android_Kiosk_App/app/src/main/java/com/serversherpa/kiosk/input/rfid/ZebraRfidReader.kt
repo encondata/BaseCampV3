@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.input.rfid
 
 import android.content.Context
+import android.util.Log
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidSession
 import com.serversherpa.kiosk.core.rfid.RfidSettings
@@ -85,7 +86,7 @@ import kotlinx.coroutines.withContext
  * are both `LinkageError`, not `Exception`, so a bare `catch (e: Exception)`
  * would let either fall straight through as an uncaught crash.
  */
-class ZebraRfidReader(private val context: Context, private val scope: CoroutineScope) : RfidReader {
+open class ZebraRfidReader(private val context: Context, private val scope: CoroutineScope) : RfidReader {
     private val _connection = MutableStateFlow<RfidConnection>(RfidConnection.Disconnected)
     override val connection: StateFlow<RfidConnection> = _connection
 
@@ -97,22 +98,34 @@ class ZebraRfidReader(private val context: Context, private val scope: Coroutine
 
     private var readers: Readers? = null
     private var reader: RFIDReader? = null
-    private var name: String = "RFID reader"
 
     private val listener = object : RfidEventsListener {
         override fun eventReadNotify(event: RfidReadEvents) {
             // Never touch the reader from in here; just hand the value on.
-            event.readEventData?.tagData?.tagID?.let { _tags.tryEmit(it) }
+            val epc = event.readEventData?.tagData?.tagID ?: return
+            if (!_tags.tryEmit(epc)) {
+                // The tags flow buffers 512 — this only fires if nothing is
+                // draining it fast enough. Silent drops here mean scans the
+                // operator thinks were read never reach the outbox.
+                Log.w(TAG, "Dropped a tag read: the tags flow's buffer is full.")
+            }
         }
 
         override fun eventStatusNotify(event: RfidStatusEvents) {
             val data = event.StatusEventData ?: return
             when (data.statusEventType) {
                 STATUS_EVENT_TYPE.HANDHELD_TRIGGER_EVENT -> {
-                    when (data.HandheldTriggerEventData?.handheldEvent) {
-                        HANDHELD_TRIGGER_EVENT_TYPE.HANDHELD_TRIGGER_PRESSED -> _triggers.tryEmit(TriggerEvent.PRESSED)
-                        HANDHELD_TRIGGER_EVENT_TYPE.HANDHELD_TRIGGER_RELEASED -> _triggers.tryEmit(TriggerEvent.RELEASED)
-                        else -> Unit
+                    val triggerEvent = when (data.HandheldTriggerEventData?.handheldEvent) {
+                        HANDHELD_TRIGGER_EVENT_TYPE.HANDHELD_TRIGGER_PRESSED -> TriggerEvent.PRESSED
+                        HANDHELD_TRIGGER_EVENT_TYPE.HANDHELD_TRIGGER_RELEASED -> TriggerEvent.RELEASED
+                        else -> null
+                    }
+                    // A dropped RELEASED is the dangerous one: it can leave a
+                    // latched burst running forever with nothing reported
+                    // anywhere, so this is worth a log even though it can't
+                    // throw — this runs on the vendor's own callback thread.
+                    if (triggerEvent != null && !_triggers.tryEmit(triggerEvent)) {
+                        Log.w(TAG, "Dropped a trigger $triggerEvent event: the triggers flow's buffer is full.")
                     }
                 }
                 STATUS_EVENT_TYPE.BATTERY_EVENT -> {
@@ -123,6 +136,10 @@ class ZebraRfidReader(private val context: Context, private val scope: Coroutine
                     }
                 }
                 STATUS_EVENT_TYPE.DISCONNECTION_EVENT -> {
+                    // Deliberately doesn't touch `reader`/`readers` — this runs on
+                    // the vendor's callback thread and must stay free of vendor
+                    // calls. They're torn down the next time connect() runs; see
+                    // [hasOpenVendorConnection]/[closeVendorConnection].
                     _connection.value = RfidConnection.Failed("The reader disconnected.")
                 }
                 else -> Unit
@@ -130,33 +147,45 @@ class ZebraRfidReader(private val context: Context, private val scope: Coroutine
         }
     }
 
+    companion object {
+        private const val TAG = "ZebraRfidReader"
+    }
+
     override suspend fun connect(): Result<Unit> = withContext(Dispatchers.IO) {
         _connection.value = RfidConnection.Connecting
         try {
-            runInterruptible {
-                val all = Readers(context, ENUM_TRANSPORT.ALL)
-                readers = all
-                val device = all.GetAvailableRFIDReaderList()?.firstOrNull()
-                    ?: error("No RFID reader found. Pair the RFD40 in Android's Bluetooth settings first.")
-                // device.getRFIDReader() is the real accessor: the SDK's setter is
-                // misspelled setRFIDRReader(...), which breaks Kotlin's usual
-                // getX()/setX(X) property synthesis, so the explicit Java call is
-                // used here rather than a synthetic `device.rfidReader` property.
-                val rfid = device.getRFIDReader()
-                rfid.connect()
-                rfid.Events.addEventsListener(listener)
-                rfid.Events.setHandheldEvent(true)
-                rfid.Events.setTagReadEvent(true)
-                rfid.Events.setBatteryEvent(true)
-                // RFID_MODE with updateScannerPlugin = true puts the physical trigger
-                // on the radio rather than the barcode imager.
-                rfid.Config.setTriggerMode(ENUM_TRIGGER_MODE.RFID_MODE, true)
-                reader = rfid
-                name = device.name ?: "RFID reader"
+            val readerName = runInterruptible {
+                // A DISCONNECTION_EVENT sets `_connection` to Failed but never
+                // tears the reader down — nothing calls disconnect() from that
+                // state — so a stale reader/listener can still be sitting here
+                // the next time connect() runs. Tear it down first so the new
+                // reader gets a clean listener registration instead of a
+                // duplicate one (see IMPORTANT 2 in the class doc's history).
+                if (hasOpenVendorConnection()) {
+                    closeVendorConnection()
+                }
+                openVendorConnection()
             }
-            _connection.value = RfidConnection.Connected(name, null)
+            _connection.value = RfidConnection.Connected(readerName, null)
             Result.success(Unit)
         } catch (e: CancellationException) {
+            // The 15s timeout in RfidController cancelled us mid-connect. This
+            // mirrors disconnect()'s NonCancellable cleanup below, but unlike
+            // disconnect() — whose whole body already *is* the teardown —
+            // connect() can be cancelled before any teardown of what it just
+            // built was even attempted, so this has to actually close the
+            // connection, not just clear local state. Skipping this would
+            // leave `_connection` on Connecting forever (the controller's
+            // collector never sees another transition, so the UI is stuck)
+            // and, if the interrupt landed after the listener was registered
+            // and the reader connected but before `openVendorConnection()`
+            // returned, a live, listening reader with nothing left pointing
+            // at it — see [openVendorConnection]'s doc for why that reference
+            // survives to be torn down here.
+            withContext(NonCancellable) {
+                runInterruptible { closeVendorConnection() }
+                _connection.value = RfidConnection.Failed("Connecting to the reader was cancelled.")
+            }
             throw e
         } catch (e: Exception) {
             _connection.value = RfidConnection.Failed(readable(e))
@@ -174,6 +203,69 @@ class ZebraRfidReader(private val context: Context, private val scope: Coroutine
         }
     }
 
+    /** True while `reader`/`readers` still point at a live vendor connection
+     *  that hasn't been torn down — the case a DISCONNECTION_EVENT leaves
+     *  behind (see [ZebraRfidReader]'s eventStatusNotify). `connect()` checks
+     *  this before building a new one. Overridden by tests that fake
+     *  [openVendorConnection]/[closeVendorConnection] with no vendor state to
+     *  inspect here. */
+    protected open fun hasOpenVendorConnection(): Boolean = reader != null || readers != null
+
+    /** The one place a fresh vendor connection is built: construct `Readers`,
+     *  obtain the one available `RFIDReader`, connect it, wire up [listener],
+     *  and configure the physical trigger. Assumes any previous connection
+     *  has already been torn down — `connect()` sequences
+     *  [hasOpenVendorConnection]/[closeVendorConnection] ahead of this, so
+     *  this is never called with a live `reader`/`readers` still set.
+     *
+     *  `reader`/`readers` are assigned the instant each vendor object exists,
+     *  not only once every step below succeeds: a cancellation (the 15s
+     *  timeout in `RfidController`) landing anywhere in here — including
+     *  after the listener is registered and the reader is genuinely
+     *  connected and receiving events, but before this function returns —
+     *  must still find something in these fields for `connect()`'s
+     *  `CancellationException` handler to hand to [closeVendorConnection].
+     *  Runs inside `runInterruptible` on `Dispatchers.IO`; see the class doc
+     *  for why a bare `withContext(Dispatchers.IO)` would not be enough.
+     *
+     *  Overridden by test doubles (see `ZebraRfidReaderTest`) to exercise the
+     *  surrounding cancellation/teardown state machine in [connect] with no
+     *  Zebra hardware — real `Readers`/`RFIDReader` objects can't be built or
+     *  driven to a connected state under Robolectric (no reader is ever
+     *  found), so this seam is what makes that state machine testable at
+     *  all. */
+    protected open fun openVendorConnection(): String {
+        val all = Readers(context, ENUM_TRANSPORT.ALL)
+        readers = all
+        val device = all.GetAvailableRFIDReaderList()?.firstOrNull()
+            ?: error("No RFID reader found. Pair the RFD40 in Android's Bluetooth settings first.")
+        // device.getRFIDReader() is the real accessor: the SDK's setter is
+        // misspelled setRFIDRReader(...), which breaks Kotlin's usual
+        // getX()/setX(X) property synthesis, so the explicit Java call is
+        // used here rather than a synthetic `device.rfidReader` property.
+        val rfid = device.getRFIDReader()
+        reader = rfid
+        rfid.connect()
+        rfid.Events.addEventsListener(listener)
+        rfid.Events.setHandheldEvent(true)
+        rfid.Events.setTagReadEvent(true)
+        rfid.Events.setBatteryEvent(true)
+        // RFID_MODE with updateScannerPlugin = true puts the physical trigger
+        // on the radio rather than the barcode imager.
+        rfid.Config.setTriggerMode(ENUM_TRIGGER_MODE.RFID_MODE, true)
+        return device.name ?: "RFID reader"
+    }
+
+    /** Tears down whatever [openVendorConnection] built: removes [listener],
+     *  disconnects, and disposes, best-effort. The one function `connect()`
+     *  (both its "tear down anything stale first" step and its cancellation
+     *  cleanup), `disconnect()`, and [cleanUpAfterFailedConnect] all route
+     *  through, so a test double only has to override this once to observe
+     *  or fake every teardown path. */
+    protected open fun closeVendorConnection() {
+        disconnectBlocking()
+    }
+
     // Best-effort cleanup of whatever partially connected before a connect()
     // failure. Still interruptible, and still never swallows a cancellation
     // that lands during the cleanup itself. Deliberately never touches
@@ -186,7 +278,7 @@ class ZebraRfidReader(private val context: Context, private val scope: Coroutine
     // path).
     private suspend fun cleanUpAfterFailedConnect() {
         try {
-            runInterruptible { disconnectBlocking() }
+            runInterruptible { closeVendorConnection() }
         } catch (ce: CancellationException) {
             throw ce
         } catch (ignored: Exception) {
@@ -199,7 +291,7 @@ class ZebraRfidReader(private val context: Context, private val scope: Coroutine
     override suspend fun disconnect() {
         withContext(Dispatchers.IO) {
             try {
-                runInterruptible { disconnectBlocking() }
+                runInterruptible { closeVendorConnection() }
                 _connection.value = RfidConnection.Disconnected
             } catch (e: CancellationException) {
                 // The interrupt landed mid-cleanup. Leave local state consistent
@@ -224,10 +316,30 @@ class ZebraRfidReader(private val context: Context, private val scope: Coroutine
     /** Only ever called from inside [runInterruptible]; never suspends itself.
      *  Leaves `_connection` untouched — see [cleanUpAfterFailedConnect]'s doc. */
     private fun disconnectBlocking() {
-        runCatching { reader?.Events?.removeEventsListener(listener) }
-        runCatching { reader?.disconnect() }
-        runCatching { readers?.Dispose() }
+        teardownStep { reader?.Events?.removeEventsListener(listener) }
+        teardownStep { reader?.disconnect() }
+        teardownStep { readers?.Dispose() }
         clearReaderRefs()
+    }
+
+    /** Runs one best-effort vendor teardown call, the way a bare `runCatching`
+     *  around each step used to. The difference: an `InterruptedException`
+     *  restores the thread's interrupt status before moving on to the next
+     *  step, instead of just swallowing it. `runCatching` alone would clear
+     *  the flag as a side effect of catching it (throwing
+     *  `InterruptedException` clears it), which left every step after the
+     *  first one that got interrupted running with a clean flag — no longer
+     *  interruptible, and nothing left for the enclosing `runInterruptible`
+     *  to see and convert into a `CancellationException` once this whole
+     *  teardown finishes. */
+    private inline fun teardownStep(action: () -> Unit) {
+        try {
+            action()
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (ignored: Throwable) {
+            // Best-effort: the remaining steps still need to run.
+        }
     }
 
     private fun clearReaderRefs() {
