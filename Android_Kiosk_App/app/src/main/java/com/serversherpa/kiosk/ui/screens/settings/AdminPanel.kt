@@ -74,7 +74,12 @@ fun AdminPanel() {
                 Text(regionLine(choice), color = c.textMute)
                 if (choice is RegionChoice.Choosable) {
                     var selectedCode by remember(choice.active?.code) { mutableStateOf(choice.active?.code ?: "") }
-                    var hoppingOn by remember(choice.active?.code) { mutableStateOf(true) }
+                    // Deliberately NOT keyed on choice.active?.code, unlike selectedCode
+                    // above: a successful pick() reloads `regions`, which moves
+                    // choice.active on to the code just picked — keying this the same
+                    // way would silently reset an operator's own hopping choice back to
+                    // the default right after every successful pick.
+                    var hoppingOn by remember { mutableStateOf(true) }
                     var regionError by remember { mutableStateOf<String?>(null) }
 
                     fun pick(code: String, hopping: Boolean?) {
