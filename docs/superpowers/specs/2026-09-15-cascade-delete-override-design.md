@@ -59,7 +59,8 @@ Rules that hold regardless of the walk:
 
 - `audit_log` is never purged. Its actor column is nullable so it clears, but an explicit guard refuses to purge that table if the schema ever changes. Deleting a record must not delete the record of deleting it.
 - A table already visited at a shallower depth is not revisited; the same (table, column) pair appears once.
-- A self-referencing nullable column inside a purged table (`auth_sessions.replaced_by`) is nulled across the doomed row set before the delete, recorded as its own `clear` step.
+- A self-referencing column inside a purged table (`auth_sessions.replaced_by`) gets no step at all. The purge deletes the referencing and the referenced rows in one statement, and the foreign key is plain `NO ACTION`, so PostgreSQL checks it at end of statement and both rows going together satisfies it. Nulling instead would trip `auth_sessions_rotation_pair_check`, which pairs `replaced_by` with `rotated_at`. A self-reference on the target's own table is different and still clears: other people's `people.created_by` pointing at the doomed person is a genuine detach.
+- `check_guarded` reads CHECK constraints from the ORM metadata only, so one declared solely in a migration is invisible to it. The blast radius is bounded: such a clear raises an `IntegrityError`, the savepoint rolls back, and the operator sees an ordinary failure report. Nothing half-deletes.
 - Exceeding `max_depth` adds to `blocked`. So does any table in `DELETABLE` being reached as a purge target, because deleting another top-level record as a side effect is out of scope: it must be marked and reconciled on its own.
 - Steps carry counts measured at plan time. The executor re-runs each statement and reports actual row counts, which may differ if the database changed between preview and confirm.
 
