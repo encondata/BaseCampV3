@@ -11,6 +11,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -24,6 +25,8 @@ import androidx.navigation.NavHostController
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.outbox.OutboxRow
 import com.serversherpa.kiosk.core.outbox.OutboxStatus
+import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
+import com.serversherpa.kiosk.core.rfid.RepeatSweepPolicy
 import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.input.datawedge.DataWedge
@@ -53,11 +56,31 @@ fun ScanScreen(nav: NavHostController) {
     val ui by vm.state.collectAsStateWithLifecycle()
     val snapshot by vm.outboxSnapshot.collectAsStateWithLifecycle()
     val setup by container.prefs.setupSelection.collectAsStateWithLifecycle(initialValue = null)
+    val rfidSession by container.rfid.session.collectAsStateWithLifecycle()
+    val rfidSettings by container.prefs.rfid.collectAsStateWithLifecycle(initialValue = DEFAULT_RFID_SETTINGS)
     var camera by remember { mutableStateOf(false) }
     val empty = ui.loadStatus == LoadStatus.READY && ui.rosterSize == 0
     val disabled = ui.loadStatus != LoadStatus.READY || empty || setup == null
 
     LaunchedEffect(Unit) { container.scanBus.events.collect { vm.onScan(it.value) } }
+    // A finished sweep queues here, beside the typed and barcode commits.
+    LaunchedEffect(Unit) { container.rfid.bursts.collect { vm.onBurst(it) } }
+
+    // The sled reads only while this screen is on top, the same rule the scan
+    // bus follows. Keyed on Unit, not re-keyed on anything that changes while
+    // the screen stays composed, so this runs exactly once per visit (on
+    // first composition) and disarms exactly once on leaving — recomposition
+    // (e.g. from rfidSession or rfidSettings changing) never re-enters it.
+    // That matters because armNow() only resets what this visit has already
+    // queued when the controller wasn't already armed; a re-arm mid-visit
+    // would otherwise be a no-op for that reset (the controller guards it
+    // too), but relying on a Unit key to never fire twice per visit is the
+    // simpler invariant to keep, so both line up rather than one covering
+    // for the other.
+    DisposableEffect(Unit) {
+        container.rfid.arm()
+        onDispose { container.rfid.disarm() }
+    }
 
     // A full-screen dialog: it floats over this page rather than replacing it.
     if (camera) CameraScanSheet(onScan = { container.scanBus.publish(it) }, onDismiss = { camera = false })
@@ -66,11 +89,20 @@ fun ScanScreen(nav: NavHostController) {
         PageHeader("Kiosk · Scanning", "Scanning", setup?.let { "${it.initiativeName} · ${it.siteName} · ${it.scanLabel}" } ?: "Finish Kiosk Setup first.")
         if (ui.loadStatus == LoadStatus.ERROR) KioskToast("Couldn't read this kiosk's local data.", error = true)
         if (empty) Text("No move data on this kiosk. Sync from Kiosk Setup.", color = c.textMute)
-        ScanInput(
-            ui.value, vm::setValue, onSubmit = { vm.onScan(it) },
-            placeholder = "Scan or type an asset ID, serial, or tag", enabled = !disabled, keepFocus = !camera,
-            trailingIcon = if (container.hasCamera) ({ CameraFieldButton(!disabled) { camera = true } }) else null,
-        )
+        val burst = rfidSession
+        if (burst != null) {
+            RfidReadPanel(
+                session = burst,
+                showSkipped = rfidSettings.repeatPolicy == RepeatSweepPolicy.SKIP_AND_COUNT,
+                onStop = { container.rfid.stopBurst() },
+            )
+        } else {
+            ScanInput(
+                ui.value, vm::setValue, onSubmit = { vm.onScan(it) },
+                placeholder = "Scan or type an asset ID, serial, or tag", enabled = !disabled, keepFocus = !camera,
+                trailingIcon = if (container.hasCamera) ({ CameraFieldButton(!disabled) { camera = true } }) else null,
+            )
+        }
         // The grey empty-roster line above already says it; the red toast is for a scan that arrived anyway.
         if (ui.error != null && !empty) KioskToast(ui.error, error = true)
         KioskToast(ui.storageError, error = true)
