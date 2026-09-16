@@ -352,3 +352,91 @@ async def test_references_report_marks_database_handled_foreign_keys(
     refs = {(r["table"], r["column"]): r for r in failure["references"]}
     assert refs[("notification_group_members", "person_id")]["db_handled"] is True
     assert refs[("person_roles", "person_id")]["db_handled"] is False
+
+
+async def test_cascade_delete_404s_for_an_unknown_marker(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await client.post(
+        f"/devtools/pending-deletes/{uuid.uuid4()}/cascade-delete", headers=hdrs,
+        json={"confirm_label": "whatever"})
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "marker_not_found"
+
+
+async def test_cascade_delete_409s_when_the_plan_is_blocked(client, db, seeded_user):
+    """processed_scans.person_id is nullable but check-guarded by
+    processed_scans_match_target_chk (a scan matched to a person can't have
+    its person_id nulled without tripping the CHECK), so collect_levels
+    refuses it outright — a real block, nothing mocked."""
+    from datetime import UTC, datetime
+
+    from serversherpa.db.models import ProcessedScan
+
+    hdrs = await _developer(db, client, seeded_user)
+    person = Person(first_name="Blocked", last_name="Person")
+    db.add(person)
+    await db.flush()
+    db.add(ProcessedScan(
+        scanned_value="x", scan_type="rfid", scanned_at=datetime.now(UTC),
+        match_type="person", person_id=person.id, processed_at=datetime.now(UTC)))
+    marker = await _marker(db, person, "Blocked Person")
+    person_id, marker_id = person.id, marker.id
+
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/cascade-delete", headers=hdrs,
+        json={"confirm_label": "Blocked Person"})
+
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "cascade_blocked"
+    assert detail["reasons"]
+    assert any("processed_scans" in reason for reason in detail["reasons"])
+
+    db.expire_all()
+    assert await db.get(Person, person_id) is not None
+    assert await db.get(PendingDelete, marker_id) is not None
+    assert await db.scalar(
+        select(AuditLog).where(AuditLog.action == "cascade_delete")) is None
+
+
+async def test_cascade_delete_rolls_back_the_audit_row_on_fk_violation(
+        client, db, seeded_user, monkeypatch):
+    """A seam, not a fake exception: execute_cascade is monkeypatched to a
+    no-op, so the target's own required person_roles dependent is left
+    behind and Postgres raises a real fk_violation deleting the person row.
+    The empty audit-row check is the point of this test — it proves the
+    audit row the try block would otherwise write is rolled back with
+    everything else in the failed savepoint, not left dangling."""
+    from serversherpa.api.routes import devtools as devtools_routes
+
+    async def _noop_cascade(db, model, entity_id, **kwargs):
+        return {"deleted_rows": {}, "cleared_references": {}}
+
+    monkeypatch.setattr(devtools_routes, "execute_cascade", _noop_cascade)
+
+    hdrs = await _developer(db, client, seeded_user)
+    person = Person(first_name="Poisoned", last_name="Person")
+    db.add(person)
+    await db.flush()
+    db.add(PersonRole(person_id=person.id, role="staff"))
+    marker = await _marker(db, person, "Poisoned Person")
+    person_id, marker_id = person.id, marker.id
+
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/cascade-delete", headers=hdrs,
+        json={"confirm_label": "Poisoned Person"})
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["deleted"] == 0
+    assert len(body["failed"]) == 1
+    failure = body["failed"][0]
+    assert failure["reason"] == "fk_violation"
+    refs = {(r["table"], r["column"]) for r in failure["references"]}
+    assert ("person_roles", "person_id") in refs
+
+    db.expire_all()
+    assert await db.get(Person, person_id) is not None
+    assert await db.get(PendingDelete, marker_id) is not None
+    assert await db.scalar(
+        select(AuditLog).where(AuditLog.action == "cascade_delete")) is None
