@@ -10,8 +10,11 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * A reader with no hardware behind it. It drives every test, and the Developer
- * tab uses it to fire a synthetic burst so the live panel and the outbox commit
- * can be exercised on a phone with no sled.
+ * tab uses it to drive the reader adapter — connect, a trigger press, tag
+ * reads, trigger release — as a plumbing smoke test on a phone with no sled.
+ * That burst never reaches the Scanning screen's live panel or the outbox:
+ * `RfidController` only acts on triggers while armed, and only that screen
+ * arms it.
  *
  * It ships in `main`, not `test`, for exactly that reason.
  */

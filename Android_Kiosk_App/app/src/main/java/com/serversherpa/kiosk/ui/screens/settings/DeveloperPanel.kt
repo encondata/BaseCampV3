@@ -66,6 +66,11 @@ fun DeveloperPanel() {
             ) {
                 MiniButton("Simulate an RFID sweep", {
                     scope.launch {
+                        // Calling the raw reader, not container.rfid.connectNow(), still
+                        // exercises the controller's settings-push plumbing: RfidController
+                        // .start() collects reader.connection itself, so it sees this
+                        // Connected transition and fires the push regardless of who called
+                        // connect().
                         fakeReader.connect()
                         fakeReader.emitTrigger(TriggerEvent.PRESSED)
                         for (tag in listOf("100348", "100349", "100350", "100348")) {
