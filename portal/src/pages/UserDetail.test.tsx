@@ -158,6 +158,17 @@ it('an outranked person is read-only', async () => {
   expect(screen.queryByRole('button', { name: 'Disable account' })).toBeNull();
 });
 
+it('an actor with only access:change gets Access management but no Profile-tab user actions', async () => {
+  auth.perms = new Set(['users:view', 'access:view', 'access:change', 'audit:view']);
+  renderAt('/people/users/p1');
+  await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Reset password' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Sign out everywhere' })).toBeNull();
+  fireEvent.click(screen.getByRole('tab', { name: 'Access' }));
+  expect(await screen.findByRole('button', { name: 'Manage roles' })).toBeTruthy();
+});
+
 it('Sign out everywhere confirms, posts, and reloads', async () => {
   renderAt('/people/users/p1');
   await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });

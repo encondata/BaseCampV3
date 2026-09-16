@@ -153,7 +153,10 @@ async def get_user_detail(
 ) -> UserDetailOut:
     """Everything the user detail page shows, in one payload. Row visibility
     matches the list (users:view + scope). The access block keeps the
-    Explorer's rank-60 rule; sessions need users:change and a global actor."""
+    Explorer's rank-60 rule; sessions need users:change, a global actor, and
+    the actor must be able to touch the target's rank (or be viewing
+    themself) — a rank-40 staffer should not be able to read a founder's
+    session IPs and user agents."""
     query = (select(Person, UserAccount)
              .join(UserAccount, UserAccount.person_id == Person.id)
              .where(Person.id == person_id))
@@ -258,9 +261,14 @@ async def get_user_detail(
             cells=eff.cells,
         )
 
-    # ── sessions (admin view) ──
+    # ── sessions (admin view; rank-gated so a rank-40 staffer can't read a
+    # founder's session IPs/user agents) ──
+    target_max_rank = max((role.rank for _, role in grant_rows), default=0)
     sessions: list[UserSessionRow] | None = None
-    if actor.access.can("users", "change") and actor.access.is_global:
+    if actor.access.can("users", "change") and actor.access.is_global and (
+        person_id == actor.person.id
+        or can_touch_rank(actor.access.max_rank, target_max_rank)
+    ):
         sessions = [UserSessionRow(**r) for r in await live_session_rows(db, person_id)]
 
     person_out = UserDetailPerson.model_validate(person)
@@ -279,7 +287,7 @@ async def get_user_detail(
                  else orgs.get(("partner", g.partner_id)) if g.partner_id else None),
             granted_by=refs.get(g.granted_by), granted_at=g.granted_at)
             for g, role in grant_rows],
-        max_rank=max((role.rank for _, role in grant_rows), default=0),
+        max_rank=target_max_rank,
         worker=worker,
         notification_groups=notification_groups,
         access=access_block,

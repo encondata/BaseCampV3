@@ -9,8 +9,7 @@ import DataTable from '../DataTable';
 import type { UserDetailOut } from '../../lib/api';
 import { statusChip } from '../../lib/chips';
 import { describeUserAgent, longDate, relativeTime } from '../../lib/format';
-import { STATUS_META } from '../../lib/users';
-import type { DetailMode } from '../../pages/UserDetail';
+import { STATUS_META, type DetailMode } from '../../lib/users';
 
 const SOURCE_LABEL: Record<string, string> = {
   manual: 'Added manually',
@@ -18,16 +17,22 @@ const SOURCE_LABEL: Record<string, string> = {
   import: 'Imported from V2',
 };
 
-export default function UserProfileTab({ detail, mode, onEdit, onReset, onSignOutAll }: {
+// `mode` is accepted (not just canManageUsers) so callers keep passing the
+// same DetailMode they compute for the rest of the page; this component
+// only needs canManageUsers to gate its own buttons.
+export default function UserProfileTab({
+  detail, canManageUsers, onEdit, onReset, onSignOutAll,
+}: {
   detail: UserDetailOut;
   mode: DetailMode;
+  canManageUsers: boolean;
   onEdit: () => void;
   onReset: () => void;
   onSignOutAll: () => void;
 }) {
   const { person, account, roles, worker, notification_groups: groups, sessions } = detail;
   const status = STATUS_META[account.status] ?? { label: account.status, cls: 'tag' };
-  const canManage = mode === 'manage';
+  const canManage = canManageUsers;
   const address = [person.address_line1, person.address_line2,
     [person.city, person.region, person.postal_code].filter(Boolean).join(', '),
     person.country]
@@ -96,21 +101,25 @@ export default function UserProfileTab({ detail, mode, onEdit, onReset, onSignOu
           <div className="panel-head"><h3>Memberships</h3></div>
           <div className="panel-body">
             <div className="ud-membership-head"><p className="eyebrow-sm" style={{ margin: 0 }}>Worker profile</p></div>
-            <DataTable ariaLabel="Worker profile" emptyText="Not a worker"
-              columns={[
-                { key: 'trade', label: 'Trade' }, { key: 'level', label: 'Level' },
-                { key: 'partner', label: 'Partner' }, { key: 'status', label: 'Status' },
-                { key: 'actions', label: '' },
-              ]}
-              rows={worker ? [{
-                key: 'worker',
-                cells: [
-                  worker.trade ?? '—', worker.level_title ?? 'Unleveled',
-                  worker.partner?.name ?? 'Direct hire',
-                  statusChip(worker.status_label, worker.status_color),
-                  <Link key="open" className="mini-btn" to={`/people/workers/${person.id}`}>Open worker page</Link>,
-                ],
-              }] : []} />
+            {worker
+              ? (
+                <DataTable ariaLabel="Worker profile" emptyText="Not a worker"
+                  columns={[
+                    { key: 'trade', label: 'Trade' }, { key: 'level', label: 'Level' },
+                    { key: 'partner', label: 'Partner' }, { key: 'status', label: 'Status' },
+                    { key: 'actions', label: '' },
+                  ]}
+                  rows={[{
+                    key: 'worker',
+                    cells: [
+                      worker.trade ?? '—', worker.level_title ?? 'Unleveled',
+                      worker.partner?.name ?? 'Direct hire',
+                      statusChip(worker.status_label, worker.status_color),
+                      <Link key="open" className="mini-btn" to={`/people/workers/${person.id}`}>Open worker page</Link>,
+                    ],
+                  }]} />
+              )
+              : <p className="set-note" style={{ padding: 0 }}>Not a worker</p>}
 
             <div className="ud-membership-head"><p className="eyebrow-sm" style={{ margin: 0 }}>Org affiliations</p></div>
             <DataTable ariaLabel="Org affiliations" emptyText="No client or partner roles"

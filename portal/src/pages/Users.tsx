@@ -650,9 +650,11 @@ export default function Users() {
       {addOpen && (
         <AddPersonModal
           onClose={() => setAddOpen(false)}
-          onCreated={(personId) => {
+          onCreated={(created) => {
             setAddOpen(false);
-            navigate(`/people/users/${personId}`);
+            if (created.login_email) { navigate(`/people/users/${created.person_id}`); return; }
+            deepLinkTarget.current = null;
+            void load().then(() => setOpenId(created.person_id));
           }}
         />
       )}
@@ -677,7 +679,7 @@ function generatePassword(): string {
 
 function AddPersonModal({ onClose, onCreated }: {
   onClose: () => void;
-  onCreated: (personId: string) => void;
+  onCreated: (created: { person_id: string; login_email: string | null }) => void;
 }) {
   const [form, setForm] = useState({
     first_name: '', last_name: '', preferred_name: '', contact_email: '',
@@ -721,7 +723,7 @@ function AddPersonModal({ onClose, onCreated }: {
         return;
       }
       const created = await resp.json();
-      onCreated(created.person_id);
+      onCreated(created);
     } catch (err) {
       setError(err instanceof ApiError ? (ADD_ERRORS[err.code] ?? err.code) : 'Network error.');
     } finally {

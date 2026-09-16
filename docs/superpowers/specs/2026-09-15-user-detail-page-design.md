@@ -96,7 +96,7 @@ sessions: null | [{ family_id, started_at, last_active_at, expires_at, ip_addres
 ```
 
 - `access` is populated only when the actor has `access:view` **and** (`actor.max_rank >= GATE_BYPASS_RANK` or `person_id == actor.person.id`) — the same rule `/access/effective/{id}` enforces today. The cell computation is factored out of `access.py::effective` into `serversherpa/access/effective.py::effective_cells(db, person_id)` and reused by both endpoints so the sourcing logic has one home.
-- `sessions` is populated only when the actor has `users:change` and is global (`_require_global` semantics without raising) — matches the other admin mutations. The session query is the `/me/sessions` query with the target id and no `current` flag; factor it into a helper shared with `me.py`.
+- `sessions` is populated only when the actor has `users:change`, is global (`_require_global` semantics without raising), and can touch the target's rank (`can_touch_rank(actor.access.max_rank, target_max_rank)`) — or is viewing themself. Rationale: the IP address and user agent of someone who outranks you should stay private, even from a global users:change holder. The session query is the `/me/sessions` query with the target id and no `current` flag; factor it into a helper shared with `me.py`.
 - `roles.org.name` comes from `Client.name` / `Partner.name`; `granted_by` / `added_by` / `set_by` display names come from one batched `Person` lookup.
 - `notification_groups.channels` is the member's effective channels (`effective_settings()` from `routes/notifications.py`).
 

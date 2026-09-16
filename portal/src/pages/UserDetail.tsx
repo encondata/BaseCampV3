@@ -23,17 +23,13 @@ import {
 } from '../lib/api';
 import { longDate } from '../lib/format';
 import { usePendingDeletes } from '../lib/pendingDeletes';
-import { ROLE_CLS, STATUS_META, toManagedUser } from '../lib/users';
+import { type DetailMode, ROLE_CLS, STATUS_META, toManagedUser } from '../lib/users';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';
 import '../styles/access.css';
 import '../styles/reports.css';
 import '../styles/user-detail.css';
-
-/** self = it's you; readonly = they outrank you; manage = full admin actions;
- *  view = you can see the row but hold no users:change / access:change. */
-export type DetailMode = 'self' | 'readonly' | 'manage' | 'view';
 
 type Tab = 'profile' | 'access' | 'history';
 type Action =
@@ -67,6 +63,10 @@ export default function UserDetail() {
 
   const tab: Tab = pathname.endsWith('/access') ? 'access'
     : pathname.endsWith('/history') ? 'history' : 'profile';
+  // A direct link to .../history without audit:view (the History tab button
+  // is hidden in that case, but the URL itself is still reachable) falls
+  // back to the Profile body rather than rendering nothing.
+  const effectiveTab: Tab = tab === 'history' && !showHistory ? 'profile' : tab;
   const base = `/people/users/${personId}`;
 
   const [detail, setDetail] = useState<UserDetailOut | null>(null);
@@ -264,24 +264,25 @@ export default function UserDetail() {
            ['history', 'History', `${base}/history`]] as const)
           .filter(([key]) => key !== 'history' || showHistory)
           .map(([key, label, to]) => (
-            <button key={key} role="tab" aria-selected={tab === key} className={tab === key ? 'on' : ''}
+            <button key={key} role="tab" aria-selected={effectiveTab === key}
+                    className={effectiveTab === key ? 'on' : ''}
                     onClick={() => navigate(to)}>
               {label}
             </button>
           ))}
       </div>
 
-      {tab === 'profile' && (
-        <UserProfileTab detail={detail} mode={mode}
+      {effectiveTab === 'profile' && (
+        <UserProfileTab detail={detail} mode={mode} canManageUsers={canManageUsers}
                         onEdit={() => setAction({ kind: 'edit' })}
                         onReset={() => setAction({ kind: 'reset' })}
                         onSignOutAll={() => setAction({ kind: 'signout' })} />
       )}
-      {tab === 'access' && (
+      {effectiveTab === 'access' && (
         <UserAccessTab detail={detail} canManageAccess={canManageAccess}
                        selfId={me?.id ?? null} maxRank={maxRank} onChanged={() => void load()} />
       )}
-      {tab === 'history' && showHistory && (
+      {effectiveTab === 'history' && showHistory && (
         activityError
           ? (
             <div className="dir-empty" style={{ marginTop: 16 }}>

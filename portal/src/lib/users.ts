@@ -7,6 +7,10 @@ import type { ManagedUser } from '../components/UserAdminModals';
 import type { GodField } from './godEdit';
 import { longDate, relativeTime } from './format';
 
+/** self = it's you; readonly = they outrank you; manage = full admin actions;
+ *  view = you can see the row but hold no users:change / access:change. */
+export type DetailMode = 'self' | 'readonly' | 'manage' | 'view';
+
 /** Role chip palette — shared by the Users list and the user detail page. */
 export const ROLE_CLS: Record<string, string> = {
   admin: 'c-amber', staff: 'c-blue', worker: 'c-green',

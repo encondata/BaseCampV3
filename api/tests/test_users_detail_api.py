@@ -108,18 +108,35 @@ async def test_detail_access_block_follows_rank_60_rule(client, db, seeded_user)
 
 
 async def test_detail_sessions_need_users_change(client, db, seeded_user):
-    # staff has users:change and is global -> sessions visible;
+    # staff has users:change and is global -> sessions visible for a
+    # touchable (lower-rank) target;
     # a staff whose users:change is overridden off -> sessions null
+    low = await _add_user(db, first="Lois", last="Low",
+                          email="lois@test.example.com", role="worker")
     wan = await _add_user(db, first="Wan", last="Worker",
                           email="wan@test.example.com", role="staff")
     hdrs = await _login(client, "alice@test.example.com")
-    assert (await client.get(f"/users/{wan.id}", headers=hdrs)).json()["sessions"] == []
+    assert (await client.get(f"/users/{low.id}", headers=hdrs)).json()["sessions"] == []
     admin = await login_admin(client, db, seeded_user)
     assert (await client.put(f"/access/overrides/{wan.id}", headers=admin,
                              json={"overrides": {"users": {"change": False}}})).status_code == 200
     wan_hdrs = await _login(client, "wan@test.example.com")
     detail = (await client.get(f"/users/{seeded_user.id}", headers=wan_hdrs)).json()
     assert detail["sessions"] is None
+
+
+async def test_detail_sessions_need_rank_check(client, db, seeded_user):
+    # alice (staff, rank 40) can't see a super_admin's (rank 80) sessions,
+    # but can see a worker's (rank 10) — the same "can this actor manage
+    # this target" rule as edit/reset/disable, so a rank-40 staffer can't
+    # read a founder's session IPs and user agents.
+    boss = await _add_user(db, first="B", last="Oss",
+                           email="boss@test.example.com", role="super_admin")
+    worker = await _add_user(db, first="Wor", last="Ker",
+                             email="worker@test.example.com", role="worker")
+    hdrs = await _login(client, "alice@test.example.com")
+    assert (await client.get(f"/users/{boss.id}", headers=hdrs)).json()["sessions"] is None
+    assert (await client.get(f"/users/{worker.id}", headers=hdrs)).json()["sessions"] == []
 
 
 async def test_detail_404_without_account_and_403_for_worker(client, db, seeded_user):
@@ -135,6 +152,40 @@ async def test_detail_404_without_account_and_403_for_worker(client, db, seeded_
                     email="wan@test.example.com", role="worker")
     wan_hdrs = await _login(client, "wan@test.example.com")
     assert (await client.get(f"/users/{seeded_user.id}", headers=wan_hdrs)).status_code == 403
+
+
+async def test_detail_scope_conditions_for_a_self_anchored_actor(client, db, seeded_user):
+    # `external` (scope_anchor="self") has no grants of its own — a
+    # per-person override is the only way such an actor reaches this
+    # endpoint at all (see _require_global's docstring: that "self"
+    # visibility exists purely for an external contact to see their own
+    # row via users:view; it is not scope-aware for mutating endpoints,
+    # but GET /users/{id} filters by scope_conditions instead, so a
+    # non-global actor here only ever sees their own row).
+    ext = await _add_user(db, first="Ext", last="Ernal",
+                          email="ext@test.example.com", role="external")
+    other = await _add_user(db, first="Oth", last="Er",
+                            email="other@test.example.com", role="worker")
+    admin = await login_admin(client, db, seeded_user)
+    assert (await client.put(f"/access/overrides/{ext.id}", headers=admin,
+                             json={"overrides": {"users": {"view": True}}})).status_code == 200
+
+    ext_hdrs = await _login(client, "ext@test.example.com")
+    resp = await client.get(f"/users/{other.id}", headers=ext_hdrs)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "user_not_found"
+
+    self_resp = await client.get(f"/users/{ext.id}", headers=ext_hdrs)
+    assert self_resp.status_code == 200, self_resp.text
+    body = self_resp.json()
+    # NOTE: unlike "users", the "access" resource's visible_to never
+    # includes "self" (resources.py hard-gates the whole resource to
+    # global actors only) — no per-person override can widen that, so
+    # a self-anchored actor's access block stays null even for their own
+    # row. See report: this differs from the brief's expectation that
+    # `access` would be populated here.
+    assert body["access"] is None
+    assert body["sessions"] is None
 
 
 # ── GET /users/{id}/activity ────────────────────────────────────────
@@ -206,6 +257,27 @@ async def test_set_access_groups_diffs_and_audits(client, db, seeded_user):
     assert resp.json()["detail"]["code"] == "group_not_found"
 
 
+async def test_set_access_groups_to_empty_removes_membership(client, db, seeded_user):
+    admin = await login_admin(client, db, seeded_user)
+    wan = await _add_user(db, first="Wan", last="Worker",
+                          email="wan@test.example.com", role="staff")
+    g1 = (await client.post("/access/groups", headers=admin, json={"name": "Finance"})).json()["id"]
+    assert (await client.put(f"/access/groups/{g1}/members", headers=admin,
+                             json={"person_ids": [str(wan.id)]})).status_code == 200
+
+    resp = await client.put(f"/users/{wan.id}/access-groups", headers=admin,
+                            json={"group_ids": []})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"group_ids": []}
+    members = list(await db.scalars(
+        select(AccessGroupMember.group_id).where(AccessGroupMember.person_id == wan.id)))
+    assert members == []
+
+    log = await db.scalar(select(AuditLog).where(AuditLog.action == "access_groups.set"))
+    assert log.entity_type == "person" and log.entity_id == str(wan.id)
+    assert log.changes == {"groups": {"from": ["Finance"], "to": []}}
+
+
 async def test_set_access_groups_guards(client, db, seeded_user):
     admin = await login_admin(client, db, seeded_user)
     gid = (await client.post("/access/groups", headers=admin, json={"name": "Sec"})).json()["id"]
@@ -246,3 +318,13 @@ async def test_revoke_all_sessions(client, db, seeded_user):
 
     body = (await client.get(f"/users/{wan_id}", headers=admin)).json()
     assert body["sessions"] == []
+
+
+async def test_revoke_all_sessions_requires_users_change(client, db, seeded_user):
+    target = await _add_user(db, first="Tar", last="Get",
+                             email="target@test.example.com", role="staff")
+    await _add_user(db, first="Wor", last="Ker",
+                    email="worker@test.example.com", role="worker")
+    worker_hdrs = await _login(client, "worker@test.example.com")   # no users:change
+    resp = await client.post(f"/users/{target.id}/sessions/revoke-all", headers=worker_hdrs)
+    assert resp.status_code == 403
