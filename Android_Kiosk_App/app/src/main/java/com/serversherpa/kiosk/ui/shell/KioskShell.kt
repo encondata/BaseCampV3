@@ -48,7 +48,6 @@ import com.serversherpa.kiosk.core.devices.RegistrationState
 import com.serversherpa.kiosk.core.features.featureForRoute
 import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.identity.KioskIdentity
-import com.serversherpa.kiosk.data.sync.SyncPhase
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.theme.ChipTone
@@ -69,7 +68,6 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
     val registration by container.heartbeat.registration.collectAsStateWithLifecycle()
     val setup by container.prefs.setupSelection.collectAsStateWithLifecycle(initialValue = null)
     val devMode by container.prefs.devMode.collectAsStateWithLifecycle(initialValue = false)
-    val sync by container.sync.status.collectAsStateWithLifecycle()
     val backStack by nav.currentBackStackEntryAsState()
     val feature = featureForRoute(backStack?.destination?.route)
     val scope = rememberCoroutineScope()
@@ -83,8 +81,8 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
         // ── top bar ──
         // One row: the logo carries the brand, the mono name says which kiosk this
         // is, the person says who is on it, and Sign out doubles as the registration
-        // light. The mode chip and the section title are deliberately absent — the
-        // footer says "MODE Android" and every page prints its own title below.
+        // light. The mode chip and the section title are deliberately absent — every
+        // page prints its own title below.
         Row(
             Modifier.fillMaxWidth().background(c.ink).statusBarsPadding()
                 .padding(start = 14.dp, end = 10.dp, top = 4.dp, bottom = 4.dp),
@@ -126,11 +124,10 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
         Box(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) { content() }
         // ── footer ──
         FlowRow(Modifier.fillMaxWidth().background(c.paper).navigationBarsPadding().padding(horizontal = 14.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            FootItem("Mode", "Android")
-            FootItem("Version", container.config.kioskVersion)
+            // What move this kiosk is set to, and nothing else. Mode, version and the
+            // sync light said nothing an operator acts on; the version lives in
+            // Settings and Kiosk Setup owns the sync state.
             setup?.let { FootItem("Move", it.initiativeName); FootItem("Site", it.siteName); FootItem("Scan", it.scanLabel) }
-            val good = sync.phase == SyncPhase.DONE
-            Text("Data Sync", fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = if (good) ChipTone.GREEN.text else ChipTone.RED.text)
             if (devMode) FootItem("Dev mode", "On", valueColor = c.accent)
         }
     }

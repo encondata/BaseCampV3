@@ -41,10 +41,12 @@ class KioskShellTest {
         // The one-row bar drops the wordmark; the logo carries the brand and its name.
         compose.onNodeWithContentDescription("ServerSherpa").assertIsDisplayed()
         compose.onNodeWithText("Move A", substring = true).assertIsDisplayed()
-        compose.onNodeWithText("Data Sync").assertIsDisplayed()
-        // "Android" belongs to the footer's MODE only: the bar used to repeat it as a
-        // "KIOSK · ANDROID" chip, which is the clutter this layout removed.
-        assertEquals(1, compose.onAllNodesWithText("Android", substring = true).fetchSemanticsNodes().size)
+        compose.onNodeWithText("Dock 4", substring = true).assertIsDisplayed()
+        // The footer carries the move context and nothing else: mode, version and the
+        // sync light were noise an operator never acted on.
+        for (gone in listOf("MODE", "VERSION", "Data Sync")) {
+            assertEquals(gone, 0, compose.onAllNodesWithText(gone, substring = true).fetchSemanticsNodes().size)
+        }
     }
 
     /** A stray tap must not end the shift: Sign out asks, and Cancel leaves the session alone. */
