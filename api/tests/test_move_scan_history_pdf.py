@@ -103,6 +103,23 @@ def test_render_html_empty_move_shows_both_empty_state_messages():
     assert "Not scheduled" in html
 
 
+def test_render_html_scheduled_start_midnight_utc_prints_the_picked_day():
+    """`scheduled_start` is a date-only field stored as midnight UTC — the
+    other fixtures in this file use 9:00 UTC, which happens to land on the
+    same calendar day once converted to America/New_York and so can't
+    catch this bug. Midnight UTC converts to the PREVIOUS evening in any
+    west-of-UTC zone, so a naive `.astimezone(tz)` would print 03/14/2026
+    here instead of the day the user actually picked."""
+    data = ScanHistoryData(
+        initiative_id=uuid4(), name="Midnight Move", client_name="Acme",
+        scheduled_start=datetime(2026, 3, 15, tzinfo=UTC),
+        source_name=None, destination_name=None, assets=[], statuses=[], scan_progress={},
+        total_assets=0, scanned_assets=0, completed=0, completion_pct=0, last_scan_at=None)
+    html = render_html(data, [], generated_at=datetime(2026, 3, 17, 8, 0, tzinfo=UTC),
+                       tracking_id=str(uuid4()), tz=TZ)
+    assert "03/15/2026" in html
+
+
 def test_render_html_overview_cell_uses_a_24_hour_clock():
     """Every hit in `_populated_data()` happens to land in the AM, so
     `"03/16 04:00" in html` alone can't tell `%H:%M` (24 h) apart from a

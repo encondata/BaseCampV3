@@ -15,6 +15,7 @@ from serversherpa.reports.move_report.render import css_string, render_pdf_async
 from serversherpa.reports.move_scan_history.barcode import pdf417_data_uri
 from serversherpa.reports.move_scan_history.timefmt import timezone_label, zone_abbrev
 from serversherpa.reports.move_scan_history.gather import ScanHistoryData, StatusCol
+from serversherpa.services.timezone import stored_day
 
 _ENV = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"),
                    autoescape=select_autoescape(["html"]), trim_blocks=True, lstrip_blocks=True)
@@ -116,7 +117,10 @@ class _OverviewGroup:
 
 def render_html(data: ScanHistoryData, columns: list[StatusCol], *, generated_at: datetime,
                 tracking_id: str, tz: ZoneInfo) -> str:
-    scheduled_start = (data.scheduled_start.astimezone(tz).strftime(_DATE_FMT)
+    # scheduled_start is a date-only field stored as midnight UTC — read the
+    # UTC date parts directly (stored_day) rather than converting to `tz`,
+    # which would land on the evening before anywhere west of UTC.
+    scheduled_start = (stored_day(data.scheduled_start).strftime(_DATE_FMT)
                        if data.scheduled_start else "Not scheduled")
     stamp = f"{generated_at.astimezone(tz).strftime(_STAMP_FMT)} {zone_abbrev(tz, generated_at)}"
     tz_label = timezone_label(tz, generated_at)

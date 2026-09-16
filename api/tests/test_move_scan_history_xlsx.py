@@ -76,6 +76,23 @@ def test_overview_block_rows_and_bold_labels():
     assert ws.cell(row=10, column=1).value is None  # blank separator row
 
 
+def test_overview_scheduled_start_midnight_utc_prints_the_picked_day():
+    """`scheduled_start` is a date-only field stored as midnight UTC — the
+    other fixtures in this file use 9:00 UTC, which happens to land on the
+    same calendar day once converted to America/New_York and so can't
+    catch this bug. Midnight UTC converts to the PREVIOUS evening in any
+    west-of-UTC zone, so a naive `.astimezone(tz)` would print 03/14/2026
+    here instead of the day the user actually picked."""
+    data = ScanHistoryData(
+        initiative_id=uuid4(), name="Midnight Move", client_name="Acme",
+        scheduled_start=datetime(2026, 3, 15, tzinfo=UTC),
+        source_name=None, destination_name=None, assets=[], statuses=[], scan_progress={},
+        total_assets=0, scanned_assets=0, completed=0, completion_pct=0, last_scan_at=None)
+    wb = _load(build_workbook(data, [], datetime(2026, 3, 17, 8, 0, tzinfo=UTC), TZ))
+    ws = wb["Overview"]
+    assert ws.cell(row=3, column=2).value == "03/15/2026"
+
+
 def test_overview_missing_client_and_site_names_render_na_and_not_scheduled():
     data = ScanHistoryData(
         initiative_id=uuid4(), name="Solo Move", client_name=None, scheduled_start=None,

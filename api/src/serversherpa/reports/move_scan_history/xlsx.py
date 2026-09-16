@@ -14,6 +14,7 @@ from openpyxl.styles import Font
 
 from serversherpa.reports.move_scan_history.timefmt import timezone_label, zone_abbrev
 from serversherpa.reports.move_scan_history.gather import ScanHistoryData, StatusCol
+from serversherpa.services.timezone import stored_day
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -44,7 +45,10 @@ def _build_overview(wb: Workbook, data: ScanHistoryData, columns: list[StatusCol
     ws = wb.active
     ws.title = "Overview"
 
-    scheduled_start = (_fmt(data.scheduled_start, tz, _DATE_FMT)
+    # scheduled_start is a date-only field stored as midnight UTC — read the
+    # UTC date parts directly (stored_day) rather than converting to `tz`,
+    # which would land on the evening before anywhere west of UTC.
+    scheduled_start = (stored_day(data.scheduled_start).strftime(_DATE_FMT)
                        if data.scheduled_start else "Not scheduled")
     block_rows = [
         ["Move Name", data.name],
