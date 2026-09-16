@@ -46,6 +46,7 @@ fun SettingsScreen(nav: NavHostController, requestedTab: String?) {
             SettingsTabId.APPEARANCE -> AppearancePanel()
             SettingsTabId.SOUND -> SoundPanel()
             SettingsTabId.DEVICES -> DevicesPanel()
+            SettingsTabId.RFID -> RfidPanel()
             SettingsTabId.ADMIN -> AdminPanel()
             SettingsTabId.DEVELOPER -> DeveloperPanel()
         }
