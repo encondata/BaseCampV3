@@ -46,4 +46,11 @@ class RfidRegionTest {
     @Test fun theActiveCodeIsMatchedIgnoringSurroundingSpace() {
         assertEquals(RegionChoice.Choosable(listOf(usa, eu), usa), regionChoice(RfidRegions(listOf(usa, eu), "  USA ")))
     }
+
+    /** A reader that reports its active region in a different case still resolves
+     *  to the listed region, and the line reads as that region being set. */
+    @Test fun aCaseInsensitiveActiveCodeStillResolvesToTheListedRegion() {
+        assertEquals(RegionChoice.Choosable(listOf(usa, eu), usa), regionChoice(RfidRegions(listOf(usa, eu), "usa")))
+        assertEquals("Set to United States (USA).", regionLine(RegionChoice.Choosable(listOf(usa, eu), usa)))
+    }
 }

@@ -31,7 +31,7 @@ sealed class RegionChoice {
 fun regionChoice(regions: RfidRegions): RegionChoice {
     val supported = regions.supported
     if (supported.isEmpty()) return RegionChoice.Unknown
-    val active = regions.active?.trim()?.let { code -> supported.firstOrNull { it.code == code } }
+    val active = regions.active?.trim()?.let { code -> supported.firstOrNull { it.code.equals(code, ignoreCase = true) } }
     if (supported.size == 1) return RegionChoice.Locked(supported.first())
     return RegionChoice.Choosable(supported, active)
 }
