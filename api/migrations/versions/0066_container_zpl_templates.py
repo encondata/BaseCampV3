@@ -211,6 +211,8 @@ def downgrade() -> None:
     conn.execute(sa.text("""
         UPDATE label_placeholders
         SET applies_to = array_remove(applies_to, 'container_info')
+        WHERE key IN ('source_site', 'destination_site', 'move_name', 'move_date',
+                       'container_name', 'container_id')
     """))
     conn.execute(sa.text("""
         UPDATE label_placeholders
@@ -218,7 +220,8 @@ def downgrade() -> None:
         WHERE key IN ('source_site', 'destination_site')
     """))
     conn.execute(sa.text(
-        "UPDATE label_vocab SET meta = meta - 'default_copies' WHERE kind = 'type'"))
+        "UPDATE label_vocab SET meta = meta - 'default_copies' "
+        "WHERE kind = 'type' AND key = 'container'"))
     conn.execute(sa.text(
         "DELETE FROM label_vocab WHERE kind = 'type' AND key = 'container_info'"))
     conn.execute(sa.text("DELETE FROM label_vocab WHERE kind = 'size' AND key = '4x6'"))

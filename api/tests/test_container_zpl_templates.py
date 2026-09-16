@@ -11,6 +11,7 @@ for 0057's INSERT_DEFINITION_SQL and test_site_move_survey_fixtures.py
 uses for 0053's repoint_survey_templates()."""
 
 import importlib.util
+import inspect
 from pathlib import Path
 
 import pytest
@@ -36,9 +37,13 @@ def _load_migration_0066():
 
 
 @pytest.fixture(autouse=True)
-async def _seed_container_templates(db):
+async def _seed_container_templates(clean_db, db):
     """Re-run migration 0066's seed() against the (freshly truncated) test
-    database before every test in this file."""
+    database before every test in this file. `clean_db` is requested
+    explicitly (even though it is also autouse in conftest.py) so this
+    fixture is guaranteed to run after the truncate rather than relying on
+    pytest's within-scope autouse ordering, which `db` itself does not
+    pin down."""
     migration = _load_migration_0066()
     await db.run_sync(lambda session: migration.seed(session.connection()))
     await db.commit()
@@ -80,13 +85,31 @@ async def test_container_types_carry_their_default_copies(db):
     assert (await db.get(LabelVocab, ("type", "container_info"))).meta["default_copies"] == 1
 
 
+def test_upgrade_calls_seed():
+    """Guard against `upgrade()` being stubbed out or reimplemented without
+    calling `seed()`: every other test in this file re-runs `seed()`
+    directly (because `clean_db` truncates the seeded tables before each
+    test), so none of them would notice `upgrade()` doing nothing at all."""
+    migration = _load_migration_0066()
+    source = inspect.getsource(migration.upgrade)
+    assert "seed(" in source, (
+        "upgrade() must call seed(...) — none of the other tests exercise "
+        "upgrade() itself, so this is the only thing that would catch it "
+        "being stubbed out"
+    )
+
+
 async def test_new_placeholders_are_scoped_to_the_container_types(db):
     tag = await db.get(LabelPlaceholder, "label_tag")
     assert set(tag.applies_to) == {"container", "container_info"}
     long_date = await db.get(LabelPlaceholder, "move_date_long")
     assert {"container_info", "top"} <= set(long_date.applies_to)
     for key in ("source_site", "destination_site"):
-        assert "container_info" in (await db.get(LabelPlaceholder, key)).applies_to
+        applies_to = set((await db.get(LabelPlaceholder, key)).applies_to)
+        assert {"container", "container_info"} <= applies_to
+    for key in ("move_name", "move_date", "container_name", "container_id"):
+        applies_to = set((await db.get(LabelPlaceholder, key)).applies_to)
+        assert "container_info" in applies_to
 
 
 async def test_container_label_compiles_with_a_reversed_tag_bar(db):
