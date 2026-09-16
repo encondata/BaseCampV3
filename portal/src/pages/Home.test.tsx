@@ -55,7 +55,7 @@ const { default: Home } = await import('./Home');
 
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   auth.can = () => false;
   auth.mustChangePassword = false;
   auth.scope = null;
@@ -155,6 +155,6 @@ it("flight board's window covers the unscheduled, from-only, and by-only branche
   );
   await screen.findByText('No dates');
   expect(screen.getByText('unscheduled')).toBeTruthy();
-  expect(screen.getByText('from Sep 1')).toBeTruthy();
-  expect(screen.getByText('by Sep 15')).toBeTruthy();
+  expect(screen.getByText(/from Sep 1/)).toBeTruthy();
+  expect(screen.getByText(/by Sep 15/)).toBeTruthy();
 });

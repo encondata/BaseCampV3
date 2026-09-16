@@ -46,7 +46,7 @@ it('renders issued/expires on the picked calendar day, not the evening before, w
     expect(screen.queryByText(/Jan 4, 2026/)).toBeNull();
     expect(screen.queryByText(/Jun 4, 2026/)).toBeNull();
   } finally {
-    process.env.TZ = prevTz;
+    if (prevTz === undefined) delete process.env.TZ; else process.env.TZ = prevTz;
   }
 });
 
@@ -71,6 +71,6 @@ it('classifies expiry against the local calendar day, not a UTC-midnight instant
     expect(screen.getByText('expiring')).toBeTruthy();
   } finally {
     nowSpy.mockRestore();
-    process.env.TZ = prevTz;
+    if (prevTz === undefined) delete process.env.TZ; else process.env.TZ = prevTz;
   }
 });

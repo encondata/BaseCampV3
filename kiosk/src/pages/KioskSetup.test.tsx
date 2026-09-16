@@ -41,7 +41,7 @@ const OPTIONS = {
     {
       id: 'i-1', name: 'NAP11 Hall Migration (demo)', status: 'planned',
       status_label: 'Planned', client_name: 'Acme Corp',
-      scheduled_start: '2026-09-20', scheduled_end: null,
+      scheduled_start: '2026-09-20T00:00:00+00:00', scheduled_end: null,
       source_site: { id: 's-1', name: 'NAP11 Hall' },
       destination_site: { id: 's-2', name: 'NAP22 Hall' },
     },
@@ -142,7 +142,7 @@ it('renders a move\'s scheduled_start without shifting it west of UTC', async ()
     expect(within(napCard.closest('button')!).getByText('Starts Sep 20')).toBeTruthy();
     expect(within(napCard.closest('button')!).queryByText('Starts Sep 19')).toBeNull();
   } finally {
-    process.env.TZ = prevTz;
+    if (prevTz === undefined) delete process.env.TZ; else process.env.TZ = prevTz;
   }
 });
 
