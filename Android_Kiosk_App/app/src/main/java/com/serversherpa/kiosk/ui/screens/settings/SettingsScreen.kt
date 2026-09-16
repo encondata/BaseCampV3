@@ -38,7 +38,7 @@ fun SettingsScreen(nav: NavHostController, requestedTab: String?) {
     val active = tabs.firstOrNull { it.id == selected } ?: tabs.first()
     Column {
         PageHeader("Kiosk · Settings", "Settings")
-        Segmented(tabs.map { it.id.wire to it.label }, selected.wire) { w -> SettingsTabId.fromWire(w)?.let { selected = it } }
+        Segmented(tabs.map { it.id.wire to it.label }, active.id.wire) { w -> SettingsTabId.fromWire(w)?.let { selected = it } }
         Text(active.label, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 16.dp))
         Text(active.blurb, style = MaterialTheme.typography.bodyMedium, color = LocalKioskColors.current.textMute, modifier = Modifier.padding(bottom = 8.dp))
         when (active.id) {

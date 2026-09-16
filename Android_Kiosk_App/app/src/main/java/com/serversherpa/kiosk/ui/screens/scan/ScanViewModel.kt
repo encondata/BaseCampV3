@@ -48,7 +48,7 @@ fun statusLabel(row: OutboxRow): String = when (row.status) {
     OutboxStatus.ACCEPTED -> "Sent"
     OutboxStatus.SENDING -> "Sending"
     OutboxStatus.RETRYING -> "Retrying (${row.attempts}/${OutboxMachine.BACKOFF.size})"
-    OutboxStatus.FAILED -> row.lastError?.let { "Failed: $it" } ?: "Failed"
+    OutboxStatus.FAILED -> "Failed: ${row.lastError ?: "timeout"}"
     OutboxStatus.NOMATCH -> "No match"
     OutboxStatus.QUEUED -> "Queued"
 }

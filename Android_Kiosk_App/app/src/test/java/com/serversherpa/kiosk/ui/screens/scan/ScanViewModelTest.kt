@@ -73,7 +73,7 @@ class ScanViewModelTest {
         assertEquals("Sent", statusLabel(base.copy(status = OutboxStatus.ACCEPTED)))
         assertEquals("Retrying (2/4)", statusLabel(base.copy(status = OutboxStatus.RETRYING, attempts = 2)))
         assertEquals("Failed: bad_site", statusLabel(base.copy(status = OutboxStatus.FAILED, lastError = "bad_site")))
-        assertEquals("Failed", statusLabel(base.copy(status = OutboxStatus.FAILED, lastError = null)))
+        assertEquals("Failed: timeout", statusLabel(base.copy(status = OutboxStatus.FAILED, lastError = null)))
         assertEquals("No match", statusLabel(base.copy(status = OutboxStatus.NOMATCH)))
     }
 

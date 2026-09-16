@@ -65,7 +65,7 @@ fun ScanScreen(nav: NavHostController) {
         if (ui.loadStatus == LoadStatus.ERROR) KioskToast("Couldn't read this kiosk's local data.", error = true)
         if (empty) Text("No move data on this kiosk. Sync from Kiosk Setup.", color = c.textMute)
         ScanInput(ui.value, vm::setValue, onSubmit = { vm.onScan(it) }, placeholder = "Scan or type an asset ID, serial, or tag", enabled = !disabled, keepFocus = !camera)
-        KioskToast(ui.error, error = true)
+        if (!ui.error.isNullOrEmpty()) KioskToast(ui.error, error = true)
         KioskToast(ui.storageError, error = true)
         ScanTools(showCamera = container.hasCamera, onCamera = { camera = true }, showTrigger = container.hasDataWedge, onTrigger = { DataWedge.softScan(context, true) })
         val counts = snapshot.counts
