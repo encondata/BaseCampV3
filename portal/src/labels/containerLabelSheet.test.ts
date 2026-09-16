@@ -468,5 +468,12 @@ describe('formatLabelDate', () => {
     expect(formatLabelDate(undefined)).toBe('N/A');
     expect(formatLabelDate('not a date')).toBe('N/A');
   });
+
+  it('names the stored day for a midnight-UTC date-only value', () => {
+    // scheduled_start arrives as midnight UTC; `new Date(iso)` then getDate()
+    // used to name the previous day in any zone west of UTC.
+    expect(formatLabelDate('2026-09-15T00:00:00Z')).toBe('15-SEP-2026');
+    expect(formatLabelDate('2026-01-01T00:00:00Z')).toBe('01-JAN-2026');
+  });
 });
 

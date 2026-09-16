@@ -16,19 +16,26 @@ API_DIR = Path(__file__).resolve().parents[1]
 # heads — both collide): SS_TEST_DB=serversherpa_test_<branch> pytest …
 TEST_DB = os.environ.get("SS_TEST_DB", "serversherpa_test")
 
-# 0042 labels seeds — duplicated verbatim from the migration
+# Labels seeds — 0042's rows as migration 0066 leaves them. This is the
+# baseline a migrated production database actually has, so it must be kept
+# in step with every later migration that touches label_vocab /
+# label_placeholders; a stale copy here silently tests a world that no
+# longer exists (0066's `container_info` type went unnoticed exactly that
+# way). Values are duplicated verbatim from the two migrations.
 LABEL_VOCAB_SEEDS = """
     INSERT INTO label_vocab (kind, key, label, description, meta, sort_order) VALUES
       ('type','top','Top Label','Placed on the asset''s top face.','{}',1),
       ('type','front','Front Label','Placed on the asset''s front face.','{}',2),
       ('type','rail','Rail Label','Placed on the rack rail at the destination RU.','{}',3),
-      ('type','container','Container Label','Placed on crates and containers.','{}',4),
+      ('type','container','Container Label','Placed on crates and containers.','{"default_copies": 5}',4),
+      ('type','container_info','Container Info Label','The crate''s QR, route, date and RFID zone.','{"default_copies": 1}',5),
       ('size','4x2','4" x 2"','','{"width_in": 4, "height_in": 2, "has_tab": false}',1),
       ('size','2x1','2" x 1"','','{"width_in": 2, "height_in": 1, "has_tab": false}',2),
       ('size','4x3-tab','4" x 3" (w/ tab)','','{"width_in": 4, "height_in": 3, "has_tab": true}',3),
       ('size','1x1','1" x 1"','','{"width_in": 1, "height_in": 1, "has_tab": false}',4),
       ('size','6x4','6" x 4"','','{"width_in": 6, "height_in": 4, "has_tab": false}',5),
       ('size','id-badge','ID Badge','CR80 card, 3.375" x 2.125".','{"width_in": 3.375, "height_in": 2.125, "has_tab": false}',6),
+      ('size','4x6','4" x 6"','Zebra roll label, portrait.','{"width_in": 4, "height_in": 6, "has_tab": false}',7),
       ('dpi','203','203 DPI','','{"dots": 203}',1),
       ('dpi','300','300 DPI','','{"dots": 300}',2),
       ('language','zpl','ZPL','Zebra Programming Language.','{"family": "zebra"}',1),
@@ -46,14 +53,20 @@ LABEL_PLACEHOLDER_SEEDS = """
       ('make_model','Make + model','','Cisco Nexus 9336C','{top,front,rail}',6),
       ('source_raw','Source (raw)','','NAP7 A12','{top,front,rail}',7),
       ('source_ru','Source RU','','U14','{top,front,rail}',8),
-      ('source_site','Source site','','NAP7','{top,front,rail}',9),
+      ('source_site','Source site','','NAP7','{container,container_info,front,rail,top}',9),
       ('destination_raw','Destination (raw)','','NAP11 C03','{top,front,rail}',10),
       ('destination_ru','Destination RU','','U22','{top,front,rail}',11),
-      ('destination_site','Destination site','','NAP11','{top,front,rail}',12),
-      ('move_name','Initiative / move name','','NAP11 Hall Migration','{top,front,rail,container}',13),
-      ('move_date','Move date','','09/15/2026','{top,front,rail,container}',14),
-      ('container_name','Container name','','crate-17','{container}',15),
-      ('container_id','Container ID','','C-0017','{container}',16)
+      ('destination_site','Destination site','','NAP11','{container,container_info,front,rail,top}',12),
+      ('move_name','Initiative / move name','','NAP11 Hall Migration','{container,container_info,front,rail,top}',13),
+      ('move_date','Move date','','09/15/2026','{container,container_info,front,rail,top}',14),
+      ('container_name','Container name','','crate-17','{container,container_info}',15),
+      ('container_id','Container ID','','C-0017','{container,container_info}',16),
+      -- 0066. The applies_to arrays above are 0042's own plus the types
+      -- 0066 adds, spelled in the sorted order 0066's
+      -- `array_agg(DISTINCT ...)` rewrite produces, so re-running that
+      -- migration's seed() over this baseline is a no-op.
+      ('label_tag','Container tag','Priority / Vendor / Accessories / Warehouse / E-Waste, upper-cased. Falls back to CONTAINER when the container has no tag.','PRIORITY','{container,container_info}',17),
+      ('move_date_long','Move date (long)','The move date as DD-MON-YYYY, which reads unambiguously in every region the company operates in.','01-SEP-2026','{top,front,rail,container,container_info}',18)
 """
 
 
@@ -377,7 +390,7 @@ async def clean_db():
                 "syslog": {"host": "", "port": 514, "protocol": "udp"}}'::jsonb),
               ('logging_cursor', '{"last_forwarded_id": 0}'::jsonb)
         """))
-        # 0042 labels seeds
+        # labels seeds (0042 as amended by 0066)
         await session.execute(text(LABEL_VOCAB_SEEDS))
         await session.execute(text(LABEL_PLACEHOLDER_SEEDS))
         await session.commit()

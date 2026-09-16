@@ -84,3 +84,46 @@ def test_qr_rotation_passthrough():
         {"id": "q1", "type": "qr", "x": 0, "y": 0, "w": 0.7, "h": 0.7,
          "rotation": 90, "data": "{asset_id}"}]})
     assert "^BQR,2," in compile_zpl(d, 203)
+
+
+def test_reverse_text_emits_field_reverse():
+    d = parse_design({"size": {"w": 4, "h": 6}, "elements": [
+        {"id": "t1", "type": "text", "x": 0.2, "y": 0.5, "w": 3.6, "h": 0.36,
+         "rotation": 0, "content": "PRIORITY", "fontSizePt": 26,
+         "bold": True, "align": "center", "reverse": True}]})
+    out = compile_zpl(d, 203)
+    assert "^FR^FH_^FDPRIORITY^FS" in out
+
+
+def test_lines_wraps_and_forces_a_field_block_even_when_left_aligned():
+    d = parse_design({"size": {"w": 4, "h": 6}, "elements": [
+        {"id": "t1", "type": "text", "x": 0.2, "y": 0.5, "w": 3.6, "h": 1.0,
+         "rotation": 0, "content": "{container_name}", "fontSizePt": 28,
+         "bold": True, "align": "left", "lines": 2}]})
+    assert "^FB731,2,0,L,0" in compile_zpl(d, 203)
+
+
+def test_module_in_sets_narrow_bar_width_per_dpi():
+    design = {"size": {"w": 4, "h": 6}, "elements": [
+        {"id": "b1", "type": "barcode", "x": 0.8, "y": 1.6, "w": 2.4, "h": 1.2,
+         "rotation": 0, "symbology": "code128", "data": "crate-17",
+         "showText": False, "moduleIn": 0.01}]}
+    assert "^BY2^BCN,244,N,N,N" in compile_zpl(parse_design(design), 203)
+    assert "^BY3^BCN,360,N,N,N" in compile_zpl(parse_design(design), 300)
+
+
+def test_absent_properties_compile_byte_identically():
+    """Absent-means-unchanged: the three new properties must not perturb any
+    design that does not use them."""
+    out = compile_zpl(parse_design(SIMPLE), 203)
+    assert out == (
+        "^XA\n"
+        "^PW812\n"
+        "^LL406\n"
+        "^CI28\n"
+        "^FO51,102^A0N,34,34^FH_^FDHello^FS\n"
+        "^XZ")
+    bare = {"size": {"w": 4, "h": 2}, "elements": [
+        {"id": "b1", "type": "barcode", "x": 0.1, "y": 0.6, "w": 3, "h": 0.8,
+         "rotation": 0, "symbology": "code128", "data": "A1", "showText": True}]}
+    assert "^BY2^BCN,162,Y,N,N" in compile_zpl(parse_design(bare), 203)

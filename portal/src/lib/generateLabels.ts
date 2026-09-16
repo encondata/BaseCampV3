@@ -215,9 +215,13 @@ export function validateRuleRows(rows: GenerationRulesRows): string | null {
 }
 
 /** Vocab `type` keys that are not asset/device labels. Container labels are
- *  Avery sheets from the Container Labels page, so Generate Labels never
- *  offers them (the API's preview and run validation exclude them too). */
-export const CONTAINER_LABEL_TYPES: ReadonlySet<string> = new Set(['container']);
+ *  Avery sheets from the Container Labels page (or the 4x6 ZPL templates
+ *  seeded by migration 0066), so Generate Labels never offers them (the
+ *  API's preview and run validation exclude them too — keep this set in
+ *  step with CONTAINER_LABEL_TYPES in labels/generate/__init__.py). */
+export const CONTAINER_LABEL_TYPES: ReadonlySet<string> = new Set([
+  'container', 'container_info',
+]);
 
 export function isAssetLabelType(key: string): boolean {
   return !CONTAINER_LABEL_TYPES.has(key);

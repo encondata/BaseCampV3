@@ -41,24 +41,33 @@ def _fd(value: str, subs: dict[str, str] | None) -> str:
     return "".join(parts)
 
 
+_JUST = {"left": "L", "center": "C", "right": "R"}
+
+
 def _text(el: TextEl, dpi: int, subs) -> str:
     h = round(el.font_size_pt * dpi / 72)
     w = round(h * 1.2) if el.bold else h
     line = f"^FO{_dots(el.x, dpi)},{_dots(el.y, dpi)}"
-    if el.align != "left":
-        just = "C" if el.align == "center" else "R"
-        line += f"^FB{_dots(el.w, dpi)},1,0,{just},0"
-    return line + (f"^A0{_ROT[el.rotation]},{h},{w}"
-                   f"^FH_^FD{_fd(el.content, subs)}^FS")
+    # A ^FB is needed for justification OR for wrapping. Left-aligned
+    # single-line fields still emit none, so existing designs are untouched.
+    if el.align != "left" or el.lines > 1:
+        line += f"^FB{_dots(el.w, dpi)},{el.lines},0,{_JUST[el.align]},0"
+    line += f"^A0{_ROT[el.rotation]},{h},{w}"
+    if el.reverse:
+        line += "^FR"
+    return line + f"^FH_^FD{_fd(el.content, subs)}^FS"
 
 
 def _barcode(el: BarcodeEl, dpi: int, subs) -> str:
     hd = _dots(el.h, dpi)
     flag = "Y" if el.show_text else "N"
+    # None keeps the historical ^BY2 exactly; a module width in inches is
+    # converted per dpi so the barcode holds its PHYSICAL width across dpi.
+    module = 2 if el.module_in is None else max(1, min(10, _dots(el.module_in, dpi)))
     cmd = (f"^BC{_ROT[el.rotation]},{hd},{flag},N,N"
            if el.symbology == "code128"
            else f"^B3{_ROT[el.rotation]},N,{hd},{flag},N")
-    return (f"^FO{_dots(el.x, dpi)},{_dots(el.y, dpi)}^BY2{cmd}"
+    return (f"^FO{_dots(el.x, dpi)},{_dots(el.y, dpi)}^BY{module}{cmd}"
             f"^FH_^FD{_fd(el.data, subs)}^FS")
 
 

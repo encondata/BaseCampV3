@@ -36,6 +36,11 @@ class TextEl(_Base):
     font_size_pt: float
     bold: bool
     align: str
+    # `reverse` emits ZPL ^FR (knockout text, for text sitting on a filled
+    # bar); `lines` is the ^FB line count, so a field can wrap. Both are
+    # Zebra-only and default to the pre-2026-09-16 behavior.
+    reverse: bool = False
+    lines: int = 1
 
 
 @dataclass(frozen=True)
@@ -43,6 +48,10 @@ class BarcodeEl(_Base):
     symbology: str
     data: str
     show_text: bool
+    # Narrow-module width in INCHES. None keeps the historical hardcoded
+    # ^BY2, which makes a barcode physically narrower at 300 dpi than at
+    # 203; a design that needs the same physical width at both sets this.
+    module_in: float | None = None
 
 
 @dataclass(frozen=True)
@@ -121,10 +130,16 @@ def parse_design(raw: object) -> Design:
             if align not in ALIGNS:
                 p.append("align must be left/center/right")
                 align = "left"
+            lines = el.get("lines", 1)
+            if not isinstance(lines, int) or isinstance(lines, bool) or lines < 1:
+                p.append("lines must be an integer of 1 or more")
+                lines = 1
             parsed.append(TextEl(**base, content=content,
                                  font_size_pt=float(fs),
                                  bold=bool(el.get("bold", False)),
-                                 align=align))
+                                 align=align,
+                                 reverse=bool(el.get("reverse", False)),
+                                 lines=lines))
         elif etype == "barcode":
             sym = el.get("symbology")
             if sym not in SYMBOLOGIES:
@@ -134,8 +149,16 @@ def parse_design(raw: object) -> Design:
             if not isinstance(data, str) or not data:
                 p.append("data must be a non-empty string")
                 data = ""
+            module_in = el.get("moduleIn")
+            if module_in is not None:
+                if not _num(module_in) or module_in <= 0:
+                    p.append("moduleIn must be a positive number")
+                    module_in = None
+                else:
+                    module_in = float(module_in)
             parsed.append(BarcodeEl(**base, symbology=sym, data=data,
-                                    show_text=bool(el.get("showText", True))))
+                                    show_text=bool(el.get("showText", True)),
+                                    module_in=module_in))
         elif etype == "qr":
             data = el.get("data")
             if not isinstance(data, str) or not data:

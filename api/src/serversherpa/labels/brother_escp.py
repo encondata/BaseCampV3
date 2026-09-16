@@ -5,7 +5,12 @@ collapse to reading order (y, then x); shapes and rotation are ignored.
 Golden tests pin this output as a regression baseline only. NUL bytes
 cannot round-trip through Postgres TEXT, so literal \\x00 bytes are
 emitted as the printable four-character escape "\\x00"; the future print
-driver decodes \\xNN escapes before sending the stream to hardware."""
+driver decodes \\xNN escapes before sending the stream to hardware.
+
+Zebra-only element properties (`reverse`, `lines`, `module_in`) are
+ignored here by design — ESC/P has no field-reverse or narrow-module
+concept, and this compiler is line-oriented so wrapping is the
+printer's business."""
 
 from serversherpa.labels.model import BarcodeEl, Design, TextEl
 from serversherpa.labels.tokens import resolve_tokens

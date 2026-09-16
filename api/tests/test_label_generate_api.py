@@ -549,17 +549,31 @@ async def test_preview_other_only_type_has_candidates_but_no_auto_match(client, 
     assert candidates[0]["site_names"] == ["NAP-Other"]
 
 
-async def test_preview_excludes_the_container_type(client, db, seeded_user):
+async def test_preview_excludes_every_container_type(client, db, seeded_user):
     """The Container Labels page owns container labels; the Generate Labels
-    preview lists asset/device types only, even when `container` is active."""
+    preview lists asset/device types only. EVERY container type has to be
+    excluded, not just the Avery `container` one — migration 0066 seeds an
+    active `container_info` type, and the runner only ever walks assets, so
+    a container type reaching the preview means a run that emits one info
+    label per ASSET, with an empty QR and a blank Container: line."""
     ini = await _initiative(db)
-    if await db.get(LabelVocab, ("type", "container")) is None:
-        db.add(LabelVocab(kind="type", key="container", label="Container Label", is_active=True))
+    for key, label in (("container", "Container Label"),
+                       ("container_info", "Container Info Label")):
+        if await db.get(LabelVocab, ("type", key)) is None:
+            db.add(LabelVocab(kind="type", key=key, label=label, is_active=True))
     await db.commit()
+    # Without this the assertion below would also pass on a database that
+    # simply has no container vocab: the point is that these rows are live
+    # and the preview skips them anyway.
+    for key in ("container", "container_info"):
+        row = await db.get(LabelVocab, ("type", key))
+        assert row is not None and row.is_active is True, f"type/{key} is not active vocab"
+
     hdrs = await login(client)
     resp = await client.get(f"/labels/generate/preview?initiative_id={ini.id}", headers=hdrs)
     assert resp.status_code == 200, resp.text
-    assert "container" not in {t["key"] for t in resp.json()["types"]}
+    keys = {t["key"] for t in resp.json()["types"]}
+    assert keys.isdisjoint({"container", "container_info"}), keys
 
 
 async def test_preview_404_unknown_initiative(client, db, seeded_user):
