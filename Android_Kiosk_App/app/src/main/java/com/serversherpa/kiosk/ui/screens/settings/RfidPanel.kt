@@ -9,6 +9,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -58,6 +59,8 @@ fun RfidPanel() {
     // settings push the radio refused.
     val connectionError by container.rfid.connectionError.collectAsStateWithLifecycle()
     fun save(next: RfidSettings) { scope.launch { container.prefs.setRfid(next) } }
+    var connectAttemptInFlight by remember { mutableStateOf(false) }
+    var disconnectAttemptInFlight by remember { mutableStateOf(false) }
 
     Column {
         SettingsRow("RFID reader", "A Zebra RFD40 paired to this device over Bluetooth.") {
@@ -65,11 +68,26 @@ fun RfidPanel() {
                 Row {
                     Switch(checked = s.enabled, onCheckedChange = { on ->
                         save(s.copy(enabled = on))
-                        if (!on) scope.launch { container.rfid.disconnectNow() }
+                        if (!on) {
+                            disconnectAttemptInFlight = true
+                            scope.launch {
+                                try {
+                                    container.rfid.disconnectNow()
+                                } finally {
+                                    disconnectAttemptInFlight = false
+                                }
+                            }
+                        }
                     })
                 }
                 Text(if (s.enabled) connectionLine(connection) else connectionLine(RfidConnection.Disabled), color = c.textMute)
-                connectionError?.let { Text(it, color = ChipTone.RED.text) }
+                // While a connect or disconnect attempt is in flight, suppress the error line
+                // to avoid showing a stale error from a previous attempt. Once the attempt
+                // completes, the controller's own connectionError will be repopulated if the
+                // new attempt failed, or cleared if it succeeded.
+                if (!connectAttemptInFlight && !disconnectAttemptInFlight) {
+                    connectionError?.let { Text(it, color = ChipTone.RED.text) }
+                }
                 if (s.enabled && RfidPermissions.missing(context).isNotEmpty()) {
                     Text("Android needs Bluetooth and location permission before the sled can connect. Grant them in this app's settings.", color = c.textMute)
                 }
@@ -77,8 +95,26 @@ fun RfidPanel() {
                 // on screen that the reader never took.
                 applyError?.let { Text("The reader refused a setting: $it", color = ChipTone.RED.text) }
                 if (s.enabled) Row(Modifier.padding(top = 8.dp)) {
-                    if (connection is RfidConnection.Connected) MiniButton("Disconnect", { scope.launch { container.rfid.disconnectNow() } })
-                    else MiniButton("Connect", { scope.launch { container.rfid.connectNow() } })
+                    if (connection is RfidConnection.Connected) MiniButton("Disconnect", {
+                        disconnectAttemptInFlight = true
+                        scope.launch {
+                            try {
+                                container.rfid.disconnectNow()
+                            } finally {
+                                disconnectAttemptInFlight = false
+                            }
+                        }
+                    })
+                    else MiniButton("Connect", {
+                        connectAttemptInFlight = true
+                        scope.launch {
+                            try {
+                                container.rfid.connectNow()
+                            } finally {
+                                connectAttemptInFlight = false
+                            }
+                        }
+                    })
                 }
             }
         }
