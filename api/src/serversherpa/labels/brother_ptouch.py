@@ -5,7 +5,11 @@ select + per-object data + print. Template number is fixed at 001 for
 v1. Golden tests pin the stream as a regression baseline only. NUL bytes
 cannot round-trip through Postgres TEXT, so literal \\x00 bytes are
 emitted as the printable four-character escape "\\x00"; the future print
-driver decodes \\xNN escapes before sending the stream to hardware."""
+driver decodes \\xNN escapes before sending the stream to hardware.
+
+Zebra-only element properties (`reverse`, `lines`, `module_in`) are
+ignored here by design — a P-touch template's objects own their own
+appearance on the printer; we only send data."""
 
 from serversherpa.labels.model import BarcodeEl, Design, TextEl
 from serversherpa.labels.tokens import resolve_tokens

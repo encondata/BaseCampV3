@@ -66,3 +66,38 @@ def test_token_helpers():
                           {"serial_number": "C7X"}) == "SN C7X"
     assert resolve_tokens("SN {unknown}", {}) == "SN "
     assert apply_placeholders("^FD{a}-{b}^FS", {"a": "1"}) == "^FD1-^FS"
+
+
+def test_new_text_properties_default_off():
+    d = parse_design({"size": {"w": 4, "h": 2}, "elements": [
+        {"id": "t1", "type": "text", "x": 0, "y": 0, "w": 2, "h": 0.3,
+         "rotation": 0, "content": "x", "fontSizePt": 10,
+         "bold": False, "align": "left"}]})
+    assert d.elements[0].reverse is False
+    assert d.elements[0].lines == 1
+
+
+def test_lines_must_be_a_positive_integer():
+    with pytest.raises(DesignError) as err:
+        parse_design({"size": {"w": 4, "h": 2}, "elements": [
+            {"id": "t1", "type": "text", "x": 0, "y": 0, "w": 2, "h": 0.3,
+             "rotation": 0, "content": "x", "fontSizePt": 10, "bold": False,
+             "align": "left", "lines": 0}]})
+    assert any("lines" in p for p in err.value.problems)
+
+
+def test_module_in_must_be_positive_when_present():
+    with pytest.raises(DesignError) as err:
+        parse_design({"size": {"w": 4, "h": 2}, "elements": [
+            {"id": "b1", "type": "barcode", "x": 0, "y": 0, "w": 2, "h": 0.5,
+             "rotation": 0, "symbology": "code128", "data": "A",
+             "showText": True, "moduleIn": 0}]})
+    assert any("moduleIn" in p for p in err.value.problems)
+
+
+def test_module_in_defaults_to_none():
+    d = parse_design({"size": {"w": 4, "h": 2}, "elements": [
+        {"id": "b1", "type": "barcode", "x": 0, "y": 0, "w": 2, "h": 0.5,
+         "rotation": 0, "symbology": "code128", "data": "A",
+         "showText": True}]})
+    assert d.elements[0].module_in is None
