@@ -245,3 +245,13 @@
   color: var(--c-amber, #a36207);
   font-size: 12.5px;
 }
+
+/* ── cascade delete override (Dev › Database › Reconcile) ────────── */
+
+.modal-card.reports-modal-card.rgm-card.dev-cascade-card {
+  width: min(880px, 96vw);
+  max-width: 96vw;
+}
+.dev-cascade-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.dev-cascade-blocked { margin: 6px 0 0; padding-left: 18px; text-align: left; }
+.dev-cascade-confirm { margin-top: 16px; }
