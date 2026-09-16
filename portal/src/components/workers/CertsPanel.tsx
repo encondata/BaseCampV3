@@ -2,7 +2,8 @@ import { useEffect, useState, type FormEvent } from 'react';
 
 import { useAuth } from '../../auth/AuthContext';
 import { apiFetch } from '../../lib/api';
-import { longDate } from '../../lib/format';
+import { longDateOf } from '../../lib/format';
+import { parseApiDay } from '../../lib/timeline';
 
 interface Cert {
   id: string;
@@ -14,7 +15,11 @@ interface Cert {
 
 function certState(c: Cert): { label: string; cls: string } | null {
   if (!c.expires_on) return null;
-  const days = (new Date(c.expires_on).getTime() - Date.now()) / 86_400_000;
+  // expires_on is a true DATE column (bare "YYYY-MM-DD"), not a
+  // TIMESTAMP — `new Date(iso)` parses it as UTC midnight, so the
+  // expired/expiring boundary would trip at the wrong local moment.
+  // parseApiDay reads the Y-M-D digits into a local Date instead.
+  const days = (parseApiDay(c.expires_on).getTime() - Date.now()) / 86_400_000;
   if (days < 0) return { label: 'expired', cls: 'c-red' };
   if (days < 30) return { label: 'expiring', cls: 'c-amber' };
   return null;
@@ -80,9 +85,13 @@ export default function CertsPanel({ personId, onChanged }: {
             <div className="session-main cell">
               <div className="cell-top"><b>{c.name}</b></div>
               <div className="mono">
+                {/* issued_on/expires_on are true DATE columns — parse
+                    the Y-M-D digits into a local Date first, since
+                    longDate's `new Date(iso)` would name the day
+                    before anywhere west of UTC. */}
                 {[c.issuer,
-                  c.issued_on ? `issued ${longDate(c.issued_on)}` : null,
-                  c.expires_on ? `expires ${longDate(c.expires_on)}` : 'no expiry',
+                  c.issued_on ? `issued ${longDateOf(parseApiDay(c.issued_on))}` : null,
+                  c.expires_on ? `expires ${longDateOf(parseApiDay(c.expires_on))}` : 'no expiry',
                 ].filter(Boolean).join(' · ')}
               </div>
             </div>
