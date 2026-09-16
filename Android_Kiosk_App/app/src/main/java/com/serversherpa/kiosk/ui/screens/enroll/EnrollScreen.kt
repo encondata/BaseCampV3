@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.ui.screens.enroll
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -14,6 +15,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -30,10 +32,12 @@ import com.serversherpa.kiosk.ui.components.MiniButton
 import com.serversherpa.kiosk.ui.components.PageHeader
 import com.serversherpa.kiosk.ui.components.ScanInput
 import com.serversherpa.kiosk.ui.components.SetupCard
+import com.serversherpa.kiosk.ui.components.SolidButton
 import com.serversherpa.kiosk.ui.components.kioskViewModel
 import com.serversherpa.kiosk.ui.screens.scan.LoadStatus
 import com.serversherpa.kiosk.ui.screens.scan.ScanTools
 import com.serversherpa.kiosk.ui.screens.scan.scanTime
+import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 
@@ -64,20 +68,38 @@ fun EnrollScreen(nav: NavHostController) {
             SetupCard(selected = true, onClick = {}) {
                 Text(asset.name ?: "Unnamed asset", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
                 Fact("Asset ID", asset.assetId.ifBlank { "—" }); Fact("Serial", asset.serialNumber ?: "—"); Fact("Make / Model", asset.makeModel.ifBlank { "—" })
-                asset.rfid?.let { Fact("Current tag", displayRfid(it)); Text("This asset already has a tag — scanning a new one replaces it.", style = MaterialTheme.typography.bodySmall, color = c.textMute) }
+                ui.currentTag?.let { Fact("Current tag", displayRfid(it), valueColor = ChipTone.AMBER.text) }
             }
-            ScanInput(
-                ui.tagValue, vm::setTagValue, onSubmit = { vm.submitTag(it) },
-                placeholder = "Scan the RFID tag", enabled = !ui.saving, keepFocus = !camera,
-                modifier = Modifier.padding(top = 12.dp),
-                trailingIcon = if (container.hasCamera) ({ CameraFieldButton(!ui.saving) { camera = true } }) else null,
-            )
-            val preview = padRfid(ui.tagValue).tag
-            if (preview != null) Row { Text("Will be stored as ", style = MaterialTheme.typography.bodySmall, color = c.textMute); Text(preview, fontFamily = FragmentMono, style = MaterialTheme.typography.bodySmall) }
-            else Text("24 characters, zero-padded.", style = MaterialTheme.typography.bodySmall, color = c.textMute)
-            ScanTools(container.hasDataWedge) { DataWedge.softScan(context, true) }
-            KioskToast(ui.error, error = true)
-            MiniButton("Cancel", { vm.cancel() })
+            if (ui.awaitingUpdate) {
+                // The asset walked in wearing a tag. Nothing here listens for a new
+                // one until the operator says to replace it, so a stray read from a
+                // neighboring reader cannot retag anything.
+                Text(
+                    if (ui.enrolledHere) "You enrolled this asset a moment ago. Replacing its tag is the only thing left to do here."
+                    else "This asset already has a tag. Replace it only if the tag on the asset has changed.",
+                    style = MaterialTheme.typography.bodySmall, color = c.textMute,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                KioskToast(ui.error, error = true)
+                Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SolidButton("Update RFID Value", onClick = { vm.confirmUpdate() }, modifier = Modifier.weight(1f))
+                    MiniButton("Cancel", { vm.cancel() })
+                }
+            } else {
+                ScanInput(
+                    ui.tagValue, vm::setTagValue, onSubmit = { vm.submitTag(it) },
+                    placeholder = if (ui.currentTag != null) "Scan the replacement tag" else "Scan the RFID tag",
+                    enabled = !ui.saving, keepFocus = !camera,
+                    modifier = Modifier.padding(top = 12.dp),
+                    trailingIcon = if (container.hasCamera) ({ CameraFieldButton(!ui.saving) { camera = true } }) else null,
+                )
+                val preview = padRfid(ui.tagValue).tag
+                if (preview != null) Row { Text("Will be stored as ", style = MaterialTheme.typography.bodySmall, color = c.textMute); Text(preview, fontFamily = FragmentMono, style = MaterialTheme.typography.bodySmall) }
+                else Text("24 characters, zero-padded.", style = MaterialTheme.typography.bodySmall, color = c.textMute)
+                ScanTools(container.hasDataWedge) { DataWedge.softScan(context, true) }
+                KioskToast(ui.error, error = true)
+                MiniButton("Cancel", { vm.cancel() })
+            }
         } else {
             ScanInput(
                 ui.value, vm::setValue, onSubmit = { vm.submitAsset(it) },
@@ -102,9 +124,9 @@ fun EnrollScreen(nav: NavHostController) {
 }
 
 @Composable
-private fun Fact(label: String, value: String) {
+private fun Fact(label: String, value: String, valueColor: Color = Color.Unspecified) {
     Row(Modifier.padding(top = 4.dp)) {
         Text(label.uppercase(), fontFamily = FragmentMono, style = MaterialTheme.typography.labelSmall, color = LocalKioskColors.current.textMute, modifier = Modifier.padding(end = 8.dp))
-        Text(value, fontFamily = FragmentMono, style = MaterialTheme.typography.bodySmall)
+        Text(value, fontFamily = FragmentMono, style = MaterialTheme.typography.bodySmall, color = valueColor)
     }
 }

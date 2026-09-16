@@ -26,7 +26,7 @@ private fun key(value: String?): String? = value?.trim()?.uppercase()?.takeIf { 
 
 /** Zero-padding stripped, upper-cased — so a handheld that pads the EPC
  *  and a fixed reader that doesn't land on the same asset. */
-private fun rfidKey(value: String?): String? {
+fun rfidKey(value: String?): String? {
     if (value.isNullOrBlank()) return null
     return key(displayRfid(value.trim()))
 }

@@ -74,6 +74,61 @@ class EnrollViewModelTest {
         assertEquals(false, vm.state.value.enrollments[0].replaced)
     }
 
+    /** An asset that walks in wearing a tag stops at the gate: its tag is on
+     *  screen, a scan there cannot retag it, and the box opens only on Update. */
+    @Test fun anAssetWithATagWaitsForUpdateBeforeItWillTakeANewOne() = runTest {
+        val api = FakeKioskApi()
+        val (vm, _) = build(api)
+        vm.onScan("A-2")
+        assertEquals("a2", vm.state.value.asset?.id)
+        assertEquals(true, vm.state.value.awaitingUpdate)
+        assertEquals("000000000000000000100348", vm.state.value.currentTag)
+
+        // A tag read at the gate is refused, not applied.
+        vm.onScan("100350"); settle()
+        assertEquals("Tagged already has a tag. Tap Update RFID Value to replace it.", vm.state.value.error)
+        assertEquals(true, vm.state.value.awaitingUpdate)
+        assertEquals(0, vm.state.value.enrollments.size)
+
+        vm.confirmUpdate()
+        assertEquals(false, vm.state.value.awaitingUpdate)
+        vm.submitTag("100350"); settle()
+        assertEquals(1, vm.state.value.enrollments.size)
+        assertEquals(true, vm.state.value.enrollments[0].replaced)
+    }
+
+    /** The same asset scanned twice: the second pass shows what this kiosk just
+     *  put on it rather than quietly opening the box for another tag. */
+    @Test fun anAssetEnrolledThisSessionComesBackToTheGate() = runTest {
+        val (vm, _) = build(FakeKioskApi())
+        vm.onScan("A-1"); vm.submitTag("100349"); settle()
+        assertEquals(1, vm.state.value.enrollments.size)
+
+        vm.onScan("A-1")
+        assertEquals(true, vm.state.value.awaitingUpdate)
+        assertEquals(true, vm.state.value.enrolledHere)
+        assertEquals("000000000000000000100349", vm.state.value.currentTag)
+    }
+
+    /** The duplicate-tag gate, without a round trip: the roster's own copy, and
+     *  the tag this session already handed out. */
+    @Test fun aTagAlreadyInUseNeverReachesThePortal() = runTest {
+        val api = FakeKioskApi()
+        val (vm, _) = build(api)
+        vm.onScan("A-1")
+        vm.submitTag("100348"); settle()
+        assertEquals("That tag is on Tagged. Scan a different tag.", vm.state.value.error)
+        assertEquals(0, api.calls.count { it == "rfid" })
+        assertEquals("a1", vm.state.value.asset?.id)   // stays on step two
+
+        // And the same tag twice in a row on the same asset.
+        vm.submitTag("100349"); settle()
+        vm.onScan("SN2"); vm.confirmUpdate()
+        vm.submitTag("100349"); settle()
+        assertEquals("You just enrolled that tag on Rack. Scan a different tag.", vm.state.value.error)
+        assertEquals(1, api.calls.count { it == "rfid" })
+    }
+
     @Test fun errorsMapToCopy() = runTest {
         val api = FakeKioskApi().apply { rfidResult = { _, _ -> throw ApiError(409, "rfid_in_use", buildJsonObject { put("code", "rfid_in_use"); put("asset_name", "Other rack") }) } }
         val (vm, _) = build(api)

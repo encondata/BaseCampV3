@@ -5,9 +5,13 @@ import androidx.lifecycle.viewModelScope
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.KioskRfidEnrollIn
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
+import com.serversherpa.kiosk.core.scan.EnrollLogEntry
 import com.serversherpa.kiosk.core.scan.ScanIndex
 import com.serversherpa.kiosk.core.scan.ScanMatchKind
 import com.serversherpa.kiosk.core.scan.buildScanIndex
+import com.serversherpa.kiosk.core.scan.checkEnrollTag
+import com.serversherpa.kiosk.core.scan.enrollTagText
+import com.serversherpa.kiosk.core.scan.enrolledThisSession
 import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.core.scan.matchAssetOrSerial
 import com.serversherpa.kiosk.core.scan.matchScan
@@ -44,13 +48,22 @@ private const val NO_MOVE_DATA = "No move data on this kiosk. Sync from Kiosk Se
 private const val TOAST_MS = 5_000L
 private const val ERROR_MS = 4_000L
 
-data class EnrollmentRow(val id: String, val name: String, val serial: String?, val rfid: String, val replaced: Boolean, val at: String)
+data class EnrollmentRow(val id: String, val assetRowId: String, val name: String, val serial: String?, val rfid: String, val replaced: Boolean, val at: String)
 
 data class EnrollUi(
     val loadStatus: LoadStatus = LoadStatus.LOADING, val rosterSize: Int = 0,
     val asset: AssetEntity? = null, val value: String = "", val tagValue: String = "",
     val saving: Boolean = false, val error: String? = null, val toast: String? = null,
     val enrollments: List<EnrollmentRow> = emptyList(),
+    /** An asset that already carries a tag waits here: the details and the tag it
+     *  has are on screen, and the box for a new tag only opens once the operator
+     *  says to replace it. A stray read cannot retag anything from this state. */
+    val awaitingUpdate: Boolean = false,
+    /** The tag this asset carries right now — from the session log when this kiosk
+     *  set it, otherwise from the synced roster. */
+    val currentTag: String? = null,
+    /** Whether that tag was put on by this kiosk since the screen opened. */
+    val enrolledHere: Boolean = false,
 )
 
 fun saveErrorText(e: Throwable): String {
@@ -118,7 +131,29 @@ class EnrollViewModel(
 
     /** Routes to whichever step is current — the screen calls this from its
      *  own `LaunchedEffect` collecting `ScanBus.events`. */
-    fun onScan(value: String) { if (_state.value.asset == null) submitAsset(value) else submitTag(value) }
+    fun onScan(value: String) {
+        val ui = _state.value
+        when {
+            ui.asset == null -> submitAsset(value)
+            // The gate is the point: a tag read while an asset is waiting for
+            // confirmation is exactly the accidental retag this screen now refuses.
+            ui.awaitingUpdate -> { flashBad(); showError(updateGateText(ui)) }
+            else -> submitTag(value)
+        }
+    }
+
+    private fun updateGateText(ui: EnrollUi): String {
+        val name = ui.asset?.name ?: ui.asset?.assetId ?: "this asset"
+        return if (ui.enrolledHere) "You just enrolled $name. Tap Update RFID Value to change its tag."
+        else "$name already has a tag. Tap Update RFID Value to replace it."
+    }
+
+    /** The operator said yes: open the box for the new tag. */
+    fun confirmUpdate() {
+        if (_state.value.asset == null) return
+        errorJob?.cancel()
+        _state.update { it.copy(awaitingUpdate = false, tagValue = "", error = null) }
+    }
 
     fun submitAsset(raw: String) {
         val value = raw.trim()
@@ -131,7 +166,20 @@ class EnrollViewModel(
             flashBad(); showError(NO_MOVE_DATA); return
         }
         val hit = matchAssetOrSerial(idx, value)
-        if (hit != null) { errorJob?.cancel(); _state.update { it.copy(asset = hit.asset, tagValue = "", error = null) }; flashGood(); return }
+        if (hit != null) {
+            errorJob?.cancel()
+            // What this kiosk did a moment ago outranks the synced roster: after a
+            // save whose local roster update failed, the log is the only one that
+            // knows this asset was just tagged.
+            val mine = enrolledThisSession(sessionLog(), hit.asset.id)
+            val tag = mine?.tag ?: hit.asset.rfid?.takeIf { it.isNotBlank() }
+            _state.update {
+                it.copy(asset = hit.asset, tagValue = "", error = null,
+                    awaitingUpdate = tag != null, currentTag = tag, enrolledHere = mine != null)
+            }
+            flashGood()
+            return
+        }
         flashBad()
         val asTag = matchScan(idx, value)
         showError(if (asTag?.kind == ScanMatchKind.RFID) "That's an RFID tag. Scan the asset's serial or ID first." else "No asset found for \"$value\".")
@@ -139,13 +187,26 @@ class EnrollViewModel(
 
     fun submitTag(raw: String) {
         val target = _state.value.asset ?: return
-        if (_state.value.saving) return
+        if (_state.value.saving || _state.value.awaitingUpdate) return
         val (tag, problem) = padRfid(raw)
         if (problem != null) { _state.update { it.copy(tagValue = "") }; showError(rfidProblemText(problem)); return }
+        // Instantly, from what this kiosk holds: the tag on this very asset, the
+        // tags it has handed out since the screen opened, and the synced roster.
+        sessionLog().let { log ->
+            checkEnrollTag(index, log, target, tag!!)?.let {
+                flashBad(); _state.update { st -> st.copy(tagValue = "") }; showError(enrollTagText(it)); return
+            }
+        }
         _state.update { it.copy(saving = true, error = null) }
         scope.launch {
             try {
                 val sel = setup
+                // Again on the way out: a sync may have rebuilt the roster while the
+                // operator was still lining the reader up.
+                checkEnrollTag(index, sessionLog(), target, tag!!)?.let {
+                    flashBad(); _state.update { st -> st.copy(saving = false, tagValue = "") }; showError(enrollTagText(it))
+                    return@launch
+                }
                 val result = api.postRfidEnroll(target.id, KioskRfidEnrollIn(identity.get().serial, tag!!, checkpoint, idGen(), sel?.siteId, sel?.initiativeId))
                 flashGood()
                 // The tag is saved on the portal at this point; a failure here only
@@ -158,7 +219,8 @@ class EnrollViewModel(
                 showToast("Enrolled $name → ${displayRfid(result.rfid_tag)}")
                 _state.update {
                     it.copy(asset = null, value = "", tagValue = "", saving = false,
-                        enrollments = (listOf(EnrollmentRow(idGen(), name, result.serial_number ?: target.serialNumber, result.rfid_tag, replaced = !target.rfid.isNullOrEmpty() && !result.already_had_tag, at = Instant.ofEpochMilli(clock()).toString())) + it.enrollments).take(MAX_ENROLLMENTS))
+                        awaitingUpdate = false, currentTag = null, enrolledHere = false,
+                        enrollments = (listOf(EnrollmentRow(idGen(), target.id, name, result.serial_number ?: target.serialNumber, result.rfid_tag, replaced = !target.rfid.isNullOrEmpty() && !result.already_had_tag, at = Instant.ofEpochMilli(clock()).toString())) + it.enrollments).take(MAX_ENROLLMENTS))
                 }
             } catch (e: CancellationException) { throw e
             } catch (e: Exception) {
@@ -169,5 +231,12 @@ class EnrollViewModel(
         }
     }
 
-    fun cancel() { errorJob?.cancel(); _state.update { it.copy(asset = null, value = "", tagValue = "", saving = false, error = null) } }
+    /** This session's enrollments as the gate wants them. */
+    private fun sessionLog(): List<EnrollLogEntry> =
+        _state.value.enrollments.map { EnrollLogEntry(it.assetRowId, it.rfid, it.name) }
+
+    fun cancel() {
+        errorJob?.cancel()
+        _state.update { it.copy(asset = null, value = "", tagValue = "", saving = false, error = null, awaitingUpdate = false, currentTag = null, enrolledHere = false) }
+    }
 }
