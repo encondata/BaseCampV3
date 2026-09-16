@@ -2664,6 +2664,9 @@ export interface PendingDeleteReference {
   /** a CHECK constraint keeps this column non-null even though it's
    *  nullable — force can't clear it (processed_scans match FKs) */
   check_guarded: boolean;
+  /** the foreign key declares ON DELETE CASCADE or SET NULL, so the
+   *  database clears it on delete — it never blocked anything */
+  db_handled: boolean;
   count: number;
   labels: string[];
 }
@@ -2700,6 +2703,52 @@ export async function reconcilePendingDelete(
   const resp = await apiFetch(
     `/devtools/pending-deletes/${markerId}/reconcile${force ? '?force=true' : ''}`,
     { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/* ── cascade delete override ───────────────────────────────────── */
+
+export interface CascadeStep {
+  table: string;
+  column: string;
+  /** purge deletes the rows; clear nulls the column; db_* is the
+   *  database's own ON DELETE rule doing it for us */
+  action: 'purge' | 'clear' | 'db_cascade' | 'db_set_null';
+  count: number;
+  labels: string[];
+  depth: number;
+}
+
+export interface CascadePlan {
+  entity_type: string;
+  entity_id: string;
+  label: string;
+  steps: CascadeStep[];
+  /** non-empty means the delete will refuse to run, with these reasons */
+  blocked: string[];
+  total_rows_deleted: number;
+  total_rows_cleared: number;
+}
+
+/** Everything a cascade delete would destroy for one marker. Read-only —
+ *  the server builds it with the same walk the delete runs. */
+export async function getCascadePreview(markerId: string): Promise<CascadePlan> {
+  const resp = await apiFetch(`/devtools/pending-deletes/${markerId}/cascade-preview`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Irreversible. `confirmLabel` must equal the marker's own label or the
+ *  server refuses with `label_mismatch`. */
+export async function cascadeDelete(
+  markerId: string, confirmLabel: string,
+): Promise<PendingDeleteReconcileOut> {
+  const resp = await apiFetch(`/devtools/pending-deletes/${markerId}/cascade-delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm_label: confirmLabel }),
+  });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

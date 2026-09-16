@@ -57,7 +57,7 @@ describe('markerIdsByEntity', () => {
 function ref(over: Partial<PendingDeleteReference> = {}): PendingDeleteReference {
   return {
     table: 'initiatives', column: 'site_id', nullable: true,
-    purgeable: false, check_guarded: false, count: 1, labels: [], ...over,
+    purgeable: false, check_guarded: false, db_handled: false, count: 1, labels: [], ...over,
   };
 }
 
@@ -138,5 +138,32 @@ describe('usePendingDeletes', () => {
     await act(async () => { await result.current.unmark('ghost'); });
 
     expect(api.unmarkPendingDelete).not.toHaveBeenCalled();
+  });
+});
+
+describe('canForceDelete', () => {
+  // Local `ref` shadows the module-level one above (different defaults —
+  // every flag starts false here) — scoped to this describe block so it
+  // doesn't collide with the fixture the earlier tests share.
+  const ref = (over: Partial<PendingDeleteReference>): PendingDeleteReference => ({
+    table: 't', column: 'c', nullable: false, purgeable: false,
+    check_guarded: false, db_handled: false, count: 1, labels: [], ...over,
+  });
+
+  it('accepts nullable and purgeable references', () => {
+    expect(canForceDelete([ref({ nullable: true }), ref({ purgeable: true })])).toBe(true);
+  });
+
+  it('rejects a required reference', () => {
+    expect(canForceDelete([ref({})])).toBe(false);
+  });
+
+  it('rejects a check-guarded nullable reference', () => {
+    expect(canForceDelete([ref({ nullable: true, check_guarded: true })])).toBe(false);
+  });
+
+  it('treats a database-handled reference as already satisfied', () => {
+    expect(canForceDelete([ref({ db_handled: true })])).toBe(true);
+    expect(canForceDelete([ref({ db_handled: true }), ref({})])).toBe(false);
   });
 });
