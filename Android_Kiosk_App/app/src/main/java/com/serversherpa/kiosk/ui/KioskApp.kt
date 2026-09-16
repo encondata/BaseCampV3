@@ -21,6 +21,7 @@ import com.serversherpa.kiosk.ui.guards.SetupGate
 import com.serversherpa.kiosk.ui.screens.home.HomeScreen
 import com.serversherpa.kiosk.ui.screens.login.LoginScreen
 import com.serversherpa.kiosk.ui.screens.placeholder.FeaturePlaceholderScreen
+import com.serversherpa.kiosk.ui.screens.scan.ScanScreen
 import com.serversherpa.kiosk.ui.screens.settings.SettingsScreen
 import com.serversherpa.kiosk.ui.screens.setup.KioskSetupScreen
 import com.serversherpa.kiosk.ui.shell.KioskShell
@@ -41,7 +42,7 @@ fun KioskApp() {
                 composable(Routes.SETTINGS, arguments = listOf(navArgument("tab") { type = NavType.StringType; nullable = true })) { entry ->
                     KioskShell(nav) { SettingsScreen(nav, entry.arguments?.getString("tab")) }
                 }
-                gated(nav, Routes.SCAN, FeatureId.SCAN) { FeaturePlaceholderScreen(feature(FeatureId.SCAN), nav) }         // Task 22: ScanScreen(nav)
+                gated(nav, Routes.SCAN, FeatureId.SCAN) { ScanScreen(nav) }
                 gated(nav, Routes.ENROLL, FeatureId.ENROLL) { FeaturePlaceholderScreen(feature(FeatureId.ENROLL), nav) }   // Task 23: EnrollScreen(nav)
                 gated(nav, Routes.TIMECLOCK, FeatureId.TIMECLOCK) { FeaturePlaceholderScreen(feature(FeatureId.TIMECLOCK), nav) } // Task 24: TimeclockScreen(nav)
                 gated(nav, Routes.CONTAINERS, FeatureId.CONTAINERS) { FeaturePlaceholderScreen(feature(FeatureId.CONTAINERS), nav) }
