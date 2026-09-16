@@ -2,10 +2,10 @@ package com.serversherpa.kiosk.core.settings
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 enum class BuiltinSound(val wire: String, val label: String) {
@@ -32,13 +32,17 @@ private val json = Json { ignoreUnknownKeys = true }
 
 /** A JSON number only — a quoted "10" is not a number, exactly as the web's typeof check says. */
 private fun kotlinx.serialization.json.JsonElement.numberOrNull(): Double? =
-    (this as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull
+    (this as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull
 
 private fun choiceOf(obj: JsonObject?): SoundChoice? {
-    val kind = obj?.get("kind")?.jsonPrimitive?.content ?: return null
+    // "kind" or "id" can hold a JSON object or array instead of a primitive (an
+    // older build, or a corrupted document); `as?` returns null there instead of
+    // throwing the way the `.jsonPrimitive` extension would, so a bad choice falls
+    // back to its default rather than taking the whole parse down with it.
+    val kind = (obj?.get("kind") as? JsonPrimitive)?.content ?: return null
     return when (kind) {
         "none" -> SoundChoice.None
-        "builtin" -> BuiltinSound.fromWire(obj["id"]?.jsonPrimitive?.content)?.let { SoundChoice.Builtin(it) }
+        "builtin" -> BuiltinSound.fromWire((obj["id"] as? JsonPrimitive)?.content)?.let { SoundChoice.Builtin(it) }
         else -> null   // "upload" is a web-only kind
     }
 }

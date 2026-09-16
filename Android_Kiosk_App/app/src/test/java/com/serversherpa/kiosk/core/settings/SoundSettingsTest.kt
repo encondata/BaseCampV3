@@ -28,4 +28,26 @@ class SoundSettingsTest {
     @Test fun quotedVolumeIsNotANumber() {
         assertEquals(DEFAULT_SOUND_SETTINGS.volume, parseSoundSettings("""{"volume":"0.2"}""").volume, 1e-9)
     }
+
+    /** A "kind" holding a JSON object must fall back to that choice's default, and
+     *  must not take the rest of the document down with it. */
+    @Test fun objectValuedFieldFallsBackWithoutLosingOtherFields() {
+        val s = parseSoundSettings("""{"good":{"kind":{"nested":"builtin"}},"volume":0.25}""")
+        assertEquals(DEFAULT_SOUND_SETTINGS.good, s.good)
+        assertEquals(0.25, s.volume, 1e-9)
+    }
+
+    /** Same as above, but for a JSON array value instead of an object. */
+    @Test fun arrayValuedFieldFallsBackWithoutLosingOtherFields() {
+        val s = parseSoundSettings("""{"good":{"kind":["builtin"]},"volume":0.25}""")
+        assertEquals(DEFAULT_SOUND_SETTINGS.good, s.good)
+        assertEquals(0.25, s.volume, 1e-9)
+    }
+
+    /** The nested "id" is the other throwing read in the same helper. */
+    @Test fun objectValuedIdFallsBackWithoutLosingOtherFields() {
+        val s = parseSoundSettings("""{"good":{"kind":"builtin","id":{"nested":"bonk"}},"not_found":{"kind":"none"}}""")
+        assertEquals(DEFAULT_SOUND_SETTINGS.good, s.good)
+        assertEquals(SoundChoice.None, s.notFound)
+    }
 }
