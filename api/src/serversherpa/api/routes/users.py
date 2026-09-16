@@ -8,25 +8,52 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
+from serversherpa.access.defaults import GATE_BYPASS_RANK
+from serversherpa.access.effective import effective_cells
 from serversherpa.access.resolver import can_touch_rank
+from serversherpa.access.resources import REGISTRY
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import (
     AuthContext, DbSession, require_password_length, require_permission,
 )
+from serversherpa.api.routes.notifications import effective_settings
 from serversherpa.api.schemas import (
+    AccessGroupsOut,
+    AccessGroupsUpdateIn,
     AccountCreateIn,
+    MyActivityItem,
+    OrgRefOut,
+    PartnerRef,
     PersonDetail,
+    PersonRef,
     ProfileUpdateIn,
     ResetPasswordIn,
     RolesUpdateIn,
+    UserAccessBlock,
+    UserAccessGroupRow,
     UserCreateIn,
+    UserDetailAccount,
+    UserDetailOut,
+    UserDetailPerson,
     UserItem,
+    UserNotificationGroup,
+    UserOverrideRow,
+    UserRoleGrant,
+    UserSessionRow,
+    UserWorkerCard,
 )
 from serversherpa.config import get_settings
-from serversherpa.db.models import AuthSession, Person, PersonRole, Role, UserAccount
+from serversherpa.db.models import (
+    AccessGroup, AccessGroupMember, AuthSession, Client, NotificationGroup,
+    NotificationGroupMember, Partner, PermissionOverride, Person, PersonRole,
+    ResourceGroupGate, Role, UserAccount, WorkerLevel, WorkerProfile,
+)
 from serversherpa.security.passwords import hash_password
+from serversherpa.services.activity import person_activity
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.sessions import live_session_rows
 from serversherpa.services.storage import presign_get
+from serversherpa.status.labels import level_colors, level_fields, status_fields, status_labels
 from sqlalchemy.exc import IntegrityError as _IntegrityError  # noqa: F401 (re-exported name kept)
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -93,6 +120,196 @@ async def list_users(
         )
         for person, account in rows
     ]
+
+
+async def _person_refs(db: DbSession, ids: set) -> dict:
+    """id -> PersonRef for a batch of granter/adder/setter ids (None dropped)."""
+    wanted = {i for i in ids if i is not None}
+    if not wanted:
+        return {}
+    people = await db.scalars(select(Person).where(Person.id.in_(wanted)))
+    return {p.id: PersonRef(id=p.id, display_name=p.display_name) for p in people}
+
+
+async def _org_refs(db: DbSession, client_ids: set, partner_ids: set) -> dict:
+    """(kind, id) -> OrgRefOut."""
+    out: dict = {}
+    if client_ids:
+        for cid, name in (await db.execute(
+                select(Client.id, Client.name).where(Client.id.in_(client_ids)))).all():
+            out[("client", cid)] = OrgRefOut(kind="client", id=cid, name=name)
+    if partner_ids:
+        for pid, name in (await db.execute(
+                select(Partner.id, Partner.name).where(Partner.id.in_(partner_ids)))).all():
+            out[("partner", pid)] = OrgRefOut(kind="partner", id=pid, name=name)
+    return out
+
+
+@router.get("/{person_id}", response_model=UserDetailOut)
+async def get_user_detail(
+    person_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "view"),
+) -> UserDetailOut:
+    """Everything the user detail page shows, in one payload. Row visibility
+    matches the list (users:view + scope). The access block keeps the
+    Explorer's rank-60 rule; sessions need users:change, a global actor, and
+    the actor must be able to touch the target's rank (or be viewing
+    themself) — a rank-40 staffer should not be able to read a founder's
+    session IPs and user agents."""
+    query = (select(Person, UserAccount)
+             .join(UserAccount, UserAccount.person_id == Person.id)
+             .where(Person.id == person_id))
+    cond = scope_conditions("users", actor.access, actor.person.id)
+    if cond is not None:
+        query = query.where(cond)
+    row = (await db.execute(query)).first()
+    if row is None:
+        raise _err(404, "user_not_found")
+    person, account = row
+    now = datetime.now(UTC)
+
+    # ── roles: active grants with rank, org, granter ──
+    grant_rows = (await db.execute(
+        select(PersonRole, Role)
+        .join(Role, Role.name == PersonRole.role)
+        .where(PersonRole.person_id == person_id, PersonRole.revoked_at.is_(None))
+        .order_by(Role.rank.desc(), Role.name))).all()
+    orgs = await _org_refs(
+        db, {g.client_id for g, _ in grant_rows if g.client_id},
+        {g.partner_id for g, _ in grant_rows if g.partner_id})
+
+    # ── worker card ──
+    worker: UserWorkerCard | None = None
+    profile = await db.get(WorkerProfile, person_id)
+    if profile is not None:
+        partner = await db.get(Partner, profile.partner_id) if profile.partner_id else None
+        level_row = await db.get(WorkerLevel, profile.level) if profile.level else None
+        worker = UserWorkerCard(
+            trade=profile.trade,
+            level_title=level_row.title if level_row else None,
+            partner=PartnerRef(id=partner.id, name=partner.name) if partner else None,
+            **level_fields(profile.level, await level_colors(db)),
+            **status_fields(profile.status, await status_labels(db, "worker")),
+        )
+
+    # ── notification groups (enabled only; channels = effective) ──
+    ng_rows = (await db.execute(
+        select(NotificationGroup, NotificationGroupMember)
+        .join(NotificationGroupMember,
+              NotificationGroupMember.group_id == NotificationGroup.id)
+        .where(NotificationGroupMember.person_id == person_id,
+               NotificationGroup.enabled.is_(True))
+        .order_by(NotificationGroup.name))).all()
+    notification_groups = [
+        UserNotificationGroup(id=g.id, name=g.name,
+                              channels=effective_settings(g, m)["channels"],
+                              added_at=m.added_at)
+        for g, m in ng_rows]
+
+    # ── access block (rank-60 rule, same as /access/effective) ──
+    access_block: UserAccessBlock | None = None
+    can_see_access = actor.access.can("access", "view") and (
+        actor.access.max_rank >= GATE_BYPASS_RANK or person_id == actor.person.id)
+    override_rows: list[PermissionOverride] = []
+    group_member_rows: list = []
+    if can_see_access:
+        eff = await effective_cells(db, person_id)
+        group_member_rows = (await db.execute(
+            select(AccessGroup, AccessGroupMember)
+            .join(AccessGroupMember, AccessGroupMember.group_id == AccessGroup.id)
+            .where(AccessGroupMember.person_id == person_id)
+            .order_by(AccessGroup.name))).all()
+        gates_by_group: dict = {}
+        if group_member_rows:
+            gids = [g.id for g, _ in group_member_rows]
+            for res, gid in (await db.execute(
+                    select(ResourceGroupGate.resource, ResourceGroupGate.group_id)
+                    .where(ResourceGroupGate.group_id.in_(gids)))).all():
+                gates_by_group.setdefault(gid, []).append(res)
+        override_rows = list(await db.scalars(
+            select(PermissionOverride)
+            .where(PermissionOverride.person_id == person_id)
+            .order_by(PermissionOverride.resource, PermissionOverride.action)))
+        scope_orgs_map = await _org_refs(db, set(eff.access.client_ids),
+                                         set(eff.access.partner_ids))
+
+    # one batched name lookup for every "who did it" column
+    refs = await _person_refs(
+        db,
+        {g.granted_by for g, _ in grant_rows}
+        | {m.added_by for _, m in group_member_rows}
+        | {o.set_by for o in override_rows})
+
+    if can_see_access:
+        access_block = UserAccessBlock(
+            groups=[UserAccessGroupRow(
+                id=g.id, name=g.name, description=g.description,
+                gate_count=len(gates_by_group.get(g.id, [])),
+                gated_pages=sorted(REGISTRY[r].label for r in gates_by_group.get(g.id, [])
+                                   if r in REGISTRY),
+                added_by=refs.get(m.added_by), added_at=m.added_at)
+                for g, m in group_member_rows],
+            overrides=[UserOverrideRow(
+                resource=o.resource,
+                resource_label=REGISTRY[o.resource].label if o.resource in REGISTRY
+                               else o.resource,
+                action=o.action, allow=o.allow, set_by=refs.get(o.set_by), set_at=o.set_at)
+                for o in override_rows],
+            scope=eff.scope,
+            scope_orgs=[scope_orgs_map[k] for k in sorted(scope_orgs_map, key=str)],
+            cells=eff.cells,
+        )
+
+    # ── sessions (admin view; rank-gated so a rank-40 staffer can't read a
+    # founder's session IPs/user agents) ──
+    target_max_rank = max((role.rank for _, role in grant_rows), default=0)
+    sessions: list[UserSessionRow] | None = None
+    if actor.access.can("users", "change") and actor.access.is_global and (
+        person_id == actor.person.id
+        or can_touch_rank(actor.access.max_rank, target_max_rank)
+    ):
+        sessions = [UserSessionRow(**r) for r in await live_session_rows(db, person_id)]
+
+    person_out = UserDetailPerson.model_validate(person)
+    person_out.avatar_url = presign_get(person.avatar_key)
+    return UserDetailOut(
+        person=person_out,
+        account=UserDetailAccount(
+            login_email=account.email, status=_status(account, now),
+            must_change_password=account.must_change_password,
+            last_login_at=account.last_login_at, created_at=account.created_at,
+            password_updated_at=account.password_updated_at),
+        roles=[UserRoleGrant(
+            role=role.name, label=role.label or role.name, rank=role.rank,
+            scope_anchor=role.scope_anchor,
+            org=(orgs.get(("client", g.client_id)) if g.client_id
+                 else orgs.get(("partner", g.partner_id)) if g.partner_id else None),
+            granted_by=refs.get(g.granted_by), granted_at=g.granted_at)
+            for g, role in grant_rows],
+        max_rank=target_max_rank,
+        worker=worker,
+        notification_groups=notification_groups,
+        access=access_block,
+        sessions=sessions,
+    )
+
+
+@router.get("/{person_id}/activity", response_model=list[MyActivityItem])
+async def user_activity(
+    person_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("audit", "view"),
+) -> list[MyActivityItem]:
+    """The History tab: rows this person acted in plus rows about their
+    person/account/sign-ins — the same query /auth/me/activity runs, pointed
+    at the target. `by_me` means the *target* acted."""
+    await _require_global(actor)
+    account = await db.get(UserAccount, person_id)
+    if account is None:
+        raise _err(404, "user_not_found")
+    rows = await person_activity(db, person_id, account.email, limit=100)
+    return [MyActivityItem(**row) for row in rows]
 
 
 @router.post("", response_model=UserItem, status_code=201)
@@ -419,6 +636,55 @@ async def set_roles(
           changes={"roles": {"from": sorted(current), "to": sorted(desired)}})
     await db.commit()
     return sorted(desired)
+
+
+@router.put("/{person_id}/access-groups", response_model=AccessGroupsOut)
+async def set_access_groups(
+    person_id: uuid.UUID,
+    body: AccessGroupsUpdateIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("access", "change"),
+) -> AccessGroupsOut:
+    """Person-centered group membership: the full desired set, diffed.
+    Same rank rules as PUT /access/groups/{id}/members, one audit row on
+    the person instead of one per group."""
+    await _load_target(db, actor, person_id)
+    desired = set(body.group_ids)
+    current_rows = list(await db.scalars(
+        select(AccessGroupMember).where(AccessGroupMember.person_id == person_id)))
+    current = {m.group_id for m in current_rows}
+    names = {g.id: g.name for g in await db.scalars(
+        select(AccessGroup).where(AccessGroup.id.in_((desired | current) or {uuid.uuid4()})))}
+    if any(gid not in names for gid in desired):
+        raise _err(404, "group_not_found")
+    if desired != current:
+        for gid in current - desired:
+            await db.execute(AccessGroupMember.__table__.delete().where(
+                AccessGroupMember.group_id == gid,
+                AccessGroupMember.person_id == person_id))
+        for gid in desired - current:
+            db.add(AccessGroupMember(group_id=gid, person_id=person_id,
+                                     added_by=actor.person.id))
+        audit(db, actor_id=actor.person.id, entity_type="person",
+              entity_id=str(person_id), action="access_groups.set",
+              changes={"groups": {"from": sorted(names[g] for g in current),
+                                  "to": sorted(names[g] for g in desired)}})
+        await db.commit()
+    return AccessGroupsOut(group_ids=sorted(desired, key=str))
+
+
+@router.post("/{person_id}/sessions/revoke-all", status_code=204)
+async def revoke_all_user_sessions(
+    person_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "change"),
+) -> None:
+    """Sign the person out everywhere without disabling them."""
+    await _load_target(db, actor, person_id)
+    await _revoke_all_sessions(db, person_id, reason="admin")
+    audit(db, actor_id=actor.person.id, entity_type="auth",
+          entity_id=str(person_id), action="session.revoke_all", changes={})
+    await db.commit()
 
 
 @router.patch("/{person_id}/profile", response_model=PersonDetail)

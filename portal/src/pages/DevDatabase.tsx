@@ -26,6 +26,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
+import CascadeDeleteModal from '../components/dev/CascadeDeleteModal';
 import DbTestingTab from '../components/dev/DbTestingTab';
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import {
@@ -83,6 +84,7 @@ function ReconcileTab() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [reconciling, setReconciling] = useState(false);
   const [result, setResult] = useState<PendingDeleteReconcileOut | null>(null);
+  const [cascadeFor, setCascadeFor] = useState<PendingDeleteFailure | null>(null);
 
   const load = async () => {
     try {
@@ -195,6 +197,11 @@ function ReconcileTab() {
     }
   };
 
+  // Same marker lookup handleForceDelete relies on — a failure's marker
+  // is always still present (reconcile only clears markers it resolved),
+  // but the type stays optional since nothing guarantees that statically.
+  const cascadeMarkerId = cascadeFor ? markerIdFor(cascadeFor) : undefined;
+
   return (
     <>
       <p className="page-hint" style={{ marginBottom: 16 }}>
@@ -231,7 +238,6 @@ function ReconcileTab() {
             <ul style={{ margin: '8px 0 0', paddingLeft: 18, textAlign: 'left' }}>
               {result.failed.map((f) => {
                 const canForce = canForceDelete(f.references);
-                const checkGuarded = f.references.some((r) => r.check_guarded);
                 return (
                   <li key={`${f.entity_type}:${f.entity_id}`} style={{ marginBottom: 8 }}>
                     <b>{f.label}</b> — {humanizeReason(f.reason)}
@@ -245,29 +251,36 @@ function ReconcileTab() {
                           <li key={`${r.table}.${r.column}`}>
                             {r.table}.{r.column} — {r.count} row{r.count === 1 ? '' : 's'}
                             {r.labels.length > 0 && ` ("${r.labels.join('", "')}")`}
+                            {r.db_handled
+                              && ' — handled automatically by the database'}
                             {r.check_guarded
                               && ' — kept non-null by a database rule; delete these rows first'}
                           </li>
                         ))}
                       </ul>
                     )}
-                    {f.references.length > 0 && (canForce ? (
-                      <button
-                        type="button"
-                        className="mini-btn sm danger"
-                        style={{ marginTop: 6 }}
-                        disabled={busyId !== null}
-                        onClick={() => void handleForceDelete(f)}
-                      >
-                        Force delete — detach references
-                      </button>
-                    ) : (
-                      <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-mute)' }}>
-                        {checkGuarded
-                          ? 'Cannot force — a database rule keeps some references non-null.'
-                          : 'Cannot force — some references are required fields.'}
+                    {f.references.length > 0 && (
+                      <div className="dev-cascade-actions">
+                        {canForce && (
+                          <button
+                            type="button"
+                            className="mini-btn sm danger"
+                            disabled={busyId !== null}
+                            onClick={() => void handleForceDelete(f)}
+                          >
+                            Force delete — detach references
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="mini-btn sm danger"
+                          disabled={busyId !== null}
+                          onClick={() => setCascadeFor(f)}
+                        >
+                          Override — delete this and everything attached
+                        </button>
                       </div>
-                    ))}
+                    )}
                   </li>
                 );
               })}
@@ -327,6 +340,32 @@ function ReconcileTab() {
           ))}
         </div>
       ))}
+
+      {cascadeFor && cascadeMarkerId && (
+        <CascadeDeleteModal
+          markerId={cascadeMarkerId}
+          label={cascadeFor.label}
+          onClose={() => setCascadeFor(null)}
+          onDeleted={(res) => {
+            const overridden = cascadeFor;
+            setCascadeFor(null);
+            // Merge into whatever's on screen rather than replacing it: the
+            // override resolves one failure from a preceding bulk
+            // Reconcile, and the other failures (with their own Override
+            // buttons) must stay visible for the operator to work through.
+            setResult((prev) => (prev ? {
+              deleted: prev.deleted + res.deleted,
+              failed: [
+                ...prev.failed.filter((f) => !(overridden
+                  && f.entity_type === overridden.entity_type
+                  && f.entity_id === overridden.entity_id)),
+                ...res.failed,
+              ],
+            } : res));
+            void load();
+          }}
+        />
+      )}
     </>
   );
 }

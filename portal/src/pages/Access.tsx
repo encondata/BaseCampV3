@@ -3,6 +3,7 @@
  *  tab bodies themselves (Roles/Groups/Members/Explorer) land in later tasks. */
 
 import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import ExplorerTab from '../components/access/ExplorerTab';
@@ -30,7 +31,11 @@ export default function Access() {
 
   const [summary, setSummary] = useState<AccessSummary | null>(null);
   const [error, setError] = useState('');
-  const [tab, setTab] = useState<Tab>('roles');
+  const [params] = useSearchParams();
+  const wanted = params.get('tab');
+  const [tab, setTab] = useState<Tab>(
+    TABS.some((t) => t.key === wanted) ? (wanted as Tab) : 'roles');
+  const initialGroupId = params.get('group');
 
   const load = useCallback(async () => {
     try {
@@ -105,7 +110,7 @@ export default function Access() {
                         onChanged={load} />
             )}
             {tab === 'groups' && (
-              <GroupsTab summary={summary} canEdit={canEdit}
+              <GroupsTab summary={summary} canEdit={canEdit} initialGroupId={initialGroupId}
                          onChanged={() => void load()} />
             )}
             {tab === 'members' && (

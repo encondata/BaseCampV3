@@ -491,6 +491,104 @@ export async function adminUpdateProfileRequest(
   return resp.json();
 }
 
+/* ── user detail page (GET /users/{id}) ────────────────────────── */
+
+export interface PersonRef { id: string; display_name: string }
+export interface OrgRefOut { kind: 'client' | 'partner'; id: string; name: string }
+
+export interface UserDetailPerson extends PersonDetail {
+  source: string;
+  source_ref: string | null;
+  archived_at: string | null;
+}
+
+export interface UserDetailAccount {
+  login_email: string | null;
+  status: string;
+  must_change_password: boolean;
+  last_login_at: string | null;
+  created_at: string;
+  password_updated_at: string | null;
+}
+
+export interface UserRoleGrant {
+  role: string; label: string; rank: number; scope_anchor: string;
+  org: OrgRefOut | null; granted_by: PersonRef | null; granted_at: string;
+}
+
+export interface UserWorkerCard {
+  trade: string | null; level: string | null; level_title: string | null;
+  level_color: string | null; partner: { id: string; name: string } | null;
+  status: string; status_label: string; status_color: string;
+}
+
+export interface UserNotificationGroup {
+  id: string; name: string; channels: string[]; added_at: string;
+}
+
+export interface UserAccessGroupRow {
+  id: string; name: string; description: string; gate_count: number;
+  gated_pages: string[]; added_by: PersonRef | null; added_at: string;
+}
+
+export interface UserOverrideRow {
+  resource: string; resource_label: string; action: string; allow: boolean;
+  set_by: PersonRef | null; set_at: string;
+}
+
+export interface UserAccessBlock {
+  groups: UserAccessGroupRow[];
+  overrides: UserOverrideRow[];
+  scope: ScopeInfo;
+  scope_orgs: OrgRefOut[];
+  cells: Record<string, Record<Action, EffectiveCell>>;
+}
+
+export interface UserSessionRow {
+  family_id: string; started_at: string; last_active_at: string; expires_at: string;
+  ip_address: string | null; user_agent: string | null;
+}
+
+export interface UserDetailOut {
+  person: UserDetailPerson;
+  account: UserDetailAccount;
+  roles: UserRoleGrant[];
+  max_rank: number;
+  worker: UserWorkerCard | null;
+  notification_groups: UserNotificationGroup[];
+  access: UserAccessBlock | null;
+  sessions: UserSessionRow[] | null;
+}
+
+export async function getUserDetail(personId: string): Promise<UserDetailOut> {
+  const resp = await apiFetch(`/users/${personId}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getUserActivity(personId: string): Promise<MyActivityItem[]> {
+  const resp = await apiFetch(`/users/${personId}/activity`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function setUserAccessGroups(
+  personId: string, groupIds: string[],
+): Promise<string[]> {
+  const resp = await apiFetch(`/users/${personId}/access-groups`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ group_ids: groupIds }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return (await resp.json()).group_ids as string[];
+}
+
+export async function revokeAllUserSessions(personId: string): Promise<void> {
+  const resp = await apiFetch(`/users/${personId}/sessions/revoke-all`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
 /** Slim projection of GET /users for pickers (the Users page reads the
  *  full payload itself). */
 export interface UserSummary {
@@ -1981,6 +2079,30 @@ export async function listAssetScans(
   return resp.json();
 }
 
+/** One move roster row an asset has appeared on. Compact by design — rack,
+ *  RU, disposition and verification live on the move-row page. */
+export interface AssetMoveRow {
+  row_id: string;
+  initiative_id: string;
+  initiative_name: string;
+  initiative_status: string;
+  initiative_status_label: string;
+  initiative_status_color: string;
+  asset_status: string;
+  asset_status_label: string;
+  asset_status_color: string;
+  /** date-only, midnight UTC — render with parseApiDay + longDateOf */
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  added_at: string;
+}
+
+export async function listAssetMoves(assetId: string): Promise<AssetMoveRow[]> {
+  const resp = await apiFetch(`/assets/${assetId}/moves`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /* ── time ─────────────────────────────────────────────────────────── */
 
 export interface TimeEntryItem {
@@ -2566,6 +2688,9 @@ export interface PendingDeleteReference {
   /** a CHECK constraint keeps this column non-null even though it's
    *  nullable — force can't clear it (processed_scans match FKs) */
   check_guarded: boolean;
+  /** the foreign key declares ON DELETE CASCADE or SET NULL, so the
+   *  database clears it on delete — it never blocked anything */
+  db_handled: boolean;
   count: number;
   labels: string[];
 }
@@ -2602,6 +2727,55 @@ export async function reconcilePendingDelete(
   const resp = await apiFetch(
     `/devtools/pending-deletes/${markerId}/reconcile${force ? '?force=true' : ''}`,
     { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/* ── cascade delete override ───────────────────────────────────── */
+
+export interface CascadeStep {
+  table: string;
+  column: string;
+  /** purge deletes the rows; clear nulls the column; db_* is the
+   *  database's own ON DELETE rule doing it for us */
+  action: 'purge' | 'clear' | 'db_cascade' | 'db_set_null';
+  count: number;
+  labels: string[];
+  depth: number;
+}
+
+export interface CascadePlan {
+  entity_type: string;
+  entity_id: string;
+  label: string;
+  steps: CascadeStep[];
+  /** non-empty means the delete will refuse to run, with these reasons */
+  blocked: string[];
+  total_rows_deleted: number;
+  total_rows_cleared: number;
+  /** rows the DATABASE destroys via ON DELETE CASCADE — not part of
+   *  total_rows_deleted, which is only this walk's own DELETEs */
+  total_rows_db_deleted: number;
+}
+
+/** Everything a cascade delete would destroy for one marker. Read-only —
+ *  the server builds it with the same walk the delete runs. */
+export async function getCascadePreview(markerId: string): Promise<CascadePlan> {
+  const resp = await apiFetch(`/devtools/pending-deletes/${markerId}/cascade-preview`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Irreversible. `confirmLabel` must equal the marker's own label or the
+ *  server refuses with `label_mismatch`. */
+export async function cascadeDelete(
+  markerId: string, confirmLabel: string,
+): Promise<PendingDeleteReconcileOut> {
+  const resp = await apiFetch(`/devtools/pending-deletes/${markerId}/cascade-delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm_label: confirmLabel }),
+  });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

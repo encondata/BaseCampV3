@@ -27,14 +27,16 @@ from serversherpa.api.schemas import (
     SessionItem,
 )
 from serversherpa.db.models import (
-    AuditLog, AuthSession, NotificationGroup, NotificationGroupMember,
-    NotificationMembershipRequest, Person,
+    AuthSession, NotificationGroup, NotificationGroupMember,
+    NotificationMembershipRequest,
 )
 from serversherpa.config import get_settings
 from serversherpa.notifications.requests import RequestError, cancel_request, create_request
 from serversherpa.security.passwords import hash_password, verify_password
+from serversherpa.services.activity import ABOUT_ENTITY_TYPES, person_activity
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.auth import revoke_family
+from serversherpa.services.sessions import live_session_rows
 from serversherpa.services.storage import presign_get
 
 router = APIRouter(prefix="/auth/me", tags=["me"])
@@ -53,7 +55,7 @@ async def get_profile(user: CurrentUser) -> PersonDetail:
     return _detail(user.person, user.account)
 
 
-ABOUT_ME_ENTITY_TYPES = ("person", "user_account", "auth")
+ABOUT_ME_ENTITY_TYPES = ABOUT_ENTITY_TYPES
 
 
 @router.get("/activity", response_model=list[MyActivityItem])
@@ -61,38 +63,8 @@ async def my_activity(user: CurrentUser, db: DbSession) -> list[MyActivityItem]:
     """The signed-in user's history: rows they acted in, plus rows about
     their person/account/auth identity (admin resets, failed logins against
     their email — those carry actor NULL and entity_id = the typed email)."""
-    from sqlalchemy import and_, or_
-
-    me = user.person.id
-    identities = [str(me)]
-    if user.account.email:
-        identities.append(user.account.email)
-    rows = (await db.execute(
-        select(AuditLog, Person)
-        .outerjoin(Person, Person.id == AuditLog.actor_person_id)
-        .where(or_(
-            AuditLog.actor_person_id == me,
-            and_(AuditLog.entity_type.in_(ABOUT_ME_ENTITY_TYPES),
-                 AuditLog.entity_id.in_(identities)),
-        ))
-        .order_by(AuditLog.at.desc())
-        .limit(50)
-    )).all()
-    from serversherpa.services.entity_refs import resolve_entity_refs
-    refs = await resolve_entity_refs(db, {
-        (log.entity_type, log.entity_id) for log, _ in rows
-        if log.entity_id is not None})
-    return [MyActivityItem(
-        id=log.id, at=log.at, action=log.action, entity_type=log.entity_type,
-        entity_id=log.entity_id, ip=str(log.ip) if log.ip else None,
-        by_me=log.actor_person_id == me,
-        actor_name=(actor.display_name
-                    if actor is not None and log.actor_person_id != me
-                    else None),
-        changes=log.changes or {},
-        entity_name=refs.get((log.entity_type, log.entity_id or ""), {}).get("name"),
-        entity_summary=refs.get((log.entity_type, log.entity_id or ""), {}).get("summary", {}),
-    ) for log, actor in rows]
+    rows = await person_activity(db, user.person.id, user.account.email, limit=50)
+    return [MyActivityItem(**row) for row in rows]
 
 
 @router.patch("/profile", response_model=PersonDetail)
@@ -128,40 +100,10 @@ async def update_profile(
 
 @router.get("/sessions", response_model=list[SessionItem])
 async def list_sessions(user: CurrentUser, db: DbSession) -> list[SessionItem]:
-    now = datetime.now(UTC)
-
-    live = (await db.scalars(
-        select(AuthSession).where(
-            AuthSession.person_id == user.person.id,
-            AuthSession.revoked_at.is_(None),
-            AuthSession.rotated_at.is_(None),
-            AuthSession.expires_at > now,
-        )
-    )).all()
-
-    family_ids = [s.family_id for s in live]
-    starts = dict((await db.execute(
-        select(AuthSession.family_id, func.min(AuthSession.created_at))
-        .where(AuthSession.family_id.in_(family_ids or [uuid.uuid4()]))
-        .group_by(AuthSession.family_id)
-    )).all())
-
-    items = [
-        SessionItem(
-            family_id=s.family_id,
-            started_at=starts.get(s.family_id, s.created_at),
-            last_active_at=s.created_at,
-            expires_at=s.expires_at,
-            ip_address=str(s.ip_address) if s.ip_address is not None else None,
-            user_agent=s.user_agent,
-            current=s.family_id == user.session.family_id,
-        )
-        for s in live
-    ]
-    # current login first, then most recently active
-    items.sort(key=lambda i: (not i.current, i.last_active_at), reverse=False)
-    items.sort(key=lambda i: i.last_active_at, reverse=True)
-    items.sort(key=lambda i: not i.current)
+    rows = await live_session_rows(db, user.person.id)
+    items = [SessionItem(**row, current=row["family_id"] == user.session.family_id)
+             for row in rows]
+    items.sort(key=lambda i: not i.current)   # stable: current first, then most recent
     return items
 
 

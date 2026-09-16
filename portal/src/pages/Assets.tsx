@@ -7,10 +7,12 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AssetEditModal from '../components/assets/AssetEditModal';
 import GodDeleteButton from '../components/GodDeleteButton';
+import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import {
   ApiError,
@@ -132,6 +134,7 @@ const CSV_COLUMNS: [string, (a: AssetItem) => string][] = [
 ];
 
 export default function Assets() {
+  const navigate = useNavigate();
   const { can, godMode } = useAuth();
   const canAdd = can('assets', 'add');
   const canChange = can('assets', 'change');
@@ -289,12 +292,22 @@ export default function Assets() {
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 100px 30px` };
 
   /** The amber chip the serial-bearing cells carry when a serial is shared
    *  by two or more assets. Rendered by whichever identity column is on. */
   const dupeChip = (isDupe: boolean) =>
     (isDupe ? <span className="chip c-amber">Duplicate SN</span> : null);
+
+  // Actions available for the row's own trailing RowActionsMenu. Full
+  // details is always offered; Edit joins it only for editors — the
+  // god-mode delete stays its own control in the expansion.
+  const rowActions = (a: AssetItem): RowAction[] => [
+    { key: 'details', label: 'Full details', onSelect: () => navigate(`/assets/${a.id}`) },
+    ...(canChange
+      ? [{ key: 'edit', label: 'Edit', onSelect: () => setEditingId(a.id) }]
+      : []),
+  ];
 
   const cellFor = (a: AssetItem, key: string, isDupe = false) => {
     // The identity trio comes first, ahead of the generic god-edit branch
@@ -451,6 +464,7 @@ export default function Assets() {
                             onSort={(dir) => setSort(c.key, dir)} />
               </span>
             ))}
+            <span className="col-head" aria-hidden="true" />
             <ColumnMenu colKey="archived" label="Archived"
                         allRows={assets ?? []} filters={filters}
                         text={assetCellText}
@@ -483,6 +497,10 @@ export default function Assets() {
                       {cellFor(a, c.key, isDupe)}
                     </div>
                   ))}
+                  <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}
+                       onClick={(e) => e.stopPropagation()}>
+                    <RowActionsMenu actions={rowActions(a)} />
+                  </div>
                   <div className="cell chevron-cell">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                          strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
@@ -500,7 +518,6 @@ export default function Assets() {
                           pending={pd.pendingIds.has(a.id)}
                           onMark={() => pd.mark('asset', a.id, a.name ?? a.serial_number ?? 'Asset')}
                           onUnmark={() => pd.unmark(a.id)}
-                          onEdit={() => setEditingId(a.id)}
                         />
                       )}
                     </div>
@@ -540,14 +557,16 @@ export default function Assets() {
   );
 }
 
-/* ── row detail: read-only display — the ONLY interactive element is the
- * Edit button. The Notes & Files panel (Task 13) mounts as a third,
- * full-width detail block below the two here. ────────────────────── */
+/* ── row detail: read-only display — Full details and Edit live in the
+ * row's own RowActionsMenu now, so the only interactive elements left
+ * here are the Notes & Files panel and, in god mode, the delete
+ * control. The Notes & Files panel mounts as a third, full-width detail
+ * block below the two here. ────────────────────────────────────────── */
 
 function AssetRowDetail({
-  asset, canEdit, onEdit, godVisible, pending, onMark, onUnmark,
+  asset, canEdit, godVisible, pending, onMark, onUnmark,
 }: {
-  asset: AssetItem; canEdit: boolean; onEdit: () => void;
+  asset: AssetItem; canEdit: boolean;
   godVisible: boolean; pending: boolean;
   onMark: () => Promise<void>; onUnmark: () => Promise<void>;
 }) {
@@ -576,11 +595,8 @@ function AssetRowDetail({
         </dl>
       </div>
       <NotesFilesPanel entityType="asset" entityId={asset.id} canWrite={canEdit} />
-      {(canEdit || godVisible) && (
+      {godVisible && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
-          {canEdit && (
-            <button className="btn-solid" onClick={onEdit}>Edit</button>
-          )}
           <GodDeleteButton visible={godVisible} entityType="asset" entityId={asset.id}
                            label={asset.name ?? asset.serial_number ?? 'Asset'} pending={pending}
                            onChange={pending ? onUnmark : onMark} />

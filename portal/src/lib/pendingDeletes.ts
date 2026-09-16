@@ -20,10 +20,13 @@ import {
 /** Whether force delete can actually detach every listed reference: it
  *  purges association rows and nulls nullable columns, but a check-guarded
  *  column (processed_scans match FKs) can't be nulled without tripping the
- *  CHECK — offering Force there would just fail and roll back. */
+ *  CHECK — offering Force there would just fail and roll back.
+ *  A db_handled reference is cleared by the database's own ON DELETE rule,
+ *  so it never stood in the way. */
 export function canForceDelete(references: PendingDeleteReference[]): boolean {
   return references.length > 0
-    && references.every((r) => (r.nullable && !r.check_guarded) || r.purgeable);
+    && references.every((r) => r.db_handled
+      || (r.nullable && !r.check_guarded) || r.purgeable);
 }
 
 /** entityId -> markerId, the lookup `unmark` needs. Split out from the

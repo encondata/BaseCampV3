@@ -156,8 +156,8 @@ async def test_reconcile_reports_fk_violation_and_retains_marker(
     assert failure["reason"] == "fk_violation"
     assert failure["references"] == [{
         "table": "initiatives", "column": "site_id", "nullable": True,
-        "purgeable": False, "check_guarded": False, "count": 1,
-        "labels": ["Uses Site"],
+        "purgeable": False, "check_guarded": False, "db_handled": False,
+        "count": 1, "labels": ["Uses Site"],
     }]
 
     db.expire_all()
@@ -224,11 +224,18 @@ async def test_reconcile_one_poisoned_row_does_not_block_others(
     assert await db.get(Site, site_id) is not None
 
 
-async def test_staff_is_forbidden_on_all_four_endpoints(client, db, seeded_user):
+async def test_staff_is_forbidden_on_all_six_endpoints(client, db, seeded_user):
+    """The most destructive endpoints in the application — cascade-preview
+    and cascade-delete included — must 403 for staff same as the other
+    four. require_permission runs as a route dependency ahead of the
+    marker lookup, so a marker that doesn't even exist still 403s rather
+    than 404ing: authorization is checked before anything about the
+    request's path is."""
     hdrs = await login(client)  # seeded_user defaults to "staff"
     initiative = Initiative(name="Doomed", initiative_type="project")
     db.add(initiative)
     await db.commit()
+    bogus_marker = "00000000-0000-0000-0000-000000000000"
 
     assert (await client.get("/devtools/pending-deletes", headers=hdrs)
            ).status_code == 403
@@ -236,10 +243,16 @@ async def test_staff_is_forbidden_on_all_four_endpoints(client, db, seeded_user)
         "entity_type": "initiative", "entity_id": str(initiative.id),
         "entity_label": "Doomed"})).status_code == 403
     assert (await client.delete(
-        "/devtools/pending-deletes/00000000-0000-0000-0000-000000000000",
+        f"/devtools/pending-deletes/{bogus_marker}",
         headers=hdrs)).status_code == 403
     assert (await client.post("/devtools/pending-deletes/reconcile", headers=hdrs)
            ).status_code == 403
+    assert (await client.get(
+        f"/devtools/pending-deletes/{bogus_marker}/cascade-preview",
+        headers=hdrs)).status_code == 403
+    assert (await client.post(
+        f"/devtools/pending-deletes/{bogus_marker}/cascade-delete",
+        headers=hdrs, json={"confirm_label": "whatever"})).status_code == 403
 
 
 async def test_single_reconcile_deletes_only_its_marker(client, db, seeded_user):
@@ -334,8 +347,8 @@ async def test_single_reconcile_failure_lists_referencing_records(
     assert failure["reason"] == "fk_violation"
     assert failure["references"] == [{
         "table": "initiatives", "column": "site_id", "nullable": True,
-        "purgeable": False, "check_guarded": False, "count": 1,
-        "labels": ["Vegas to Zurich migration"],
+        "purgeable": False, "check_guarded": False, "db_handled": False,
+        "count": 1, "labels": ["Vegas to Zurich migration"],
     }]
 
 

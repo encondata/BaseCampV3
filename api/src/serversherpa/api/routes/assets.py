@@ -12,12 +12,14 @@ from sqlalchemy import select
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    AssetCreateIn, AssetItem, AssetModelRef, AssetUpdateIn,
+    AssetCreateIn, AssetItem, AssetModelRef, AssetMoveRow, AssetUpdateIn,
 )
 from serversherpa.db.models import (
-    Asset, AssetCategory, AssetModel, Client, Site, StatusValue,
+    Asset, AssetCategory, AssetModel, Client, Initiative, InitiativeAsset,
+    Site, StatusValue,
 )
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.status.labels import UNKNOWN_COLOR, status_labels
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -131,6 +133,48 @@ async def get_asset(
 ) -> AssetItem:
     asset = await _get_asset(db, asset_id, actor)
     return await _detail(db, asset)
+
+
+@router.get("/{asset_id}/moves", response_model=list[AssetMoveRow])
+async def list_asset_moves(
+    asset_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("assets", "view"),
+) -> list[AssetMoveRow]:
+    """Every move roster this asset has appeared on, newest scheduled first.
+
+    Scoped by INITIATIVE, not only by asset: one asset can sit on two
+    clients' moves, and a client-anchored actor must not learn another
+    client's move exists through an asset they can legitimately see."""
+    await _get_asset(db, asset_id, actor)
+
+    query = (
+        select(InitiativeAsset, Initiative)
+        .join(Initiative, Initiative.id == InitiativeAsset.initiative_id)
+        .where(InitiativeAsset.asset_id == asset_id)
+        .order_by(Initiative.scheduled_start.desc().nullslast(),
+                  InitiativeAsset.created_at.desc())
+    )
+    cond = scope_conditions("initiatives", actor.access, actor.person.id)
+    if cond is not None:
+        query = query.where(cond)
+    rows = (await db.execute(query)).all()
+
+    init_labels = await status_labels(db, "initiative")
+    asset_labels = await _statuses(db)
+    out: list[AssetMoveRow] = []
+    for row, init in rows:
+        i_label, i_color = init_labels.get(init.status, (init.status, UNKNOWN_COLOR))
+        a_label, a_color = asset_labels.get(row.status, (row.status, UNKNOWN_COLOR))
+        out.append(AssetMoveRow(
+            row_id=row.id, initiative_id=init.id, initiative_name=init.name,
+            initiative_status=init.status, initiative_status_label=i_label,
+            initiative_status_color=i_color,
+            asset_status=row.status, asset_status_label=a_label,
+            asset_status_color=a_color,
+            scheduled_start=init.scheduled_start, scheduled_end=init.scheduled_end,
+            added_at=row.created_at))
+    return out
 
 
 async def _check_refs(db: DbSession, data: dict) -> None:

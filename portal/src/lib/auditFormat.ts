@@ -20,6 +20,8 @@ export const ACTION_LABELS: Record<string, string> = {
   token_replay_detected: 'Token replay detected — sessions revoked',
   'password.change': 'Changed password',
   'session.revoke': 'Signed out another session',
+  'session.revoke_all': 'Signed out everywhere',
+  'access_groups.set': 'Changed access groups',
   bulk_import: 'Ran a bulk import',
   create: 'Created',
   update: 'Updated',

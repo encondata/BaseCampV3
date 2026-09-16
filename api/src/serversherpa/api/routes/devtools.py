@@ -10,29 +10,33 @@ The words live in SS_GOD_MODE_WORDS (server-side). A VITE_* equivalent
 would be inlined into the portal bundle and readable from devtools.
 """
 
-import re
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 
 from botocore.exceptions import ClientError
 from fastapi import APIRouter, HTTPException, Response
-from sqlalchemy import CheckConstraint, String, cast, delete, func, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.schema import Table
 
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
 from serversherpa.api.schemas import (
-    DbBackupCreateIn, DbBackupItem, DbTestingChanges, DbTestingEndIn,
-    DbTestingSessionOut, DbTestingStartIn, DbTestingStatusOut,
-    DbTestingTableChange, GodModeIn, PendingDeleteCreateIn, PendingDeleteFailure,
-    PendingDeleteOut, PendingDeleteReconcileOut, PendingDeleteReference,
+    CascadeDeleteIn, CascadePlanOut, DbBackupCreateIn, DbBackupItem,
+    DbTestingChanges, DbTestingEndIn, DbTestingSessionOut, DbTestingStartIn,
+    DbTestingStatusOut, DbTestingTableChange, GodModeIn, PendingDeleteCreateIn,
+    PendingDeleteFailure, PendingDeleteOut, PendingDeleteReconcileOut,
+    PendingDeleteReference,
 )
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    Asset, AssetModel, AuditLog, Base, Client, Container, DbBackup,
+    Asset, AssetModel, AuditLog, Client, Container, DbBackup,
     DbTestingSession, Initiative, Partner, PendingDelete, Person,
     ProcessedScan, Site, SystemConfig, SystemProcess,
+)
+from serversherpa.devtools.cascade import (
+    CascadeBlocked, check_guarded, execute_cascade, label_expr, plan_cascade,
+    references_to,
 )
 from serversherpa.devtools.testing.jobs import WORKING_STATUSES
 from serversherpa.security.passwords import verify_password
@@ -169,11 +173,6 @@ async def unmark_pending_delete(
     await db.commit()
 
 
-# Frozen label-column map for reference discovery: how to render a human
-# label for a row in a referencing table. Unmapped tables fall back to the
-# row's own primary key, stringified — never blank.
-_NAME_LABELED = {"initiatives", "sites", "containers", "clients", "partners"}
-
 # Pure association tables: rows here carry no data of their own beyond the
 # link, so force mode may DELETE them outright (a non-nullable FK on a join
 # row can never be nulled). Frozen — never derived from the schema, because
@@ -187,42 +186,6 @@ PURGE_ROW_TABLES = frozenset({
 # Actor/audit-ish columns that make poor label joins on association rows.
 _ACTOR_COLUMNS = frozenset({"created_by", "marked_by", "added_by", "granted_by",
                             "audit_by", "revoked_by", "linked_by"})
-
-
-def _label_expr(table: Table):
-    if table.name in _NAME_LABELED:
-        return table.c.name
-    if table.name == "assets":
-        return func.coalesce(table.c.serial_number, table.c.name)
-    if table.name == "people":
-        return table.c.first_name + " " + table.c.last_name
-    if table.name == "asset_models":
-        return table.c.make + " " + table.c.model
-    pk = next(iter(table.primary_key.columns))
-    return cast(pk, String)
-
-
-def _references_to(model: type):
-    """Yields (table, column) for every column anywhere in the schema whose
-    foreign key targets `model`'s primary key — the mechanism behind both
-    reference discovery and force-null."""
-    target_pk = next(iter(model.__table__.primary_key.columns))
-    for table in Base.metadata.tables.values():
-        for fk in table.foreign_keys:
-            if fk.column is target_pk:
-                yield table, fk.parent
-
-
-def _check_guarded(table: Table, col) -> bool:
-    """True when a CHECK constraint on `table` mentions `col` — the column
-    may be nullable, yet force-nulling it can trip the CHECK and roll the
-    whole force delete back (processed_scans_match_target_chk keeps the
-    match_type target FK non-null). Surfaced so a failure report doesn't
-    read as "nullable, so force should have cleared it"."""
-    return any(
-        isinstance(constraint, CheckConstraint)
-        and re.search(rf"\b{re.escape(col.name)}\b", str(constraint.sqltext))
-        for constraint in table.constraints)
 
 
 def _other_fk(table: Table, matching_col):
@@ -242,12 +205,12 @@ async def _find_references(
     and reports which ones currently have rows pointing at `entity_id` —
     the "what's still using this" detail behind an fk_violation failure."""
     refs: list[PendingDeleteReference] = []
-    for table, col in _references_to(model):
+    for table, col, _parent in references_to(model.__table__):
         count = await db.scalar(
             select(func.count()).select_from(table).where(col == entity_id))
         if not count:
             continue
-        label_query = (select(_label_expr(table)).select_from(table)
+        label_query = (select(label_expr(table)).select_from(table)
                        .where(col == entity_id).limit(3))
         if table.name in PURGE_ROW_TABLES:
             # a join row's own PK means nothing to a human — label it by
@@ -255,15 +218,18 @@ async def _find_references(
             other = _other_fk(table, col)
             if other is not None:
                 label_query = (
-                    select(_label_expr(other.column.table))
+                    select(label_expr(other.column.table))
                     .select_from(table.join(
                         other.column.table, other.parent == other.column))
                     .where(col == entity_id).limit(3))
         labels = list(await db.scalars(label_query))
+        ondelete = next((fk.ondelete or "" for fk in table.foreign_keys
+                         if fk.parent is col), "").upper()
         refs.append(PendingDeleteReference(
             table=table.name, column=col.name, nullable=col.nullable,
             purgeable=table.name in PURGE_ROW_TABLES,
-            check_guarded=_check_guarded(table, col),
+            check_guarded=check_guarded(table, col),
+            db_handled=ondelete in ("CASCADE", "SET NULL"),
             count=count, labels=[str(v) for v in labels]))
     return refs
 
@@ -279,7 +245,7 @@ async def _detach_references(
     below reports it as a reference like any other failure."""
     nulled: dict[str, int] = {}
     removed: dict[str, int] = {}
-    for table, col in _references_to(model):
+    for table, col, _parent in references_to(model.__table__):
         if table.name in PURGE_ROW_TABLES:
             result = await db.execute(delete(table).where(col == entity_id))
             if result.rowcount:
@@ -380,6 +346,93 @@ async def reconcile_pending_delete(
     if marker is None:
         raise _err(404, "marker_not_found")
     return await _reconcile_markers(db, actor, [marker], force=force)
+
+
+async def _load_marker(db: DbSession, marker_id: uuid.UUID) -> PendingDelete:
+    marker = await db.get(PendingDelete, marker_id)
+    if marker is None:
+        raise _err(404, "marker_not_found")
+    return marker
+
+
+def _protected_tables(model: type) -> frozenset[str]:
+    """Every reconcile-able entity's table, INCLUDING the target's own:
+    those are all records in their own right and must never be collateral.
+    Deleting a person must never quietly delete a site — and, just as much,
+    must never quietly delete another person. The target's own table stays
+    in this set on purpose: today every self-reference in the schema
+    (people.created_by, auth_sessions.replaced_by) is nullable, so it
+    classifies as `clear` before collect_levels ever checks
+    protected_tables — but a required self-referencing FK added later must
+    still be refused rather than purge sibling rows out from under the
+    walk."""
+    return frozenset(m.__table__.name for m in DELETABLE.values())
+
+
+@router.get("/pending-deletes/{marker_id}/cascade-preview",
+            response_model=CascadePlanOut)
+async def cascade_preview(
+    marker_id: uuid.UUID,
+    db: DbSession,
+    _actor: AuthContext = require_permission("devtools", "change"),
+) -> CascadePlanOut:
+    """Everything a cascade delete would destroy or detach for one marker.
+    Writes nothing — the same walk the delete runs, reported instead of
+    applied, so the two can never disagree."""
+    marker = await _load_marker(db, marker_id)
+    model = DELETABLE[marker.entity_type]
+    plan = await plan_cascade(
+        db, model, marker.entity_id, entity_type=marker.entity_type,
+        label=marker.entity_label, protected_tables=_protected_tables(model))
+    return CascadePlanOut(**plan.__dict__)
+
+
+@router.post("/pending-deletes/{marker_id}/cascade-delete",
+             response_model=PendingDeleteReconcileOut)
+async def cascade_delete(
+    marker_id: uuid.UUID,
+    body: CascadeDeleteIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("devtools", "change"),
+) -> PendingDeleteReconcileOut:
+    """Delete a marked record and every row attached to it. Irreversible,
+    so the caller must type the record's own label back: a stale preview in
+    a forgotten tab cannot destroy whatever now sits at this marker."""
+    marker = await _load_marker(db, marker_id)
+    if not marker.entity_label.strip():
+        raise _err(422, "label_unavailable")
+    if body.confirm_label.strip() != marker.entity_label.strip():
+        raise _err(422, "label_mismatch")
+
+    model = DELETABLE[marker.entity_type]
+    target_table = model.__table__
+    target_pk = next(iter(target_table.primary_key.columns))
+    entity_type, entity_id = marker.entity_type, marker.entity_id
+    label = marker.entity_label
+    try:
+        async with db.begin_nested():
+            counts = await execute_cascade(
+                db, model, entity_id,
+                protected_tables=_protected_tables(model))
+            await db.execute(
+                delete(target_table).where(target_pk == entity_id))
+            await db.flush()
+            audit(db, actor_id=actor.person.id, entity_type=entity_type,
+                  entity_id=str(entity_id), action="cascade_delete",
+                  changes={"label": label, **counts})
+            await db.delete(marker)
+            await db.flush()
+    except CascadeBlocked as exc:
+        raise _err(409, "cascade_blocked", reasons=exc.reasons) from exc
+    except IntegrityError:
+        await db.rollback()
+        return PendingDeleteReconcileOut(deleted=0, failed=[
+            PendingDeleteFailure(
+                entity_type=entity_type, entity_id=entity_id, label=label,
+                reason="fk_violation",
+                references=await _find_references(db, model, entity_id))])
+    await db.commit()
+    return PendingDeleteReconcileOut(deleted=1, failed=[])
 
 
 # ── db backups ───────────────────────────────────────────────────────

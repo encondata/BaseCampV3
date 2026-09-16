@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyUserPatch, USER_ERRORS, USER_GOD_FIELDS, userCellText, userSearchText, type UserItem,
+  applyUserPatch, ROLE_CLS, toManagedUser, toMemberItem, USER_ERRORS, USER_GOD_FIELDS,
+  userCellText, userSearchText, type UserItem,
 } from './users';
-import type { PersonDetail } from './api';
+import type { PersonDetail, UserDetailOut } from './api';
 
 const user: UserItem = {
   person_id: 'p1', first_name: 'Jamie', last_name: 'Rivera', preferred_name: null,
@@ -150,5 +151,43 @@ describe('USER_ERRORS', () => {
     ]) {
       expect(USER_ERRORS[code]).toBeTruthy();
     }
+  });
+});
+
+const DETAIL: UserDetailOut = {
+  person: {
+    id: 'p1', first_name: 'Wan', last_name: 'Worker', preferred_name: null,
+    display_name: 'Wan Worker', email: 'wan@x.test', phone: null, job_title: 'Tech',
+    address_line1: null, address_line2: null, city: null, region: null, postal_code: null,
+    country: 'US', badge_uid: 'B1', created_at: '2026-01-01T00:00:00Z', avatar_key: null,
+    avatar_url: null, password_updated_at: null, source: 'manual', source_ref: null,
+    archived_at: null,
+  },
+  account: { login_email: 'wan@x.test', status: 'active', must_change_password: false,
+    last_login_at: null, created_at: '2026-01-01T00:00:00Z', password_updated_at: null },
+  roles: [{ role: 'staff', label: 'Staff', rank: 40, scope_anchor: 'global', org: null,
+    granted_by: null, granted_at: '2026-01-01T00:00:00Z' }],
+  max_rank: 40, worker: null, notification_groups: [], access: null, sessions: null,
+};
+
+describe('user detail adapters', () => {
+  it('ROLE_CLS maps the six roles', () => {
+    expect(ROLE_CLS.admin).toBe('c-amber');
+    expect(ROLE_CLS.worker).toBe('c-green');
+  });
+  it('toManagedUser flattens person + account + roles', () => {
+    const m = toManagedUser(DETAIL);
+    expect(m).toEqual({
+      person_id: 'p1', display_name: 'Wan Worker', first_name: 'Wan', last_name: 'Worker',
+      preferred_name: null, job_title: 'Tech', contact_email: 'wan@x.test', phone: null,
+      roles: ['staff'], status: 'active', max_rank: 40, avatar_url: null,
+    });
+  });
+  it('toMemberItem carries login email and roles', () => {
+    expect(toMemberItem(DETAIL)).toEqual({
+      person_id: 'p1', display_name: 'Wan Worker', job_title: 'Tech',
+      login_email: 'wan@x.test', status: 'active', roles: ['staff'], max_rank: 40,
+      avatar_url: null,
+    });
   });
 });

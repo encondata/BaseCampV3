@@ -9,6 +9,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import GodDeleteButton from '../components/GodDeleteButton';
+import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
 import {
   AccountStateModal,
   AdminEditProfileModal,
@@ -26,8 +27,8 @@ import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
-  applyUserPatch, STATUS_META, USER_ERRORS, USER_GOD_FIELDS, userCellText, userSearchText,
-  type UserItem,
+  applyUserPatch, ROLE_CLS, STATUS_META, USER_ERRORS, USER_GOD_FIELDS, userCellText,
+  userSearchText, type UserItem,
 } from '../lib/users';
 import { avatarGradient, initials, longDate, relativeTime } from '../lib/format';
 import {
@@ -39,11 +40,6 @@ import { naturalCompare } from '../lib/sites';
 import '../styles/directory.css';
 import '../styles/profile.css';   /* .pf-form, .btn-solid */
 import '../styles/settings.css';  /* .set-note */
-
-const ROLE_CLS: Record<string, string> = {
-  admin: 'c-amber', staff: 'c-blue', worker: 'c-green',
-  client: 'c-violet', vendor: 'c-violet', external: 'c-blue',
-};
 
 const ALL_ROLES = ['admin', 'staff', 'worker', 'client', 'vendor', 'external'];
 const PILLS = [
@@ -282,7 +278,7 @@ export default function Users() {
   const headerDrag = useReorderDrag(reorder, 'x', { ignoreFrom: '.pop-menu' });
   const menuDrag = useReorderDrag(reorder, 'y');
   const grid = {
-    gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px`,
+    gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 100px 30px`,
   };
 
   const caret = (key: string) =>
@@ -331,6 +327,53 @@ export default function Users() {
       default:
         return null;
     }
+  };
+
+  // Actions available for the row's own trailing RowActionsMenu — same
+  // gating d1b697a defined for the expansion's menu, now driving the
+  // inline trigger instead. Full details is always offered; the self
+  // and read-only branches stop there (self gets a link to /me instead
+  // of manage actions; a rank-locked target gets nothing else).
+  const rowActions = (u: UserItem): RowAction[] => {
+    const detailsAction: RowAction = {
+      key: 'details', label: 'Full details',
+      onSelect: () => navigate(`/people/users/${u.person_id}`),
+    };
+    const isSelf = u.person_id === mePerson?.id;
+    if (isSelf) {
+      return [detailsAction, { key: 'me', label: 'Go to My profile', onSelect: () => navigate('/me') }];
+    }
+    if (!canTouchRank(maxRank, u.max_rank)) {
+      return [detailsAction];
+    }
+    const canManageUsers = can('users', 'change');
+    const canManageRoles = can('access', 'change');
+    return [
+      detailsAction,
+      ...(canManageUsers ? [{
+        key: 'edit', label: 'Edit profile',
+        onSelect: () => setManage({ kind: 'edit', user: u }),
+      }] : []),
+      ...(canManageUsers ? [{
+        key: 'reset', label: 'Reset password',
+        onSelect: () => setManage({ kind: 'reset', user: u }),
+      }] : []),
+      ...(canManageRoles ? [{
+        key: 'roles', label: 'Manage roles',
+        onSelect: () => setManage({ kind: 'roles', user: u }),
+      }] : []),
+      ...(canManageUsers && u.status === 'locked' ? [{
+        key: 'unlock', label: 'Unlock',
+        onSelect: () => setManage({ kind: 'state', action: 'unlock', user: u }),
+      }] : []),
+      ...(canManageUsers ? [u.status === 'disabled' ? {
+        key: 'enable', label: 'Enable account',
+        onSelect: () => setManage({ kind: 'state', action: 'enable', user: u }),
+      } : {
+        key: 'disable', label: 'Disable account', destructive: true,
+        onSelect: () => setManage({ kind: 'state', action: 'disable', user: u }),
+      }] : []),
+    ];
   };
 
   return (
@@ -452,6 +495,7 @@ export default function Users() {
                           onSort={(dir) => setSort(c.key, dir)} />
             </span>
           ))}
+          <span className="col-head" aria-hidden="true" />
           <ColumnMenu colKey="must_change" label="Password change required"
                       allRows={users ?? []} filters={filters}
                       text={userCellText}
@@ -492,6 +536,10 @@ export default function Users() {
                 {shownCols.map((c) => (
                   <div className="cell" key={c.key}>{cellFor(u, c.key)}</div>
                 ))}
+                <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}
+                     onClick={(e) => e.stopPropagation()}>
+                  <RowActionsMenu actions={rowActions(u)} />
+                </div>
                 <div className="cell chevron-cell">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                        strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
@@ -534,8 +582,6 @@ export default function Users() {
                         {(() => {
                           const isSelf = u.person_id === mePerson?.id;
                           const canTouch = !isSelf && canTouchRank(maxRank, u.max_rank);
-                          const canManageUsers = canTouch && can('users', 'change');
-                          const canManageRoles = canTouch && can('access', 'change');
                           if (isSelf) {
                             return (
                               <div className="detail-actions">
@@ -543,10 +589,6 @@ export default function Users() {
                                   This is you — your details, password, and
                                   sessions live on your profile.
                                 </span>
-                                <button className="mini-btn accent"
-                                        onClick={() => navigate('/me')}>
-                                  Go to My profile
-                                </button>
                               </div>
                             );
                           }
@@ -559,45 +601,9 @@ export default function Users() {
                               </div>
                             );
                           }
-                          if (!canManageUsers && !canManageRoles && !godMode) return null;
-                          const guard = (title: string) => title;
+                          if (!godMode) return null;
                           return (
                             <div className="detail-actions">
-                              {canManageUsers && (
-                                <button className="mini-btn accent"                                       title={guard('Edit identity fields')}
-                                        onClick={() => setManage({ kind: 'edit', user: u })}>
-                                  Edit profile
-                                </button>
-                              )}
-                              {canManageUsers && (
-                                <button className="mini-btn"                                       title={guard('Set a temporary password')}
-                                        onClick={() => setManage({ kind: 'reset', user: u })}>
-                                  Reset password
-                                </button>
-                              )}
-                              {canManageRoles && (
-                                <button className="mini-btn"                                       title={guard('Grant or revoke roles')}
-                                        onClick={() => setManage({ kind: 'roles', user: u })}>
-                                  Manage roles
-                                </button>
-                              )}
-                              {canManageUsers && u.status === 'locked' && (
-                                <button className="mini-btn"                                         title={guard('Clear the failed-attempt lockout')}
-                                        onClick={() => setManage({ kind: 'state', action: 'unlock', user: u })}>
-                                  Unlock
-                                </button>
-                              )}
-                              {canManageUsers && (u.status === 'disabled' ? (
-                                <button className="mini-btn"                                         title={guard('Restore sign-in')}
-                                        onClick={() => setManage({ kind: 'state', action: 'enable', user: u })}>
-                                  Enable account
-                                </button>
-                              ) : (
-                                <button className="mini-btn danger"                                         title={guard('Block sign-in and revoke sessions')}
-                                        onClick={() => setManage({ kind: 'state', action: 'disable', user: u })}>
-                                  Disable account
-                                </button>
-                              ))}
                               <GodDeleteButton visible={godMode} entityType="person"
                                                entityId={u.person_id} label={u.display_name}
                                                pending={pd.pendingIds.has(u.person_id)}
@@ -642,10 +648,11 @@ export default function Users() {
       {addOpen && (
         <AddPersonModal
           onClose={() => setAddOpen(false)}
-          onCreated={(personId) => {
+          onCreated={(created) => {
             setAddOpen(false);
+            if (created.login_email) { navigate(`/people/users/${created.person_id}`); return; }
             deepLinkTarget.current = null;
-            void load().then(() => setOpenId(personId));
+            void load().then(() => setOpenId(created.person_id));
           }}
         />
       )}
@@ -670,7 +677,7 @@ function generatePassword(): string {
 
 function AddPersonModal({ onClose, onCreated }: {
   onClose: () => void;
-  onCreated: (personId: string) => void;
+  onCreated: (created: { person_id: string; login_email: string | null }) => void;
 }) {
   const [form, setForm] = useState({
     first_name: '', last_name: '', preferred_name: '', contact_email: '',
@@ -714,7 +721,7 @@ function AddPersonModal({ onClose, onCreated }: {
         return;
       }
       const created = await resp.json();
-      onCreated(created.person_id);
+      onCreated(created);
     } catch (err) {
       setError(err instanceof ApiError ? (ADD_ERRORS[err.code] ?? err.code) : 'Network error.');
     } finally {

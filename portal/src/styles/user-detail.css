@@ -1,0 +1,16 @@
+/* User detail page (/people/users/:id) — layout only; typography comes
+   from directory.css tokens and the /me profile.css panels. */
+
+.ud-hero-chips { display: inline-flex; gap: 6px; align-items: center; margin-left: 10px; vertical-align: middle; }
+.ud-panels { display: flex; flex-direction: column; gap: 18px; margin-top: 18px; }
+.ud-membership-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 14px 0 6px; }
+.ud-membership-head:first-child { margin-top: 0; }
+.ud-source-ref { display: block; margin-top: 2px; }
+.ud-rank-note { border: 1px dashed var(--border, #d9dee7); border-radius: 10px; padding: 14px 16px; color: var(--text-mute); }
+.ud-confirm-card { width: min(520px, 96vw); }
+.ud-groups-card { width: min(760px, 96vw); max-width: 96vw; }
+.ud-group-picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.ud-group-pick { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border, #d9dee7); background: var(--surface, #fff); cursor: pointer; }
+.ud-group-pick.on { border-color: var(--accent, #d38b1d); box-shadow: inset 0 0 0 1px var(--accent, #d38b1d); }
+.ud-group-pick:disabled { opacity: 0.45; cursor: not-allowed; }
+.ud-group-pick .ud-group-meta { color: var(--text-mute); }

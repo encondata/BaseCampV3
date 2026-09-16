@@ -659,6 +659,117 @@ class PartnerRef(BaseModel):
     name: str
 
 
+# ── user detail page (GET /users/{id}) ─────────────────────────────
+
+class PersonRef(BaseModel):
+    id: uuid.UUID
+    display_name: str
+
+
+class OrgRefOut(BaseModel):
+    kind: str            # "client" | "partner"
+    id: uuid.UUID
+    name: str
+
+
+class UserDetailPerson(PersonDetail):
+    source: str
+    source_ref: str | None
+    archived_at: datetime | None
+
+
+class UserDetailAccount(BaseModel):
+    login_email: str | None
+    status: str                          # active | locked | disabled
+    must_change_password: bool
+    last_login_at: datetime | None
+    created_at: datetime
+    password_updated_at: datetime | None
+
+
+class UserRoleGrant(BaseModel):
+    role: str
+    label: str
+    rank: int
+    scope_anchor: str
+    org: OrgRefOut | None
+    granted_by: PersonRef | None
+    granted_at: datetime
+
+
+class UserWorkerCard(BaseModel):
+    trade: str | None
+    level: str | None
+    level_title: str | None
+    level_color: str | None
+    partner: PartnerRef | None
+    status: str
+    status_label: str
+    status_color: str
+
+
+class UserNotificationGroup(BaseModel):
+    id: uuid.UUID
+    name: str
+    channels: list[str]
+    added_at: datetime
+
+
+class UserAccessGroupRow(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str
+    gate_count: int
+    gated_pages: list[str]
+    added_by: PersonRef | None
+    added_at: datetime
+
+
+class UserOverrideRow(BaseModel):
+    resource: str
+    resource_label: str
+    action: str
+    allow: bool
+    set_by: PersonRef | None
+    set_at: datetime
+
+
+class UserAccessBlock(BaseModel):
+    groups: list[UserAccessGroupRow]
+    overrides: list[UserOverrideRow]
+    scope: dict
+    scope_orgs: list[OrgRefOut]
+    cells: dict
+
+
+class UserSessionRow(BaseModel):
+    family_id: uuid.UUID
+    started_at: datetime
+    last_active_at: datetime
+    expires_at: datetime
+    ip_address: str | None
+    user_agent: str | None
+
+
+class UserDetailOut(BaseModel):
+    person: UserDetailPerson
+    account: UserDetailAccount
+    roles: list[UserRoleGrant]
+    max_rank: int
+    worker: UserWorkerCard | None
+    notification_groups: list[UserNotificationGroup]
+    access: UserAccessBlock | None       # None below rank 60 unless viewing yourself
+    sessions: list[UserSessionRow] | None  # None without users:change (global)
+
+
+class AccessGroupsUpdateIn(BaseModel):
+    group_ids: list[uuid.UUID]
+
+
+class AccessGroupsOut(BaseModel):
+    group_ids: list[uuid.UUID]
+
+
 class WorkerItem(BaseModel):
     person_id: uuid.UUID
     display_name: str
@@ -1124,6 +1235,25 @@ class AssetUpdateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AssetMoveRow(BaseModel):
+    """One move roster row an asset has appeared on — the compact history
+    line. Rack, RU, disposition and verification live on the move-row page
+    this links to, deliberately not here."""
+
+    row_id: uuid.UUID            # initiative_assets.id — the move-row page key
+    initiative_id: uuid.UUID
+    initiative_name: str
+    initiative_status: str
+    initiative_status_label: str
+    initiative_status_color: str
+    asset_status: str
+    asset_status_label: str
+    asset_status_color: str
+    scheduled_start: datetime | None
+    scheduled_end: datetime | None
+    added_at: datetime
+
+
 class ContainerItem(BaseModel):
     id: uuid.UUID
     name: str
@@ -1405,6 +1535,10 @@ class PendingDeleteReference(BaseModel):
     # nullable, but force mode still can't null it without tripping the
     # CHECK — the whole force delete rolls back
     check_guarded: bool = False
+    # True when the foreign key itself declares ON DELETE CASCADE or SET
+    # NULL: the database clears this reference on delete, so it never
+    # blocked anything and must not be reported as a blocker.
+    db_handled: bool = False
     count: int
     labels: list[str] = []
 
@@ -1420,6 +1554,43 @@ class PendingDeleteFailure(BaseModel):
 class PendingDeleteReconcileOut(BaseModel):
     deleted: int
     failed: list[PendingDeleteFailure] = []
+
+
+class CascadeStepOut(BaseModel):
+    """One (table, column) a cascade delete touches, and how. Validated
+    straight from the engine's CascadeStep dataclasses (CascadePlanOut(
+    **plan.__dict__) in the preview endpoint), hence from_attributes."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    table: str
+    column: str
+    action: str          # purge | clear | db_cascade | db_set_null
+    count: int
+    labels: list[str] = []
+    depth: int
+
+
+class CascadePlanOut(BaseModel):
+    entity_type: str
+    entity_id: uuid.UUID
+    label: str
+    steps: list[CascadeStepOut] = []
+    # non-empty means the cascade will refuse to run, with these reasons
+    blocked: list[str] = []
+    total_rows_deleted: int
+    total_rows_cleared: int
+    # rows the DATABASE destroys via ON DELETE CASCADE — not part of
+    # total_rows_deleted, which is only this walk's own DELETEs
+    total_rows_db_deleted: int
+
+
+class CascadeDeleteIn(BaseModel):
+    """The record's own label, typed by the operator. Guards against a
+    stale preview in a forgotten browser tab destroying the wrong row."""
+
+    confirm_label: str
+    model_config = ConfigDict(extra="forbid")
 
 
 # ── db backups ───────────────────────────────────────────────────────

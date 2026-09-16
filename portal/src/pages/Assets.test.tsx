@@ -8,9 +8,9 @@
  * lib/listTools.test.tsx and lib/columnMenu.test.tsx.
  */
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { AssetItem, UiPreferences } from '../lib/api';
@@ -178,4 +178,36 @@ it('a layout saved after the split with all three identity columns off stays tha
   expect(headerNames()).not.toContain('Serial');
   expect(headerNames()).not.toContain('Name');
   expect(document.querySelector('.dir-row .cell.cell-primary')).toBeNull();
+});
+
+it('each collapsed row carries an Actions menu with Full details and Edit', async () => {
+  render(<MemoryRouter initialEntries={['/assets']}>
+    <Routes>
+      <Route path="/assets" element={<Assets />} />
+      <Route path="/assets/:assetId" element={<div>ASSET PAGE</div>} />
+    </Routes>
+  </MemoryRouter>);
+  const trigger = (await screen.findAllByRole('button', { name: /Actions/ }))[0];
+  fireEvent.click(trigger);
+  expect(await screen.findByText('Full details')).toBeTruthy();
+  expect(screen.getByText('Edit')).toBeTruthy();
+});
+
+it('opening the Actions menu does not expand the row', async () => {
+  render(<MemoryRouter><Assets /></MemoryRouter>);
+  const trigger = (await screen.findAllByRole('button', { name: /Actions/ }))[0];
+  fireEvent.click(trigger);
+  expect(document.querySelector('.dir-row.open')).toBeNull();
+});
+
+it('Full details navigates to the asset page', async () => {
+  render(<MemoryRouter initialEntries={['/assets']}>
+    <Routes>
+      <Route path="/assets" element={<Assets />} />
+      <Route path="/assets/:assetId" element={<div>ASSET PAGE</div>} />
+    </Routes>
+  </MemoryRouter>);
+  fireEvent.click((await screen.findAllByRole('button', { name: /Actions/ }))[0]);
+  fireEvent.click(await screen.findByText('Full details'));
+  expect(await screen.findByText('ASSET PAGE')).toBeTruthy();
 });
