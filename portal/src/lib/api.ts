@@ -2079,6 +2079,30 @@ export async function listAssetScans(
   return resp.json();
 }
 
+/** One move roster row an asset has appeared on. Compact by design — rack,
+ *  RU, disposition and verification live on the move-row page. */
+export interface AssetMoveRow {
+  row_id: string;
+  initiative_id: string;
+  initiative_name: string;
+  initiative_status: string;
+  initiative_status_label: string;
+  initiative_status_color: string;
+  asset_status: string;
+  asset_status_label: string;
+  asset_status_color: string;
+  /** date-only, midnight UTC — render with parseApiDay + longDateOf */
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+  added_at: string;
+}
+
+export async function listAssetMoves(assetId: string): Promise<AssetMoveRow[]> {
+  const resp = await apiFetch(`/assets/${assetId}/moves`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /* ── time ─────────────────────────────────────────────────────────── */
 
 export interface TimeEntryItem {
