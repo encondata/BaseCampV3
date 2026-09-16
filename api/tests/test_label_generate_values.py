@@ -90,6 +90,28 @@ def test_move_date_empty_when_unscheduled():
     assert values["move_date"] == ""
 
 
+def test_move_date_reads_the_stored_day_not_the_local_one(monkeypatch):
+    """scheduled_start is a date-only field stored at midnight UTC. Converting
+    it into a zone west of UTC lands on the previous evening, which used to
+    print the day BEFORE the one the user picked."""
+    import zoneinfo
+    from serversherpa.labels.generate import values as values_mod
+    monkeypatch.setattr(values_mod, "report_timezone",
+                        lambda: zoneinfo.ZoneInfo("America/New_York"))
+    initiative = _initiative(scheduled_start=datetime(2026, 9, 15, tzinfo=UTC))
+    out = placeholder_values(_row(), initiative, _sites(),
+                             ["move_date", "move_date_long"])
+    assert out["move_date"] == "09/15/2026"
+    assert out["move_date_long"] == "15-SEP-2026"
+
+
+def test_move_date_is_empty_without_a_scheduled_start():
+    out = placeholder_values(_row(), _initiative(scheduled_start=None),
+                             _sites(), ["move_date", "move_date_long"])
+    assert out["move_date"] == ""
+    assert out["move_date_long"] == ""
+
+
 def test_sites_missing_resolve_empty():
     values = placeholder_values(_row(), _initiative(), Sites(origin=None, destination=None),
                                 ["source_site", "destination_site"])

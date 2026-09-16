@@ -8,11 +8,17 @@ Position-split tokens and RU formatting are the two places V2 and V3
 diverge in observable output (documented inline)."""
 
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import NamedTuple
 
 from serversherpa.db.models import Initiative, Site
-from serversherpa.services.timezone import report_timezone
+# No longer read by this module's own logic (move_date/move_date_long now
+# read the UTC date parts directly — see _stored_day) but kept importable
+# so test_label_generate_values.py can monkeypatch it to prove that: the
+# test patches this name to a non-UTC zone and asserts the result is
+# unaffected.
+from serversherpa.services.timezone import report_timezone  # noqa: F401
 
 CONTAINER_KEYS = ("container_name", "container_id")
 
@@ -42,6 +48,24 @@ class Sites:
 
     origin: Site | None
     destination: Site | None
+
+
+_MONTHS_UPPER = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                 "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+
+
+def _stored_day(value: datetime) -> date:
+    """The calendar day a date-only field holds.
+
+    `scheduled_start` and friends are TIMESTAMP(timezone=True) columns that
+    carry a plain YYYY-MM-DD input as MIDNIGHT UTC. Converting that into the
+    report timezone lands on the previous evening anywhere west of UTC, which
+    named the day BEFORE the one the user picked (fixed 2026-09-16; the same
+    class of bug was found on the initiatives timeline on 2026-09-15). Read the
+    UTC date parts instead — for a midnight-UTC value they ARE the picked day,
+    and for a genuine timestamp this is still the UTC calendar day, which is
+    the closest defensible reading of a field used as a date."""
+    return value.astimezone(UTC).date()
 
 
 def _format_ru(value: Decimal | None) -> str:
@@ -123,10 +147,12 @@ def placeholder_values(
     source_raw = asset_row.source_position or asset_row.source_rack or ""
     destination_raw = asset_row.destination_position or asset_row.destination_rack or ""
 
-    move_date = ""
+    move_date = move_date_long = ""
     if initiative.scheduled_start is not None:
-        move_date = initiative.scheduled_start.astimezone(
-            report_timezone()).strftime("%m/%d/%Y")
+        day = _stored_day(initiative.scheduled_start)
+        move_date = day.strftime("%m/%d/%Y")
+        move_date_long = (f"{day.day:02d}-{_MONTHS_UPPER[day.month - 1]}-"
+                          f"{day.year}")
 
     computed = {
         "asset_id": str(asset_row.legacy_id) if asset_row.legacy_id is not None else "",
@@ -143,6 +169,7 @@ def placeholder_values(
         "destination_site": sites.destination.name if sites.destination else "",
         "move_name": initiative.name or "",
         "move_date": move_date,
+        "move_date_long": move_date_long,
         # the runner handles assets only for now (spec: "Out of scope");
         # these always resolve empty for an asset row.
         "container_name": "",

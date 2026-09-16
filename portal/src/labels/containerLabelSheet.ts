@@ -96,15 +96,28 @@ const MONTHS_UPPER = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'S
 /** The Date value on label 6, as `dd-MMM-yyyy` (e.g. `01-SEP-2026`).
  *  DELIBERATE DIVERGENCE FROM V2 (Jimmy, 2026-09-12): V2 printed
  *  `toLocaleDateString()` (mm/dd/yyyy), which reads ambiguously across the
- *  regions the company operates in. Day/month/year are taken in the
- *  runtime's local zone, exactly as V2's call did (the worker sets TZ to
- *  the company zone). 'N/A' when the move has no scheduled start. */
+ *  regions the company operates in. 'N/A' when the move has no scheduled
+ *  start. */
 export function formatLabelDate(iso: string | null | undefined): string {
   if (!iso) return 'N/A';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return 'N/A';
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${dd}-${MONTHS_UPPER[d.getMonth()]}-${d.getFullYear()}`;
+  // Date-only fields (scheduled_start) arrive as MIDNIGHT UTC, so reading the
+  // day through local time names the day before anywhere west of UTC. Read the
+  // Y-M-D digits straight off the string when it has them — the same approach
+  // `parseApiDay` in lib/timeline.ts takes — and fall back to UTC parts for
+  // anything else. (Fixed 2026-09-16; V2 had this bug too, so the exactness
+  // test's embedded V2 routine calls this same function and still matches.)
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (ymd) {
+    const [, y, m, d] = ymd;
+    const month = Number(m);
+    if (month >= 1 && month <= 12) {
+      return `${d}-${MONTHS_UPPER[month - 1]}-${y}`;
+    }
+  }
+  const dt = new Date(iso);
+  if (Number.isNaN(dt.getTime())) return 'N/A';
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${dd}-${MONTHS_UPPER[dt.getUTCMonth()]}-${dt.getUTCFullYear()}`;
 }
 
 export function buildContainerLabelPdf(
