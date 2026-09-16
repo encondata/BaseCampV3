@@ -88,6 +88,11 @@ class CascadePlan:
     blocked: list[str]
     total_rows_deleted: int
     total_rows_cleared: int
+    # Rows the DATABASE destroys via ON DELETE CASCADE — not counted in
+    # total_rows_deleted (which is only what this walk's own DELETEs
+    # remove), but just as gone. Kept separate so a caller can report the
+    # two truthfully instead of picking one.
+    total_rows_db_deleted: int
 
 
 @dataclass
@@ -171,6 +176,22 @@ async def collect_levels(
                 continue
             seen.add(key)
             ondelete = _fk_ondelete(child_table, child_col)
+            # NEVER_PURGE is checked before the ON DELETE branches below, not
+            # after: today audit_log.actor_person_id is nullable with no
+            # ondelete, so it falls all the way through to "clear" and this
+            # guard never fires for it — that is correct and must keep
+            # working. But if a future migration ever puts ON DELETE CASCADE
+            # on an audit_log foreign key, that FK must still be refused
+            # rather than classified db_cascade: letting Postgres silently
+            # delete the record of the deletion is exactly what this guard
+            # exists to prevent, and it can only prevent it by outranking
+            # the db_cascade branch rather than following it.
+            if child_table.name in NEVER_PURGE and (
+                    not child_col.nullable or ondelete == "CASCADE"):
+                blocked.append(
+                    f"{child_table.name}.{child_col.name} is required and "
+                    f"{child_table.name} is never deleted")
+                continue
             if ondelete == "CASCADE":
                 action = "db_cascade"
             elif ondelete == "SET NULL":
@@ -180,12 +201,8 @@ async def collect_levels(
             elif child_col.nullable:
                 blocked.append(
                     f"{child_table.name}.{child_col.name} is kept non-null by "
-                    "a database rule — delete those rows first")
-                continue
-            elif child_table.name in NEVER_PURGE:
-                blocked.append(
-                    f"{child_table.name}.{child_col.name} is required and "
-                    f"{child_table.name} is never deleted")
+                    "a database rule, so the cascade will not touch the "
+                    f"{child_table.name} rows blocking it")
                 continue
             elif child_table.name in protected_tables:
                 # A record that can be marked for deletion in its own right
@@ -222,7 +239,7 @@ async def plan_cascade(
         db, model.__table__, entity_id, max_depth=max_depth,
         protected_tables=protected_tables)
     steps: list[CascadeStep] = []
-    deleted = cleared = 0
+    deleted = cleared = db_deleted = 0
     for level in levels:
         count = await db.scalar(
             select(func.count()).select_from(level.table)
@@ -238,11 +255,14 @@ async def plan_cascade(
             deleted += count or 0
         elif level.action == "clear":
             cleared += count or 0
+        elif level.action == "db_cascade":
+            db_deleted += count or 0
     steps.sort(key=lambda s: (s.action != "purge", -s.depth, s.table))
     return CascadePlan(
         entity_type=entity_type, entity_id=entity_id, label=label,
         steps=steps, blocked=blocked,
-        total_rows_deleted=deleted, total_rows_cleared=cleared)
+        total_rows_deleted=deleted, total_rows_cleared=cleared,
+        total_rows_db_deleted=db_deleted)
 
 
 class CascadeBlocked(Exception):

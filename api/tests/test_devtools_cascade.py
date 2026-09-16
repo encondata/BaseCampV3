@@ -222,8 +222,8 @@ async def test_execute_refuses_a_blocked_plan(db, seeded_user):
         select(UserAccount).where(UserAccount.person_id == person.id))).first() is not None
 
 
-async def _marker(db, person, label):
-    marker = PendingDelete(entity_type="person", entity_id=person.id,
+async def _marker(db, person, label, entity_type="person"):
+    marker = PendingDelete(entity_type=entity_type, entity_id=person.id,
                            entity_label=label)
     db.add(marker)
     await db.commit()
@@ -368,8 +368,6 @@ async def test_cascade_delete_409s_when_the_plan_is_blocked(client, db, seeded_u
     processed_scans_match_target_chk (a scan matched to a person can't have
     its person_id nulled without tripping the CHECK), so collect_levels
     refuses it outright — a real block, nothing mocked."""
-    from datetime import UTC, datetime
-
     from serversherpa.db.models import ProcessedScan
 
     hdrs = await _developer(db, client, seeded_user)
@@ -403,10 +401,12 @@ async def test_cascade_delete_rolls_back_the_audit_row_on_fk_violation(
         client, db, seeded_user, monkeypatch):
     """A seam, not a fake exception: execute_cascade is monkeypatched to a
     no-op, so the target's own required person_roles dependent is left
-    behind and Postgres raises a real fk_violation deleting the person row.
-    The empty audit-row check is the point of this test — it proves the
-    audit row the try block would otherwise write is rolled back with
-    everything else in the failed savepoint, not left dangling."""
+    behind and Postgres raises a real fk_violation deleting the person row
+    before the route ever reaches its audit() call. The empty audit-row
+    check is the point of this test — it guards against an audit row
+    surviving ANY failed cascade delete, this one included: whether the
+    failure happens before audit() runs (as here) or after it but before
+    commit, the failed savepoint must leave no audit row behind."""
     from serversherpa.api.routes import devtools as devtools_routes
 
     async def _noop_cascade(db, model, entity_id, **kwargs):
@@ -440,3 +440,97 @@ async def test_cascade_delete_rolls_back_the_audit_row_on_fk_violation(
     assert await db.get(PendingDelete, marker_id) is not None
     assert await db.scalar(
         select(AuditLog).where(AuditLog.action == "cascade_delete")) is None
+
+
+async def test_plan_reports_a_set_null_foreign_key_as_db_set_null(db, seeded_user):
+    """devices.session_person_id declares ON DELETE SET NULL — the plan
+    must say db_set_null, distinct from both purge and db_cascade, since
+    the database only detaches this reference rather than destroying the
+    device row."""
+    from serversherpa.db.models import Device
+
+    person = Person(first_name="Signed", last_name="In")
+    db.add(person)
+    await db.flush()
+    db.add(Device(device_type="router", name="Router 1",
+                  session_person_id=person.id))
+    await db.commit()
+
+    plan = await plan_cascade(db, Person, person.id,
+                              entity_type="person", label="Signed In")
+
+    step = _step(plan, "devices", "session_person_id")
+    assert step is not None
+    assert step.action == "db_set_null"
+    assert step.count == 1
+    # db_set_null rows are detached, not destroyed — they must not inflate
+    # either "destroyed" total
+    assert plan.total_rows_deleted == 0
+    assert plan.total_rows_db_deleted == 0
+
+
+async def test_cascade_delete_removes_a_client_and_its_site_link(
+        client, db, seeded_user):
+    """The engine is generic over every DELETABLE entity type, not just
+    person — proves it end to end against a client with a site link:
+    site_clients.client_id has no ondelete and is part of that table's
+    composite primary key (so it's required, not nullable), which purges
+    it. The site on the other side of the join is never touched."""
+    from serversherpa.db.models import Client, Site, SiteClient
+
+    hdrs = await _developer(db, client, seeded_user)
+    org = Client(name="Doomed Org")
+    site = Site(name="Their Site")
+    db.add_all([org, site])
+    await db.flush()
+    db.add(SiteClient(site_id=site.id, client_id=org.id))
+    await db.commit()
+    org_id, site_id = org.id, site.id
+    marker = await _marker(db, org, "Doomed Org", entity_type="client")
+    marker_id = marker.id
+
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/cascade-delete", headers=hdrs,
+        json={"confirm_label": "Doomed Org"})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"deleted": 1, "failed": []}
+
+    db.expire_all()
+    assert await db.get(Client, org_id) is None
+    assert await db.get(Site, site_id) is not None
+    assert (await db.execute(
+        select(SiteClient).where(SiteClient.client_id == org_id))).first() is None
+
+    log = await db.scalar(
+        select(AuditLog).where(AuditLog.action == "cascade_delete",
+                               AuditLog.entity_id == str(org_id)))
+    assert log is not None
+    assert log.changes["deleted_rows"]["site_clients"] == 1
+
+
+async def test_never_purge_outranks_a_hypothetical_cascade_fk(
+        db, seeded_user, monkeypatch):
+    """Pins the ordering fix directly: if a table is ever added to
+    NEVER_PURGE while something still references it with a required,
+    non-cascading foreign key, the walk must refuse rather than purge —
+    proving NEVER_PURGE is checked before, not after, the ON DELETE
+    branches. person_roles is used as the stand-in table (person_id is
+    required and has no ondelete), monkeypatched into NEVER_PURGE for the
+    duration of this test only."""
+    from serversherpa.devtools import cascade as cascade_module
+
+    person = Person(first_name="Guarded", last_name="Person")
+    db.add(person)
+    await db.flush()
+    db.add(PersonRole(person_id=person.id, role="staff"))
+    await db.commit()
+
+    monkeypatch.setattr(cascade_module, "NEVER_PURGE",
+                        frozenset({"person_roles"}))
+
+    plan = await plan_cascade(db, Person, person.id,
+                              entity_type="person", label="Guarded Person")
+
+    assert any("person_roles" in reason for reason in plan.blocked)
+    assert _step(plan, "person_roles") is None

@@ -38,6 +38,7 @@ const PLAN: CascadePlan = {
   blocked: [],
   total_rows_deleted: 3,
   total_rows_cleared: 5,
+  total_rows_db_deleted: 1,
 };
 
 const onClose = vi.fn();
@@ -63,8 +64,10 @@ it('renders every step with its wording and counts', async () => {
   expect(screen.getByText('user_accounts')).toBeTruthy();
   expect(screen.getAllByText('Deleted').length).toBe(2);
   expect(screen.getByText('Reference cleared')).toBeTruthy();
-  expect(screen.getByText('Handled by the database')).toBeTruthy();
-  expect(screen.getByText(/3 rows in 2 tables will be permanently deleted/)).toBeTruthy();
+  expect(screen.getByText('Deleted by the database')).toBeTruthy();
+  // 3 purged (1 + 2) + 1 the database deletes via ON DELETE CASCADE = 4,
+  // across 3 tables (user_accounts, auth_sessions, notification_group_members)
+  expect(screen.getByText(/4 rows in 3 tables will be permanently deleted/)).toBeTruthy();
 });
 
 it('keeps the destroy button disabled until the label is typed exactly', async () => {
@@ -116,4 +119,18 @@ it('offers a retry when the preview cannot be built', async () => {
   api.getCascadePreview.mockResolvedValue(PLAN);
   fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
   expect(await screen.findByRole('table', { name: 'Cascade delete plan' })).toBeTruthy();
+});
+
+it('surfaces the server reasons when a delete is refused as cascade_blocked', async () => {
+  const { ApiError } = await import('../../lib/api');
+  api.cascadeDelete.mockRejectedValue(new ApiError(
+    409, 'cascade_blocked',
+    { code: 'cascade_blocked', reasons: ['newly_added.column is kept non-null by a database rule'] }));
+  renderModal();
+  fireEvent.change(await screen.findByLabelText(/Type Guido Huizing to confirm/),
+                   { target: { value: 'Guido Huizing' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Delete permanently' }));
+  expect(await screen.findByText('newly_added.column is kept non-null by a database rule')).toBeTruthy();
+  // the preview is re-fetched rather than left stale
+  await waitFor(() => expect(api.getCascadePreview).toHaveBeenCalledTimes(2));
 });

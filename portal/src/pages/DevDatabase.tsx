@@ -347,8 +347,21 @@ function ReconcileTab() {
           label={cascadeFor.label}
           onClose={() => setCascadeFor(null)}
           onDeleted={(res) => {
+            const overridden = cascadeFor;
             setCascadeFor(null);
-            setResult(res);
+            // Merge into whatever's on screen rather than replacing it: the
+            // override resolves one failure from a preceding bulk
+            // Reconcile, and the other failures (with their own Override
+            // buttons) must stay visible for the operator to work through.
+            setResult((prev) => (prev ? {
+              deleted: prev.deleted + res.deleted,
+              failed: [
+                ...prev.failed.filter((f) => !(overridden
+                  && f.entity_type === overridden.entity_type
+                  && f.entity_id === overridden.entity_id)),
+                ...res.failed,
+              ],
+            } : res));
             void load();
           }}
         />

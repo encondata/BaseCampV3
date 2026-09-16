@@ -356,11 +356,17 @@ async def _load_marker(db: DbSession, marker_id: uuid.UUID) -> PendingDelete:
 
 
 def _protected_tables(model: type) -> frozenset[str]:
-    """Every reconcile-able entity's table except the target's own: those
-    are records in their own right and must never be collateral."""
-    return frozenset(
-        m.__table__.name for m in DELETABLE.values()
-        if m.__table__.name != model.__table__.name)
+    """Every reconcile-able entity's table, INCLUDING the target's own:
+    those are all records in their own right and must never be collateral.
+    Deleting a person must never quietly delete a site — and, just as much,
+    must never quietly delete another person. The target's own table stays
+    in this set on purpose: today every self-reference in the schema
+    (people.created_by, auth_sessions.replaced_by) is nullable, so it
+    classifies as `clear` before collect_levels ever checks
+    protected_tables — but a required self-referencing FK added later must
+    still be refused rather than purge sibling rows out from under the
+    walk."""
+    return frozenset(m.__table__.name for m in DELETABLE.values())
 
 
 @router.get("/pending-deletes/{marker_id}/cascade-preview",

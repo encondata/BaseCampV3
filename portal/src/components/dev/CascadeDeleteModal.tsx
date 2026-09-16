@@ -15,8 +15,8 @@ import {
 const ACTION_LABEL: Record<CascadeStep['action'], string> = {
   purge: 'Deleted',
   clear: 'Reference cleared',
-  db_cascade: 'Handled by the database',
-  db_set_null: 'Handled by the database',
+  db_cascade: 'Deleted by the database',
+  db_set_null: 'Reference cleared by the database',
 };
 
 const ERRORS: Record<string, string> = {
@@ -37,6 +37,10 @@ export default function CascadeDeleteModal({ markerId, label, onClose, onDeleted
   const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  // Reasons a cascade_blocked refusal carried back on the delete attempt
+  // itself (ApiError.detail.reasons) — shown until the re-fetched plan's
+  // own `blocked` list has something to say instead.
+  const [refusalReasons, setRefusalReasons] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     setLoadError(false);
@@ -49,9 +53,15 @@ export default function CascadeDeleteModal({ markerId, label, onClose, onDeleted
 
   useEffect(() => { void load(); }, [load]);
 
-  const blocked = (plan?.blocked.length ?? 0) > 0;
+  const blockedReasons = plan?.blocked.length ? plan.blocked : refusalReasons;
+  const blocked = blockedReasons.length > 0;
   const confirmed = typed.trim() === label.trim() && label.trim() !== '';
-  const tables = new Set(plan?.steps.filter((s) => s.action === 'purge')
+  // The database destroys db_cascade rows just as surely as a purge does —
+  // db_set_null only detaches a reference, so it stays out of this count
+  // and out of the destroyed-tables set below.
+  const destroyedRows = (plan?.total_rows_deleted ?? 0) + (plan?.total_rows_db_deleted ?? 0);
+  const tables = new Set(plan?.steps
+    .filter((s) => s.action === 'purge' || s.action === 'db_cascade')
     .map((s) => s.table)).size;
 
   const destroy = async () => {
@@ -62,6 +72,15 @@ export default function CascadeDeleteModal({ markerId, label, onClose, onDeleted
     } catch (err) {
       const code = err instanceof ApiError ? err.code : '';
       setError(ERRORS[code] ?? 'Could not delete — try again.');
+      if (code === 'cascade_blocked') {
+        const detail = err instanceof ApiError ? err.detail : undefined;
+        const reasons = detail && typeof detail === 'object' && 'reasons' in detail
+          ? (detail as { reasons?: unknown }).reasons
+          : undefined;
+        setRefusalReasons(Array.isArray(reasons)
+          ? reasons.filter((r): r is string => typeof r === 'string') : []);
+        void load();
+      }
       setBusy(false);
     }
   };
@@ -105,7 +124,7 @@ export default function CascadeDeleteModal({ markerId, label, onClose, onDeleted
               <div className="dev-cascade-summary">
                 <span className="chip c-red">
                   <span className="dot" />
-                  {plan.total_rows_deleted} row{plan.total_rows_deleted === 1 ? '' : 's'}
+                  {destroyedRows} row{destroyedRows === 1 ? '' : 's'}
                   {' '}in {tables} table{tables === 1 ? '' : 's'} will be permanently deleted
                 </span>
                 {plan.total_rows_cleared > 0 && (
@@ -120,7 +139,7 @@ export default function CascadeDeleteModal({ markerId, label, onClose, onDeleted
                 <div className="dir-empty" style={{ marginBottom: 12 }}>
                   <b>This record cannot be deleted yet</b>
                   <ul className="dev-cascade-blocked">
-                    {plan.blocked.map((reason) => <li key={reason}>{reason}</li>)}
+                    {blockedReasons.map((reason) => <li key={reason}>{reason}</li>)}
                   </ul>
                 </div>
               )}

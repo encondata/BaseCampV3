@@ -90,6 +90,7 @@ beforeEach(() => {
   api.getCascadePreview.mockReset().mockResolvedValue({
     entity_type: 'asset', entity_id: 'a1', label: 'SN-0001',
     steps: [], blocked: [], total_rows_deleted: 0, total_rows_cleared: 0,
+    total_rows_db_deleted: 0,
   });
   api.cascadeDelete.mockReset();
 });
@@ -319,7 +320,7 @@ it('opens the override modal and refreshes after it deletes', async () => {
   api.getCascadePreview.mockResolvedValue({
     entity_type: 'asset', entity_id: 'a1', label: 'SN-0001',
     steps: [{ table: 'person_roles', column: 'person_id', action: 'purge', count: 1, labels: [], depth: 1 }],
-    blocked: [], total_rows_deleted: 1, total_rows_cleared: 0,
+    blocked: [], total_rows_deleted: 1, total_rows_cleared: 0, total_rows_db_deleted: 0,
   });
   api.cascadeDelete.mockResolvedValue({ deleted: 1, failed: [] });
 
@@ -344,4 +345,58 @@ it('opens the override modal and refreshes after it deletes', async () => {
 
   const heading = await screen.findByText('Reconcile complete');
   expect(heading.closest('.dir-empty')?.textContent).toMatch(/1 deleted/);
+});
+
+it('overriding one failure keeps the other failures and their Override buttons on screen', async () => {
+  api.listPendingDeletes.mockResolvedValue([
+    pendingDelete({ id: 'pd1', entity_type: 'asset', entity_id: 'a1', entity_label: 'SN-0001' }),
+    pendingDelete({ id: 'pd2', entity_type: 'asset', entity_id: 'a2', entity_label: 'SN-0002' }),
+  ]);
+  const failureRef: PendingDeleteReference = {
+    table: 'person_roles', column: 'person_id', nullable: false, purgeable: false,
+    check_guarded: false, db_handled: false, count: 1, labels: [],
+  };
+  api.reconcilePendingDeletes.mockResolvedValue({
+    deleted: 0,
+    failed: [
+      { entity_type: 'asset', entity_id: 'a1', label: 'SN-0001', reason: 'fk_violation', references: [failureRef] },
+      { entity_type: 'asset', entity_id: 'a2', label: 'SN-0002', reason: 'fk_violation', references: [failureRef] },
+    ],
+  });
+  api.getCascadePreview.mockResolvedValue({
+    entity_type: 'asset', entity_id: 'a1', label: 'SN-0001',
+    steps: [{ table: 'person_roles', column: 'person_id', action: 'purge', count: 1, labels: [], depth: 1 }],
+    blocked: [], total_rows_deleted: 1, total_rows_cleared: 0, total_rows_db_deleted: 0,
+  });
+  api.cascadeDelete.mockResolvedValue({ deleted: 1, failed: [] });
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+  const user = userEvent.setup();
+  render(<MemoryRouter><DevDatabase /></MemoryRouter>);
+  await screen.findByText('SN-0001');
+  await user.click(screen.getByRole('button', { name: /Reconcile — permanently delete/ }));
+  await waitFor(() => expect(api.reconcilePendingDeletes).toHaveBeenCalled());
+
+  const overrideButtons = await screen.findAllByRole(
+    'button', { name: 'Override — delete this and everything attached' });
+  expect(overrideButtons.length).toBe(2);
+
+  fireEvent.click(overrideButtons[0]);
+  const confirmInput = await screen.findByLabelText('Type SN-0001 to confirm');
+  fireEvent.change(confirmInput, { target: { value: 'SN-0001' } });
+  const destroyBtn = screen.getByRole('button', { name: 'Delete permanently' });
+  await waitFor(() => expect((destroyBtn as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(destroyBtn);
+
+  await waitFor(() => expect(api.cascadeDelete).toHaveBeenCalledWith('pd1', 'SN-0001'));
+
+  const heading = await screen.findByText('Reconcile complete');
+  const panel = heading.closest('.dir-empty') as HTMLElement;
+  await waitFor(() => expect(panel.textContent).toMatch(/1 deleted, 1 failed/));
+  // the second failure — and its own Override button — survives the first
+  // one being overridden, instead of the whole result panel being replaced
+  expect(panel.textContent).toMatch(/SN-0002/);
+  expect(panel.textContent).not.toMatch(/SN-0001/);
+  expect(within(panel).getAllByRole(
+    'button', { name: 'Override — delete this and everything attached' }).length).toBe(1);
 });

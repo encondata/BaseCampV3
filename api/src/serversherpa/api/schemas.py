@@ -1561,6 +1561,9 @@ class CascadePlanOut(BaseModel):
     blocked: list[str] = []
     total_rows_deleted: int
     total_rows_cleared: int
+    # rows the DATABASE destroys via ON DELETE CASCADE — not part of
+    # total_rows_deleted, which is only this walk's own DELETEs
+    total_rows_db_deleted: int
 
 
 class CascadeDeleteIn(BaseModel):

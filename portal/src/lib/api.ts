@@ -2729,6 +2729,9 @@ export interface CascadePlan {
   blocked: string[];
   total_rows_deleted: number;
   total_rows_cleared: number;
+  /** rows the DATABASE destroys via ON DELETE CASCADE — not part of
+   *  total_rows_deleted, which is only this walk's own DELETEs */
+  total_rows_db_deleted: number;
 }
 
 /** Everything a cascade delete would destroy for one marker. Read-only —
