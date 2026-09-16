@@ -36,6 +36,25 @@ it('the expansion shows a Full details link to /people/users/:id', async () => {
     </MemoryRouter>,
   );
   fireEvent.click(await screen.findByText('Wan Worker'));
-  fireEvent.click(await screen.findByRole('button', { name: 'Full details' }));
+  fireEvent.click(screen.getByRole('button', { name: /actions/i }));
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Full details' }));
   expect(await screen.findByText('DETAIL PAGE')).toBeTruthy();
+});
+
+it('a manage-able row lists Full details, Edit profile, Reset password, Manage roles, Disable account', async () => {
+  render(
+    <MemoryRouter initialEntries={['/people/users']}>
+      <Routes>
+        <Route path="/people/users" element={<Users />} />
+        <Route path="/people/users/:personId" element={<div>DETAIL PAGE</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  fireEvent.click(await screen.findByText('Wan Worker'));
+  fireEvent.click(screen.getByRole('button', { name: /actions/i }));
+  expect(await screen.findByRole('menuitem', { name: 'Full details' })).toBeTruthy();
+  expect(screen.getByRole('menuitem', { name: 'Edit profile' })).toBeTruthy();
+  expect(screen.getByRole('menuitem', { name: 'Reset password' })).toBeTruthy();
+  expect(screen.getByRole('menuitem', { name: 'Manage roles' })).toBeTruthy();
+  expect(screen.getByRole('menuitem', { name: 'Disable account' })).toBeTruthy();
 });

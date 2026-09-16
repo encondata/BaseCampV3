@@ -9,6 +9,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import GodDeleteButton from '../components/GodDeleteButton';
+import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
 import {
   AccountStateModal,
   AdminEditProfileModal,
@@ -531,12 +532,10 @@ export default function Users() {
                           const canTouch = !isSelf && canTouchRank(maxRank, u.max_rank);
                           const canManageUsers = canTouch && can('users', 'change');
                           const canManageRoles = canTouch && can('access', 'change');
-                          const fullDetails = (
-                            <button className="mini-btn accent"
-                                    onClick={() => navigate(`/people/users/${u.person_id}`)}>
-                              Full details
-                            </button>
-                          );
+                          const detailsAction: RowAction = {
+                            key: 'details', label: 'Full details',
+                            onSelect: () => navigate(`/people/users/${u.person_id}`),
+                          };
                           if (isSelf) {
                             return (
                               <div className="detail-actions">
@@ -544,11 +543,10 @@ export default function Users() {
                                   This is you — your details, password, and
                                   sessions live on your profile.
                                 </span>
-                                {fullDetails}
-                                <button className="mini-btn accent"
-                                        onClick={() => navigate('/me')}>
-                                  Go to My profile
-                                </button>
+                                <RowActionsMenu actions={[
+                                  detailsAction,
+                                  { key: 'me', label: 'Go to My profile', onSelect: () => navigate('/me') },
+                                ]} />
                               </div>
                             );
                           }
@@ -558,59 +556,47 @@ export default function Users() {
                                 <span className="self-note">
                                   Read-only — {u.display_name}'s rank is at or above yours.
                                 </span>
-                                {fullDetails}
+                                <RowActionsMenu actions={[detailsAction]} />
                               </div>
                             );
                           }
                           const manageable = canManageUsers || canManageRoles || godMode;
-                          const guard = (title: string) => title;
+                          const actions: RowAction[] = [
+                            detailsAction,
+                            ...(canManageUsers ? [{
+                              key: 'edit', label: 'Edit profile',
+                              onSelect: () => setManage({ kind: 'edit', user: u }),
+                            }] : []),
+                            ...(canManageUsers ? [{
+                              key: 'reset', label: 'Reset password',
+                              onSelect: () => setManage({ kind: 'reset', user: u }),
+                            }] : []),
+                            ...(canManageRoles ? [{
+                              key: 'roles', label: 'Manage roles',
+                              onSelect: () => setManage({ kind: 'roles', user: u }),
+                            }] : []),
+                            ...(canManageUsers && u.status === 'locked' ? [{
+                              key: 'unlock', label: 'Unlock',
+                              onSelect: () => setManage({ kind: 'state', action: 'unlock', user: u }),
+                            }] : []),
+                            ...(canManageUsers ? [u.status === 'disabled' ? {
+                              key: 'enable', label: 'Enable account',
+                              onSelect: () => setManage({ kind: 'state', action: 'enable', user: u }),
+                            } : {
+                              key: 'disable', label: 'Disable account', destructive: true,
+                              onSelect: () => setManage({ kind: 'state', action: 'disable', user: u }),
+                            }] : []),
+                          ];
                           return (
                             <div className="detail-actions">
-                              {fullDetails}
+                              <RowActionsMenu actions={actions} />
                               {manageable && (
-                                <>
-                                  {canManageUsers && (
-                                    <button className="mini-btn accent"                                       title={guard('Edit identity fields')}
-                                            onClick={() => setManage({ kind: 'edit', user: u })}>
-                                      Edit profile
-                                    </button>
-                                  )}
-                                  {canManageUsers && (
-                                    <button className="mini-btn"                                       title={guard('Set a temporary password')}
-                                            onClick={() => setManage({ kind: 'reset', user: u })}>
-                                      Reset password
-                                    </button>
-                                  )}
-                                  {canManageRoles && (
-                                    <button className="mini-btn"                                       title={guard('Grant or revoke roles')}
-                                            onClick={() => setManage({ kind: 'roles', user: u })}>
-                                      Manage roles
-                                    </button>
-                                  )}
-                                  {canManageUsers && u.status === 'locked' && (
-                                    <button className="mini-btn"                                         title={guard('Clear the failed-attempt lockout')}
-                                            onClick={() => setManage({ kind: 'state', action: 'unlock', user: u })}>
-                                      Unlock
-                                    </button>
-                                  )}
-                                  {canManageUsers && (u.status === 'disabled' ? (
-                                    <button className="mini-btn"                                         title={guard('Restore sign-in')}
-                                            onClick={() => setManage({ kind: 'state', action: 'enable', user: u })}>
-                                      Enable account
-                                    </button>
-                                  ) : (
-                                    <button className="mini-btn danger"                                         title={guard('Block sign-in and revoke sessions')}
-                                            onClick={() => setManage({ kind: 'state', action: 'disable', user: u })}>
-                                      Disable account
-                                    </button>
-                                  ))}
-                                  <GodDeleteButton visible={godMode} entityType="person"
-                                                   entityId={u.person_id} label={u.display_name}
-                                                   pending={pd.pendingIds.has(u.person_id)}
-                                                   onChange={pd.pendingIds.has(u.person_id)
-                                                     ? () => pd.unmark(u.person_id)
-                                                     : () => pd.mark('person', u.person_id, u.display_name)} />
-                                </>
+                                <GodDeleteButton visible={godMode} entityType="person"
+                                                 entityId={u.person_id} label={u.display_name}
+                                                 pending={pd.pendingIds.has(u.person_id)}
+                                                 onChange={pd.pendingIds.has(u.person_id)
+                                                   ? () => pd.unmark(u.person_id)
+                                                   : () => pd.mark('person', u.person_id, u.display_name)} />
                               )}
                             </div>
                           );
