@@ -122,4 +122,30 @@ class ScanViewModelRfidTest {
         assertEquals(setOf("000000000000000000100348", "tag-3"), values)
         assertEquals("Couldn't save this scan on the kiosk. Check its storage.", vm.state.value.storageError)
     }
+
+    @Test fun aSuccessfulBurstAfterSetupClearsAStaleError() = runTest {
+        val db = KioskDatabase.inMemory(ApplicationProvider.getApplicationContext())
+        db.assets().insertAll(listOf(
+            KioskAssetRow("a1", "A-1", "Tagged rack", rfid = "000000000000000000100348", serial_number = "SN1", make_model = "Dell").toEntity(),
+        ))
+        val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = backgroundScope) { File(tmp.root, "stale.preferences_pb") })
+        val api = FakeKioskApi()
+        val outbox = Outbox(RoomOutboxStore(db.outbox()), api, Identity(prefs), backgroundScope)
+        val vm = ScanViewModel(db, Sync(api, db, backgroundScope), outbox, prefs, FlashController(backgroundScope), sound = null, scopeOverride = backgroundScope)
+        settle()
+
+        // Burst before setup sets the error.
+        vm.onBurst(listOf("000000000000000000100348")); settle()
+        assertEquals(NO_MOVE_DATA, vm.state.value.error)
+        assertEquals(0, vm.outboxSnapshot.value.rows.size)
+
+        // Now finish setup and try again.
+        prefs.setSetupSelection(KioskSetupSelection("i1", "Move", "s1", "Site", "source", "pre_stage", "Pre-stage")); settle()
+        vm.onBurst(listOf("000000000000000000100348")); settle()
+
+        // The successful burst clears the stale error.
+        assertEquals(null, vm.state.value.error)
+        assertEquals(1, vm.outboxSnapshot.value.rows.size)
+        assertEquals("000000000000000000100348", vm.outboxSnapshot.value.rows[0].scannedValue)
+    }
 }

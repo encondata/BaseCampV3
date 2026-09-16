@@ -145,6 +145,7 @@ class ScanViewModel(
             _state.update { it.copy(error = NO_MOVE_DATA) }
             return
         }
+        _state.update { it.copy(error = null) }
         scope.launch {
             var matched = 0
             var hadError = false
