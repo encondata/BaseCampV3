@@ -21,3 +21,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "ServerSherpa Kiosk"
 include(":app")
+include(":RFIDAPI3Library")

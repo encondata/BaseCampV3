@@ -43,6 +43,12 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.isReturnDefaultValues = true
+        unitTests.all {
+            it.systemProperty(
+                "javax.xml.parsers.DocumentBuilderFactory",
+                "com.sun.org.apache.xerces.internal.jaxp.DocumentBuilderFactoryImpl",
+            )
+        }
     }
 }
 
@@ -76,6 +82,7 @@ dependencies {
     implementation(libs.okhttp.logging)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(project(":RFIDAPI3Library"))
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
