@@ -156,8 +156,8 @@ async def test_reconcile_reports_fk_violation_and_retains_marker(
     assert failure["reason"] == "fk_violation"
     assert failure["references"] == [{
         "table": "initiatives", "column": "site_id", "nullable": True,
-        "purgeable": False, "check_guarded": False, "count": 1,
-        "labels": ["Uses Site"],
+        "purgeable": False, "check_guarded": False, "db_handled": False,
+        "count": 1, "labels": ["Uses Site"],
     }]
 
     db.expire_all()
@@ -334,8 +334,8 @@ async def test_single_reconcile_failure_lists_referencing_records(
     assert failure["reason"] == "fk_violation"
     assert failure["references"] == [{
         "table": "initiatives", "column": "site_id", "nullable": True,
-        "purgeable": False, "check_guarded": False, "count": 1,
-        "labels": ["Vegas to Zurich migration"],
+        "purgeable": False, "check_guarded": False, "db_handled": False,
+        "count": 1, "labels": ["Vegas to Zurich migration"],
     }]
 
 

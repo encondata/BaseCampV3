@@ -1516,6 +1516,10 @@ class PendingDeleteReference(BaseModel):
     # nullable, but force mode still can't null it without tripping the
     # CHECK — the whole force delete rolls back
     check_guarded: bool = False
+    # True when the foreign key itself declares ON DELETE CASCADE or SET
+    # NULL: the database clears this reference on delete, so it never
+    # blocked anything and must not be reported as a blocker.
+    db_handled: bool = False
     count: int
     labels: list[str] = []
 
@@ -1531,6 +1535,40 @@ class PendingDeleteFailure(BaseModel):
 class PendingDeleteReconcileOut(BaseModel):
     deleted: int
     failed: list[PendingDeleteFailure] = []
+
+
+class CascadeStepOut(BaseModel):
+    """One (table, column) a cascade delete touches, and how. Validated
+    straight from the engine's CascadeStep dataclasses (CascadePlanOut(
+    **plan.__dict__) in the preview endpoint), hence from_attributes."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    table: str
+    column: str
+    action: str          # purge | clear | db_cascade | db_set_null
+    count: int
+    labels: list[str] = []
+    depth: int
+
+
+class CascadePlanOut(BaseModel):
+    entity_type: str
+    entity_id: uuid.UUID
+    label: str
+    steps: list[CascadeStepOut] = []
+    # non-empty means the cascade will refuse to run, with these reasons
+    blocked: list[str] = []
+    total_rows_deleted: int
+    total_rows_cleared: int
+
+
+class CascadeDeleteIn(BaseModel):
+    """The record's own label, typed by the operator. Guards against a
+    stale preview in a forgotten browser tab destroying the wrong row."""
+
+    confirm_label: str
+    model_config = ConfigDict(extra="forbid")
 
 
 # ── db backups ───────────────────────────────────────────────────────

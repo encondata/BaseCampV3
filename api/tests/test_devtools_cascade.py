@@ -9,7 +9,7 @@ from sqlalchemy import select
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
     AccessGroup, AccessGroupMember, AuditLog, AuthSession,
-    Person, PersonRole, TimeEntry, UserAccount, WorkerProfile,
+    PendingDelete, Person, PersonRole, TimeEntry, UserAccount, WorkerProfile,
 )
 from serversherpa.devtools.cascade import plan_cascade
 from serversherpa.security.passwords import hash_password
@@ -220,3 +220,135 @@ async def test_execute_refuses_a_blocked_plan(db, seeded_user):
     assert await db.get(Person, person.id) is not None
     assert (await db.scalars(
         select(UserAccount).where(UserAccount.person_id == person.id))).first() is not None
+
+
+async def _marker(db, person, label):
+    marker = PendingDelete(entity_type="person", entity_id=person.id,
+                           entity_label=label)
+    db.add(marker)
+    await db.commit()
+    return marker
+
+
+async def test_preview_lists_the_plan(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    person = await _person_with_everything(db, first="Preview")
+    marker = await _marker(db, person, "Preview Person")
+
+    resp = await client.get(
+        f"/devtools/pending-deletes/{marker.id}/cascade-preview", headers=hdrs)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["label"] == "Preview Person"
+    assert body["blocked"] == []
+    assert body["total_rows_deleted"] >= 7
+    by_table = {(s["table"], s["column"]): s for s in body["steps"]}
+    assert by_table[("user_accounts", "person_id")]["action"] == "purge"
+    assert by_table[("auth_sessions", "person_id")]["depth"] == 1
+    assert by_table[("audit_log", "actor_person_id")]["action"] == "clear"
+    # purges sort ahead of clears so the destructive rows read first
+    assert body["steps"][0]["action"] == "purge"
+
+
+async def test_preview_404s_for_an_unknown_marker(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    resp = await client.get(
+        f"/devtools/pending-deletes/{uuid.uuid4()}/cascade-preview", headers=hdrs)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "marker_not_found"
+
+
+async def test_cascade_delete_destroys_everything_and_audits(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    person = await _person_with_everything(db, first="Gone")
+    marker = await _marker(db, person, "Gone Person")
+    person_id, marker_id = person.id, marker.id
+
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/cascade-delete", headers=hdrs,
+        json={"confirm_label": "Gone Person"})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"deleted": 1, "failed": []}
+    # the delete ran in the API's own session; ours still holds the
+    # pre-delete identity map (expire_on_commit=False), same as every
+    # other post-reconcile db.get() check in test_pending_deletes_api.py.
+    # The ids are read above, before expiring, so accessing them below
+    # doesn't itself trigger a synchronous refresh of an expired instance.
+    db.expire_all()
+    assert await db.get(Person, person_id) is None
+    assert await db.get(PendingDelete, marker_id) is None
+    assert (await db.scalars(
+        select(AuthSession).where(AuthSession.person_id == person_id))).first() is None
+
+    log = await db.scalar(
+        select(AuditLog).where(AuditLog.action == "cascade_delete"))
+    assert log is not None
+    assert log.entity_id == str(person_id)
+    assert log.changes["label"] == "Gone Person"
+    assert log.changes["deleted_rows"]["user_accounts"] == 1
+
+
+async def test_cascade_delete_requires_the_exact_label(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    person = await _person_with_everything(db, first="Safe")
+    marker = await _marker(db, person, "Safe Person")
+    person_id, marker_id = person.id, marker.id
+
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/cascade-delete", headers=hdrs,
+        json={"confirm_label": "safe person"})
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "label_mismatch"
+    assert await db.get(Person, person_id) is not None
+
+    # surrounding whitespace is forgiven
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker_id}/cascade-delete", headers=hdrs,
+        json={"confirm_label": "  Safe Person  "})
+    assert resp.status_code == 200, resp.text
+    db.expire_all()
+    assert await db.get(Person, person_id) is None
+
+
+async def test_cascade_delete_refuses_a_marker_without_a_label(client, db, seeded_user):
+    hdrs = await _developer(db, client, seeded_user)
+    person = await _person_with_everything(db, first="Nameless")
+    marker = await _marker(db, person, "")
+
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker.id}/cascade-delete", headers=hdrs,
+        json={"confirm_label": ""})
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "label_unavailable"
+    assert await db.get(Person, person.id) is not None
+
+
+async def test_references_report_marks_database_handled_foreign_keys(
+        client, db, seeded_user):
+    """The failure list used to present an ON DELETE CASCADE reference as a
+    blocker; it never was."""
+    from serversherpa.db.models import NotificationGroup, NotificationGroupMember
+
+    hdrs = await _developer(db, client, seeded_user)
+    person = Person(first_name="Reported", last_name="Person")
+    group = NotificationGroup(
+        name="Ops2", description="", channels=["email"],
+        timezone="America/New_York", active_days=["mon"],
+        dnd_behavior="defer", urgent_bypass=False, enabled=True)
+    db.add_all([person, group])
+    await db.flush()
+    db.add(NotificationGroupMember(group_id=group.id, person_id=person.id))
+    db.add(PersonRole(person_id=person.id, role="staff"))
+    marker = await _marker(db, person, "Reported Person")
+
+    resp = await client.post(
+        f"/devtools/pending-deletes/{marker.id}/reconcile", headers=hdrs)
+
+    failure = resp.json()["failed"][0]
+    refs = {(r["table"], r["column"]): r for r in failure["references"]}
+    assert refs[("notification_group_members", "person_id")]["db_handled"] is True
+    assert refs[("person_roles", "person_id")]["db_handled"] is False
