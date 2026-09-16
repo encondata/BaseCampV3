@@ -100,6 +100,9 @@ export default function App() {
                 <Route path="/assets/:assetId" element={
                   <ProtectedRoute resource="assets"><AssetDetail /></ProtectedRoute>
                 } />
+                <Route path="/assets/:assetId/history" element={
+                  <ProtectedRoute resource="assets"><AssetDetail /></ProtectedRoute>
+                } />
                 <Route path="/logistics/containers" element={<ProtectedRoute resource="containers"><Containers /></ProtectedRoute>} />
                 <Route path="/logistics/trucks" element={<ProtectedRoute resource="trucks"><Trucks /></ProtectedRoute>} />
                 <Route path="/logistics/trucks/:id" element={

@@ -4,10 +4,11 @@
  * AssetEditModal; chrome mirrors MoveAssetDetail (idet- classes, init-panel).
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AssetEditModal from '../components/assets/AssetEditModal';
+import AssetMoveHistory from '../components/assets/AssetMoveHistory';
 import NotesFilesPanel from '../components/NotesFilesPanel';
 import ScanHistoryTable from '../components/scans/ScanHistoryTable';
 import {
@@ -28,6 +29,11 @@ export default function AssetDetail() {
   const canChange = can('assets', 'change');
   const canViewScans = can('scans', 'view');
   const canViewSites = can('sites', 'view');
+
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const tab: 'overview' | 'history' = pathname.endsWith('/history') ? 'history' : 'overview';
+  const base = `/assets/${assetId}`;
 
   const [asset, setAsset] = useState<AssetItem | null>(null);
   const [missing, setMissing] = useState(false);
@@ -99,48 +105,71 @@ export default function AssetDetail() {
         )}
       </div>
 
-      <div className="init-panel">
-        <p className="eyebrow-sm">Identity</p>
-        <dl className="kv">
-          <dt>Serial</dt><dd className="mono">{asset.serial_number ?? '—'}</dd>
-          <dt>Name</dt><dd>{asset.name ?? '—'}</dd>
-          <dt>RFID tag</dt><dd className="mono" title={asset.rfid_tag ?? undefined}>{displayRfid(asset.rfid_tag)}</dd>
-          <dt>Model</dt>
-          <dd>{asset.model ? `${asset.model.make} ${asset.model.model}` : '—'}</dd>
-          <dt>Category</dt><dd>{asset.model?.category_label ?? '—'}</dd>
-          <dt>RU</dt><dd>{asset.model?.ru_size ?? '—'}</dd>
-          <dt>Rails present</dt>
-          <dd>{asset.has_rails === null ? 'Unknown' : asset.has_rails ? 'Yes' : 'No'}</dd>
-        </dl>
+      <div className="segmented" role="tablist">
+        {([['overview', 'Overview', base],
+           ['history', 'History', `${base}/history`]] as const).map(([key, label, to]) => (
+          <button key={key} role="tab" aria-selected={tab === key}
+                  className={tab === key ? 'on' : ''}
+                  onClick={() => navigate(to)}>
+            {label}
+          </button>
+        ))}
       </div>
 
-      <div className="init-panel">
-        <p className="eyebrow-sm">Location & status</p>
-        <dl className="kv">
-          <dt>Status</dt>
-          <dd>
-            <StatusHover entityType="asset" entityId={asset.id} status={asset.status}>
-              {chip(asset.status_label, asset.status_color)}
-            </StatusHover>
-          </dd>
-          <dt>Client</dt><dd>{asset.client_name ?? 'House'}</dd>
-          <dt>Site</dt><dd>{asset.site_name ?? '—'}</dd>
-          <dt>Location</dt><dd>{asset.location_detail || '—'}</dd>
-          <dt>Last seen</dt>
-          <dd>{asset.last_seen_at ? new Date(asset.last_seen_at).toLocaleString() : '—'}</dd>
-          <dt>Created</dt><dd>{new Date(asset.created_at).toLocaleDateString()}</dd>
-        </dl>
-      </div>
+      {tab === 'overview' && (
+        <>
+          <div className="init-panel">
+            <p className="eyebrow-sm">Identity</p>
+            <dl className="kv">
+              <dt>Serial</dt><dd className="mono">{asset.serial_number ?? '—'}</dd>
+              <dt>Name</dt><dd>{asset.name ?? '—'}</dd>
+              <dt>RFID tag</dt><dd className="mono" title={asset.rfid_tag ?? undefined}>{displayRfid(asset.rfid_tag)}</dd>
+              <dt>Model</dt>
+              <dd>{asset.model ? `${asset.model.make} ${asset.model.model}` : '—'}</dd>
+              <dt>Category</dt><dd>{asset.model?.category_label ?? '—'}</dd>
+              <dt>RU</dt><dd>{asset.model?.ru_size ?? '—'}</dd>
+              <dt>Rails present</dt>
+              <dd>{asset.has_rails === null ? 'Unknown' : asset.has_rails ? 'Yes' : 'No'}</dd>
+            </dl>
+          </div>
 
-      <div className="init-panel">
-        <NotesFilesPanel entityType="asset" entityId={asset.id} canWrite={canChange} />
-      </div>
+          <div className="init-panel">
+            <p className="eyebrow-sm">Location & status</p>
+            <dl className="kv">
+              <dt>Status</dt>
+              <dd>
+                <StatusHover entityType="asset" entityId={asset.id} status={asset.status}>
+                  {chip(asset.status_label, asset.status_color)}
+                </StatusHover>
+              </dd>
+              <dt>Client</dt><dd>{asset.client_name ?? 'House'}</dd>
+              <dt>Site</dt><dd>{asset.site_name ?? '—'}</dd>
+              <dt>Location</dt><dd>{asset.location_detail || '—'}</dd>
+              <dt>Last seen</dt>
+              <dd>{asset.last_seen_at ? new Date(asset.last_seen_at).toLocaleString() : '—'}</dd>
+              <dt>Created</dt><dd>{new Date(asset.created_at).toLocaleDateString()}</dd>
+            </dl>
+          </div>
 
-      {canViewScans && (
-        <div className="init-panel">
-          <p className="eyebrow-sm">Scan History</p>
-          <ScanHistoryTable assetId={asset.id} />
-        </div>
+          <div className="init-panel">
+            <NotesFilesPanel entityType="asset" entityId={asset.id} canWrite={canChange} />
+          </div>
+        </>
+      )}
+
+      {tab === 'history' && (
+        <>
+          <div className="init-panel">
+            <p className="eyebrow-sm">Move history</p>
+            <AssetMoveHistory assetId={asset.id} />
+          </div>
+          {canViewScans && (
+            <div className="init-panel">
+              <p className="eyebrow-sm">Scan History</p>
+              <ScanHistoryTable assetId={asset.id} />
+            </div>
+          )}
+        </>
       )}
 
       {editing && (
