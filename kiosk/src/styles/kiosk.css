@@ -259,7 +259,7 @@
 .kiosk-foot-item b { font-weight: 500; letter-spacing: .1em; text-transform: uppercase; font-size: 9.5px; margin-right: 6px; color: var(--text-mute); opacity: .8; }
 .kiosk-foot-item span { color: var(--text-dark); }
 .kiosk-foot-dev span { color: var(--accent); }
-/* A one-word status in the footer: the word names the thing, the colour
+/* A one-word status in the footer: the word names the thing, the color
    answers it. Detail (dates, counts, failure codes) rides the title. */
 .kiosk-foot-item.is-status { cursor: help; }
 .kiosk-foot-item.is-status b {
@@ -644,6 +644,19 @@
   color: var(--text-mute);
 }
 .enroll-facts dd { margin: 2px 0 0; font-size: 15px; color: var(--text-dark); }
+/* The confirmation step, for an asset that already carries a tag. The
+   card itself holds focus (tabIndex -1) so a second scan of the same
+   barcode types into nothing and its Enter presses nothing — the ring
+   is suppressed for that programmatic focus and kept for the keyboard. */
+.enroll-card.is-confirm {
+  border-color: var(--c-amber-bd, rgba(255, 161, 46, 0.38));
+  background: var(--c-amber-bg, rgba(255, 161, 46, 0.08));
+}
+.enroll-card.is-confirm:focus { outline: none; }
+.enroll-card.is-confirm:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.enroll-card.is-confirm .enroll-replace { color: var(--text-dark); font-size: 14px; }
 .enroll-replace { margin: 12px 0 0; font-size: 13px; color: var(--text-mute); }
 .enroll-preview { margin: 8px 0 0; font-size: 14px; color: var(--text-mute); max-width: clamp(20rem, 62vw, 62rem); }
 .enroll-preview .mono { font-size: 16px; color: var(--text-dark); }
