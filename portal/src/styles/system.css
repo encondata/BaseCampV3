@@ -255,3 +255,4 @@
 .dev-cascade-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .dev-cascade-blocked { margin: 6px 0 0; padding-left: 18px; text-align: left; }
 .dev-cascade-confirm { margin-top: 16px; }
+.dev-cascade-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }

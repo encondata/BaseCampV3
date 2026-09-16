@@ -462,12 +462,6 @@
   },
   {
     "file": "pages/DevDatabase.tsx",
-    "selector": "<div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-mute)' }}>",
-    "reason": "not list content: Reconcile dry-run results tree \u2014 the cannot-force-delete note below one failed entity, not a list row",
-    "check": "inline"
-  },
-  {
-    "file": "pages/DevDatabase.tsx",
     "selector": "<p className=\"page-hint\" style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>",
     "reason": "not list content: encrypted-backup \"Decrypt with\" hint text, not a list row",
     "check": "inline"

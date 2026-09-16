@@ -12,12 +12,12 @@
  * pages/KioskDevices.test.tsx:178.
  */
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { DbBackupItem, PendingDeleteItem } from '../lib/api';
+import type { DbBackupItem, PendingDeleteItem, PendingDeleteReference } from '../lib/api';
 import DevDatabase from './DevDatabase';
 
 const auth = vi.hoisted(() => ({ godMode: true, canChange: true }));
@@ -35,8 +35,11 @@ const api = vi.hoisted(() => ({
   getDbTestingStatus: vi.fn(),
   unmarkPendingDelete: vi.fn(),
   reconcilePendingDelete: vi.fn(),
+  reconcilePendingDeletes: vi.fn(),
   getDbBackupDownload: vi.fn(),
   deleteDbBackup: vi.fn(),
+  getCascadePreview: vi.fn(),
+  cascadeDelete: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -81,8 +84,14 @@ beforeEach(() => {
   });
   api.unmarkPendingDelete.mockReset().mockResolvedValue(undefined);
   api.reconcilePendingDelete.mockReset().mockResolvedValue({ deleted: 1, failed: [] });
+  api.reconcilePendingDeletes.mockReset().mockResolvedValue({ deleted: 1, failed: [] });
   api.getDbBackupDownload.mockReset().mockResolvedValue({ url: 'blob:signed' });
   api.deleteDbBackup.mockReset().mockResolvedValue(undefined);
+  api.getCascadePreview.mockReset().mockResolvedValue({
+    entity_type: 'asset', entity_id: 'a1', label: 'SN-0001',
+    steps: [], blocked: [], total_rows_deleted: 0, total_rows_cleared: 0,
+  });
+  api.cascadeDelete.mockReset();
 });
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -138,6 +147,27 @@ it('tags testing-snapshot backups with a chip', async () => {
   const manualCell = screen.getByText('backup_manual.sql').closest('.cell-top');
   expect(manualCell?.textContent).not.toMatch(/Testing snapshot/);
 });
+
+/** Render the Reconcile tab with one pending marker, run the bulk
+ *  Reconcile action, and resolve it with a single failure carrying the
+ *  given references — the shape a "some references remain" reconcile
+ *  response takes. Confirm dialogs are auto-accepted for the duration. */
+async function renderReconcileWithFailure(references: PendingDeleteReference[]) {
+  api.listPendingDeletes.mockResolvedValue([pendingDelete()]);
+  api.reconcilePendingDeletes.mockResolvedValue({
+    deleted: 0,
+    failed: [{
+      entity_type: 'asset', entity_id: 'a1', label: 'SN-0001',
+      reason: 'fk_violation', references,
+    }],
+  });
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const user = userEvent.setup();
+  render(<MemoryRouter><DevDatabase /></MemoryRouter>);
+  await screen.findByText('SN-0001');
+  await user.click(screen.getByRole('button', { name: /Reconcile — permanently delete/ }));
+  await waitFor(() => expect(api.reconcilePendingDeletes).toHaveBeenCalled());
+}
 
 // ── Reconcile tab: pending-delete row actions ─────────────────────────
 
@@ -259,4 +289,36 @@ it('the backups list reclaims its action track for the trigger', async () => {
   const head = document.querySelector('.list-head') as HTMLElement;
   expect(head.style.gridTemplateColumns.endsWith('88px')).toBe(true);
   expect(head.style.gridTemplateColumns).not.toMatch(/170px/);
+});
+
+// ── Reconcile tab: cascade delete override ─────────────────────────
+
+it('offers the override where force delete is impossible', async () => {
+  // a required reference: force cannot help, the override must be offered
+  await renderReconcileWithFailure([
+    { table: 'person_roles', column: 'person_id', nullable: false, purgeable: false,
+      check_guarded: false, db_handled: false, count: 1, labels: [] },
+  ]);
+  expect(await screen.findByRole('button', {
+    name: 'Override — delete this and everything attached' })).toBeTruthy();
+  expect(screen.queryByText(/Cannot force/)).toBeNull();
+});
+
+it('does not count a database-handled reference as a blocker', async () => {
+  await renderReconcileWithFailure([
+    { table: 'notification_group_members', column: 'person_id', nullable: false,
+      purgeable: false, check_guarded: false, db_handled: true, count: 1, labels: ['Ops'] },
+  ]);
+  expect(await screen.findByText(/handled automatically by the database/)).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Force delete — detach references' })).toBeTruthy();
+});
+
+it('opens the override modal and refreshes after it deletes', async () => {
+  await renderReconcileWithFailure([
+    { table: 'person_roles', column: 'person_id', nullable: false, purgeable: false,
+      check_guarded: false, db_handled: false, count: 1, labels: [] },
+  ]);
+  fireEvent.click(await screen.findByRole('button', {
+    name: 'Override — delete this and everything attached' }));
+  expect(await screen.findByRole('dialog', { name: 'Cascade delete' })).toBeTruthy();
 });
