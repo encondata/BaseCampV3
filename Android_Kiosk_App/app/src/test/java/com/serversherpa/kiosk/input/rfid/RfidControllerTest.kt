@@ -431,6 +431,85 @@ class RfidControllerTest {
     }
 
     /**
+     * Regression test for the leak this fix closes: if the coroutine running
+     * `endBurst` is cancelled while suspended in `reader.stopInventory()` —
+     * e.g. `disconnectNow()` called from a screen's `viewModelScope` that
+     * then gets cleared because the screen navigated away — the stopping
+     * marker and the open session must not be left behind forever. Before
+     * the fix, cancellation unwound straight past the claim at the bottom of
+     * `endBurst`, leaving `stoppingBurst` stuck true and `_session` stuck
+     * non-null: every later `endBurst` returned early, the live panel never
+     * closed, the radio kept inventorying, `bursts` never emitted again, and
+     * a following trigger press read as NONE because a session still looked
+     * open — wedged until the process restarted.
+     *
+     * `disconnectNow()` is a plain `suspend fun` (unlike `arm`/`disarm`/
+     * `stopBurst`, which only enqueue onto [commands]), so cancelling the
+     * coroutine that is running it cancels `endBurst` itself directly while
+     * it is suspended inside `stopInventory()` — exactly the window the
+     * finding describes.
+     */
+    @Test fun aStopCancelledWhileSuspendedInStopInventoryLeavesTheControllerCleanForTheNextTrigger() = runTest {
+        val inner = FakeRfidReader()
+        val slowStop = SlowStopReader(inner)
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+        val controller = RfidController(slowStop, settings, backgroundScope) { 0L }
+        val bursts = mutableListOf<List<String>>()
+        backgroundScope.launch { controller.bursts.collect { bursts += it } }
+        controller.start(); controller.arm(); settle()
+        controller.connectNow(); settle()
+
+        inner.emitTrigger(TriggerEvent.PRESSED); settle()
+        slowStop.emitTag("100700"); settle()
+        assertEquals(1, controller.session.value?.totalReads)
+
+        val disconnector = backgroundScope.launch { controller.disconnectNow() }
+        settle()
+        assertTrue("stopInventory() should have been called", slowStop.stopStarted.isCompleted)
+        assertTrue(
+            "the burst should still look open while the stop is in flight",
+            controller.session.value != null,
+        )
+
+        disconnector.cancel()
+        settle()
+
+        assertNull(
+            "a cancelled stop must still claim the session, not leave it stuck open",
+            controller.session.value,
+        )
+        // The caller wanted the tags queued (disconnectNow's normal rule),
+        // and they were genuinely read: the cancellation must not discard
+        // them.
+        assertEquals(listOf(listOf("100700")), bursts)
+
+        // Let the underlying vendor call unblock for any *future* stop —
+        // it was abandoned, not answered, by the cancelled caller above; this
+        // only prevents a later stopInventory() call from hanging on the same
+        // single-use CompletableDeferred.
+        slowStop.proceedStop.complete(Unit)
+
+        // The next trigger pull must behave normally: reading = false, so
+        // this PRESSED must start a fresh inventory rather than being read
+        // as NONE because a session still looks open.
+        inner.emitTrigger(TriggerEvent.PRESSED); settle()
+        assertEquals(
+            "a trigger after the cancelled stop should start a new read",
+            2,
+            slowStop.startInventoryCalls,
+        )
+        assertTrue("the new read should be running", inner.inventoryRunning)
+
+        // The stopping marker must not be stuck either: a later stopBurst()
+        // must actually stop this new read, not silently no-op the way it
+        // would if `stoppingBurst` had leaked true.
+        slowStop.emitTag("100701"); settle()
+        controller.stopBurst(); settle()
+        assertEquals(false, inner.inventoryRunning)
+        assertEquals(listOf(listOf("100700"), listOf("100701")), bursts)
+    }
+
+    /**
      * `TestScope` is single-threaded, so it cannot reproduce the races fixed
      * in `RfidController`: they need two collectors, or a collector and a
      * UI-thread call, genuinely running at once. This drives the controller

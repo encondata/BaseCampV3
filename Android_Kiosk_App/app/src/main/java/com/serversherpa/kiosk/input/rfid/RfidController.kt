@@ -13,6 +13,7 @@ import com.serversherpa.kiosk.core.rfid.queuedAfter
 import com.serversherpa.kiosk.core.rfid.startSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -23,6 +24,7 @@ import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * Owns one reader. Turns trigger events into inventories using whichever
@@ -329,6 +331,30 @@ class RfidController(
      * mid-stop from producing a second one, and a `disarm()` that lands
      * while another caller's stop is already in flight still discarding the
      * burst instead of letting it be queued.
+     *
+     * The ownership window (`stoppingBurst = true` through the claim at the
+     * bottom) is also the one place a cancelled caller could otherwise leak
+     * state forever: if the coroutine running this call is cancelled while
+     * suspended in `reader.stopInventory()` — e.g. `disconnectNow()` called
+     * from a screen's `viewModelScope` that gets cleared on navigation away —
+     * plain cancellation would unwind straight past the claim below,
+     * leaving `stoppingBurst` stuck true and `_session` stuck non-null.
+     * Every later `endBurst` would then return early forever, the live
+     * panel would never close, the radio would keep inventorying, `bursts`
+     * would never emit again, and in HOLD mode a new trigger press would
+     * evaluate as NONE because a session still looks open — wedged until
+     * the process restarts. The `catch (CancellationException)` below
+     * finishes the same claim `withContext(NonCancellable)` (a cancelled
+     * coroutine cannot otherwise suspend to take `mutex`), the same idiom
+     * `Outbox.sendBatch` uses to persist a batch's outcome under
+     * cancellation, before rethrowing — so a cancelled stop still leaves
+     * the controller consistent for the next trigger pull. It queues the
+     * tags folded in so far exactly when the caller that owned the stop
+     * wanted them queued (`queueOnStop`, unchanged by the cancellation):
+     * the operator genuinely read those tags, so a cancelled
+     * `disconnectNow()` (`queue = true`) still queues them, the same as an
+     * uncancelled one, while a cancelled `disarm()` (`queue = false`) still
+     * discards them, the same as an uncancelled one.
      */
     private suspend fun endBurst(stopReader: Boolean, queue: Boolean) {
         val owns = mutex.withLock {
@@ -349,24 +375,42 @@ class RfidController(
         // evaluates anything. Released before the emit below, since a slow
         // `bursts` collector must not hold up a trigger that was only
         // waiting on the stop, not on delivery.
-        val (done, shouldQueue) = stopGate.withLock {
-            if (stopReader) {
-                try {
-                    reader.stopInventory()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // the reader is already gone; the tags still count
+        val (done, shouldQueue) = try {
+            stopGate.withLock {
+                if (stopReader) {
+                    try {
+                        reader.stopInventory()
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // the reader is already gone; the tags still count
+                    }
+                }
+
+                mutex.withLock {
+                    val d = _session.getAndUpdate { null }
+                    val q = queueOnStop
+                    stoppingBurst = false
+                    if (d != null && q) queued = queuedAfter(queued, d)
+                    d to q
                 }
             }
-
-            mutex.withLock {
-                val d = _session.getAndUpdate { null }
-                val q = queueOnStop
-                stoppingBurst = false
-                if (d != null && q) queued = queuedAfter(queued, d)
-                d to q
+        } catch (e: CancellationException) {
+            // See the class/method docs: finish the claim this call already
+            // owns so the next trigger pull finds a clean controller, then
+            // still rethrow — a cancelled coroutine must not look like it
+            // finished normally.
+            withContext(NonCancellable) {
+                val (d, q) = mutex.withLock {
+                    val d = _session.getAndUpdate { null }
+                    val q = queueOnStop
+                    stoppingBurst = false
+                    if (d != null && q) queued = queuedAfter(queued, d)
+                    d to q
+                }
+                if (d != null && q) _bursts.emit(burstToScans(d))
             }
+            throw e
         }
         // Emitting outside the lock: a slow collector on `bursts` must not
         // stall trigger and tag handling for everyone else.
