@@ -41,6 +41,7 @@ class FakeRfidReader(name: String = "Fake RFD40") : RfidReader {
 
     override suspend fun connect(): Result<Unit> {
         connectCalls++
+        inventoryRunning = false
         _connection.value = RfidConnection.Connecting
         return connectResult.onSuccess { _connection.value = RfidConnection.Connected(readerName, 80) }
             .onFailure { _connection.value = RfidConnection.Failed(it.message ?: "Couldn't connect to the reader.") }
@@ -88,5 +89,12 @@ class FakeRfidReader(name: String = "Fake RFD40") : RfidReader {
         check(_tags.subscriptionCount.value > 0) { "Dropped tag $epc: nothing was collecting." }
         check(_tags.tryEmit(epc)) { "Dropped tag $epc: nothing was collecting." }
     }
-    fun setConnection(c: RfidConnection) { _connection.value = c }
+    fun setConnection(c: RfidConnection) {
+        // A real sled cannot be running an inventory while disconnected, so clear
+        // the flag whenever the connection is anything other than Connected.
+        if (c !is RfidConnection.Connected) {
+            inventoryRunning = false
+        }
+        _connection.value = c
+    }
 }

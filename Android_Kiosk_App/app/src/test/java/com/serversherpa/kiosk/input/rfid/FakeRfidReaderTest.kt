@@ -82,4 +82,37 @@ class FakeRfidReaderTest {
             reader.emitTrigger(TriggerEvent.PRESSED)
         }
     }
+
+    @Test fun setConnectionToDisconnectedClearsInventoryRunning() = runTest {
+        val reader = FakeRfidReader()
+        reader.connect()
+        reader.startInventory()
+        assertTrue(reader.inventoryRunning)
+
+        reader.setConnection(RfidConnection.Disconnected)
+
+        assertFalse(reader.inventoryRunning)
+    }
+
+    @Test fun setConnectionToFailedClearsInventoryRunning() = runTest {
+        val reader = FakeRfidReader()
+        reader.connect()
+        reader.startInventory()
+        assertTrue(reader.inventoryRunning)
+
+        reader.setConnection(RfidConnection.Failed("The reader disconnected."))
+
+        assertFalse(reader.inventoryRunning)
+    }
+
+    @Test fun connectAgainWhileInventoryIsRunningClearsInventoryRunning() = runTest {
+        val reader = FakeRfidReader()
+        reader.connect()
+        reader.startInventory()
+        assertTrue(reader.inventoryRunning)
+
+        reader.connect()
+
+        assertFalse(reader.inventoryRunning)
+    }
 }
