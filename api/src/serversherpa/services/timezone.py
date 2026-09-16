@@ -14,6 +14,7 @@ ZoneInfo. `reports/move_scan_history` re-exports both names so existing
 `from serversherpa.reports.move_scan_history import report_timezone`
 imports keep working."""
 
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 DEFAULT_TIMEZONE = "America/New_York"
@@ -21,3 +22,17 @@ DEFAULT_TIMEZONE = "America/New_York"
 
 def report_timezone() -> ZoneInfo:
     return ZoneInfo(DEFAULT_TIMEZONE)
+
+
+def stored_day(value: datetime) -> date:
+    """The calendar day a date-only field holds.
+
+    `scheduled_start` and friends are TIMESTAMP(timezone=True) columns that
+    carry a plain YYYY-MM-DD input as MIDNIGHT UTC. Converting that into the
+    report timezone lands on the previous evening anywhere west of UTC, which
+    named the day BEFORE the one the user picked (fixed 2026-09-16; the same
+    class of bug was found on the initiatives timeline on 2026-09-15). Read the
+    UTC date parts instead — for a midnight-UTC value they ARE the picked day,
+    and for a genuine timestamp this is still the UTC calendar day, which is
+    the closest defensible reading of a field used as a date."""
+    return value.astimezone(UTC).date()
