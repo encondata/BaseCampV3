@@ -6,6 +6,9 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
+import com.serversherpa.kiosk.core.rfid.RfidSettings
+import com.serversherpa.kiosk.core.rfid.parseRfidSettings
+import com.serversherpa.kiosk.core.rfid.toJson
 import com.serversherpa.kiosk.core.settings.Appearance
 import com.serversherpa.kiosk.core.settings.CheckpointId
 import com.serversherpa.kiosk.core.settings.SoundSettings
@@ -31,6 +34,7 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
         val setupSelection = stringPreferencesKey("ss.kiosk.setup")
         val appearance = stringPreferencesKey("ss.kiosk.appearance")
         val sound = stringPreferencesKey("ss.kiosk.sound")
+        val rfid = stringPreferencesKey("ss.kiosk.rfid")
         val devMode = booleanPreferencesKey("ss.kiosk.devMode")
         val apiUrl = stringPreferencesKey("ss.kiosk.apiUrl")
         val portalUrl = stringPreferencesKey("ss.kiosk.portalUrl")
@@ -53,6 +57,9 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
 
     val sound: Flow<SoundSettings> = store.data.map { parseSoundSettings(it[Keys.sound]) }
     suspend fun setSound(s: SoundSettings) { store.edit { it[Keys.sound] = s.toJson() } }
+
+    val rfid: Flow<RfidSettings> = store.data.map { parseRfidSettings(it[Keys.rfid]) }
+    suspend fun setRfid(s: RfidSettings) { store.edit { it[Keys.rfid] = s.toJson() } }
 
     fun checkpoint(id: CheckpointId): Flow<String> = store.data.map { it[stringPreferencesKey(id.storageKey)]?.takeIf { v -> v.isNotBlank() } ?: id.fallback }
     suspend fun setCheckpoint(id: CheckpointId, key: String) { store.edit { it[stringPreferencesKey(id.storageKey)] = key } }
