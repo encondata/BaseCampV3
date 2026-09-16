@@ -38,6 +38,8 @@ class FakeRfidReader(name: String = "Fake RFD40") : RfidReader {
         private set
     var connectCalls: Int = 0
         private set
+    var regionsCalls: Int = 0
+        private set
 
     /** Set these to make the next connect or apply fail. */
     var connectResult: Result<Unit> = Result.success(Unit)
@@ -91,6 +93,7 @@ class FakeRfidReader(name: String = "Fake RFD40") : RfidReader {
     var regionResult: Result<Unit> = Result.success(Unit)
 
     override suspend fun regions(): Result<RfidRegions> {
+        regionsCalls++
         if (_connection.value !is RfidConnection.Connected) {
             return Result.failure(IllegalStateException("The reader is not connected."))
         }

@@ -13,6 +13,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidRegion
 import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.input.rfid.FakeRfidReader
@@ -81,5 +82,27 @@ class AdminRegionTest {
         compose.waitForIdle()
 
         assertEquals("ETSI" to null, reader.lastRegionSet)
+    }
+
+    @Test fun batteryPercentageChangeAloneDoesNotReloadRegions() {
+        val reader = FakeRfidReader()
+        reader.reportedRegions = RfidRegions(listOf(usa, eu), "USA")
+        val c = testContainer(reader)
+        runBlocking { c.rfid.connectNow() }
+        compose.setAdminPanelContent(c)
+        compose.waitForIdle()
+
+        val initialCallCount = reader.regionsCalls
+        // Initial load should have called regions()
+        assertEquals(1, initialCallCount)
+
+        // Simulate a battery level change by pushing a new Connected state
+        // with a different battery percentage. This should not trigger a
+        // regions() call because only the battery changed, not the
+        // connection status itself.
+        reader.setConnection(RfidConnection.Connected("Fake RFD40", 75))
+        compose.waitForIdle()
+
+        assertEquals(initialCallCount, reader.regionsCalls)
     }
 }

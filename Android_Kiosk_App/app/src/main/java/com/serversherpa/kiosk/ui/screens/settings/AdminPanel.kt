@@ -46,11 +46,14 @@ fun AdminPanel() {
 
     val connection by container.rfid.connection.collectAsStateWithLifecycle()
     var regions by remember { mutableStateOf(RfidRegions(emptyList(), null)) }
-    // Keyed on the reader's connection state, so the row fills in the moment
-    // a reader connects and empties the moment it goes away — never a stale
-    // list from whatever was connected before.
-    LaunchedEffect(connection) {
-        regions = if (connection is RfidConnection.Connected) {
+    // Keyed on whether the reader is connected, not on the connection value
+    // itself, so the list loads when a reader connects and clears when it goes
+    // away — without re-querying on every battery level change. The Connected
+    // state carries a battery percentage that updates periodically, so keying
+    // on the whole value would trigger needless Bluetooth round trips.
+    val isConnected = connection is RfidConnection.Connected
+    LaunchedEffect(isConnected) {
+        regions = if (isConnected) {
             container.rfid.loadRegions().getOrNull() ?: RfidRegions(emptyList(), null)
         } else {
             RfidRegions(emptyList(), null)
