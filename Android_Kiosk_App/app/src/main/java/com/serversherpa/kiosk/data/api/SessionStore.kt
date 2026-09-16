@@ -2,6 +2,7 @@ package com.serversherpa.kiosk.data.api
 
 import com.serversherpa.kiosk.core.model.SessionData
 import com.serversherpa.kiosk.data.config.KioskConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -79,6 +80,8 @@ class SessionStore(
                 store(data)
                 data
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             null   // network hiccup or an unreadable answer: keep local state
         }

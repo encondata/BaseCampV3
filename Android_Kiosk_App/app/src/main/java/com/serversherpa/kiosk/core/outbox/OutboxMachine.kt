@@ -4,7 +4,9 @@ import java.time.Instant
 
 enum class OutboxStatus(val wire: String) {
     QUEUED("queued"), SENDING("sending"), ACCEPTED("accepted"), RETRYING("retrying"), FAILED("failed"), NOMATCH("nomatch");
-    companion object { fun fromWire(s: String) = entries.first { it.wire == s } }
+    /** An unrecognized status (a row written by a newer build) reads as `queued`
+     *  rather than throwing — a stored row must never crash the outbox. */
+    companion object { fun fromWire(s: String) = entries.firstOrNull { it.wire == s } ?: QUEUED }
 }
 
 /** The matched asset, denormalized onto the row so the receipt list keeps

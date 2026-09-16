@@ -46,8 +46,11 @@ fun KioskSetupScreen(nav: NavHostController) {
 
     Column {
         PageHeader("Kiosk · Setup", "Kiosk setup")
+        // Nothing until the stored setup has been read, so an already-configured
+        // kiosk never flashes step 1 of the wizard on the way to its summary.
+        val wizardOpen = ui.wizardOpen ?: return@Column
         val sel = selection
-        if (!ui.wizardOpen && sel != null) {
+        if (!wizardOpen && sel != null) {
             Text(buildString { append("This kiosk is set up for "); append(sel.initiativeName); append(" at "); append(sel.siteName); append(" ("); append(sel.siteRole); append(") · scan type "); append(sel.scanLabel) },
                 style = MaterialTheme.typography.bodyLarge)
             Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

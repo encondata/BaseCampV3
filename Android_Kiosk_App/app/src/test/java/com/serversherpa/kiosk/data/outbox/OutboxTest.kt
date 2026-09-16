@@ -10,6 +10,7 @@ import com.serversherpa.kiosk.core.outbox.OutboxRow
 import com.serversherpa.kiosk.core.outbox.OutboxStatus
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.testIdentity
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
@@ -106,6 +107,30 @@ class OutboxTest {
         assertEquals(1, api.scanBatches.size)          // resent
         val fresh = ob.enqueue(input()); settle()
         assertEquals(8L, fresh.seq)
+    }
+
+    /** The app is backgrounded mid-POST: stop() cancels the sender before the batch's
+     *  outcome is known. The next start() must un-strand the row and resend it. */
+    @Test fun stopMidPostThenStartResendsTheBatch() = runTest {
+        val api = FakeKioskApi()
+        val gate = CompletableDeferred<Unit>()
+        var firstPost = true
+        api.postScansResult = { body ->
+            if (firstPost) { firstPost = false; gate.await() }   // never completes: this POST is cancelled
+            KioskScanBatchOut(accepted = body.scans.map { s -> s.client_scan_id })
+        }
+        val ob = outbox(api); ob.start(); settle()
+        ob.enqueue(input())
+        advanceTimeBy(600); settle()
+        assertEquals(1, api.scanBatches.size)
+        assertEquals(listOf(OutboxStatus.SENDING), ob.snapshot.value.rows.map { it.status })
+
+        ob.stop(); runCurrent()
+        ob.start(); settle()
+        assertTrue(ob.snapshot.value.rows.none { it.status == OutboxStatus.SENDING })
+        assertEquals(2, api.scanBatches.size)                                  // resent
+        assertEquals(listOf("c1"), api.scanBatches[1].scans.map { it.client_scan_id })
+        assertEquals(OutboxStatus.ACCEPTED, ob.snapshot.value.rows[0].status)
     }
 
     @Test fun clearSentAndDiscardFailed() = runTest {

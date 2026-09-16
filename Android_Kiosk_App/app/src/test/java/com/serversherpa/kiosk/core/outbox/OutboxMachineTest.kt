@@ -29,6 +29,11 @@ class OutboxMachineTest {
         assertTrue(due.none { it.seq == 201L || it.seq >= 300 })
     }
 
+    @Test fun fromWireFallsBackToQueuedForAnUnknownStatus() {
+        assertEquals(OutboxStatus.ACCEPTED, OutboxStatus.fromWire("accepted"))
+        assertEquals(OutboxStatus.QUEUED, OutboxStatus.fromWire("something_new"))
+    }
+
     @Test fun recoverStrandedResetsSendingToQueued() {
         val out = OutboxMachine.recoverStranded(listOf(row(1, OutboxStatus.SENDING), row(2, OutboxStatus.ACCEPTED)))
         assertEquals(listOf(OutboxStatus.QUEUED), out.map { it.status })

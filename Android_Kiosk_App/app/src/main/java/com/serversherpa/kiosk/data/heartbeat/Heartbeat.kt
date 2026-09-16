@@ -6,6 +6,7 @@ import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.auth.LoginMethod
 import com.serversherpa.kiosk.data.config.KioskConfig
 import com.serversherpa.kiosk.data.identity.Identity
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -63,6 +64,8 @@ class Heartbeat(
             ))
             if (asSignIn != null && pendingSignIn === asSignIn) pendingSignIn = null
             _registration.value = RegistrationState.fromWire(result.registration)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             /* keep the last known state and any pending sign-in */
         }

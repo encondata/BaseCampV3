@@ -14,6 +14,7 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +23,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 data class OutboxSnapshot(val rows: List<OutboxRow>, val counts: OutboxCounts)
@@ -67,18 +69,46 @@ class Outbox(
 
     suspend fun load() = mutex.withLock {
         if (loaded) return@withLock
-        val rows = try { store.all() } catch (e: Exception) { emptyList() }
+        val rows = try {
+            store.all()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Leave `loaded` false so the next start() reads the store again.
+            android.util.Log.w("Outbox", "Couldn't read the outbox from storage", e)
+            return@withLock
+        }
         all = LinkedHashMap(rows.associateBy { it.clientScanId })
         nextSeq = (rows.maxOfOrNull { it.seq } ?: 0L) + 1
-        val stranded = OutboxMachine.recoverStranded(rows)
-        if (stranded.isNotEmpty()) save(stranded) else rebuild()
+        rebuild()
         loaded = true
+    }
+
+    /**
+     * Rows left `sending` by a sender that died mid-POST (the app was backgrounded)
+     * go back to queued. Runs on EVERY start(), not just the first load, because the
+     * process survives a stop()/start() cycle with those rows still in memory.
+     */
+    private suspend fun recoverStranded() = mutex.withLock {
+        val stranded = OutboxMachine.recoverStranded(all.values.toList())
+        if (stranded.isEmpty()) return@withLock
+        try {
+            save(stranded)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Storage failed: still mirror them so this pass resends them anyway.
+            android.util.Log.w("Outbox", "Couldn't persist recovered rows", e)
+            stranded.forEach { all[it.clientScanId] = it }
+            rebuild()
+        }
     }
 
     fun start() {
         if (senderJob?.isActive == true) return
         senderJob = scope.launch {
             load()
+            recoverStranded()
             sweep()
             while (isActive) {
                 try {
@@ -87,6 +117,7 @@ class Outbox(
                     throw e
                 } catch (e: Exception) {
                     // Storage hiccup: the next pass retries.
+                    android.util.Log.w("Outbox", "Flush pass failed", e)
                 }
                 val wait = when {
                     OutboxMachine.dueRows(all.values.toList(), clock()).isNotEmpty() -> 0L
@@ -104,6 +135,7 @@ class Outbox(
                     throw e
                 } catch (e: Exception) {
                     // Storage hiccup: the next tick retries.
+                    android.util.Log.w("Outbox", "Sweep tick failed", e)
                 }
             }
         }
@@ -144,6 +176,7 @@ class Outbox(
                 // Storage failed while marking the batch `sending`: nothing went out
                 // this pass. Revert any rows the mirror did pick up so they stay
                 // eligible for the next pass instead of stranding as `sending`.
+                android.util.Log.w("Outbox", "Couldn't mark a batch sending", e)
                 sending.forEach { row ->
                     if (all[row.clientScanId]?.status == OutboxStatus.SENDING) {
                         all[row.clientScanId] = row.copy(status = OutboxStatus.QUEUED)
@@ -160,18 +193,25 @@ class Outbox(
         val updated = try {
             val result = api.postScans(KioskScanBatchIn(serial, scans))
             OutboxMachine.applyResponse(batch, result.accepted.toSet(), result.rejected.associate { it.client_scan_id to it.code })
+        } catch (e: CancellationException) {
+            // The sender was stopped mid-POST: leave the batch alone. The rows stay
+            // `sending` and the next start() recovers them.
+            throw e
         } catch (e: Exception) {
             val code = (e as? ApiError)?.code?.takeIf { it.isNotEmpty() } ?: "timeout"
             OutboxMachine.applyFailure(batch, code, clock())
         }
-        mutex.withLock {
-            try { save(updated) } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // Storage failed: never leave rows `sending`, or they'd be stranded.
-                updated.filter { all[it.clientScanId]?.status == OutboxStatus.SENDING }
-                    .forEach { all[it.clientScanId] = it.copy(status = OutboxStatus.QUEUED) }
-                rebuild()
+        // The POST already happened: persist its outcome even if the sender is being
+        // cancelled right now, or the batch would strand as `sending`.
+        withContext(NonCancellable) {
+            mutex.withLock {
+                try { save(updated) } catch (e: Exception) {
+                    // Storage failed: never leave rows `sending`, or they'd be stranded.
+                    android.util.Log.w("Outbox", "Couldn't save a batch's outcome", e)
+                    updated.filter { all[it.clientScanId]?.status == OutboxStatus.SENDING }
+                        .forEach { all[it.clientScanId] = it.copy(status = OutboxStatus.QUEUED) }
+                    rebuild()
+                }
             }
         }
     }
@@ -189,6 +229,7 @@ class Outbox(
             throw e
         } catch (e: Exception) {
             // Storage hiccup: the next tick retries.
+            android.util.Log.w("Outbox", "Couldn't sweep expired no-match rows", e)
         }
     }
 

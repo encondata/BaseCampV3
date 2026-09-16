@@ -29,10 +29,13 @@ fun SettingsScreen(nav: NavHostController, requestedTab: String?) {
     val auth by container.auth.state.collectAsStateWithLifecycle()
     val authed = auth as? AuthState.Authed
     val tabs = visibleTabs(isAdmin = authed?.isAdmin == true, isDeveloper = authed?.isDeveloper == true, signedIn = authed != null)
-    var selected by remember(requestedTab, tabs.size) {
+    // Keyed on WHICH tabs are visible, not how many: signing in can swap one tab
+    // for another without changing the count, and the old selection would linger.
+    var selected by remember(requestedTab, tabs.map { it.id }) {
         mutableStateOf((SettingsTabId.fromWire(requestedTab)?.takeIf { id -> tabs.any { it.id == id } } ?: tabs.firstOrNull { it.id == DEFAULT_TAB }?.id ?: tabs.first().id))
     }
-    val active = tabs.first { it.id == selected }
+    // A selection that is no longer visible falls back rather than crashing.
+    val active = tabs.firstOrNull { it.id == selected } ?: tabs.first()
     Column {
         PageHeader("Kiosk · Settings", "Settings")
         Segmented(tabs.map { it.id.wire to it.label }, selected.wire) { w -> SettingsTabId.fromWire(w)?.let { selected = it } }

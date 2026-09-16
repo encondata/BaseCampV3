@@ -4,6 +4,8 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.core.model.KioskAssetRow
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
+import com.serversherpa.kiosk.core.outbox.EnqueueInput
+import com.serversherpa.kiosk.core.outbox.OutboxMachine
 import com.serversherpa.kiosk.core.outbox.OutboxStatus
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.db.KioskDatabase
@@ -61,6 +63,18 @@ class ScanViewModelTest {
         assertEquals(OutboxStatus.NOMATCH, outbox.snapshot.value.rows[0].status)
         assertEquals(2, outbox.snapshot.value.counts.total)
         db.close()
+    }
+
+    /** kiosk/src/pages/Scan.tsx statusLabel(), verbatim. */
+    @Test fun statusLabelsMatchTheWebKiosk() {
+        val base = OutboxMachine.newRow(EnqueueInput("A-1", "barcode", null, "s1", "i1", "pre_stage"), "c1", 1, 0)
+        assertEquals("Queued", statusLabel(base.copy(status = OutboxStatus.QUEUED)))
+        assertEquals("Sending", statusLabel(base.copy(status = OutboxStatus.SENDING)))
+        assertEquals("Sent", statusLabel(base.copy(status = OutboxStatus.ACCEPTED)))
+        assertEquals("Retrying (2/4)", statusLabel(base.copy(status = OutboxStatus.RETRYING, attempts = 2)))
+        assertEquals("Failed: bad_site", statusLabel(base.copy(status = OutboxStatus.FAILED, lastError = "bad_site")))
+        assertEquals("Failed", statusLabel(base.copy(status = OutboxStatus.FAILED, lastError = null)))
+        assertEquals("No match", statusLabel(base.copy(status = OutboxStatus.NOMATCH)))
     }
 
     /** A store whose upsert always throws — like FlakyOutboxStore in OutboxTest.kt, copied

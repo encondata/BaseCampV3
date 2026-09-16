@@ -8,6 +8,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.navigation.compose.rememberNavController
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
+import com.serversherpa.kiosk.data.fakeSession
 import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import kotlinx.coroutines.runBlocking
@@ -18,7 +19,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [34], qualifiers = "w360dp-h640dp")
 class KioskShellTest {
     @get:Rule val compose = createComposeRule()
 
@@ -35,5 +36,18 @@ class KioskShellTest {
         compose.onNodeWithText("Android", substring = true).assertIsDisplayed()
         compose.onNodeWithText("Move A", substring = true).assertIsDisplayed()
         compose.onNodeWithText("Data Sync").assertIsDisplayed()
+    }
+
+    /** A long name must not push "Sign out" or the registration chip off a 360 dp screen. */
+    @Test fun signOutStaysVisibleBesideALongDisplayName() {
+        val c = testContainer()
+        val session = fakeSession()
+        c.auth.completePair(session.copy(person = session.person.copy(display_name = "Bartholomew Featherstonehaugh-Smythe")))
+        compose.setContent {
+            CompositionLocalProvider(LocalAppContainer provides c) {
+                KioskTheme { KioskShell(rememberNavController()) { Text("page body") } }
+            }
+        }
+        compose.onNodeWithText("Sign out").assertIsDisplayed()
     }
 }

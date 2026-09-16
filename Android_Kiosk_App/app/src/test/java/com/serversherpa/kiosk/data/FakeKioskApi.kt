@@ -19,7 +19,8 @@ open class FakeKioskApi : KioskApi {
     var people: () -> KioskPeopleSync = { KioskPeopleSync("now") }
     var containers: () -> KioskContainersSync = { KioskContainersSync("i1", "now") }
     var trucks: () -> KioskTrucksSync = { KioskTrucksSync("i1", "now") }
-    var postScansResult: (KioskScanBatchIn) -> KioskScanBatchOut = { KioskScanBatchOut(accepted = it.scans.map { s -> s.client_scan_id }) }
+    /** Suspending so a test can hold a POST open (stop/start mid-flight). */
+    var postScansResult: suspend (KioskScanBatchIn) -> KioskScanBatchOut = { KioskScanBatchOut(accepted = it.scans.map { s -> s.client_scan_id }) }
     val scanBatches = ArrayList<KioskScanBatchIn>()
     var rfidResult: (String, KioskRfidEnrollIn) -> KioskRfidEnroll = { id, b -> KioskRfidEnroll(id, "Rack", "A-1", "SN", b.rfid_tag) }
     var statusResult: (String) -> KioskTimeclockStatus = { KioskTimeclockStatus(KioskTimeclockPerson(it, "Tina T"), false) }

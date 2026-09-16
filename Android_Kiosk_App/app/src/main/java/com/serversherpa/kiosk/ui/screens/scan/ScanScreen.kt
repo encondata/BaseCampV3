@@ -65,6 +65,7 @@ fun ScanScreen(nav: NavHostController) {
         if (ui.loadStatus == LoadStatus.ERROR) KioskToast("Couldn't read this kiosk's local data.", error = true)
         if (empty) Text("No move data on this kiosk. Sync from Kiosk Setup.", color = c.textMute)
         ScanInput(ui.value, vm::setValue, onSubmit = { vm.onScan(it) }, placeholder = "Scan or type an asset ID, serial, or tag", enabled = !disabled, keepFocus = !camera)
+        KioskToast(ui.error, error = true)
         KioskToast(ui.storageError, error = true)
         ScanTools(showCamera = container.hasCamera, onCamera = { camera = true }, showTrigger = container.hasDataWedge, onTrigger = { DataWedge.softScan(context, true) })
         val counts = snapshot.counts
@@ -93,7 +94,7 @@ private fun ScanRow(row: OutboxRow) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(scanTime(row.scannedAt), fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.textMute)
             Text(if (row.scanType == "rfid") displayRfid(row.scannedValue) else row.scannedValue, fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
-            KioskChip(row.status.wire, tone(row.status), dot = false)
+            KioskChip(statusLabel(row), tone(row.status), dot = false)
         }
         val a = row.asset
         Text(if (a == null) "No match" else listOfNotNull(a.assetId.takeIf { it.isNotBlank() }, a.name, a.makeModel.takeIf { it.isNotBlank() }).joinToString(" · "),

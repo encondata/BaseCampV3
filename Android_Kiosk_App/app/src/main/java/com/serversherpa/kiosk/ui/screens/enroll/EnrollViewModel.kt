@@ -40,6 +40,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 const val MAX_ENROLLMENTS = 25
+private const val NO_MOVE_DATA = "No move data on this kiosk. Sync from Kiosk Setup."
 private const val TOAST_MS = 5_000L
 private const val ERROR_MS = 4_000L
 
@@ -122,8 +123,13 @@ class EnrollViewModel(
     fun submitAsset(raw: String) {
         val value = raw.trim()
         _state.update { it.copy(value = "") }
-        val idx = index ?: return
-        if (value.isEmpty() || _state.value.loadStatus != LoadStatus.READY || setup == null) return
+        if (value.isEmpty()) return
+        val idx = index
+        // A hardware scan can arrive before the roster or the setup is ready (the
+        // typed input is disabled then). Say so instead of dropping it silently.
+        if (idx == null || _state.value.loadStatus != LoadStatus.READY || _state.value.rosterSize == 0 || setup == null) {
+            flashBad(); showError(NO_MOVE_DATA); return
+        }
         val hit = matchAssetOrSerial(idx, value)
         if (hit != null) { errorJob?.cancel(); _state.update { it.copy(asset = hit.asset, tagValue = "", error = null) }; flashGood(); return }
         flashBad()

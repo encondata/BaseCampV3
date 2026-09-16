@@ -26,6 +26,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
@@ -67,19 +68,23 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
     Column(Modifier.fillMaxSize().background(c.paper2)) {
         // ── top bar ──
         Column(Modifier.fillMaxWidth().background(c.ink).statusBarsPadding().padding(horizontal = 14.dp, vertical = 8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                androidx.compose.foundation.Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = null, modifier = Modifier.size(30.dp))
-                Text(buildString { append("Server") }, color = c.snow, fontWeight = FontWeight.SemiBold)
-                Text("Sherpa", color = c.accent, fontWeight = FontWeight.SemiBold, modifier = Modifier.offset(x = (-8).dp))
-                Text("KIOSK · ANDROID", fontFamily = FragmentMono, style = MaterialTheme.typography.labelSmall, color = c.accentSoft)
-                if (feature != null) Text(feature.title, fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.snow)
+            // Both rows flow: on a 360 dp phone the brand line and the identity line
+            // wrap rather than pushing "Sign out" or the registration chip off-screen.
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                androidx.compose.foundation.Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = null, modifier = Modifier.size(26.dp).align(Alignment.CenterVertically))
+                Text(buildString { append("Server") }, color = c.snow, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.CenterVertically))
+                Text("Sherpa", color = c.accent, fontWeight = FontWeight.SemiBold, modifier = Modifier.offset(x = (-8).dp).align(Alignment.CenterVertically))
+                Text("KIOSK · ANDROID", fontFamily = FragmentMono, style = MaterialTheme.typography.labelSmall, color = c.accentSoft, modifier = Modifier.align(Alignment.CenterVertically))
+                if (feature != null) Text(feature.title, fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.snow, modifier = Modifier.align(Alignment.CenterVertically))
             }
-            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(identity.name, fontFamily = FragmentMono, color = c.snow, modifier = Modifier.clickable { nav.navigate(Routes.settings("this-kiosk")) }.padding(6.dp))
-                androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+            FlowRow(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(identity.name, fontFamily = FragmentMono, color = c.snow, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.clickable { nav.navigate(Routes.settings("this-kiosk")) }.padding(6.dp).align(Alignment.CenterVertically))
                 if (authed != null) {
                     registration?.let { KioskChip(it.label, REG_TONE.getValue(it)) }
-                    Text(authed.person.display_name, color = c.snow, style = MaterialTheme.typography.bodySmall)
+                    // Shrinks (never grows) so the chip and "Sign out" always fit.
+                    Text(authed.person.display_name, color = c.snow, style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false).align(Alignment.CenterVertically))
                     MiniButton("Sign out", onClick = { scope.launch { container.logout(); nav.navigate(Routes.LOGIN) { popUpTo(0) } } })
                 }
             }

@@ -26,7 +26,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class SetupUi(
-    val wizardOpen: Boolean = true,
+    /** null until the stored setup has been read: the screen paints nothing then,
+     *  rather than flashing the wizard at a kiosk that is already set up. */
+    val wizardOpen: Boolean? = null,
     val options: SetupOptions? = null,
     val loadError: Boolean = false,
     val step: Int = 1,
@@ -64,7 +66,7 @@ class KioskSetupViewModel(
         scope.launch {
             val sel = prefs.setupSelection.first(); val st = prefs.setupState.first()
             _state.update { it.copy(wizardOpen = !(sel != null && st.isComplete)) }
-            if (_state.value.wizardOpen) load()
+            if (_state.value.wizardOpen == true) load()
         }
     }
 

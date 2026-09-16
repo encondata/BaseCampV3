@@ -45,15 +45,24 @@ private val Context.kioskDataStore by preferencesDataStore(name = "kiosk_prefs")
 /** Manual dependency wiring: one instance, built by KioskApplication. */
 class AppContainer(
     private val app: Application,
-    secrets: SecretStore = AndroidSecretStore(app),
+    secrets: SecretStore? = null,
     val db: KioskDatabase = KioskDatabase.build(app),
     dataStore: DataStore<Preferences> = app.kioskDataStore,
 ) {
+    /** EncryptedSharedPreferences unlocks an Android Keystore key — too slow for
+     *  Application.onCreate. The jar's first use builds it, on whatever OkHttp
+     *  thread that turns out to be, never the main thread. */
+    private val androidSecrets by lazy { AndroidSecretStore(app) }
+    private val secretStore: SecretStore = secrets ?: object : SecretStore {
+        override fun get(key: String): String? = androidSecrets.get(key)
+        override fun put(key: String, value: String) = androidSecrets.put(key, value)
+        override fun remove(key: String) = androidSecrets.remove(key)
+    }
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val prefs = KioskPrefs(dataStore)
     val config = KioskConfig(prefs, BuildConfig.DEFAULT_API_URL, BuildConfig.DEFAULT_PORTAL_URL, BuildConfig.KIOSK_VERSION)
     val identity = Identity(prefs)
-    val cookieJar = RefreshCookieJar(secrets)
+    val cookieJar = RefreshCookieJar(secretStore)
     val httpClient: OkHttpClient = OkHttpClient.Builder().cookieJar(cookieJar)
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS).build()
     val session = SessionStore(httpClient, config, scope)
@@ -77,7 +86,9 @@ class AppContainer(
     val sound = SoundPlayer(prefs, scope)
 
     fun start() {
-        scope.launch { identity.get(); auth.restore(); sync.hydrate() }
+        // Two launches: the footer's sync line must not wait on auth's network call.
+        scope.launch { identity.get(); auth.restore() }
+        scope.launch { sync.hydrate() }
         scope.launch { session.sessionEnded.collect { cookieJar.clearRefreshCookie() } }
         SessionCoordinator(auth, heartbeat, foreground, scope).start()
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {

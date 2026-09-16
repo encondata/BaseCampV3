@@ -47,6 +47,7 @@ import com.serversherpa.kiosk.ui.screens.scan.ScanTools
 import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Request
@@ -125,11 +126,12 @@ private fun Avatar(url: String?, name: String, container: AppContainer) {
     LaunchedEffect(url) {
         if (url == null) return@LaunchedEffect
         bitmap = withContext(Dispatchers.IO) {
-            runCatching {
+            try {
                 container.httpClient.newCall(Request.Builder().url(url).build()).execute().use { r ->
                     r.body?.bytes()?.let { android.graphics.BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
                 }
-            }.getOrNull()
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { null }
         }
     }
     val bmp = bitmap

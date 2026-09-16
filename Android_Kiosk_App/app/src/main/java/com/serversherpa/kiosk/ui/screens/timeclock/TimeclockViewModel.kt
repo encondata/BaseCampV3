@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 const val MAX_RESULTS = 8
+private const val NO_PEOPLE_DATA = "No people on this kiosk. Sync from Kiosk Setup."
 const val IDLE_MS = 20_000L
 private const val TICK_MS = 30_000L
 private const val TOAST_MS = 5_000L
@@ -165,8 +166,15 @@ class TimeclockViewModel(
     }
 
     fun onEnter(raw: String) {
-        val value = raw.trim(); val idx = index ?: return
+        val value = raw.trim()
         if (value.isEmpty()) return
+        val idx = index
+        // A badge scan can arrive before the roster is ready (the typed input is
+        // disabled then). Say so instead of dropping it silently. onScan() routes
+        // here whenever onChange() could not select anybody, so it is covered too.
+        if (idx == null || _state.value.loadStatus != LoadStatus.READY || _state.value.rosterSize == 0) {
+            flashBad(); _state.update { it.copy(value = "") }; showError(NO_PEOPLE_DATA, ERROR_MS); return
+        }
         matchPersonExact(idx, value)?.let { select(it); return }
         val rows = searchPeople(idx, value, MAX_RESULTS)
         if (rows.size == 1) { select(rows[0]); return }

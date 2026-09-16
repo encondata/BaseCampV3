@@ -11,6 +11,7 @@ import com.serversherpa.kiosk.data.db.toEntity
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -72,6 +73,8 @@ class Sync(
                 val t = async { api.syncTrucks(initiativeId) }
                 Fetched(a.await(), p.await(), c.await(), t.await())
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             if (myRun != currentRun) return
             _status.value = previous.copy(phase = SyncPhase.ERROR, error = if (e is ApiError) e.code else "unknown_error")
@@ -96,6 +99,8 @@ class Sync(
             _status.value = SyncStatus(
                 SyncPhase.DONE, db.assets().count(), db.people().count(), db.containers().count(), db.trucks().count(), syncedAt,
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             if (myRun != currentRun) return
             _status.value = previous.copy(phase = SyncPhase.ERROR, error = "storage")

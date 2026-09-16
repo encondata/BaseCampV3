@@ -4,6 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.outbox.EnqueueInput
+import com.serversherpa.kiosk.core.outbox.OutboxMachine
+import com.serversherpa.kiosk.core.outbox.OutboxRow
+import com.serversherpa.kiosk.core.outbox.OutboxStatus
 import com.serversherpa.kiosk.core.scan.ScanIndex
 import com.serversherpa.kiosk.core.scan.buildScanIndex
 import com.serversherpa.kiosk.core.scan.matchScan
@@ -32,9 +35,23 @@ import kotlinx.coroutines.launch
 
 enum class LoadStatus { LOADING, READY, ERROR }
 
-data class ScanUi(val loadStatus: LoadStatus = LoadStatus.LOADING, val rosterSize: Int = 0, val value: String = "", val confirmDiscard: Boolean = false, val storageError: String? = null)
+data class ScanUi(
+    val loadStatus: LoadStatus = LoadStatus.LOADING, val rosterSize: Int = 0, val value: String = "",
+    val confirmDiscard: Boolean = false, val storageError: String? = null, val error: String? = null,
+)
 
 private const val STORAGE_ERROR = "Couldn't save this scan on the kiosk. Check its storage."
+const val NO_MOVE_DATA = "No move data on this kiosk. Sync from Kiosk Setup."
+
+/** kiosk/src/pages/Scan.tsx statusLabel(): what the receipt list's pill says. */
+fun statusLabel(row: OutboxRow): String = when (row.status) {
+    OutboxStatus.ACCEPTED -> "Sent"
+    OutboxStatus.SENDING -> "Sending"
+    OutboxStatus.RETRYING -> "Retrying (${row.attempts}/${OutboxMachine.BACKOFF.size})"
+    OutboxStatus.FAILED -> row.lastError?.let { "Failed: $it" } ?: "Failed"
+    OutboxStatus.NOMATCH -> "No match"
+    OutboxStatus.QUEUED -> "Queued"
+}
 
 fun scanTime(iso: String): String = try {
     DateTimeFormatter.ofPattern("HH:mm:ss").format(Instant.parse(iso).atZone(ZoneId.systemDefault()))
@@ -75,10 +92,18 @@ class ScanViewModel(
     fun onScan(raw: String) {
         val value = raw.trim(); if (value.isEmpty()) return
         _state.update { it.copy(value = "") }
-        val idx = index ?: return
-        val sel = setup ?: return
-        val hit = matchScan(idx, value)
+        val idx = index
+        val sel = setup
         val a = appearance
+        // A hardware scan can arrive before the roster or the setup is ready (the
+        // typed input is disabled then). Say so instead of dropping it silently.
+        if (idx == null || sel == null || _state.value.rosterSize == 0) {
+            flash.flash(hslToArgb(a.notFoundScan), a.flashMs); sound?.play(ScanSoundKind.NOT_FOUND)
+            _state.update { it.copy(error = NO_MOVE_DATA) }
+            return
+        }
+        _state.update { it.copy(error = null) }
+        val hit = matchScan(idx, value)
         if (hit != null) { flash.flash(hslToArgb(a.goodScan), a.flashMs); sound?.play(ScanSoundKind.GOOD) }
         else { flash.flash(hslToArgb(a.notFoundScan), a.flashMs); sound?.play(ScanSoundKind.NOT_FOUND) }
         scope.launch {
