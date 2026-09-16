@@ -49,6 +49,33 @@ Three further decisions made while writing this up, flagged for review:
    output changes by a byte (see "Barcode module width").
 3. **Barcode and QR both encode `{container_name}`**, exactly as the PDF does.
 
+## Addendum 2026-09-16 — the move-date off-by-one
+
+Writing the plan surfaced a correctness bug in the existing pipeline, and
+Jimmy chose to fix it as part of this work rather than carry it forward.
+
+`initiatives.scheduled_start` is `TIMESTAMP(timezone=True)` holding **midnight
+UTC** for what is semantically a date-only field. Both existing formatters
+convert it into a local zone before reading the day:
+
+- `values.py`'s `move_date`: `scheduled_start.astimezone(report_timezone()).strftime("%m/%d/%Y")`
+- `containerLabelSheet.ts`'s `formatLabelDate`: `new Date(iso)` then `getDate()`,
+  with the worker's `TZ` set to the company zone
+
+Anywhere west of UTC that names **the day before** the scheduled date. A move
+scheduled 2026-09-15 prints `09/14/2026`. This is the same class of bug found on
+the initiatives timeline on 2026-09-15, where the bar drew Sep 7 -> Sep 25 while
+its tooltip read Sep 6 -> Sep 24. The existing tests missed it because they feed
+noon timestamps (`2026-09-01T12:00:00`), which survive the shift.
+
+**Decision: fix all three.** `move_date` and `formatLabelDate` are corrected to
+read the Y-M-D digits as stored, and the new `move_date_long` is written correctly
+from the start. Regression tests pin a west-of-UTC zone and a midnight-UTC input.
+
+The Avery PDF's V2 exactness test needs **no** expected-value churn: its embedded
+copy of V2's routine calls the same `formatLabelDate`, so both sides of the
+comparison move together and log-equivalence still holds.
+
 ## Fidelity losses versus the PDF
 
 Beyond color, which Jimmy already accepted:
