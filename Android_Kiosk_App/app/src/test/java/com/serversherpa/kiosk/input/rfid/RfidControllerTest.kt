@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.yield
@@ -541,6 +542,117 @@ class RfidControllerTest {
     }
 
     /**
+     * A reader whose `apply()` signals [applyStarted] and then hangs on
+     * [proceedApply] until the test releases it — [SlowStopReader]'s mirror
+     * for the settings-push side, so it lives here for the same reason:
+     * `FakeRfidReader` has no need for this seam. `connect`/`disconnect`/
+     * `startInventory`/`stopInventory` and `triggers`/`tags` all delegate to
+     * a real `FakeRfidReader`.
+     */
+    private class SlowApplyReader(private val inner: FakeRfidReader) : RfidReader {
+        override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val tags: Flow<String> get() = inner.tags
+        override val triggers: Flow<TriggerEvent> get() = inner.triggers
+
+        /** Completes the instant `apply()` is called. */
+        val applyStarted = CompletableDeferred<Unit>()
+
+        /** The test completes this once it wants `apply()` to actually
+         *  return. */
+        val proceedApply = CompletableDeferred<Unit>()
+
+        override suspend fun connect() = inner.connect()
+        override suspend fun disconnect() = inner.disconnect()
+        override suspend fun apply(settings: RfidSettings): Result<Unit> {
+            applyStarted.complete(Unit)
+            proceedApply.await()
+            return inner.apply(settings)
+        }
+        override suspend fun startInventory() = inner.startInventory()
+        override suspend fun stopInventory() = inner.stopInventory()
+    }
+
+    /**
+     * The core regression proof for C1: before the fix, the connection
+     * collector pushed settings as `mutex.withLock { push(current) }`, so a
+     * settings push stuck on the vendor link (`reader.apply()`, which used to
+     * have no timeout at all) held `mutex` forever. `onTrigger` takes the
+     * same `mutex` to evaluate a trigger event, so a stuck push froze every
+     * trigger pull too — not just the settings screen, the whole Scanning
+     * screen. This drives exactly that: `connectNow()` fires the "just
+     * connected" push, which sticks on `proceedApply`, and a trigger PRESSED
+     * event fired afterward must still open the burst — proving `mutex` was
+     * never held across the stuck `apply()` call.
+     *
+     * Against the pre-fix code (`mutex.withLock { push(current) }`), the
+     * connection collector never releases `mutex`, `onTrigger`'s own
+     * `mutex.withLock` never acquires it, and `controller.session.value`
+     * stays null forever within this test's scheduling — this test fails
+     * before the fix and passes after it (see the fix-wave report for both
+     * runs).
+     */
+    @Test fun aTriggerPullOpensTheBurstWhileASettingsPushIsStuckOnTheVendorLink() = runTest {
+        val inner = FakeRfidReader()
+        val slowApply = SlowApplyReader(inner)
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+        val controller = RfidController(slowApply, settings, backgroundScope) { 0L }
+        controller.start(); controller.arm(); settle()
+        controller.connectNow(); settle()
+        assertTrue(
+            "apply() should have been called on the just-connected transition",
+            slowApply.applyStarted.isCompleted,
+        )
+
+        // apply() is stuck on proceedApply here — before the fix this holds
+        // `mutex` for as long as the vendor stack takes, blocking every
+        // other mutex.withLock caller, onTrigger included.
+        inner.emitTrigger(TriggerEvent.PRESSED); settle()
+
+        assertTrue(
+            "a trigger pull must open the burst even while a settings push is " +
+                "stuck on the vendor link — mutex must never be held across apply()",
+            controller.session.value != null,
+        )
+
+        // Let the stuck apply() finish so it doesn't leak past the test.
+        slowApply.proceedApply.complete(Unit); settle()
+    }
+
+    /**
+     * The timeout-reporting proof for C1: `push()` wraps `reader.apply()` in
+     * `withTimeoutOrNull(VENDOR_TIMEOUT_MS)`, the same defense
+     * `connectWithTimeout`/`disconnectWithTimeout` already use, so a soft-hung
+     * vendor stack is reported rather than silently wedging `applyGate`
+     * forever. `VENDOR_TIMEOUT_MS` is `private` on `RfidController`'s
+     * companion object, so its value (15s) is duplicated here rather than
+     * referenced — the same tradeoff other constants in this codebase make
+     * where the source deliberately keeps them private.
+     */
+    @Test fun aStuckSettingsPushReportsATimeoutAfterVendorTimeoutMsElapses() = runTest {
+        val inner = FakeRfidReader()
+        val slowApply = SlowApplyReader(inner)
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+        val controller = RfidController(slowApply, settings, backgroundScope) { 0L }
+        controller.start(); settle()
+        controller.connectNow(); settle()
+        assertTrue(
+            "apply() should have been called on the just-connected transition",
+            slowApply.applyStarted.isCompleted,
+        )
+        assertNull("nothing has timed out yet", controller.applyError.value)
+
+        advanceTimeBy(15_000L + 1); settle()
+
+        assertEquals(
+            "Pushing settings to the reader timed out.",
+            controller.applyError.value,
+        )
+
+        // Let the stuck apply() finish so it doesn't leak past the test.
+        slowApply.proceedApply.complete(Unit); settle()
+    }
+
+    /**
      * The regression test for the finding this fix wave closes: before the
      * fix, `connectForLifecycle()`/`disconnectForLifecycle()` and
      * `arm()`/`disarm()`/`stopBurst()` all funneled through the same single
@@ -915,5 +1027,100 @@ class RfidControllerTest {
         } finally {
             scope.cancel()
         }
+    }
+
+    /**
+     * I6 (controller half): a tag whose write to the outbox fails must not be
+     * silently treated as already-sent on the next sweep. `forgetQueued`
+     * removes it from `queued` after the fact, translating the raw EPCs
+     * `bursts` emits into the normalized keys `queued` stores internally.
+     * Burst two tags under SKIP_AND_COUNT, forget one, then sweep the same
+     * two tags again: the forgotten one must queue again while the other
+     * still skips as a repeat.
+     */
+    @Test fun forgetQueuedLetsAForgottenTagQueueAgainWhileTheOtherStillSkips() = runTest {
+        val r = Rig(backgroundScope)
+        r.settings.value = DEFAULT_RFID_SETTINGS.copy(enabled = true, repeatPolicy = RepeatSweepPolicy.SKIP_AND_COUNT)
+        val bursts = mutableListOf<List<String>>()
+        backgroundScope.launch { r.controller.bursts.collect { bursts += it } }
+        r.controller.start(); r.controller.arm(); settle()
+        r.controller.connectNow(); settle()
+
+        r.reader.emitTrigger(TriggerEvent.PRESSED)
+        r.reader.emitTag("100800"); r.reader.emitTag("100801"); settle()
+        r.reader.emitTrigger(TriggerEvent.RELEASED); settle()
+        assertEquals(listOf(listOf("100800", "100801")), bursts)
+
+        r.controller.forgetQueued(listOf("100800")); settle()
+
+        r.reader.emitTrigger(TriggerEvent.PRESSED)
+        r.reader.emitTag("100800"); r.reader.emitTag("100801"); settle()
+        assertEquals(
+            "100800 was forgotten and must not read as a repeat; 100801 still should",
+            1,
+            r.controller.session.value?.skippedRepeats,
+        )
+        r.reader.emitTrigger(TriggerEvent.RELEASED); settle()
+
+        assertEquals(
+            listOf(listOf("100800", "100801"), listOf("100800")),
+            bursts,
+        )
+    }
+
+    /**
+     * M1: under the default ALWAYS_QUEUE policy, `queued` is read nowhere
+     * (`onTagRead` ignores `alreadyQueued` for that policy), so `endBurst`
+     * must not grow it. Proven indirectly: burst a tag under ALWAYS_QUEUE,
+     * then flip to SKIP_AND_COUNT (a legitimate settings change, no re-arm)
+     * and sweep the same tag again — if the first burst had added to
+     * `queued`, this second sweep would wrongly skip it as a repeat.
+     */
+    @Test fun queuedDoesNotGrowUnderTheDefaultAlwaysQueuePolicy() = runTest {
+        val r = Rig(backgroundScope) // DEFAULT_RFID_SETTINGS.repeatPolicy == ALWAYS_QUEUE
+        r.controller.start(); r.controller.arm(); settle()
+        r.controller.connectNow(); settle()
+
+        r.reader.emitTrigger(TriggerEvent.PRESSED); r.reader.emitTag("100900"); settle()
+        r.reader.emitTrigger(TriggerEvent.RELEASED); settle()
+
+        r.settings.value = r.settings.value.copy(repeatPolicy = RepeatSweepPolicy.SKIP_AND_COUNT); settle()
+
+        r.reader.emitTrigger(TriggerEvent.PRESSED); r.reader.emitTag("100900"); settle()
+        assertEquals(
+            "the ALWAYS_QUEUE burst above must not have added to `queued`, or " +
+                "this identical tag would now read as a skipped repeat",
+            0,
+            r.controller.session.value?.skippedRepeats,
+        )
+        r.reader.emitTrigger(TriggerEvent.RELEASED); settle()
+    }
+
+    /**
+     * M6: toggling only `enabled` must not push a full settings block to the
+     * reader — `apply()` never reads `enabled`, and the RFID panel pairs this
+     * with a `disconnectNow()` call, so pushing here is pure waste. A real
+     * change (e.g. `powerDbm`) must still push, `enabled` value notwithstanding.
+     */
+    @Test fun togglingOnlyEnabledDoesNotPushSettingsToTheReader() = runTest {
+        val r = Rig(backgroundScope)
+        r.controller.start(); settle()
+        r.controller.connectNow(); settle()
+        val appliedAfterConnect = r.reader.applied
+        assertEquals(27, appliedAfterConnect?.powerDbm)
+
+        r.settings.value = r.settings.value.copy(enabled = false); settle()
+        assertEquals(
+            "flipping only `enabled` must not push a new settings block",
+            appliedAfterConnect,
+            r.reader.applied,
+        )
+
+        r.settings.value = r.settings.value.copy(powerDbm = 12); settle()
+        assertEquals(
+            "a real settings change must still push",
+            12,
+            r.reader.applied?.powerDbm,
+        )
     }
 }

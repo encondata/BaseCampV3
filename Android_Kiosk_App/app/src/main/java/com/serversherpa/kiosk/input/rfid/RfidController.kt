@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.input.rfid
 
 import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
+import com.serversherpa.kiosk.core.rfid.RepeatSweepPolicy
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidReadSession
 import com.serversherpa.kiosk.core.rfid.RfidSettings
@@ -11,6 +12,7 @@ import com.serversherpa.kiosk.core.rfid.nextTriggerAction
 import com.serversherpa.kiosk.core.rfid.onTagRead
 import com.serversherpa.kiosk.core.rfid.queuedAfter
 import com.serversherpa.kiosk.core.rfid.startSession
+import com.serversherpa.kiosk.core.scan.rfidKey
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
@@ -49,16 +51,33 @@ import kotlinx.coroutines.withTimeoutOrNull
  * since a field a lock only sometimes guards gives no happens-before edge to
  * the accesses that skip it.
  *
- * The one deliberate exception is `reader.stopInventory()` inside
- * [endBurst]: on real hardware that is a vendor round trip of tens of
- * milliseconds during which tags can still arrive, and holding `mutex`
- * across it would make `onTag` block until the burst was already claimed —
- * silently dropping the tail of every sweep. So ending a burst is done in
- * three steps: claim ownership of the stop under the lock (recorded in
- * `stoppingBurst`, so a second, concurrent caller does nothing but fold in
+ * Two deliberate exceptions to "every access happens under `mutex`" are
+ * `reader.stopInventory()` inside [endBurst] and `reader.apply()` inside
+ * [push] — both vendor round trips long enough (or, for `apply()`, unbounded
+ * enough) that holding `mutex` across them would starve `onTag`/`onTrigger`
+ * for the duration, or forever if the vendor stack soft-hangs.
+ *
+ * `reader.stopInventory()`: on real hardware that is a vendor round trip of
+ * tens of milliseconds during which tags can still arrive, and holding
+ * `mutex` across it would make `onTag` block until the burst was already
+ * claimed — silently dropping the tail of every sweep. So ending a burst is
+ * done in three steps: claim ownership of the stop under the lock (recorded
+ * in `stoppingBurst`, so a second, concurrent caller does nothing but fold in
  * its own queue-or-discard preference), stop the reader with the lock
  * released so `onTag` stays free, then re-acquire the lock to claim the
  * session, update `queued`, and decide whether to emit.
+ *
+ * `reader.apply()`: on real hardware (`ZebraRfidReader.apply()`) that is eight
+ * sequential vendor round trips, and unlike `connect()`/`disconnect()` it
+ * used to have no timeout at all — a soft-hung vendor stack would wedge
+ * whatever held the lock across it forever. [applyGate], a second, narrow
+ * `Mutex`, is what lets [push] stay off `mutex` entirely: it serializes
+ * `apply()` against `startInventory()` on the vendor link (see the nesting in
+ * [onTrigger]'s `TriggerAction.START` branch) without making tag/trigger
+ * evaluation — which only ever needs `mutex` — wait on a slow or hung
+ * settings push. Nothing that holds `applyGate` (i.e. [push]) ever tries to
+ * acquire `mutex`, so nesting `mutex` outside `applyGate` at that one call
+ * site cannot deadlock.
  *
  * `arm()`, `disarm()` and `stopBurst()` are called from the UI thread and
  * must stay non-suspending, but their real work still has to happen on
@@ -214,6 +233,17 @@ class RfidController(
      *  across anything `onTag` needs. */
     private val stopGate = Mutex()
 
+    /** A second, narrow lock so [push] never has to hold `mutex` across
+     *  `reader.apply()` — see the class doc. It exists purely to serialize
+     *  `apply()` against `startInventory()` on the vendor link (the nesting
+     *  in [onTrigger]'s `TriggerAction.START` branch); tag/trigger
+     *  evaluation, which only ever needs `mutex`, never waits on it, so a
+     *  slow or hung settings push can delay a later push but nothing else —
+     *  not a tag, a trigger, an arm/disarm, or `endBurst`. Nothing that
+     *  holds `applyGate` ever tries to acquire `mutex`, so nesting `mutex`
+     *  outside it at that one call site cannot deadlock. */
+    private val applyGate = Mutex()
+
     private sealed interface Command {
         data object Arm : Command
         data object Disarm : Command
@@ -272,12 +302,23 @@ class RfidController(
                 // true but nothing pushes) would otherwise sit unpublished
                 // until something else happened to take the lock.
                 val changed = mutex.withLock {
-                    val c = s != current
+                    // Toggling only `enabled` is a real, common event — the
+                    // RFID panel's switch does exactly this, alongside a
+                    // disconnectNow() call — and `apply()` never reads
+                    // `enabled` at all, so it is not worth a push: comparing
+                    // with `enabled` forced to match `current`'s isolates
+                    // that one field without hand-listing every other one of
+                    // RfidSettings. `current` itself must still hold the
+                    // true, current `enabled` value.
+                    val c = s.copy(enabled = current.enabled) != current
                     current = s
                     c
                 }
                 if (changed && reader.connection.value is RfidConnection.Connected) {
-                    mutex.withLock { push(s) }
+                    // No `mutex` involved: `s` is already a plain value from
+                    // the collected flow, and `push()` must never run under
+                    // `mutex` — see the class doc and [applyGate].
+                    applyGate.withLock { push(s) }
                 }
             }
         }
@@ -304,8 +345,11 @@ class RfidController(
                     // Push current settings on every transition into Connected,
                     // including a reconnect the sled did on its own — otherwise it
                     // is left running firmware defaults with nothing on screen
-                    // saying so.
-                    mutex.withLock { push(current) }
+                    // saying so. Read `current` under `mutex`, then release it
+                    // before pushing — `push()` must never run under `mutex` —
+                    // see the class doc and [applyGate].
+                    val toPush = mutex.withLock { current }
+                    applyGate.withLock { push(toPush) }
                 }
                 wasConnected = nowConnected
             }
@@ -406,6 +450,16 @@ class RfidController(
         endBurst(stopReader = true, queue = false)
     }
 
+    /** Removes tags whose write to the outbox failed from `queued`, so a tag
+     *  that never actually persisted is not silently treated as
+     *  already-sent on the next sweep. `values` are raw EPCs — the same
+     *  shape [bursts] emits and `ScanViewModel.onBurst` receives — not the
+     *  normalized keys `queued` stores internally; this does that
+     *  translation so callers never need to know about key normalization. */
+    suspend fun forgetQueued(values: List<String>) = mutex.withLock {
+        queued = queued - values.mapNotNull { rfidKey(it) }.toSet()
+    }
+
     suspend fun connectNow(): Result<Unit> = connectWithTimeout()
     // Settings are pushed by the connection collector on the resulting
     // Connected transition, the same path a self-initiated reconnect uses —
@@ -444,8 +498,15 @@ class RfidController(
         }
     }
 
+    /** The one place `reader.apply()` is actually called — always under
+     *  [applyGate], never under `mutex`; see the class doc. Wrapped in the
+     *  same `VENDOR_TIMEOUT_MS` defense [connectWithTimeout]/
+     *  [disconnectWithTimeout] use, since `apply()` otherwise has no timeout
+     *  of its own and a soft-hung vendor stack would wedge `applyGate`
+     *  forever. */
     private suspend fun push(s: RfidSettings) {
-        val result = reader.apply(s)
+        val result = withTimeoutOrNull(VENDOR_TIMEOUT_MS) { reader.apply(s) }
+            ?: Result.failure(IllegalStateException("Pushing settings to the reader timed out."))
         _applyError.value = if (result.isFailure) {
             result.exceptionOrNull()?.message?.takeIf { it.isNotBlank() }
                 ?: "The reader refused the settings."
@@ -491,13 +552,20 @@ class RfidController(
             when (nextTriggerAction(current.triggerMode, event, reading, heldMs)) {
                 TriggerAction.START -> {
                     _session.value = startSession(clock())
-                    try {
-                        reader.startInventory()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        // The reader may already be gone; the session stays
-                        // open and endBurst()'s own try/catch covers the stop.
+                    // applyGate nested inside mutex (mutex outer, applyGate
+                    // inner) so a start can never race a settings push on
+                    // the vendor link. Nothing that holds applyGate (i.e.
+                    // push()) ever tries to acquire mutex, so this ordering
+                    // cannot deadlock — see the class doc.
+                    applyGate.withLock {
+                        try {
+                            reader.startInventory()
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            // The reader may already be gone; the session stays
+                            // open and endBurst()'s own try/catch covers the stop.
+                        }
                     }
                 }
                 // Deferred until the lock is released: endBurst() takes
@@ -590,7 +658,13 @@ class RfidController(
                     val d = _session.getAndUpdate { null }
                     val q = queueOnStop
                     stoppingBurst = false
-                    if (d != null && q) queued = queuedAfter(queued, d)
+                    // Under ALWAYS_QUEUE, `queued` is read nowhere — onTagRead
+                    // ignores `alreadyQueued` for that policy — so growing it
+                    // forever would be pure waste for a kiosk that sits on
+                    // this screen for days.
+                    if (d != null && q && current.repeatPolicy != RepeatSweepPolicy.ALWAYS_QUEUE) {
+                        queued = queuedAfter(queued, d)
+                    }
                     d to q
                 }
             }
@@ -604,7 +678,11 @@ class RfidController(
                     val d = _session.getAndUpdate { null }
                     val q = queueOnStop
                     stoppingBurst = false
-                    if (d != null && q) queued = queuedAfter(queued, d)
+                    // See the same guard above: ALWAYS_QUEUE never reads
+                    // `queued`, so there is nothing to gain by growing it here.
+                    if (d != null && q && current.repeatPolicy != RepeatSweepPolicy.ALWAYS_QUEUE) {
+                        queued = queuedAfter(queued, d)
+                    }
                     d to q
                 }
                 if (d != null && q) _bursts.emit(burstToScans(d))
