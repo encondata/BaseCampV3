@@ -44,10 +44,45 @@ android {
         unitTests.isIncludeAndroidResources = true
         unitTests.isReturnDefaultValues = true
         unitTests.all {
+            // The Zebra RFIDAPI3 .aar (see project(":RFIDAPI3Library")) bundles an
+            // incomplete vendor copy of Apache Xerces plus META-INF/services JAXP
+            // registration files. Those hijack DocumentBuilderFactory resolution on the
+            // unit test JVM's classpath toward the broken vendor impl; without this
+            // override, every Robolectric-backed test that parses AndroidManifest.xml
+            // fails with NoClassDefFoundError: org.apache.xerces.impl.dv.ObjectFactory.
             it.systemProperty(
                 "javax.xml.parsers.DocumentBuilderFactory",
                 "com.sun.org.apache.xerces.internal.jaxp.DocumentBuilderFactoryImpl",
             )
+        }
+    }
+
+    packaging {
+        resources {
+            // The Zebra RFIDAPI3 .aar bundles JAXP META-INF/services registration files
+            // (see the systemProperty override above for the unit-test-side symptom).
+            // These land unmodified in the packaged APK and would hijack
+            // DocumentBuilderFactory/SAXParserFactory/etc. resolution at runtime on a
+            // real device toward the vendor's incomplete Xerces bundle, which is
+            // missing classes it needs. Exclude exactly the entries confirmed present
+            // in app-debug.apk; nothing else is swept up.
+            excludes += setOf(
+                "META-INF/services/javax.xml.datatype.DatatypeFactory",
+                "META-INF/services/javax.xml.parsers.DocumentBuilderFactory",
+                "META-INF/services/javax.xml.parsers.SAXParserFactory",
+                "META-INF/services/javax.xml.stream.XMLEventFactory",
+                "META-INF/services/javax.xml.validation.SchemaFactory",
+                "META-INF/services/org.w3c.dom.DOMImplementationSourceList",
+                "META-INF/services/org.xml.sax.driver",
+            )
+            // AGP's default `merges` set includes "/META-INF/services/**" and takes
+            // precedence over `excludes` for matching paths, so the excludes above are
+            // silently ignored unless this default is narrowed first. Removing it does
+            // not drop any legitimate service file: the app's only other
+            // META-INF/services/* entries (kotlinx.coroutines' CoroutineExceptionHandler
+            // and MainDispatcherFactory) each come from a single dependency, so they
+            // pass straight through with no duplicate to merge.
+            merges -= "/META-INF/services/**"
         }
     }
 }
