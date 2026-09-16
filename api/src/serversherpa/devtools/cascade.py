@@ -7,9 +7,11 @@ list of tables: a new table with a required foreign key joins the cascade
 the moment it exists."""
 
 import re
+import uuid
 from collections.abc import Iterator
+from dataclasses import dataclass
 
-from sqlalchemy import CheckConstraint, String, cast, func
+from sqlalchemy import CheckConstraint, String, cast, func, select
 from sqlalchemy.sql.schema import Column, Table
 
 from serversherpa.db.models import Base
@@ -63,3 +65,162 @@ def references_to(table: Table) -> Iterator[tuple[Table, Column, Column]]:
         for fk in other.foreign_keys:
             if fk.column in pk_cols:
                 yield other, fk.parent, fk.column
+
+
+@dataclass(frozen=True)
+class CascadeStep:
+    """One (table, column) the cascade touches, and how."""
+
+    table: str
+    column: str
+    action: str          # purge | clear | db_cascade | db_set_null
+    count: int
+    labels: list[str]
+    depth: int
+
+
+@dataclass
+class CascadePlan:
+    entity_type: str
+    entity_id: uuid.UUID
+    label: str
+    steps: list[CascadeStep]
+    blocked: list[str]
+    total_rows_deleted: int
+    total_rows_cleared: int
+
+
+@dataclass
+class _Level:
+    """Internal: a step plus the live key values it applies to, so the
+    executor can act without re-deriving them from scratch."""
+
+    table: Table
+    column: Column
+    action: str
+    parent_values: list
+    depth: int
+
+
+def _fk_ondelete(table: Table, col: Column) -> str | None:
+    for fk in table.foreign_keys:
+        if fk.parent is col:
+            return (fk.ondelete or "").upper() or None
+    return None
+
+
+async def collect_levels(
+    db, table: Table, entity_id, *, max_depth: int = MAX_DEPTH,
+    protected_tables: frozenset[str] = frozenset(),
+) -> tuple[list[_Level], list[str]]:
+    """Breadth-first walk from one doomed row. Returns the levels to act on
+    and the reasons, if any, the cascade must refuse to run.
+
+    `protected_tables` names tables whose rows are records in their own
+    right (the reconcile-able entities). Reaching one is a refusal, not a
+    purge: deleting a person must never quietly delete a site."""
+    levels: list[_Level] = []
+    blocked: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    pk_col = next(iter(table.primary_key.columns))
+    frontier = [(table, pk_col, [entity_id], 0)]
+
+    while frontier:
+        parent_table, parent_key, values, depth = frontier.pop(0)
+        if not values:
+            continue
+        if depth > max_depth:
+            blocked.append(
+                f"{parent_table.name}: exceeds the max depth of {max_depth} "
+                "levels of dependent rows — refusing to walk further")
+            continue
+        for child_table, child_col, target_col in references_to(parent_table):
+            key = (child_table.name, child_col.name)
+            if key in seen:
+                continue
+            if target_col is not parent_key:
+                blocked.append(
+                    f"{child_table.name}.{child_col.name} references "
+                    f"{parent_table.name}.{target_col.name}, which this walk "
+                    "does not track")
+                seen.add(key)
+                continue
+            count = await db.scalar(
+                select(func.count()).select_from(child_table)
+                .where(child_col.in_(values)))
+            if not count:
+                continue
+            seen.add(key)
+            ondelete = _fk_ondelete(child_table, child_col)
+            if ondelete == "CASCADE":
+                action = "db_cascade"
+            elif ondelete == "SET NULL":
+                action = "db_set_null"
+            elif child_col.nullable and not check_guarded(child_table, child_col):
+                action = "clear"
+            elif child_col.nullable:
+                blocked.append(
+                    f"{child_table.name}.{child_col.name} is kept non-null by "
+                    "a database rule — delete those rows first")
+                continue
+            elif child_table.name in NEVER_PURGE:
+                blocked.append(
+                    f"{child_table.name}.{child_col.name} is required and "
+                    f"{child_table.name} is never deleted")
+                continue
+            elif child_table.name in protected_tables:
+                # A record that can be marked for deletion in its own right
+                # is never collateral: mark and reconcile it separately.
+                blocked.append(
+                    f"{child_table.name} rows point at this record and are "
+                    "themselves deletable records — mark them for deletion "
+                    "on their own instead")
+                continue
+            else:
+                action = "purge"
+            levels.append(_Level(table=child_table, column=child_col,
+                                 action=action, parent_values=list(values),
+                                 depth=depth))
+            if action != "purge" or child_table is parent_table:
+                continue
+            child_pk = next(iter(child_table.primary_key.columns))
+            if not any(True for _ in references_to(child_table)):
+                continue
+            child_ids = list(await db.scalars(
+                select(child_pk).where(child_col.in_(values))))
+            frontier.append((child_table, child_pk, child_ids, depth + 1))
+    return levels, blocked
+
+
+async def plan_cascade(
+    db, model: type, entity_id, *, entity_type: str, label: str,
+    max_depth: int = MAX_DEPTH,
+    protected_tables: frozenset[str] = frozenset(),
+) -> CascadePlan:
+    """The preview: every row the cascade would destroy or detach, with
+    counts and up to three sample labels each. Writes nothing."""
+    levels, blocked = await collect_levels(
+        db, model.__table__, entity_id, max_depth=max_depth,
+        protected_tables=protected_tables)
+    steps: list[CascadeStep] = []
+    deleted = cleared = 0
+    for level in levels:
+        count = await db.scalar(
+            select(func.count()).select_from(level.table)
+            .where(level.column.in_(level.parent_values)))
+        labels = [str(v) for v in await db.scalars(
+            select(label_expr(level.table)).select_from(level.table)
+            .where(level.column.in_(level.parent_values)).limit(3))]
+        steps.append(CascadeStep(
+            table=level.table.name, column=level.column.name,
+            action=level.action, count=count or 0, labels=labels,
+            depth=level.depth))
+        if level.action == "purge":
+            deleted += count or 0
+        elif level.action == "clear":
+            cleared += count or 0
+    steps.sort(key=lambda s: (s.action != "purge", -s.depth, s.table))
+    return CascadePlan(
+        entity_type=entity_type, entity_id=entity_id, label=label,
+        steps=steps, blocked=blocked,
+        total_rows_deleted=deleted, total_rows_cleared=cleared)
