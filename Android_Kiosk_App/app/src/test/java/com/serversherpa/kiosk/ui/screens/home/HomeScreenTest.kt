@@ -25,10 +25,6 @@ class HomeScreenTest {
 
     @Test fun incompleteSetupLocksFeatureTiles() {
         val c = testContainer()
-        // `KioskPrefs`'s DataStore is a process-wide singleton (see AppContainer.kioskDataStore),
-        // so it survives across tests in this class's shared Robolectric sandbox. Pin the state
-        // this test is actually about instead of trusting "freshly defaulted" prefs.
-        runBlocking { c.prefs.setSetupState(SetupState.INCOMPLETE); c.prefs.setDevMode(false) }
         compose.setContent { CompositionLocalProvider(LocalAppContainer provides c) { KioskTheme { HomeScreen(rememberNavController()) } } }
         compose.onNodeWithText("What would you like to do?").assertIsDisplayed()
         compose.onNodeWithText("Kiosk setup is incomplete. Only Kiosk Setup and Settings are available.").assertIsDisplayed()

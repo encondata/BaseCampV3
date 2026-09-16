@@ -4,6 +4,8 @@ import android.app.Application
 import android.content.Context
 import android.os.Build
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -45,9 +47,10 @@ class AppContainer(
     private val app: Application,
     secrets: SecretStore = AndroidSecretStore(app),
     val db: KioskDatabase = KioskDatabase.build(app),
+    dataStore: DataStore<Preferences> = app.kioskDataStore,
 ) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    val prefs = KioskPrefs(app.kioskDataStore)
+    val prefs = KioskPrefs(dataStore)
     val config = KioskConfig(prefs, BuildConfig.DEFAULT_API_URL, BuildConfig.DEFAULT_PORTAL_URL, BuildConfig.KIOSK_VERSION)
     val identity = Identity(prefs)
     val cookieJar = RefreshCookieJar(secrets)
