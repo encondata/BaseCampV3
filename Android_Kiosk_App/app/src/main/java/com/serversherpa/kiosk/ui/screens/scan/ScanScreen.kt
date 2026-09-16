@@ -11,6 +11,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,13 +48,15 @@ fun ScanScreen(nav: NavHostController) {
     val container = LocalAppContainer.current
     val c = LocalKioskColors.current
     val context = LocalContext.current
-    val vm = kioskViewModel { ScanViewModel(container.db, container.sync, container.outbox, container.prefs, container.scanBus, container.flash, container.sound) }
+    val vm = kioskViewModel { ScanViewModel(container.db, container.sync, container.outbox, container.prefs, container.flash, container.sound) }
     val ui by vm.state.collectAsStateWithLifecycle()
     val snapshot by vm.outboxSnapshot.collectAsStateWithLifecycle()
     val setup by container.prefs.setupSelection.collectAsStateWithLifecycle(initialValue = null)
     var camera by remember { mutableStateOf(false) }
     val empty = ui.loadStatus == LoadStatus.READY && ui.rosterSize == 0
     val disabled = ui.loadStatus != LoadStatus.READY || empty || setup == null
+
+    LaunchedEffect(Unit) { container.scanBus.events.collect { vm.onScan(it.value) } }
 
     if (camera) { CameraScanSheet(onScan = { container.scanBus.publish(it) }, onDismiss = { camera = false }); return }
 
@@ -62,6 +65,7 @@ fun ScanScreen(nav: NavHostController) {
         if (ui.loadStatus == LoadStatus.ERROR) KioskToast("Couldn't read this kiosk's local data.", error = true)
         if (empty) Text("No move data on this kiosk. Sync from Kiosk Setup.", color = c.textMute)
         ScanInput(ui.value, vm::setValue, onSubmit = { vm.onScan(it) }, placeholder = "Scan or type an asset ID, serial, or tag", enabled = !disabled, keepFocus = !camera)
+        KioskToast(ui.storageError, error = true)
         ScanTools(showCamera = container.hasCamera, onCamera = { camera = true }, showTrigger = container.hasDataWedge, onTrigger = { DataWedge.softScan(context, true) })
         val counts = snapshot.counts
         Text("Queued ${counts.queued} · Sent ${counts.accepted} · Failed ${counts.failed} · No match ${counts.nomatch}", fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.textMute, modifier = Modifier.padding(top = 8.dp))

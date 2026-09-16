@@ -17,13 +17,13 @@ import com.serversherpa.kiosk.data.outbox.OutboxSnapshot
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import com.serversherpa.kiosk.data.sync.Sync
 import com.serversherpa.kiosk.data.sync.SyncPhase
-import com.serversherpa.kiosk.input.ScanBus
 import com.serversherpa.kiosk.ui.flash.FlashController
 import com.serversherpa.kiosk.ui.sound.ScanSoundKind
 import com.serversherpa.kiosk.ui.sound.SoundPlayer
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,7 +32,9 @@ import kotlinx.coroutines.launch
 
 enum class LoadStatus { LOADING, READY, ERROR }
 
-data class ScanUi(val loadStatus: LoadStatus = LoadStatus.LOADING, val rosterSize: Int = 0, val value: String = "", val confirmDiscard: Boolean = false)
+data class ScanUi(val loadStatus: LoadStatus = LoadStatus.LOADING, val rosterSize: Int = 0, val value: String = "", val confirmDiscard: Boolean = false, val storageError: String? = null)
+
+private const val STORAGE_ERROR = "Couldn't save this scan on the kiosk. Check its storage."
 
 fun scanTime(iso: String): String = try {
     DateTimeFormatter.ofPattern("HH:mm:ss").format(Instant.parse(iso).atZone(ZoneId.systemDefault()))
@@ -41,7 +43,7 @@ fun scanTime(iso: String): String = try {
 /** kiosk/src/pages/Scan.tsx: match locally, flash + sound, queue in the outbox. */
 class ScanViewModel(
     private val db: KioskDatabase, private val sync: Sync, private val outbox: Outbox, private val prefs: KioskPrefs,
-    private val bus: ScanBus, private val flash: FlashController, private val sound: SoundPlayer?, scopeOverride: CoroutineScope? = null,
+    private val flash: FlashController, private val sound: SoundPlayer?, scopeOverride: CoroutineScope? = null,
 ) : ViewModel() {
     private val scope = scopeOverride ?: viewModelScope
     private val _state = MutableStateFlow(ScanUi())
@@ -58,7 +60,6 @@ class ScanViewModel(
         scope.launch { load() }
         // Re-read when a sync finishes or local data was cleared (IDLE after DONE).
         scope.launch { sync.status.collect { if (it.phase == SyncPhase.DONE || it.phase == SyncPhase.IDLE) load() } }
-        scope.launch { bus.events.collect { onScan(it.value) } }
     }
 
     private suspend fun load() {
@@ -81,16 +82,42 @@ class ScanViewModel(
         if (hit != null) { flash.flash(hslToArgb(a.goodScan), a.flashMs); sound?.play(ScanSoundKind.GOOD) }
         else { flash.flash(hslToArgb(a.notFoundScan), a.flashMs); sound?.play(ScanSoundKind.NOT_FOUND) }
         scope.launch {
-            outbox.enqueue(EnqueueInput(
-                scannedValue = value, scanType = hit?.let { scanTypeFor(it.kind) } ?: "barcode",
-                asset = hit?.asset?.toOutboxAsset(), siteId = sel.siteId, initiativeId = sel.initiativeId, scanStatus = sel.scanStatus,
-            ))
+            try {
+                outbox.enqueue(EnqueueInput(
+                    scannedValue = value, scanType = hit?.let { scanTypeFor(it.kind) } ?: "barcode",
+                    asset = hit?.asset?.toOutboxAsset(), siteId = sel.siteId, initiativeId = sel.initiativeId, scanStatus = sel.scanStatus,
+                ))
+                _state.update { it.copy(storageError = null) }
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { _state.update { it.copy(storageError = STORAGE_ERROR) } }
         }
     }
 
-    fun retryFailed() { scope.launch { outbox.retryFailed() } }
-    fun clearSent() { scope.launch { outbox.clearSent() } }
+    fun retryFailed() {
+        scope.launch {
+            try { outbox.retryFailed(); _state.update { it.copy(storageError = null) } }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(storageError = STORAGE_ERROR) } }
+        }
+    }
+
+    fun clearSent() {
+        scope.launch {
+            try { outbox.clearSent(); _state.update { it.copy(storageError = null) } }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(storageError = STORAGE_ERROR) } }
+        }
+    }
+
     fun askDiscard() = _state.update { it.copy(confirmDiscard = true) }
     fun cancelDiscard() = _state.update { it.copy(confirmDiscard = false) }
-    fun discardFailed() { _state.update { it.copy(confirmDiscard = false) }; scope.launch { outbox.discardFailed() } }
+
+    fun discardFailed() {
+        _state.update { it.copy(confirmDiscard = false) }
+        scope.launch {
+            try { outbox.discardFailed(); _state.update { it.copy(storageError = null) } }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _state.update { it.copy(storageError = STORAGE_ERROR) } }
+        }
+    }
 }
