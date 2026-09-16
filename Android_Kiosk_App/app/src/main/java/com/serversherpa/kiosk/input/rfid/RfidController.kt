@@ -322,7 +322,19 @@ class RfidController(
                     // that one field without hand-listing every other one of
                     // RfidSettings. `current` itself must still hold the
                     // true, current `enabled` value.
-                    val c = s.copy(enabled = current.enabled) != current
+                    //
+                    // `region` is excluded the same way, for the same
+                    // reason: [setRegion] writes the picked code straight
+                    // into `RfidSettings.region` (via `prefs.setRfid`) so
+                    // this row — and the RFID tab's read-only line — can
+                    // say something useful while disconnected, but `apply()`
+                    // never reads `region` either. Without this exclusion,
+                    // every region change would also fire a full eight-round-
+                    // trip settings push for nothing: region is a compliance
+                    // setting, pushed only on explicit admin action via
+                    // [setRegion], never folded into the ordinary settings
+                    // push.
+                    val c = s.copy(enabled = current.enabled, region = current.region) != current
                     current = s
                     c
                 }

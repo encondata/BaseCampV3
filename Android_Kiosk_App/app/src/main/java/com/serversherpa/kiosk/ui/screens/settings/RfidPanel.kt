@@ -220,8 +220,8 @@ fun RfidPanel() {
         SettingsRow("Dynamic power optimization", "Saves battery during a long sweep.") {
             Switch(checked = s.dpo, onCheckedChange = { save(s.copy(dpo = it)) })
         }
-        SettingsRow("Region", "Left as the reader has it. Set the region with Zebra's own tools.") {
-            Text(s.region ?: "The reader's own setting", color = c.textMute)
+        SettingsRow("Region", "A compliance setting. It's set on the Admin tab, not here.") {
+            Text(s.region?.let { "The active region is $it." } ?: "The reader's own setting applies.", color = c.textMute)
         }
         MiniButton("Restore defaults", { save(DEFAULT_RFID_SETTINGS.copy(enabled = s.enabled)) })
     }

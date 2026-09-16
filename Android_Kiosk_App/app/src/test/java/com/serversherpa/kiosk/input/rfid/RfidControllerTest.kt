@@ -1288,4 +1288,38 @@ class RfidControllerTest {
             r.reader.applied?.powerDbm,
         )
     }
+
+    /**
+     * The region-selection review's hard requirement: [setRegion] persists
+     * the picked code into `RfidSettings.region` (via `prefs.setRfid`, from
+     * the Admin row) so this row — and the RFID tab's read-only line — can
+     * say something useful while disconnected. Without excluding `region`
+     * from the settings-collector's diff the same way `enabled` already is,
+     * that write would also fire a full eight-round-trip settings push for
+     * nothing every single time an admin changes the region — `apply()`
+     * never reads `region` at all. Region is pushed only through
+     * [RfidController.setRegion], on explicit admin action, never folded
+     * into the ordinary settings push.
+     */
+    @Test fun togglingOnlyRegionDoesNotPushSettingsToTheReader() = runTest {
+        val r = Rig(backgroundScope)
+        r.controller.start(); settle()
+        r.controller.connectNow(); settle()
+        val appliedAfterConnect = r.reader.applied
+        assertEquals(27, appliedAfterConnect?.powerDbm)
+
+        r.settings.value = r.settings.value.copy(region = "ETSI"); settle()
+        assertEquals(
+            "writing only `region` must not push a new settings block",
+            appliedAfterConnect,
+            r.reader.applied,
+        )
+
+        r.settings.value = r.settings.value.copy(powerDbm = 12); settle()
+        assertEquals(
+            "a real settings change must still push",
+            12,
+            r.reader.applied?.powerDbm,
+        )
+    }
 }
