@@ -53,7 +53,7 @@ CONTAINER_DESIGN = {
          "data": "{container_name}", "showText": False, "moduleIn": 0.01},
         {"id": "name", "type": "text", "x": 0.2, "y": 3.1, "w": 3.6,
          "h": 1.0, "rotation": 0, "content": "{container_name}",
-         "fontSizePt": 28, "bold": True, "align": "center", "lines": 2},
+         "fontSizePt": 24, "bold": True, "align": "center", "lines": 2},
         {"id": "move_name", "type": "text", "x": 0.2, "y": 5.55, "w": 3.6,
          "h": 0.2, "rotation": 0, "content": "{move_name}",
          "fontSizePt": 10, "bold": False, "align": "center"},

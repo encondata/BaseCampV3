@@ -12,6 +12,7 @@ uses for 0053's repoint_survey_templates()."""
 
 import importlib.util
 import inspect
+import re
 from pathlib import Path
 
 import pytest
@@ -134,3 +135,52 @@ async def test_container_info_compiles_with_the_qr_and_rfid_zone(db):
     assert "^FD15-SEP-2026^FS" in out
     assert "^FDRFID TAG HERE^FS" in out
     assert out.count("^GB") == 2                 # the two RFID rules only
+
+
+_FO = re.compile(r"\^FO(\d+),(\d+)")
+_GB = re.compile(r"\^GB(\d+),(\d+),(\d+)")
+_BY = re.compile(r"\^BY(\d+)")
+
+
+# Positions and box sizes are large numbers, so one dot at the coarser
+# resolution is the right slack: it absorbs the two independent roundings
+# without hiding anything that matters.
+#
+# A barcode module is NOT a large number. The seeded 0.01in module is two
+# dots at 203 dpi, so a full-coarse-dot slack (0.0049in) is wider than the
+# module itself and would wave through a hardcoded ^BY2 — which lands at
+# 0.0099in vs 0.0067in, only 0.0032in apart. That is precisely the bug this
+# test exists to catch, so `by` gets half a coarse dot. The real difference
+# between the two correct designs is 0.0001in, so this is still 16x headroom.
+_TOLERANCE_IN = {"fo": 1 / 203, "gb": 1 / 203, "by": 0.5 / 203}
+
+
+def _inches(zpl: str, dpi: int) -> dict[str, list[float]]:
+    """Every geometric number in the ZPL, converted back to inches."""
+    return {
+        "fo": [v / dpi for m in _FO.finditer(zpl) for v in map(int, m.groups())],
+        "gb": [v / dpi for m in _GB.finditer(zpl) for v in map(int, m.groups())],
+        "by": [v / dpi for m in _BY.finditer(zpl) for v in map(int, m.groups())],
+    }
+
+
+@pytest.mark.parametrize("base", ["Container Label 4x6", "Container Info 4x6"])
+async def test_both_dpi_describe_the_same_physical_label(db, base):
+    """A 203 and a 300 dpi version must place ink in the same physical
+    places. This is the test that would have caught the hardcoded ^BY2,
+    which made a barcode 1.5x narrower at 300 dpi than at 203."""
+    subs = {"label_tag": "PRIORITY", "container_name": "crate-17",
+            "move_name": "NAP11 Migration", "source_site": "NAP7",
+            "destination_site": "NAP11", "move_date_long": "15-SEP-2026"}
+    lo = await _template(db, f"{base} 203dpi")
+    hi = await _template(db, f"{base} 300dpi")
+    a = _inches(compile_zpl(parse_design(lo.design), 203, subs), 203)
+    b = _inches(compile_zpl(parse_design(hi.design), 300, subs), 300)
+
+    assert set(a) == set(b)
+    for kind in a:
+        assert len(a[kind]) == len(b[kind]), f"{kind}: different element counts"
+        tolerance = _TOLERANCE_IN[kind]
+        for i, (lo_in, hi_in) in enumerate(zip(a[kind], b[kind])):
+            assert abs(lo_in - hi_in) <= tolerance, (
+                f"{kind}[{i}]: {lo_in:.4f}in at 203 vs {hi_in:.4f}in at 300")
