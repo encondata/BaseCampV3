@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from sqlalchemy import CheckConstraint, String, cast, func, select
+from sqlalchemy import CheckConstraint, String, cast, delete, func, select, update
 from sqlalchemy.sql.schema import Column, Table
 
 from serversherpa.db.models import Base
@@ -123,10 +123,14 @@ async def collect_levels(
     blocked: list[str] = []
     seen: set[tuple[str, str]] = set()
     pk_col = next(iter(table.primary_key.columns))
-    frontier = [(table, pk_col, [entity_id], 0)]
+    # The bool tracks whether `values`' own rows are themselves doomed by a
+    # purge level already queued (the root entity is not — the caller
+    # deletes it separately — but every table this walk recurses into is,
+    # since recursion only ever follows a purge).
+    frontier = [(table, pk_col, [entity_id], 0, False)]
 
     while frontier:
-        parent_table, parent_key, values, depth = frontier.pop(0)
+        parent_table, parent_key, values, depth, parent_purged = frontier.pop(0)
         if not values:
             continue
         if depth > max_depth:
@@ -143,6 +147,21 @@ async def collect_levels(
                     f"{child_table.name}.{child_col.name} references "
                     f"{parent_table.name}.{target_col.name}, which this walk "
                     "does not track")
+                seen.add(key)
+                continue
+            if child_table is parent_table and parent_purged:
+                # A self-reference inside a table this cascade is already
+                # purging (auth_sessions.replaced_by, say) needs no clear
+                # step at all: the purge below deletes every row in
+                # `values` — referencer and referenced alike — in one
+                # DELETE statement, and a plain NO ACTION foreign key is
+                # checked at end of statement, so both ends going together
+                # satisfies it without ever nulling anything first. A
+                # self-reference on the ROOT table (people.created_by
+                # pointing at the doomed person from another person's row)
+                # does not take this branch — parent_purged is False there
+                # — and still falls through to an ordinary clear/purge
+                # classification below.
                 seen.add(key)
                 continue
             count = await db.scalar(
@@ -188,7 +207,7 @@ async def collect_levels(
                 continue
             child_ids = list(await db.scalars(
                 select(child_pk).where(child_col.in_(values))))
-            frontier.append((child_table, child_pk, child_ids, depth + 1))
+            frontier.append((child_table, child_pk, child_ids, depth + 1, True))
     return levels, blocked
 
 
@@ -224,3 +243,56 @@ async def plan_cascade(
         entity_type=entity_type, entity_id=entity_id, label=label,
         steps=steps, blocked=blocked,
         total_rows_deleted=deleted, total_rows_cleared=cleared)
+
+
+class CascadeBlocked(Exception):
+    """The walk found something it will not destroy. Carries every reason
+    so the caller can show them all rather than the first."""
+
+    def __init__(self, reasons: list[str]):
+        super().__init__("; ".join(reasons))
+        self.reasons = reasons
+
+
+async def execute_cascade(
+    db, model: type, entity_id, *, max_depth: int = MAX_DEPTH,
+    protected_tables: frozenset[str] = frozenset(),
+) -> dict[str, dict[str, int]]:
+    """Apply the cascade for one doomed row: clear every detachable
+    reference, then delete dependent rows deepest-first. The caller deletes
+    the target row itself and owns the transaction — nothing here commits.
+
+    The walk is repeated against live rows rather than replaying the
+    preview's identifiers, so a row added since the preview is destroyed
+    too and the returned counts are the truth."""
+    levels, blocked = await collect_levels(
+        db, model.__table__, entity_id, max_depth=max_depth,
+        protected_tables=protected_tables)
+    if blocked:
+        raise CascadeBlocked(blocked)
+
+    cleared: dict[str, int] = {}
+    deleted: dict[str, int] = {}
+    # Clears first, at any depth: a nulled column never blocks a delete.
+    # (A self-reference inside a table this cascade purges — auth_sessions.
+    # replaced_by, say — never shows up here: collect_levels skips it
+    # because the purge below deletes both ends of that reference in the
+    # same statement.)
+    for level in (lvl for lvl in levels if lvl.action == "clear"):
+        result = await db.execute(
+            update(level.table)
+            .where(level.column.in_(level.parent_values))
+            .values({level.column.name: None}))
+        if result.rowcount:
+            key = f"{level.table.name}.{level.column.name}"
+            cleared[key] = cleared.get(key, 0) + result.rowcount
+    # Then purges, deepest first, so children die before their parents.
+    for level in sorted((lvl for lvl in levels if lvl.action == "purge"),
+                        key=lambda lvl: -lvl.depth):
+        result = await db.execute(
+            delete(level.table).where(level.column.in_(level.parent_values)))
+        if result.rowcount:
+            deleted[level.table.name] = (
+                deleted.get(level.table.name, 0) + result.rowcount)
+    await db.flush()
+    return {"deleted_rows": deleted, "cleared_references": cleared}

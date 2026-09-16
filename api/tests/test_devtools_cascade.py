@@ -4,6 +4,8 @@ reconcile target, and the endpoints that preview and run it."""
 import uuid
 from datetime import UTC, datetime
 
+from sqlalchemy import select
+
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
     AccessGroup, AccessGroupMember, AuditLog, AuthSession,
@@ -43,12 +45,12 @@ async def _person_with_everything(db, *, first="Doomed", last="Person"):
     db.add(TimeEntry(person_id=person.id, clock_in_at=datetime.now(UTC)))
     await db.flush()
     first_session = AuthSession(
-        person_id=person.id, family_id=uuid.uuid4(), token_hash="a",
+        person_id=person.id, family_id=uuid.uuid4(), token_hash=f"{first}-a",
         expires_at=datetime.now(UTC))
     db.add(first_session)
     await db.flush()
     db.add(AuthSession(
-        person_id=person.id, family_id=uuid.uuid4(), token_hash="b",
+        person_id=person.id, family_id=uuid.uuid4(), token_hash=f"{first}-b",
         expires_at=datetime.now(UTC), replaced_by=first_session.id,
         rotated_at=datetime.now(UTC)))
     db.add(AuditLog(actor_person_id=person.id, entity_type="person",
@@ -82,9 +84,10 @@ async def test_plan_classifies_every_reference_shape(db, seeded_user):
     assert sessions is not None and sessions.action == "purge"
     assert sessions.depth == 1
     assert sessions.count == 2
-    # the self-reference inside auth_sessions is cleared, not purged
-    replaced = _step(plan, "auth_sessions", "replaced_by")
-    assert replaced is not None and replaced.action == "clear"
+    # the self-reference inside auth_sessions needs no step at all: both
+    # rows are purged by the same DELETE statement, so the plain NO ACTION
+    # foreign key on replaced_by is satisfied without ever nulling it
+    assert _step(plan, "auth_sessions", "replaced_by") is None
     # nullable provenance columns are cleared
     assert _step(plan, "audit_log").action == "clear"
     assert plan.total_rows_deleted >= 7
@@ -153,3 +156,57 @@ async def test_plan_blocks_when_depth_is_exhausted(db, seeded_user):
 
     assert plan.blocked != []
     assert any("depth" in reason.lower() for reason in plan.blocked)
+
+
+async def test_execute_removes_exactly_the_planned_rows(db, seeded_user):
+    from sqlalchemy import delete as sa_delete
+
+    from serversherpa.devtools.cascade import execute_cascade
+
+    doomed = await _person_with_everything(db, first="Doomed")
+    keeper = await _person_with_everything(db, first="Keeper")
+
+    result = await execute_cascade(db, Person, doomed.id)
+    # ORM-level delete (not Person.__table__): this synchronizes the
+    # session so the identity map's cached `doomed` doesn't shadow the
+    # deletion for the db.get() below.
+    await db.execute(sa_delete(Person).where(Person.id == doomed.id))
+    await db.commit()
+
+    assert result["deleted_rows"]["user_accounts"] == 1
+    assert result["deleted_rows"]["auth_sessions"] == 2
+    assert result["deleted_rows"]["time_entries"] == 1
+    assert await db.get(Person, doomed.id) is None
+    for model, col in ((UserAccount, UserAccount.person_id),
+                       (PersonRole, PersonRole.person_id),
+                       (WorkerProfile, WorkerProfile.person_id),
+                       (AccessGroupMember, AccessGroupMember.person_id),
+                       (TimeEntry, TimeEntry.person_id),
+                       (AuthSession, AuthSession.person_id)):
+        assert (await db.scalars(select(model).where(col == doomed.id))).first() is None
+    # the untouched neighbour keeps every one of its rows
+    for model, col in ((UserAccount, UserAccount.person_id),
+                       (PersonRole, PersonRole.person_id),
+                       (TimeEntry, TimeEntry.person_id)):
+        assert (await db.scalars(select(model).where(col == keeper.id))).first() is not None
+    assert (await db.scalars(
+        select(AuthSession).where(AuthSession.person_id == keeper.id))).all()
+
+
+async def test_execute_refuses_a_blocked_plan(db, seeded_user):
+    from serversherpa.devtools.cascade import CascadeBlocked, execute_cascade
+
+    person = await _person_with_everything(db, first="Blocked")
+
+    try:
+        await execute_cascade(db, Person, person.id, max_depth=0)
+    except CascadeBlocked as exc:
+        assert exc.reasons != []
+    else:
+        raise AssertionError("expected CascadeBlocked")
+
+    # execute_cascade refuses before issuing a single statement, so there
+    # is nothing to roll back — the person and account are untouched as-is.
+    assert await db.get(Person, person.id) is not None
+    assert (await db.scalars(
+        select(UserAccount).where(UserAccount.person_id == person.id))).first() is not None
