@@ -1,5 +1,10 @@
 package com.serversherpa.kiosk.ui.screens.settings
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
@@ -7,6 +12,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -16,6 +22,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
@@ -62,13 +71,33 @@ fun RfidPanel() {
     var connectAttemptInFlight by remember { mutableStateOf(false) }
     var disconnectAttemptInFlight by remember { mutableStateOf(false) }
 
+    // Snapshotted rather than read live from RfidPermissions.missing(context) on every
+    // recomposition: nothing tells Compose to recompose a plain function call when the
+    // operator grants the permission in Android's own Settings app and returns, so this
+    // is refreshed explicitly below — once immediately by the permission launcher's
+    // callback, and again on every ON_RESUME in case the operator went by Settings instead.
+    var missingPermissions by remember { mutableStateOf(RfidPermissions.missing(context)) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        missingPermissions = RfidPermissions.missing(context)
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) missingPermissions = RfidPermissions.missing(context)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     Column {
         SettingsRow("RFID reader", "A Zebra RFD40 paired to this device over Bluetooth.") {
             Column {
                 Row {
                     Switch(checked = s.enabled, onCheckedChange = { on ->
                         save(s.copy(enabled = on))
-                        if (!on) {
+                        if (on) {
+                            if (missingPermissions.isNotEmpty()) permissionLauncher.launch(RfidPermissions.REQUIRED.toTypedArray())
+                        } else {
                             disconnectAttemptInFlight = true
                             scope.launch {
                                 try {
@@ -88,8 +117,15 @@ fun RfidPanel() {
                 if (!connectAttemptInFlight && !disconnectAttemptInFlight) {
                     connectionError?.let { Text(it, color = ChipTone.RED.text) }
                 }
-                if (s.enabled && RfidPermissions.missing(context).isNotEmpty()) {
+                if (s.enabled && missingPermissions.isNotEmpty()) {
                     Text("Android needs Bluetooth and location permission before the sled can connect. Grant them in this app's settings.", color = c.textMute)
+                    MiniButton("Open app settings", {
+                        runCatching {
+                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + context.packageName))
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            context.startActivity(intent)
+                        }
+                    })
                 }
                 // A setting the radio refused: say so rather than leaving a number
                 // on screen that the reader never took.

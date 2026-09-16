@@ -43,6 +43,7 @@ fun DeveloperPanel() {
     val setupState by container.prefs.setupState.collectAsStateWithLifecycle(initialValue = SetupState.INCOMPLETE)
     val sync by container.sync.status.collectAsStateWithLifecycle()
     var clearError by remember { mutableStateOf(false) }
+    var sweepInFlight by remember { mutableStateOf(false) }
     Column {
         SettingsRow("Developer mode", "Shows diagnostics and developer tools on this kiosk. Stored on this kiosk only.") {
             Switch(checked = devMode, onCheckedChange = { on -> scope.launch { container.prefs.setDevMode(on) } })
@@ -64,20 +65,25 @@ fun DeveloperPanel() {
                 "Simulate an RFID connection",
                 "Connects a synthetic reader and drives it through a full trigger-and-tag burst, proving the RFID adapter and its settings push work with no sled attached. RFID reading itself only ever happens on the Scanning screen, once a reader — fake or real — is armed there, so this control does not reach that screen's live panel and queues nothing to the outbox.",
             ) {
-                MiniButton("Simulate an RFID sweep", {
+                MiniButton("Simulate an RFID sweep", enabled = !sweepInFlight, onClick = {
+                    sweepInFlight = true
                     scope.launch {
-                        // Calling the raw reader, not container.rfid.connectNow(), still
-                        // exercises the controller's settings-push plumbing: RfidController
-                        // .start() collects reader.connection itself, so it sees this
-                        // Connected transition and fires the push regardless of who called
-                        // connect().
-                        fakeReader.connect()
-                        fakeReader.emitTrigger(TriggerEvent.PRESSED)
-                        for (tag in listOf("100348", "100349", "100350", "100348")) {
-                            fakeReader.emitTag(tag)
-                            delay(120)
+                        try {
+                            // Calling the raw reader, not container.rfid.connectNow(), still
+                            // exercises the controller's settings-push plumbing: RfidController
+                            // .start() collects reader.connection itself, so it sees this
+                            // Connected transition and fires the push regardless of who called
+                            // connect().
+                            fakeReader.connect()
+                            fakeReader.emitTrigger(TriggerEvent.PRESSED)
+                            for (tag in listOf("100348", "100349", "100350", "100348")) {
+                                fakeReader.emitTag(tag)
+                                delay(120)
+                            }
+                            fakeReader.emitTrigger(TriggerEvent.RELEASED)
+                        } finally {
+                            sweepInFlight = false
                         }
-                        fakeReader.emitTrigger(TriggerEvent.RELEASED)
                     }
                 })
             }

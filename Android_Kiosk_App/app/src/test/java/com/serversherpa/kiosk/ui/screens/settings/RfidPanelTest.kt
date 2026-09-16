@@ -1,5 +1,9 @@
 package com.serversherpa.kiosk.ui.screens.settings
 
+import android.app.Application
+import android.net.Uri
+import android.provider.Settings
+import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -7,12 +11,17 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.isToggleable
+import androidx.compose.ui.test.junit4.AndroidComposeTestRule
 import androidx.compose.ui.test.junit4.ComposeContentTestRule
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.lifecycle.Lifecycle
+import androidx.test.core.app.ApplicationProvider
+import androidx.test.ext.junit.rules.ActivityScenarioRule
 import com.serversherpa.kiosk.AppContainer
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.rfid.RfidConnection
@@ -22,6 +31,7 @@ import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.settings.SETTINGS_TABS
 import com.serversherpa.kiosk.core.settings.SettingsTabId
 import com.serversherpa.kiosk.core.settings.visibleTabs
+import com.serversherpa.kiosk.input.rfid.RfidPermissions
 import com.serversherpa.kiosk.input.rfid.RfidReader
 import com.serversherpa.kiosk.testContainer
 import com.serversherpa.kiosk.ui.theme.KioskTheme
@@ -38,6 +48,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
@@ -186,5 +197,117 @@ class RfidPanelTest {
         // Let the stuck connect() finish so it doesn't leak past the test.
         reader.connectGate?.complete(Unit)
         compose.waitForIdle()
+    }
+
+    /** [createComposeRule] always hands back a [ComponentActivity] backed by an
+     *  [ActivityScenarioRule] (see `AndroidComposeTestRule_androidKt.createComposeRule`) —
+     *  that generic signature just isn't exposed on the [ComposeContentTestRule]
+     *  interface `compose` is declared as, so tests that need the underlying
+     *  activity (to drive its lifecycle, or read what it started) cast to it. */
+    @Suppress("UNCHECKED_CAST")
+    private val ComposeContentTestRule.androidRule
+        get() = this as AndroidComposeTestRule<ActivityScenarioRule<ComponentActivity>, ComponentActivity>
+
+    @Test fun aMissingPermissionShowsTheWarningAndTheSettingsButtonWhileEnabled() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        Shadows.shadowOf(app).denyPermissions(*RfidPermissions.REQUIRED.toTypedArray())
+        val c = testContainer()
+        runBlocking { c.prefs.setRfid(RfidSettings(enabled = true)) }
+        compose.setRfidPanelContent(c)
+        compose.onNodeWithText("Android needs Bluetooth and location permission before the sled can connect. Grant them in this app's settings.")
+            .performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("Open app settings").performScrollTo().assertIsDisplayed()
+    }
+
+    /** Robolectric denies every dangerous permission by default, manifest
+     *  declaration or not — a test gets nothing for free — so this grants
+     *  every entry in [RfidPermissions.REQUIRED] explicitly to build the
+     *  "nothing missing" case, rather than relying on [testContainer]'s
+     *  default environment to already be in it. */
+    @Test fun nothingMissingShowsNeitherTheWarningNorTheButton() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        Shadows.shadowOf(app).grantPermissions(*RfidPermissions.REQUIRED.toTypedArray())
+        val c = testContainer()
+        runBlocking { c.prefs.setRfid(RfidSettings(enabled = true)) }
+        compose.setRfidPanelContent(c)
+        compose.onAllNodesWithText("Open app settings").assertCountEquals(0)
+    }
+
+    @Test fun clickingOpenAppSettingsStartsTheAppDetailsIntent() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        Shadows.shadowOf(app).denyPermissions(*RfidPermissions.REQUIRED.toTypedArray())
+        val c = testContainer()
+        runBlocking { c.prefs.setRfid(RfidSettings(enabled = true)) }
+        compose.setRfidPanelContent(c)
+        compose.onNodeWithText("Open app settings").performScrollTo().performClick()
+        compose.waitForIdle()
+        val started = Shadows.shadowOf(app).nextStartedActivity
+        assertEquals(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, started?.action)
+        assertEquals(Uri.parse("package:" + app.packageName), started?.data)
+    }
+
+    /**
+     * Whether flipping the switch on actually drives
+     * `permissionLauncher.launch(...)` all the way to a real permission
+     * prompt. `ComponentActivity`'s built-in `ActivityResultRegistry` special-
+     * cases `RequestMultiplePermissions`/`RequestPermission` contracts: rather
+     * than starting a separate activity for the result, it calls
+     * `ActivityCompat.requestPermissions(...)` directly on the host activity,
+     * which Robolectric's `ShadowActivity` records via
+     * `getLastRequestedPermission()`. That means — unlike the launcher
+     * interaction the brief flagged as possibly undrivable in this harness —
+     * this specific contract type turns out to be observable without needing
+     * to fake the `ActivityResultRegistry` itself. This test proves that path
+     * end to end: real click, real launcher, real (shadowed) platform call.
+     *
+     * The switch under test is found as the first toggleable node in the
+     * tree: `RfidPanel` has four `Switch`es total (this one, "Report each tag
+     * once", "Blink on read", "Dynamic power optimization"), all later in
+     * composition order than the enable switch, so `onAllNodes(isToggleable())[0]`
+     * reliably means this one — there is no test tag on any of them to select
+     * by name instead.
+     */
+    @Test fun turningTheReaderOnWithAMissingPermissionRequestsIt() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        Shadows.shadowOf(app).denyPermissions(*RfidPermissions.REQUIRED.toTypedArray())
+        val c = testContainer()
+        compose.setRfidPanelContent(c)
+        compose.onAllNodes(isToggleable())[0].performScrollTo().performClick()
+        compose.waitForIdle()
+
+        var requested: Array<out String>? = null
+        compose.androidRule.activityRule.scenario.onActivity { activity ->
+            requested = Shadows.shadowOf(activity).lastRequestedPermission?.requestedPermissions
+        }
+        assertEquals(RfidPermissions.REQUIRED.toSet(), requested?.toSet())
+    }
+
+    /**
+     * M2: an operator who leaves the kiosk to grant the permission in
+     * Android's own Settings app, then returns, must see the warning line
+     * clear on its own — nothing about `RfidPermissions.missing(context)`
+     * itself would ever tell Compose to recompose that line, so this proves
+     * the `ON_RESUME` refresh is what does it, not a side effect of anything
+     * else. The grant is applied first (so a stale read would still show the
+     * old, missing state), then the activity is driven from RESUMED down to
+     * CREATED and back up to RESUMED — the same transition a real
+     * "leave the app, come back" trip produces — using `ActivityScenario`,
+     * the same tool `ActivityScenarioRule` itself is built on.
+     */
+    @Test fun returningFromSettingsAfterGrantingClearsTheWarningOnResume() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val permissions = RfidPermissions.REQUIRED.toTypedArray()
+        Shadows.shadowOf(app).denyPermissions(*permissions)
+        val c = testContainer()
+        runBlocking { c.prefs.setRfid(RfidSettings(enabled = true)) }
+        compose.setRfidPanelContent(c)
+        compose.onNodeWithText("Open app settings").performScrollTo().assertIsDisplayed()
+
+        Shadows.shadowOf(app).grantPermissions(*permissions)
+        compose.androidRule.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        compose.androidRule.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        compose.waitForIdle()
+
+        compose.onAllNodesWithText("Open app settings").assertCountEquals(0)
     }
 }

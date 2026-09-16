@@ -27,6 +27,7 @@ import com.serversherpa.kiosk.core.outbox.OutboxRow
 import com.serversherpa.kiosk.core.outbox.OutboxStatus
 import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
 import com.serversherpa.kiosk.core.rfid.RepeatSweepPolicy
+import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.input.datawedge.DataWedge
@@ -58,6 +59,7 @@ fun ScanScreen(nav: NavHostController) {
     val setup by container.prefs.setupSelection.collectAsStateWithLifecycle(initialValue = null)
     val rfidSession by container.rfid.session.collectAsStateWithLifecycle()
     val rfidSettings by container.prefs.rfid.collectAsStateWithLifecycle(initialValue = DEFAULT_RFID_SETTINGS)
+    val rfidConnection by container.rfid.connection.collectAsStateWithLifecycle()
     var camera by remember { mutableStateOf(false) }
     val empty = ui.loadStatus == LoadStatus.READY && ui.rosterSize == 0
     val disabled = ui.loadStatus != LoadStatus.READY || empty || setup == null
@@ -106,6 +108,8 @@ fun ScanScreen(nav: NavHostController) {
         // The grey empty-roster line above already says it; the red toast is for a scan that arrived anyway.
         if (ui.error != null && !empty) KioskToast(ui.error, error = true)
         KioskToast(ui.storageError, error = true)
+        val rfidFailure = (rfidConnection as? RfidConnection.Failed)?.reason
+        KioskToast(rfidFailure, error = true)
         ScanTools(showTrigger = container.hasDataWedge, onTrigger = { DataWedge.softScan(context, true) })
         val counts = snapshot.counts
         Text("Queued ${counts.queued} · Sent ${counts.accepted} · Failed ${counts.failed} · No match ${counts.nomatch}", fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.textMute, modifier = Modifier.padding(top = 8.dp))

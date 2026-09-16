@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.ui.screens.settings
 
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -14,6 +15,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -66,5 +68,35 @@ class DeveloperRfidBurstTest {
         assertTrue("no burst should have reached the outbox: the controller is never armed on Settings", bursts.isEmpty())
         assertTrue("the live panel's session should never have opened", c.rfid.session.value == null)
         observer.cancel()
+    }
+
+    /**
+     * M9: the button had no in-flight guard, so a double tap interleaved two
+     * synthetic bursts. The fix pairs `enabled = !sweepInFlight` with a
+     * `sweepInFlight` flag set before the coroutine launches and cleared in
+     * its `finally`, so a second click landing while the first burst is
+     * still running (before its `delay(120)` chain finishes) must not start
+     * a second one.
+     */
+    @Test fun aSecondClickWhileASweepIsRunningStartsNoSecondBurst() {
+        val c = testContainer()
+        runBlocking { c.prefs.setDevMode(true) }
+        c.rfid.start(); c.rfid.arm()
+        compose.setContent { CompositionLocalProvider(LocalAppContainer provides c) { KioskTheme { DeveloperPanel() } } }
+
+        compose.onNodeWithText("Simulate an RFID sweep").performClick()
+        compose.waitForIdle()
+        // The button must already read as disabled by the time this test could
+        // land a second, real double-tap — proving the guard is live before
+        // relying on a second performClick() to prove it does something.
+        compose.onNodeWithText("Simulate an RFID sweep").assertIsNotEnabled()
+
+        compose.onNodeWithText("Simulate an RFID sweep").performClick()
+        compose.waitForIdle()
+        Thread.sleep(800)
+        compose.waitForIdle()
+
+        val fake = c.rfidReader as FakeRfidReader
+        assertEquals("a second click while the first burst is still running must not start a second one", 1, fake.connectCalls)
     }
 }

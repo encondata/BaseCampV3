@@ -20,7 +20,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.serversherpa.kiosk.core.rfid.RfidReadSession
 import com.serversherpa.kiosk.core.scan.displayRfid
+import com.serversherpa.kiosk.ui.components.KioskChip
 import com.serversherpa.kiosk.ui.components.MiniButton
+import com.serversherpa.kiosk.ui.theme.ChipTone
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import com.serversherpa.kiosk.ui.theme.LocalKioskColors
 
@@ -90,13 +92,7 @@ fun RfidReadPanel(session: RfidReadSession, showSkipped: Boolean, onStop: () -> 
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 for (tag in session.tags.asReversed().take(CHIPS)) {
-                    Text(
-                        displayRfid(tag.epc),
-                        fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.textDark,
-                        modifier = Modifier.background(c.paper2, RoundedCornerShape(999.dp))
-                            .border(1.dp, c.paperLine, RoundedCornerShape(999.dp))
-                            .padding(horizontal = 9.dp, vertical = 4.dp),
-                    )
+                    KioskChip(displayRfid(tag.epc), ChipTone.SLATE, dot = false)
                 }
             }
         }
