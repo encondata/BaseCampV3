@@ -7,13 +7,17 @@ import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.RfidTriggerMode
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runCurrent
@@ -244,6 +248,87 @@ class RfidControllerTest {
     }
 
     /**
+     * A reader whose `stopInventory()` signals [stopStarted] and then hangs
+     * on [proceedStop] until the test releases it — a seam `FakeRfidReader`
+     * has no need for, so it lives here rather than weakening that class.
+     * `connect`/`disconnect`/`apply`/`startInventory` and `triggers` all
+     * delegate to a real `FakeRfidReader`; `tags` is this class's own flow so
+     * the test can slip a tag in at an exact moment without going through
+     * `FakeRfidReader`'s "nothing was collecting" guard timing.
+     */
+    private class SlowStopReader(private val inner: FakeRfidReader) : RfidReader {
+        override val connection: StateFlow<RfidConnection> get() = inner.connection
+        private val _tags = MutableSharedFlow<String>(extraBufferCapacity = 16)
+        override val tags: Flow<String> = _tags
+        override val triggers: Flow<TriggerEvent> get() = inner.triggers
+
+        /** Completes the instant `stopInventory()` is called. */
+        val stopStarted = CompletableDeferred<Unit>()
+
+        /** The test completes this once it wants `stopInventory()` to
+         *  actually return. */
+        val proceedStop = CompletableDeferred<Unit>()
+
+        override suspend fun connect() = inner.connect()
+        override suspend fun disconnect() = inner.disconnect()
+        override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
+        override suspend fun startInventory() = inner.startInventory()
+        override suspend fun stopInventory(): Result<Unit> {
+            stopStarted.complete(Unit)
+            proceedStop.await()
+            return inner.stopInventory()
+        }
+
+        fun emitTag(epc: String) {
+            check(_tags.tryEmit(epc)) { "Dropped tag $epc: nothing was collecting." }
+        }
+    }
+
+    /**
+     * Regression test for the reorder that used to be inert: `endBurst` called
+     * `reader.stopInventory()` before claiming the session, but the caller
+     * held `mutex` across that call, and `onTag` takes the same mutex — so a
+     * tag arriving mid-stop just blocked until the session was already
+     * claimed and nulled, and was folded into nothing. The fix releases the
+     * lock before calling `stopInventory()`, so `onTag` stays free to keep
+     * folding tags into the still-open session for the whole vendor round
+     * trip.
+     */
+    @Test fun aTagArrivingWhileStopInventoryIsInFlightIsStillIncludedInTheBurst() = runTest {
+        val inner = FakeRfidReader()
+        val slowStop = SlowStopReader(inner)
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+        val controller = RfidController(slowStop, settings, backgroundScope) { 0L }
+        val bursts = mutableListOf<List<String>>()
+        backgroundScope.launch { controller.bursts.collect { bursts += it } }
+        controller.start(); controller.arm(); settle()
+        controller.connectNow(); settle()
+
+        inner.emitTrigger(TriggerEvent.PRESSED); settle()
+        slowStop.emitTag("100600"); settle()
+        assertEquals(1, controller.session.value?.totalReads)
+
+        controller.stopBurst(); settle()
+        assertTrue("stopInventory() should have been called", slowStop.stopStarted.isCompleted)
+        assertTrue(
+            "the burst must still be open while the stop is in flight — a caller " +
+                "that claimed it before stopping would already have nulled it here",
+            controller.session.value != null,
+        )
+
+        // The tag lands while stopInventory() is still suspended on
+        // proceedStop. Before the fix, onTag would be stuck waiting on the
+        // same mutex the stopping caller held across the stop, and would
+        // fold this tag into a session that no longer existed by the time it
+        // finally ran.
+        slowStop.emitTag("100601"); settle()
+
+        slowStop.proceedStop.complete(Unit); settle()
+
+        assertEquals(listOf(listOf("100600", "100601")), bursts)
+    }
+
+    /**
      * `TestScope` is single-threaded, so it cannot reproduce the races fixed
      * in `RfidController`: they need two collectors, or a collector and a
      * UI-thread call, genuinely running at once. This drives the controller
@@ -256,6 +341,21 @@ class RfidControllerTest {
      * caught finding 1 (a double emit, or a resurrected session re-emitting
      * tags a previous burst already emitted) is simple: no tag value ever
      * shows up in two different emitted bursts.
+     *
+     * That duplicate-freedom check alone is guaranteed by the atomic claim
+     * (`_session.getAndUpdate { null }`) on its own — it says nothing about
+     * whether the mutex is doing anything. Two more assertions exercise the
+     * mutex specifically: `seen` must be non-empty (a controller that
+     * dropped every burst would vacuously pass the no-duplicates check), and
+     * the radio must not be left running once the storm has settled and the
+     * screen is disarmed. That second one is the one the atomic claim can't
+     * explain: `stoppingBurst`/`queueOnStop` — which caller owns ending the
+     * open burst, and whether the result should be kept — are a plain
+     * check-then-act pair with no atomic primitive backing them. Only the
+     * mutex keeps that check-then-act correct; a controller that raced on it
+     * could easily be left with `stoppingBurst` stuck true (so a later
+     * legitimate stop never happens) or the radio started again after the
+     * disarming stop already ran.
      */
     @Test fun concurrentStopDisarmAndDisconnectNeverDoubleEmitATag() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -306,18 +406,73 @@ class RfidControllerTest {
                 }
                 driver.join(); stopper.join(); disarmer.join(); disconnector.join()
 
-                // Drain whatever burst is still open so its tags (if any) are
-                // accounted for before we compare.
-                controller.arm()
+                // One deterministic, uncontested burst, so that "bursts
+                // actually happened" below is a real assertion rather than a
+                // coincidence of how the storm happened to interleave. The
+                // storm itself can legitimately emit nothing at all: a
+                // disarm() landing during any in-flight stop discards that
+                // burst by design (finding 2's own requirement), and with 30
+                // disarms racing 150 stops over 150 trigger cycles, disarm
+                // can empirically win every single one. That is not new here
+                // — the pre-fix controller starves the same way on some
+                // runs, since nothing in this fix changes how often disarm
+                // wins the race, only what happens once it does.
+                //
+                // disarmer/stopper joining only means their loops finished
+                // *issuing* fire-and-forget disarm()/arm()/stopBurst() calls
+                // — scope.launch returns immediately, so some of what they
+                // queued can still be running for a little while after. A
+                // fixed delay here would be a guess at how long that takes
+                // under whatever load happens to be on the machine, so
+                // retry instead of guessing: each attempt is harmless even
+                // if a straggler from the storm (or a previous attempt)
+                // still lands on it, and the loop only needs one attempt to
+                // land in an actually-quiet window to succeed.
+                var proofAttempts = 0
+                // Each attempt uses its own tag value: if a straggler from
+                // an earlier attempt (or the storm) finally lands *after*
+                // this loop already decided to retry, a repeated tag value
+                // would look like the exact double-emit finding 1 fixed —
+                // a false failure, not a real one.
+                while (seen.none { it.startsWith("FINAL-PROOF") } && proofAttempts < 20) {
+                    controller.arm()
+                    // arm() is itself fire-and-forget, so give its launch a
+                    // moment to actually flip `armed` before firing a
+                    // trigger.
+                    delay(50)
+                    reader.emitTrigger(TriggerEvent.PRESSED)
+                    reader.emitTag("FINAL-PROOF-$proofAttempts")
+                    reader.emitTrigger(TriggerEvent.RELEASED)
+                    delay(100)
+                    proofAttempts++
+                }
+
+                // Drain whatever burst the storm itself left open so its
+                // tags (if any) are accounted for before we compare.
                 controller.stopBurst()
+                delay(50)
+
+                // Now that nothing else is racing, a plain disarm must leave
+                // the radio stopped. If the storm left `stoppingBurst` or
+                // `queueOnStop` corrupted, this is where it would show up —
+                // either as the radio still spinning, or as this disarm's
+                // own stop never actually running because `stoppingBurst`
+                // was stuck true from an earlier, unsynchronized caller.
+                controller.disarm()
                 delay(50)
             }
 
             collector.cancel()
+            assertTrue("bursts should have been emitted during the stress run", seen.isNotEmpty())
             assertEquals(
                 "no tag value should ever be emitted in two different bursts",
                 seen.size,
                 seen.toSet().size,
+            )
+            assertEquals(
+                "the radio must not be left running once the storm has settled and the screen is disarmed",
+                false,
+                reader.inventoryRunning,
             )
         } finally {
             scope.cancel()
