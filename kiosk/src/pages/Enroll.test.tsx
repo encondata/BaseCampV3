@@ -34,6 +34,7 @@ vi.mock('../lib/sound', async (importOriginal) => {
 import { ApiError } from '../lib/api';
 import { DEFAULT_APPEARANCE, hslCss } from '../lib/appearance';
 import { writeCheckpoint } from '../lib/checkpointSettings';
+import { clearEnrollLog } from '../lib/enrollLog';
 import { clearFlash, readFlash } from '../lib/flash';
 import { getIdentity } from '../lib/identity';
 import { writeKioskSetup } from '../lib/kioskSetup';
@@ -57,7 +58,10 @@ const SETUP = {
   scanStatus: 'cage_exit', scanLabel: 'RFID 1 - Cage Exit',
 };
 
-const PADDED = '0'.repeat(18) + '100348';
+/** A free tag: 100348 belongs to TAGGED, and the local gate refuses it
+ *  before the endpoint is ever called (its own tests, below). */
+const FREE = '900100';
+const PADDED = '0'.repeat(18) + FREE;
 
 const enrolled = (over: Record<string, unknown> = {}) => ({
   asset_id: SWITCH.id, asset_name: SWITCH.name, asset_tag: SWITCH.asset_id,
@@ -69,6 +73,7 @@ const render_ = () => render(<MemoryRouter><Enroll /></MemoryRouter>);
 
 beforeEach(async () => {
   localStorage.clear();
+  clearEnrollLog();     // module-level: it outlives a render on purpose
   closeDb();
   (globalThis as unknown as { indexedDB: IDBFactory }).indexedDB = new IDBFactory();
   await replaceAll('assets', [SWITCH, TAGGED]);
@@ -94,6 +99,14 @@ async function scanAsset(value: string): Promise<void> {
 }
 
 const tagInput = () => screen.getByLabelText('RFID tag') as HTMLInputElement;
+
+/** An asset that already carries a tag stops on the confirmation card;
+ *  the tag box only opens on a deliberate press. */
+async function pressUpdate(): Promise<void> {
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: 'Update RFID Value' }));
+  await screen.findByLabelText('RFID tag');
+}
 
 it('opens on the asset step with that input focused and empty', async () => {
   render_();
@@ -123,14 +136,56 @@ it('an asset ID match moves to the tag step too', async () => {
   expect(screen.getByText('Rack 4 switch')).toBeTruthy();
 });
 
-it('an asset that already has a tag shows it, trimmed, and warns that a new scan replaces it', async () => {
+it('an asset that already has a tag stops on the confirmation card, not the tag box', async () => {
   render_();
   await scanAsset('10043');
-  expect(await screen.findByLabelText('RFID tag')).toBeTruthy();
+
+  const card = await screen.findByRole('group', { name: 'Asset already tagged' });
+  expect(within(card).getByText('Patch panel')).toBeTruthy();
+  expect(within(card).getByText('100348')).toBeTruthy();        // trimmed
+  expect(within(card).getByText('FDO2140X9ZZ')).toBeTruthy();
+  expect(screen.getByText(/This asset already has a tag\./)).toBeTruthy();
+  // The gate: nowhere for a second scan to land, and nothing for its
+  // Enter to press.
+  expect(screen.queryByLabelText('RFID tag')).toBeNull();
+  await waitFor(() => expect(document.activeElement).toBe(card));
+});
+
+it('Update RFID Value opens the tag box, still showing the tag being replaced', async () => {
+  render_();
+  await scanAsset('10043');
+  await pressUpdate();
   expect(screen.getByText('100348')).toBeTruthy();
-  expect(screen.getByText(
-    'This asset already has a tag — scanning a new one replaces it.',
-  )).toBeTruthy();
+  expect(screen.getByText('Scanning a new tag replaces the one above.')).toBeTruthy();
+  await waitFor(() => expect(document.activeElement).toBe(tagInput()));
+});
+
+it('Cancel on the confirmation card returns to the asset step, untouched', async () => {
+  const user = userEvent.setup();
+  render_();
+  await scanAsset('10043');
+  await screen.findByRole('group', { name: 'Asset already tagged' });
+
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  const el = await assetInput();
+  await waitFor(() => expect(document.activeElement).toBe(el));
+  expect(screen.queryByLabelText('RFID tag')).toBeNull();
+  expect(api.postRfidEnroll).not.toHaveBeenCalled();
+});
+
+it('re-scanning an asset this session tagged says so, and flashes the duplicate color', async () => {
+  const user = userEvent.setup();
+  render_();
+  await scanAsset('SN-4242');
+  await user.type(tagInput(), `${FREE}{Enter}`);
+  await screen.findByText(`Enrolled Rack 4 switch → ${FREE}`);
+  clearFlash();
+
+  await scanAsset('SN-4242');
+  await screen.findByRole('group', { name: 'Asset already tagged' });
+  expect(screen.getByText(/^This kiosk tagged it at /)).toBeTruthy();
+  expect(readFlash()?.color).toBe(hslCss(DEFAULT_APPEARANCE.duplicate_scan));
+  expect(sound.playScanSound).toHaveBeenLastCalledWith('duplicate');
 });
 
 it('scanning an RFID tag at the asset step says so and stays put', async () => {
@@ -159,7 +214,7 @@ it('previews the padded tag as it is typed and posts the padded value', async ()
   await scanAsset('SN-4242');
   await screen.findByLabelText('RFID tag');
 
-  await user.type(tagInput(), '100348');
+  await user.type(tagInput(), FREE);
   expect(screen.getByText(PADDED)).toBeTruthy();
 
   await user.type(tagInput(), '{Enter}');
@@ -181,7 +236,7 @@ it('defaults to the pre_stage checkpoint when the Admin tab has not set one', as
   render_();
   await scanAsset('SN-4242');
   await screen.findByLabelText('RFID tag');
-  await user.type(tagInput(), '100348{Enter}');
+  await user.type(tagInput(), `${FREE}{Enter}`);
   await waitFor(() => expect(api.postRfidEnroll).toHaveBeenCalledTimes(1));
   expect(api.postRfidEnroll.mock.calls[0][0].scan_status).toBe('pre_stage');
 });
@@ -191,9 +246,9 @@ it('a saved tag flashes, sounds, toasts, updates the local roster, and returns t
   render_();
   await scanAsset('SN-4242');
   await screen.findByLabelText('RFID tag');
-  await user.type(tagInput(), '100348{Enter}');
+  await user.type(tagInput(), `${FREE}{Enter}`);
 
-  expect(await screen.findByText('Enrolled Rack 4 switch → 100348')).toBeTruthy();
+  expect(await screen.findByText(`Enrolled Rack 4 switch → ${FREE}`)).toBeTruthy();
   expect(readFlash()?.color).toBe(hslCss(DEFAULT_APPEARANCE.good_scan));
   expect(sound.playScanSound).toHaveBeenCalledWith('good');
 
@@ -224,17 +279,15 @@ it('the enrolled tag is recognized at the asset step straight away', async () =>
   )).toBeTruthy();
 });
 
-it('a tag already on another asset names it and stays on the tag step', async () => {
+it('a tag the synced roster has on another asset never reaches the portal', async () => {
   const user = userEvent.setup();
-  api.postRfidEnroll.mockRejectedValue(new ApiError(409, 'rfid_in_use', {
-    code: 'rfid_in_use', asset_id: 'a-2', asset_name: 'Patch panel',
-  }));
   render_();
   await scanAsset('SN-4242');
   await screen.findByLabelText('RFID tag');
-  await user.type(tagInput(), '100348{Enter}');
+  await user.type(tagInput(), '100348{Enter}');      // Patch panel's tag
 
   expect(await screen.findByText('That tag is already on Patch panel.')).toBeTruthy();
+  expect(api.postRfidEnroll).not.toHaveBeenCalled();
   const el = tagInput();
   expect(el.value).toBe('');
   await waitFor(() => expect(document.activeElement).toBe(el));
@@ -244,13 +297,51 @@ it('a tag already on another asset names it and stays on the tag step', async ()
   expect(rows.find((a) => a.id === 'a-1')?.rfid).toBeNull();
 });
 
+it("scanning the asset's own barcode into the tag box is refused by name", async () => {
+  const user = userEvent.setup();
+  render_();
+  await scanAsset('SN-4242');
+  await screen.findByLabelText('RFID tag');
+
+  await user.type(tagInput(), '10042{Enter}');       // its own asset ID
+  expect(await screen.findByText(
+    "That's this asset's own asset ID, not an RFID tag.",
+  )).toBeTruthy();
+  expect(api.postRfidEnroll).not.toHaveBeenCalled();
+
+  await user.type(tagInput(), '10043{Enter}');       // and another asset's
+  expect(await screen.findByText(
+    "That's the asset ID for Patch panel, not an RFID tag.",
+  )).toBeTruthy();
+  expect(api.postRfidEnroll).not.toHaveBeenCalled();
+});
+
+it('a tag the kiosk did not know about is refused by the portal, then locally', async () => {
+  const user = userEvent.setup();
+  api.postRfidEnroll.mockRejectedValue(new ApiError(409, 'rfid_in_use', {
+    code: 'rfid_in_use', asset_id: 'a-9', asset_name: 'Rack 9 PDU',
+  }));
+  render_();
+  await scanAsset('SN-4242');
+  await screen.findByLabelText('RFID tag');
+  await user.type(tagInput(), '777123{Enter}');
+
+  expect(await screen.findByText('That tag is already on Rack 9 PDU.')).toBeTruthy();
+  expect(api.postRfidEnroll).toHaveBeenCalledTimes(1);
+
+  // The refusal is remembered: the same tag again costs no round trip.
+  await user.type(tagInput(), '777123{Enter}');
+  expect(await screen.findByText('That tag is already on Rack 9 PDU.')).toBeTruthy();
+  expect(api.postRfidEnroll).toHaveBeenCalledTimes(1);
+});
+
 it('an unreachable portal says the tag was not saved', async () => {
   const user = userEvent.setup();
   api.postRfidEnroll.mockRejectedValue(new ApiError(0, 'network'));
   render_();
   await scanAsset('SN-4242');
   await screen.findByLabelText('RFID tag');
-  await user.type(tagInput(), '100348{Enter}');
+  await user.type(tagInput(), `${FREE}{Enter}`);
   expect(await screen.findByText(
     "Can't reach the portal. The tag was not saved.",
   )).toBeTruthy();
@@ -262,7 +353,7 @@ it('read-only mode says to try again shortly', async () => {
   render_();
   await scanAsset('SN-4242');
   await screen.findByLabelText('RFID tag');
-  await user.type(tagInput(), '100348{Enter}');
+  await user.type(tagInput(), `${FREE}{Enter}`);
   expect(await screen.findByText(
     'The portal is in read-only mode. Try again shortly.',
   )).toBeTruthy();
@@ -310,14 +401,14 @@ it('a saved enrollment appears in the session list with name, serial, and the tr
   render_();
   await scanAsset('SN-4242');
   await screen.findByLabelText('RFID tag');
-  await user.type(tagInput(), '100348{Enter}');
-  await screen.findByText('Enrolled Rack 4 switch → 100348');
+  await user.type(tagInput(), `${FREE}{Enter}`);
+  await screen.findByText(`Enrolled Rack 4 switch → ${FREE}`);
 
   const table = await screen.findByRole('table');
   const row = within(table).getByText('Rack 4 switch').closest('tr');
   expect(row).toBeTruthy();
   expect(within(row as HTMLElement).getByText('SN-4242')).toBeTruthy();
-  const tagCell = within(row as HTMLElement).getByText('100348');
+  const tagCell = within(row as HTMLElement).getByText(FREE);
   expect(tagCell.title).toBe(PADDED);
 });
 
@@ -336,11 +427,11 @@ it('a second enrollment appears above the first, newest first', async () => {
   render_();
   await scanAsset('SN-4242');
   await screen.findByLabelText('RFID tag');
-  await user.type(tagInput(), '100348{Enter}');
-  await screen.findByText('Enrolled Rack 4 switch → 100348');
+  await user.type(tagInput(), `${FREE}{Enter}`);
+  await screen.findByText(`Enrolled Rack 4 switch → ${FREE}`);
 
   await scanAsset('10043');
-  await screen.findByLabelText('RFID tag');
+  await pressUpdate();
   await user.type(tagInput(), '200500{Enter}');
   await screen.findByText('Enrolled Patch panel → 200500');
 
@@ -362,7 +453,7 @@ it('enrolling a new tag onto an asset that already had one shows a replaced chip
   });
   render_();
   await scanAsset('10043');
-  await screen.findByLabelText('RFID tag');
+  await pressUpdate();
   await user.type(tagInput(), '200500{Enter}');
   await screen.findByText('Enrolled Patch panel → 200500');
 
@@ -377,7 +468,7 @@ it('a failed save adds no row to the session list', async () => {
   render_();
   await scanAsset('SN-4242');
   await screen.findByLabelText('RFID tag');
-  await user.type(tagInput(), '100348{Enter}');
+  await user.type(tagInput(), `${FREE}{Enter}`);
   await screen.findByText("Can't reach the portal. The tag was not saved.");
   expect(screen.queryByRole('table')).toBeNull();
 });
