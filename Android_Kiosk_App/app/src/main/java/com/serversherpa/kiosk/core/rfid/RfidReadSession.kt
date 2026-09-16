@@ -11,12 +11,19 @@ data class TagSighting(val epc: String, val key: String)
  * read from a chatty one. `tags` holds each tag once, in the order it first
  * appeared. `skippedRepeats` counts tags dropped because this screen already
  * queued them.
+ *
+ * `resolvedKeys` is bookkeeping, not something callers read: it is every key
+ * this burst has already decided about, whether it was kept in `tags` or
+ * dropped as an already-queued repeat. A key dropped as a repeat never lands
+ * in `tags`, so `tags` alone cannot tell a later report of that same key from
+ * a brand-new one; `resolvedKeys` can.
  */
 data class RfidReadSession(
     val startedAtMs: Long,
     val totalReads: Int = 0,
     val tags: List<TagSighting> = emptyList(),
     val skippedRepeats: Int = 0,
+    val resolvedKeys: Set<String> = emptySet(),
 ) {
     val uniqueCount: Int get() = tags.size
 }
@@ -38,10 +45,17 @@ fun onTagRead(
 ): RfidReadSession {
     val key = rfidKey(rawEpc) ?: return session
     val counted = session.copy(totalReads = session.totalReads + 1)
-    // The same tag answering again inside this burst is normal, not a repeat sweep.
-    if (counted.tags.any { it.key == key }) return counted
+    // The same tag answering again inside this burst is normal, not a repeat sweep,
+    // whether it was queued or skipped the first time this burst resolved it.
+    if (key in counted.resolvedKeys) return counted
     if (policy != RepeatSweepPolicy.ALWAYS_QUEUE && key in alreadyQueued) {
-        return counted.copy(skippedRepeats = counted.skippedRepeats + 1)
+        return counted.copy(
+            skippedRepeats = counted.skippedRepeats + 1,
+            resolvedKeys = counted.resolvedKeys + key,
+        )
     }
-    return counted.copy(tags = counted.tags + TagSighting(rawEpc.trim(), key))
+    return counted.copy(
+        tags = counted.tags + TagSighting(rawEpc.trim(), key),
+        resolvedKeys = counted.resolvedKeys + key,
+    )
 }

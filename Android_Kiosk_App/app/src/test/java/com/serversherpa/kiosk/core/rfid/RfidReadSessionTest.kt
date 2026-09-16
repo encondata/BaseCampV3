@@ -66,4 +66,48 @@ class RfidReadSessionTest {
         s = read(s, "100348"); s = read(s, "0100349")
         assertEquals(setOf("9000", "100348", "100349"), queuedAfter(setOf("9000"), s))
     }
+
+    /** A tag that is both already queued and chatty must be skipped once, not
+     *  once per report — the reader answering three times in a burst is the
+     *  same event the operator already sent, not three of them. */
+    @Test fun anAlreadyQueuedTagReadThriceInOneBurstIsSkippedOnceUnderSkipAndCount() {
+        var s = startSession(0)
+        s = read(s, "100348", queued = setOf("100348"), policy = RepeatSweepPolicy.SKIP_AND_COUNT)
+        s = read(s, "100348", queued = setOf("100348"), policy = RepeatSweepPolicy.SKIP_AND_COUNT)
+        s = read(s, "100348", queued = setOf("100348"), policy = RepeatSweepPolicy.SKIP_AND_COUNT)
+        assertEquals(3, s.totalReads)
+        assertEquals(1, s.skippedRepeats)
+        assertEquals(0, s.uniqueCount)
+    }
+
+    @Test fun anAlreadyQueuedTagReadThriceInOneBurstIsSkippedOnceUnderSkipSilent() {
+        var s = startSession(0)
+        s = read(s, "100348", queued = setOf("100348"), policy = RepeatSweepPolicy.SKIP_SILENT)
+        s = read(s, "100348", queued = setOf("100348"), policy = RepeatSweepPolicy.SKIP_SILENT)
+        s = read(s, "100348", queued = setOf("100348"), policy = RepeatSweepPolicy.SKIP_SILENT)
+        assertEquals(3, s.totalReads)
+        assertEquals(1, s.skippedRepeats)
+        assertEquals(0, s.uniqueCount)
+    }
+
+    @Test fun aBurstThatSkipsEveryTagQueuesNothingNew() {
+        var s = startSession(0)
+        val queued = setOf("100348", "100349")
+        s = read(s, "100348", queued = queued, policy = RepeatSweepPolicy.SKIP_AND_COUNT)
+        s = read(s, "100349", queued = queued, policy = RepeatSweepPolicy.SKIP_AND_COUNT)
+        assertEquals(0, s.uniqueCount)
+        assertEquals(emptyList<String>(), burstToScans(s))
+        assertEquals(queued, queuedAfter(queued, s))
+    }
+
+    /** The padded and unpadded spellings of one already-queued tag arriving in
+     *  the same burst are one repeat, not two — they share a key. */
+    @Test fun paddedAndUnpaddedFormsOfAnAlreadyQueuedTagAreOneSkip() {
+        var s = startSession(0)
+        s = read(s, "000000000000000000100348", queued = setOf("100348"), policy = RepeatSweepPolicy.SKIP_AND_COUNT)
+        s = read(s, "100348", queued = setOf("100348"), policy = RepeatSweepPolicy.SKIP_AND_COUNT)
+        assertEquals(2, s.totalReads)
+        assertEquals(1, s.skippedRepeats)
+        assertEquals(0, s.uniqueCount)
+    }
 }
