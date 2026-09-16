@@ -1,5 +1,11 @@
 """process_run(db, run, *, sessionmaker) — drives one claimed run through
-every requested label type and every asset on the initiative's roster.
+every requested label type and every row on that type's roster.
+
+Which roster a type walks comes from `entity_for_type`: a container type
+walks the initiative's live containers and stamps entity_type
+"container", every other type walks the asset roster and stamps "asset".
+A run may mix the two, so `total` is the SUM of each type's own roster
+length, never len(roster) * len(label_types).
 
 Port of V2's `process_label_generation_job` (portal_routes.py), with the
 deliberate differences the design spec calls out: a missing template
@@ -39,12 +45,14 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import (
-    Asset, AssetModel, GeneratedLabel, Initiative, InitiativeAsset,
+    Asset, AssetModel, Container, GeneratedLabel, Initiative, InitiativeAsset,
     LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelVocab, Site,
 )
+from serversherpa.labels.generate import entity_for_type
 from serversherpa.labels.generate.engine import render_label
 from serversherpa.labels.generate.select import select_template
-from serversherpa.labels.generate.values import AssetRow, Sites, placeholder_values
+from serversherpa.labels.generate.values import (
+    AssetRow, ContainerRow, Sites, values_for_row)
 from serversherpa.notifications.inbox import notify
 
 logger = logging.getLogger("serversherpa.labels.generate.runner")
@@ -90,7 +98,25 @@ async def _load_roster(db: AsyncSession, initiative_id: uuid.UUID) -> list[Asset
     ]
 
 
-def _item_label(row: AssetRow) -> str:
+async def _load_container_roster(db: AsyncSession,
+                                 initiative_id: uuid.UUID) -> list[ContainerRow]:
+    """The initiative's live containers. Archived containers are excluded:
+    a crate that has been archived should not be getting fresh labels (the
+    Avery PDF path still labels them — see that feature's follow-ups)."""
+    rows = (await db.execute(
+        select(Container)
+        .where(Container.initiative_id == initiative_id,
+               Container.archived_at.is_(None))
+        .order_by(Container.name))).scalars().all()
+    return [ContainerRow(container_uuid=c.id, legacy_id=c.legacy_id,
+                         name=c.name, label_tag=c.label_tag)
+            for c in rows]
+
+
+def _item_label(row) -> str:
+    """What the run's progress and error rows call this item."""
+    if isinstance(row, ContainerRow):
+        return row.name or str(row.legacy_id or "unknown")
     if row.serial_number:
         return row.serial_number
     return str(row.legacy_id) if row.legacy_id is not None else "unknown"
@@ -98,15 +124,16 @@ def _item_label(row: AssetRow) -> str:
 
 async def _load_existing_for_type(
     db: AsyncSession, initiative_id: uuid.UUID, label_type: str,
+    *, entity_type: str,
 ) -> dict[uuid.UUID, tuple[uuid.UUID, int, bool]]:
-    """One query per label type instead of one SELECT per asset: every
-    current `generated_labels` row for this (initiative, type), keyed by
-    entity_id -> (template_id, template_version, stale) — everything
-    `_generate_one` needs to decide skip vs regenerate."""
+    """One query per label type instead of one SELECT per row: every
+    current `generated_labels` row for this (initiative, entity kind,
+    type), keyed by entity_id -> (template_id, template_version, stale) —
+    everything `_generate_one` needs to decide skip vs regenerate."""
     rows = (await db.execute(select(
         GeneratedLabel.entity_id, GeneratedLabel.template_id,
         GeneratedLabel.template_version, GeneratedLabel.stale,
-    ).where(GeneratedLabel.entity_type == "asset",
+    ).where(GeneratedLabel.entity_type == entity_type,
            GeneratedLabel.initiative_id == initiative_id,
            GeneratedLabel.label_type == label_type))).all()
     return {entity_id: (template_id, version, stale)
@@ -114,10 +141,10 @@ async def _load_existing_for_type(
 
 
 async def _upsert_label(db: AsyncSession, *, initiative_id: uuid.UUID, run_id: uuid.UUID,
-                        row: AssetRow, label_type: str, template: LabelTemplate, code: str,
-                        values: dict) -> None:
+                        row, label_type: str, entity_type: str, template: LabelTemplate,
+                        code: str, values: dict) -> None:
     fields = dict(
-        entity_type="asset", entity_id=row.asset_id, initiative_id=initiative_id,
+        entity_type=entity_type, entity_id=row.entity_id, initiative_id=initiative_id,
         label_type=label_type, template_id=template.id, template_version=template.version,
         language_key=template.language_key, dpi_key=template.dpi_key,
         size_key=template.size_key, code=code, values=values, run_id=run_id,
@@ -142,28 +169,28 @@ async def _upsert_label(db: AsyncSession, *, initiative_id: uuid.UUID, run_id: u
 
 async def _generate_one(
     db: AsyncSession, *, initiative_id: uuid.UUID, run_id: uuid.UUID,
-    regenerate_existing: bool, row: AssetRow, item: str, label_type: str,
+    regenerate_existing: bool, row, item: str, label_type: str, entity_type: str,
     template: LabelTemplate, size_meta: dict, dpi_meta: dict, catalog_keys: list[str],
     initiative: Initiative, sites: Sites, seen_unknown: set[str],
     error_summary: dict[str, int], error_details: list[dict],
-    existing_by_asset: dict[uuid.UUID, tuple[uuid.UUID, int, bool]],
+    existing_by_entity: dict[uuid.UUID, tuple[uuid.UUID, int, bool]],
 ) -> str:
-    """Generate (or skip) one asset's label for one type. Returns
+    """Generate (or skip) one roster row's label for one type. Returns
     'generated', 'skipped', or 'error' — errors are recorded onto
     error_summary/error_details here so the caller stays a flat counter
     bump. Only `_upsert_label`'s statement can fail at the DB level (the
     skip check is now a plain dict lookup, not a query); it runs in its
     own SAVEPOINT so a failure there can't cost the batch's other
     already-written rows."""
-    existing = existing_by_asset.get(row.asset_id)
+    existing = existing_by_entity.get(row.entity_id)
     if (existing is not None and not regenerate_existing
             and existing[0] == template.id and existing[1] == template.version
             and not existing[2]):
         return "skipped"
 
     try:
-        values = placeholder_values(row, initiative, sites, catalog_keys,
-                                    generation_rules=template.generation_rules)
+        values = values_for_row(row, initiative, sites, catalog_keys,
+                                generation_rules=template.generation_rules)
         code, unknown = render_label(template, values, size_meta=size_meta, dpi_meta=dpi_meta,
                                      language_key=template.language_key)
     except Exception as exc:
@@ -178,7 +205,8 @@ async def _generate_one(
 
     try:
         await _upsert_label(db, initiative_id=initiative_id, run_id=run_id, row=row,
-                            label_type=label_type, template=template, code=code, values=values)
+                            label_type=label_type, entity_type=entity_type, template=template,
+                            code=code, values=values)
     except Exception as exc:
         _tag_error(error_summary, error_details, item=item, label_type=label_type, exc=exc)
         return "error"
@@ -244,12 +272,26 @@ async def process_run(db: AsyncSession, run: LabelGenerationRun, *, sessionmaker
         sites = Sites(origin=origin, destination=destination)
         template_site_id = initiative.destination_site_id or initiative.origin_site_id
 
-        roster = await _load_roster(db, initiative_id)
+        rosters: dict[str, list] = {}
+
+        async def roster_for(label_type: str) -> list:
+            """One roster per ENTITY KIND, loaded at most once per run."""
+            kind = entity_for_type(label_type)
+            if kind not in rosters:
+                rosters[kind] = (await _load_container_roster(db, initiative_id)
+                                 if kind == "container"
+                                 else await _load_roster(db, initiative_id))
+            return rosters[kind]
+
         catalog_keys = list((await db.execute(
             select(LabelPlaceholder.key).where(LabelPlaceholder.is_active == True)  # noqa: E712
         )).scalars())
 
-        total = len(roster) * len(label_types)
+        # total is a SUM, not len(roster) * len(label_types) — with two entity
+        # kinds in one run the rosters have different lengths.
+        total = 0
+        for label_type in label_types:
+            total += len(await roster_for(label_type))
         processed = generated = skipped = errors = 0
         error_summary: dict[str, int] = {}
         error_details: list[dict] = []
@@ -266,6 +308,8 @@ async def process_run(db: AsyncSession, run: LabelGenerationRun, *, sessionmaker
         for label_type in label_types:
             if canceled:
                 break
+            entity_type = entity_for_type(label_type)
+            roster = await roster_for(label_type)
             override_id = template_overrides.get(label_type)
             if override_id is not None:
                 # the override wins even when an auto-match exists; if it
@@ -278,13 +322,14 @@ async def process_run(db: AsyncSession, run: LabelGenerationRun, *, sessionmaker
             else:
                 template = await select_template(db, label_type, template_site_id)
             size_meta = dpi_meta = None
-            existing_by_asset: dict[uuid.UUID, tuple[uuid.UUID, int, bool]] = {}
+            existing_by_entity: dict[uuid.UUID, tuple[uuid.UUID, int, bool]] = {}
             if template is not None:
                 size_row = await db.get(LabelVocab, ("size", template.size_key))
                 dpi_row = await db.get(LabelVocab, ("dpi", template.dpi_key))
                 size_meta = size_row.meta if size_row else {}
                 dpi_meta = dpi_row.meta if dpi_row else {}
-                existing_by_asset = await _load_existing_for_type(db, initiative_id, label_type)
+                existing_by_entity = await _load_existing_for_type(
+                    db, initiative_id, label_type, entity_type=entity_type)
 
             for row in roster:
                 item = _item_label(row)
@@ -299,10 +344,11 @@ async def process_run(db: AsyncSession, run: LabelGenerationRun, *, sessionmaker
                     outcome = await _generate_one(
                         db, initiative_id=initiative_id, run_id=run_id,
                         regenerate_existing=regenerate_existing, row=row, item=item,
-                        label_type=label_type, template=template, size_meta=size_meta,
-                        dpi_meta=dpi_meta, catalog_keys=catalog_keys, initiative=initiative,
-                        sites=sites, seen_unknown=seen_unknown, error_summary=error_summary,
-                        error_details=error_details, existing_by_asset=existing_by_asset)
+                        label_type=label_type, entity_type=entity_type, template=template,
+                        size_meta=size_meta, dpi_meta=dpi_meta, catalog_keys=catalog_keys,
+                        initiative=initiative, sites=sites, seen_unknown=seen_unknown,
+                        error_summary=error_summary, error_details=error_details,
+                        existing_by_entity=existing_by_entity)
                     if outcome == "generated":
                         generated += 1
                     elif outcome == "skipped":

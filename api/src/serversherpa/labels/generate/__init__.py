@@ -41,6 +41,20 @@ ACTIVE_STATUSES = ("queued", "running")
 # per ASSET with empty container placeholders.
 CONTAINER_LABEL_TYPES: frozenset[str] = frozenset({"container", "container_info"})
 
+# The single source of truth for which entity kind a label type describes.
+# `generated_labels.entity_type` and the runner's roster both come from here,
+# so adding a container-shaped type means editing one dict.
+ENTITY_FOR_TYPE: dict[str, str] = {"container": "container",
+                                   "container_info": "container"}
+
+
+def entity_for_type(label_type: str) -> str:
+    """'container' for the container label types, 'asset' for everything
+    else — an unknown type is an asset label, matching how every type
+    behaved before container types existed."""
+    return ENTITY_FOR_TYPE.get(label_type, "asset")
+
+
 class InvalidLabelTypes(ValueError):
     """One or more requested label types are not active `type` vocab
     keys (or the list was empty). `problems` are the offending keys,
