@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.input.rfid
 
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidRegion
@@ -244,7 +245,23 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
      *  found), so this seam is what makes that state machine testable at
      *  all. */
     protected open fun openVendorConnection(): String {
-        val all = Readers(context, ENUM_TRANSPORT.ALL)
+        // Readers registers a broadcast receiver internally with no
+        // RECEIVER_EXPORTED/RECEIVER_NOT_EXPORTED flag. Android 14 (API 34)
+        // enforces that one of those flags be supplied and throws
+        // SecurityException otherwise; the flags themselves (and the
+        // registerReceiver overloads that take them) exist starting API 33,
+        // so wrapping from there too is harmless and one guard instead of
+        // two. See ExportedReceiverContext's doc for the full story and why
+        // RECEIVER_EXPORTED is the right flag to supply on the library's
+        // behalf. Below API 33 the flag doesn't exist at all, so the raw
+        // context is used unchanged.
+        val readerContext =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ExportedReceiverContext(context)
+            } else {
+                context
+            }
+        val all = Readers(readerContext, ENUM_TRANSPORT.ALL)
         readers = all
         val device = all.GetAvailableRFIDReaderList()?.firstOrNull()
             ?: error("No RFID reader found. Pair the RFD40 in Android's Bluetooth settings first.")
