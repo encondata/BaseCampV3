@@ -290,6 +290,7 @@ class RfidControllerTest {
      */
     private class SlowStopReader(private val inner: FakeRfidReader) : RfidReader {
         override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val connectNote: StateFlow<String?> get() = inner.connectNote
         private val _tags = MutableSharedFlow<String>(extraBufferCapacity = 16)
         override val tags: Flow<String> = _tags
         override val triggers: Flow<TriggerEvent> get() = inner.triggers
@@ -519,6 +520,7 @@ class RfidControllerTest {
      *  no reason to support. Everything else delegates straight to [inner]. */
     private class ThrowingStopReader(private val inner: FakeRfidReader) : RfidReader {
         override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val connectNote: StateFlow<String?> get() = inner.connectNote
         override val tags: Flow<String> get() = inner.tags
         override val triggers: Flow<TriggerEvent> get() = inner.triggers
         override suspend fun connect() = inner.connect()
@@ -599,6 +601,7 @@ class RfidControllerTest {
     private class ThrowingStartReader(private val inner: FakeRfidReader) : RfidReader {
         private var starts = 0
         override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val connectNote: StateFlow<String?> get() = inner.connectNote
         override val tags: Flow<String> get() = inner.tags
         override val triggers: Flow<TriggerEvent> get() = inner.triggers
         override suspend fun connect() = inner.connect()
@@ -681,6 +684,7 @@ class RfidControllerTest {
      */
     private class SlowConnectReader(private val inner: FakeRfidReader) : RfidReader {
         override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val connectNote: StateFlow<String?> get() = inner.connectNote
         override val tags: Flow<String> get() = inner.tags
         override val triggers: Flow<TriggerEvent> get() = inner.triggers
 
@@ -714,6 +718,7 @@ class RfidControllerTest {
      */
     private class SlowApplyReader(private val inner: FakeRfidReader) : RfidReader {
         override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val connectNote: StateFlow<String?> get() = inner.connectNote
         override val tags: Flow<String> get() = inner.tags
         override val triggers: Flow<TriggerEvent> get() = inner.triggers
 
@@ -1321,5 +1326,31 @@ class RfidControllerTest {
             12,
             r.reader.applied?.powerDbm,
         )
+    }
+
+    /**
+     * Task 1 (batch-mode recovery): `RfidController.connectNote` is
+     * documented as a plain read-through of `reader.connectNote`, added the
+     * same way `connection` already is. This proves it actually is one —
+     * starts null, and reflects whatever the reader reports — rather than a
+     * dead property nothing wires up. The real batch-mode recovery sequence
+     * inside `ZebraRfidReader.openVendorConnection()` can't be driven from a
+     * unit test (see that class's doc), so this uses `FakeRfidReader`'s
+     * `setConnectNote` test hook to simulate "the reader reported a note"
+     * without needing real vendor plumbing.
+     */
+    @Test fun connectNoteIsALivePassthroughOfTheReadersConnectNote() = runTest {
+        val r = Rig(backgroundScope)
+        r.controller.start(); settle()
+        assertNull(r.controller.connectNote.value)
+
+        val note = "The reader was holding tags from earlier offline use. They were discarded and batch mode is now off."
+        r.reader.setConnectNote(note)
+        settle()
+        assertEquals(note, r.controller.connectNote.value)
+
+        r.reader.setConnectNote(null)
+        settle()
+        assertNull(r.controller.connectNote.value)
     }
 }

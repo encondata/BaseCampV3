@@ -121,6 +121,7 @@ class RfidPanelTest {
     private class GatedConnectReader : RfidReader {
         private val inner = FakeRfidReader()
         override val connection: StateFlow<RfidConnection> = inner.connection
+        override val connectNote: StateFlow<String?> = inner.connectNote
         override val tags: Flow<String> = inner.tags
         override val triggers: Flow<TriggerEvent> = inner.triggers
 
@@ -400,4 +401,30 @@ class RfidPanelTest {
         compose.waitForIdle()
     }
 
+    /**
+     * Task 1 (batch-mode recovery): the reader's `connectNote` is rendered
+     * beneath the connection line whenever it is non-null. The real
+     * batch-mode recovery that would set this on a real sled can't be driven
+     * from a unit test (see `ZebraRfidReader`'s class doc), so this uses
+     * `FakeRfidReader`'s `setConnectNote` test hook — no bespoke `RfidReader`
+     * double needed for this alone.
+     */
+    @Test fun connectNoteAppearsBeneathTheConnectionLineWhenSet() {
+        val reader = FakeRfidReader()
+        val note = "The reader was holding tags from earlier offline use. They were discarded and batch mode is now off."
+        reader.setConnectNote(note)
+        val c = testContainer(reader)
+        runBlocking { c.prefs.setRfid(RfidSettings(enabled = true)) }
+        compose.setRfidPanelContent(c)
+        compose.onNodeWithText(note).performScrollTo().assertIsDisplayed()
+    }
+
+    @Test fun noConnectNoteMeansNothingExtraIsShown() {
+        val reader = FakeRfidReader()
+        val c = testContainer(reader)
+        runBlocking { c.prefs.setRfid(RfidSettings(enabled = true)) }
+        compose.setRfidPanelContent(c)
+        val note = "The reader was holding tags from earlier offline use. They were discarded and batch mode is now off."
+        compose.onAllNodesWithText(note).assertCountEquals(0)
+    }
 }

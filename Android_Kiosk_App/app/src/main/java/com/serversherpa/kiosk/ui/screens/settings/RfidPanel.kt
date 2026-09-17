@@ -57,6 +57,7 @@ fun RfidPanel() {
     val scope = rememberCoroutineScope()
     val s by container.prefs.rfid.collectAsStateWithLifecycle(initialValue = DEFAULT_RFID_SETTINGS)
     val connection by container.rfid.connection.collectAsStateWithLifecycle()
+    val connectNote by container.rfid.connectNote.collectAsStateWithLifecycle()
     val applyError by container.rfid.applyError.collectAsStateWithLifecycle()
     // connection is a plain read-through of the reader's own state, and the
     // reader can never write it on a connect/disconnect the controller gave
@@ -110,6 +111,11 @@ fun RfidPanel() {
                     })
                 }
                 Text(if (s.enabled) connectionLine(connection) else connectionLine(RfidConnection.Disabled), color = c.textMute)
+                // Not an error — a factual note about something unusual the last
+                // connect attempt handled on its own (e.g. discarding a stale
+                // batch of stored tags), so it renders in the same plain tone as
+                // the connection line above, never ChipTone.RED.
+                connectNote?.let { Text(it, color = c.textMute) }
                 // While a connect or disconnect attempt is in flight, suppress the error line
                 // to avoid showing a stale error from a previous attempt. Once the attempt
                 // completes, the controller's own connectionError will be repopulated if the

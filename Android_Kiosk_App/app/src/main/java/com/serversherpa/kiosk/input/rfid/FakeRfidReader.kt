@@ -23,6 +23,9 @@ class FakeRfidReader(name: String = "Fake RFD40") : RfidReader {
     private val _connection = MutableStateFlow<RfidConnection>(RfidConnection.Disconnected)
     override val connection: StateFlow<RfidConnection> = _connection
 
+    private val _connectNote = MutableStateFlow<String?>(null)
+    override val connectNote: StateFlow<String?> = _connectNote
+
     private val _tags = MutableSharedFlow<String>(extraBufferCapacity = 256)
     override val tags: SharedFlow<String> = _tags
 
@@ -48,6 +51,9 @@ class FakeRfidReader(name: String = "Fake RFD40") : RfidReader {
     override suspend fun connect(): Result<Unit> {
         connectCalls++
         inventoryRunning = false
+        // Mirrors ZebraRfidReader.connect(), which clears its own connectNote
+        // at the top of every new attempt so a stale note never lingers.
+        _connectNote.value = null
         _connection.value = RfidConnection.Connecting
         return connectResult.onSuccess { _connection.value = RfidConnection.Connected(readerName, 80) }
             .onFailure { _connection.value = RfidConnection.Failed(it.message ?: "Couldn't connect to the reader.") }
@@ -122,6 +128,12 @@ class FakeRfidReader(name: String = "Fake RFD40") : RfidReader {
     fun emitTag(epc: String) {
         check(_tags.subscriptionCount.value > 0) { "Dropped tag $epc: nothing was collecting." }
         check(_tags.tryEmit(epc)) { "Dropped tag $epc: nothing was collecting." }
+    }
+    /** This fake has no real batch-mode concept, so a test that needs to
+     *  simulate "the reader reported a note" (e.g. proving RfidController or
+     *  RfidPanel pass connectNote through) sets it directly here. */
+    fun setConnectNote(note: String?) {
+        _connectNote.value = note
     }
     fun setConnection(c: RfidConnection) {
         // A real sled cannot be running an inventory while disconnected, so clear

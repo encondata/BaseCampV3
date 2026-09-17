@@ -17,6 +17,13 @@ import kotlinx.coroutines.flow.StateFlow
  */
 interface RfidReader {
     val connection: StateFlow<RfidConnection>
+    /** A one-line, operator-facing note about something unusual that
+     *  happened during the last connect attempt but wasn't a failure — for
+     *  example, the reader holding a stale batch of stored tags that had to
+     *  be discarded before it could connect. Null when there's nothing to
+     *  say. Cleared at the start of every new connect attempt so a stale
+     *  note from a previous attempt never lingers into the next one. */
+    val connectNote: StateFlow<String?>
     /** EPCs, as the reader reported them. */
     val tags: Flow<String>
     val triggers: Flow<TriggerEvent>

@@ -181,6 +181,8 @@ class RfidController(
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     val connection: StateFlow<RfidConnection> = reader.connection
+    /** A plain read-through of the reader's own note — see [RfidReader.connectNote]. */
+    val connectNote: StateFlow<String?> = reader.connectNote
 
     private val _session = MutableStateFlow<RfidReadSession?>(null)
     /** Non-null only while a burst is running. The Scanning screen's live panel. */

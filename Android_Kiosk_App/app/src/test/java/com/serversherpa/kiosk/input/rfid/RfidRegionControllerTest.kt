@@ -96,6 +96,7 @@ class RfidRegionControllerTest {
      */
     private class SlowRegionReader(private val inner: FakeRfidReader) : RfidReader {
         override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val connectNote: StateFlow<String?> get() = inner.connectNote
         override val tags: Flow<String> get() = inner.tags
         override val triggers: Flow<TriggerEvent> get() = inner.triggers
 
