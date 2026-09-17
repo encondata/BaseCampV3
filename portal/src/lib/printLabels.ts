@@ -4,7 +4,7 @@
  * arithmetic, and per-asset label status. No React, no fetching.
  * Behavior contract: docs/superpowers/specs/2026-09-12-print-labels-design.md.
  */
-import type { GeneratedLabelBundle, GeneratedLabelBundleItem, InitiativeAssetRow } from './api';
+import type { ContainerItem, GeneratedLabelBundle, GeneratedLabelBundleItem, InitiativeAssetRow } from './api';
 
 export interface PrintSettings {
   verticalOffset: number;
@@ -154,6 +154,32 @@ export function printOrder(selectedIds: string[], displayedRows: InitiativeAsset
     if (rackCmp !== 0) return rackCmp;
     return (b.source_ru ?? 0) - (a.source_ru ?? 0);
   }).map((r) => r.asset_id);
+}
+
+/** The container counterpart of `printOrder`: the selection intersected
+ *  with the displayed rows, in display order. There is no rack ordering —
+ *  `printByRack` and `blanksBetweenRacks` are asset concepts (a rack is a
+ *  property of an asset's position in a move) and are ignored here, so the
+ *  settings object is accepted only to keep the two call sites symmetric. */
+export function containerPrintOrder(
+  selectedIds: string[], displayedRows: ContainerItem[], _s: PrintSettings,
+): string[] {
+  const chosen = new Set(selectedIds);
+  return displayedRows.filter((r) => chosen.has(r.id)).map((r) => r.id);
+}
+
+/** Which label types describe a container rather than an asset.
+ *
+ *  ⚠ This is the SECOND copy of that mapping. The first — and the one the
+ *  server actually labels from — is `ENTITY_FOR_TYPE` in
+ *  `api/src/serversherpa/labels/generate/__init__.py`. A new container-shaped
+ *  label type must be added to BOTH or Print Labels will show the asset
+ *  roster for a type whose labels are keyed by container id. There is no
+ *  third copy: the picker and the generate flow both derive from these. */
+const CONTAINER_LABEL_TYPES: ReadonlySet<string> = new Set(['container', 'container_info']);
+
+export function isContainerLabelType(labelType: string): boolean {
+  return CONTAINER_LABEL_TYPES.has(labelType);
 }
 
 export function batchCount(total: number, batchSize: number): number {

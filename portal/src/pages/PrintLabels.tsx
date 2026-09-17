@@ -7,16 +7,22 @@
  * drops. Behavior contract: docs/superpowers/specs/2026-09-12-print-labels-design.md.
  *
  * Layout mirrors V2: header + status notice, three side-by-side step
- * cards (Initiative / Label type / Printer), the asset list card, the
- * Ready to print bar. Modals: Print settings, Printing labels (batch),
- * Offline labels.
+ * cards (Initiative / Label type / Printer), the roster card, the Ready to
+ * print bar. Modals: Print settings, Printing labels (batch), Offline labels.
+ *
+ * The page has two modes, chosen by the selected label type
+ * (`isContainerLabelType`): an ASSET mode over the initiative's roster and
+ * a CONTAINER mode over its containers. Each mode keeps its own roster,
+ * selection and displayed rows, so switching types never prints an asset
+ * label for a container id (or the reverse).
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
 import {
-  getGeneratedLabelBundle, listInitiativeAssets, listInitiatives, listLabelVocab,
-  type GeneratedLabelBundle, type InitiativeAssetRow, type InitiativeItem, type LabelVocab,
+  getGeneratedLabelBundle, listContainers, listInitiativeAssets, listInitiatives, listLabelVocab,
+  type ContainerItem, type GeneratedLabelBundle, type InitiativeAssetRow, type InitiativeItem,
+  type LabelVocab,
 } from '../lib/api';
 import { relativeTime } from '../lib/format';
 import { visibleInitiativesForGenerate } from '../lib/generateLabels';
@@ -24,13 +30,15 @@ import * as labelCache from '../lib/labelCache';
 import { vocabLabel, vocabOfKind } from '../lib/labels';
 import {
   LABEL_TYPE_CUSTOM, applyPrintSettings, batchBounds, batchCount, blankLabelsZpl, bundleByEntity,
-  labelStatusFor, missingLabelIds, printOrder, rackOf, readPrintSettings, settingsModified,
-  staleLabelCount, writePrintSettings, type LabelStatus, type PrintSettings,
+  containerPrintOrder, isContainerLabelType, labelStatusFor, missingLabelIds, printOrder, rackOf,
+  readPrintSettings, settingsModified, staleLabelCount, writePrintSettings,
+  type LabelStatus, type PrintSettings,
 } from '../lib/printLabels';
 import { useZebraPrinter } from '../lib/useZebraPrinter';
 import ComboBox from '../components/ComboBox';
 import OfflineCacheModal from '../components/labels/OfflineCacheModal';
 import PrintAssetList from '../components/labels/PrintAssetList';
+import PrintContainerList from '../components/labels/PrintContainerList';
 import PrintBatchModal, { type BatchPrintState } from '../components/labels/PrintBatchModal';
 import PrintSettingsModal from '../components/labels/PrintSettingsModal';
 import { ChoiceCard, InitiativeSummary, summaryFromInitiative } from '../components/reports/ReportOptionsLayout';
@@ -41,11 +49,6 @@ import '../styles/labels.css';
 
 const LABEL_DELAY_MS = 100;
 const AUTO_NEXT_SECONDS = 5;
-
-// Print Labels doesn't walk containers yet (that's a later phase-two task),
-// so the type picker here still excludes the container-shaped label types
-// even though Generate Labels now offers them.
-const NOT_YET_PRINTABLE_TYPES: ReadonlySet<string> = new Set(['container', 'container_info']);
 
 interface Notice { type: 'success' | 'info' | 'warning' | 'error'; message: string; action?: { label: string; onClick: () => void } }
 
@@ -85,6 +88,14 @@ export default function PrintLabels() {
   const [cachedBundles, setCachedBundles] = useState<labelCache.CachedBundleSummary[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [displayed, setDisplayed] = useState<InitiativeAssetRow[]>([]);
+  // Container mode's roster/selection/displayed rows live beside the asset
+  // ones rather than replacing them: the two id spaces must never mix, and
+  // switching type back and forth keeps each list's own selection.
+  const [containers, setContainers] = useState<ContainerItem[] | null>(null);
+  const [containersLoading, setContainersLoading] = useState(false);
+  const [containersDenied, setContainersDenied] = useState(false);
+  const [containerSelected, setContainerSelected] = useState<string[]>([]);
+  const [containerDisplayed, setContainerDisplayed] = useState<ContainerItem[]>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [settings, setSettings] = useState<PrintSettings>(() => readPrintSettings());
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -130,8 +141,7 @@ export default function PrintLabels() {
     refreshCachedBundles();
   }, [refreshCachedBundles]);
 
-  const typeVocab = useMemo(
-    () => vocabOfKind(vocab, 'type').filter((v) => !NOT_YET_PRINTABLE_TYPES.has(v.key)), [vocab]);
+  const typeVocab = useMemo(() => vocabOfKind(vocab, 'type'), [vocab]);
   // Offline without vocab: the types present in cached bundles.
   const typeChoices = useMemo(() => {
     if (typeVocab.length > 0) return typeVocab.map((v) => ({ key: v.key, label: v.label }));
@@ -174,7 +184,38 @@ export default function PrintLabels() {
     }
   }, [initiatives]);
 
+  // ── container roster load (container label types only) ───────────────
+  // `GET /containers` needs `containers:view`, which `labels:view` does not
+  // imply — a 403 here is a permissions answer, not "no containers", and
+  // says so. It also returns archived containers; `PrintContainerList`
+  // drops them so the list matches what the runner labels.
+  const loadContainers = useCallback(async (id: string, opts: { keepSelection?: boolean } = {}) => {
+    setContainersLoading(true);
+    if (!opts.keepSelection) setContainerSelected([]);
+    try {
+      const rows = await listContainers({ initiative_id: id });
+      if (initiativeIdRef.current !== id) return;
+      setContainers(rows);
+      setContainersDenied(false);
+      if (opts.keepSelection) {
+        setContainerSelected((s) => s.filter((cid) => rows.some((r) => r.id === cid)));
+      }
+    } catch (err) {
+      if (initiativeIdRef.current !== id) return;
+      const status = err instanceof Error && 'status' in err ? (err as { status?: number }).status : undefined;
+      setContainers([]);
+      setContainersDenied(status === 403);
+      if (status !== 403) setNotice({ type: 'error', message: "Couldn't load the initiative's containers." });
+    } finally {
+      if (initiativeIdRef.current === id) setContainersLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
+    setContainers(null);
+    setContainerSelected([]);
+    setContainerDisplayed([]);
+    setContainersDenied(false);
     if (!initiativeId) { setRoster(null); setSelected([]); setBundle(null); return; }
     void loadRoster(initiativeId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -219,6 +260,14 @@ export default function PrintLabels() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initiativeId, labelType]);
 
+  const containerMode = isContainerLabelType(labelType);
+
+  useEffect(() => {
+    if (!initiativeId || !containerMode) return;
+    void loadContainers(initiativeId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initiativeId, containerMode]);
+
   // Default the type to the first choice once vocab arrives (V2 defaulted to Front).
   useEffect(() => {
     if (!labelType && typeChoices.length > 0) setLabelType(typeChoices[0].key);
@@ -229,21 +278,35 @@ export default function PrintLabels() {
     const onOnline = () => {
       if (initiativeIdRef.current) {
         void loadRoster(initiativeIdRef.current, { keepSelection: true });
+        if (isContainerLabelType(labelType)) void loadContainers(initiativeIdRef.current, { keepSelection: true });
         if (labelType && labelType !== LABEL_TYPE_CUSTOM) void loadBundle(initiativeIdRef.current, labelType);
       }
     };
     window.addEventListener('online', onOnline);
     return () => window.removeEventListener('online', onOnline);
-  }, [labelType, loadRoster, loadBundle]);
+  }, [labelType, loadRoster, loadBundle, loadContainers]);
 
   const byEntity = useMemo(() => bundleByEntity(bundle), [bundle]);
   const isCustom = labelType === LABEL_TYPE_CUSTOM;
   const statusOf = useCallback((r: InitiativeAssetRow): LabelStatus => labelStatusFor(r.asset_id, byEntity), [byEntity]);
+  const containerStatusOf = useCallback((c: ContainerItem): LabelStatus => labelStatusFor(c.id, byEntity), [byEntity]);
+  /** The noun this mode prints labels for — used in the coverage line, the
+   *  card heading, the Ready-to-print bar and the validation notices. */
+  const entityNoun = containerMode ? 'container' : 'asset';
+  // Archived containers are excluded here exactly as the list excludes them,
+  // so coverage counts the same rows the operator can actually select.
+  const liveContainers = useMemo(() => (containers ?? []).filter((c) => !c.archived_at), [containers]);
   const coverage = useMemo(() => {
-    if (!roster || isCustom || !labelType) return null;
+    if (isCustom || !labelType) return null;
+    if (containerMode) {
+      if (!containers) return null;
+      const have = liveContainers.filter((c) => ['ready', 'stale'].includes(containerStatusOf(c))).length;
+      return { have, total: liveContainers.length, missing: liveContainers.length - have };
+    }
+    if (!roster) return null;
     const have = roster.filter((r) => statusOf(r) === 'ready' || statusOf(r) === 'stale').length;
     return { have, total: roster.length, missing: roster.length - have };
-  }, [roster, isCustom, labelType, statusOf]);
+  }, [roster, isCustom, labelType, statusOf, containerMode, containers, liveContainers, containerStatusOf]);
 
   const updateSettings = (next: PrintSettings) => { setSettings(next); writePrintSettings(next); };
 
@@ -262,7 +325,7 @@ export default function PrintLabels() {
       const zpl = zplFor(assetId);
       if (!zpl) { skipped += 1; continue; }
       const rack = rackOf(rowById.get(assetId));
-      if (settings.printByRack && prevRack !== null && rack !== prevRack) {
+      if (settings.printByRack && !containerMode && prevRack !== null && rack !== prevRack) {
         await sendBlanks(settings.blanksBetweenRacks);
         blanksSent += settings.blanksBetweenRacks;
       }
@@ -275,11 +338,17 @@ export default function PrintLabels() {
     return { formatsSent, blanksSent, skipped };
   };
 
-  const printableIds = useMemo(() => printOrder(selected, displayed, settings), [selected, displayed, settings]);
+  const printableIds = useMemo(
+    () => (containerMode
+      ? containerPrintOrder(containerSelected, containerDisplayed, settings)
+      : printOrder(selected, displayed, settings)),
+    [containerMode, containerSelected, containerDisplayed, selected, displayed, settings]);
+  const activeSelected = containerMode ? containerSelected : selected;
+  const setActiveSelected = containerMode ? setContainerSelected : setSelected;
 
   const validateForPrint = (): { ids: string[]; stale: number } | null => {
     if (!printer.connected || !labelType || printableIds.length === 0) {
-      setNotice({ type: 'error', message: 'Please connect a printer, select a label type, and select assets to print' });
+      setNotice({ type: 'error', message: `Please connect a printer, select a label type, and select ${entityNoun}s to print` });
       return null;
     }
     if (isCustom) {
@@ -292,9 +361,9 @@ export default function PrintLabels() {
       setNotice({
         type: 'error',
         message: unsupported === missing.length
-          ? `${missing.length} selected asset(s) have labels compiled for a non-Zebra printer`
-          : `${missing.length} selected asset(s) do not have ${typeLabel(labelType)} data. Please generate labels first.`,
-        action: { label: 'Deselect missing', onClick: () => { setSelected((s) => s.filter((id) => !missing.includes(id))); setNotice(null); } },
+          ? `${missing.length} selected ${entityNoun}(s) have labels compiled for a non-Zebra printer`
+          : `${missing.length} selected ${entityNoun}(s) do not have ${typeLabel(labelType)} data. Please generate labels first.`,
+        action: { label: 'Deselect missing', onClick: () => { setActiveSelected((s) => s.filter((id) => !missing.includes(id))); setNotice(null); } },
       });
       return null;
     }
@@ -479,17 +548,20 @@ export default function PrintLabels() {
 
         <StepCard step="Step 2" title="Label type" hint="Choose the type of label to print.">
           <div className="rgm-choice-cards" role="radiogroup" aria-label="Label type">
-            {typeChoices.map((t) => (
-              <ChoiceCard key={t.key} title={t.label} selected={labelType === t.key} onSelect={() => setLabelType(t.key)}
-                          description={labelType === t.key && coverage
-                            ? `${coverage.have} of ${coverage.total} assets have a ${t.label}${coverage.missing > 0 ? ` · ${coverage.missing} missing` : ''}`
-                            : `Printable ${t.label.toLowerCase()} for each selected asset`} />
-            ))}
+            {typeChoices.map((t) => {
+              const noun = isContainerLabelType(t.key) ? 'container' : 'asset';
+              return (
+                <ChoiceCard key={t.key} title={t.label} selected={labelType === t.key} onSelect={() => setLabelType(t.key)}
+                            description={labelType === t.key && coverage
+                              ? `${coverage.have} of ${coverage.total} ${noun}s have a ${t.label}${coverage.missing > 0 ? ` · ${coverage.missing} missing` : ''}`
+                              : `Printable ${t.label.toLowerCase()} for each selected ${noun}`} />
+              );
+            })}
             <ChoiceCard title="Custom" selected={isCustom} onSelect={() => setLabelType(LABEL_TYPE_CUSTOM)}
                         description="Send raw ZPL to the printer once per selected asset" />
           </div>
           {coverage && coverage.missing > 0 && (
-            <p className="page-hint"><Link to="/labels/generate">Generate labels</Link> for the assets that are missing one.</p>
+            <p className="page-hint"><Link to="/labels/generate">Generate labels</Link> for the {entityNoun}s that are missing one.</p>
           )}
           {isCustom && (
             <div className="pf-form">
@@ -526,11 +598,28 @@ export default function PrintLabels() {
         <div className="plabels-card-head">
           <div>
             <span className="eyebrow">Step 4</span>
-            <div className="modal-section">Assets to print</div>
+            <div className="modal-section">{containerMode ? 'Containers to print' : 'Assets to print'}</div>
           </div>
         </div>
         {!initiativeId ? (
-          <div className="dir-empty">Select an initiative to view assets</div>
+          <div className="dir-empty">Select an initiative to view {entityNoun}s</div>
+        ) : containerMode ? (
+          containersDenied ? (
+            <div className="dir-empty">
+              You do not have permission to list containers. Ask an administrator for container access,
+              or pick an asset label type.
+            </div>
+          ) : containersLoading && !containers ? (
+            <div className="dir-empty">Loading containers…</div>
+          ) : containers && liveContainers.length === 0 ? (
+            <div className="dir-empty">No containers found on this initiative</div>
+          ) : containers ? (
+            <PrintContainerList rows={containers} statusOf={isCustom || !labelType ? null : containerStatusOf}
+                                selected={containerSelected} onSelectedChange={setContainerSelected}
+                                onDisplayedChange={setContainerDisplayed}
+                                onRefresh={() => void loadContainers(initiativeId, { keepSelection: true })}
+                                refreshing={containersLoading} disabled={printing || !!batch} resetKey={initiativeId} />
+          ) : null
         ) : rosterLoading && !roster ? (
           <div className="dir-empty">Loading assets…</div>
         ) : roster && roster.length === 0 ? (
@@ -549,8 +638,8 @@ export default function PrintLabels() {
           <span className="cell-sub">
             {inlineProgress
               ? `Printing ${inlineProgress.done} of ${inlineProgress.total}…`
-              : selected.length === 0 ? 'Select assets to print labels'
-              : `${printableIds.length} label(s) will be printed${selected.length > printableIds.length ? ` · ${selected.length - printableIds.length} selected asset(s) are hidden by the current filters` : ''}`}
+              : activeSelected.length === 0 ? `Select ${entityNoun}s to print labels`
+              : `${printableIds.length} label(s) will be printed${activeSelected.length > printableIds.length ? ` · ${activeSelected.length - printableIds.length} selected ${entityNoun}(s) are hidden by the current filters` : ''}`}
           </span>
         </div>
         <div className="plabels-ready-actions">

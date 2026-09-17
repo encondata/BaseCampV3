@@ -3,11 +3,12 @@
  *  BaseCampV2-reference/portal-v2/src/pages/PrintLabels.jsx. */
 import { describe, expect, it } from 'vitest';
 
-import type { GeneratedLabelBundle, InitiativeAssetRow } from './api';
+import type { ContainerItem, GeneratedLabelBundle, InitiativeAssetRow } from './api';
 import {
   DEFAULT_PRINT_SETTINGS, alignmentTestZpl, applyPrintSettings, batchBounds, batchCount,
-  blankLabelsZpl, bundleByEntity, clampSetting, labelStatusFor, missingLabelIds, printOrder,
-  readPrintSettings, sanitizePrintSettings, settingsModified, staleLabelCount, writePrintSettings,
+  blankLabelsZpl, bundleByEntity, clampSetting, containerPrintOrder, isContainerLabelType,
+  labelStatusFor, missingLabelIds, printOrder, readPrintSettings, sanitizePrintSettings,
+  settingsModified, staleLabelCount, writePrintSettings,
 } from './printLabels';
 
 const S = (over: Partial<typeof DEFAULT_PRINT_SETTINGS> = {}) => ({ ...DEFAULT_PRINT_SETTINGS, ...over });
@@ -121,6 +122,32 @@ describe('printOrder', () => {
       return cmp !== 0 ? cmp : (ry.source_ru ?? 0) - (rx.source_ru ?? 0);
     }));
     expect(printOrder(['b', 'c'], rows, S({ printByRack: true }))).toEqual(['c', 'b']);
+  });
+});
+
+const container = (id: string): ContainerItem => ({ id, name: `box-${id}` } as unknown as ContainerItem);
+
+describe('containerPrintOrder', () => {
+  it('is the selection intersected with the displayed rows, in display order', () => {
+    const displayed = [container('a'), container('b'), container('c')];
+    expect(containerPrintOrder(['c', 'a', 'zzz'], displayed, DEFAULT_PRINT_SETTINGS))
+      .toEqual(['a', 'c']);
+  });
+
+  it('ignores printByRack, which has no container meaning', () => {
+    const displayed = [container('a'), container('b')];
+    expect(containerPrintOrder(['a', 'b'], displayed, S({ printByRack: true }))).toEqual(['a', 'b']);
+  });
+});
+
+describe('isContainerLabelType', () => {
+  it('knows the container-shaped types and treats everything else as an asset type', () => {
+    expect(isContainerLabelType('container')).toBe(true);
+    expect(isContainerLabelType('container_info')).toBe(true);
+    expect(isContainerLabelType('top')).toBe(false);
+    expect(isContainerLabelType('front')).toBe(false);
+    expect(isContainerLabelType('custom')).toBe(false);
+    expect(isContainerLabelType('')).toBe(false);
   });
 });
 
