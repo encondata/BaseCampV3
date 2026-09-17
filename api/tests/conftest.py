@@ -343,7 +343,8 @@ async def clean_db():
               ('time_entry','approved','Approved','','#178a4c',3),
               ('time_entry','rejected','Rejected','','#c03540',4)
         """))
-        # device type vocabulary — restore canonical seeds (0037)
+        # device type vocabulary — restore canonical seeds (0037 as 0067
+        # leaves them: handheld_reader is retired)
         await session.execute(text(
             "DELETE FROM status_values WHERE record_type = 'device_type'"))
         await session.execute(text("""
@@ -352,7 +353,6 @@ async def clean_db():
             VALUES
               ('device_type','router','Router','GL.iNet site router.','#1668a7',1),
               ('device_type','fixed_reader','Fixed Reader','Zebra FX9600 fixed RFID reader.','#178a4c',2),
-              ('device_type','handheld_reader','Handheld Reader','Android / iOS / Zebra handheld scanner.','#6d4fc4',3),
               ('device_type','kiosk','Kiosk','Web or iPad kiosk station.','#a36207',4)
         """))
         # truck vocabulary — restore canonical seeds (0049)

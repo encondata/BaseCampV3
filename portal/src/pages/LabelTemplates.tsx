@@ -1,6 +1,6 @@
 /** Label Templates — the directory list of label templates (design/ZPL
  *  builder rows and raw-code rows side by side). Standalone page (own
- *  .portal-page/.dir-head, model: FixedReaders.tsx / HandheldReaders.tsx)
+ *  .portal-page/.dir-head, model: FixedReaders.tsx / KioskDevices.tsx)
  *  built on the shared directory-list pattern: search + toolbar
  *  FilterButton facet (Type/Size/Language/Kind/Active) + per-column
  *  ColumnMenu filters + persisted visible/sort/order state

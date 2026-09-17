@@ -17,8 +17,7 @@ it('nav section sits between Stakeholders and Admin, gated on scanning_hardware'
   expect(idx).toBeLessThan(labels.indexOf('Admin'));
   const section = NAV_SECTIONS[idx];
   expect(section.items.map((i) => i.to)).toEqual([
-    '/hardware/handheld-readers', '/hardware/fixed-readers',
-    '/hardware/kiosks', '/hardware/routers',
+    '/hardware/fixed-readers', '/hardware/kiosks', '/hardware/routers',
   ]);
   expect(new Set(section.items.map((i) => i.resource)))
     .toEqual(new Set(['scanning_hardware']));

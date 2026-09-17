@@ -27,7 +27,6 @@ export const ROUTE_RESOURCE: Record<string, string> = {
   '/labels/generate': 'labels',
   '/labels/templates': 'labels',
   '/labels/printers': 'labels',
-  '/hardware/handheld-readers': 'scanning_hardware',
   '/hardware/fixed-readers': 'scanning_hardware',
   '/hardware/kiosks': 'scanning_hardware',
   '/hardware/routers': 'scanning_hardware',

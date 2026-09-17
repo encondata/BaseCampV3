@@ -20,7 +20,6 @@ import DevDatabase from './pages/DevDatabase';
 import External from './pages/External';
 import FixedReaders from './pages/FixedReaders';
 import GenerateLabels from './pages/GenerateLabels';
-import HandheldReaders from './pages/HandheldReaders';
 import Home from './pages/Home';
 import ImportMoveAssets from './pages/ImportMoveAssets';
 import Initiatives from './pages/Initiatives';
@@ -177,8 +176,6 @@ export default function App() {
                 <Route path="/reports" element={
                   <ProtectedRoute resource="reports"><Reports /></ProtectedRoute>
                 } />
-                <Route path="/hardware/handheld-readers" element={
-                  <ProtectedRoute resource="scanning_hardware"><HandheldReaders /></ProtectedRoute>} />
                 <Route path="/hardware/fixed-readers" element={
                   <ProtectedRoute resource="scanning_hardware"><FixedReaders /></ProtectedRoute>} />
                 <Route path="/hardware/kiosks" element={

@@ -1,6 +1,6 @@
 /**
  * DeviceEditModal — create/edit for a single scanning-hardware device row
- * (kiosk, handheld reader, …) that's provisioned from the portal rather
+ * (kiosk, fixed reader, …) that's provisioned from the portal rather
  * than self-registering. `device === null` opens in create mode;
  * otherwise saves via patchDevice(id, changedFieldsOnly). Generalized
  * from the kiosk-only KioskEditModal: the caller supplies `deviceType`
@@ -33,8 +33,8 @@ import {
 interface TypeOption { value: string; label: string }
 
 interface Props {
-  deviceType: string; // wire device_type for create, e.g. 'kiosk' | 'handheld_reader'
-  noun: string; // e.g. 'kiosk' | 'handheld reader' — drives heading/button copy
+  deviceType: string; // wire device_type for create, e.g. 'kiosk' | 'fixed_reader'
+  noun: string; // e.g. 'kiosk' | 'fixed reader' — drives heading/button copy
   typeOptions: TypeOption[]; // Type select choices (sub_type)
   device: DeviceItem | null; // null = create mode
   onClose: () => void;
