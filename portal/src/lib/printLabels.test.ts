@@ -3,11 +3,12 @@
  *  BaseCampV2-reference/portal-v2/src/pages/PrintLabels.jsx. */
 import { describe, expect, it } from 'vitest';
 
-import type { GeneratedLabelBundle, InitiativeAssetRow } from './api';
+import type { ContainerItem, GeneratedLabelBundle, InitiativeAssetRow, LabelVocab } from './api';
 import {
   DEFAULT_PRINT_SETTINGS, alignmentTestZpl, applyPrintSettings, batchBounds, batchCount,
-  blankLabelsZpl, bundleByEntity, clampSetting, labelStatusFor, missingLabelIds, printOrder,
-  readPrintSettings, sanitizePrintSettings, settingsModified, staleLabelCount, writePrintSettings,
+  blankLabelsZpl, bundleByEntity, clampSetting, containerPrintOrder, defaultCopiesFor,
+  labelStatusFor, missingLabelIds, printOrder, readPrintSettings,
+  sanitizePrintSettings, settingsModified, staleLabelCount, writePrintSettings,
 } from './printLabels';
 
 const S = (over: Partial<typeof DEFAULT_PRINT_SETTINGS> = {}) => ({ ...DEFAULT_PRINT_SETTINGS, ...over });
@@ -121,6 +122,49 @@ describe('printOrder', () => {
       return cmp !== 0 ? cmp : (ry.source_ru ?? 0) - (rx.source_ru ?? 0);
     }));
     expect(printOrder(['b', 'c'], rows, S({ printByRack: true }))).toEqual(['c', 'b']);
+  });
+});
+
+const container = (id: string): ContainerItem => ({ id, name: `box-${id}` } as unknown as ContainerItem);
+
+describe('containerPrintOrder', () => {
+  it('is the selection intersected with the displayed rows, in display order', () => {
+    const displayed = [container('a'), container('b'), container('c')];
+    expect(containerPrintOrder(['c', 'a', 'zzz'], displayed, DEFAULT_PRINT_SETTINGS))
+      .toEqual(['a', 'c']);
+  });
+
+  it('ignores printByRack, which has no container meaning', () => {
+    const displayed = [container('a'), container('b')];
+    expect(containerPrintOrder(['a', 'b'], displayed, S({ printByRack: true }))).toEqual(['a', 'b']);
+  });
+});
+
+const typeVocabRow = (key: string, meta: Record<string, unknown> = {}): LabelVocab => ({
+  kind: 'type', key, label: key, description: '', meta, sort_order: 1, is_active: true, usage_count: null,
+});
+
+describe('defaultCopiesFor', () => {
+  const vocab: LabelVocab[] = [
+    typeVocabRow('container', { default_copies: 5 }),
+    typeVocabRow('container_info', { default_copies: 1 }),
+    typeVocabRow('top'),
+  ];
+  it('reads default_copies from the type vocab meta', () => {
+    expect(defaultCopiesFor(vocab, 'container')).toBe(5);
+    expect(defaultCopiesFor(vocab, 'container_info')).toBe(1);
+  });
+  it('is null for a type that carries no default', () => {
+    expect(defaultCopiesFor(vocab, 'top')).toBeNull();
+  });
+  it('is null for a type key with no matching vocab row', () => {
+    expect(defaultCopiesFor(vocab, 'missing')).toBeNull();
+  });
+  it('ignores a non-numeric or out-of-range meta value', () => {
+    expect(defaultCopiesFor([typeVocabRow('container', { default_copies: 'five' })], 'container')).toBeNull();
+    expect(defaultCopiesFor([typeVocabRow('container', { default_copies: 0 })], 'container')).toBeNull();
+    expect(defaultCopiesFor([typeVocabRow('container', { default_copies: 100 })], 'container')).toBeNull();
+    expect(defaultCopiesFor([typeVocabRow('container', { default_copies: 2.5 })], 'container')).toBeNull();
   });
 });
 

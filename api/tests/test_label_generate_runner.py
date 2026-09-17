@@ -19,13 +19,15 @@ from sqlalchemy.exc import IntegrityError
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
-    Asset, AssetModel, GeneratedLabel, Initiative, InitiativeAsset, LabelGenerationRun,
-    LabelTemplate, LabelVocab, Notification, Person, Site,
+    Asset, AssetModel, Container, GeneratedLabel, Initiative, InitiativeAsset,
+    LabelGenerationRun, LabelTemplate, LabelVocab, Notification, Person, Site,
 )
-from serversherpa.labels.generate import InvalidLabelTypes, InvalidTemplates, RunActive, enqueue_run
+from serversherpa.labels.generate import (
+    InvalidLabelTypes, InvalidTemplates, RunActive, enqueue_run, entity_for_type)
 from serversherpa.labels.generate.engine import render_label
 from serversherpa.labels.generate.jobs import STALE_MINUTES, claim_next, requeue_stale
 from serversherpa.labels.generate import runner as runner_module
+from serversherpa.labels.generate import values as values_module
 from serversherpa.labels.generate import worker
 from serversherpa.labels.generate.runner import process_run
 
@@ -86,6 +88,32 @@ def _queued_run(initiative_id, requested_by, *, label_types=("top",), notify=Fal
         initiative_id=initiative_id, label_types=list(label_types),
         regenerate_existing=regenerate_existing, requested_by=requested_by,
         notify=notify, status="running", started_at=datetime.now(UTC))
+
+
+async def _add_containers(db, initiative, names, *, archived=False):
+    """Containers on the initiative — the roster a container label type
+    walks. `archived=True` stamps `archived_at` so the archived-container
+    exclusion can be proved."""
+    containers = []
+    for name in names:
+        container = Container(
+            name=name, initiative_id=initiative.id, label_tag="priority",
+            archived_at=datetime.now(UTC) if archived else None)
+        db.add(container)
+        containers.append(container)
+    await db.commit()
+    return containers
+
+
+async def _seed_template(db, *, label_type, code="{container_name}"):
+    """A global (no site links) active code template of one label type,
+    so `select_template` auto-matches it for that type."""
+    template = LabelTemplate(
+        name=f"{label_type}-tpl-{uuid.uuid4()}", label_type=label_type, size_key="4x2",
+        dpi_key="203", language_key="zpl", kind="code", code=code)
+    db.add(template)
+    await db.commit()
+    return template
 
 
 # ── engine.render_label ────────────────────────────────────────────
@@ -194,9 +222,15 @@ async def test_runner_skips_existing_current_label_unless_regenerate(db):
 
 
 async def test_runner_per_asset_exception_is_recorded_and_run_continues(db):
+    # The failure is injected into the ASSET value builder itself. The
+    # runner now calls `values_for_row` (which dispatches asset vs
+    # container rows), so patching the runner module's own namespace no
+    # longer reaches the asset path — patch `values.placeholder_values`,
+    # which `values_for_row` looks up at call time. Same injection, same
+    # assertions.
     initiative, person, assets, template = await _seed_initiative(db, n_assets=3)
     boom_asset_id = assets[1].id
-    real = runner_module.placeholder_values
+    real = values_module.placeholder_values
 
     def flaky(row, *args, **kwargs):
         if row.asset_id == boom_asset_id:
@@ -207,12 +241,11 @@ async def test_runner_per_asset_exception_is_recorded_and_run_continues(db):
     db.add(run)
     await db.commit()
 
-    orig = runner_module.placeholder_values
-    runner_module.placeholder_values = flaky
+    values_module.placeholder_values = flaky
     try:
         status = await process_run(db, run, sessionmaker=get_sessionmaker())
     finally:
-        runner_module.placeholder_values = orig
+        values_module.placeholder_values = real
 
     assert status == "completed"
     await db.refresh(run)
@@ -506,21 +539,19 @@ async def test_enqueue_run_rejects_empty_types(db):
 
 
 @pytest.mark.parametrize("key", ["container", "container_info"])
-async def test_enqueue_run_rejects_container_types_even_when_active(db, key):
+async def test_container_types_can_now_be_enqueued(db, key):
     """`container` and (since migration 0066) `container_info` are active
-    vocab types, but container labels come from the Container Labels page —
-    never an asset run type. The runner hardcodes entity_type="asset", so
-    letting either through queues one container label per asset."""
+    vocab types. Phase two taught the runner to pick a roster per label
+    type (`entity_for_type`), so the gate that used to reject these two
+    is gone — they enqueue exactly like any other active type."""
     initiative, person, assets, template = await _seed_initiative(db, n_assets=1)
     if await db.get(LabelVocab, ("type", key)) is None:
         db.add(LabelVocab(kind="type", key=key, label=key, is_active=True))
     await db.commit()
     assert (await db.get(LabelVocab, ("type", key))).is_active is True
-    with pytest.raises(InvalidLabelTypes) as exc:
-        await enqueue_run(db, initiative_id=initiative.id, label_types=["top", key],
-                          regenerate_existing=False, requested_by=person.id, notify=False)
-    assert exc.value.problems == [
-        f"{key}: container labels are generated from the Container Labels page"]
+    run = await enqueue_run(db, initiative_id=initiative.id, label_types=["top", key],
+                            regenerate_existing=False, requested_by=person.id, notify=False)
+    assert list(run.label_types) == ["top", key]
 
 
 async def test_enqueue_run_rejects_unknown_types(db):
@@ -783,3 +814,105 @@ async def test_runner_upsert_survives_postgres_generic_plan_switch(db):
     rows = (await db.execute(select(GeneratedLabel).where(
         GeneratedLabel.initiative_id == initiative.id))).scalars().all()
     assert len(rows) == 8
+
+
+# ── containers: one roster per entity kind ───────────────────────────
+
+def test_entity_for_type_maps_container_types_and_defaults_to_asset():
+    assert entity_for_type("container") == "container"
+    assert entity_for_type("container_info") == "container"
+    assert entity_for_type("top") == "asset"
+    assert entity_for_type("something_new") == "asset"
+
+
+async def test_a_container_type_walks_containers_not_assets(db):
+    """The whole point of phase two: a container label type must produce one
+    label per CONTAINER, stamped entity_type='container'."""
+    initiative, person, _assets, _tpl = await _seed_initiative(db, n_assets=3)
+    await _add_containers(db, initiative, ["crate-17", "crate-18"])
+    await _seed_template(db, label_type="container")
+
+    run = _queued_run(initiative.id, person.id, label_types=["container"])
+    db.add(run)
+    await db.commit()
+    await process_run(db, run, sessionmaker=get_sessionmaker())
+
+    await db.refresh(run)
+    rows = (await db.execute(select(GeneratedLabel).where(
+        GeneratedLabel.initiative_id == initiative.id,
+        GeneratedLabel.label_type == "container"))).scalars().all()
+    assert len(rows) == 2
+    assert {r.entity_type for r in rows} == {"container"}
+    assert sorted(r.code for r in rows) == ["crate-17", "crate-18"]
+    assert run.generated == 2 and run.errors == 0
+
+
+async def test_archived_containers_are_not_labeled(db):
+    initiative, person, _assets, _tpl = await _seed_initiative(db, n_assets=0)
+    await _add_containers(db, initiative, ["live-crate"])
+    await _add_containers(db, initiative, ["old-crate"], archived=True)
+    await _seed_template(db, label_type="container")
+
+    run = _queued_run(initiative.id, person.id, label_types=["container"])
+    db.add(run)
+    await db.commit()
+    await process_run(db, run, sessionmaker=get_sessionmaker())
+
+    await db.refresh(run)
+    assert run.generated == 1 and run.total == 1
+
+
+async def test_a_mixed_run_totals_each_type_against_its_own_roster(db):
+    """total used to be len(roster) * len(label_types); with two entity
+    kinds the rosters differ in length and that arithmetic is wrong."""
+    initiative, person, _assets, _top = await _seed_initiative(db, n_assets=3)
+    await _add_containers(db, initiative, ["crate-17", "crate-18"])
+    await _seed_template(db, label_type="container")
+
+    run = _queued_run(initiative.id, person.id, label_types=["top", "container"])
+    db.add(run)
+    await db.commit()
+    await process_run(db, run, sessionmaker=get_sessionmaker())
+
+    await db.refresh(run)
+    assert run.total == 5          # 3 assets + 2 containers, not 2 * 2 or 3 * 2
+    assert run.generated == 5 and run.processed == 5
+
+
+async def test_container_and_asset_labels_do_not_collide_on_upsert(db):
+    """generated_labels is keyed on (entity_type, entity_id, initiative,
+    label_type); a container and an asset must never overwrite each other."""
+    initiative, person, _assets, _top = await _seed_initiative(db, n_assets=1)
+    await _add_containers(db, initiative, ["crate-17"])
+    await _seed_template(db, label_type="container")
+
+    run = _queued_run(initiative.id, person.id, label_types=["top", "container"])
+    db.add(run)
+    await db.commit()
+    await process_run(db, run, sessionmaker=get_sessionmaker())
+
+    rows = (await db.execute(select(GeneratedLabel).where(
+        GeneratedLabel.initiative_id == initiative.id))).scalars().all()
+    assert len(rows) == 2
+    assert {(r.entity_type, r.label_type) for r in rows} == {
+        ("asset", "top"), ("container", "container")}
+
+
+async def test_rerunning_a_container_type_skips_unchanged_labels(db):
+    initiative, person, _assets, _tpl = await _seed_initiative(db, n_assets=0)
+    await _add_containers(db, initiative, ["crate-17"])
+    await _seed_template(db, label_type="container")
+
+    first = _queued_run(initiative.id, person.id, label_types=["container"])
+    db.add(first)
+    await db.commit()
+    await process_run(db, first, sessionmaker=get_sessionmaker())
+    await db.refresh(first)
+    assert first.generated == 1
+
+    second = _queued_run(initiative.id, person.id, label_types=["container"])
+    db.add(second)
+    await db.commit()
+    await process_run(db, second, sessionmaker=get_sessionmaker())
+    await db.refresh(second)
+    assert second.skipped == 1 and second.generated == 0

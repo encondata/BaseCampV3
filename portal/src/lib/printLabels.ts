@@ -4,7 +4,7 @@
  * arithmetic, and per-asset label status. No React, no fetching.
  * Behavior contract: docs/superpowers/specs/2026-09-12-print-labels-design.md.
  */
-import type { GeneratedLabelBundle, GeneratedLabelBundleItem, InitiativeAssetRow } from './api';
+import type { ContainerItem, GeneratedLabelBundle, GeneratedLabelBundleItem, InitiativeAssetRow, LabelVocab } from './api';
 
 export interface PrintSettings {
   verticalOffset: number;
@@ -63,6 +63,18 @@ export function sanitizePrintSettings(raw: unknown): PrintSettings {
     printByRack: 'printByRack' in r ? Boolean(r.printByRack) : DEFAULT_PRINT_SETTINGS.printByRack,
     blanksBetweenRacks: num('blanksBetweenRacks'),
   };
+}
+
+/** The per-type copies default seeded on the `type` vocab meta (migration
+ *  0066): 5 for a container barcode label, 1 for its info label. Null when
+ *  the type carries no default or the value is not a usable count — the
+ *  caller then leaves the copies setting alone. */
+export function defaultCopiesFor(vocab: LabelVocab[], labelType: string): number | null {
+  const meta = vocab.find((v) => v.kind === 'type' && v.key === labelType)?.meta;
+  const raw = (meta as Record<string, unknown> | undefined)?.default_copies;
+  return typeof raw === 'number' && Number.isInteger(raw)
+    && raw >= SETTING_LIMITS.copies.min && raw <= SETTING_LIMITS.copies.max
+    ? raw : null;
 }
 
 function defaultStorage(): Storage | null {
@@ -156,6 +168,18 @@ export function printOrder(selectedIds: string[], displayedRows: InitiativeAsset
   }).map((r) => r.asset_id);
 }
 
+/** The container counterpart of `printOrder`: the selection intersected
+ *  with the displayed rows, in display order. There is no rack ordering —
+ *  `printByRack` and `blanksBetweenRacks` are asset concepts (a rack is a
+ *  property of an asset's position in a move) and are ignored here, so the
+ *  settings object is accepted only to keep the two call sites symmetric. */
+export function containerPrintOrder(
+  selectedIds: string[], displayedRows: ContainerItem[], _s: PrintSettings,
+): string[] {
+  const chosen = new Set(selectedIds);
+  return displayedRows.filter((r) => chosen.has(r.id)).map((r) => r.id);
+}
+
 export function batchCount(total: number, batchSize: number): number {
   return Math.ceil(total / Math.max(1, batchSize));
 }
@@ -176,8 +200,8 @@ export function bundleByEntity(bundle: GeneratedLabelBundle | null): Map<string,
 /** Only ZPL can go to a Zebra; a label compiled for another language is
  *  `unsupported` (blocks the print like a missing one). Stale labels still
  *  have code, so they print. */
-export function labelStatusFor(assetId: string, byEntity: Map<string, GeneratedLabelBundleItem>): LabelStatus {
-  const item = byEntity.get(assetId);
+export function labelStatusFor(entityId: string, byEntity: Map<string, GeneratedLabelBundleItem>): LabelStatus {
+  const item = byEntity.get(entityId);
   if (!item) return 'missing';
   if (item.language_key !== 'zpl') return 'unsupported';
   return item.stale ? 'stale' : 'ready';

@@ -15,7 +15,7 @@ __pycache__/
 .ruff_cache/
 
 # Node
-node_modules/
+node_modules
 dist/
 
 # Reference material (previous-generation projects, not part of V3)

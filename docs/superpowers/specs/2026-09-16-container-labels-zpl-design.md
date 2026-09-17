@@ -212,8 +212,15 @@ that containers are out of scope, resolving `container_name`/`container_id` to
   alongside the asset path, including the `CONTAINER` fallback for an untagged
   container and the `move_date_long` formatting.
 - **One `ENTITY_FOR_TYPE` map** (`container`/`container_info` -> `"container"`,
-  everything else -> `"asset"`), living beside the existing `labels/tags.py`
-  key source so exactly one place knows this.
+  everything else -> `"asset"`). As shipped it lives in
+  `labels/generate/__init__.py` (with `entity_for_type()`) rather than beside
+  `labels/tags.py` — it is the generate pipeline's own concept, and that is
+  where the runner, the bundle route and `enqueue_run` all reach for it. It is
+  not the only copy: the portal needs the same answer to choose a roster and to
+  count a run, and cannot import Python, so `CONTAINER_LABEL_TYPES` /
+  `isContainerLabelType` in `portal/src/lib/labels.ts` is a deliberate second
+  copy. Each side carries a comment pointing at the other; a new
+  container-shaped type must be added to both.
 - **`runner.py`**: roster loading becomes per-label-type, and `total` becomes a
   sum over types rather than `len(roster) * len(label_types)` — with mixed
   entity kinds the rosters differ in length.
@@ -229,11 +236,21 @@ needed for the rows themselves.
 `GET /labels/generated/bundle` already filters by `label_type`, so the bundle
 works as soon as container rows exist. `PrintAssetList` is asset-shaped (rack /
 RU sort, rack separators), so containers get a sibling list rather than a
-contorted shared one; it lists the containers that have a generated label of the
-selected type on the selected initiative, with the same checkbox column, search,
-column menu and Ready/Missing filter, sorted by container name. The copies
-setting seeds from the selected type's `default_copies` meta and remains
-editable.
+contorted shared one; it carries the same checkbox column, search, column menu
+and Ready/Missing filter, sorted by container name.
+
+As shipped the list is drawn from `GET /containers` — every live container on
+the initiative, each marked Ready or Missing by whether the bundle holds a
+label for it — not from the bundle alone. That matches the asset list, which
+has always shown the whole roster: an operator needs to see the containers with
+no label yet, because "nothing to print" and "you have not generated labels
+yet" are different answers. Archived containers are filtered out client-side so
+the list matches what the runner labels.
+
+The copies setting seeds from the selected type's `default_copies` meta and
+remains editable. The seed is held apart from the operator's stored settings:
+switching to a type without a default restores the operator's own value, and a
+seeded number is never written to localStorage.
 
 ## 6. Testing
 

@@ -3166,6 +3166,9 @@ class LabelGeneratePreviewInitiativeOut(BaseModel):
     source_name: str | None
     destination_name: str | None
     asset_count: int
+    # The initiative's live (non-archived) containers — what a container
+    # label type's run walks. The asset types label `asset_count` rows.
+    container_count: int = 0
 
 
 class LabelGeneratePreviewTemplateOut(BaseModel):
@@ -3222,7 +3225,7 @@ class GeneratedLabelOut(BaseModel):
 
 class GeneratedLabelBundleItemOut(BaseModel):
     id: uuid.UUID
-    entity_type: str
+    entity_type: Literal["asset", "container"]
     entity_id: uuid.UUID
     template_id: uuid.UUID
     template_name: str

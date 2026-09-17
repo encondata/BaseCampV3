@@ -40,13 +40,13 @@ from serversherpa.api.schemas import (
     LabelZplPreviewIn,
 )
 from serversherpa.db.models import (
-    Asset, Client, GeneratedLabel, Initiative, InitiativeAsset,
+    Asset, Client, Container, GeneratedLabel, Initiative, InitiativeAsset,
     LabelFont, LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelTemplateSite,
     LabelVocab, Person, Site,
 )
 from serversherpa.labels import labelary
 from serversherpa.labels.compile import UnsupportedLanguage, compile_design
-from serversherpa.labels.generate import CONTAINER_LABEL_TYPES, InvalidLabelTypes, InvalidTemplates, RunActive, enqueue_run
+from serversherpa.labels.generate import InvalidLabelTypes, InvalidTemplates, RunActive, entity_for_type, enqueue_run
 from serversherpa.labels.generate.select import candidate_templates
 from serversherpa.labels.model import DesignError, parse_design
 from serversherpa.labels.tokens import apply_placeholders
@@ -791,12 +791,20 @@ async def preview_generation(
     asset_count = await db.scalar(
         select(func.count()).select_from(InitiativeAsset)
         .where(InitiativeAsset.initiative_id == ini.id)) or 0
+    # The container label types label containers, not assets, so the preview
+    # carries both counts and the portal shows whichever the picked types
+    # describe. Counted exactly as the runner's roster is built
+    # (`_load_container_roster`) — initiative match AND not archived — so the
+    # number the operator sees is the number of labels the run produces.
+    container_count = await db.scalar(
+        select(func.count()).select_from(Container)
+        .where(Container.initiative_id == ini.id,
+               Container.archived_at.is_(None))) or 0
 
     # Same site preference as the runner: destination, else origin.
     template_site_id = ini.destination_site_id or ini.origin_site_id
     type_rows = (await db.execute(
-        select(LabelVocab).where(LabelVocab.kind == "type", LabelVocab.is_active == True,  # noqa: E712
-                                 LabelVocab.key.notin_(CONTAINER_LABEL_TYPES))
+        select(LabelVocab).where(LabelVocab.kind == "type", LabelVocab.is_active == True)  # noqa: E712
         .order_by(LabelVocab.sort_order, LabelVocab.key))).scalars().all()
 
     types: list[LabelGeneratePreviewTypeOut] = []
@@ -821,7 +829,7 @@ async def preview_generation(
             select(GeneratedLabel.template_id, GeneratedLabel.template_version,
                    GeneratedLabel.stale)
             .where(GeneratedLabel.initiative_id == ini.id,
-                   GeneratedLabel.entity_type == "asset",
+                   GeneratedLabel.entity_type == entity_for_type(vocab.key),
                    GeneratedLabel.label_type == vocab.key))).all()
         for template_id, template_version, is_stale in existing_rows:
             if (template is not None and template_id == template.id
@@ -842,7 +850,8 @@ async def preview_generation(
         initiative=LabelGeneratePreviewInitiativeOut(
             id=ini.id, name=ini.name, client_name=client_name, status=ini.status,
             scheduled_start=ini.scheduled_start, source_name=source_name,
-            destination_name=destination_name, asset_count=asset_count),
+            destination_name=destination_name, asset_count=asset_count,
+            container_count=container_count),
         types=types, active_run_id=active_run_id)
 
 
@@ -896,18 +905,25 @@ async def get_generated_label_bundle(
     db: DbSession, initiative_id: uuid.UUID, label_type: str,
     actor: AuthContext = require_permission("labels", "view"),
 ) -> GeneratedLabelBundleOut:
-    """Print Labels' data source: every asset label of one type on one
-    initiative, with the language/size/dpi keys the page needs to decide
-    what a Zebra printer can take. Unknown/archived/out-of-scope
-    initiatives read as 404 like the preview endpoint."""
+    """Print Labels' data source: every label of one type on one
+    initiative — asset or container, whichever `label_type` maps to —
+    with the language/size/dpi keys the page needs to decide what a
+    Zebra printer can take. Unknown/archived/out-of-scope initiatives
+    read as 404 like the preview endpoint."""
     ini = await _scoped_initiative(db, actor, initiative_id)
-    rows = (await db.execute(
-        select(GeneratedLabel, LabelTemplate.name)
-        .join(LabelTemplate, LabelTemplate.id == GeneratedLabel.template_id)
-        .where(GeneratedLabel.initiative_id == ini.id,
-               GeneratedLabel.entity_type == "asset",
-               GeneratedLabel.label_type == label_type)
-        .order_by(GeneratedLabel.generated_at, GeneratedLabel.id))).all()
+    # The entity filter is the whole point of the mapping: a container type
+    # must never serve asset labels (or the reverse), whatever rows happen
+    # to share the initiative. Display names are deliberately NOT joined —
+    # the page builds its roster from /assets and /containers, which carry
+    # far richer rows, and keys this payload by entity_id alone.
+    entity_type = entity_for_type(label_type)
+    query = (select(GeneratedLabel, LabelTemplate.name)
+             .join(LabelTemplate, LabelTemplate.id == GeneratedLabel.template_id)
+             .where(GeneratedLabel.initiative_id == ini.id,
+                    GeneratedLabel.entity_type == entity_type,
+                    GeneratedLabel.label_type == label_type)
+             .order_by(GeneratedLabel.generated_at, GeneratedLabel.id))
+    rows = (await db.execute(query)).all()
     return GeneratedLabelBundleOut(
         initiative_id=ini.id, label_type=label_type, fetched_at=datetime.now(UTC),
         labels=[

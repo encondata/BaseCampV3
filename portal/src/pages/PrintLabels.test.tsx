@@ -12,10 +12,11 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { GeneratedLabelBundle, InitiativeAssetRow, InitiativeItem, LabelVocab } from '../lib/api';
+import type { ContainerItem, GeneratedLabelBundle, InitiativeAssetRow, InitiativeItem, LabelVocab } from '../lib/api';
 
 const api = vi.hoisted(() => ({
   listInitiatives: vi.fn(), listInitiativeAssets: vi.fn(), listLabelVocab: vi.fn(), getGeneratedLabelBundle: vi.fn(),
+  listContainers: vi.fn(),
 }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()), ...api,
@@ -74,7 +75,7 @@ const row = (n: number, rack: string, ru: number): InitiativeAssetRow => ({
 const vocab: LabelVocab[] = [
   { kind: 'type', key: 'top', label: 'Top Label', description: '', meta: {}, sort_order: 1, is_active: true, usage_count: null },
   { kind: 'type', key: 'front', label: 'Front Label', description: '', meta: {}, sort_order: 2, is_active: true, usage_count: null },
-  { kind: 'type', key: 'container', label: 'Container Label', description: '', meta: {}, sort_order: 4, is_active: true, usage_count: null },
+  { kind: 'type', key: 'container', label: 'Container Label', description: '', meta: { default_copies: 5 }, sort_order: 4, is_active: true, usage_count: null },
   { kind: 'size', key: '4x2', label: '4" x 2"', description: '', meta: { width_in: 4, height_in: 2 }, sort_order: 1, is_active: true, usage_count: null },
   { kind: 'dpi', key: '300', label: '300 DPI', description: '', meta: { dots: 300 }, sort_order: 2, is_active: true, usage_count: null },
 ];
@@ -89,6 +90,14 @@ const bundleFor = (ids: string[], type = 'top', staleIds: string[] = []): Genera
 
 const ROWS = [row(1, 'R1', 40), row(2, 'R1', 42), row(3, 'R2', 10)];
 
+const container = (id: string, over: Partial<ContainerItem> = {}): ContainerItem => ({
+  id, name: `crate-${id}`, rfid_tag: null, container_type: 'pallet', type_label: 'Pallet', type_color: '#abc',
+  status: 'packed', status_label: 'Packed', status_color: '#123', site_id: 's1', site_name: 'NAP11',
+  location_detail: '', asset_count: 2, last_audit_at: null, last_validated_at: null, archived_at: null,
+  created_at: '2026-09-01T00:00:00Z', initiative_id: 'i1', initiative_name: 'NAP11', label_tag: null, ...over,
+});
+const CONTAINERS = [container('k1'), container('k2'), container('k3', { archived_at: '2026-01-01T00:00:00Z' })];
+
 beforeEach(() => {
   localStorage.clear();
   cache.inis.clear(); cache.bundles.clear();
@@ -96,7 +105,9 @@ beforeEach(() => {
   api.listInitiatives.mockResolvedValue([ini('i1', 'NAP11'), ini('i2', 'Done move', 'completed')]);
   api.listLabelVocab.mockResolvedValue(vocab);
   api.listInitiativeAssets.mockResolvedValue(ROWS);
-  api.getGeneratedLabelBundle.mockImplementation(async (_i: string, t: string) => bundleFor(t === 'top' ? ['a1', 'a2', 'a3'] : ['a1'], t));
+  api.listContainers.mockResolvedValue(CONTAINERS);
+  api.getGeneratedLabelBundle.mockImplementation(async (_i: string, t: string) => (
+    t === 'container' ? bundleFor(['k1', 'k2'], t) : bundleFor(t === 'top' ? ['a1', 'a2', 'a3'] : ['a1'], t)));
 });
 afterEach(cleanup);
 
@@ -118,7 +129,7 @@ it('renders the header, hides finished initiatives, and shows the summary + cove
   await screen.findByText('Showing 3 of 3 assets');
   expect(screen.getByText('3 assets')).toBeTruthy();
   expect(screen.getByText('3 of 3 assets have a Top Label')).toBeTruthy();
-  expect(screen.queryByText('Container Label')).toBeNull();
+  expect(screen.getByText('Container Label')).toBeTruthy();
   expect(cache.putInitiative).toHaveBeenCalled();
   expect(cache.putBundle).toHaveBeenCalled();
 });
@@ -342,5 +353,179 @@ it('offline cache modal lists bundles and downloads the checked types', async ()
   expect(await screen.findByText('Offline labels')).toBeTruthy();
   await userEvent.click(screen.getByRole('button', { name: 'Download' }));
   await waitFor(() => expect(api.getGeneratedLabelBundle).toHaveBeenCalledWith('i1', 'front'));
-  expect(await screen.findByText(/Cached 2 types/)).toBeTruthy();
+  expect(await screen.findByText(/Cached 3 types/)).toBeTruthy();
+});
+
+it('a container label type lists the initiative\'s live containers and prints by container id', async () => {
+  printer.connected = true;
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  // archived containers never reach the list
+  expect(await screen.findByText('Showing 2 of 2 containers')).toBeTruthy();
+  expect(screen.getByText('Containers to print')).toBeTruthy();
+  expect(api.listContainers).toHaveBeenCalledWith({ initiative_id: 'i1' });
+  expect(screen.getByText('2 of 2 containers have a Container Label')).toBeTruthy();
+
+  await userEvent.click(screen.getByLabelText('Select all filtered containers'));
+  await userEvent.click(screen.getByRole('button', { name: 'Print 2 labels' }));
+  await waitFor(() => expect(printer.send).toHaveBeenCalledTimes(2));
+  // Container Label's default_copies (5, migration 0066) was seeded on the type switch.
+  expect(printer.send.mock.calls.map((c) => c[0]).sort()).toEqual([
+    '^XA^PW812^FDk1^FS^PQ5^XZ', '^XA^PW812^FDk2^FS^PQ5^XZ',
+  ]);
+});
+
+it("the offline-cache chip counts only the containers the list shows", async () => {
+  // The bundle carries a label for the archived container too; the list
+  // drops that row, so the chip must not count it (found in live
+  // verification: chip said 25 labels over a 24-row list).
+  api.getGeneratedLabelBundle.mockImplementation(async (_i: string, t: string) => (
+    t === 'container' ? bundleFor(['k1', 'k2', 'k3'], t) : bundleFor(['a1', 'a2', 'a3'], t)));
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  await screen.findByText('Showing 2 of 2 containers');
+  await waitFor(() => expect(screen.getByText(/Cached for offline · 2 labels/)).toBeTruthy());
+});
+
+it('says so when the account cannot list containers', async () => {
+  const denied = Object.assign(new Error('Forbidden'), { status: 403 });
+  api.listContainers.mockRejectedValue(denied);
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  expect(await screen.findByText(/You do not have permission to list containers/)).toBeTruthy();
+});
+
+it('switching back to an asset type restores the asset list and its own selection', async () => {
+  printer.connected = true;
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByLabelText('Select all filtered assets'));
+  expect(screen.getByRole('button', { name: 'Print 3 labels' })).toBeTruthy();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  await screen.findByText('Showing 2 of 2 containers');
+  // container selection starts empty — the asset selection must not leak into it
+  expect(screen.getByRole('button', { name: /^Print 0 labels$/ })).toBeTruthy();
+  await userEvent.click(screen.getByRole('radio', { name: /Top Label/ }));
+  await screen.findByText('Showing 3 of 3 assets');
+  expect(screen.getByRole('button', { name: 'Print 3 labels' })).toBeTruthy();
+});
+
+it("seeds copies from the label type's default_copies on a type change, but never overwrites an edit", async () => {
+  printer.connected = true;
+  renderPage();
+  await pickInitiative();
+  // Top Label carries no default_copies — the field keeps V2's default of 1.
+  await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
+  expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('1');
+  await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+  // Switching to Container Label seeds copies from its default_copies (5, migration 0066).
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  await screen.findByText('Showing 2 of 2 containers');
+  await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
+  expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('5');
+
+  // The operator edits copies...
+  fireEvent.change(screen.getByLabelText('Copies'), { target: { value: '9' } });
+  fireEvent.blur(screen.getByLabelText('Copies'));
+  await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+  expect(JSON.parse(localStorage.getItem('labels.print.settings') ?? '{}').copies).toBe(9);
+
+  // ...and it survives a re-render triggered by something else (selecting containers) —
+  // the seed must not reapply just because the component rendered again.
+  await userEvent.click(screen.getByLabelText('Select all filtered containers'));
+  await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
+  expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('9');
+  await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+  // Container → asset: Top Label has no default_copies, so the seed must be
+  // dropped and the operator's own 9 come back. Leaving the container seed in
+  // place would multiply every asset label sent by 5.
+  await userEvent.click(screen.getByRole('radio', { name: /Top Label/ }));
+  await screen.findByText('Showing 3 of 3 assets');
+  await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
+  expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('9');
+});
+
+it('a seeded copies value is dropped, not kept, when the type has no default of its own', async () => {
+  printer.connected = true;
+  renderPage();
+  await pickInitiative();
+
+  // The operator never touches Copies: it stays at V2's default of 1.
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  await screen.findByText('Showing 2 of 2 containers');
+  await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
+  expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('5');
+  await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+  await userEvent.click(screen.getByRole('radio', { name: /Top Label/ }));
+  await screen.findByText('Showing 3 of 3 assets');
+  await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
+  expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('1');
+  await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+  // The seed was never persisted either, so a reload starts from 1 as well.
+  expect(JSON.parse(localStorage.getItem('labels.print.settings') ?? '{}').copies ?? 1).toBe(1);
+});
+
+it('keeps the container selection when the type goes container \u2192 asset \u2192 container', async () => {
+  printer.connected = true;
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  await screen.findByText('Showing 2 of 2 containers');
+  await userEvent.click(screen.getByLabelText('Select all filtered containers'));
+  expect(screen.getByRole('button', { name: 'Print 2 labels' })).toBeTruthy();
+
+  // Away to an asset type and back: the reload of the container list must
+  // not drop the picks the operator already made.
+  await userEvent.click(screen.getByRole('radio', { name: /Top Label/ }));
+  await screen.findByText('Showing 3 of 3 assets');
+  expect(screen.getByRole('button', { name: /^Print 0 labels$/ })).toBeTruthy();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  await screen.findByText('Showing 2 of 2 containers');
+  expect(await screen.findByRole('button', { name: 'Print 2 labels' })).toBeTruthy();
+});
+
+it('a container that disappeared from the reloaded list drops out of the selection', async () => {
+  printer.connected = true;
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  await screen.findByText('Showing 2 of 2 containers');
+  await userEvent.click(screen.getByLabelText('Select all filtered containers'));
+  expect(screen.getByRole('button', { name: 'Print 2 labels' })).toBeTruthy();
+
+  api.listContainers.mockResolvedValue([CONTAINERS[0]]);
+  await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await screen.findByText('Showing 1 of 1 containers');
+  expect(await screen.findByRole('button', { name: 'Print 1 label' })).toBeTruthy();
+});
+
+it('the container offline banner does not follow you back to an asset type', async () => {
+  api.listContainers.mockRejectedValue(new TypeError('Failed to fetch'));
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  expect(await screen.findByText(/container lists aren't cached/)).toBeTruthy();
+
+  // Nothing about the ASSET list is offline: its roster and bundle both
+  // loaded, so the banner must go when the page switches back to assets.
+  await userEvent.click(screen.getByRole('radio', { name: /Top Label/ }));
+  await screen.findByText('Showing 3 of 3 assets');
+  expect(screen.queryByText(/container lists aren't cached/)).toBeNull();
+});
+
+it("says plainly that container lists aren't available offline, instead of reading as no containers", async () => {
+  api.listContainers.mockRejectedValue(new TypeError('Failed to fetch'));
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  expect(await screen.findByText(/Container lists aren't available offline/)).toBeTruthy();
+  expect(screen.queryByText('No containers found on this initiative')).toBeNull();
+  expect(screen.queryByText("Couldn't load the initiative's containers.")).toBeNull();
 });

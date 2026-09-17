@@ -1,11 +1,13 @@
 """Generate Labels — the package behind `label-worker`.
 
-`values` builds the per-asset placeholder catalog (+ a template's
-generation_rules); `select` resolves the active template for a label
-type/site; `engine` renders one label (code or design kind) and reports
-unknown tokens; `runner` drives one queued run end to end; `jobs` is the
-run-table queue (claim/requeue, same shape as reports/jobs.py); `worker`
-is the `serversherpa label-worker` process loop.
+`values` builds the per-asset or per-container placeholder catalog (+ a
+template's generation_rules); `select` resolves the active template for
+a label type/site; `engine` renders one label (code or design kind) and
+reports unknown tokens; `runner` drives one queued run end to end,
+walking whichever roster (assets or containers) the run's label types
+call for; `jobs` is the run-table queue (claim/requeue, same shape as
+reports/jobs.py); `worker` is the `serversherpa label-worker` process
+loop.
 
 `enqueue_run` is the single entry point any surface (the future API
 route, other packages) uses to queue a run — it owns label-type
@@ -33,13 +35,25 @@ from serversherpa.db.models import LabelGenerationRun, LabelTemplate, LabelVocab
 ACTIVE_STATUSES = ("queued", "running")
 
 
-# Vocab `type` keys that are NOT asset/device labels — excluded from Generate
-# Labels (the preview's type list and run validation). Container labels have
-# their own page and report (Avery sheets, see reports/container_labels) and
-# their own 4x6 ZPL templates (migration 0066); the runner here only walks
-# assets, so every container type must be listed or it would emit one label
-# per ASSET with empty container placeholders.
-CONTAINER_LABEL_TYPES: frozenset[str] = frozenset({"container", "container_info"})
+# Which entity kind a label type describes — the server's copy, and the one
+# `generated_labels.entity_type` and the runner's roster both come from.
+#
+# ⚠ There is a SECOND copy: `CONTAINER_LABEL_TYPES` in
+# `portal/src/lib/labels.ts` (behind `isContainerLabelType`), which Print
+# Labels uses to decide whether to show the container roster or the asset
+# roster and Generate Labels uses to count them. A new container-shaped
+# label type must be added to BOTH or the page will offer the ASSET roster
+# for a type whose labels are keyed by container id. Never edit one alone.
+ENTITY_FOR_TYPE: dict[str, str] = {"container": "container",
+                                   "container_info": "container"}
+
+
+def entity_for_type(label_type: str) -> str:
+    """'container' for the container label types, 'asset' for everything
+    else — an unknown type is an asset label, matching how every type
+    behaved before container types existed."""
+    return ENTITY_FOR_TYPE.get(label_type, "asset")
+
 
 class InvalidLabelTypes(ValueError):
     """One or more requested label types are not active `type` vocab
@@ -127,15 +141,6 @@ async def enqueue_run(
     requested = list(dict.fromkeys(label_types))          # de-dupe, keep order
     if not requested:
         raise InvalidLabelTypes([])
-    # Generate Labels renders asset/device labels only. Container labels are
-    # Avery sheets produced by the Container Labels page / report, so the
-    # `container` and `container_info` vocab types are never valid asset run
-    # types even when active.
-    container_keys = [k for k in requested if k in CONTAINER_LABEL_TYPES]
-    if container_keys:
-        raise InvalidLabelTypes(
-            [f"{k}: container labels are generated from the Container Labels page"
-             for k in container_keys])
     active_keys = set((await db.execute(
         sa_select(LabelVocab.key).where(LabelVocab.kind == "type",
                                      LabelVocab.key.in_(requested),

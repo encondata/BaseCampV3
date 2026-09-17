@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 
 import type { LabelPlaceholder, LabelVocab } from './api';
 import {
-  dpiDots, metaSummary, placeholdersFor, siteNames, sitesCellText, sizeMeta,
+  dpiDots, isContainerLabelType, metaSummary, placeholdersFor, siteNames, sitesCellText, sizeMeta,
   templateSearchText, vocabLabel, vocabOfKind,
 } from './labels';
 
@@ -83,4 +83,13 @@ it('templateSearchText covers the visible columns', () => {
   for (const frag of ['front tag', 'main', 'front', '4x2', 'zpl', 'design']) {
     expect(hay).toContain(frag);
   }
+});
+
+it('isContainerLabelType knows the container-shaped types and treats everything else as an asset type', () => {
+  expect(isContainerLabelType('container')).toBe(true);
+  expect(isContainerLabelType('container_info')).toBe(true);
+  expect(isContainerLabelType('top')).toBe(false);
+  expect(isContainerLabelType('front')).toBe(false);
+  expect(isContainerLabelType('custom')).toBe(false);
+  expect(isContainerLabelType('')).toBe(false);
 });

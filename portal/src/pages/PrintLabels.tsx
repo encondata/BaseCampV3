@@ -7,30 +7,38 @@
  * drops. Behavior contract: docs/superpowers/specs/2026-09-12-print-labels-design.md.
  *
  * Layout mirrors V2: header + status notice, three side-by-side step
- * cards (Initiative / Label type / Printer), the asset list card, the
- * Ready to print bar. Modals: Print settings, Printing labels (batch),
- * Offline labels.
+ * cards (Initiative / Label type / Printer), the roster card, the Ready to
+ * print bar. Modals: Print settings, Printing labels (batch), Offline labels.
+ *
+ * The page has two modes, chosen by the selected label type
+ * (`isContainerLabelType`): an ASSET mode over the initiative's roster and
+ * a CONTAINER mode over its containers. Each mode keeps its own roster,
+ * selection and displayed rows, so switching types never prints an asset
+ * label for a container id (or the reverse).
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
 import {
-  getGeneratedLabelBundle, listInitiativeAssets, listInitiatives, listLabelVocab,
-  type GeneratedLabelBundle, type InitiativeAssetRow, type InitiativeItem, type LabelVocab,
+  getGeneratedLabelBundle, listContainers, listInitiativeAssets, listInitiatives, listLabelVocab,
+  type ContainerItem, type GeneratedLabelBundle, type InitiativeAssetRow, type InitiativeItem,
+  type LabelVocab,
 } from '../lib/api';
 import { relativeTime } from '../lib/format';
-import { isAssetLabelType, visibleInitiativesForGenerate } from '../lib/generateLabels';
+import { visibleInitiativesForGenerate } from '../lib/generateLabels';
 import * as labelCache from '../lib/labelCache';
-import { vocabLabel, vocabOfKind } from '../lib/labels';
+import { isContainerLabelType, vocabLabel, vocabOfKind } from '../lib/labels';
 import {
   LABEL_TYPE_CUSTOM, applyPrintSettings, batchBounds, batchCount, blankLabelsZpl, bundleByEntity,
-  labelStatusFor, missingLabelIds, printOrder, rackOf, readPrintSettings, settingsModified,
-  staleLabelCount, writePrintSettings, type LabelStatus, type PrintSettings,
+  containerPrintOrder, defaultCopiesFor, labelStatusFor, missingLabelIds, printOrder,
+  rackOf, readPrintSettings, settingsModified, staleLabelCount, writePrintSettings,
+  type LabelStatus, type PrintSettings,
 } from '../lib/printLabels';
 import { useZebraPrinter } from '../lib/useZebraPrinter';
 import ComboBox from '../components/ComboBox';
 import OfflineCacheModal from '../components/labels/OfflineCacheModal';
 import PrintAssetList from '../components/labels/PrintAssetList';
+import PrintContainerList from '../components/labels/PrintContainerList';
 import PrintBatchModal, { type BatchPrintState } from '../components/labels/PrintBatchModal';
 import PrintSettingsModal from '../components/labels/PrintSettingsModal';
 import { ChoiceCard, InitiativeSummary, summaryFromInitiative } from '../components/reports/ReportOptionsLayout';
@@ -80,8 +88,34 @@ export default function PrintLabels() {
   const [cachedBundles, setCachedBundles] = useState<labelCache.CachedBundleSummary[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [displayed, setDisplayed] = useState<InitiativeAssetRow[]>([]);
+  // Container mode's roster/selection/displayed rows live beside the asset
+  // ones rather than replacing them: the two id spaces must never mix, and
+  // switching type back and forth keeps each list's own selection.
+  const [containers, setContainers] = useState<ContainerItem[] | null>(null);
+  const [containersLoading, setContainersLoading] = useState(false);
+  const [containersDenied, setContainersDenied] = useState(false);
+  // Unlike the asset roster, container lists have no offline cache
+  // (`labelCache` only stores the asset roster) — a network failure here is
+  // a flat "can't load" rather than something we can fall back to.
+  const [containersOffline, setContainersOffline] = useState(false);
+  const [containerSelected, setContainerSelected] = useState<string[]>([]);
+  const [containerDisplayed, setContainerDisplayed] = useState<ContainerItem[]>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
-  const [settings, setSettings] = useState<PrintSettings>(() => readPrintSettings());
+  // The operator's own print settings — what `readPrintSettings` loaded and
+  // the only thing ever written back. A label type's `default_copies` seed
+  // lives beside it in `seededCopies` (see `settings` below) so a seed can
+  // never be persisted over a value the operator chose.
+  const [operatorSettings, setOperatorSettings] = useState<PrintSettings>(() => readPrintSettings());
+  const [seededCopies, setSeededCopies] = useState<number | null>(null);
+  /** What the page actually prints and shows: the operator's settings with
+   *  the current type's seeded copies laid over them. `seededCopies` is set
+   *  on every label-type change — to the type's `default_copies` when it has
+   *  one and to null when it does not — so switching to a type with no
+   *  default restores the operator's value instead of leaving the last
+   *  seed in place. */
+  const settings = useMemo<PrintSettings>(
+    () => (seededCopies === null ? operatorSettings : { ...operatorSettings, copies: seededCopies }),
+    [operatorSettings, seededCopies]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [cacheOpen, setCacheOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -125,7 +159,7 @@ export default function PrintLabels() {
     refreshCachedBundles();
   }, [refreshCachedBundles]);
 
-  const typeVocab = useMemo(() => vocabOfKind(vocab, 'type').filter((v) => isAssetLabelType(v.key)), [vocab]);
+  const typeVocab = useMemo(() => vocabOfKind(vocab, 'type'), [vocab]);
   // Offline without vocab: the types present in cached bundles.
   const typeChoices = useMemo(() => {
     if (typeVocab.length > 0) return typeVocab.map((v) => ({ key: v.key, label: v.label }));
@@ -133,6 +167,20 @@ export default function PrintLabels() {
     return keys.map((key) => ({ key, label: key }));
   }, [typeVocab, cachedBundles]);
   const typeLabel = (key: string) => (key === LABEL_TYPE_CUSTOM ? 'Custom' : (typeChoices.find((t) => t.key === key)?.label ?? vocabLabel(vocab, 'type', key)));
+
+  /** Seeds copies from the new type's default_copies (migration 0066), or
+   *  clears the seed for a type that has none so the operator's own value
+   *  comes back — a seed must never outlive the type it came from, or a
+   *  container type's 5 would silently multiply an asset run. The seed is
+   *  never written to storage, so it can't clobber the operator's value
+   *  there either. Only an actual label-type change runs this: it fires
+   *  from the type picker and the initial-type effect, never from a render
+   *  or an unrelated state change. */
+  const handleLabelTypeChange = (key: string) => {
+    if (key === labelType) return;
+    setLabelType(key);
+    setSeededCopies(defaultCopiesFor(vocab, key));
+  };
 
   const pickerOptions = useMemo(
     () => visibleInitiativesForGenerate(initiatives ?? []).map((i) => ({ value: i.id, label: i.name, sub: i.client_name ?? undefined })),
@@ -168,7 +216,52 @@ export default function PrintLabels() {
     }
   }, [initiatives]);
 
+  // ── container roster load (container label types only) ───────────────
+  // `GET /containers` needs `containers:view`, which `labels:view` does not
+  // imply — a 403 here is a permissions answer, not "no containers", and
+  // says so. It also returns archived containers; `PrintContainerList`
+  // drops them so the list matches what the runner labels.
+  // Never clears the selection on its own — switching label type reloads
+  // this list, and dropping the operator's picks on that round trip is the
+  // bug the "keeps each list's own selection" contract above rules out.
+  // The selection is pruned to the rows that came back (a container deleted
+  // elsewhere drops out), and the initiative-change effect below is what
+  // resets it outright.
+  const loadContainers = useCallback(async (id: string) => {
+    setContainersLoading(true);
+    try {
+      const rows = await listContainers({ initiative_id: id });
+      if (initiativeIdRef.current !== id) return;
+      setContainers(rows);
+      setContainersDenied(false);
+      setContainersOffline(false);
+      setContainerSelected((s) => s.filter((cid) => rows.some((r) => r.id === cid)));
+    } catch (err) {
+      if (initiativeIdRef.current !== id) return;
+      const status = err instanceof Error && 'status' in err ? (err as { status?: number }).status : undefined;
+      const network = isNetworkFailure(err);
+      setContainersDenied(status === 403);
+      setContainersOffline(network);
+      if (network) {
+        // No cache to fall back to for containers — an empty list here would
+        // misleadingly read as "no containers"; the offline banner + card
+        // copy say plainly that this list can't load right now.
+        setContainers(null);
+      } else {
+        setContainers([]);
+        if (status !== 403) setNotice({ type: 'error', message: "Couldn't load the initiative's containers." });
+      }
+    } finally {
+      if (initiativeIdRef.current === id) setContainersLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
+    setContainers(null);
+    setContainerSelected([]);
+    setContainerDisplayed([]);
+    setContainersDenied(false);
+    setContainersOffline(false);
     if (!initiativeId) { setRoster(null); setSelected([]); setBundle(null); return; }
     void loadRoster(initiativeId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -213,9 +306,23 @@ export default function PrintLabels() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initiativeId, labelType]);
 
+  const containerMode = isContainerLabelType(labelType);
+  // `containersOffline` survives a label-type change (it only resets on a
+  // successful container load or a new initiative), so the banner must be
+  // gated on the mode as well — otherwise a failed container load leaves a
+  // "container lists aren't cached" banner sitting over the ASSET list.
+  const containerListOffline = containerMode && containersOffline;
+
+  useEffect(() => {
+    if (!initiativeId || !containerMode) return;
+    void loadContainers(initiativeId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initiativeId, containerMode]);
+
   // Default the type to the first choice once vocab arrives (V2 defaulted to Front).
   useEffect(() => {
-    if (!labelType && typeChoices.length > 0) setLabelType(typeChoices[0].key);
+    if (!labelType && typeChoices.length > 0) handleLabelTypeChange(typeChoices[0].key);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typeChoices, labelType]);
 
   // Back online → refetch what's in view.
@@ -223,23 +330,58 @@ export default function PrintLabels() {
     const onOnline = () => {
       if (initiativeIdRef.current) {
         void loadRoster(initiativeIdRef.current, { keepSelection: true });
+        if (isContainerLabelType(labelType)) void loadContainers(initiativeIdRef.current);
         if (labelType && labelType !== LABEL_TYPE_CUSTOM) void loadBundle(initiativeIdRef.current, labelType);
       }
     };
     window.addEventListener('online', onOnline);
     return () => window.removeEventListener('online', onOnline);
-  }, [labelType, loadRoster, loadBundle]);
+  }, [labelType, loadRoster, loadBundle, loadContainers]);
 
   const byEntity = useMemo(() => bundleByEntity(bundle), [bundle]);
   const isCustom = labelType === LABEL_TYPE_CUSTOM;
   const statusOf = useCallback((r: InitiativeAssetRow): LabelStatus => labelStatusFor(r.asset_id, byEntity), [byEntity]);
+  const containerStatusOf = useCallback((c: ContainerItem): LabelStatus => labelStatusFor(c.id, byEntity), [byEntity]);
+  /** The noun this mode prints labels for — used in the coverage line, the
+   *  card heading, the Ready-to-print bar and the validation notices. */
+  const entityNoun = containerMode ? 'container' : 'asset';
+  // Archived containers are excluded here exactly as the list excludes them,
+  // so coverage counts the same rows the operator can actually select.
+  const liveContainers = useMemo(() => (containers ?? []).filter((c) => !c.archived_at), [containers]);
+  /** What the "Cached for offline" chip counts. A container bundle carries
+   *  a label for every container the run covered, including any archived
+   *  since — the list drops those, so counting the bundle whole would
+   *  report one more label than the operator can see or print. */
+  const cachedLabelCount = useMemo(() => {
+    if (!cacheStamp) return 0;
+    if (!containerMode || !containers) return cacheStamp.count;
+    return liveContainers.filter((c) => byEntity.has(c.id)).length;
+  }, [cacheStamp, containerMode, containers, liveContainers, byEntity]);
   const coverage = useMemo(() => {
-    if (!roster || isCustom || !labelType) return null;
+    if (isCustom || !labelType) return null;
+    if (containerMode) {
+      if (!containers) return null;
+      const have = liveContainers.filter((c) => ['ready', 'stale'].includes(containerStatusOf(c))).length;
+      return { have, total: liveContainers.length, missing: liveContainers.length - have };
+    }
+    if (!roster) return null;
     const have = roster.filter((r) => statusOf(r) === 'ready' || statusOf(r) === 'stale').length;
     return { have, total: roster.length, missing: roster.length - have };
-  }, [roster, isCustom, labelType, statusOf]);
+  }, [roster, isCustom, labelType, statusOf, containerMode, containers, liveContainers, containerStatusOf]);
 
-  const updateSettings = (next: PrintSettings) => { setSettings(next); writePrintSettings(next); };
+  /** The settings modal edits the EFFECTIVE settings, so a `copies` that
+   *  differs from what was on screen is the operator claiming that number:
+   *  the seed is dropped and the value persisted. Reset does the same — it
+   *  returns every field to its default, copies included. Any other change
+   *  keeps the seed and leaves the operator's stored copies untouched, so
+   *  editing the batch size in container mode never persists the seeded 5. */
+  const updateSettings = (next: PrintSettings) => {
+    const tookCopies = next.copies !== settings.copies || !settingsModified(next);
+    if (tookCopies) setSeededCopies(null);
+    const persisted = tookCopies ? next : { ...next, copies: operatorSettings.copies };
+    setOperatorSettings(persisted);
+    writePrintSettings(persisted);
+  };
 
   // ── sending ──────────────────────────────────────────────────────────
   const sendLabel = (zpl: string, singleCopy = false) => printer.send(applyPrintSettings(zpl, settings, { singleCopy }));
@@ -256,7 +398,7 @@ export default function PrintLabels() {
       const zpl = zplFor(assetId);
       if (!zpl) { skipped += 1; continue; }
       const rack = rackOf(rowById.get(assetId));
-      if (settings.printByRack && prevRack !== null && rack !== prevRack) {
+      if (settings.printByRack && !containerMode && prevRack !== null && rack !== prevRack) {
         await sendBlanks(settings.blanksBetweenRacks);
         blanksSent += settings.blanksBetweenRacks;
       }
@@ -269,11 +411,17 @@ export default function PrintLabels() {
     return { formatsSent, blanksSent, skipped };
   };
 
-  const printableIds = useMemo(() => printOrder(selected, displayed, settings), [selected, displayed, settings]);
+  const printableIds = useMemo(
+    () => (containerMode
+      ? containerPrintOrder(containerSelected, containerDisplayed, settings)
+      : printOrder(selected, displayed, settings)),
+    [containerMode, containerSelected, containerDisplayed, selected, displayed, settings]);
+  const activeSelected = containerMode ? containerSelected : selected;
+  const setActiveSelected = containerMode ? setContainerSelected : setSelected;
 
   const validateForPrint = (): { ids: string[]; stale: number } | null => {
     if (!printer.connected || !labelType || printableIds.length === 0) {
-      setNotice({ type: 'error', message: 'Please connect a printer, select a label type, and select assets to print' });
+      setNotice({ type: 'error', message: `Please connect a printer, select a label type, and select ${entityNoun}s to print` });
       return null;
     }
     if (isCustom) {
@@ -286,9 +434,9 @@ export default function PrintLabels() {
       setNotice({
         type: 'error',
         message: unsupported === missing.length
-          ? `${missing.length} selected asset(s) have labels compiled for a non-Zebra printer`
-          : `${missing.length} selected asset(s) do not have ${typeLabel(labelType)} data. Please generate labels first.`,
-        action: { label: 'Deselect missing', onClick: () => { setSelected((s) => s.filter((id) => !missing.includes(id))); setNotice(null); } },
+          ? `${missing.length} selected ${entityNoun}(s) have labels compiled for a non-Zebra printer`
+          : `${missing.length} selected ${entityNoun}(s) do not have ${typeLabel(labelType)} data. Please generate labels first.`,
+        action: { label: 'Deselect missing', onClick: () => { setActiveSelected((s) => s.filter((id) => !missing.includes(id))); setNotice(null); } },
       });
       return null;
     }
@@ -431,10 +579,12 @@ export default function PrintLabels() {
         </div>
       </div>
 
-      {offlineSince && (
+      {(offlineSince || containerListOffline) && (
         <div className="plabels-notice warning">
           <p className="page-hint">
-            Offline — using labels downloaded {relativeTime(offlineSince)}. Printing works; changes made elsewhere are not reflected.
+            {containerListOffline
+              ? "Offline — container lists aren't cached, so they can't load without a network connection."
+              : `Offline — using labels downloaded ${relativeTime(offlineSince!)}. Printing works; changes made elsewhere are not reflected.`}
           </p>
         </div>
       )}
@@ -459,9 +609,17 @@ export default function PrintLabels() {
             <div>
               <InitiativeSummary initiative={summaryFromInitiative(initiative)} emptyText="" />
               <div className="plabels-summary-line">
-                <span className="cell-sub">{rosterLoading ? 'Loading assets…' : `${roster?.length ?? 0} assets`}</span>
+                {/* Counts the rows this mode actually prints for, so the line
+                    matches the noun every other part of the page switches to.
+                    Containers are counted live (archived ones are dropped from
+                    the list), exactly like the coverage line. */}
+                <span className="cell-sub">
+                  {containerMode
+                    ? (containersLoading ? 'Loading containers…' : `${liveContainers.length} containers`)
+                    : (rosterLoading ? 'Loading assets…' : `${roster?.length ?? 0} assets`)}
+                </span>
                 {cacheStamp && !isCustom && (
-                  <span className="chip tag">Cached for offline · {cacheStamp.count} labels · {relativeTime(cacheStamp.cached_at)}</span>
+                  <span className="chip tag">Cached for offline · {cachedLabelCount} labels · {relativeTime(cacheStamp.cached_at)}</span>
                 )}
                 {!cacheStamp && labelType && !isCustom && !bundleLoading && (
                   <span className="chip tag">Not cached</span>
@@ -473,17 +631,20 @@ export default function PrintLabels() {
 
         <StepCard step="Step 2" title="Label type" hint="Choose the type of label to print.">
           <div className="rgm-choice-cards" role="radiogroup" aria-label="Label type">
-            {typeChoices.map((t) => (
-              <ChoiceCard key={t.key} title={t.label} selected={labelType === t.key} onSelect={() => setLabelType(t.key)}
-                          description={labelType === t.key && coverage
-                            ? `${coverage.have} of ${coverage.total} assets have a ${t.label}${coverage.missing > 0 ? ` · ${coverage.missing} missing` : ''}`
-                            : `Printable ${t.label.toLowerCase()} for each selected asset`} />
-            ))}
-            <ChoiceCard title="Custom" selected={isCustom} onSelect={() => setLabelType(LABEL_TYPE_CUSTOM)}
+            {typeChoices.map((t) => {
+              const noun = isContainerLabelType(t.key) ? 'container' : 'asset';
+              return (
+                <ChoiceCard key={t.key} title={t.label} selected={labelType === t.key} onSelect={() => handleLabelTypeChange(t.key)}
+                            description={labelType === t.key && coverage
+                              ? `${coverage.have} of ${coverage.total} ${noun}s have a ${t.label}${coverage.missing > 0 ? ` · ${coverage.missing} missing` : ''}`
+                              : `Printable ${t.label.toLowerCase()} for each selected ${noun}`} />
+              );
+            })}
+            <ChoiceCard title="Custom" selected={isCustom} onSelect={() => handleLabelTypeChange(LABEL_TYPE_CUSTOM)}
                         description="Send raw ZPL to the printer once per selected asset" />
           </div>
           {coverage && coverage.missing > 0 && (
-            <p className="page-hint"><Link to="/labels/generate">Generate labels</Link> for the assets that are missing one.</p>
+            <p className="page-hint"><Link to="/labels/generate">Generate labels</Link> for the {entityNoun}s that are missing one.</p>
           )}
           {isCustom && (
             <div className="pf-form">
@@ -520,11 +681,32 @@ export default function PrintLabels() {
         <div className="plabels-card-head">
           <div>
             <span className="eyebrow">Step 4</span>
-            <div className="modal-section">Assets to print</div>
+            <div className="modal-section">{containerMode ? 'Containers to print' : 'Assets to print'}</div>
           </div>
         </div>
         {!initiativeId ? (
-          <div className="dir-empty">Select an initiative to view assets</div>
+          <div className="dir-empty">Select an initiative to view {entityNoun}s</div>
+        ) : containerMode ? (
+          containersDenied ? (
+            <div className="dir-empty">
+              You do not have permission to list containers. Ask an administrator for container access,
+              or pick an asset label type.
+            </div>
+          ) : containersLoading && !containers ? (
+            <div className="dir-empty">Loading containers…</div>
+          ) : containersOffline ? (
+            <div className="dir-empty">
+              Container lists aren't available offline. Connect to the network to load this initiative's containers.
+            </div>
+          ) : containers && liveContainers.length === 0 ? (
+            <div className="dir-empty">No containers found on this initiative</div>
+          ) : containers ? (
+            <PrintContainerList rows={containers} statusOf={isCustom || !labelType ? null : containerStatusOf}
+                                selected={containerSelected} onSelectedChange={setContainerSelected}
+                                onDisplayedChange={setContainerDisplayed}
+                                onRefresh={() => void loadContainers(initiativeId)}
+                                refreshing={containersLoading} disabled={printing || !!batch} resetKey={initiativeId} />
+          ) : null
         ) : rosterLoading && !roster ? (
           <div className="dir-empty">Loading assets…</div>
         ) : roster && roster.length === 0 ? (
@@ -543,8 +725,8 @@ export default function PrintLabels() {
           <span className="cell-sub">
             {inlineProgress
               ? `Printing ${inlineProgress.done} of ${inlineProgress.total}…`
-              : selected.length === 0 ? 'Select assets to print labels'
-              : `${printableIds.length} label(s) will be printed${selected.length > printableIds.length ? ` · ${selected.length - printableIds.length} selected asset(s) are hidden by the current filters` : ''}`}
+              : activeSelected.length === 0 ? `Select ${entityNoun}s to print labels`
+              : `${printableIds.length} label(s) will be printed${activeSelected.length > printableIds.length ? ` · ${activeSelected.length - printableIds.length} selected ${entityNoun}(s) are hidden by the current filters` : ''}`}
           </span>
         </div>
         <div className="plabels-ready-actions">
