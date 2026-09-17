@@ -7,11 +7,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import aliased
 
+from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
+    ClearOfflineKioskItem, ClearOfflineKiosksIn, ClearOfflineKiosksOut,
     DeviceCreate, DeviceItem, DeviceLeaseItem, DevicePatch, DeviceRegisterIn,
 )
 from serversherpa.db.models import (
@@ -127,6 +129,80 @@ async def list_devices(
         query = query.where(Device.device_type == device_type)
     rows = (await db.execute(query)).all()
     return [_row_to_item(row) for row in rows]
+
+
+# Hardcoded to match the button's own label; deliberately not configurable.
+OFFLINE_HOURS = 24
+
+
+def _offline_kiosk_clause(now: datetime):
+    """A kiosk is clearable when it is BOTH unregistered-or-expired AND
+    unseen for OFFLINE_HOURS. Deliberately AND, not OR: a kiosk heartbeating
+    right now with a lapsed token is alive and needs re-registering, not
+    deleting, and one registered moments ago has a NULL last_seen_at."""
+    return and_(
+        Device.device_type == "kiosk",
+        or_(Device.token_expires_at.is_(None), Device.token_expires_at < now),
+        or_(Device.last_seen_at.is_(None),
+            Device.last_seen_at < now - timedelta(hours=OFFLINE_HOURS)),
+    )
+
+
+def _clear_item(device: Device) -> ClearOfflineKioskItem:
+    return ClearOfflineKioskItem(
+        id=device.id, name=device.name, sub_type=device.sub_type,
+        registration="unregistered" if device.token_expires_at is None else "expired",
+        last_seen_at=device.last_seen_at)
+
+
+@router.post("/kiosks/clear-offline", response_model=ClearOfflineKiosksOut)
+async def clear_offline_kiosks(
+    body: ClearOfflineKiosksIn, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "delete"),
+) -> ClearOfflineKiosksOut:
+    """Delete kiosks that are both unregistered/expired and unseen for a day.
+
+    Admin and above only. The permission alone is not enough: the matrix is
+    runtime-editable, so scanning_hardware:delete can be granted to staff —
+    the rank floor is what keeps this irreversible bulk action admin-only.
+    (Idiom: api/routes/access.py:107.)"""
+    if actor.access.max_rank < GATE_BYPASS_RANK:
+        raise _err(403, "forbidden_rank")
+
+    # The DATABASE clock, never the caller's: a skewed laptop must not decide
+    # what "24 hours" means for a delete that cannot be undone.
+    now = await db.scalar(select(func.now()))
+
+    if body.dry_run:
+        matches = (await db.execute(
+            select(Device).where(_offline_kiosk_clause(now))
+            .order_by(Device.name))).scalars().all()
+        return ClearOfflineKiosksOut(dry_run=True,
+                                     kiosks=[_clear_item(d) for d in matches],
+                                     skipped=[])
+
+    ids = body.ids or []
+    if not ids:
+        return ClearOfflineKiosksOut(dry_run=False, kiosks=[], skipped=[])
+
+    named = (await db.execute(
+        select(Device).where(Device.id.in_(ids)).order_by(Device.name))).scalars().all()
+    still_matching = {d.id for d in (await db.execute(
+        select(Device).where(Device.id.in_(ids), _offline_kiosk_clause(now)))).scalars()}
+
+    deleted, skipped = [], []
+    for device in named:
+        if device.id not in still_matching:
+            skipped.append(_clear_item(device))
+            continue
+        deleted.append(_clear_item(device))
+        audit(db, actor_id=actor.person.id, entity_type="device",
+              entity_id=str(device.id), action="delete",
+              changes={"name": device.name, "device_type": device.device_type,
+                       "serial": device.serial, "reason": "clear_offline_kiosks"})
+        await db.delete(device)
+    await db.commit()
+    return ClearOfflineKiosksOut(dry_run=False, kiosks=deleted, skipped=skipped)
 
 
 @router.get("/{device_id}/leases", response_model=list[DeviceLeaseItem])

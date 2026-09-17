@@ -2474,6 +2474,31 @@ class DeviceLeaseItem(BaseModel):
     last_seen_at: datetime | None
 
 
+class ClearOfflineKiosksIn(BaseModel):
+    """`dry_run` True previews and deletes nothing. False deletes, and `ids`
+    names the rows the operator confirmed — every one is re-checked against
+    the same rule first, so a kiosk that came back to life is skipped."""
+    dry_run: bool = True
+    ids: list[uuid.UUID] | None = None
+
+
+class ClearOfflineKioskItem(BaseModel):
+    id: uuid.UUID
+    name: str
+    sub_type: str | None
+    registration: Literal["unregistered", "expired"]
+    last_seen_at: datetime | None
+
+
+class ClearOfflineKiosksOut(BaseModel):
+    """`kiosks` is what WOULD be deleted on a dry run and what WAS deleted on
+    a confirm. `skipped` is always empty on a dry run; on a confirm it holds
+    ids that no longer match the rule and were therefore left alone."""
+    dry_run: bool
+    kiosks: list[ClearOfflineKioskItem]
+    skipped: list[ClearOfflineKioskItem]
+
+
 # ── kiosk setup ──
 
 class SetupOptionSite(BaseModel):
