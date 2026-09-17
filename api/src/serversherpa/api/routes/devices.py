@@ -136,15 +136,29 @@ OFFLINE_HOURS = 24
 
 
 def _offline_kiosk_clause(now: datetime):
-    """A kiosk is clearable when it is BOTH unregistered-or-expired AND
-    unseen for OFFLINE_HOURS. Deliberately AND, not OR: a kiosk heartbeating
-    right now with a lapsed token is alive and needs re-registering, not
-    deleting, and one registered moments ago has a NULL last_seen_at."""
+    """A kiosk is clearable when it has not been seen for OFFLINE_HOURS:
+    last_seen_at is older than the cutoff, or last_seen_at IS NULL and the
+    row itself was created before the cutoff.
+
+    Registration is deliberately NOT part of this rule. It used to be — the
+    rule required unregistered-or-expired AND stale — and that made the
+    button unable to do its job: tokens are issued for ~30 days, so a kiosk
+    that dies stays "registered" for a month while going silent within
+    hours. Dropping registration loses nothing, because staleness already
+    decides both cases on its own: an unregistered kiosk that is also silent
+    is caught by staleness, and one that is still heartbeating is spared by
+    it, lapsed token or not. It needs re-registering, not deleting.
+
+    The NULL branch is a grace period, which is why the rule is not simply
+    "stale or never seen": a kiosk provisioned in the portal has never been
+    seen, and must not be deletable the instant its row exists — someone has
+    to be able to create it and then go plug it in. It becomes clearable
+    only once its own row is OFFLINE_HOURS old."""
+    cutoff = now - timedelta(hours=OFFLINE_HOURS)
     return and_(
         Device.device_type == "kiosk",
-        or_(Device.token_expires_at.is_(None), Device.token_expires_at < now),
-        or_(Device.last_seen_at.is_(None),
-            Device.last_seen_at < now - timedelta(hours=OFFLINE_HOURS)),
+        or_(Device.last_seen_at < cutoff,
+            and_(Device.last_seen_at.is_(None), Device.created_at < cutoff)),
     )
 
 
@@ -154,8 +168,9 @@ def _clear_item(device: Device, now: datetime) -> ClearOfflineKioskItem:
     elif device.token_expires_at < now:
         registration = "expired"
     else:
-        # Only reachable for `skipped`: re-registered between preview and
-        # confirm, so the token is valid again.
+        # Reportable for deleted kiosks too, not just `skipped`: a kiosk
+        # with a valid future token that has gone silent for a day is
+        # cleared, and the modal still shows what its token said.
         registration = "registered"
     return ClearOfflineKioskItem(
         id=device.id, name=device.name, sub_type=device.sub_type,
@@ -167,7 +182,7 @@ async def clear_offline_kiosks(
     body: ClearOfflineKiosksIn, db: DbSession,
     actor: AuthContext = require_permission("scanning_hardware", "delete"),
 ) -> ClearOfflineKiosksOut:
-    """Delete kiosks that are both unregistered/expired and unseen for a day.
+    """Delete kiosks that have not been seen for a day.
 
     Admin and above only. The permission alone is not enough: the matrix is
     runtime-editable, so scanning_hardware:delete can be granted to staff —

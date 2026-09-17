@@ -1,6 +1,6 @@
-/** ClearOfflineKiosksModal — the confirmation step for "Clear offline and
- *  expired kiosks". It names every kiosk the server's dry run matched, with
- *  its registration state and last-seen time, so an irreversible bulk delete
+/** ClearOfflineKiosksModal — the confirmation step for "Clear offline
+ *  kiosks". It names every kiosk the server's dry run matched, with its
+ *  registration state and last-seen time, so an irreversible bulk delete
  *  is read before it is approved rather than trusted blind.
  *
  *  Pure UI: it never calls the API. KioskDevices owns the dry run, the
@@ -35,11 +35,11 @@ const COLUMNS = [
   { key: 'last_seen', label: 'Last seen', width: '1fr', mono: true },
 ];
 
-/** "registered" can only reach this list through a `skipped` row, but the
- *  wire type carries all three values, so every one gets a chip. Indexed
- *  defensively below: this union matches the Python `Literal` today, but a
- *  lookup miss must degrade to a neutral chip rather than throw inside the
- *  modal that fronts an irreversible delete. */
+/** Registration no longer decides anything — the rule is silence alone — so
+ *  any of the three values can appear in either list, and every one gets a
+ *  chip. Indexed defensively below: this union matches the Python `Literal`
+ *  today, but a lookup miss must degrade to a neutral chip rather than throw
+ *  inside the modal that fronts an irreversible delete. */
 const REGISTRATION: Record<string, [string, string]> = {
   unregistered: ['Unregistered', 'chip c-slate'],
   expired: ['Expired', 'chip c-red'],
@@ -81,10 +81,11 @@ export default function ClearOfflineKiosksModal({
         <div className="modal-head">
           <div className="rgm-head-text">
             <div className="eyebrow">Kiosk devices</div>
-            <h3>Clear offline and expired kiosks</h3>
+            <h3>Clear offline kiosks</h3>
             <p className="page-hint">
-              Kiosks that were never registered or whose registration has expired, and that
-              have not been seen in the last 24 hours. Deleting them cannot be undone.
+              Kiosks that have not been seen in the last 24 hours. A kiosk that has never
+              been seen counts once it is a day old, so a newly added one is left alone.
+              Deleting them cannot be undone.
             </p>
           </div>
           <button type="button" className="modal-close" aria-label="Close" onClick={onClose}
@@ -97,8 +98,8 @@ export default function ClearOfflineKiosksModal({
         <div className="modal-body">
           {kiosks.length === 0 ? (
             <p className="page-hint">
-              Nothing to clear — every kiosk is either registered or has been seen in the
-              last 24 hours.
+              Nothing to clear — every kiosk has been seen in the last 24 hours, or was
+              added too recently to count as offline yet.
             </p>
           ) : (
             <>

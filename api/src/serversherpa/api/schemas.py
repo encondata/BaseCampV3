@@ -2487,9 +2487,9 @@ class ClearOfflineKioskItem(BaseModel):
     name: str
     sub_type: str | None
     # "unregistered": token_expires_at is NULL. "expired": it is in the past.
-    # "registered": it is now valid — only possible in `skipped`, for a
-    # kiosk that re-registered between the preview and the confirm; a
-    # `kiosks` entry is always unregistered or expired by construction.
+    # "registered": it is still valid. Reported for information only —
+    # registration does not decide what gets cleared, so any of the three
+    # can appear in either list.
     registration: Literal["unregistered", "expired", "registered"]
     last_seen_at: datetime | None
 

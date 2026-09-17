@@ -325,7 +325,7 @@ it('shows the load-error banner when listDevices rejects', async () => {
   expect(await screen.findByText(/Couldn.t load kiosks/i)).not.toBeNull();
 });
 
-/* ── Clear offline and expired kiosks ──────────────────────────────── */
+/* ── Clear offline kiosks ──────────────────────────────────────────── */
 
 it('hides the clear button below rank 60', async () => {
   auth.maxRank = 40;

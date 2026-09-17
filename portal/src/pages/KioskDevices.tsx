@@ -17,8 +17,8 @@
  *  create, 'change' for edit/register/deregister, 'delete' for delete.
  *
  *  "Clear offline" is the one bulk action: a dry run previews every kiosk
- *  that is unregistered or expired AND unseen for 24h, the modal names them,
- *  and confirming posts those ids back. The server re-checks each one, so the
+ *  unseen for 24h (a never-seen one counts once its row is a day old), the
+ *  modal names them, and confirming posts those ids back. The server re-checks each one, so the
  *  notice is built from the confirm response — never from the preview. The
  *  button is gated on rank, not on a permission, and hidden below it. */
 
@@ -419,7 +419,7 @@ export default function KioskDevices() {
 
       {notice && (
         <div className="dir-empty" style={{ marginBottom: 12 }} role="status">
-          <b>Clear offline and expired kiosks</b>{notice}
+          <b>Clear offline kiosks</b>{notice}
         </div>
       )}
 

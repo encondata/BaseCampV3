@@ -151,3 +151,79 @@ for an actor below rank 60.
   point it is not running that initiative anyway.
 - **No soft delete.** Adding `archived_at` to `devices` would mean an archive/restore
   path across all four hardware pages — far more than this button warrants.
+
+---
+
+## Addendum — 2026-09-17: the AND rule shipped and could not fire
+
+**What happened.** The AND rule above shipped. On the real fleet the button
+reported "nothing to clear" while four of the eight dev kiosks had been silent
+for days.
+
+**Why it could not fire.** Registration tokens are issued for roughly 30 days.
+A kiosk that dies therefore stays *Registered* for a month while going silent
+within hours — every one of the eight dev kiosks held a token into October.
+Clause 1 of the rule ("not registered") is false for essentially every kiosk
+that has just died, so the AND could not match the exact population the button
+exists to clear. The reasoning above is not wrong about the two kiosks `OR`
+would wrongly delete; it is wrong about the cost of the fix. It reached for
+registration to spare a live-but-expired kiosk, when staleness already spares
+it — that kiosk is heartbeating, so it is not stale.
+
+**The replacement rule.** A kiosk is clearable when it has not been seen for 24
+hours:
+
+- `last_seen_at < now() - interval '24 hours'`, **or**
+- `last_seen_at IS NULL` **and** `created_at < now() - interval '24 hours'`.
+
+Still scoped to `device_type = 'kiosk'`, still on the database clock.
+
+Registration drops out of the rule entirely. It decides nothing, because
+staleness already decides both cases the original design was worried about: an
+unregistered-but-stale kiosk is caught by staleness, and an unregistered-but-
+live one is spared by it. The `registration` field stays on the response item —
+it is useful for the operator reading the modal — but it is now information,
+not a veto, so any of its three values can appear on a cleared row as well as a
+skipped one.
+
+The `created_at` clause is a **grace period**, and it is why the rule is not
+simply "stale or never seen". A kiosk provisioned in the portal has never been
+seen; it must not be deletable the instant its row exists, because someone has
+to be able to create it and then go plug it in. This is the same worry that
+motivated the original clause 2, addressed directly instead of by proxy.
+
+Updated table:
+
+| Kiosk | Registration | Last seen | Cleared |
+|---|---|---|---|
+| `kiosk-dock-01` | Expired | 3 days ago | yes |
+| `kiosk-pi-07` | Unregistered | never, created 3 days ago | yes |
+| `kiosk-lab-02` | Registered | 2 days ago | **yes** — was "no" under the AND rule; the case this change exists for |
+| `kiosk-live-04` | Expired | 10 minutes ago | no — demonstrably alive |
+| `kiosk-soon-05` | Expires soon | 5 days ago | **yes** — was "no"; a valid token is not a heartbeat |
+| `kiosk-new-06` | Unregistered | never, created 5 minutes ago | no — grace period |
+
+**Copy.** "Clear offline and expired" was accurate to the old rule and is a lie
+under the new one. The modal title is now *Clear offline kiosks*, its
+description names silence and the grace period, and the empty state reads
+"every kiosk has been seen in the last 24 hours, or was added too recently to
+count as offline yet". The button already read "Clear offline", which is still
+accurate, and the endpoint path `/devices/kiosks/clear-offline` is unchanged.
+
+**Testing.** `test_expires_soon_is_still_registered` protected clause 1 and had
+no meaning left, so its row shape (a token valid for one more hour, silent for
+five days) is kept with the expectation inverted, as
+`test_a_registered_kiosk_silent_for_days_is_cleared`. The re-registration test
+now has the kiosk heartbeat as well as renew its token, since renewal alone no
+longer spares anything — what it still protects is that the skip reason says
+`registered`, not `expired`. New coverage: a registered kiosk silent for days is
+cleared, a kiosk seen minutes ago is spared whatever its token says, a never-seen
+kiosk created 3 days ago is cleared, and a never-seen kiosk created 5 minutes
+ago is spared.
+
+**Still deliberately not doing.** The "no guard for a kiosk assigned to an
+active initiative" note above rested on AND semantics and is weaker now: a kiosk
+on a live initiative that has been silent for a day is clearable. That is
+acceptable — a kiosk that has not checked in for 24 hours is not running that
+initiative either — and the confirmation modal names every row before anything
+is deleted.

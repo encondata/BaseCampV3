@@ -36,6 +36,20 @@ it('names every kiosk that will be deleted', () => {
   expect(screen.getByText('Pi')).toBeTruthy();
 });
 
+it('states the rule in the header: silence, not expiry', () => {
+  // The rule is staleness alone; header copy that promises to clear expired
+  // kiosks would describe a button that no longer exists. (Rows may still
+  // carry an Expired chip — that is reporting, not the rule, so the negative
+  // assertion is scoped to the header.)
+  const { container } = render(
+    <ClearOfflineKiosksModal kiosks={ROWS} totalMatched={ROWS.length} busy={false}
+                             onConfirm={() => {}} onClose={() => {}} />);
+  const head = container.querySelector('.rgm-head-text') as HTMLElement;
+  expect(within(head).getByRole('heading', { name: 'Clear offline kiosks' })).toBeTruthy();
+  expect(within(head).getByText(/not been seen in the last 24 hours/)).toBeTruthy();
+  expect(head.textContent).not.toMatch(/expire/i);
+});
+
 it('says never for a kiosk that has never been seen', () => {
   render(<ClearOfflineKiosksModal kiosks={ROWS} totalMatched={ROWS.length} busy={false}
                                   onConfirm={() => {}} onClose={() => {}} />);
@@ -43,9 +57,10 @@ it('says never for a kiosk that has never been seen', () => {
 });
 
 it('colors the registration chips and covers the registered state too', () => {
-  // `registered` only reaches this component through a `skipped` row, but the
-  // wire type carries all three values, so the chip must not fall through to
-  // a bare literal.
+  // Registration decides nothing — a kiosk holding a valid token is cleared
+  // once it goes silent — so `registered` reaches this component on a row
+  // about to be deleted, and the chip must not fall through to a bare
+  // literal.
   const withRegistered: ClearOfflineKioskItem[] = [...ROWS, {
     id: 'c', name: 'kiosk-back-online', sub_type: 'web',
     registration: 'registered', last_seen_at: '2026-09-16T10:00:00Z',
