@@ -5,7 +5,10 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from serversherpa.db.models import Initiative, Site
-from serversherpa.labels.generate.values import AssetRow, Sites, placeholder_values
+from serversherpa.labels.generate.values import (
+    AssetRow, ContainerRow, Sites, container_placeholder_values, placeholder_values,
+    values_for_row,
+)
 
 CATALOG = [
     "asset_id", "asset_name", "serial_number", "make", "model", "make_model",
@@ -174,10 +177,6 @@ def test_generation_rules_empty_dict_is_a_no_op():
     values = placeholder_values(_row(), _initiative(), _sites(), CATALOG, generation_rules={})
     assert "nap" not in values
 
-
-from serversherpa.labels.generate.values import (
-    ContainerRow, container_placeholder_values, values_for_row,
-)
 
 CONTAINER_CATALOG = ["container_name", "container_id", "label_tag",
                      "move_name", "move_date", "move_date_long",

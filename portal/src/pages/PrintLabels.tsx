@@ -101,7 +101,21 @@ export default function PrintLabels() {
   const [containerSelected, setContainerSelected] = useState<string[]>([]);
   const [containerDisplayed, setContainerDisplayed] = useState<ContainerItem[]>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
-  const [settings, setSettings] = useState<PrintSettings>(() => readPrintSettings());
+  // The operator's own print settings — what `readPrintSettings` loaded and
+  // the only thing ever written back. A label type's `default_copies` seed
+  // lives beside it in `seededCopies` (see `settings` below) so a seed can
+  // never be persisted over a value the operator chose.
+  const [operatorSettings, setOperatorSettings] = useState<PrintSettings>(() => readPrintSettings());
+  const [seededCopies, setSeededCopies] = useState<number | null>(null);
+  /** What the page actually prints and shows: the operator's settings with
+   *  the current type's seeded copies laid over them. `seededCopies` is set
+   *  on every label-type change — to the type's `default_copies` when it has
+   *  one and to null when it does not — so switching to a type with no
+   *  default restores the operator's value instead of leaving the last
+   *  seed in place. */
+  const settings = useMemo<PrintSettings>(
+    () => (seededCopies === null ? operatorSettings : { ...operatorSettings, copies: seededCopies }),
+    [operatorSettings, seededCopies]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [cacheOpen, setCacheOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -154,22 +168,18 @@ export default function PrintLabels() {
   }, [typeVocab, cachedBundles]);
   const typeLabel = (key: string) => (key === LABEL_TYPE_CUSTOM ? 'Custom' : (typeChoices.find((t) => t.key === key)?.label ?? vocabLabel(vocab, 'type', key)));
 
-  /** Seeds settings.copies from the new type's default_copies (migration
-   *  0066) — but only on an actual label-type change: this runs from the
-   *  type picker and the initial-type effect, never from a render or an
-   *  unrelated state change, so it can never clobber a value the operator
-   *  has since typed into the settings modal. */
+  /** Seeds copies from the new type's default_copies (migration 0066), or
+   *  clears the seed for a type that has none so the operator's own value
+   *  comes back — a seed must never outlive the type it came from, or a
+   *  container type's 5 would silently multiply an asset run. The seed is
+   *  never written to storage, so it can't clobber the operator's value
+   *  there either. Only an actual label-type change runs this: it fires
+   *  from the type picker and the initial-type effect, never from a render
+   *  or an unrelated state change. */
   const handleLabelTypeChange = (key: string) => {
     if (key === labelType) return;
     setLabelType(key);
-    const def = defaultCopiesFor(vocab, key);
-    if (def !== null) {
-      setSettings((s) => {
-        const next = { ...s, copies: def };
-        writePrintSettings(next);
-        return next;
-      });
-    }
+    setSeededCopies(defaultCopiesFor(vocab, key));
   };
 
   const pickerOptions = useMemo(
@@ -359,7 +369,19 @@ export default function PrintLabels() {
     return { have, total: roster.length, missing: roster.length - have };
   }, [roster, isCustom, labelType, statusOf, containerMode, containers, liveContainers, containerStatusOf]);
 
-  const updateSettings = (next: PrintSettings) => { setSettings(next); writePrintSettings(next); };
+  /** The settings modal edits the EFFECTIVE settings, so a `copies` that
+   *  differs from what was on screen is the operator claiming that number:
+   *  the seed is dropped and the value persisted. Reset does the same — it
+   *  returns every field to its default, copies included. Any other change
+   *  keeps the seed and leaves the operator's stored copies untouched, so
+   *  editing the batch size in container mode never persists the seeded 5. */
+  const updateSettings = (next: PrintSettings) => {
+    const tookCopies = next.copies !== settings.copies || !settingsModified(next);
+    if (tookCopies) setSeededCopies(null);
+    const persisted = tookCopies ? next : { ...next, copies: operatorSettings.copies };
+    setOperatorSettings(persisted);
+    writePrintSettings(persisted);
+  };
 
   // ── sending ──────────────────────────────────────────────────────────
   const sendLabel = (zpl: string, singleCopy = false) => printer.send(applyPrintSettings(zpl, settings, { singleCopy }));
@@ -587,7 +609,15 @@ export default function PrintLabels() {
             <div>
               <InitiativeSummary initiative={summaryFromInitiative(initiative)} emptyText="" />
               <div className="plabels-summary-line">
-                <span className="cell-sub">{rosterLoading ? 'Loading assets…' : `${roster?.length ?? 0} assets`}</span>
+                {/* Counts the rows this mode actually prints for, so the line
+                    matches the noun every other part of the page switches to.
+                    Containers are counted live (archived ones are dropped from
+                    the list), exactly like the coverage line. */}
+                <span className="cell-sub">
+                  {containerMode
+                    ? (containersLoading ? 'Loading containers…' : `${liveContainers.length} containers`)
+                    : (rosterLoading ? 'Loading assets…' : `${roster?.length ?? 0} assets`)}
+                </span>
                 {cacheStamp && !isCustom && (
                   <span className="chip tag">Cached for offline · {cachedLabelCount} labels · {relativeTime(cacheStamp.cached_at)}</span>
                 )}

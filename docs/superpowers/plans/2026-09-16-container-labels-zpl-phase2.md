@@ -679,6 +679,17 @@ to show without a second fetch. entity_type is now a Literal.
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ```
 
+**Addendum (2026-09-16, review):** `entity_name` never shipped. Task 5's
+container list turned out to have the container's own name already — it
+lists containers and asks the bundle only whether each one has a label —
+so nothing ever read the field, and carrying it meant an outer join on
+every bundle fetch for a value no caller used. Commit `51ac239` removed
+both the field and the join; `entity_type` stayed a `Literal`. The "outer
+join matters" rationale above went with it: with no name column to join,
+a label whose entity was deleted comes back from the plain query anyway,
+so orphans are still served. The task body above is left as it was
+written.
+
 ---
 
 ### Task 5: The container list on Print Labels

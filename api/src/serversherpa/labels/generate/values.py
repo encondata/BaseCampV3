@@ -236,6 +236,9 @@ def container_placeholder_values(
     }
     out = {key: computed.get(key, "") for key in catalog_keys}
     if generation_rules:
+        # Length limits only: position rules split an ASSET's source/
+        # destination location string into its parts, which a container row
+        # has no equivalent of, so applying them here would be meaningless.
         _apply_length_limits(out, generation_rules)
     return out
 

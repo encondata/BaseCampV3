@@ -154,4 +154,16 @@ async def test_a_container_bundle_never_leaks_asset_labels(client, db, seeded_us
         f"/labels/generated/bundle?initiative_id={ini.id}&label_type=container", headers=hdrs)
     assert resp.status_code == 200, resp.text
     container_body = resp.json()
-    assert all(l["entity_type"] == "container" for l in container_body["labels"])
+    # The container label, and only it — an `all(...)` over an empty bundle
+    # would pass while serving nothing, which is the failure this test is for.
+    assert [(l["entity_type"], l["entity_id"]) for l in container_body["labels"]] \
+        == [("container", str(container.id))]
+
+    # ...and the other direction: the asset type's bundle carries the asset
+    # label alone.
+    resp = await client.get(
+        f"/labels/generated/bundle?initiative_id={ini.id}&label_type=top", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    asset_body = resp.json()
+    assert [(l["entity_type"], l["entity_id"]) for l in asset_body["labels"]] \
+        == [("asset", str(asset.id))]

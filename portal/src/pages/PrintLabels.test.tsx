@@ -439,6 +439,37 @@ it("seeds copies from the label type's default_copies on a type change, but neve
   await userEvent.click(screen.getByLabelText('Select all filtered containers'));
   await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
   expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('9');
+  await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+  // Container → asset: Top Label has no default_copies, so the seed must be
+  // dropped and the operator's own 9 come back. Leaving the container seed in
+  // place would multiply every asset label sent by 5.
+  await userEvent.click(screen.getByRole('radio', { name: /Top Label/ }));
+  await screen.findByText('Showing 3 of 3 assets');
+  await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
+  expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('9');
+});
+
+it('a seeded copies value is dropped, not kept, when the type has no default of its own', async () => {
+  printer.connected = true;
+  renderPage();
+  await pickInitiative();
+
+  // The operator never touches Copies: it stays at V2's default of 1.
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  await screen.findByText('Showing 2 of 2 containers');
+  await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
+  expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('5');
+  await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+  await userEvent.click(screen.getByRole('radio', { name: /Top Label/ }));
+  await screen.findByText('Showing 3 of 3 assets');
+  await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
+  expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('1');
+  await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+  // The seed was never persisted either, so a reload starts from 1 as well.
+  expect(JSON.parse(localStorage.getItem('labels.print.settings') ?? '{}').copies ?? 1).toBe(1);
 });
 
 it('keeps the container selection when the type goes container \u2192 asset \u2192 container', async () => {
