@@ -223,15 +223,17 @@
    six choice cards). The separator keeps it readable as its own block now
    that it shares a card with the printer status. Buttons size to their own
    content — an earlier `flex: 1` stretched Print across the whole card. */
-/* Step 3 and the print card stack in the third grid column. The column is a
-   stretched grid item, so `margin-top: auto` on the print card genuinely has
-   free space to consume and pins it to the bottom — the pair then ends level
-   with Step 2's last choice card. */
-.plabels-step-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.plabels-ready { margin-top: auto; }
-.plabels-ready-text { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
-.plabels-ready-text .modal-section { margin: 0; }
+/* Step 3 and the print card stack in the third grid column as two separate
+   cards. They sit at the TOP of the column, like Step 1's content does —
+   pushing the print card to the column's bottom edge aligned it with Step 2
+   but left it floating in a large empty gap, which read as a mistake. */
+.plabels-step-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; align-content: start; }
 .plabels-ready-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* A step body is a flex column, so a direct button child stretches to the full
+   card width — which made Connect via USB a full-width slab. The choice cards
+   in Step 2 are nested inside .rgm-choice-cards and are meant to fill, so
+   scoping to direct children leaves them alone. */
+.plabels-step-body > button { align-self: flex-start; }
 
 /* Print settings modal — two content-sized columns; ComboBox lists overlay */
 .modal-card.reports-modal-card.rgm-card.plabels-settings-card {

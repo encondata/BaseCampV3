@@ -660,10 +660,9 @@ export default function PrintLabels() {
         </StepCard>
 
         {/* Step 3 and the print controls share the third grid column as two
-            separate cards. The column is a stretched grid item, so the print
-            card's `margin-top: auto` pins it to the bottom and the pair ends
-            level with Step 2 — which is why the print controls sit here at
-            all, rather than in a card below the long, scrolling roster. */}
+            separate cards, filling space the column had going spare — the
+            print button used to sit in a card below the long, scrolling
+            roster, well out of reach of the steps that feed it. */}
         <div className="plabels-step-col">
         <StepCard step="Step 3" title="Printer" hint="A Zebra printer connected to this computer over USB.">
           <div className="plabels-printer-status">
@@ -682,16 +681,11 @@ export default function PrintLabels() {
           <p className="page-hint">Requires a Zebra printer connected via USB. Make sure the printer is turned on before connecting.</p>
         </StepCard>
 
-        <section className="plabels-step plabels-ready" aria-label="Ready to print">
-          <div className="plabels-ready-text">
-            <div className="modal-section">Ready to print</div>
-            <span className="cell-sub">
-              {inlineProgress
-                ? `Printing ${inlineProgress.done} of ${inlineProgress.total}…`
-                : activeSelected.length === 0 ? `Select ${entityNoun}s to print labels`
-                : `${printableIds.length} label(s) will be printed${activeSelected.length > printableIds.length ? ` · ${activeSelected.length - printableIds.length} selected ${entityNoun}(s) are hidden by the current filters` : ''}`}
-            </span>
-          </div>
+        <StepCard step="Step 5" title="Ready to print"
+                  hint={inlineProgress
+                    ? `Printing ${inlineProgress.done} of ${inlineProgress.total}…`
+                    : activeSelected.length === 0 ? `Select ${entityNoun}s to print labels`
+                    : `${printableIds.length} label(s) will be printed${activeSelected.length > printableIds.length ? ` · ${activeSelected.length - printableIds.length} selected ${entityNoun}(s) are hidden by the current filters` : ''}`}>
           <div className="plabels-ready-actions">
             <button type="button" className="btn-ghost plabels-gear" aria-label="Print settings" title="Print settings"
                     onClick={() => setSettingsOpen(true)}>
@@ -701,7 +695,7 @@ export default function PrintLabels() {
               {printing ? 'Printing…' : `Print ${printableIds.length} label${printableIds.length === 1 ? '' : 's'}`}
             </button>
           </div>
-        </section>
+        </StepCard>
         </div>
       </div>
 
