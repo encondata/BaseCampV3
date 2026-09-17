@@ -45,7 +45,15 @@ import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 
 /**
- * The only file in this app that knows Zebra exists.
+ * Until `ZebraBarcodeEngine.kt` was added alongside this file, this was the
+ * only file in this app that knew Zebra existed;
+ * `CorePurityTest.onlyDesignatedFilesImportTheZebraSdk` (renamed from
+ * `onlyZebraRfidReaderImportsTheZebraSdk`) now enforces the two-file version
+ * of that rule instead of the one-file version. This file talks to
+ * `com.zebra.rfid.api3` — the RFID radio. `ZebraBarcodeEngine` talks to the
+ * separate `com.zebra.scannercontrol` SDK, for the sled's barcode imager —
+ * a different physical device inside the same RFD40 housing; see that
+ * file's class doc for why a second Zebra SDK is needed at all.
  *
  * The SDK calls back on its own thread ([listener]), so every callback does
  * one thing: push onto a flow. Never call back into the reader from inside a
@@ -114,6 +122,17 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
 
     private var readers: Readers? = null
     private var reader: RFIDReader? = null
+
+    /** Wraps the separate `com.zebra.scannercontrol` SDK to stand the
+     *  sled's barcode imager down — see [ZebraBarcodeEngine]'s class doc for
+     *  why the RFID SDK's own [configureTriggerMode] cannot do this alone.
+     *  Built fresh in [standDownBarcodeImager] for a connection whose
+     *  [RfidTriggerPersonality] is RFID, the same "new vendor object per
+     *  connect" shape `readers`/`reader` use; null otherwise (disconnected,
+     *  or the personality is BARCODE and this was never built), so
+     *  [disconnectBlocking] has something to tear down only when there is
+     *  something to tear down. */
+    private var barcodeEngine: ZebraBarcodeEngine? = null
 
     private val listener = object : RfidEventsListener {
         override fun eventReadNotify(event: RfidReadEvents) {
@@ -529,6 +548,18 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         // still runs whether or not the radio/barcode switch actually took,
         // instead of one failed avenue aborting setup partway through.
         configureTriggerMode(rfid, triggerPersonality, scannerPluginMode)
+        // Only when the operator has the physical trigger driving the RFID
+        // radio does the barcode imager firing on the same pull actually
+        // corrupt anything — with BARCODE personality the imager firing is
+        // the point, so standing it down here would be actively wrong.
+        // Runs after configureTriggerMode() (which never throws except a
+        // real cancellation — see its doc) and standDownBarcodeImager()
+        // itself never throws either, so this cannot be mistaken for a
+        // trigger-mode failure and cannot abort the start/stop trigger
+        // pinning that follows.
+        if (triggerPersonality == RfidTriggerPersonality.RFID) {
+            standDownBarcodeImager()
+        }
         // Pin the reader's own start/stop trigger behavior to immediate: a
         // sled left on HANDHELD (its 123RFID Mobile default) would let its
         // own firmware decide when an inventory starts and stops, defeating
@@ -554,6 +585,38 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         // failure here can never be mistaken for a trigger-mode failure,
         // and configureTriggerMode()'s own logging/connectNote work is
         // already complete by the time any of this can throw.
+    }
+
+    /** Builds a [ZebraBarcodeEngine] and asks it to stand the sled's barcode
+     *  imager down — see that class's doc for the full story of why a
+     *  second Zebra SDK is needed at all. Only called from
+     *  [configurePostConnectSetup], and only when [RfidTriggerPersonality]
+     *  is RFID. [ZebraBarcodeEngine.standDown] never throws — it reduces
+     *  every outcome, success included, to an operator-facing sentence — so
+     *  this cannot fail the RFID connect it runs alongside; the `try`
+     *  around the call itself is the same belt-and-braces guard every other
+     *  vendor call site in this file uses, in case a future change to that
+     *  class ever lets something slip past its own guard. Appends to
+     *  [_connectNote] via [combineConnectNotes] rather than overwriting it,
+     *  the same reasoning [configureTriggerMode]'s own note-writing uses:
+     *  this and [configureTriggerMode] each leave an independently true
+     *  fact about the same connect attempt, and the operator should see
+     *  both. */
+    private fun standDownBarcodeImager() {
+        val engine = ZebraBarcodeEngine(context)
+        barcodeEngine = engine
+        val note = try {
+            engine.standDown()
+        } catch (interrupt: InterruptedException) {
+            throw interrupt
+        } catch (e: Exception) {
+            Log.w(TAG, "standDownBarcodeImager: ZebraBarcodeEngine.standDown() itself threw.", e)
+            "The sled's barcode imager couldn't be reached (${e.javaClass.simpleName}); it may still fire on a trigger pull."
+        } catch (e: LinkageError) {
+            Log.w(TAG, "standDownBarcodeImager: ZebraBarcodeEngine.standDown() itself threw a LinkageError.", e)
+            "The sled's barcode imager couldn't be reached (${e.javaClass.simpleName}); it may still fire on a trigger pull."
+        }
+        _connectNote.value = combineConnectNotes(_connectNote.value, note)
     }
 
     /**
@@ -733,6 +796,11 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
     /** Only ever called from inside [runInterruptible]; never suspends itself.
      *  Leaves `_connection` untouched — see [cleanUpAfterFailedConnect]'s doc. */
     private fun disconnectBlocking() {
+        // Runs before the RFID teardown below, not after: ZebraBarcodeEngine
+        // re-enables the imager itself (see its tearDown() doc for why),
+        // and there is no ordering reason to make that wait on the RFID
+        // radio being torn down first.
+        teardownStep { barcodeEngine?.tearDown() }
         teardownStep { reader?.Events?.removeEventsListener(listener) }
         teardownStep { reader?.disconnect() }
         teardownStep { readers?.Dispose() }
@@ -762,6 +830,7 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
     private fun clearReaderRefs() {
         reader = null
         readers = null
+        barcodeEngine = null
     }
 
     final override suspend fun apply(settings: RfidSettings): Result<Unit> = withContext(Dispatchers.IO) {
