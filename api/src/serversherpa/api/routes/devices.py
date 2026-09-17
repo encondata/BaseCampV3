@@ -7,11 +7,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import aliased
 
+from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
+    ClearOfflineKioskItem, ClearOfflineKiosksIn, ClearOfflineKiosksOut,
     DeviceCreate, DeviceItem, DeviceLeaseItem, DevicePatch, DeviceRegisterIn,
 )
 from serversherpa.db.models import (
@@ -127,6 +129,105 @@ async def list_devices(
         query = query.where(Device.device_type == device_type)
     rows = (await db.execute(query)).all()
     return [_row_to_item(row) for row in rows]
+
+
+# Hardcoded to match the button's own label; deliberately not configurable.
+OFFLINE_HOURS = 24
+
+
+def _offline_kiosk_clause(now: datetime):
+    """A kiosk is clearable when it has not been seen for OFFLINE_HOURS:
+    last_seen_at is older than the cutoff, or last_seen_at IS NULL and the
+    row itself was created before the cutoff.
+
+    Registration is deliberately NOT part of this rule. It used to be — the
+    rule required unregistered-or-expired AND stale — and that made the
+    button unable to do its job: tokens are issued for ~30 days, so a kiosk
+    that dies stays "registered" for a month while going silent within
+    hours. Dropping registration loses nothing, because staleness already
+    decides both cases on its own: an unregistered kiosk that is also silent
+    is caught by staleness, and one that is still heartbeating is spared by
+    it, lapsed token or not. It needs re-registering, not deleting.
+
+    The NULL branch is a grace period, which is why the rule is not simply
+    "stale or never seen": a kiosk provisioned in the portal has never been
+    seen, and must not be deletable the instant its row exists — someone has
+    to be able to create it and then go plug it in. It becomes clearable
+    only once its own row is OFFLINE_HOURS old."""
+    cutoff = now - timedelta(hours=OFFLINE_HOURS)
+    return and_(
+        Device.device_type == "kiosk",
+        or_(Device.last_seen_at < cutoff,
+            and_(Device.last_seen_at.is_(None), Device.created_at < cutoff)),
+    )
+
+
+def _clear_item(device: Device, now: datetime) -> ClearOfflineKioskItem:
+    if device.token_expires_at is None:
+        registration = "unregistered"
+    elif device.token_expires_at < now:
+        registration = "expired"
+    else:
+        # Reportable for deleted kiosks too, not just `skipped`: a kiosk
+        # with a valid future token that has gone silent for a day is
+        # cleared, and the modal still shows what its token said.
+        registration = "registered"
+    return ClearOfflineKioskItem(
+        id=device.id, name=device.name, sub_type=device.sub_type,
+        registration=registration, last_seen_at=device.last_seen_at)
+
+
+@router.post("/kiosks/clear-offline", response_model=ClearOfflineKiosksOut)
+async def clear_offline_kiosks(
+    body: ClearOfflineKiosksIn, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "delete"),
+) -> ClearOfflineKiosksOut:
+    """Delete kiosks that have not been seen for a day.
+
+    Admin and above only. The permission alone is not enough: the matrix is
+    runtime-editable, so scanning_hardware:delete can be granted to staff —
+    the rank floor is what keeps this irreversible bulk action admin-only.
+    (Idiom: api/routes/access.py:107.)"""
+    if actor.access.max_rank < GATE_BYPASS_RANK:
+        raise _err(403, "forbidden_rank")
+
+    # The DATABASE clock, never the caller's: a skewed laptop must not decide
+    # what "24 hours" means for a delete that cannot be undone.
+    now = await db.scalar(select(func.now()))
+
+    if body.dry_run:
+        matches = (await db.execute(
+            select(Device).where(_offline_kiosk_clause(now))
+            .order_by(Device.name))).scalars().all()
+        return ClearOfflineKiosksOut(
+            dry_run=True, kiosks=[_clear_item(d, now) for d in matches],
+            skipped=[], not_found=0)
+
+    ids = body.ids or []
+    if not ids:
+        return ClearOfflineKiosksOut(dry_run=False, kiosks=[], skipped=[], not_found=0)
+
+    named = (await db.execute(
+        select(Device).where(Device.id.in_(ids), Device.device_type == "kiosk")
+        .order_by(Device.name))).scalars().all()
+    still_matching = {d.id for d in (await db.execute(
+        select(Device).where(Device.id.in_(ids), _offline_kiosk_clause(now)))).scalars()}
+
+    deleted, skipped = [], []
+    for device in named:
+        if device.id not in still_matching:
+            skipped.append(_clear_item(device, now))
+            continue
+        deleted.append(_clear_item(device, now))
+        audit(db, actor_id=actor.person.id, entity_type="device",
+              entity_id=str(device.id), action="delete",
+              changes={"name": device.name, "device_type": device.device_type,
+                       "serial": device.serial, "reason": "clear_offline_kiosks"})
+        await db.delete(device)
+    await db.commit()
+    not_found = len(set(ids) - {d.id for d in named})
+    return ClearOfflineKiosksOut(dry_run=False, kiosks=deleted, skipped=skipped,
+                                 not_found=not_found)
 
 
 @router.get("/{device_id}/leases", response_model=list[DeviceLeaseItem])
