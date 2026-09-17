@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 
 from serversherpa.db.models import (
-    Asset, AuditLog, Client, GeneratedLabel, Initiative, InitiativeAsset,
+    Asset, AuditLog, Client, Container, GeneratedLabel, Initiative, InitiativeAsset,
     LabelGenerationRun, LabelTemplate, LabelTemplateSite, LabelVocab, PermissionOverride,
     Person, Site,
 )
@@ -507,7 +507,9 @@ async def test_preview_shape_with_site_and_global_templates(client, db, seeded_u
     assert body["active_run_id"] is None
 
     types = {t["key"]: t for t in body["types"]}
-    assert set(types) == {"top", "front", "rail"}   # container labels live on their own page
+    # Phase two: the container types are active vocab like any other, so the
+    # preview offers them alongside the asset/device types.
+    assert set(types) == {"top", "front", "rail", "container", "container_info"}
     assert types["top"]["template"]["id"] == str(top_tpl.id)
     assert types["top"]["template"]["scope"] == "site"
     assert types["top"]["current"] == 1
@@ -549,31 +551,61 @@ async def test_preview_other_only_type_has_candidates_but_no_auto_match(client, 
     assert candidates[0]["site_names"] == ["NAP-Other"]
 
 
-async def test_preview_excludes_every_container_type(client, db, seeded_user):
-    """The Container Labels page owns container labels; the Generate Labels
-    preview lists asset/device types only. EVERY container type has to be
-    excluded, not just the Avery `container` one — migration 0066 seeds an
-    active `container_info` type, and the runner only ever walks assets, so
-    a container type reaching the preview means a run that emits one info
-    label per ASSET, with an empty QR and a blank Container: line."""
+async def test_the_generate_preview_offers_the_container_types(client, db, seeded_user):
+    """Phase two: the runner walks containers, so the gate is open — the
+    preview offers EVERY active container type, not just the Avery
+    `container` one. Migration 0066 seeds an active `container_info` type
+    too, and both must show up here for the portal's type picker."""
     ini = await _initiative(db)
     for key, label in (("container", "Container Label"),
                        ("container_info", "Container Info Label")):
         if await db.get(LabelVocab, ("type", key)) is None:
             db.add(LabelVocab(kind="type", key=key, label=label, is_active=True))
     await db.commit()
-    # Without this the assertion below would also pass on a database that
-    # simply has no container vocab: the point is that these rows are live
-    # and the preview skips them anyway.
-    for key in ("container", "container_info"):
-        row = await db.get(LabelVocab, ("type", key))
-        assert row is not None and row.is_active is True, f"type/{key} is not active vocab"
 
     hdrs = await login(client)
     resp = await client.get(f"/labels/generate/preview?initiative_id={ini.id}", headers=hdrs)
     assert resp.status_code == 200, resp.text
     keys = {t["key"] for t in resp.json()["types"]}
-    assert keys.isdisjoint({"container", "container_info"}), keys
+    assert {"container", "container_info"} <= keys, keys
+
+
+async def test_the_preview_counts_containers_for_a_container_type(client, db, seeded_user):
+    """A container type's current/stale counts must come from container
+    labels, not from the asset count — before phase two this route
+    hardcoded `entity_type == "asset"` for every type's count, so a
+    container type's numbers were always zero."""
+    ini = await _initiative(db)
+    top_tpl = await _template(db, "top")
+    container_tpl = await _template(db, "container")
+
+    a1 = await _asset_on(db, ini, legacy_id=4001)
+    a2 = await _asset_on(db, ini, legacy_id=4002)
+    a3 = await _asset_on(db, ini, legacy_id=4003)
+    for asset in (a1, a2, a3):
+        db.add(GeneratedLabel(entity_type="asset", entity_id=asset.id, initiative_id=ini.id,
+                              label_type="top", template_id=top_tpl.id,
+                              template_version=top_tpl.version, language_key="zpl",
+                              dpi_key="203", size_key="4x2", code="X"))
+
+    c1 = Container(name="crate-1", initiative_id=ini.id, label_tag="priority")
+    c2 = Container(name="crate-2", initiative_id=ini.id, label_tag="priority")
+    db.add_all([c1, c2])
+    await db.flush()
+    for container in (c1, c2):
+        db.add(GeneratedLabel(entity_type="container", entity_id=container.id,
+                              initiative_id=ini.id, label_type="container",
+                              template_id=container_tpl.id,
+                              template_version=container_tpl.version, language_key="zpl",
+                              dpi_key="203", size_key="4x2", code="Y"))
+    await db.commit()
+
+    hdrs = await login(client)
+    resp = await client.get(f"/labels/generate/preview?initiative_id={ini.id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    by_key = {t["key"]: t for t in resp.json()["types"]}
+    assert by_key["container"]["current"] == 2      # two containers labeled
+    assert by_key["top"]["current"] == 3            # three assets labeled
 
 
 async def test_preview_404_unknown_initiative(client, db, seeded_user):

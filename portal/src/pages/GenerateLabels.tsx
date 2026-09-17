@@ -22,7 +22,7 @@ import {
   type InitiativeItem, type LabelGeneratePreview, type LabelRun, type LabelVocab,
 } from '../lib/api';
 import {
-  canGenerate, firstUnresolvedType, isAssetLabelType, isRunActive, templatesPayloadFor,
+  canGenerate, firstUnresolvedType, isRunActive, templatesPayloadFor,
   visibleInitiativesForGenerate,
 } from '../lib/generateLabels';
 import { vocabLabel, vocabOfKind } from '../lib/labels';
@@ -118,8 +118,7 @@ export default function GenerateLabels() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Asset/device label types only — container labels live on their own page.
-  const typeVocab = useMemo(() => vocabOfKind(vocab, 'type').filter((v) => isAssetLabelType(v.key)), [vocab]);
+  const typeVocab = useMemo(() => vocabOfKind(vocab, 'type'), [vocab]);
   const typeLabelFor = (key: string) => vocabLabel(vocab, 'type', key);
 
   const pickerOptions = useMemo(

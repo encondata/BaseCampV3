@@ -46,7 +46,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.labels import labelary
 from serversherpa.labels.compile import UnsupportedLanguage, compile_design
-from serversherpa.labels.generate import CONTAINER_LABEL_TYPES, InvalidLabelTypes, InvalidTemplates, RunActive, enqueue_run
+from serversherpa.labels.generate import InvalidLabelTypes, InvalidTemplates, RunActive, entity_for_type, enqueue_run
 from serversherpa.labels.generate.select import candidate_templates
 from serversherpa.labels.model import DesignError, parse_design
 from serversherpa.labels.tokens import apply_placeholders
@@ -795,8 +795,7 @@ async def preview_generation(
     # Same site preference as the runner: destination, else origin.
     template_site_id = ini.destination_site_id or ini.origin_site_id
     type_rows = (await db.execute(
-        select(LabelVocab).where(LabelVocab.kind == "type", LabelVocab.is_active == True,  # noqa: E712
-                                 LabelVocab.key.notin_(CONTAINER_LABEL_TYPES))
+        select(LabelVocab).where(LabelVocab.kind == "type", LabelVocab.is_active == True)  # noqa: E712
         .order_by(LabelVocab.sort_order, LabelVocab.key))).scalars().all()
 
     types: list[LabelGeneratePreviewTypeOut] = []
@@ -821,7 +820,7 @@ async def preview_generation(
             select(GeneratedLabel.template_id, GeneratedLabel.template_version,
                    GeneratedLabel.stale)
             .where(GeneratedLabel.initiative_id == ini.id,
-                   GeneratedLabel.entity_type == "asset",
+                   GeneratedLabel.entity_type == entity_for_type(vocab.key),
                    GeneratedLabel.label_type == vocab.key))).all()
         for template_id, template_version, is_stale in existing_rows:
             if (template is not None and template_id == template.id

@@ -201,8 +201,8 @@ def placeholder_values(
         "move_name": initiative.name or "",
         "move_date": move_date,
         "move_date_long": move_date_long,
-        # the runner handles assets only for now (spec: "Out of scope");
-        # these always resolve empty for an asset row.
+        # an asset row never carries container fields; container_placeholder_
+        # values (below) fills these for a container row instead.
         "container_name": "",
         "container_id": "",
     }

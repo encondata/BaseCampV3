@@ -19,7 +19,7 @@ import {
   type GeneratedLabelBundle, type InitiativeAssetRow, type InitiativeItem, type LabelVocab,
 } from '../lib/api';
 import { relativeTime } from '../lib/format';
-import { isAssetLabelType, visibleInitiativesForGenerate } from '../lib/generateLabels';
+import { visibleInitiativesForGenerate } from '../lib/generateLabels';
 import * as labelCache from '../lib/labelCache';
 import { vocabLabel, vocabOfKind } from '../lib/labels';
 import {
@@ -41,6 +41,11 @@ import '../styles/labels.css';
 
 const LABEL_DELAY_MS = 100;
 const AUTO_NEXT_SECONDS = 5;
+
+// Print Labels doesn't walk containers yet (that's a later phase-two task),
+// so the type picker here still excludes the container-shaped label types
+// even though Generate Labels now offers them.
+const NOT_YET_PRINTABLE_TYPES: ReadonlySet<string> = new Set(['container', 'container_info']);
 
 interface Notice { type: 'success' | 'info' | 'warning' | 'error'; message: string; action?: { label: string; onClick: () => void } }
 
@@ -125,7 +130,8 @@ export default function PrintLabels() {
     refreshCachedBundles();
   }, [refreshCachedBundles]);
 
-  const typeVocab = useMemo(() => vocabOfKind(vocab, 'type').filter((v) => isAssetLabelType(v.key)), [vocab]);
+  const typeVocab = useMemo(
+    () => vocabOfKind(vocab, 'type').filter((v) => !NOT_YET_PRINTABLE_TYPES.has(v.key)), [vocab]);
   // Offline without vocab: the types present in cached bundles.
   const typeChoices = useMemo(() => {
     if (typeVocab.length > 0) return typeVocab.map((v) => ({ key: v.key, label: v.label }));

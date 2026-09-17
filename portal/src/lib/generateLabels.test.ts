@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 
 import type { InitiativeItem, LabelGeneratePreviewType } from './api';
 import {
-  candidateScopeText, canGenerate, firstUnresolvedType, hasHiddenErrors, isAssetLabelType,
+  candidateScopeText, canGenerate, firstUnresolvedType, hasHiddenErrors,
   isRunActive, isValidToken, jsonToRuleRows, progressPct, resolvedTemplateId, ruleRowsToJson,
   sortedErrorSummary, templatesPayloadFor, validateRuleRows, visibleInitiativesForGenerate,
 } from './generateLabels';
@@ -156,12 +156,9 @@ it('validateRuleRows rejects a non-numeric position and a non-positive length li
   })).toMatch(/positive whole number/);
 });
 
-// Generate Labels and Print Labels both filter their type vocab through
-// isAssetLabelType, and the runner behind them only ever walks assets — so
-// EVERY container type has to be filtered out, not just the Avery one.
-// Migration 0066 seeds a second, active one: `container_info`.
-it('isAssetLabelType keeps asset types and drops every container type', () => {
-  expect(['top', 'front', 'rail'].filter(isAssetLabelType)).toEqual(['top', 'front', 'rail']);
-  expect(['top', 'container', 'container_info', 'rail'].filter(isAssetLabelType))
-    .toEqual(['top', 'rail']);
-});
+// Phase two: the runner walks containers now, so Generate Labels no longer
+// excludes container types from its type vocab, and the helper that used
+// to filter them out here has been removed. There's nothing left to
+// unit-test at this lib level; GenerateLabels.tsx now takes the vocab
+// as-is (see api/tests/test_label_generate_api.py for the preview-level
+// coverage of container types showing up).

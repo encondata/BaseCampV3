@@ -539,21 +539,19 @@ async def test_enqueue_run_rejects_empty_types(db):
 
 
 @pytest.mark.parametrize("key", ["container", "container_info"])
-async def test_enqueue_run_rejects_container_types_even_when_active(db, key):
+async def test_container_types_can_now_be_enqueued(db, key):
     """`container` and (since migration 0066) `container_info` are active
-    vocab types, but container labels come from the Container Labels page —
-    never an asset run type. The runner hardcodes entity_type="asset", so
-    letting either through queues one container label per asset."""
+    vocab types. Phase two taught the runner to pick a roster per label
+    type (`entity_for_type`), so the gate that used to reject these two
+    is gone — they enqueue exactly like any other active type."""
     initiative, person, assets, template = await _seed_initiative(db, n_assets=1)
     if await db.get(LabelVocab, ("type", key)) is None:
         db.add(LabelVocab(kind="type", key=key, label=key, is_active=True))
     await db.commit()
     assert (await db.get(LabelVocab, ("type", key))).is_active is True
-    with pytest.raises(InvalidLabelTypes) as exc:
-        await enqueue_run(db, initiative_id=initiative.id, label_types=["top", key],
-                          regenerate_existing=False, requested_by=person.id, notify=False)
-    assert exc.value.problems == [
-        f"{key}: container labels are generated from the Container Labels page"]
+    run = await enqueue_run(db, initiative_id=initiative.id, label_types=["top", key],
+                            regenerate_existing=False, requested_by=person.id, notify=False)
+    assert list(run.label_types) == ["top", key]
 
 
 async def test_enqueue_run_rejects_unknown_types(db):
