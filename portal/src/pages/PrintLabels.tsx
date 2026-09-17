@@ -211,18 +211,21 @@ export default function PrintLabels() {
   // imply — a 403 here is a permissions answer, not "no containers", and
   // says so. It also returns archived containers; `PrintContainerList`
   // drops them so the list matches what the runner labels.
-  const loadContainers = useCallback(async (id: string, opts: { keepSelection?: boolean } = {}) => {
+  // Never clears the selection on its own — switching label type reloads
+  // this list, and dropping the operator's picks on that round trip is the
+  // bug the "keeps each list's own selection" contract above rules out.
+  // The selection is pruned to the rows that came back (a container deleted
+  // elsewhere drops out), and the initiative-change effect below is what
+  // resets it outright.
+  const loadContainers = useCallback(async (id: string) => {
     setContainersLoading(true);
-    if (!opts.keepSelection) setContainerSelected([]);
     try {
       const rows = await listContainers({ initiative_id: id });
       if (initiativeIdRef.current !== id) return;
       setContainers(rows);
       setContainersDenied(false);
       setContainersOffline(false);
-      if (opts.keepSelection) {
-        setContainerSelected((s) => s.filter((cid) => rows.some((r) => r.id === cid)));
-      }
+      setContainerSelected((s) => s.filter((cid) => rows.some((r) => r.id === cid)));
     } catch (err) {
       if (initiativeIdRef.current !== id) return;
       const status = err instanceof Error && 'status' in err ? (err as { status?: number }).status : undefined;
@@ -294,6 +297,11 @@ export default function PrintLabels() {
   }, [initiativeId, labelType]);
 
   const containerMode = isContainerLabelType(labelType);
+  // `containersOffline` survives a label-type change (it only resets on a
+  // successful container load or a new initiative), so the banner must be
+  // gated on the mode as well — otherwise a failed container load leaves a
+  // "container lists aren't cached" banner sitting over the ASSET list.
+  const containerListOffline = containerMode && containersOffline;
 
   useEffect(() => {
     if (!initiativeId || !containerMode) return;
@@ -312,7 +320,7 @@ export default function PrintLabels() {
     const onOnline = () => {
       if (initiativeIdRef.current) {
         void loadRoster(initiativeIdRef.current, { keepSelection: true });
-        if (isContainerLabelType(labelType)) void loadContainers(initiativeIdRef.current, { keepSelection: true });
+        if (isContainerLabelType(labelType)) void loadContainers(initiativeIdRef.current);
         if (labelType && labelType !== LABEL_TYPE_CUSTOM) void loadBundle(initiativeIdRef.current, labelType);
       }
     };
@@ -540,10 +548,10 @@ export default function PrintLabels() {
         </div>
       </div>
 
-      {(offlineSince || containersOffline) && (
+      {(offlineSince || containerListOffline) && (
         <div className="plabels-notice warning">
           <p className="page-hint">
-            {containersOffline
+            {containerListOffline
               ? "Offline — container lists aren't cached, so they can't load without a network connection."
               : `Offline — using labels downloaded ${relativeTime(offlineSince!)}. Printing works; changes made elsewhere are not reflected.`}
           </p>
@@ -657,7 +665,7 @@ export default function PrintLabels() {
             <PrintContainerList rows={containers} statusOf={isCustom || !labelType ? null : containerStatusOf}
                                 selected={containerSelected} onSelectedChange={setContainerSelected}
                                 onDisplayedChange={setContainerDisplayed}
-                                onRefresh={() => void loadContainers(initiativeId, { keepSelection: true })}
+                                onRefresh={() => void loadContainers(initiativeId)}
                                 refreshing={containersLoading} disabled={printing || !!batch} resetKey={initiativeId} />
           ) : null
         ) : rosterLoading && !roster ? (

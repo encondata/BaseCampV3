@@ -35,9 +35,14 @@ from serversherpa.db.models import LabelGenerationRun, LabelTemplate, LabelVocab
 ACTIVE_STATUSES = ("queued", "running")
 
 
-# The single source of truth for which entity kind a label type describes.
-# `generated_labels.entity_type` and the runner's roster both come from here,
-# so adding a container-shaped type means editing one dict.
+# Which entity kind a label type describes — the server's copy, and the one
+# `generated_labels.entity_type` and the runner's roster both come from.
+#
+# ⚠ There is a SECOND copy: `CONTAINER_LABEL_TYPES` in
+# `portal/src/lib/printLabels.ts`, which Print Labels uses to decide whether
+# to show the container roster or the asset roster. A new container-shaped
+# label type must be added to BOTH or the page will offer the ASSET roster
+# for a type whose labels are keyed by container id. Never edit one alone.
 ENTITY_FOR_TYPE: dict[str, str] = {"container": "container",
                                    "container_info": "container"}
 

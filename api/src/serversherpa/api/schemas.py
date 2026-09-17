@@ -3224,7 +3224,6 @@ class GeneratedLabelBundleItemOut(BaseModel):
     id: uuid.UUID
     entity_type: Literal["asset", "container"]
     entity_id: uuid.UUID
-    entity_name: str | None = None
     template_id: uuid.UUID
     template_name: str
     template_version: int

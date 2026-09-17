@@ -40,7 +40,7 @@ from serversherpa.api.schemas import (
     LabelZplPreviewIn,
 )
 from serversherpa.db.models import (
-    Asset, Client, Container, GeneratedLabel, Initiative, InitiativeAsset,
+    Asset, Client, GeneratedLabel, Initiative, InitiativeAsset,
     LabelFont, LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelTemplateSite,
     LabelVocab, Person, Site,
 )
@@ -901,30 +901,29 @@ async def get_generated_label_bundle(
     Zebra printer can take. Unknown/archived/out-of-scope initiatives
     read as 404 like the preview endpoint."""
     ini = await _scoped_initiative(db, actor, initiative_id)
+    # The entity filter is the whole point of the mapping: a container type
+    # must never serve asset labels (or the reverse), whatever rows happen
+    # to share the initiative. Display names are deliberately NOT joined —
+    # the page builds its roster from /assets and /containers, which carry
+    # far richer rows, and keys this payload by entity_id alone.
     entity_type = entity_for_type(label_type)
-    name_col = Container.name if entity_type == "container" else Asset.name
-    query = (select(GeneratedLabel, LabelTemplate.name, name_col)
+    query = (select(GeneratedLabel, LabelTemplate.name)
              .join(LabelTemplate, LabelTemplate.id == GeneratedLabel.template_id)
              .where(GeneratedLabel.initiative_id == ini.id,
                     GeneratedLabel.entity_type == entity_type,
                     GeneratedLabel.label_type == label_type)
              .order_by(GeneratedLabel.generated_at, GeneratedLabel.id))
-    if entity_type == "container":
-        query = query.outerjoin(Container, Container.id == GeneratedLabel.entity_id)
-    else:
-        query = query.outerjoin(Asset, Asset.id == GeneratedLabel.entity_id)
     rows = (await db.execute(query)).all()
     return GeneratedLabelBundleOut(
         initiative_id=ini.id, label_type=label_type, fetched_at=datetime.now(UTC),
         labels=[
             GeneratedLabelBundleItemOut(
                 id=gl.id, entity_type=gl.entity_type, entity_id=gl.entity_id,
-                entity_name=entity_name,
                 template_id=gl.template_id, template_name=template_name,
                 template_version=gl.template_version, language_key=gl.language_key,
                 size_key=gl.size_key, dpi_key=gl.dpi_key, stale=gl.stale,
                 generated_at=gl.generated_at, code=gl.code)
-            for gl, template_name, entity_name in rows])
+            for gl, template_name in rows])
 
 
 # ── font library (Labels → Printers › Install Fonts) ─────────────────

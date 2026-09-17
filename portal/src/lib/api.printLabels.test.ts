@@ -10,7 +10,7 @@ afterEach(() => vi.unstubAllGlobals());
 const bundle: GeneratedLabelBundle = {
   initiative_id: 'i1', label_type: 'top', fetched_at: '2026-09-12T00:00:00Z',
   labels: [{
-    id: 'g1', entity_type: 'asset', entity_name: null, entity_id: 'a1', template_id: 't1', template_name: 'Top asset tag',
+    id: 'g1', entity_type: 'asset', entity_id: 'a1', template_id: 't1', template_name: 'Top asset tag',
     template_version: 5, language_key: 'zpl', size_key: '4x2', dpi_key: '203', stale: false,
     generated_at: '2026-09-12T00:00:00Z', code: '^XA^XZ',
   }],

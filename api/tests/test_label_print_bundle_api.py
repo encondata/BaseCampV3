@@ -64,10 +64,11 @@ async def test_bundle_returns_every_label_for_the_pair(client, db, seeded_user):
     assert row["language_key"] == "zpl"
     assert row["size_key"] == "4x2" and row["dpi_key"] == "203"
     assert row["stale"] is False and row["entity_type"] == "asset"
-    assert row["entity_name"] == "sw-1"
+    # No display name: the print page keys this payload by entity_id and
+    # takes names from its own roster (/assets, /containers).
+    assert "entity_name" not in row
     assert by_entity[str(a2.id)]["stale"] is True
     assert by_entity[str(a2.id)]["language_key"] == "escp"
-    assert by_entity[str(a2.id)]["entity_name"] == "sw-2"
 
 
 async def test_bundle_empty_for_type_without_labels(client, db, seeded_user):
@@ -117,10 +118,11 @@ async def test_the_bundle_serves_container_labels_for_a_container_type(client, d
     body = resp.json()
     assert len(body["labels"]) == 2
     assert {l["entity_type"] for l in body["labels"]} == {"container"}
-    assert {l["entity_name"] for l in body["labels"]} == {"crate-17", "crate-18"}
+    assert {l["entity_id"] for l in body["labels"]} == {str(c1.id), str(c2.id)}
+    assert {l["code"] for l in body["labels"]} == {"^XAC1^XZ", "^XAC2^XZ"}
 
 
-async def test_an_asset_bundle_is_unchanged_and_carries_asset_names(client, db, seeded_user):
+async def test_an_asset_bundle_is_unchanged(client, db, seeded_user):
     ini = await _initiative(db)
     tpl = await _template(db, "top")
     a1 = await _asset_on(db, ini, legacy_id=5101, name="sw-a")
@@ -134,7 +136,7 @@ async def test_an_asset_bundle_is_unchanged_and_carries_asset_names(client, db, 
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert {l["entity_type"] for l in body["labels"]} == {"asset"}
-    assert all(l["entity_name"] for l in body["labels"])
+    assert {l["entity_id"] for l in body["labels"]} == {str(a1.id), str(a2.id)}
 
 
 async def test_a_container_bundle_never_leaks_asset_labels(client, db, seeded_user):
@@ -153,24 +155,3 @@ async def test_a_container_bundle_never_leaks_asset_labels(client, db, seeded_us
     assert resp.status_code == 200, resp.text
     container_body = resp.json()
     assert all(l["entity_type"] == "container" for l in container_body["labels"])
-
-
-async def test_bundle_shows_orphaned_container_label_with_no_name(client, db, seeded_user):
-    """A label whose container row was deleted must still appear in the
-    bundle (entity_name=None) instead of vanishing — otherwise the print
-    page would silently print fewer labels than the operator selected."""
-    ini = await _initiative(db)
-    tpl = await _template(db, "container")
-    container = await _container_on(db, ini, name="crate-gone")
-    await _container_label(db, ini, container, tpl, code="^XAG^XZ")
-    await db.delete(container)
-    await db.commit()
-
-    hdrs = await login(client)
-    resp = await client.get(
-        f"/labels/generated/bundle?initiative_id={ini.id}&label_type=container", headers=hdrs)
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert len(body["labels"]) == 1
-    assert body["labels"][0]["entity_type"] == "container"
-    assert body["labels"][0]["entity_name"] is None

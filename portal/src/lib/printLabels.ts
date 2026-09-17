@@ -214,8 +214,8 @@ export function bundleByEntity(bundle: GeneratedLabelBundle | null): Map<string,
 /** Only ZPL can go to a Zebra; a label compiled for another language is
  *  `unsupported` (blocks the print like a missing one). Stale labels still
  *  have code, so they print. */
-export function labelStatusFor(assetId: string, byEntity: Map<string, GeneratedLabelBundleItem>): LabelStatus {
-  const item = byEntity.get(assetId);
+export function labelStatusFor(entityId: string, byEntity: Map<string, GeneratedLabelBundleItem>): LabelStatus {
+  const item = byEntity.get(entityId);
   if (!item) return 'missing';
   if (item.language_key !== 'zpl') return 'unsupported';
   return item.stale ? 'stale' : 'ready';

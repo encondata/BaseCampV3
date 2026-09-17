@@ -15,7 +15,7 @@ const row = (assetId: string) => ({ id: `j-${assetId}`, asset_id: assetId } as u
 const bundle = (initiativeId: string, type: string, n: number): GeneratedLabelBundle => ({
   initiative_id: initiativeId, label_type: type, fetched_at: '2026-09-12T00:00:00Z',
   labels: Array.from({ length: n }, (_, i) => ({
-    id: `${type}-${i}`, entity_type: 'asset', entity_name: null, entity_id: `a${i}`, template_id: 't', template_name: 'T',
+    id: `${type}-${i}`, entity_type: 'asset', entity_id: `a${i}`, template_id: 't', template_name: 'T',
     template_version: 1, language_key: 'zpl', size_key: '4x2', dpi_key: '203', stale: false,
     generated_at: '2026-09-12T00:00:00Z', code: '^XA^XZ',
   })),

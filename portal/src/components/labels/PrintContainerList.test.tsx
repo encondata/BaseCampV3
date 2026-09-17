@@ -12,8 +12,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ContainerItem } from '../../lib/api';
 import type { LabelStatus } from '../../lib/printLabels';
 
+const auth = vi.hoisted(() => ({ updatePreferences: vi.fn(async (_prefs: unknown) => true) }));
 vi.mock('../../auth/AuthContext', () => ({
-  useAuth: () => ({ preferences: { list_prefs: {} }, updatePreferences: vi.fn(async () => true) }),
+  useAuth: () => ({ preferences: { list_prefs: {} }, updatePreferences: auth.updatePreferences }),
 }));
 
 const { default: PrintContainerList, containerCellText, sortContainerRows, PRINT_CONTAINER_LIST_PAGE_KEY } =
@@ -71,8 +72,24 @@ describe('PrintContainerList', () => {
     expect(screen.getByText('Showing 1 of 1 containers')).toBeTruthy();
   });
 
-  it('uses a prefs key distinct from the asset list', () => {
-    expect(PRINT_CONTAINER_LIST_PAGE_KEY).not.toBe(PRINT_LIST_PAGE_KEY);
+  // Asserting the two exported constants differ proves nothing — they differ
+  // by construction, and would still differ if this list were wired to the
+  // ASSET key, which would silently corrupt both lists' column state. So
+  // assert the key that actually reaches the preferences layer.
+  it('saves its column state under its own prefs key, never the asset list key', async () => {
+    auth.updatePreferences.mockClear();
+    const { view } = setup();
+    // Any change to persisted state schedules a debounced save; unmounting
+    // flushes it synchronously.
+    await userEvent.click(screen.getByText('Site'));
+    view.unmount();
+
+    expect(auth.updatePreferences).toHaveBeenCalledTimes(1);
+    const saved = auth.updatePreferences.mock.calls[0][0] as
+      { list_prefs: Record<string, { sortKey?: string }> };
+    expect(Object.keys(saved.list_prefs)).toEqual([PRINT_CONTAINER_LIST_PAGE_KEY]);
+    expect(saved.list_prefs[PRINT_LIST_PAGE_KEY]).toBeUndefined();
+    expect(saved.list_prefs[PRINT_CONTAINER_LIST_PAGE_KEY].sortKey).toBe('site');
   });
 
   it('row click toggles, header checkbox selects the filtered rows', async () => {

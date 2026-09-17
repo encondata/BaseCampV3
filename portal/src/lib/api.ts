@@ -3981,7 +3981,6 @@ export async function listGeneratedLabels(params: {
  *  compiled for a Brother printer must never be sent to a Zebra). */
 export interface GeneratedLabelBundleItem {
   id: string; entity_type: 'asset' | 'container'; entity_id: string;
-  entity_name: string | null;
   template_id: string; template_name: string; template_version: number;
   language_key: string; size_key: string; dpi_key: string;
   stale: boolean; generated_at: string; code: string;

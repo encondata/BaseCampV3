@@ -83,7 +83,7 @@ const vocab: LabelVocab[] = [
 const bundleFor = (ids: string[], type = 'top', staleIds: string[] = []): GeneratedLabelBundle => ({
   initiative_id: 'i1', label_type: type, fetched_at: 'now',
   labels: ids.map((id) => ({
-    id: `g-${id}`, entity_type: 'asset', entity_name: null, entity_id: id, template_id: 't', template_name: 'T', template_version: 1,
+    id: `g-${id}`, entity_type: 'asset', entity_id: id, template_id: 't', template_name: 'T', template_version: 1,
     language_key: 'zpl', size_key: '4x2', dpi_key: '203', stale: staleIds.includes(id), generated_at: 'now', code: `^XA^PW812^FD${id}^FS^XZ`,
   })),
 });
@@ -426,6 +426,54 @@ it("seeds copies from the label type's default_copies on a type change, but neve
   await userEvent.click(screen.getByLabelText('Select all filtered containers'));
   await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
   expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('9');
+});
+
+it('keeps the container selection when the type goes container \u2192 asset \u2192 container', async () => {
+  printer.connected = true;
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  await screen.findByText('Showing 2 of 2 containers');
+  await userEvent.click(screen.getByLabelText('Select all filtered containers'));
+  expect(screen.getByRole('button', { name: 'Print 2 labels' })).toBeTruthy();
+
+  // Away to an asset type and back: the reload of the container list must
+  // not drop the picks the operator already made.
+  await userEvent.click(screen.getByRole('radio', { name: /Top Label/ }));
+  await screen.findByText('Showing 3 of 3 assets');
+  expect(screen.getByRole('button', { name: /^Print 0 labels$/ })).toBeTruthy();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  await screen.findByText('Showing 2 of 2 containers');
+  expect(await screen.findByRole('button', { name: 'Print 2 labels' })).toBeTruthy();
+});
+
+it('a container that disappeared from the reloaded list drops out of the selection', async () => {
+  printer.connected = true;
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  await screen.findByText('Showing 2 of 2 containers');
+  await userEvent.click(screen.getByLabelText('Select all filtered containers'));
+  expect(screen.getByRole('button', { name: 'Print 2 labels' })).toBeTruthy();
+
+  api.listContainers.mockResolvedValue([CONTAINERS[0]]);
+  await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await screen.findByText('Showing 1 of 1 containers');
+  expect(await screen.findByRole('button', { name: 'Print 1 label' })).toBeTruthy();
+});
+
+it('the container offline banner does not follow you back to an asset type', async () => {
+  api.listContainers.mockRejectedValue(new TypeError('Failed to fetch'));
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  expect(await screen.findByText(/container lists aren't cached/)).toBeTruthy();
+
+  // Nothing about the ASSET list is offline: its roster and bundle both
+  // loaded, so the banner must go when the page switches back to assets.
+  await userEvent.click(screen.getByRole('radio', { name: /Top Label/ }));
+  await screen.findByText('Showing 3 of 3 assets');
+  expect(screen.queryByText(/container lists aren't cached/)).toBeNull();
 });
 
 it("says plainly that container lists aren't available offline, instead of reading as no containers", async () => {
