@@ -1081,7 +1081,7 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
 
     /** [stopInventoryForTeardown]'s sibling: reads the current batch mode
      *  via `reader?.Config` and, if it is anything other than
-     *  [BATCH_MODE.DISABLE], turns it off and persists the change — the
+     *  `BATCH_MODE.DISABLE`, turns it off and persists the change — the
      *  exact sequence [preventBatchMode] already uses on the way *in* to a
      *  connection, reused here rather than reinvented (steals its
      *  structure and logging shape on purpose). Called right after
