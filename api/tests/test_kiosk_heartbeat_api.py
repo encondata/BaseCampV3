@@ -245,6 +245,32 @@ async def test_sign_out_unknown_serial_is_204(client, db, seeded_user):
     assert resp.status_code == 204
 
 
+async def test_heartbeat_stores_zebra_for_a_zebra_handheld(client, db, seeded_user):
+    hdrs = await login(client)
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json={
+        **BODY, "serial": "kiosk-android-zzzz", "mode": "android",
+        "raw_info": {"manufacturer": "Zebra Technologies", "datawedge": "true"}})
+    assert resp.status_code == 200, resp.text
+    d = await db.scalar(select(Device).where(Device.serial == "kiosk-android-zzzz"))
+    assert d.sub_type == "zebra"
+    a = await db.scalar(select(AuditLog).where(AuditLog.action == "self_register",
+                                               AuditLog.entity_id == str(d.id)))
+    assert a.changes["sub_type"] == "zebra"
+
+
+async def test_second_heartbeat_re_derives_rather_than_reverting(client, db, seeded_user):
+    """The update branch must derive too — otherwise a Zebra device
+    classified on first pair silently drops back to 'android'."""
+    hdrs = await login(client)
+    zebra_body = {**BODY, "serial": "kiosk-android-zzzz", "mode": "android",
+                  "raw_info": {"manufacturer": "Zebra Technologies"}}
+    await client.post("/kiosk/heartbeat", headers=hdrs, json=zebra_body)
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json=zebra_body)
+    assert resp.status_code == 200, resp.text
+    d = await db.scalar(select(Device).where(Device.serial == "kiosk-android-zzzz"))
+    assert d.sub_type == "zebra"
+
+
 async def test_sign_in_renews_an_expired_registration(client, db, seeded_user):
     hdrs = await login(client)
     await client.post("/kiosk/heartbeat", headers=hdrs, json=BODY)
