@@ -19,6 +19,10 @@ import { relativeTime } from '../../lib/format';
 
 interface Props {
   kiosks: ClearOfflineKioskItem[];
+  // The dry run's real match count. Exceeds kiosks.length when the caller
+  // capped the batch (KioskDevices.CLEAR_OFFLINE_BATCH_LIMIT) — the note
+  // below tells the operator only kiosks.length will be cleared this pass.
+  totalMatched: number;
   busy: boolean;
   onConfirm: () => void;
   onClose: () => void;
@@ -32,14 +36,20 @@ const COLUMNS = [
 ];
 
 /** "registered" can only reach this list through a `skipped` row, but the
- *  wire type carries all three values, so every one gets a chip. */
-const REGISTRATION: Record<ClearOfflineKioskItem['registration'], [string, string]> = {
+ *  wire type carries all three values, so every one gets a chip. Indexed
+ *  defensively below: this union matches the Python `Literal` today, but a
+ *  lookup miss must degrade to a neutral chip rather than throw inside the
+ *  modal that fronts an irreversible delete. */
+const REGISTRATION: Record<string, [string, string]> = {
   unregistered: ['Unregistered', 'chip c-slate'],
   expired: ['Expired', 'chip c-red'],
   registered: ['Registered', 'chip c-green'],
 };
+const UNKNOWN_REGISTRATION: [string, string] = ['Unknown', 'chip tag'];
 
-export default function ClearOfflineKiosksModal({ kiosks, busy, onConfirm, onClose }: Props) {
+export default function ClearOfflineKiosksModal({
+  kiosks, totalMatched, busy, onConfirm, onClose,
+}: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onClose(); };
     document.addEventListener('keydown', onKey);
@@ -49,7 +59,7 @@ export default function ClearOfflineKiosksModal({ kiosks, busy, onConfirm, onClo
   const noun = kiosks.length === 1 ? 'kiosk' : 'kiosks';
 
   const rows: DataTableRow[] = kiosks.map((k) => {
-    const [label, cls] = REGISTRATION[k.registration];
+    const [label, cls] = REGISTRATION[k.registration] ?? UNKNOWN_REGISTRATION;
     return {
       key: k.id,
       cells: [
@@ -91,7 +101,15 @@ export default function ClearOfflineKiosksModal({ kiosks, busy, onConfirm, onClo
               last 24 hours.
             </p>
           ) : (
-            <DataTable ariaLabel="Kiosks that will be deleted" columns={COLUMNS} rows={rows} />
+            <>
+              {totalMatched > kiosks.length && (
+                <p className="page-hint">
+                  Showing the first {kiosks.length} of {totalMatched} matches. Delete these,
+                  then run Clear offline again afterward for the rest.
+                </p>
+              )}
+              <DataTable ariaLabel="Kiosks that will be deleted" columns={COLUMNS} rows={rows} />
+            </>
           )}
         </div>
 

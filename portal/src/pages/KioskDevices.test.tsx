@@ -8,12 +8,13 @@
  * load-error banner; and the "Clear offline" bulk flow — its rank gate,
  * the dry run that fills the modal, a confirm whose notice reports the
  * SERVER's counts rather than the preview's, and a preview that failed
- * (read-only mode 423s the dry run too, since it is itself a POST). Full toolbar/column-menu/reorder/CSV behavior is
- * exercised generically by lib/listTools.test.tsx and
- * lib/columnMenu.test.tsx — this file only covers KioskDevices-specific
- * wiring. Registration-state fixtures use time-proof offsets (±/well
- * outside the 7-day "soon" window, computed off Date.now()) rather than
- * hardcoded dates, so they never age into the wrong bucket.
+ * (read-only mode 423s the dry run too, since it is itself a POST).
+ * Full toolbar/column-menu/reorder/CSV behavior is exercised generically by
+ * lib/listTools.test.tsx and lib/columnMenu.test.tsx — this file only
+ * covers KioskDevices-specific wiring. Registration-state fixtures use
+ * time-proof offsets (±/well outside the 7-day "soon" window, computed off
+ * Date.now()) rather than hardcoded dates, so they never age into the
+ * wrong bucket.
  */
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
@@ -106,6 +107,10 @@ const MATCH = {
 const MATCH_B = {
   id: 'd2', name: 'kiosk-pi-07', sub_type: 'pi',
   registration: 'unregistered' as const, last_seen_at: null,
+};
+const MATCH_C = {
+  id: 'd3', name: 'kiosk-dock-03', sub_type: 'laptop',
+  registration: 'expired' as const, last_seen_at: '2026-09-15T10:00:00Z',
 };
 
 beforeEach(() => {
@@ -442,4 +447,102 @@ it('explains any other failed preview instead of opening an empty modal', async 
 
   expect(await screen.findByText(/Couldn.t check which kiosks/i)).not.toBeNull();
   expect(screen.queryByText(/Nothing to clear/)).toBeNull();
+});
+
+it('reports deleted, skipped, and not-found together', async () => {
+  api.clearOfflineKiosks
+    .mockResolvedValueOnce({ dry_run: true, kiosks: [MATCH, MATCH_B, MATCH_C], skipped: [], not_found: 0 })
+    .mockResolvedValueOnce({ dry_run: false, kiosks: [MATCH], skipped: [MATCH_B], not_found: 1 });
+  const user = userEvent.setup();
+  render(<KioskDevices />);
+  await screen.findByText('kiosk-dock-1');
+
+  await user.click(screen.getByRole('button', { name: /Clear offline/ }));
+  await user.click(await screen.findByRole('button', { name: /Delete 3 kiosks/ }));
+
+  expect(await screen.findByText(
+    /Deleted 1 kiosk.*1 skipped, seen since the preview.*1 kiosk no longer existed/,
+  )).not.toBeNull();
+});
+
+it('reports a not-found-only result when nothing was deleted or skipped', async () => {
+  api.clearOfflineKiosks
+    .mockResolvedValueOnce({ dry_run: true, kiosks: [MATCH, MATCH_B], skipped: [], not_found: 0 })
+    .mockResolvedValueOnce({ dry_run: false, kiosks: [], skipped: [], not_found: 2 });
+  const user = userEvent.setup();
+  render(<KioskDevices />);
+  await screen.findByText('kiosk-dock-1');
+
+  await user.click(screen.getByRole('button', { name: /Clear offline/ }));
+  await user.click(await screen.findByRole('button', { name: /Delete 2 kiosks/ }));
+
+  expect(await screen.findByText(/Nothing deleted.*2 kiosks no longer existed/)).not.toBeNull();
+});
+
+it('caps the confirm batch at 500 ids and tells the operator to rerun for the rest', async () => {
+  const many = Array.from({ length: 501 }, (_, i) => ({
+    id: `m${i}`, name: `kiosk-${i}`, sub_type: 'pi',
+    registration: 'unregistered' as const, last_seen_at: null,
+  }));
+  api.clearOfflineKiosks
+    .mockResolvedValueOnce({ dry_run: true, kiosks: many, skipped: [], not_found: 0 })
+    .mockResolvedValueOnce({ dry_run: false, kiosks: many.slice(0, 500), skipped: [], not_found: 0 });
+  const user = userEvent.setup();
+  render(<KioskDevices />);
+  await screen.findByText('kiosk-dock-1');
+
+  await user.click(screen.getByRole('button', { name: /Clear offline/ }));
+
+  expect(await screen.findByText(/Showing the first 500 of 501 matches/)).not.toBeNull();
+  await user.click(screen.getByRole('button', { name: /Delete 500 kiosks/ }));
+
+  await waitFor(() => expect(api.clearOfflineKiosks).toHaveBeenLastCalledWith(
+    { dry_run: false, ids: many.slice(0, 500).map((k) => k.id) },
+  ));
+});
+
+it('disables the Clear offline button and blocks a second click while the preview is in flight',
+  async () => {
+    let resolvePreview: (value: unknown) => void = () => {};
+    api.clearOfflineKiosks.mockImplementationOnce(
+      () => new Promise((resolve) => { resolvePreview = resolve; }),
+    );
+    const user = userEvent.setup();
+    render(<KioskDevices />);
+    await screen.findByText('kiosk-dock-1');
+
+    const btn = screen.getByRole('button', { name: /Clear offline/ });
+    await user.click(btn);
+
+    const busyBtn = screen.getByRole('button', { name: /Checking/ }) as HTMLButtonElement;
+    expect(busyBtn.disabled).toBe(true);
+    await user.click(busyBtn); // no-op: disabled while the dry run is in flight
+
+    resolvePreview({ dry_run: true, kiosks: [MATCH], skipped: [], not_found: 0 });
+    await screen.findByText('kiosk-dock-01');
+
+    expect(api.clearOfflineKiosks).toHaveBeenCalledTimes(1);
+  });
+
+it('clears a lingering clear-offline notice once another action runs', async () => {
+  api.clearOfflineKiosks
+    .mockResolvedValueOnce({ dry_run: true, kiosks: [MATCH], skipped: [], not_found: 0 })
+    .mockResolvedValueOnce({ dry_run: false, kiosks: [MATCH], skipped: [], not_found: 0 });
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const user = userEvent.setup();
+  render(<KioskDevices />);
+  await screen.findByText('kiosk-dock-1');
+
+  await user.click(screen.getByRole('button', { name: /Clear offline/ }));
+  await user.click(await screen.findByRole('button', { name: /Delete 1 kiosk/ }));
+  expect(await screen.findByText(/Deleted 1 kiosk/)).not.toBeNull();
+
+  const row = screen.getByText('kiosk-dock-1').closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Delete' }));
+
+  await waitFor(() => expect(api.deleteDevice).toHaveBeenCalled());
+  expect(screen.queryByText(/Deleted 1 kiosk/)).toBeNull();
+
+  confirmSpy.mockRestore();
 });
