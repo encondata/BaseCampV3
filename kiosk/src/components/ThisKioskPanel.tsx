@@ -36,7 +36,8 @@ export default function ThisKioskPanel() {
       <p className="page-hint">This name is what people see on their phone when they link with this kiosk.</p>
       {!identity.persistent && (
         <div className="portal-banner">
-          This browser can&apos;t remember kiosk settings. The serial and name reset when the page reloads.
+          This browser is keeping neither cookies nor site data for this page, so the
+          serial and name reset on every reload — and the portal sees a new kiosk each time.
         </div>
       )}
       <form className="pf-form kiosk-settings" onSubmit={submit} noValidate>

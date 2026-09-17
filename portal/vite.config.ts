@@ -5,6 +5,15 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    // Pinned, not "preferred". Without this Vite silently moves to the
+    // next free port when 5173 is taken — by a dev server that did not
+    // exit cleanly, or a second worktree serving the same app. A moved
+    // port is not a small thing here: the proxy forwards to this exact
+    // one, and the browser treats {host}:{other} as a DIFFERENT ORIGIN,
+    // so localStorage starts empty. For the kiosk that means a new
+    // serial, a new name, and another row in the portal's Kiosk Devices
+    // list. Failing to start is the better answer.
+    strictPort: true,
     host: true,   // bind 0.0.0.0 — a proxy or a phone on the LAN has to reach it
     // Vite 5.4 blocks requests whose Host header it doesn't recognize, so
     // the dev subdomains have to be named. A leading dot allows the host
