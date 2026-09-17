@@ -218,10 +218,18 @@
 .plabels-list-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .plabels-list-tools .dir-search { flex: 0 1 360px; }
 .plabels-list-tools .spacer { flex: 1; }
-.plabels-ready { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+/* Ready to print sits at the foot of Step 3. `margin-top: auto` pushes it to
+   the bottom of the grid-stretched card so its lower edge lines up with
+   Step 2's, filling space that was otherwise dead. The separator keeps it
+   readable as its own block now that it shares a card with the printer. */
+.plabels-ready {
+  display: flex; flex-direction: column; gap: 10px;
+  margin-top: auto; padding-top: 14px; border-top: 1px solid var(--paper-line);
+}
 .plabels-ready-text { display: flex; flex-direction: column; gap: 2px; }
+.plabels-ready-text .modal-section { margin: 0; }
 .plabels-ready-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.plabels-ready-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.plabels-ready-actions .btn-solid { flex: 1; min-width: 0; }
 
 /* Print settings modal — two content-sized columns; ComboBox lists overlay */
 .modal-card.reports-modal-card.rgm-card.plabels-settings-card {
