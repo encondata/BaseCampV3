@@ -10,6 +10,7 @@ import com.zebra.scannercontrol.DCSScannerInfo
 import com.zebra.scannercontrol.FirmwareUpdateEvent
 import com.zebra.scannercontrol.IDcsSdkApiDelegate
 import com.zebra.scannercontrol.SDKHandler
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * The second file in this app that knows `com.zebra` exists — see
@@ -91,8 +92,62 @@ import com.zebra.scannercontrol.SDKHandler
  * observable.
  */
 internal open class ZebraBarcodeEngine(private val context: Context, private val target: SledIdentity) {
+    // @Volatile because these are written on the dedicated background thread
+    // ZebraRfidReader.runBarcodeStandDownWithTimeout() runs attemptStandDown()
+    // on, and read/written on whatever thread eventually calls tearDown() —
+    // normally the disconnect path's runInterruptible thread. Without this,
+    // a tearDown() that runs concurrently with a still-in-flight
+    // attemptStandDown() (the exact scenario the Bug 2 timeout fix made
+    // newly possible: a timeout lets the background thread keep running
+    // instead of being interrupted, so a near-immediate disconnect() can
+    // call tearDown() while it is still going) would have no happens-before
+    // edge to the background thread's writes and could read a stale/torn
+    // value. @Volatile alone doesn't stop the two threads from calling into
+    // `handler` at the same time, though — see [vendorCallLock] for that.
+    @Volatile
     private var sdkHandler: SDKHandler? = null
+
+    @Volatile
     private var scannerId: Int? = null
+
+    /**
+     * Serializes [attemptStandDown]'s and [tearDown]'s vendor-call sections
+     * against each other, so the background stand-down thread and whatever
+     * thread calls [tearDown] never call into the same `SDKHandler` instance
+     * at the same time. Needed for the same reason [sdkHandler]/[scannerId]
+     * are `@Volatile`: the Bug 2 fix bounds [attemptStandDown] with a 5s
+     * wall-clock timeout but deliberately does not interrupt the background
+     * thread when that timeout elapses (see
+     * [ZebraRfidReader.runBarcodeStandDownWithTimeout]'s doc for why), so a
+     * timed-out attempt can still be mid-call on `handler` — inside
+     * `dcssdkEstablishCommunicationSession`/
+     * `dcssdkExecuteCommandOpCodeInXMLForScanner` — when a near-immediate
+     * `disconnect()` runs [tearDown] concurrently. `RfidController` never
+     * serializes `connect()`/`disconnect()` against each other (see that
+     * class's own doc), so nothing upstream of this file prevents that
+     * overlap either. Two threads calling into the same vendor `.aar`
+     * handler at once risks a native/JNI-level crash, not just a logic bug —
+     * `@Volatile` alone only fixes visibility, not mutual exclusion.
+     *
+     * `ReentrantLock`, not `synchronized`: [tearDown] is called from
+     * [ZebraRfidReader.disconnectBlocking]'s `teardownStep { barcodeEngine
+     * ?.tearDown() }`, itself inside [ZebraRfidReader]'s own
+     * `runInterruptible` block — see that class's doc for why a blocking
+     * call in there must stay interruptible by `Thread.interrupt()`. A bare
+     * Java monitor (`synchronized`) blocks on contention without responding
+     * to `Thread.interrupt()`; `ReentrantLock.lockInterruptibly()` does, so
+     * [tearDown] uses that instead of `lock()`, and lets the
+     * `InterruptedException` propagate uncaught — `teardownStep` already
+     * catches it and restores the thread's interrupt flag, the same
+     * contract every other teardown step in that function relies on.
+     * [attemptStandDown] runs on its own dedicated single-thread executor,
+     * not as part of any coroutine's cancellation, so it uses the plain
+     * blocking `lock()`: there is no cancellation signal for it to stay
+     * responsive to, and using `lockInterruptibly()` there too would gain
+     * nothing while adding an exception path this class's "never throws"
+     * contract (see the class doc) would just have to wrap right back up.
+     */
+    private val vendorCallLock = ReentrantLock()
 
     /** Every method must exist and must not throw — the vendor calls back on
      *  its own thread(s), and [ZebraRfidReader]'s class doc's "never call
@@ -174,99 +229,112 @@ internal open class ZebraBarcodeEngine(private val context: Context, private val
     }
 
     private fun attemptStandDown(): ImagerStandDownOutcome {
-        val handler = SDKHandler(context)
-        sdkHandler = handler
+        // Held for the whole vendor-call sequence below, through the final
+        // DCSSDK_DEVICE_SCAN_DISABLE opcode call — including the
+        // chooseScanner()/logging steps in between, which don't touch
+        // `handler` themselves but are fast, pure, and bounded, so splitting
+        // the lock around them would only reopen a window for a concurrent
+        // tearDown() to close `handler` out from under this function
+        // partway through — exactly the race [vendorCallLock] exists to
+        // close. See that field's doc for the full story.
+        vendorCallLock.lock()
+        try {
+            val handler = SDKHandler(context)
+            sdkHandler = handler
 
-        // BT_NORMAL is classic Bluetooth (SSI over RFCOMM/SPP) — the same
-        // transport ZebraRfidReader's own RFID connect() uses to reach this
-        // sled (see that class's connect() doc); DCSSDK_OPMODE_BT_LE is for
-        // a BLE-only scanner, which an RFD40 paired the classic way is not.
-        // Not documented Zebra behavior — an inference from the transport
-        // ZebraRfidReader already uses successfully — so the result is
-        // logged rather than assumed silently correct.
-        val modeResult = handler.dcssdkSetOperationalMode(DCSSDK_MODE.DCSSDK_OPMODE_BT_NORMAL)
-        Log.w(TAG, "Barcode engine: dcssdkSetOperationalMode(DCSSDK_OPMODE_BT_NORMAL) returned $modeResult.")
+            // BT_NORMAL is classic Bluetooth (SSI over RFCOMM/SPP) — the same
+            // transport ZebraRfidReader's own RFID connect() uses to reach this
+            // sled (see that class's connect() doc); DCSSDK_OPMODE_BT_LE is for
+            // a BLE-only scanner, which an RFD40 paired the classic way is not.
+            // Not documented Zebra behavior — an inference from the transport
+            // ZebraRfidReader already uses successfully — so the result is
+            // logged rather than assumed silently correct.
+            val modeResult = handler.dcssdkSetOperationalMode(DCSSDK_MODE.DCSSDK_OPMODE_BT_NORMAL)
+            Log.w(TAG, "Barcode engine: dcssdkSetOperationalMode(DCSSDK_OPMODE_BT_NORMAL) returned $modeResult.")
 
-        handler.dcssdkSetDelegate(delegate)
+            handler.dcssdkSetDelegate(delegate)
 
-        val eventMask = DCSSDK_EVENT.DCSSDK_EVENT_SCANNER_APPEARANCE.value or
-            DCSSDK_EVENT.DCSSDK_EVENT_SCANNER_DISAPPEARANCE.value or
-            DCSSDK_EVENT.DCSSDK_EVENT_SESSION_ESTABLISHMENT.value or
-            DCSSDK_EVENT.DCSSDK_EVENT_SESSION_TERMINATION.value or
-            DCSSDK_EVENT.DCSSDK_EVENT_BARCODE.value
-        val subscribeResult = handler.dcssdkSubsribeForEvents(eventMask)
-        Log.w(TAG, "Barcode engine: dcssdkSubsribeForEvents($eventMask) returned $subscribeResult.")
+            val eventMask = DCSSDK_EVENT.DCSSDK_EVENT_SCANNER_APPEARANCE.value or
+                DCSSDK_EVENT.DCSSDK_EVENT_SCANNER_DISAPPEARANCE.value or
+                DCSSDK_EVENT.DCSSDK_EVENT_SESSION_ESTABLISHMENT.value or
+                DCSSDK_EVENT.DCSSDK_EVENT_SESSION_TERMINATION.value or
+                DCSSDK_EVENT.DCSSDK_EVENT_BARCODE.value
+            val subscribeResult = handler.dcssdkSubsribeForEvents(eventMask)
+            Log.w(TAG, "Barcode engine: dcssdkSubsribeForEvents($eventMask) returned $subscribeResult.")
 
-        val available = runCatching { handler.dcssdkGetAvailableScannersList() }.getOrNull().orEmpty()
-        val active = runCatching { handler.dcssdkGetActiveScannersList() }.getOrNull().orEmpty()
+            val available = runCatching { handler.dcssdkGetAvailableScannersList() }.getOrNull().orEmpty()
+            val active = runCatching { handler.dcssdkGetActiveScannersList() }.getOrNull().orEmpty()
 
-        // Active scanners first: a scanner already active is a stronger
-        // signal than one merely available, and de-duplicated by id so a
-        // scanner present in both lists is not logged/considered twice.
-        val candidates = (active + available).map { it.toCandidate() }.distinctBy { it.scannerId }
-        // Extends the original "what did the SDK see" log line with the
-        // identity being matched against, so a device log shows both halves
-        // of the matching decision on one line: everything the SDK reported,
-        // and what this app was actually looking for among it.
-        Log.w(
-            TAG,
-            "Barcode engine: ${available.size} available scanner(s): ${available.describeAll()}; " +
-                "${active.size} active scanner(s): ${active.describeAll()}; matching against target identity " +
-                "name=${target.name} address=${target.address} serial=${target.serial}.",
-        )
-        val chosen = chooseScanner(candidates, target)
-        if (chosen == null) {
-            // Two distinct real outcomes, both real: no candidates at all
-            // (nothing paired, or the SDK saw nothing), versus candidates
-            // that just aren't this kiosk's sled (the stranger's-dive-
-            // computer case this whole matching rule exists to reject). Both
-            // reduce to the same ImagerStandDownOutcome.NotIdentified and
-            // the same operator-facing note — "couldn't be identified" is
-            // honest either way — but the log lines below say which one
-            // actually happened, because that distinction matters for
-            // diagnosing a real device.
-            if (candidates.isEmpty()) {
-                Log.w(TAG, "Barcode engine: no candidate scanners available at all; the imager could not be identified.")
-            } else {
-                Log.w(
-                    TAG,
-                    "Barcode engine: ${candidates.size} candidate scanner(s) seen but none matched the target " +
-                        "identity above; the imager could not be identified. Connecting to any of them would risk " +
-                        "reaching a stranger's device, so none will be tried.",
-                )
+            // Active scanners first: a scanner already active is a stronger
+            // signal than one merely available, and de-duplicated by id so a
+            // scanner present in both lists is not logged/considered twice.
+            val candidates = (active + available).map { it.toCandidate() }.distinctBy { it.scannerId }
+            // Extends the original "what did the SDK see" log line with the
+            // identity being matched against, so a device log shows both halves
+            // of the matching decision on one line: everything the SDK reported,
+            // and what this app was actually looking for among it.
+            Log.w(
+                TAG,
+                "Barcode engine: ${available.size} available scanner(s): ${available.describeAll()}; " +
+                    "${active.size} active scanner(s): ${active.describeAll()}; matching against target identity " +
+                    "name=${target.name} address=${target.address} serial=${target.serial}.",
+            )
+            val chosen = chooseScanner(candidates, target)
+            if (chosen == null) {
+                // Two distinct real outcomes, both real: no candidates at all
+                // (nothing paired, or the SDK saw nothing), versus candidates
+                // that just aren't this kiosk's sled (the stranger's-dive-
+                // computer case this whole matching rule exists to reject). Both
+                // reduce to the same ImagerStandDownOutcome.NotIdentified and
+                // the same operator-facing note — "couldn't be identified" is
+                // honest either way — but the log lines below say which one
+                // actually happened, because that distinction matters for
+                // diagnosing a real device.
+                if (candidates.isEmpty()) {
+                    Log.w(TAG, "Barcode engine: no candidate scanners available at all; the imager could not be identified.")
+                } else {
+                    Log.w(
+                        TAG,
+                        "Barcode engine: ${candidates.size} candidate scanner(s) seen but none matched the target " +
+                            "identity above; the imager could not be identified. Connecting to any of them would risk " +
+                            "reaching a stranger's device, so none will be tried.",
+                    )
+                }
+                return ImagerStandDownOutcome.NotIdentified
             }
-            return ImagerStandDownOutcome.NotIdentified
-        }
-        Log.w(
-            TAG,
-            "Barcode engine: chose scanner id=${chosen.scannerId} name=${chosen.name} model=${chosen.model} " +
-                "serial=${chosen.serial} — matched the target identity among ${candidates.size} candidate(s) " +
-                "total (see the line above for every candidate this kiosk saw and the identity matched against).",
-        )
-        scannerId = chosen.scannerId
+            Log.w(
+                TAG,
+                "Barcode engine: chose scanner id=${chosen.scannerId} name=${chosen.name} model=${chosen.model} " +
+                    "serial=${chosen.serial} — matched the target identity among ${candidates.size} candidate(s) " +
+                    "total (see the line above for every candidate this kiosk saw and the identity matched against).",
+            )
+            scannerId = chosen.scannerId
 
-        val sessionResult = handler.dcssdkEstablishCommunicationSession(chosen.scannerId)
-        Log.w(TAG, "Barcode engine: dcssdkEstablishCommunicationSession(${chosen.scannerId}) returned $sessionResult.")
-        if (sessionResult != DCSSDK_RESULT.DCSSDK_RESULT_SUCCESS) {
-            return ImagerStandDownOutcome.SessionFailed(sessionResult.name)
-        }
+            val sessionResult = handler.dcssdkEstablishCommunicationSession(chosen.scannerId)
+            Log.w(TAG, "Barcode engine: dcssdkEstablishCommunicationSession(${chosen.scannerId}) returned $sessionResult.")
+            if (sessionResult != DCSSDK_RESULT.DCSSDK_RESULT_SUCCESS) {
+                return ImagerStandDownOutcome.SessionFailed(sessionResult.name)
+            }
 
-        val outXml = StringBuilder()
-        val commandResult = handler.dcssdkExecuteCommandOpCodeInXMLForScanner(
-            DCSSDK_COMMAND_OPCODE.DCSSDK_DEVICE_SCAN_DISABLE,
-            scanCommandInXml(),
-            outXml,
-            chosen.scannerId,
-        )
-        Log.w(
-            TAG,
-            "Barcode engine: DCSSDK_DEVICE_SCAN_DISABLE for scanner ${chosen.scannerId} returned $commandResult, " +
-                "outXML=\"$outXml\".",
-        )
-        return if (commandResult == DCSSDK_RESULT.DCSSDK_RESULT_SUCCESS) {
-            ImagerStandDownOutcome.Silenced
-        } else {
-            ImagerStandDownOutcome.CommandFailed(commandResult.name)
+            val outXml = StringBuilder()
+            val commandResult = handler.dcssdkExecuteCommandOpCodeInXMLForScanner(
+                DCSSDK_COMMAND_OPCODE.DCSSDK_DEVICE_SCAN_DISABLE,
+                scanCommandInXml(),
+                outXml,
+                chosen.scannerId,
+            )
+            Log.w(
+                TAG,
+                "Barcode engine: DCSSDK_DEVICE_SCAN_DISABLE for scanner ${chosen.scannerId} returned $commandResult, " +
+                    "outXML=\"$outXml\".",
+            )
+            return if (commandResult == DCSSDK_RESULT.DCSSDK_RESULT_SUCCESS) {
+                ImagerStandDownOutcome.Silenced
+            } else {
+                ImagerStandDownOutcome.CommandFailed(commandResult.name)
+            }
+        } finally {
+            vendorCallLock.unlock()
         }
     }
 
@@ -280,46 +348,64 @@ internal open class ZebraBarcodeEngine(private val context: Context, private val
      * connects next (Zebra's own 123RFID Mobile, or a different app
      * expecting the imager to work) with a sled that silently does not
      * scan, for a reason nothing on screen would explain. Best-effort and
-     * never throws, exactly like [ZebraRfidReader.disconnectBlocking]'s own
-     * teardown steps: a disconnect must finish and clear local state
-     * regardless of whether any individual vendor call here succeeds.
+     * never throws *from any individual vendor call* — every
+     * `dcssdk*`/`Exception`/`LinkageError` below is still caught and logged,
+     * exactly like [ZebraRfidReader.disconnectBlocking]'s own teardown
+     * steps, so a disconnect still finishes and clears local state
+     * regardless of whether any individual vendor call here succeeds. The
+     * one exception (literally): acquiring [vendorCallLock] below via
+     * `lockInterruptibly()` can throw `InterruptedException` if this thread
+     * is interrupted while waiting for a concurrent [attemptStandDown] to
+     * release it. That is deliberate, not a gap — see [vendorCallLock]'s doc
+     * — and is left to propagate uncaught: the one real call site,
+     * [ZebraRfidReader.disconnectBlocking]'s `teardownStep { barcodeEngine
+     * ?.tearDown() }`, already catches `InterruptedException` and restores
+     * the thread's interrupt flag, the same contract every other teardown
+     * step in that function relies on.
      */
     fun tearDown() {
-        val handler = sdkHandler ?: return
-        val id = scannerId
-        if (id != null) {
-            try {
-                val outXml = StringBuilder()
-                val result = handler.dcssdkExecuteCommandOpCodeInXMLForScanner(
-                    DCSSDK_COMMAND_OPCODE.DCSSDK_DEVICE_SCAN_ENABLE,
-                    scanCommandInXml(),
-                    outXml,
-                    id,
-                )
-                Log.w(TAG, "Barcode engine: DCSSDK_DEVICE_SCAN_ENABLE for scanner $id returned $result, outXML=\"$outXml\".")
-            } catch (e: Exception) {
-                Log.w(TAG, "Barcode engine: re-enabling the imager on teardown threw.", e)
-            } catch (e: LinkageError) {
-                Log.w(TAG, "Barcode engine: re-enabling the imager on teardown threw.", e)
-            }
-            try {
-                val result = handler.dcssdkTerminateCommunicationSession(id)
-                Log.w(TAG, "Barcode engine: dcssdkTerminateCommunicationSession($id) returned $result.")
-            } catch (e: Exception) {
-                Log.w(TAG, "Barcode engine: terminating the session threw.", e)
-            } catch (e: LinkageError) {
-                Log.w(TAG, "Barcode engine: terminating the session threw.", e)
-            }
-        }
+        // lockInterruptibly(), not lock() — see [vendorCallLock]'s doc for
+        // why tearDown() specifically needs to stay interruptible here.
+        vendorCallLock.lockInterruptibly()
         try {
-            handler.dcssdkClose()
-        } catch (e: Exception) {
-            Log.w(TAG, "Barcode engine: dcssdkClose() threw.", e)
-        } catch (e: LinkageError) {
-            Log.w(TAG, "Barcode engine: dcssdkClose() threw.", e)
+            val handler = sdkHandler ?: return
+            val id = scannerId
+            if (id != null) {
+                try {
+                    val outXml = StringBuilder()
+                    val result = handler.dcssdkExecuteCommandOpCodeInXMLForScanner(
+                        DCSSDK_COMMAND_OPCODE.DCSSDK_DEVICE_SCAN_ENABLE,
+                        scanCommandInXml(),
+                        outXml,
+                        id,
+                    )
+                    Log.w(TAG, "Barcode engine: DCSSDK_DEVICE_SCAN_ENABLE for scanner $id returned $result, outXML=\"$outXml\".")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Barcode engine: re-enabling the imager on teardown threw.", e)
+                } catch (e: LinkageError) {
+                    Log.w(TAG, "Barcode engine: re-enabling the imager on teardown threw.", e)
+                }
+                try {
+                    val result = handler.dcssdkTerminateCommunicationSession(id)
+                    Log.w(TAG, "Barcode engine: dcssdkTerminateCommunicationSession($id) returned $result.")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Barcode engine: terminating the session threw.", e)
+                } catch (e: LinkageError) {
+                    Log.w(TAG, "Barcode engine: terminating the session threw.", e)
+                }
+            }
+            try {
+                handler.dcssdkClose()
+            } catch (e: Exception) {
+                Log.w(TAG, "Barcode engine: dcssdkClose() threw.", e)
+            } catch (e: LinkageError) {
+                Log.w(TAG, "Barcode engine: dcssdkClose() threw.", e)
+            }
+            sdkHandler = null
+            scannerId = null
+        } finally {
+            vendorCallLock.unlock()
         }
-        sdkHandler = null
-        scannerId = null
     }
 
     private companion object {
