@@ -421,11 +421,16 @@ it('?run= deep link opens the errors modal when the run already finished with er
   expect(await screen.findByText('2 errors in NAP11')).not.toBeNull();
 });
 
-it('never offers the container type and points at the Container Labels page', async () => {
-  api.listLabelVocab.mockResolvedValue([...VOCAB, vocabRow('container', 'Container Label')]);
+it('offers the container types alongside asset types, and still hints at the Container Labels page', async () => {
+  api.listLabelVocab.mockResolvedValue([
+    ...VOCAB, vocabRow('container', 'Container Label'), vocabRow('container_info', 'Container Info Label'),
+  ]);
   renderAt();
   await screen.findByRole('checkbox', { name: /Top/ });
-  expect(screen.queryByRole('checkbox', { name: /Container Label/ })).toBeNull();
+  expect(screen.getByRole('checkbox', { name: /Container Label/ })).not.toBeNull();
+  expect(screen.getByRole('checkbox', { name: /Container Info Label/ })).not.toBeNull();
+  // The runner can walk containers now, but Avery sheet printing still
+  // lives on its own page — the hint keeps pointing there.
   const link = screen.getByRole('link', { name: 'Container Labels' });
   expect(link.getAttribute('href')).toBe('/labels/containers');
 });
