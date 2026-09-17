@@ -40,7 +40,7 @@ from serversherpa.api.schemas import (
     LabelZplPreviewIn,
 )
 from serversherpa.db.models import (
-    Asset, Client, GeneratedLabel, Initiative, InitiativeAsset,
+    Asset, Client, Container, GeneratedLabel, Initiative, InitiativeAsset,
     LabelFont, LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelTemplateSite,
     LabelVocab, Person, Site,
 )
@@ -895,28 +895,36 @@ async def get_generated_label_bundle(
     db: DbSession, initiative_id: uuid.UUID, label_type: str,
     actor: AuthContext = require_permission("labels", "view"),
 ) -> GeneratedLabelBundleOut:
-    """Print Labels' data source: every asset label of one type on one
-    initiative, with the language/size/dpi keys the page needs to decide
-    what a Zebra printer can take. Unknown/archived/out-of-scope
-    initiatives read as 404 like the preview endpoint."""
+    """Print Labels' data source: every label of one type on one
+    initiative — asset or container, whichever `label_type` maps to —
+    with the language/size/dpi keys the page needs to decide what a
+    Zebra printer can take. Unknown/archived/out-of-scope initiatives
+    read as 404 like the preview endpoint."""
     ini = await _scoped_initiative(db, actor, initiative_id)
-    rows = (await db.execute(
-        select(GeneratedLabel, LabelTemplate.name)
-        .join(LabelTemplate, LabelTemplate.id == GeneratedLabel.template_id)
-        .where(GeneratedLabel.initiative_id == ini.id,
-               GeneratedLabel.entity_type == "asset",
-               GeneratedLabel.label_type == label_type)
-        .order_by(GeneratedLabel.generated_at, GeneratedLabel.id))).all()
+    entity_type = entity_for_type(label_type)
+    name_col = Container.name if entity_type == "container" else Asset.name
+    query = (select(GeneratedLabel, LabelTemplate.name, name_col)
+             .join(LabelTemplate, LabelTemplate.id == GeneratedLabel.template_id)
+             .where(GeneratedLabel.initiative_id == ini.id,
+                    GeneratedLabel.entity_type == entity_type,
+                    GeneratedLabel.label_type == label_type)
+             .order_by(GeneratedLabel.generated_at, GeneratedLabel.id))
+    if entity_type == "container":
+        query = query.outerjoin(Container, Container.id == GeneratedLabel.entity_id)
+    else:
+        query = query.outerjoin(Asset, Asset.id == GeneratedLabel.entity_id)
+    rows = (await db.execute(query)).all()
     return GeneratedLabelBundleOut(
         initiative_id=ini.id, label_type=label_type, fetched_at=datetime.now(UTC),
         labels=[
             GeneratedLabelBundleItemOut(
                 id=gl.id, entity_type=gl.entity_type, entity_id=gl.entity_id,
+                entity_name=entity_name,
                 template_id=gl.template_id, template_name=template_name,
                 template_version=gl.template_version, language_key=gl.language_key,
                 size_key=gl.size_key, dpi_key=gl.dpi_key, stale=gl.stale,
                 generated_at=gl.generated_at, code=gl.code)
-            for gl, template_name in rows])
+            for gl, template_name, entity_name in rows])
 
 
 # ── font library (Labels → Printers › Install Fonts) ─────────────────

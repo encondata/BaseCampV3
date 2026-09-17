@@ -82,7 +82,7 @@ const vocab: LabelVocab[] = [
 const bundleFor = (ids: string[], type = 'top', staleIds: string[] = []): GeneratedLabelBundle => ({
   initiative_id: 'i1', label_type: type, fetched_at: 'now',
   labels: ids.map((id) => ({
-    id: `g-${id}`, entity_type: 'asset', entity_id: id, template_id: 't', template_name: 'T', template_version: 1,
+    id: `g-${id}`, entity_type: 'asset', entity_name: null, entity_id: id, template_id: 't', template_name: 'T', template_version: 1,
     language_key: 'zpl', size_key: '4x2', dpi_key: '203', stale: staleIds.includes(id), generated_at: 'now', code: `^XA^PW812^FD${id}^FS^XZ`,
   })),
 });

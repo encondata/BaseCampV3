@@ -3,7 +3,7 @@ generated label for one initiative + label type in one response (no
 paging) with the language/size/dpi keys the print page needs — the same
 payload the page stores in its offline cache."""
 
-from serversherpa.db.models import GeneratedLabel
+from serversherpa.db.models import Container, GeneratedLabel
 
 from tests.test_label_generate_api import _asset_on, _initiative, _template
 from tests.test_sites_api import login
@@ -14,6 +14,22 @@ async def _label(db, ini, asset, tpl, *, label_type="top", code="^XA^XZ", stale=
                  language="zpl"):
     db.add(GeneratedLabel(entity_type="asset", entity_id=asset.id, initiative_id=ini.id,
                           label_type=label_type, template_id=tpl.id,
+                          template_version=tpl.version, language_key=language,
+                          dpi_key="203", size_key="4x2", code=code, stale=stale))
+    await db.commit()
+
+
+async def _container_on(db, ini, *, name="crate"):
+    container = Container(name=name, initiative_id=ini.id, label_tag="priority")
+    db.add(container)
+    await db.commit()
+    return container
+
+
+async def _container_label(db, ini, container, tpl, *, label_type="container",
+                           code="^XAC^XZ", stale=False, language="zpl"):
+    db.add(GeneratedLabel(entity_type="container", entity_id=container.id,
+                          initiative_id=ini.id, label_type=label_type, template_id=tpl.id,
                           template_version=tpl.version, language_key=language,
                           dpi_key="203", size_key="4x2", code=code, stale=stale))
     await db.commit()
@@ -48,8 +64,10 @@ async def test_bundle_returns_every_label_for_the_pair(client, db, seeded_user):
     assert row["language_key"] == "zpl"
     assert row["size_key"] == "4x2" and row["dpi_key"] == "203"
     assert row["stale"] is False and row["entity_type"] == "asset"
+    assert row["entity_name"] == "sw-1"
     assert by_entity[str(a2.id)]["stale"] is True
     assert by_entity[str(a2.id)]["language_key"] == "escp"
+    assert by_entity[str(a2.id)]["entity_name"] == "sw-2"
 
 
 async def test_bundle_empty_for_type_without_labels(client, db, seeded_user):
@@ -80,3 +98,79 @@ async def test_bundle_requires_labels_view(client, db, seeded_user):
     resp = await client.get(
         f"/labels/generated/bundle?initiative_id={ini.id}&label_type=top", headers=worker)
     assert resp.status_code == 403
+
+
+async def test_the_bundle_serves_container_labels_for_a_container_type(client, db, seeded_user):
+    """The route hardcoded entity_type == 'asset', so a container type
+    returned an empty bundle however many labels existed."""
+    ini = await _initiative(db)
+    tpl = await _template(db, "container")
+    c1 = await _container_on(db, ini, name="crate-17")
+    c2 = await _container_on(db, ini, name="crate-18")
+    await _container_label(db, ini, c1, tpl, code="^XAC1^XZ")
+    await _container_label(db, ini, c2, tpl, code="^XAC2^XZ")
+    hdrs = await login(client)
+
+    resp = await client.get(
+        f"/labels/generated/bundle?initiative_id={ini.id}&label_type=container", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body["labels"]) == 2
+    assert {l["entity_type"] for l in body["labels"]} == {"container"}
+    assert {l["entity_name"] for l in body["labels"]} == {"crate-17", "crate-18"}
+
+
+async def test_an_asset_bundle_is_unchanged_and_carries_asset_names(client, db, seeded_user):
+    ini = await _initiative(db)
+    tpl = await _template(db, "top")
+    a1 = await _asset_on(db, ini, legacy_id=5101, name="sw-a")
+    a2 = await _asset_on(db, ini, legacy_id=5102, name="sw-b")
+    await _label(db, ini, a1, tpl, code="^XA1^XZ")
+    await _label(db, ini, a2, tpl, code="^XA2^XZ")
+    hdrs = await login(client)
+
+    resp = await client.get(
+        f"/labels/generated/bundle?initiative_id={ini.id}&label_type=top", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert {l["entity_type"] for l in body["labels"]} == {"asset"}
+    assert all(l["entity_name"] for l in body["labels"])
+
+
+async def test_a_container_bundle_never_leaks_asset_labels(client, db, seeded_user):
+    """Both kinds exist on this initiative; each bundle must be pure."""
+    ini = await _initiative(db)
+    asset_tpl = await _template(db, "top")
+    container_tpl = await _template(db, "container")
+    asset = await _asset_on(db, ini, legacy_id=5201, name="sw-mixed")
+    container = await _container_on(db, ini, name="crate-mixed")
+    await _label(db, ini, asset, asset_tpl, code="^XA1^XZ")
+    await _container_label(db, ini, container, container_tpl, code="^XAC1^XZ")
+    hdrs = await login(client)
+
+    resp = await client.get(
+        f"/labels/generated/bundle?initiative_id={ini.id}&label_type=container", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    container_body = resp.json()
+    assert all(l["entity_type"] == "container" for l in container_body["labels"])
+
+
+async def test_bundle_shows_orphaned_container_label_with_no_name(client, db, seeded_user):
+    """A label whose container row was deleted must still appear in the
+    bundle (entity_name=None) instead of vanishing — otherwise the print
+    page would silently print fewer labels than the operator selected."""
+    ini = await _initiative(db)
+    tpl = await _template(db, "container")
+    container = await _container_on(db, ini, name="crate-gone")
+    await _container_label(db, ini, container, tpl, code="^XAG^XZ")
+    await db.delete(container)
+    await db.commit()
+
+    hdrs = await login(client)
+    resp = await client.get(
+        f"/labels/generated/bundle?initiative_id={ini.id}&label_type=container", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body["labels"]) == 1
+    assert body["labels"][0]["entity_type"] == "container"
+    assert body["labels"][0]["entity_name"] is None

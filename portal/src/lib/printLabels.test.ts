@@ -137,9 +137,9 @@ describe('label status', () => {
   const bundle: GeneratedLabelBundle = {
     initiative_id: 'i', label_type: 'top', fetched_at: 'now',
     labels: [
-      { id: '1', entity_type: 'asset', entity_id: 'a', template_id: 't', template_name: 'T', template_version: 1, language_key: 'zpl', size_key: '4x2', dpi_key: '203', stale: false, generated_at: 'now', code: '^XA^XZ' },
-      { id: '2', entity_type: 'asset', entity_id: 'b', template_id: 't', template_name: 'T', template_version: 1, language_key: 'zpl', size_key: '4x2', dpi_key: '203', stale: true, generated_at: 'now', code: '^XA^XZ' },
-      { id: '3', entity_type: 'asset', entity_id: 'c', template_id: 't', template_name: 'T', template_version: 1, language_key: 'escp', size_key: '4x2', dpi_key: '203', stale: false, generated_at: 'now', code: 'ESC' },
+      { id: '1', entity_type: 'asset', entity_name: null, entity_id: 'a', template_id: 't', template_name: 'T', template_version: 1, language_key: 'zpl', size_key: '4x2', dpi_key: '203', stale: false, generated_at: 'now', code: '^XA^XZ' },
+      { id: '2', entity_type: 'asset', entity_name: null, entity_id: 'b', template_id: 't', template_name: 'T', template_version: 1, language_key: 'zpl', size_key: '4x2', dpi_key: '203', stale: true, generated_at: 'now', code: '^XA^XZ' },
+      { id: '3', entity_type: 'asset', entity_name: null, entity_id: 'c', template_id: 't', template_name: 'T', template_version: 1, language_key: 'escp', size_key: '4x2', dpi_key: '203', stale: false, generated_at: 'now', code: 'ESC' },
     ],
   };
   const by = bundleByEntity(bundle);
