@@ -188,6 +188,21 @@ it('hides "+ New kiosk" without add, shows it and opens the create modal with ad
   expect(await screen.findByRole('heading', { name: 'New kiosk' })).not.toBeNull();
 });
 
+it('the edit modal offers every sub-type the kiosk heartbeat can derive', async () => {
+  const user = userEvent.setup();
+  render(<KioskDevices />);
+
+  const row = (await screen.findByText('kiosk-dock-1')).closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Edit' }));
+
+  const type = await screen.findByRole('combobox', { name: 'Type' });
+  const options = within(type).getAllByRole('option').map((o) => o.textContent);
+  expect(options).toEqual(
+    ['— none', 'Laptop', 'Pi', 'Android', 'Android (Zebra)', 'iOS', 'Web'],
+  );
+});
+
 it('contextual actions: unregistered row shows Register only; registered row shows Renew + De-Register', async () => {
   const REG_DEVICES: DeviceItem[] = [
     kiosk({ id: 'u1', name: 'unregistered-kiosk', token_expires_at: null }),

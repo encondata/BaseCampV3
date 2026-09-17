@@ -136,7 +136,7 @@ it('renders seeded rows with Android/iOS/Zebra type tags and registration chips 
   expect(soonChip.className).toContain('c-amber');
 
   const zebraRow = screen.getByText('handheld-zebra-3').closest('.dir-row') as HTMLElement;
-  expect(within(zebraRow).getByText('Zebra')).not.toBeNull();
+  expect(within(zebraRow).getByText('Android (Zebra)')).not.toBeNull();
   const noneChip = within(zebraRow).getByText('Unregistered');
   expect(noneChip.className).toContain('tag');
 });

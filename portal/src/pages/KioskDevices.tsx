@@ -489,7 +489,18 @@ export default function KioskDevices() {
       {editing !== null && (
         <DeviceEditModal
           deviceType="kiosk" noun="kiosk"
-          typeOptions={[{ value: 'laptop', label: 'Laptop' }, { value: 'pi', label: 'Pi' }]}
+          // Every sub_type the kiosk heartbeat can derive. This select is
+          // authoritative only for rows created by hand: a device that
+          // actually checks in overwrites sub_type from its own client
+          // info on the next heartbeat, so the derivation wins there.
+          typeOptions={[
+            { value: 'laptop', label: 'Laptop' },
+            { value: 'pi', label: 'Pi' },
+            { value: 'android', label: 'Android' },
+            { value: 'zebra', label: 'Android (Zebra)' },
+            { value: 'ios', label: 'iOS' },
+            { value: 'web', label: 'Web' },
+          ]}
           device={editing === 'new' ? null : editing}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); setError(''); setNotice(''); void load(); }}
