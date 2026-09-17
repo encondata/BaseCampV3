@@ -294,7 +294,20 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
             check(second is VendorConnectAttempt.Ready) {
                 "unreachable: a fallback attempt cannot itself request another fallback"
             }
-            second
+            // second.recoveredFromBatchMode is always false: it describes only
+            // what happened on THIS call to connectRfid, and this call ran
+            // with allowBatchModeRecovery = false, so its own plain-success
+            // path (return false) is the only way it reaches Ready. But the
+            // only way execution reaches this else branch at all is that
+            // `first` was NeedsFreshConnection — which connectRfid only
+            // returns after the in-place recovery (purgeTags/setBatchMode/
+            // saveConfig) already ran against the reader. So recovery did
+            // happen in this openVendorConnection() call; it just didn't
+            // leave the *first* connection usable. Force the flag rather than
+            // reading it off `second`, so the operator note and log below
+            // still fire for this path — see the Important #1 fix-review
+            // finding this addresses.
+            second.copy(recoveredFromBatchMode = true)
         }
         if (ready.recoveredFromBatchMode) {
             _connectNote.value = BATCH_MODE_RECOVERY_NOTE
@@ -395,14 +408,14 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
                 rfid.Config.saveConfig()
                 Log.w(TAG, "Batch-mode recovery: stored tags purged, batch mode disabled, saveConfig() ran.")
                 rfid.isConnected()
-            } catch (e: InterruptedException) {
+            } catch (interrupt: InterruptedException) {
                 // A real cancellation (the 15s timeout in RfidController)
                 // landing mid-recovery, not a recovery failure — must reach
                 // the enclosing `runInterruptible` in connect() so it becomes
                 // a CancellationException there, exactly like every other
                 // vendor call site in this file. Swallowing it here the same
                 // way as an ordinary recovery failure below would defeat that.
-                throw e
+                throw interrupt
             } catch (recoveryError: Exception) {
                 // The SDK gives no other signal for "is this connection still
                 // usable" than isConnected() — if the recovery calls

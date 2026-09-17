@@ -1353,4 +1353,24 @@ class RfidControllerTest {
         settle()
         assertNull(r.controller.connectNote.value)
     }
+
+    /**
+     * Fix-review follow-up (batch-mode recovery, Minor #4): `FakeRfidReader.
+     * connect()` clears any note left over from a previous attempt, mirroring
+     * `ZebraRfidReader.connect()`'s own "a note set by a previous attempt
+     * must never linger into this one" rule (see that class's `connect()`
+     * doc). Nothing previously asserted this, even though the fake already
+     * did it — this closes that coverage gap rather than fixing a bug.
+     */
+    @Test fun connectNowClearsAConnectNoteLeftOverFromAnEarlierAttempt() = runTest {
+        val r = Rig(backgroundScope)
+        r.controller.start(); settle()
+
+        r.reader.setConnectNote("The reader was holding tags from earlier offline use. They were discarded and batch mode is now off.")
+        settle()
+        assertTrue("the note must be set before this test can prove connect() clears it", r.reader.connectNote.value != null)
+
+        r.controller.connectNow(); settle()
+        assertNull("a stale note from an earlier attempt must not survive a new connect", r.controller.connectNote.value)
+    }
 }
