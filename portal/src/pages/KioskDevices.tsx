@@ -1,5 +1,5 @@
-/** Kiosk Devices — the device-fleet directory list for web/iPad kiosk
- *  stations. Standalone page (own .portal-page/.dir-head, model:
+/** Kiosk Devices — the device-fleet directory list for every device
+ *  running the kiosk app. Standalone page (own .portal-page/.dir-head, model:
  *  Notifications.tsx) built on the shared directory-list pattern (model:
  *  components/statusRules/RulesTab.tsx — the freshest full-pattern list):
  *  search + toolbar FilterButton facet (Type/Registration/Site) +
@@ -379,7 +379,7 @@ export default function KioskDevices() {
             Kiosk Devices
             <span className="badge-count">{devices?.length ?? '…'}</span>
           </h1>
-          <p className="page-hint">Web and iOS (iPad) kiosk stations, provisioned from the portal.</p>
+          <p className="page-hint">Every device running the kiosk app — web, laptop, Pi, Android, Zebra handhelds and iPad.</p>
         </div>
       </div>
 
