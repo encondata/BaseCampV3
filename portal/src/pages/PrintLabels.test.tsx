@@ -75,7 +75,7 @@ const row = (n: number, rack: string, ru: number): InitiativeAssetRow => ({
 const vocab: LabelVocab[] = [
   { kind: 'type', key: 'top', label: 'Top Label', description: '', meta: {}, sort_order: 1, is_active: true, usage_count: null },
   { kind: 'type', key: 'front', label: 'Front Label', description: '', meta: {}, sort_order: 2, is_active: true, usage_count: null },
-  { kind: 'type', key: 'container', label: 'Container Label', description: '', meta: {}, sort_order: 4, is_active: true, usage_count: null },
+  { kind: 'type', key: 'container', label: 'Container Label', description: '', meta: { default_copies: 5 }, sort_order: 4, is_active: true, usage_count: null },
   { kind: 'size', key: '4x2', label: '4" x 2"', description: '', meta: { width_in: 4, height_in: 2 }, sort_order: 1, is_active: true, usage_count: null },
   { kind: 'dpi', key: '300', label: '300 DPI', description: '', meta: { dots: 300 }, sort_order: 2, is_active: true, usage_count: null },
 ];
@@ -370,8 +370,9 @@ it('a container label type lists the initiative\'s live containers and prints by
   await userEvent.click(screen.getByLabelText('Select all filtered containers'));
   await userEvent.click(screen.getByRole('button', { name: 'Print 2 labels' }));
   await waitFor(() => expect(printer.send).toHaveBeenCalledTimes(2));
+  // Container Label's default_copies (5, migration 0066) was seeded on the type switch.
   expect(printer.send.mock.calls.map((c) => c[0]).sort()).toEqual([
-    '^XA^PW812^FDk1^FS^XZ', '^XA^PW812^FDk2^FS^XZ',
+    '^XA^PW812^FDk1^FS^PQ5^XZ', '^XA^PW812^FDk2^FS^PQ5^XZ',
   ]);
 });
 
@@ -397,4 +398,42 @@ it('switching back to an asset type restores the asset list and its own selectio
   await userEvent.click(screen.getByRole('radio', { name: /Top Label/ }));
   await screen.findByText('Showing 3 of 3 assets');
   expect(screen.getByRole('button', { name: 'Print 3 labels' })).toBeTruthy();
+});
+
+it("seeds copies from the label type's default_copies on a type change, but never overwrites an edit", async () => {
+  printer.connected = true;
+  renderPage();
+  await pickInitiative();
+  // Top Label carries no default_copies — the field keeps V2's default of 1.
+  await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
+  expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('1');
+  await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+  // Switching to Container Label seeds copies from its default_copies (5, migration 0066).
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  await screen.findByText('Showing 2 of 2 containers');
+  await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
+  expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('5');
+
+  // The operator edits copies...
+  fireEvent.change(screen.getByLabelText('Copies'), { target: { value: '9' } });
+  fireEvent.blur(screen.getByLabelText('Copies'));
+  await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+  expect(JSON.parse(localStorage.getItem('labels.print.settings') ?? '{}').copies).toBe(9);
+
+  // ...and it survives a re-render triggered by something else (selecting containers) —
+  // the seed must not reapply just because the component rendered again.
+  await userEvent.click(screen.getByLabelText('Select all filtered containers'));
+  await userEvent.click(screen.getAllByRole('button', { name: 'Print settings' })[0]);
+  expect((screen.getByLabelText('Copies') as HTMLInputElement).value).toBe('9');
+});
+
+it("says plainly that container lists aren't available offline, instead of reading as no containers", async () => {
+  api.listContainers.mockRejectedValue(new TypeError('Failed to fetch'));
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  expect(await screen.findByText(/Container lists aren't available offline/)).toBeTruthy();
+  expect(screen.queryByText('No containers found on this initiative')).toBeNull();
+  expect(screen.queryByText("Couldn't load the initiative's containers.")).toBeNull();
 });

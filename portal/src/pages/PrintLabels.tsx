@@ -30,8 +30,8 @@ import * as labelCache from '../lib/labelCache';
 import { vocabLabel, vocabOfKind } from '../lib/labels';
 import {
   LABEL_TYPE_CUSTOM, applyPrintSettings, batchBounds, batchCount, blankLabelsZpl, bundleByEntity,
-  containerPrintOrder, isContainerLabelType, labelStatusFor, missingLabelIds, printOrder, rackOf,
-  readPrintSettings, settingsModified, staleLabelCount, writePrintSettings,
+  containerPrintOrder, defaultCopiesFor, isContainerLabelType, labelStatusFor, missingLabelIds, printOrder,
+  rackOf, readPrintSettings, settingsModified, staleLabelCount, writePrintSettings,
   type LabelStatus, type PrintSettings,
 } from '../lib/printLabels';
 import { useZebraPrinter } from '../lib/useZebraPrinter';
@@ -94,6 +94,10 @@ export default function PrintLabels() {
   const [containers, setContainers] = useState<ContainerItem[] | null>(null);
   const [containersLoading, setContainersLoading] = useState(false);
   const [containersDenied, setContainersDenied] = useState(false);
+  // Unlike the asset roster, container lists have no offline cache
+  // (`labelCache` only stores the asset roster) — a network failure here is
+  // a flat "can't load" rather than something we can fall back to.
+  const [containersOffline, setContainersOffline] = useState(false);
   const [containerSelected, setContainerSelected] = useState<string[]>([]);
   const [containerDisplayed, setContainerDisplayed] = useState<ContainerItem[]>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
@@ -150,6 +154,24 @@ export default function PrintLabels() {
   }, [typeVocab, cachedBundles]);
   const typeLabel = (key: string) => (key === LABEL_TYPE_CUSTOM ? 'Custom' : (typeChoices.find((t) => t.key === key)?.label ?? vocabLabel(vocab, 'type', key)));
 
+  /** Seeds settings.copies from the new type's default_copies (migration
+   *  0066) — but only on an actual label-type change: this runs from the
+   *  type picker and the initial-type effect, never from a render or an
+   *  unrelated state change, so it can never clobber a value the operator
+   *  has since typed into the settings modal. */
+  const handleLabelTypeChange = (key: string) => {
+    if (key === labelType) return;
+    setLabelType(key);
+    const def = defaultCopiesFor(vocab, key);
+    if (def !== null) {
+      setSettings((s) => {
+        const next = { ...s, copies: def };
+        writePrintSettings(next);
+        return next;
+      });
+    }
+  };
+
   const pickerOptions = useMemo(
     () => visibleInitiativesForGenerate(initiatives ?? []).map((i) => ({ value: i.id, label: i.name, sub: i.client_name ?? undefined })),
     [initiatives]);
@@ -197,15 +219,25 @@ export default function PrintLabels() {
       if (initiativeIdRef.current !== id) return;
       setContainers(rows);
       setContainersDenied(false);
+      setContainersOffline(false);
       if (opts.keepSelection) {
         setContainerSelected((s) => s.filter((cid) => rows.some((r) => r.id === cid)));
       }
     } catch (err) {
       if (initiativeIdRef.current !== id) return;
       const status = err instanceof Error && 'status' in err ? (err as { status?: number }).status : undefined;
-      setContainers([]);
+      const network = isNetworkFailure(err);
       setContainersDenied(status === 403);
-      if (status !== 403) setNotice({ type: 'error', message: "Couldn't load the initiative's containers." });
+      setContainersOffline(network);
+      if (network) {
+        // No cache to fall back to for containers — an empty list here would
+        // misleadingly read as "no containers"; the offline banner + card
+        // copy say plainly that this list can't load right now.
+        setContainers(null);
+      } else {
+        setContainers([]);
+        if (status !== 403) setNotice({ type: 'error', message: "Couldn't load the initiative's containers." });
+      }
     } finally {
       if (initiativeIdRef.current === id) setContainersLoading(false);
     }
@@ -216,6 +248,7 @@ export default function PrintLabels() {
     setContainerSelected([]);
     setContainerDisplayed([]);
     setContainersDenied(false);
+    setContainersOffline(false);
     if (!initiativeId) { setRoster(null); setSelected([]); setBundle(null); return; }
     void loadRoster(initiativeId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -270,7 +303,8 @@ export default function PrintLabels() {
 
   // Default the type to the first choice once vocab arrives (V2 defaulted to Front).
   useEffect(() => {
-    if (!labelType && typeChoices.length > 0) setLabelType(typeChoices[0].key);
+    if (!labelType && typeChoices.length > 0) handleLabelTypeChange(typeChoices[0].key);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [typeChoices, labelType]);
 
   // Back online → refetch what's in view.
@@ -506,10 +540,12 @@ export default function PrintLabels() {
         </div>
       </div>
 
-      {offlineSince && (
+      {(offlineSince || containersOffline) && (
         <div className="plabels-notice warning">
           <p className="page-hint">
-            Offline — using labels downloaded {relativeTime(offlineSince)}. Printing works; changes made elsewhere are not reflected.
+            {containersOffline
+              ? "Offline — container lists aren't cached, so they can't load without a network connection."
+              : `Offline — using labels downloaded ${relativeTime(offlineSince!)}. Printing works; changes made elsewhere are not reflected.`}
           </p>
         </div>
       )}
@@ -551,13 +587,13 @@ export default function PrintLabels() {
             {typeChoices.map((t) => {
               const noun = isContainerLabelType(t.key) ? 'container' : 'asset';
               return (
-                <ChoiceCard key={t.key} title={t.label} selected={labelType === t.key} onSelect={() => setLabelType(t.key)}
+                <ChoiceCard key={t.key} title={t.label} selected={labelType === t.key} onSelect={() => handleLabelTypeChange(t.key)}
                             description={labelType === t.key && coverage
                               ? `${coverage.have} of ${coverage.total} ${noun}s have a ${t.label}${coverage.missing > 0 ? ` · ${coverage.missing} missing` : ''}`
                               : `Printable ${t.label.toLowerCase()} for each selected ${noun}`} />
               );
             })}
-            <ChoiceCard title="Custom" selected={isCustom} onSelect={() => setLabelType(LABEL_TYPE_CUSTOM)}
+            <ChoiceCard title="Custom" selected={isCustom} onSelect={() => handleLabelTypeChange(LABEL_TYPE_CUSTOM)}
                         description="Send raw ZPL to the printer once per selected asset" />
           </div>
           {coverage && coverage.missing > 0 && (
@@ -611,6 +647,10 @@ export default function PrintLabels() {
             </div>
           ) : containersLoading && !containers ? (
             <div className="dir-empty">Loading containers…</div>
+          ) : containersOffline ? (
+            <div className="dir-empty">
+              Container lists aren't available offline. Connect to the network to load this initiative's containers.
+            </div>
           ) : containers && liveContainers.length === 0 ? (
             <div className="dir-empty">No containers found on this initiative</div>
           ) : containers ? (
