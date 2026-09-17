@@ -659,6 +659,12 @@ export default function PrintLabels() {
           )}
         </StepCard>
 
+        {/* Step 3 and the print controls share the third grid column as two
+            separate cards. The column is a stretched grid item, so the print
+            card's `margin-top: auto` pins it to the bottom and the pair ends
+            level with Step 2 — which is why the print controls sit here at
+            all, rather than in a card below the long, scrolling roster. */}
+        <div className="plabels-step-col">
         <StepCard step="Step 3" title="Printer" hint="A Zebra printer connected to this computer over USB.">
           <div className="plabels-printer-status">
             <span className={`dot ${printer.connected ? 'on' : 'off'}`} />
@@ -674,34 +680,29 @@ export default function PrintLabels() {
             <button type="button" className="btn-solid" onClick={() => void printer.connect()}>Connect via USB</button>
           )}
           <p className="page-hint">Requires a Zebra printer connected via USB. Make sure the printer is turned on before connecting.</p>
-
-          {/* Ready to print lives at the foot of Step 3 rather than in its own
-              card below the list: the steps grid stretches all three cards to
-              the tallest (Step 2's six choice cards), so Step 3 had ~200px of
-              dead space while the Print button sat below a long, scrolling
-              list. `margin-top: auto` pins this to the card's bottom edge so
-              it lines up with Step 2. */}
-          <div className="plabels-ready">
-            <div className="plabels-ready-text">
-              <div className="modal-section">Ready to print</div>
-              <span className="cell-sub">
-                {inlineProgress
-                  ? `Printing ${inlineProgress.done} of ${inlineProgress.total}…`
-                  : activeSelected.length === 0 ? `Select ${entityNoun}s to print labels`
-                  : `${printableIds.length} label(s) will be printed${activeSelected.length > printableIds.length ? ` · ${activeSelected.length - printableIds.length} selected ${entityNoun}(s) are hidden by the current filters` : ''}`}
-              </span>
-            </div>
-            <div className="plabels-ready-actions">
-              <button type="button" className="btn-ghost plabels-gear" aria-label="Print settings" title="Print settings"
-                      onClick={() => setSettingsOpen(true)}>
-                Settings{modified && <span className="plabels-modified" aria-hidden="true" />}
-              </button>
-              <button type="button" className="btn-solid" disabled={!canPrint} onClick={() => void handlePrint()}>
-                {printing ? 'Printing…' : `Print ${printableIds.length} label${printableIds.length === 1 ? '' : 's'}`}
-              </button>
-            </div>
-          </div>
         </StepCard>
+
+        <section className="plabels-step plabels-ready" aria-label="Ready to print">
+          <div className="plabels-ready-text">
+            <div className="modal-section">Ready to print</div>
+            <span className="cell-sub">
+              {inlineProgress
+                ? `Printing ${inlineProgress.done} of ${inlineProgress.total}…`
+                : activeSelected.length === 0 ? `Select ${entityNoun}s to print labels`
+                : `${printableIds.length} label(s) will be printed${activeSelected.length > printableIds.length ? ` · ${activeSelected.length - printableIds.length} selected ${entityNoun}(s) are hidden by the current filters` : ''}`}
+            </span>
+          </div>
+          <div className="plabels-ready-actions">
+            <button type="button" className="btn-ghost plabels-gear" aria-label="Print settings" title="Print settings"
+                    onClick={() => setSettingsOpen(true)}>
+              Settings{modified && <span className="plabels-modified" aria-hidden="true" />}
+            </button>
+            <button type="button" className="btn-solid" disabled={!canPrint} onClick={() => void handlePrint()}>
+              {printing ? 'Printing…' : `Print ${printableIds.length} label${printableIds.length === 1 ? '' : 's'}`}
+            </button>
+          </div>
+        </section>
+        </div>
       </div>
 
       <div className="plabels-card">

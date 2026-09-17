@@ -223,7 +223,12 @@
    six choice cards). The separator keeps it readable as its own block now
    that it shares a card with the printer status. Buttons size to their own
    content — an earlier `flex: 1` stretched Print across the whole card. */
-.plabels-ready { padding-top: 14px; border-top: 1px solid var(--paper-line); }
+/* Step 3 and the print card stack in the third grid column. The column is a
+   stretched grid item, so `margin-top: auto` on the print card genuinely has
+   free space to consume and pins it to the bottom — the pair then ends level
+   with Step 2's last choice card. */
+.plabels-step-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.plabels-ready { margin-top: auto; }
 .plabels-ready-text { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
 .plabels-ready-text .modal-section { margin: 0; }
 .plabels-ready-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
