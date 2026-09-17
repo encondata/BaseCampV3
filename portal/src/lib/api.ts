@@ -3586,6 +3586,19 @@ export async function deleteDevice(id: string): Promise<void> {
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+/** One kiosk in a clear-offline preview or result. `registration` carries
+ *  three values, not two: "registered" is only ever possible on a `skipped`
+ *  row, for a kiosk that re-registered between the preview and the confirm —
+ *  a `kiosks` entry is unregistered or expired by construction. Mirrors
+ *  ClearOfflineKioskItem in api/src/serversherpa/api/schemas.py. */
+export interface ClearOfflineKioskItem {
+  id: string;
+  name: string;
+  sub_type: string | null;
+  registration: 'unregistered' | 'expired' | 'registered';
+  last_seen_at: string | null;
+}
+
 export interface DeviceLease {
   id: string; mac: string; ip: string | null; hostname: string | null;
   reserved: boolean; up: boolean; last_seen_at: string | null;
