@@ -608,6 +608,29 @@ async def test_the_preview_counts_containers_for_a_container_type(client, db, se
     assert by_key["top"]["current"] == 3            # three assets labeled
 
 
+async def test_the_preview_counts_the_initiatives_live_containers(client, db, seeded_user):
+    """The preview carries a container count beside the asset count, built
+    the same way the runner's roster is (initiative match, archived
+    excluded) — otherwise the page tells the operator "185 assets" before
+    queueing a run that produces labels for 25 containers."""
+    ini = await _initiative(db)
+    await _asset_on(db, ini, legacy_id=5001)
+    db.add_all([
+        Container(name="crate-live-1", initiative_id=ini.id),
+        Container(name="crate-live-2", initiative_id=ini.id),
+        Container(name="crate-archived", initiative_id=ini.id,
+                  archived_at=datetime(2026, 1, 1, tzinfo=UTC)),
+        Container(name="crate-elsewhere"),
+    ])
+    await db.commit()
+
+    hdrs = await login(client)
+    resp = await client.get(f"/labels/generate/preview?initiative_id={ini.id}", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["initiative"]["container_count"] == 2
+    assert resp.json()["initiative"]["asset_count"] == 1
+
+
 async def test_preview_404_unknown_initiative(client, db, seeded_user):
     hdrs = await login(client)
     resp = await client.get(f"/labels/generate/preview?initiative_id={uuid.uuid4()}",

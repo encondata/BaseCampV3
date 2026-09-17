@@ -180,20 +180,6 @@ export function containerPrintOrder(
   return displayedRows.filter((r) => chosen.has(r.id)).map((r) => r.id);
 }
 
-/** Which label types describe a container rather than an asset.
- *
- *  ⚠ This is the SECOND copy of that mapping. The first — and the one the
- *  server actually labels from — is `ENTITY_FOR_TYPE` in
- *  `api/src/serversherpa/labels/generate/__init__.py`. A new container-shaped
- *  label type must be added to BOTH or Print Labels will show the asset
- *  roster for a type whose labels are keyed by container id. There is no
- *  third copy: the picker and the generate flow both derive from these. */
-const CONTAINER_LABEL_TYPES: ReadonlySet<string> = new Set(['container', 'container_info']);
-
-export function isContainerLabelType(labelType: string): boolean {
-  return CONTAINER_LABEL_TYPES.has(labelType);
-}
-
 export function batchCount(total: number, batchSize: number): number {
   return Math.ceil(total / Math.max(1, batchSize));
 }

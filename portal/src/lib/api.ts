@@ -3945,6 +3945,9 @@ export interface LabelGeneratePreview {
     id: string; name: string; client_name: string | null; status: string;
     scheduled_start: string | null; source_name: string | null; destination_name: string | null;
     asset_count: number;
+    /** Live (non-archived) containers on the initiative — what a container
+     *  label type's run walks. The asset types label `asset_count` rows. */
+    container_count: number;
   };
   types: LabelGeneratePreviewType[];
   active_run_id: string | null;

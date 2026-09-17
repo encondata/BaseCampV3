@@ -27,10 +27,10 @@ import {
 import { relativeTime } from '../lib/format';
 import { visibleInitiativesForGenerate } from '../lib/generateLabels';
 import * as labelCache from '../lib/labelCache';
-import { vocabLabel, vocabOfKind } from '../lib/labels';
+import { isContainerLabelType, vocabLabel, vocabOfKind } from '../lib/labels';
 import {
   LABEL_TYPE_CUSTOM, applyPrintSettings, batchBounds, batchCount, blankLabelsZpl, bundleByEntity,
-  containerPrintOrder, defaultCopiesFor, isContainerLabelType, labelStatusFor, missingLabelIds, printOrder,
+  containerPrintOrder, defaultCopiesFor, labelStatusFor, missingLabelIds, printOrder,
   rackOf, readPrintSettings, settingsModified, staleLabelCount, writePrintSettings,
   type LabelStatus, type PrintSettings,
 } from '../lib/printLabels';
@@ -338,6 +338,15 @@ export default function PrintLabels() {
   // Archived containers are excluded here exactly as the list excludes them,
   // so coverage counts the same rows the operator can actually select.
   const liveContainers = useMemo(() => (containers ?? []).filter((c) => !c.archived_at), [containers]);
+  /** What the "Cached for offline" chip counts. A container bundle carries
+   *  a label for every container the run covered, including any archived
+   *  since — the list drops those, so counting the bundle whole would
+   *  report one more label than the operator can see or print. */
+  const cachedLabelCount = useMemo(() => {
+    if (!cacheStamp) return 0;
+    if (!containerMode || !containers) return cacheStamp.count;
+    return liveContainers.filter((c) => byEntity.has(c.id)).length;
+  }, [cacheStamp, containerMode, containers, liveContainers, byEntity]);
   const coverage = useMemo(() => {
     if (isCustom || !labelType) return null;
     if (containerMode) {
@@ -580,7 +589,7 @@ export default function PrintLabels() {
               <div className="plabels-summary-line">
                 <span className="cell-sub">{rosterLoading ? 'Loading assets…' : `${roster?.length ?? 0} assets`}</span>
                 {cacheStamp && !isCustom && (
-                  <span className="chip tag">Cached for offline · {cacheStamp.count} labels · {relativeTime(cacheStamp.cached_at)}</span>
+                  <span className="chip tag">Cached for offline · {cachedLabelCount} labels · {relativeTime(cacheStamp.cached_at)}</span>
                 )}
                 {!cacheStamp && labelType && !isCustom && !bundleLoading && (
                   <span className="chip tag">Not cached</span>

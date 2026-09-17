@@ -25,7 +25,7 @@ import {
   canGenerate, firstUnresolvedType, isRunActive, templatesPayloadFor,
   visibleInitiativesForGenerate,
 } from '../lib/generateLabels';
-import { vocabLabel, vocabOfKind } from '../lib/labels';
+import { isContainerLabelType, vocabLabel, vocabOfKind } from '../lib/labels';
 import { useSystemStatus } from '../lib/systemStatusContext';
 import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
@@ -258,8 +258,21 @@ export default function GenerateLabels() {
   };
 
   const pickedTypeLabels = selectedTypes.map(typeLabelFor);
+  // A container type's run walks the initiative's live containers, every
+  // other type its assets — so the page counts whichever the picked types
+  // describe (both, when the selection mixes the two). Nothing picked yet
+  // reads as assets, the page's default subject.
+  const countsContainers = selectedTypes.some(isContainerLabelType);
+  const countsAssets = !countsContainers || selectedTypes.some((k) => !isContainerLabelType(k));
+  const countPhrase = (n: number, noun: string) => `${n.toLocaleString()} ${noun}${n === 1 ? '' : 's'}`;
+  const runSubject = preview
+    ? [
+        ...(countsAssets ? [countPhrase(preview.initiative.asset_count, 'asset')] : []),
+        ...(countsContainers ? [countPhrase(preview.initiative.container_count, 'container')] : []),
+      ].join(' and ')
+    : '';
   const runSummary = initiativeId && preview && selectedTypes.length > 0
-    ? `${pickedTypeLabels.join(' + ')} for ${preview.initiative.asset_count.toLocaleString()} asset${preview.initiative.asset_count === 1 ? '' : 's'} on ${preview.initiative.name}`
+    ? `${pickedTypeLabels.join(' + ')} for ${runSubject} on ${preview.initiative.name}`
     : null;
   const NO_ADD_HINT = "You don't have permission to generate labels.";
   const NO_CHANGE_HINT = "You don't have permission to change labels.";
@@ -281,7 +294,7 @@ export default function GenerateLabels() {
           <div className="eyebrow">Labels</div>
           <h1 className="page-title">Generate Labels</h1>
           <p className="page-hint">
-            Generate printable asset and device labels for every asset on an initiative. Labels are
+            Generate printable labels for every asset and container on an initiative. Labels are
             rendered by the label worker and kept for printing.
           </p>
         </div>
@@ -291,13 +304,13 @@ export default function GenerateLabels() {
 
       <div className="glabels-steps">
         <StepCard step="Step 1" title="Initiative"
-                  hint="Pick the initiative whose assets get labels. Its sites decide which templates match.">
+                  hint="Pick the initiative whose assets and containers get labels. Its sites decide which templates match.">
           <div className="glabels-initiative">
           <ComboBox options={pickerOptions} value={initiativeId}
                     onChange={(v) => { setInitiativeId(v); setSelectedTypes([]); setTemplateOverrides({}); }}
                     placeholder="Choose an initiative…" clearable />
           {!initiativeId && (
-            <p className="page-hint">Pick an initiative to see its sites, asset count, and which template each label type will use.</p>
+            <p className="page-hint">Pick an initiative to see its sites, its counts, and which template each label type will use.</p>
           )}
           {initiativeId && previewLoading && <p className="page-hint">Loading preview…</p>}
           {initiativeId && !previewLoading && previewError && (
@@ -316,10 +329,18 @@ export default function GenerateLabels() {
                 emptyText="Pick an initiative to see its details here."
               />
               <div className="dash-kpis glabels-kpis">
-                <div className="dash-kpi">
-                  <span className="dash-kpi-label">Assets</span>
-                  <span className="dash-kpi-value">{preview.initiative.asset_count.toLocaleString()}</span>
-                </div>
+                {countsAssets && (
+                  <div className="dash-kpi">
+                    <span className="dash-kpi-label">Assets</span>
+                    <span className="dash-kpi-value">{preview.initiative.asset_count.toLocaleString()}</span>
+                  </div>
+                )}
+                {countsContainers && (
+                  <div className="dash-kpi">
+                    <span className="dash-kpi-label">Containers</span>
+                    <span className="dash-kpi-value">{preview.initiative.container_count.toLocaleString()}</span>
+                  </div>
+                )}
                 <div className="dash-kpi">
                   <span className="dash-kpi-label">Templates matched</span>
                   <span className="dash-kpi-value">{preview.types.filter((t) => t.template).length} / {preview.types.length}</span>
@@ -335,7 +356,9 @@ export default function GenerateLabels() {
                     {initiativeId
                       ? 'Pick one or more. A type needs a resolved template — automatic or chosen — before it can be generated.'
                       : 'Pick an initiative first to see which types have a template.'}
-                    {' '}These are asset and device labels; container label sheets come from the{' '}
+                    {' '}Asset, device and container labels are all generated here — one label
+                    per asset or container. The Avery sheet PDF, which lays many container labels
+                    out on a printable page, is a separate job on the{' '}
                     <Link to="/labels/containers">Container Labels</Link> page.
                   </>}>
           <LabelTypeCards vocab={typeVocab} types={preview?.types ?? null}
@@ -353,8 +376,8 @@ export default function GenerateLabels() {
                 <span className="cell-top">Regenerate existing labels</span>
                 <span className="cell-sub">
                   {canChange
-                    ? 'Off skips assets that already have a current label for the type.'
-                    : `${NO_CHANGE_HINT} Runs skip assets that already have a current label.`}
+                    ? 'Off skips anything that already has a current label for the type.'
+                    : `${NO_CHANGE_HINT} Runs skip anything that already has a current label.`}
                 </span>
               </span>
             </label>
@@ -378,8 +401,14 @@ export default function GenerateLabels() {
                   {selectedTypes.map((k) => <span key={k} className="chip tag">{typeLabelFor(k)}</span>)}
                 </span>
               </dd>
-              <dt>Assets</dt>
-              <dd>{preview.initiative.asset_count.toLocaleString()}</dd>
+              {countsAssets && <>
+                <dt>Assets</dt>
+                <dd>{preview.initiative.asset_count.toLocaleString()}</dd>
+              </>}
+              {countsContainers && <>
+                <dt>Containers</dt>
+                <dd>{preview.initiative.container_count.toLocaleString()}</dd>
+              </>}
               <dt>Templates</dt>
               <dd>{autoCount} auto · {manualCount} manual</dd>
             </dl>

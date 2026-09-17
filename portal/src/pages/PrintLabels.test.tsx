@@ -376,6 +376,19 @@ it('a container label type lists the initiative\'s live containers and prints by
   ]);
 });
 
+it("the offline-cache chip counts only the containers the list shows", async () => {
+  // The bundle carries a label for the archived container too; the list
+  // drops that row, so the chip must not count it (found in live
+  // verification: chip said 25 labels over a 24-row list).
+  api.getGeneratedLabelBundle.mockImplementation(async (_i: string, t: string) => (
+    t === 'container' ? bundleFor(['k1', 'k2', 'k3'], t) : bundleFor(['a1', 'a2', 'a3'], t)));
+  renderPage();
+  await pickInitiative();
+  await userEvent.click(screen.getByRole('radio', { name: /Container Label/ }));
+  await screen.findByText('Showing 2 of 2 containers');
+  await waitFor(() => expect(screen.getByText(/Cached for offline · 2 labels/)).toBeTruthy());
+});
+
 it('says so when the account cannot list containers', async () => {
   const denied = Object.assign(new Error('Forbidden'), { status: 403 });
   api.listContainers.mockRejectedValue(denied);

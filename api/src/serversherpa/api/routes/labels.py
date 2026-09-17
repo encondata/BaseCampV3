@@ -40,7 +40,7 @@ from serversherpa.api.schemas import (
     LabelZplPreviewIn,
 )
 from serversherpa.db.models import (
-    Asset, Client, GeneratedLabel, Initiative, InitiativeAsset,
+    Asset, Client, Container, GeneratedLabel, Initiative, InitiativeAsset,
     LabelFont, LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelTemplateSite,
     LabelVocab, Person, Site,
 )
@@ -791,6 +791,15 @@ async def preview_generation(
     asset_count = await db.scalar(
         select(func.count()).select_from(InitiativeAsset)
         .where(InitiativeAsset.initiative_id == ini.id)) or 0
+    # The container label types label containers, not assets, so the preview
+    # carries both counts and the portal shows whichever the picked types
+    # describe. Counted exactly as the runner's roster is built
+    # (`_load_container_roster`) — initiative match AND not archived — so the
+    # number the operator sees is the number of labels the run produces.
+    container_count = await db.scalar(
+        select(func.count()).select_from(Container)
+        .where(Container.initiative_id == ini.id,
+               Container.archived_at.is_(None))) or 0
 
     # Same site preference as the runner: destination, else origin.
     template_site_id = ini.destination_site_id or ini.origin_site_id
@@ -841,7 +850,8 @@ async def preview_generation(
         initiative=LabelGeneratePreviewInitiativeOut(
             id=ini.id, name=ini.name, client_name=client_name, status=ini.status,
             scheduled_start=ini.scheduled_start, source_name=source_name,
-            destination_name=destination_name, asset_count=asset_count),
+            destination_name=destination_name, asset_count=asset_count,
+            container_count=container_count),
         types=types, active_run_id=active_run_id)
 
 

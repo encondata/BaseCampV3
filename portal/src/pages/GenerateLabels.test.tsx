@@ -71,13 +71,17 @@ const vocabRow = (key: string, label: string): LabelVocab => ({
 });
 const VOCAB = [vocabRow('top', 'Top'), vocabRow('front', 'Front')];
 
+const CONTAINER_VOCAB = [
+  ...VOCAB, vocabRow('container', 'Container Label'), vocabRow('container_info', 'Container Info Label'),
+];
+
 const TOP_AUTO = { id: 't1', name: 'Top asset tag', version: 5, scope: 'site' as const };
 
 const preview = (over: Partial<LabelGeneratePreview> = {}): LabelGeneratePreview => ({
   initiative: {
     id: 'i2', name: 'NAP11', client_name: 'Acme', status: 'in_progress',
     scheduled_start: '2026-10-01T00:00:00Z', source_name: 'NAP7', destination_name: 'NAP11',
-    asset_count: 42,
+    asset_count: 42, container_count: 7,
   },
   types: [
     { key: 'top', label: 'Top', template: TOP_AUTO, candidates: [{ ...TOP_AUTO, site_names: [] }], current: 3, stale: 1 },
@@ -86,6 +90,15 @@ const preview = (over: Partial<LabelGeneratePreview> = {}): LabelGeneratePreview
   active_run_id: null,
   ...over,
 });
+
+/** Preview types for the container tests: Top and both container types
+ *  auto-matched, so each is selectable without picking a template. */
+const CONTAINER_TPL = { id: 'ct1', name: 'Container 4x6', version: 1, scope: 'global' as const };
+const CONTAINER_PREVIEW_TYPES = [
+  { key: 'top', label: 'Top', template: TOP_AUTO, candidates: [{ ...TOP_AUTO, site_names: [] }], current: 0, stale: 0 },
+  { key: 'container', label: 'Container Label', template: CONTAINER_TPL, candidates: [{ ...CONTAINER_TPL, site_names: [] }], current: 0, stale: 0 },
+  { key: 'container_info', label: 'Container Info Label', template: CONTAINER_TPL, candidates: [{ ...CONTAINER_TPL, site_names: [] }], current: 0, stale: 0 },
+];
 
 const run = (over: Partial<LabelRun> = {}): LabelRun => ({
   id: 'r1', initiative_id: 'i2', initiative_name: 'NAP11', label_types: ['top'],
@@ -128,7 +141,7 @@ it('renders the eyebrow, title, and description', async () => {
   renderAt();
   expect(screen.getByText('Labels')).not.toBeNull();
   expect(screen.getByText('Generate Labels')).not.toBeNull();
-  expect(screen.getByText(/Generate printable asset and device labels for every asset/)).not.toBeNull();
+  expect(screen.getByText(/Generate printable labels for every asset and container/)).not.toBeNull();
 });
 
 it('renders the three step cards with their eyebrows and titles', async () => {
@@ -422,15 +435,63 @@ it('?run= deep link opens the errors modal when the run already finished with er
 });
 
 it('offers the container types alongside asset types, and still hints at the Container Labels page', async () => {
-  api.listLabelVocab.mockResolvedValue([
-    ...VOCAB, vocabRow('container', 'Container Label'), vocabRow('container_info', 'Container Info Label'),
-  ]);
+  api.listLabelVocab.mockResolvedValue(CONTAINER_VOCAB);
   renderAt();
   await screen.findByRole('checkbox', { name: /Top/ });
   expect(screen.getByRole('checkbox', { name: /Container Label/ })).not.toBeNull();
   expect(screen.getByRole('checkbox', { name: /Container Info Label/ })).not.toBeNull();
-  // The runner can walk containers now, but Avery sheet printing still
-  // lives on its own page — the hint keeps pointing there.
+  // Container labels are generated here now, but the Avery SHEET pdf still
+  // lives on its own page — the hint says both.
+  expect(screen.getByText(/Asset, device and container labels are all generated here/)).not.toBeNull();
   const link = screen.getByRole('link', { name: 'Container Labels' });
   expect(link.getAttribute('href')).toBe('/labels/containers');
+});
+
+/** Step 1's counts and the Step 3 summary describe whatever the picked
+ *  types label: containers for a container-only selection, assets for an
+ *  asset-only one, both when the two are mixed (defect found in live
+ *  verification: a container run was summarized as "42 assets"). */
+const kpi = (label: string): string | null => {
+  const tile = screen.getAllByText(label).map((el) => el.closest('.dash-kpi')).find(Boolean);
+  return tile?.querySelector('.dash-kpi-value')?.textContent ?? null;
+};
+
+it('a container-only selection is counted in containers, not assets', async () => {
+  const user = userEvent.setup();
+  api.listLabelVocab.mockResolvedValue(CONTAINER_VOCAB);
+  api.getLabelGeneratePreview.mockResolvedValue(preview({ types: CONTAINER_PREVIEW_TYPES }));
+  renderAt();
+  await pickNap11(user);
+  expect(kpi('Assets')).toBe('42');
+  expect(screen.queryByText('Containers')).toBeNull();
+
+  await user.click(screen.getByRole('checkbox', { name: /Container Label/ }));
+  expect(kpi('Containers')).toBe('7');
+  expect(screen.queryByText('Assets')).toBeNull();
+  expect(screen.getByText('Container Label for 7 containers on NAP11')).not.toBeNull();
+});
+
+it('an asset-only selection is still counted in assets', async () => {
+  const user = userEvent.setup();
+  api.listLabelVocab.mockResolvedValue(CONTAINER_VOCAB);
+  api.getLabelGeneratePreview.mockResolvedValue(preview({ types: CONTAINER_PREVIEW_TYPES }));
+  renderAt();
+  await pickNap11(user);
+  await user.click(screen.getByRole('checkbox', { name: /Top/ }));
+  expect(kpi('Assets')).toBe('42');
+  expect(screen.queryByText('Containers')).toBeNull();
+  expect(screen.getByText('Top for 42 assets on NAP11')).not.toBeNull();
+});
+
+it('a mixed selection is counted in both', async () => {
+  const user = userEvent.setup();
+  api.listLabelVocab.mockResolvedValue(CONTAINER_VOCAB);
+  api.getLabelGeneratePreview.mockResolvedValue(preview({ types: CONTAINER_PREVIEW_TYPES }));
+  renderAt();
+  await pickNap11(user);
+  await user.click(screen.getByRole('checkbox', { name: /Top/ }));
+  await user.click(screen.getByRole('checkbox', { name: /Container Label/ }));
+  expect(kpi('Assets')).toBe('42');
+  expect(kpi('Containers')).toBe('7');
+  expect(screen.getByText('Top + Container Label for 42 assets and 7 containers on NAP11')).not.toBeNull();
 });

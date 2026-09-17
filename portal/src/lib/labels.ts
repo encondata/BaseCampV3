@@ -25,6 +25,22 @@ export function vocabLabel(rows: LabelVocab[], kind: VocabKind, key: string): st
   return rows.find((v) => v.kind === kind && v.key === key)?.label ?? key;
 }
 
+/** Which label types describe a container rather than an asset.
+ *
+ *  ⚠ This is the SECOND copy of that mapping. The first — and the one the
+ *  server actually labels from — is `ENTITY_FOR_TYPE` in
+ *  `api/src/serversherpa/labels/generate/__init__.py`. A new container-shaped
+ *  label type must be added to BOTH or the labels pages will describe a run
+ *  in assets, and Print Labels will show the asset roster for a type whose
+ *  labels are keyed by container id. There is no third copy: Generate
+ *  Labels and Print Labels both ask this function. (It lived in
+ *  `printLabels.ts` until Generate Labels needed it too.) */
+const CONTAINER_LABEL_TYPES: ReadonlySet<string> = new Set(['container', 'container_info']);
+
+export function isContainerLabelType(labelType: string): boolean {
+  return CONTAINER_LABEL_TYPES.has(labelType);
+}
+
 export interface SizeMeta { width_in: number; height_in: number; has_tab: boolean }
 
 export function sizeMeta(v: LabelVocab): SizeMeta {

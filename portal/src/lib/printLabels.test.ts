@@ -7,7 +7,7 @@ import type { ContainerItem, GeneratedLabelBundle, InitiativeAssetRow, LabelVoca
 import {
   DEFAULT_PRINT_SETTINGS, alignmentTestZpl, applyPrintSettings, batchBounds, batchCount,
   blankLabelsZpl, bundleByEntity, clampSetting, containerPrintOrder, defaultCopiesFor,
-  isContainerLabelType, labelStatusFor, missingLabelIds, printOrder, readPrintSettings,
+  labelStatusFor, missingLabelIds, printOrder, readPrintSettings,
   sanitizePrintSettings, settingsModified, staleLabelCount, writePrintSettings,
 } from './printLabels';
 
@@ -137,17 +137,6 @@ describe('containerPrintOrder', () => {
   it('ignores printByRack, which has no container meaning', () => {
     const displayed = [container('a'), container('b')];
     expect(containerPrintOrder(['a', 'b'], displayed, S({ printByRack: true }))).toEqual(['a', 'b']);
-  });
-});
-
-describe('isContainerLabelType', () => {
-  it('knows the container-shaped types and treats everything else as an asset type', () => {
-    expect(isContainerLabelType('container')).toBe(true);
-    expect(isContainerLabelType('container_info')).toBe(true);
-    expect(isContainerLabelType('top')).toBe(false);
-    expect(isContainerLabelType('front')).toBe(false);
-    expect(isContainerLabelType('custom')).toBe(false);
-    expect(isContainerLabelType('')).toBe(false);
   });
 });
 
