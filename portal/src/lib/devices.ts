@@ -40,8 +40,12 @@ export function tokenExpiryState(
   return t - now.getTime() <= SOON_MS ? 'soon' : 'ok';
 }
 
+/** The six values the kiosk heartbeat derives. 'zebra' is an Android
+ *  handheld, so it reads as a flavor of Android rather than a platform of
+ *  its own. */
 const SUB_TYPE_LABELS: Record<string, string> = {
-  laptop: 'Laptop', pi: 'Pi', web: 'Web', android: 'Android', ios: 'iOS', zebra: 'Zebra',
+  laptop: 'Laptop', pi: 'Pi', web: 'Web', android: 'Android', ios: 'iOS',
+  zebra: 'Android (Zebra)',
 };
 
 export function subTypeLabel(type: string | null): string {

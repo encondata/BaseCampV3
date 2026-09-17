@@ -144,7 +144,9 @@ describe('kiosk accessors', () => {
     expect(subTypeLabel('pi')).toBe('Pi');
     expect(subTypeLabel('android')).toBe('Android');
     expect(subTypeLabel('ios')).toBe('iOS');
-    expect(subTypeLabel('zebra')).toBe('Zebra');
+    // A Zebra handheld IS an Android kiosk — the label says so rather than
+    // reading as a separate platform next to 'Android'.
+    expect(subTypeLabel('zebra')).toBe('Android (Zebra)');
     expect(subTypeLabel(null)).toBe('—');
     expect(registrationLabel('ok')).toBe('Registered');
     expect(registrationLabel('soon')).toBe('Expires soon');

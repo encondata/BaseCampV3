@@ -192,6 +192,26 @@ def registration_state(token_expires_at: datetime | None, now: datetime) -> str:
     return "soon" if token_expires_at - now <= REGISTRATION_SOON else "ok"
 
 
+def kiosk_sub_type(mode: str, raw_info: dict) -> str:
+    """The stored `sub_type` for a pairing kiosk.
+
+    Only `android` is refined: a Zebra handheld running the kiosk app is
+    still an Android kiosk, but it is worth telling apart, and the app
+    already sends the evidence — `manufacturer`, and `datawedge`, which is
+    Zebra's own scanning middleware. Deriving it here rather than offering
+    it as a manual choice is deliberate: pairing reassigns `sub_type` on
+    every check-in, so a hand-set value would be reverted the next time the
+    device connected. `manufacturer` is the primary signal; `datawedge` is a
+    fallback in case that string varies across Zebra models."""
+    if mode != "android":
+        return mode
+    manufacturer = str(raw_info.get("manufacturer") or "").lower()
+    datawedge = str(raw_info.get("datawedge") or "").lower()
+    if "zebra" in manufacturer or datawedge == "true":
+        return "zebra"
+    return "android"
+
+
 @router.post("/heartbeat", response_model=HeartbeatOut)
 async def heartbeat(
     body: HeartbeatIn, db: DbSession,
@@ -208,21 +228,25 @@ async def heartbeat(
     now = datetime.now(UTC)
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None:
+        sub_type = kiosk_sub_type(body.mode, body.raw_info)
         device = Device(device_type="kiosk", name=body.name, serial=body.serial,
-                        sub_type=body.mode, version=body.version,
+                        sub_type=sub_type, version=body.version,
                         raw_info=dict(body.raw_info), last_seen_at=now)
         db.add(device)
         await db.flush()
         audit(db, actor_id=actor.person.id, entity_type="device",
               entity_id=str(device.id), action="self_register",
-              changes={"serial": body.serial, "name": body.name, "sub_type": body.mode})
+              changes={"serial": body.serial, "name": body.name, "sub_type": sub_type})
     elif device.device_type != "kiosk":
         raise _err(409, "serial_conflict")
     else:
         device.name = body.name
-        device.sub_type = body.mode
         device.version = body.version
+        # Merge first, then derive from the accumulated raw_info: a beat that
+        # omits `manufacturer`/`datawedge` must not demote a known Zebra back
+        # to plain `android` when the stored payload still identifies it.
         device.raw_info = {**(device.raw_info or {}), **body.raw_info}
+        device.sub_type = kiosk_sub_type(body.mode, device.raw_info)
         device.last_seen_at = now
         device.updated_at = now
     if body.sign_in:

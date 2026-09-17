@@ -89,7 +89,6 @@ export default function CommandPalette() {
       ...navGated('Generate Labels', '/labels/generate', 'labels'),
       ...navGated('Label Templates', '/labels/templates', 'labels'),
       ...navGated('Printers', '/labels/printers', 'labels'),
-      ...navGated('Handheld Readers', '/hardware/handheld-readers', 'scanning_hardware'),
       ...navGated('Fixed Readers', '/hardware/fixed-readers', 'scanning_hardware'),
       ...navGated('Kiosk Devices', '/hardware/kiosks', 'scanning_hardware'),
       ...navGated('Routers', '/hardware/routers', 'scanning_hardware'),

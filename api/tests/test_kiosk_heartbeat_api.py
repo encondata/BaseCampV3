@@ -245,6 +245,53 @@ async def test_sign_out_unknown_serial_is_204(client, db, seeded_user):
     assert resp.status_code == 204
 
 
+async def test_heartbeat_stores_zebra_for_a_zebra_handheld(client, db, seeded_user):
+    hdrs = await login(client)
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json={
+        **BODY, "serial": "kiosk-android-zzzz", "mode": "android",
+        "raw_info": {"manufacturer": "Zebra Technologies", "datawedge": "true"}})
+    assert resp.status_code == 200, resp.text
+    d = await db.scalar(select(Device).where(Device.serial == "kiosk-android-zzzz"))
+    assert d.sub_type == "zebra"
+    a = await db.scalar(select(AuditLog).where(AuditLog.action == "self_register",
+                                               AuditLog.entity_id == str(d.id)))
+    assert a.changes["sub_type"] == "zebra"
+
+
+async def test_second_heartbeat_re_derives_rather_than_reverting(client, db, seeded_user):
+    """The update branch must derive too — otherwise a Zebra device
+    classified on first pair silently drops back to 'android'."""
+    hdrs = await login(client)
+    zebra_body = {**BODY, "serial": "kiosk-android-zzzz", "mode": "android",
+                  "raw_info": {"manufacturer": "Zebra Technologies"}}
+    await client.post("/kiosk/heartbeat", headers=hdrs, json=zebra_body)
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json=zebra_body)
+    assert resp.status_code == 200, resp.text
+    d = await db.scalar(select(Device).where(Device.serial == "kiosk-android-zzzz"))
+    assert d.sub_type == "zebra"
+
+
+async def test_sparse_beat_keeps_a_stored_zebra(client, db, seeded_user):
+    """The update branch derives from the MERGED raw_info, not the incoming
+    payload alone: a beat that omits `manufacturer`/`datawedge` leaves the
+    stored evidence in place, so the device stays 'zebra'."""
+    hdrs = await login(client)
+    serial = "kiosk-android-sparse"
+    await client.post("/kiosk/heartbeat", headers=hdrs, json={
+        **BODY, "serial": serial, "mode": "android",
+        "raw_info": {"manufacturer": "Zebra Technologies", "datawedge": "true"}})
+    d = await db.scalar(select(Device).where(Device.serial == serial))
+    assert d.sub_type == "zebra"
+
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json={
+        **BODY, "serial": serial, "mode": "android", "raw_info": {"ua": "x"}})
+    assert resp.status_code == 200, resp.text
+    await db.refresh(d)
+    assert d.sub_type == "zebra"
+    assert d.raw_info["manufacturer"] == "Zebra Technologies"
+    assert d.raw_info["ua"] == "x"
+
+
 async def test_sign_in_renews_an_expired_registration(client, db, seeded_user):
     hdrs = await login(client)
     await client.post("/kiosk/heartbeat", headers=hdrs, json=BODY)

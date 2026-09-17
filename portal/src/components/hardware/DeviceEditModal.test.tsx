@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 /**
- * DeviceEditModal — create/edit for a single kiosk or handheld-reader
- * device row (generalized from the kiosk-only KioskEditModal via
+ * DeviceEditModal — create/edit for a single provisioned device row
+ * (generalized from the kiosk-only KioskEditModal via
  * deviceType/noun/typeOptions props). Covers: the exact createDevice
  * payload in create mode, the diff-only patchDevice payload in edit mode,
  * the move select's planned/in_progress-unarchived filter, the
- * detail-code error surface, and that typeOptions drives the Type select
- * (handheld types produce a handheld_reader create payload).
+ * detail-code error surface, and that the three props stay generic —
+ * typeOptions drives the Type select, deviceType/noun drive the wire
+ * device_type and the copy.
  */
 
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
@@ -115,9 +116,12 @@ afterEach(cleanup);
 const { default: DeviceEditModal } = await import('./DeviceEditModal');
 
 const KIOSK_TYPE_OPTIONS = [{ value: 'laptop', label: 'Laptop' }, { value: 'pi', label: 'Pi' }];
-const HANDHELD_TYPE_OPTIONS = [
-  { value: 'android', label: 'Android' }, { value: 'ios', label: 'iOS' },
-  { value: 'zebra', label: 'Zebra' },
+// The live list KioskDevices passes — every sub_type the kiosk heartbeat
+// can derive.
+const ALL_KIOSK_TYPE_OPTIONS = [
+  { value: 'laptop', label: 'Laptop' }, { value: 'pi', label: 'Pi' },
+  { value: 'android', label: 'Android' }, { value: 'zebra', label: 'Android (Zebra)' },
+  { value: 'ios', label: 'iOS' }, { value: 'web', label: 'Web' },
 ];
 
 function renderCreate(typeOptions = KIOSK_TYPE_OPTIONS) {
@@ -157,28 +161,49 @@ it('create mode: fills name, type, scan type, and move, then submits the exact c
   await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
 });
 
-it('with handheld typeOptions, the Type select offers Android/iOS/Zebra and create posts device_type: handheld_reader', async () => {
+it('typeOptions drives the Type select, and the chosen sub_type reaches the payload', async () => {
   const user = userEvent.setup();
   api.createDevice.mockResolvedValue({ ...DEVICE, id: 'new-2' });
   const onClose = vi.fn();
   const onSaved = vi.fn();
-  render(<DeviceEditModal deviceType="handheld_reader" noun="handheld reader"
-                          typeOptions={HANDHELD_TYPE_OPTIONS}
+  render(<DeviceEditModal deviceType="kiosk" noun="kiosk"
+                          typeOptions={ALL_KIOSK_TYPE_OPTIONS}
                           device={null} onClose={onClose} onSaved={onSaved} />);
 
   const typeSelect = await screen.findByLabelText('Type') as HTMLSelectElement;
   const labels = Array.from(typeSelect.options).map((o) => o.textContent);
-  expect(labels).toEqual(['— none', 'Android', 'iOS', 'Zebra']);
+  expect(labels).toEqual(
+    ['— none', 'Laptop', 'Pi', 'Android', 'Android (Zebra)', 'iOS', 'Web'],
+  );
 
-  await user.type(screen.getByLabelText('Name'), 'handheld-1');
+  await user.type(screen.getByLabelText('Name'), 'kiosk-zebra-1');
   await user.selectOptions(typeSelect, 'zebra');
-  await user.click(screen.getByRole('button', { name: /Create handheld reader/i }));
+  await user.click(screen.getByRole('button', { name: /Create kiosk/i }));
 
   await waitFor(() => expect(api.createDevice).toHaveBeenCalledTimes(1));
   expect(api.createDevice).toHaveBeenCalledWith(expect.objectContaining({
-    device_type: 'handheld_reader', sub_type: 'zebra',
+    device_type: 'kiosk', sub_type: 'zebra',
   }));
   await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+});
+
+it('deviceType and noun stay generic: another device family posts its own device_type', async () => {
+  // Kiosks are the only caller today (the Handheld Readers page is gone),
+  // so this is what keeps the three props from quietly hardcoding 'kiosk'.
+  // A fixed reader has no sub_type vocabulary, hence the empty typeOptions.
+  const user = userEvent.setup();
+  api.createDevice.mockResolvedValue({ ...DEVICE, id: 'new-3' });
+  render(<DeviceEditModal deviceType="fixed_reader" noun="fixed reader"
+                          typeOptions={[]}
+                          device={null} onClose={vi.fn()} onSaved={vi.fn()} />);
+
+  await user.type(await screen.findByLabelText('Name'), 'fx9600-dock');
+  await user.click(screen.getByRole('button', { name: /Create fixed reader/i }));
+
+  await waitFor(() => expect(api.createDevice).toHaveBeenCalledTimes(1));
+  expect(api.createDevice).toHaveBeenCalledWith(expect.objectContaining({
+    device_type: 'fixed_reader', name: 'fx9600-dock',
+  }));
 });
 
 it('disables Save until a name is entered', async () => {

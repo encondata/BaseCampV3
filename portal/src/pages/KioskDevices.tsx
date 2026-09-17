@@ -1,5 +1,5 @@
-/** Kiosk Devices — the device-fleet directory list for web/iPad kiosk
- *  stations. Standalone page (own .portal-page/.dir-head, model:
+/** Kiosk Devices — the device-fleet directory list for every device
+ *  running the kiosk app. Standalone page (own .portal-page/.dir-head, model:
  *  Notifications.tsx) built on the shared directory-list pattern (model:
  *  components/statusRules/RulesTab.tsx — the freshest full-pattern list):
  *  search + toolbar FilterButton facet (Type/Registration/Site) +
@@ -379,7 +379,7 @@ export default function KioskDevices() {
             Kiosk Devices
             <span className="badge-count">{devices?.length ?? '…'}</span>
           </h1>
-          <p className="page-hint">Web and iOS (iPad) kiosk stations, provisioned from the portal.</p>
+          <p className="page-hint">Every device running the kiosk app — web, laptop, Pi, Android, Zebra handhelds and iPad.</p>
         </div>
       </div>
 
@@ -489,7 +489,18 @@ export default function KioskDevices() {
       {editing !== null && (
         <DeviceEditModal
           deviceType="kiosk" noun="kiosk"
-          typeOptions={[{ value: 'laptop', label: 'Laptop' }, { value: 'pi', label: 'Pi' }]}
+          // Every sub_type the kiosk heartbeat can derive. This select is
+          // authoritative only for rows created by hand: a device that
+          // actually checks in overwrites sub_type from its own client
+          // info on the next heartbeat, so the derivation wins there.
+          typeOptions={[
+            { value: 'laptop', label: 'Laptop' },
+            { value: 'pi', label: 'Pi' },
+            { value: 'android', label: 'Android' },
+            { value: 'zebra', label: 'Android (Zebra)' },
+            { value: 'ios', label: 'iOS' },
+            { value: 'web', label: 'Web' },
+          ]}
           device={editing === 'new' ? null : editing}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); setError(''); setNotice(''); void load(); }}

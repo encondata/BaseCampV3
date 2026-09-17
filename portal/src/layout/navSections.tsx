@@ -462,17 +462,6 @@ export const NAV_SECTIONS: NavSection[] = [
     ),
     items: [
       {
-        to: '/hardware/handheld-readers',
-        label: 'Handheld Readers',
-        resource: 'scanning_hardware',
-        icon: (
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
-            <rect x="8" y="3" width="8" height="18" rx="2" />
-            <path d="M11 18h2" />
-          </svg>
-        ),
-      },
-      {
         to: '/hardware/fixed-readers',
         label: 'Fixed Readers',
         resource: 'scanning_hardware',
