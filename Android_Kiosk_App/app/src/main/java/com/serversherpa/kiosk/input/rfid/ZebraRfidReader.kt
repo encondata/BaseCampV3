@@ -205,9 +205,9 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
          *  ahead of [standDownBarcodeImager] inside [configurePostConnectSetup]
          *  — `rfid.connect()` itself (inside [attemptVendorConnection]),
          *  [recoverFromBatchMode] if a batch-mode recovery happened,
-         *  [configureTriggerMode]'s up-to-two `setTriggerMode` attempts, the
-         *  start/stop trigger pinning, and [preventBatchMode] — is ordinary
-         *  RFID-radio SDK traffic that has always finished comfortably
+         *  [preventBatchMode], [configureTriggerMode]'s up-to-two
+         *  `setTriggerMode` attempts, and the start/stop trigger pinning —
+         *  is ordinary RFID-radio SDK traffic that has always finished comfortably
          *  inside that 15s budget on real hardware. 5 seconds leaves that
          *  work generous headroom while still giving a real but slow
          *  *correct* sled (the scenario this bound exists for, now that Bug
@@ -429,23 +429,29 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
     /**
      * An unverified recovery sequence for a reader stuck reporting
      * `RFID_BATCHMODE_IN_PROGRESS`, derived from `RFIDReader`'s public
-     * surface (`PostConnectReaderUpdate()`, `reconnect()`, `isConnected()`,
-     * `isCapabilitiesReceived()` — all confirmed present, with the exception
-     * signatures below, via `javap` against the shipped `.aar`), **not from
-     * any Zebra documentation** — nobody on this team has seen Zebra's own
-     * account of what a host is supposed to do here. The hypothesis:
-     * `PostConnectReaderUpdate()` is a method on the reader object itself,
-     * callable even though `Actions`/`Config` are still null, and its name
-     * suggests it finishes whatever setup `connect()` left undone —
-     * including, maybe, populating those fields. Tried first; if it throws,
-     * or leaves the reader still unusable, `reconnect()` is tried once as a
-     * second avenue. If neither works, this throws
-     * [BatchModeUnrecoverableException] and stops — no third avenue, no
-     * loop. [BatchModeUnrecoverableException]'s message is the *supported*
-     * remedy: Zebra's own 123RFID Mobile app is known to be able to connect
-     * to a sled in this state and clear it, which is genuinely useful for
-     * the operator to hear instead of a generic connect failure inviting
-     * another doomed retry.
+     * surface (`PostConnectReaderUpdate()`, `reconnect()`, `connect()`,
+     * `isConnected()`, `isCapabilitiesReceived()` — all confirmed present,
+     * with the exception signatures below, via `javap` against the shipped
+     * `.aar`), **not from any Zebra documentation** — nobody on this team has
+     * seen Zebra's own account of what a host is supposed to do here. The
+     * hypothesis: `PostConnectReaderUpdate()` is a method on the reader
+     * object itself, callable even though `Actions`/`Config` are still null,
+     * and its name suggests it finishes whatever setup `connect()` left
+     * undone — including, maybe, populating those fields. Tried first; if it
+     * throws, or leaves the reader still unusable, `reconnect()` is tried as
+     * a second avenue, then — if that also fails — a bare second
+     * `rfid.connect()` on the same object that just threw
+     * `RFID_BATCHMODE_IN_PROGRESS`, with nothing torn down first, is tried
+     * as a third. This has never been tried before: the earlier fallback
+     * this file used to have (see `.superpowers/sdd/batchmode-report.md`)
+     * tore the connection down and rebuilt it from scratch before retrying,
+     * which is a different thing entirely. If none of the three avenues
+     * works, this throws [BatchModeUnrecoverableException] and stops — no
+     * fourth avenue, no loop. [BatchModeUnrecoverableException]'s message is
+     * the *supported* remedy: Zebra's own 123RFID Mobile app is known to be
+     * able to connect to a sled in this state and clear it, which is
+     * genuinely useful for the operator to hear instead of a generic connect
+     * failure inviting another doomed retry.
      *
      * Every step is logged at warning level with exactly what the reader
      * reported — `isConnected()`, `isCapabilitiesReceived()`, and whether
@@ -456,31 +462,34 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
      * the previous recovery attempt crashed (a `NullPointerException` on
      * `Actions.purgeTags()`; see `.superpowers/sdd/batchmode-report.md`).
      *
-     * Now that [preventBatchMode] runs on every successful connect and
-     * leaves `BATCH_MODE.DISABLE` persisted, hitting
-     * `RFID_BATCHMODE_IN_PROGRESS` here at all is expected to become rare —
-     * this app no longer routinely leaves a reader in a state that causes
-     * it, so a real hit is more likely a sled that arrived already batching
-     * from some other source (e.g. Zebra's own 123RFID Mobile app) than
-     * anything this app itself did. This recovery path stays exactly as it
-     * is functionally either way: [preventBatchMode] is prevention, not a
+     * Now that [preventBatchMode] runs on every successful connect — and, as
+     * of [disconnectBlocking]'s own batch-mode-safe teardown, on every
+     * disconnect too — and leaves `BATCH_MODE.DISABLE` persisted both ways,
+     * hitting `RFID_BATCHMODE_IN_PROGRESS` here at all is expected to become
+     * rare — this app no longer routinely leaves a reader in a state that
+     * causes it, so a real hit is more likely a sled that arrived already
+     * batching from some other source (e.g. Zebra's own 123RFID Mobile app)
+     * than anything this app itself did. This recovery path stays exactly as
+     * it is functionally either way: [preventBatchMode] is prevention, not a
      * replacement for having a recovery path at all.
      */
     private fun recoverFromBatchMode(rfid: RFIDReader) {
         if (tryBatchModeRecoveryAvenue("PostConnectReaderUpdate()", rfid) { rfid.PostConnectReaderUpdate() }) return
         if (tryBatchModeRecoveryAvenue("reconnect()", rfid) { rfid.reconnect() }) return
+        if (tryBatchModeRecoveryAvenue("connect()", rfid) { rfid.connect() }) return
         Log.w(
             TAG,
-            "Batch-mode recovery exhausted both avenues (PostConnectReaderUpdate() and reconnect()); the " +
-                "reader is still unusable. Stopping rather than retrying the same calls forever.",
+            "Batch-mode recovery exhausted all three avenues (PostConnectReaderUpdate(), reconnect(), and a " +
+                "bare second connect()); the reader is still unusable. Stopping rather than retrying the same " +
+                "calls forever.",
         )
         throw BatchModeUnrecoverableException()
     }
 
     /**
-     * Runs one batch-mode recovery avenue: [action] (either
-     * `PostConnectReaderUpdate()` or `reconnect()`, named by [label] for
-     * logging), then checks and logs whether the reader now looks usable
+     * Runs one batch-mode recovery avenue: [action] (`PostConnectReaderUpdate()`,
+     * `reconnect()`, or a bare `connect()`, named by [label] for logging),
+     * then checks and logs whether the reader now looks usable
      * ([logAndCheckUsable]), then — only if it does — purges the stored
      * tags and disables/persists batch mode ([purgeAndDisableBatchMode]).
      * Returns `true` only once all of that has actually succeeded. Any
@@ -573,6 +582,16 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
      * persisted, instead of only fixing it reactively the one time it's
      * already caused a failure.
      *
+     * Runs first in [configurePostConnectSetup] — before the event-listener
+     * wiring, [configureTriggerMode], and the start/stop trigger pinning
+     * that can throw — precisely so a throw anywhere after it still leaves
+     * the sled batch-mode-safe; see that function's doc for the full
+     * reasoning. [disconnectBlocking] is this function's teardown-side
+     * counterpart: it leaves the sled just as batch-mode-safe on the way
+     * *out* of a connection as this leaves it on the way *in*, which closes
+     * the one gap this function alone can't — a session that ends without
+     * ever calling `connect()` again.
+     *
      * Logged with a distinctive, greppable `"Batch-mode prevention: "`
      * prefix — parallel to [purgeAndDisableBatchMode]'s own
      * `"Batch-mode recovery: "` prefix — so this step's evidence (the
@@ -617,34 +636,55 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
 
     /** The post-connect setup every successful attempt needs, whether it
      *  connected normally or after [connectRfid] recovered from batch mode:
-     *  wire up [listener], pin the physical trigger to immediate, prevent
-     *  batch mode from recurring, and — last, and only for
+     *  prevent batch mode from recurring, wire up [listener], pin the
+     *  physical trigger to immediate, and — last, and only for
      *  [RfidTriggerPersonality.RFID] — stand the barcode imager down. Split
      *  out of [attemptVendorConnection] only so that function reads as one
      *  attempt rather than two copies of this block.
      *
-     *  Ordering here is deliberate, not incidental — see [standDownBarcodeImager]'s
-     *  doc for the field evidence: [standDownBarcodeImager] talks to a
-     *  *different* Zebra SDK over the *same* shared Bluetooth stack this
-     *  function's own RFID calls use, and a slow/failed attempt on that
-     *  second SDK was observed tying the stack up long enough to break the
-     *  unguarded start/stop trigger pinning below — RFID setup that had
-     *  already succeeded. So every piece of setup this function treats as
-     *  safety-relevant and lets fail the whole connect (`configureTriggerMode`,
-     *  the start/stop trigger pinning) runs — and is fully settled — before
-     *  [standDownBarcodeImager] ever touches the Bluetooth stack, and
-     *  [standDownBarcodeImager] is bounded by its own wall-clock timeout (see
-     *  its doc) so it can never again tie that stack up for as long as it did
-     *  in that log. [preventBatchMode] runs in between: it only touches
-     *  `rfid.Config`, the same object the trigger pinning already used
-     *  successfully by that point, so there's no new contention risk in
-     *  running it before the barcode engine step. */
+     *  [preventBatchMode] runs first, before anything else here, and
+     *  deliberately does not wait for the event-listener wiring or
+     *  [configureTriggerMode] to run first — it depends on neither, only on
+     *  `rfid.Config`, which is already usable the instant `rfid.connect()`
+     *  returns, so there is no reason to delay it behind steps it doesn't
+     *  need. The point of running it first: a sled that connects this far —
+     *  far enough for this function to have started — is left batch-mode-
+     *  safe even if the start/stop trigger pinning further down throws and
+     *  fails the rest of this `connect()` attempt (that pinning is
+     *  unguarded on purpose — see its own comment below — so a throw there
+     *  is expected to happen sometimes). Before this reordering,
+     *  [preventBatchMode] ran after that pinning, so a throw there meant it
+     *  never ran at all, and an otherwise-healthy sled was left armed for
+     *  the next `RFID_BATCHMODE_IN_PROGRESS`. [disconnectBlocking] is this
+     *  function's teardown-side counterpart — see its doc for the other
+     *  half of this same fix.
+     *
+     *  Ordering for everything else here is deliberate, not incidental —
+     *  see [standDownBarcodeImager]'s doc for the field evidence:
+     *  [standDownBarcodeImager] talks to a *different* Zebra SDK over the
+     *  *same* shared Bluetooth stack this function's own RFID calls use,
+     *  and a slow/failed attempt on that second SDK was observed tying the
+     *  stack up long enough to break the unguarded start/stop trigger
+     *  pinning below — RFID setup that had already succeeded. So every
+     *  piece of setup this function treats as safety-relevant and lets fail
+     *  the whole connect (`configureTriggerMode`, the start/stop trigger
+     *  pinning) runs — and is fully settled — before [standDownBarcodeImager]
+     *  ever touches the Bluetooth stack, and [standDownBarcodeImager] is
+     *  bounded by its own wall-clock timeout (see its doc) so it can never
+     *  again tie that stack up for as long as it did in that log. */
     private fun configurePostConnectSetup(
         rfid: RFIDReader,
         triggerPersonality: RfidTriggerPersonality,
         scannerPluginMode: ScannerPluginMode,
         sledIdentity: SledIdentity,
     ) {
+        // Runs before anything else in this function — see this function's
+        // doc for why: it only needs rfid.Config, which is already usable,
+        // so there is no reason to delay it behind the event-listener
+        // wiring, configureTriggerMode(), or the start/stop trigger pinning
+        // (the one step below that can throw and fail this whole attempt).
+        preventBatchMode(rfid)
+
         rfid.Events.addEventsListener(listener)
         rfid.Events.setHandheldEvent(true)
         rfid.Events.setTagReadEvent(true)
@@ -682,10 +722,13 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         // never throws except a genuine cancellation, so a failure here can
         // never be mistaken for a trigger-mode failure, and
         // configureTriggerMode()'s own logging/connectNote work is already
-        // complete by the time any of this can throw. Everything below this
-        // point runs only after all of the above has actually succeeded —
-        // see the class-level ordering note on this function's doc.
-        preventBatchMode(rfid)
+        // complete by the time any of this can throw. preventBatchMode()
+        // above has already run and completed by this point too, for the
+        // same reason — see this function's doc — so a throw here still
+        // leaves the sled batch-mode-safe even though it fails the rest of
+        // this connect() attempt. Only the barcode imager stand-down below
+        // still depends on everything above having actually succeeded — see
+        // the class-level ordering note on this function's doc.
         // Only when the operator has the physical trigger driving the RFID
         // radio does the barcode imager firing on the same pull actually
         // corrupt anything — with BARCODE personality the imager firing is
@@ -936,12 +979,20 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         return took
     }
 
-    /** Tears down whatever [openVendorConnection] built: removes [listener],
-     *  disconnects, and disposes, best-effort. The one function `connect()`
-     *  (both its "tear down anything stale first" step and its cancellation
-     *  cleanup), `disconnect()`, and [cleanUpAfterFailedConnect] all route
-     *  through, so a test double only has to override this once to observe
-     *  or fake every teardown path. */
+    /** Tears down whatever [openVendorConnection] built: leaves the sled
+     *  batch-mode-safe, removes [listener], disconnects, and disposes,
+     *  best-effort — see [disconnectBlocking]'s doc for the exact order. The
+     *  one function `connect()` (both its "tear down anything stale first"
+     *  step and its cancellation cleanup), `disconnect()`, and
+     *  [cleanUpAfterFailedConnect] all route through, so a test double only
+     *  has to override this once to observe or fake every teardown path —
+     *  and so [disconnectBlocking]'s batch-mode-safe steps run
+     *  unconditionally on every one of them, including the one path
+     *  (`RfidController`'s `endBurst(stopReader = false, ...)` reacting to a
+     *  `DISCONNECTION_EVENT` — see [ZebraRfidReader]'s `eventStatusNotify`
+     *  comment) that never calls `reader.stopInventory()` itself before the
+     *  stale connection is finally torn down here, the next time
+     *  `connect()` runs. */
     protected open fun closeVendorConnection() {
         disconnectBlocking()
     }
@@ -993,9 +1044,101 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         }
     }
 
-    /** Only ever called from inside [runInterruptible]; never suspends itself.
-     *  Leaves `_connection` untouched — see [cleanUpAfterFailedConnect]'s doc. */
+    /** Teardown counterpart to [preventBatchMode], run from the opposite end
+     *  of a connection's life: stops any inventory the sled might still be
+     *  running before its connection goes away. Called first thing in
+     *  [disconnectBlocking], while the connection is still healthy — this
+     *  is the same `Actions.Inventory.stop()` call [stopInventory] makes
+     *  elsewhere in this file, just guarded individually here (via
+     *  [teardownStep] at the call site) so a failure in this one step can
+     *  never stop the rest of teardown from running.
+     *
+     *  **Null safety:** unlike [preventBatchMode], which only ever runs
+     *  against a freshly-connected, guaranteed non-null `RFIDReader`, this
+     *  runs on every teardown path — including ones where `reader` was
+     *  never fully set up (e.g. cleanup after a failed connect) — so it
+     *  reads the nullable `reader` field directly through a null-safe `?.`
+     *  chain rather than taking a non-null parameter.
+     *
+     *  `InterruptedException` is rethrown rather than logged, exactly like
+     *  every other vendor call site in this file: it is a real cancellation
+     *  (`disconnectBlocking()` runs inside [runInterruptible]), not a
+     *  teardown failure, and must not be swallowed as if it were one — the
+     *  enclosing [teardownStep] is what actually catches it and restores
+     *  the thread's interrupt status so the cancellation still propagates
+     *  once [disconnectBlocking] returns. */
+    private fun stopInventoryForTeardown() {
+        try {
+            reader?.Actions?.Inventory?.stop()
+        } catch (interrupt: InterruptedException) {
+            throw interrupt
+        } catch (e: Exception) {
+            Log.w(TAG, "Teardown: stopping the inventory before disconnect threw; continuing teardown anyway.", e)
+        } catch (e: LinkageError) {
+            Log.w(TAG, "Teardown: stopping the inventory before disconnect threw; continuing teardown anyway.", e)
+        }
+    }
+
+    /** [stopInventoryForTeardown]'s sibling: reads the current batch mode
+     *  via `reader?.Config` and, if it is anything other than
+     *  [BATCH_MODE.DISABLE], turns it off and persists the change — the
+     *  exact sequence [preventBatchMode] already uses on the way *in* to a
+     *  connection, reused here rather than reinvented (steals its
+     *  structure and logging shape on purpose). Called right after
+     *  [stopInventoryForTeardown] in [disconnectBlocking], guarded the same
+     *  way (via [teardownStep] at the call site, individually — a failure
+     *  here must not stop the rest of teardown, and must not be blamed on
+     *  [stopInventoryForTeardown] or vice versa).
+     *
+     *  Logs the before value unconditionally (that is the evidence this
+     *  step actually ran on hardware) and the after value only once a
+     *  change was actually made, under a distinctive, greppable
+     *  `"Teardown: "` prefix — parallel to [preventBatchMode]'s own
+     *  `"Batch-mode prevention: "` prefix and [purgeAndDisableBatchMode]'s
+     *  `"Batch-mode recovery: "` prefix, so all three are easy to tell
+     *  apart in a device log (`adb logcat -s ZebraRfidReader`) while still
+     *  reading naturally alongside them.
+     *
+     *  Same null-safety and `InterruptedException`-rethrown-first,
+     *  `Exception`/`LinkageError`-logged-and-swallowed idiom as
+     *  [stopInventoryForTeardown] — see that function's doc for why both
+     *  matter here. */
+    private fun disableBatchModeForTeardown() {
+        try {
+            val config = reader?.Config ?: return
+            val before = config.getBatchModeConfig()
+            Log.w(TAG, "Teardown: batch mode before disconnect is $before.")
+            if (before == BATCH_MODE.DISABLE) return
+            config.setBatchMode(BATCH_MODE.DISABLE)
+            config.saveConfig()
+            val after = config.getBatchModeConfig()
+            Log.w(TAG, "Teardown: batch mode was $before, now disabled and saved before disconnect (now reads $after).")
+        } catch (interrupt: InterruptedException) {
+            throw interrupt
+        } catch (e: Exception) {
+            Log.w(TAG, "Teardown: reading/setting/saving batch mode threw; leaving it as-is.", e)
+        } catch (e: LinkageError) {
+            Log.w(TAG, "Teardown: reading/setting/saving batch mode threw; leaving it as-is.", e)
+        }
+    }
+
+    /** Only ever called from inside [runInterruptible]; never suspends
+     *  itself. Leaves `_connection` untouched — see
+     *  [cleanUpAfterFailedConnect]'s doc.
+     *
+     *  Runs [stopInventoryForTeardown] and [disableBatchModeForTeardown]
+     *  first, ahead of everything else — while the connection is still
+     *  healthy, before `reader?.disconnect()` below makes any further
+     *  vendor call meaningless — so a sled that completes one healthy
+     *  session with this app is never left armed to fail its next
+     *  `connect()` with `RFID_BATCHMODE_IN_PROGRESS`; see those two
+     *  functions' docs for the detail. Each is wrapped in its own
+     *  [teardownStep] call, exactly like the four pre-existing steps below,
+     *  so a failure in either one — or in any of the four — can never stop
+     *  the rest of teardown from running. */
     private fun disconnectBlocking() {
+        teardownStep { stopInventoryForTeardown() }
+        teardownStep { disableBatchModeForTeardown() }
         // Runs before the RFID teardown below, not after: ZebraBarcodeEngine
         // re-enables the imager itself (see its tearDown() doc for why),
         // and there is no ordering reason to make that wait on the RFID
@@ -1361,16 +1504,28 @@ internal fun combineConnectNotes(existing: String?, additional: String): String 
 
 /** The message [ZebraRfidReader]'s batch-mode recovery surfaces to the
  *  operator once every avenue it knows (`PostConnectReaderUpdate()`, then
- *  `reconnect()`) has failed to leave the reader usable. This is the honest
- *  end state, not a placeholder: this app has tried everything its vendor
- *  SDK's public surface offers, so the message names the one remedy known
- *  to actually work — Zebra's own 123RFID Mobile app connecting to the sled
- *  and clearing it — instead of inviting another retry that would just fail
- *  the same way. */
+ *  `reconnect()`, then a bare second `connect()`) has failed to leave the
+ *  reader usable. This is the honest end state, not a placeholder: this app
+ *  has tried everything its vendor SDK's public surface offers, so the
+ *  message names the one remedy known to actually work — Zebra's own
+ *  123RFID Mobile app connecting to the sled and clearing it — instead of
+ *  inviting another retry that would just fail the same way.
+ *
+ *  Also tells the operator two things a plain "couldn't clear it" sentence
+ *  doesn't: that this should be a one-time fix, not a routine step to
+ *  expect again, and that this app now prevents the sled from returning to
+ *  this state once it has completed a single healthy session with it — see
+ *  [preventBatchMode] (made more resilient by [configurePostConnectSetup]'s
+ *  reordering) and [disconnectBlocking]'s teardown-side counterpart. Both
+ *  are true regardless of why this particular sled ended up batching (this
+ *  app's own earlier teardown, or some other source such as a prior
+ *  123RFID Mobile session), so the message states them unconditionally. */
 internal const val BATCH_MODE_UNRECOVERABLE_MESSAGE =
     "This reader is holding tags stored during an earlier offline session, and this app couldn't clear " +
         "them. Open Zebra's 123RFID Mobile app and connect to the sled there — it can clear the stored " +
-        "batch. Once that's done, reconnect here and the sled will work normally."
+        "batch; once that's done, reconnect here. This should only be a one-time fix: once this app " +
+        "completes one healthy connection with this sled, it turns batch mode off and keeps it off on " +
+        "every disconnect, so the sled should not return to this state on its own again."
 
 /** Thrown by [ZebraRfidReader.recoverFromBatchMode] when neither
  *  `PostConnectReaderUpdate()` nor `reconnect()` leaves the reader usable.

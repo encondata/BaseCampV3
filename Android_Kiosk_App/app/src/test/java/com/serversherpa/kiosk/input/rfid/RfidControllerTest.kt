@@ -251,6 +251,81 @@ class RfidControllerTest {
         assertTrue("nothing was open, so nothing should have been emitted", bursts.isEmpty())
     }
 
+    /**
+     * Wraps a real `FakeRfidReader`, delegating everything except
+     * `stopInventory()`/`disconnect()`, which each append their own tag to
+     * [callOrder] before delegating. A bare `assertEquals(false,
+     * reader.inventoryRunning)` after a disconnect proves nothing about
+     * *order* — `FakeRfidReader.disconnect()` unconditionally clears
+     * `inventoryRunning` itself (see its own comment: "a sled that has just
+     * dropped no longer has an inventory to stop... this is a harmless
+     * no-op"), so that assertion would pass even if `disconnect()` ran
+     * before `stopInventory()`. This class exists so a test can tell the
+     * two orderings apart.
+     */
+    private class OrderRecordingReader(private val inner: FakeRfidReader) : RfidReader {
+        override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val connectNote: StateFlow<String?> get() = inner.connectNote
+        override val tags: Flow<String> get() = inner.tags
+        override val triggers: Flow<TriggerEvent> get() = inner.triggers
+
+        /** The order `stopInventory()` and `disconnect()` were actually
+         *  called in — what this class exists to prove. */
+        val callOrder = CopyOnWriteArrayList<String>()
+
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
+            inner.connect(triggerPersonality, scannerPluginMode)
+        override suspend fun disconnect() {
+            callOrder += "disconnect"
+            inner.disconnect()
+        }
+        override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
+        override suspend fun startInventory() = inner.startInventory()
+        override suspend fun stopInventory(): Result<Unit> {
+            callOrder += "stopInventory"
+            return inner.stopInventory()
+        }
+        override suspend fun regions() = inner.regions()
+        override suspend fun setRegion(code: String, hopping: Boolean?) = inner.setRegion(code, hopping)
+    }
+
+    /**
+     * Regression test for the guarantee this task's `ZebraRfidReader.kt`
+     * teardown fix leans on: `RfidController` itself already stops the
+     * inventory before disconnecting the reader —
+     * `disconnectNowImpl()` calls `endBurst(stopReader = true, queue =
+     * true)`, which calls `reader.stopInventory()`, before
+     * `disconnectWithTimeout()`, which calls `reader.disconnect()`.
+     * `ZebraRfidReader.disconnectBlocking()`'s own stop-inventory-then-
+     * disable-batch-mode sequence is the second, independent line of
+     * defense, for the paths that don't go through this controller at all
+     * (a stale connection `connect()` tears down, or the
+     * `DISCONNECTION_EVENT` path that calls `endBurst(stopReader = false,
+     * ...)` because the reader is already gone — see that class's doc).
+     * This test locks in the guarantee the controller side already
+     * provides, so a future change here can't silently reorder it; it does
+     * not, and should not, need any change to `RfidController.kt` to pass.
+     * Same burst-open setup as [disconnectNowQueuesWhatWasReadAndStopsTheReader].
+     */
+    @Test fun disconnectNowStopsInventoryBeforeDisconnectingTheReader() = runTest {
+        val inner = FakeRfidReader()
+        val recorder = OrderRecordingReader(inner)
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+        val controller = RfidController(recorder, settings, backgroundScope)
+        controller.start(); controller.arm(); settle()
+        controller.connectNow(); settle()
+        inner.emitTrigger(TriggerEvent.PRESSED); inner.emitTag("100700"); settle()
+
+        controller.disconnectNow(); settle()
+
+        assertEquals(
+            "stopInventory() must run before disconnect() so the sled is never left running an " +
+                "inventory across a disconnect",
+            listOf("stopInventory", "disconnect"),
+            recorder.callOrder,
+        )
+    }
+
     /** Exercises `pressedAtMs`/`heldMs` end to end: a quick click latches a
      *  HOLD_OR_LATCH read instead of stopping it, and a later press (not a
      *  release) is what ends it. An implementation that always passed

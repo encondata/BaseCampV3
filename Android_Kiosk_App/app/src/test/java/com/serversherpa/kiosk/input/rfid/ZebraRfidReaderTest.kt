@@ -295,6 +295,14 @@ class ZebraRfidReaderTest {
             "must name the actual remedy, not just say it failed",
             message!!.contains("123RFID Mobile"),
         )
+        assertTrue(
+            "must say this should be a one-time fix, not a routine step to expect again",
+            message.contains("one-time"),
+        )
+        assertTrue(
+            "must say the app now prevents the sled from returning to this state on its own",
+            message.contains("should not return to this state"),
+        )
         assertTrue(message.endsWith("."))
     }
 
