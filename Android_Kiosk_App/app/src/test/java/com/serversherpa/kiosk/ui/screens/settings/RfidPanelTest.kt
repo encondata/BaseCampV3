@@ -28,6 +28,8 @@ import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.RfidTriggerMode
+import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
+import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.settings.SETTINGS_TABS
 import com.serversherpa.kiosk.core.settings.SettingsTabId
@@ -98,6 +100,22 @@ class RfidPanelTest {
         assertEquals(RfidTriggerMode.TOGGLE, runBlocking { c.prefs.rfid.first() }.triggerMode)
     }
 
+    @Test fun pickingATriggerPersonalityWritesIt() {
+        val c = testContainer()
+        compose.setRfidPanelContent(c)
+        compose.onNodeWithText("Barcode").performScrollTo().performClick()
+        compose.waitForIdle()
+        assertEquals(RfidTriggerPersonality.BARCODE, runBlocking { c.prefs.rfid.first() }.triggerPersonality)
+    }
+
+    @Test fun pickingAScannerPluginModeWritesIt() {
+        val c = testContainer()
+        compose.setRfidPanelContent(c)
+        compose.onNodeWithText("Yes").performScrollTo().performClick()
+        compose.waitForIdle()
+        assertEquals(ScannerPluginMode.ON, runBlocking { c.prefs.rfid.first() }.scannerPluginMode)
+    }
+
     @Test fun restoreDefaultsPutsEverythingBack() {
         val c = testContainer()
         runBlocking { c.prefs.setRfid(com.serversherpa.kiosk.core.rfid.RfidSettings(enabled = true, powerDbm = 9)) }
@@ -133,7 +151,7 @@ class RfidPanelTest {
          *  that should resolve immediately. */
         var connectGate: CompletableDeferred<Unit>? = null
 
-        override suspend fun connect(): Result<Unit> {
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode): Result<Unit> {
             inner.setConnection(RfidConnection.Connecting)
             connectGate?.await()
             return connectResult

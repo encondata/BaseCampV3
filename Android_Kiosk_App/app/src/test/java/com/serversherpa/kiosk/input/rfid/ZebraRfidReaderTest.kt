@@ -2,6 +2,8 @@ package com.serversherpa.kiosk.input.rfid
 
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.core.rfid.RfidConnection
+import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
+import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -32,7 +34,7 @@ class ZebraRfidReaderTest {
 
     @Test fun connectingWithNoReaderPresentFailsWithSomethingReadable() = runTest {
         val r = reader(backgroundScope)
-        val result = r.connect()
+        val result = r.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
         assertTrue("connect must not throw, it must report", result.isFailure)
         val state = r.connection.value
         assertTrue("expected a Failed state, got $state", state is RfidConnection.Failed)
@@ -78,7 +80,7 @@ class ZebraRfidReaderTest {
 
         override fun hasOpenVendorConnection(): Boolean = attached
 
-        override fun openVendorConnection(): String {
+        override fun openVendorConnection(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode): String {
             openCalls++
             attached = true
             onOpen()
@@ -100,7 +102,7 @@ class ZebraRfidReaderTest {
         // = true) but before openVendorConnection() has returned.
         val r = fakeReader(backgroundScope) { throw CancellationException("simulated timeout") }
 
-        val thrown = runCatching { r.connect() }.exceptionOrNull()
+        val thrown = runCatching { r.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO) }.exceptionOrNull()
         assertTrue(
             "connect() must rethrow the cancellation rather than swallow it, got $thrown",
             thrown is CancellationException,
@@ -120,7 +122,7 @@ class ZebraRfidReaderTest {
     @Test fun aConnectFollowingADisconnectionEventTearsDownThePreviousReaderFirst() = runTest {
         val r = fakeReader(backgroundScope)
 
-        val first = r.connect()
+        val first = r.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
         assertTrue(first.isSuccess)
         assertEquals(1, r.openCalls)
         assertEquals(0, r.closeCalls)
@@ -130,7 +132,7 @@ class ZebraRfidReaderTest {
         // attached here, exactly like the real class after that event.
         assertTrue(r.attached)
 
-        val second = r.connect()
+        val second = r.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
         assertTrue(second.isSuccess)
         assertEquals(
             "connect() must build a new reader after tearing the old one down",
@@ -298,7 +300,7 @@ class ZebraRfidReaderTest {
         // path openVendorConnection() itself cannot swallow or retry.
         val r = fakeReaderThatThrows(backgroundScope, BatchModeUnrecoverableException())
 
-        val result = r.connect()
+        val result = r.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
         assertTrue("connect must not throw, it must report", result.isFailure)
         assertTrue(
             "must surface as the exact exception recoverFromBatchMode throws",
@@ -312,28 +314,36 @@ class ZebraRfidReaderTest {
 
     // ── trigger-mode setup (barcode-vs-RFID personality) ──
     //
-    // The sequence itself — calling the real `Config.setTriggerMode()`/
-    // `RFIDReader.switchMode()` against a real reader that is actually
-    // running its barcode engine — cannot be exercised here: there is no
-    // sled under Robolectric, `setTriggerMode`'s boolean result depends on
-    // real vendor/firmware state, and `ZebraRfidReader.configureTriggerMode`
-    // takes a real `RFIDReader`, which can't be constructed or faked from a
-    // test (see the class doc's note on why `openVendorConnection`/
-    // `closeVendorConnection` are the seam instead). What *can* be proven
-    // without hardware: the pure ordering logic behind which
-    // `updateScannerPlugin` flag is tried first, and the note-combining
-    // logic and note text that reach the operator when every avenue fails.
+    // The sequence itself — calling the real `Config.setTriggerMode()`
+    // against a real reader that is actually running its barcode engine —
+    // cannot be exercised here: there is no sled under Robolectric,
+    // `setTriggerMode`'s boolean result depends on real vendor/firmware
+    // state, and `ZebraRfidReader.configureTriggerMode` takes a real
+    // `RFIDReader`, which can't be constructed or faked from a test (see the
+    // class doc's note on why `openVendorConnection`/`closeVendorConnection`
+    // are the seam instead). What *can* be proven without hardware: the pure
+    // resolution of `ScannerPluginMode.AUTO` into a concrete
+    // `updateScannerPlugin` flag given whether DataWedge is present, the
+    // note-combining logic, and the operator-facing note text
+    // `configureTriggerMode` leaves behind for both an accepted and a
+    // refused combination.
 
-    @Test fun triggerModePluginAttemptsTriesTheDataWedgePredictedFlagFirst() {
-        assertEquals(
-            "with DataWedge present, true (matches the host) must be tried before false",
-            listOf(true, false),
-            triggerModePluginAttempts(dataWedgePresent = true),
+    @Test fun resolveScannerPluginFlagFollowsDataWedgePresenceOnlyWhenAutomatic() {
+        assertTrue(
+            "AUTO with DataWedge present must resolve to true",
+            resolveScannerPluginFlag(ScannerPluginMode.AUTO, dataWedgePresent = true),
         )
-        assertEquals(
-            "with DataWedge absent, false (matches the host) must be tried before true",
-            listOf(false, true),
-            triggerModePluginAttempts(dataWedgePresent = false),
+        assertFalse(
+            "AUTO with DataWedge absent must resolve to false",
+            resolveScannerPluginFlag(ScannerPluginMode.AUTO, dataWedgePresent = false),
+        )
+        assertTrue(
+            "ON must resolve to true regardless of DataWedge",
+            resolveScannerPluginFlag(ScannerPluginMode.ON, dataWedgePresent = false),
+        )
+        assertFalse(
+            "OFF must resolve to false regardless of DataWedge",
+            resolveScannerPluginFlag(ScannerPluginMode.OFF, dataWedgePresent = true),
         )
     }
 
@@ -347,9 +357,16 @@ class ZebraRfidReaderTest {
         assertEquals("only note.", combineConnectNotes("   ", "only note."))
     }
 
-    @Test fun triggerModeStillBarcodeNoteIsAnHonestOperatorFacingSentence() {
-        val message = ZebraRfidReader.TRIGGER_MODE_STILL_BARCODE_NOTE
-        assertTrue("must say what mode it's stuck in", message.contains("barcode"))
+    @Test fun triggerModeOutcomeNoteNamesTheCombinationWhenAccepted() {
+        val message = triggerModeOutcomeNote(RfidTriggerPersonality.RFID, updateScannerPlugin = true, accepted = true)
+        assertTrue("must say which personality took", message.contains("RFID"))
+        assertTrue("must say the plugin flag used", message.contains("on"))
+        assertTrue(message.endsWith("."))
+    }
+
+    @Test fun triggerModeOutcomeNoteNamesTheCombinationWhenRefused() {
+        val message = triggerModeOutcomeNote(RfidTriggerPersonality.BARCODE, updateScannerPlugin = false, accepted = false)
+        assertTrue("must say what mode was being attempted", message.contains("barcode"))
         assertTrue("must say the practical consequence", message.contains("trigger"))
         assertTrue(message.endsWith("."))
     }
@@ -361,7 +378,8 @@ class ZebraRfidReaderTest {
     ) : ZebraRfidReader(context, scope) {
         override fun hasOpenVendorConnection(): Boolean = false
 
-        override fun openVendorConnection(): String = throw failure
+        override fun openVendorConnection(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode): String =
+            throw failure
 
         override fun closeVendorConnection() = Unit
     }

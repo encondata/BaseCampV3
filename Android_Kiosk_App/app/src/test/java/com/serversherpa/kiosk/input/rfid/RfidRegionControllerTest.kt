@@ -5,6 +5,8 @@ import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidRegion
 import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSettings
+import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
+import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -107,7 +109,8 @@ class RfidRegionControllerTest {
          *  return. */
         val proceedRegion = CompletableDeferred<Unit>()
 
-        override suspend fun connect() = inner.connect()
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
+            inner.connect(triggerPersonality, scannerPluginMode)
         override suspend fun disconnect() = inner.disconnect()
         override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
         override suspend fun startInventory() = inner.startInventory()

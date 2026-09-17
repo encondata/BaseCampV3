@@ -3,6 +3,8 @@ package com.serversherpa.kiosk.input.rfid
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSettings
+import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
+import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,7 +50,12 @@ class FakeRfidReader(name: String = "Fake RFD40") : RfidReader {
     var connectResult: Result<Unit> = Result.success(Unit)
     var applyResult: Result<Unit> = Result.success(Unit)
 
-    override suspend fun connect(): Result<Unit> {
+    // This fake has no vendor trigger to actually flip, so triggerPersonality/
+    // scannerPluginMode are accepted (to satisfy the interface, which every
+    // caller — including production code — must pass) but not otherwise
+    // acted on; only ZebraRfidReader has real trigger-mode behavior to test,
+    // and only on hardware (see its class doc).
+    override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode): Result<Unit> {
         connectCalls++
         inventoryRunning = false
         // Mirrors ZebraRfidReader.connect(), which clears its own connectNote

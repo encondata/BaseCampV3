@@ -3,6 +3,8 @@ package com.serversherpa.kiosk.input.rfid
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidRegions
 import com.serversherpa.kiosk.core.rfid.RfidSettings
+import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
+import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,7 +30,16 @@ interface RfidReader {
     val tags: Flow<String>
     val triggers: Flow<TriggerEvent>
 
-    suspend fun connect(): Result<Unit>
+    /** Connect to the reader. [triggerPersonality] and [scannerPluginMode] are
+     *  `RfidSettings`' two connect-time-only knobs (see that class's doc):
+     *  unlike every other field, [apply] never reads them — a real sled only
+     *  lets its trigger personality and scanner-plugin flag be set while it
+     *  is dialing in, not on a live settings push, so `RfidController` reads
+     *  them off its own current settings right before calling this rather
+     *  than folding them into [apply]'s push (see `RfidController`'s
+     *  settings collector, and `ZebraRfidReader.configureTriggerMode` for
+     *  how the Zebra implementation actually applies them). */
+    suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode): Result<Unit>
     suspend fun disconnect()
     suspend fun apply(settings: RfidSettings): Result<Unit>
     suspend fun startInventory(): Result<Unit>

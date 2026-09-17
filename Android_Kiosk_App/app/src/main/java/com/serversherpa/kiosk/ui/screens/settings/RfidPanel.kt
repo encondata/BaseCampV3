@@ -37,6 +37,8 @@ import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidSession
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.RfidTriggerMode
+import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
+import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
 import com.serversherpa.kiosk.core.rfid.SledBeeper
 import com.serversherpa.kiosk.core.rfid.connectionLine
 import com.serversherpa.kiosk.input.rfid.RfidPermissions
@@ -169,6 +171,25 @@ fun RfidPanel() {
                         }
                     })
                 }
+            }
+        }
+        // These two are about the sled's physical trigger personality — a
+        // hardware-diagnostic pair, not an ordinary radio setting — so they
+        // sit right after the connection row rather than among the
+        // session/power/beeper settings below. Neither reaches the reader
+        // live: both are excluded from RfidController's settings push (see
+        // its settings collector) and are only read at connect time (see
+        // ZebraRfidReader.configureTriggerMode), which is why their hints —
+        // not this row — say so, rather than the rows pretending to apply
+        // immediately the way the Switch-backed rows below actually do.
+        SettingsRow("Trigger drives", s.triggerPersonality.hint) {
+            Segmented(RfidTriggerPersonality.entries.map { it.wire to it.label }, s.triggerPersonality.wire) { w ->
+                RfidTriggerPersonality.fromWire(w)?.let { save(s.copy(triggerPersonality = it)) }
+            }
+        }
+        SettingsRow("Scanner plugin on connect", s.scannerPluginMode.hint) {
+            Segmented(ScannerPluginMode.entries.map { it.wire to it.label }, s.scannerPluginMode.wire) { w ->
+                ScannerPluginMode.fromWire(w)?.let { save(s.copy(scannerPluginMode = it)) }
             }
         }
         SettingsRow("Trigger", s.triggerMode.hint) {

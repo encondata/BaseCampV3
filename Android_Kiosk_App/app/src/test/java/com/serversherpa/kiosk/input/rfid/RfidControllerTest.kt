@@ -5,6 +5,8 @@ import com.serversherpa.kiosk.core.rfid.RepeatSweepPolicy
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.RfidTriggerMode
+import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
+import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CompletableDeferred
@@ -173,7 +175,7 @@ class RfidControllerTest {
      */
     @Test fun aControllerStartedAgainstAnAlreadyConnectedReaderPushesSettingsWithoutWaitingForAChange() = runTest {
         val reader = FakeRfidReader()
-        reader.connect()
+        reader.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
         val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS)
         val controller = RfidController(reader, settings, backgroundScope)
 
@@ -311,7 +313,8 @@ class RfidControllerTest {
         var startInventoryCalls = 0
             private set
 
-        override suspend fun connect() = inner.connect()
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
+            inner.connect(triggerPersonality, scannerPluginMode)
         override suspend fun disconnect() = inner.disconnect()
         override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
         override suspend fun startInventory(): Result<Unit> {
@@ -523,7 +526,8 @@ class RfidControllerTest {
         override val connectNote: StateFlow<String?> get() = inner.connectNote
         override val tags: Flow<String> get() = inner.tags
         override val triggers: Flow<TriggerEvent> get() = inner.triggers
-        override suspend fun connect() = inner.connect()
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
+            inner.connect(triggerPersonality, scannerPluginMode)
         override suspend fun disconnect() = inner.disconnect()
         override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
         override suspend fun startInventory() = inner.startInventory()
@@ -604,7 +608,8 @@ class RfidControllerTest {
         override val connectNote: StateFlow<String?> get() = inner.connectNote
         override val tags: Flow<String> get() = inner.tags
         override val triggers: Flow<TriggerEvent> get() = inner.triggers
-        override suspend fun connect() = inner.connect()
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
+            inner.connect(triggerPersonality, scannerPluginMode)
         override suspend fun disconnect() = inner.disconnect()
         override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
         override suspend fun startInventory(): Result<Unit> {
@@ -695,10 +700,10 @@ class RfidControllerTest {
          *  return. */
         val proceedConnect = CompletableDeferred<Unit>()
 
-        override suspend fun connect(): Result<Unit> {
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode): Result<Unit> {
             connectStarted.complete(Unit)
             proceedConnect.await()
-            return inner.connect()
+            return inner.connect(triggerPersonality, scannerPluginMode)
         }
         override suspend fun disconnect() = inner.disconnect()
         override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
@@ -729,7 +734,8 @@ class RfidControllerTest {
          *  return. */
         val proceedApply = CompletableDeferred<Unit>()
 
-        override suspend fun connect() = inner.connect()
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
+            inner.connect(triggerPersonality, scannerPluginMode)
         override suspend fun disconnect() = inner.disconnect()
         override suspend fun apply(settings: RfidSettings): Result<Unit> {
             applyStarted.complete(Unit)
@@ -1316,6 +1322,45 @@ class RfidControllerTest {
         r.settings.value = r.settings.value.copy(region = "ETSI"); settle()
         assertEquals(
             "writing only `region` must not push a new settings block",
+            appliedAfterConnect,
+            r.reader.applied,
+        )
+
+        r.settings.value = r.settings.value.copy(powerDbm = 12); settle()
+        assertEquals(
+            "a real settings change must still push",
+            12,
+            r.reader.applied?.powerDbm,
+        )
+    }
+
+    /**
+     * The trigger-toggle brief's hard requirement, mirroring the `enabled`/
+     * `region` exclusions above: `triggerPersonality`/`scannerPluginMode` are
+     * applied only at connect time — [RfidController.connectWithTimeout]
+     * reads them fresh off `current` right before every `reader.connect()`
+     * — never through `apply()`, which never reads either field. Without
+     * excluding them from the settings-collector's diff the same way
+     * `enabled`/`region` already are, flipping either row on the RFID tab
+     * would also fire a full eight-round-trip settings push for nothing.
+     */
+    @Test fun togglingOnlyTriggerPersonalityOrScannerPluginModeDoesNotPushSettingsToTheReader() = runTest {
+        val r = Rig(backgroundScope)
+        r.controller.start(); settle()
+        r.controller.connectNow(); settle()
+        val appliedAfterConnect = r.reader.applied
+        assertEquals(27, appliedAfterConnect?.powerDbm)
+
+        r.settings.value = r.settings.value.copy(triggerPersonality = RfidTriggerPersonality.BARCODE); settle()
+        assertEquals(
+            "flipping only `triggerPersonality` must not push a new settings block",
+            appliedAfterConnect,
+            r.reader.applied,
+        )
+
+        r.settings.value = r.settings.value.copy(scannerPluginMode = ScannerPluginMode.ON); settle()
+        assertEquals(
+            "flipping only `scannerPluginMode` must not push a new settings block",
             appliedAfterConnect,
             r.reader.applied,
         )
