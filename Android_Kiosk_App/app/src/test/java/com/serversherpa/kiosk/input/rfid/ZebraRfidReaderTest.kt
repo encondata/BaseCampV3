@@ -144,4 +144,111 @@ class ZebraRfidReaderTest {
         )
         assertTrue("the new reader is live", r.attached)
     }
+
+    // ── connect-failure message building ──
+    //
+    // `OperationFailureException`/`InvalidUsageException` can't be
+    // constructed here — both come from `com.zebra.*`, and
+    // `OperationFailureException`'s constructor is package-private outside
+    // that package — so these exercise the pure formatting functions
+    // `ZebraRfidReader.kt` pulls the real `readable(Throwable)` logic out
+    // into: [operationFailureMessage], [invalidUsageMessage], and
+    // [genericMessage] take the already-unpacked `String?` values
+    // (`getResults()?.toString()`, `getStatusDescription()`, `getInfo()`,
+    // `getVendorMessage()`, `e.message`) rather than the vendor exception
+    // types themselves. What is NOT covered by these tests: that `readable`
+    // actually calls `getResults()`/`getStatusDescription()`/etc. correctly
+    // on a real `OperationFailureException`/`InvalidUsageException`, and
+    // that the `Log.w(...)` call fires with the right arguments — neither
+    // is exercisable without a constructible vendor exception or a real
+    // device.
+
+    @Test fun regionNotConfiguredGetsItsOwnActionableSentence() {
+        val message = operationFailureMessage(
+            resultsName = "RFID_READER_REGION_NOT_CONFIGURED",
+            statusDescription = "some status text that must not win",
+            vendorMessage = "some vendor text that must not win",
+        )
+        assertTrue(message.contains("RFID_READER_REGION_NOT_CONFIGURED"))
+        assertTrue("must tell the operator where to fix it", message.contains("Admin tab"))
+        assertTrue("must not fall through to the generic detail path", !message.contains("must not win"))
+        assertTrue(message.endsWith("."))
+    }
+
+    @Test fun operationFailurePrefersResultsAndStatusDescriptionTogether() {
+        val message = operationFailureMessage(
+            resultsName = "RFID_COMM_NO_CONNECTION",
+            statusDescription = "Failed to establish secure connection",
+            vendorMessage = "some vendor text that must not win",
+        )
+        assertEquals(
+            "Couldn't connect to the reader (RFID_COMM_NO_CONNECTION: Failed to establish secure connection).",
+            message,
+        )
+    }
+
+    @Test fun operationFailureFallsBackToVendorMessageWhenNoStatusDescription() {
+        val message = operationFailureMessage(
+            resultsName = "RFID_API_COMMAND_TIMEOUT",
+            statusDescription = "   ",
+            vendorMessage = "timed out waiting for the radio",
+        )
+        assertEquals(
+            "Couldn't connect to the reader (RFID_API_COMMAND_TIMEOUT: timed out waiting for the radio).",
+            message,
+        )
+    }
+
+    @Test fun operationFailureWithOnlyAResultsNameStillNamesIt() {
+        val message = operationFailureMessage(
+            resultsName = "RFID_RECONNECT_FAILED",
+            statusDescription = null,
+            vendorMessage = null,
+        )
+        assertEquals("Couldn't connect to the reader (RFID_RECONNECT_FAILED).", message)
+    }
+
+    @Test fun operationFailureWithOnlyDetailAndNoResultsNameStillReports() {
+        val message = operationFailureMessage(
+            resultsName = null,
+            statusDescription = "radio busy",
+            vendorMessage = null,
+        )
+        assertEquals("Couldn't connect to the reader (radio busy).", message)
+    }
+
+    @Test fun operationFailureWithNothingAtAllStillEndsInASentence() {
+        val message = operationFailureMessage(resultsName = null, statusDescription = null, vendorMessage = null)
+        assertEquals("Couldn't connect to the reader.", message)
+    }
+
+    @Test fun invalidUsagePrefersInfoOverVendorMessage() {
+        val message = invalidUsageMessage(info = "reader not ready", vendorMessage = "must not win")
+        assertEquals("Couldn't connect to the reader (reader not ready).", message)
+    }
+
+    @Test fun invalidUsageFallsBackToVendorMessageWhenInfoIsBlank() {
+        val message = invalidUsageMessage(info = "  ", vendorMessage = "bad state transition")
+        assertEquals("Couldn't connect to the reader (bad state transition).", message)
+    }
+
+    @Test fun invalidUsageWithNothingAtAllStillEndsInASentence() {
+        val message = invalidUsageMessage(info = null, vendorMessage = null)
+        assertEquals("Couldn't connect to the reader.", message)
+    }
+
+    @Test fun genericMessageKeepsAnAlreadyReadableSentenceAsIs() {
+        val message = genericMessage("No RFID reader found. Pair the RFD40 in Android's Bluetooth settings first.")
+        assertEquals("No RFID reader found. Pair the RFD40 in Android's Bluetooth settings first.", message)
+    }
+
+    @Test fun genericMessageWrapsAShortOrUnpunctuatedRawMessage() {
+        assertEquals("Couldn't connect to the reader (bad state).", genericMessage("bad state"))
+    }
+
+    @Test fun genericMessageFallsBackWhenThereIsNoMessageAtAll() {
+        assertEquals("Couldn't connect to the reader.", genericMessage(null))
+        assertEquals("Couldn't connect to the reader.", genericMessage(""))
+        assertEquals("Couldn't connect to the reader.", genericMessage("   "))
+    }
 }

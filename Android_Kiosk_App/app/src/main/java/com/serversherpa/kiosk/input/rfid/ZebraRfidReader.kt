@@ -16,6 +16,8 @@ import com.zebra.rfid.api3.DYNAMIC_POWER_OPTIMIZATION
 import com.zebra.rfid.api3.ENUM_TRANSPORT
 import com.zebra.rfid.api3.ENUM_TRIGGER_MODE
 import com.zebra.rfid.api3.HANDHELD_TRIGGER_EVENT_TYPE
+import com.zebra.rfid.api3.InvalidUsageException
+import com.zebra.rfid.api3.OperationFailureException
 import com.zebra.rfid.api3.RFIDReader
 import com.zebra.rfid.api3.Readers
 import com.zebra.rfid.api3.RegulatoryConfig
@@ -529,10 +531,100 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         }
     }
 
-    /** SDK exceptions carry codes, not sentences. Give the operator a sentence. */
+    /** SDK exceptions carry codes, not sentences — `e.message` alone is empty
+     *  or useless for Zebra's own exception types, which is why the sled
+     *  used to fail with nothing but "Couldn't connect to the reader."
+     *  no matter what actually went wrong. This unpacks what the vendor
+     *  really gives us — `OperationFailureException.getResults()`/
+     *  `getStatusDescription()`/`getVendorMessage()`,
+     *  `InvalidUsageException.getInfo()`/`getVendorMessage()` — logs all of
+     *  it at warning level so a failure is diagnosable over adb (`adb
+     *  logcat -s ZebraRfidReader`) without asking the operator to read the
+     *  phone screen, and turns it into an operator-facing sentence that
+     *  names the specific failure instead of hiding it. Only ever called
+     *  from `connect()`'s failure paths, so logging here already covers
+     *  "whenever a connect fails."
+     *
+     *  The actual formatting is pulled out into [operationFailureMessage]/
+     *  [invalidUsageMessage]/[genericMessage] — plain functions over plain
+     *  values, not the vendor exception types themselves — because
+     *  `OperationFailureException`'s constructor is package-private and
+     *  can't be built from a test in the normal way; those functions are
+     *  what `ZebraRfidReaderTest` can actually exercise. */
     private fun readable(e: Throwable): String {
-        val raw = e.message?.trim().orEmpty()
-        if (raw.endsWith(".") && raw.length > 12) return raw
-        return if (raw.isEmpty()) "Couldn't connect to the reader." else "Couldn't connect to the reader ($raw)."
+        return when (e) {
+            is OperationFailureException -> {
+                val resultsName = e.results?.toString()
+                val statusDescription = e.statusDescription
+                val vendorMessage = e.vendorMessage
+                Log.w(
+                    TAG,
+                    "Connect failed: OperationFailureException results=$resultsName " +
+                        "statusDescription=$statusDescription vendorMessage=$vendorMessage " +
+                        "timeStamp=${e.timeStamp}",
+                    e,
+                )
+                operationFailureMessage(resultsName, statusDescription, vendorMessage)
+            }
+            is InvalidUsageException -> {
+                val info = e.info
+                val vendorMessage = e.vendorMessage
+                Log.w(
+                    TAG,
+                    "Connect failed: InvalidUsageException info=$info vendorMessage=$vendorMessage " +
+                        "timeStamp=${e.timeStamp}",
+                    e,
+                )
+                invalidUsageMessage(info, vendorMessage)
+            }
+            else -> {
+                Log.w(TAG, "Connect failed: ${e.javaClass.name}", e)
+                genericMessage(e.message)
+            }
+        }
     }
 }
+
+/** Builds the operator-facing sentence for an `OperationFailureException`
+ *  from its already-unpacked detail. Pure and free of any `com.zebra.*`
+ *  type, which is what makes it testable without constructing one — see
+ *  [ZebraRfidReader.readable] for where the real exception is unpacked into
+ *  [resultsName] (`getResults()?.toString()`, the `RFIDResults` constant's
+ *  own name — e.g. "RFID_READER_REGION_NOT_CONFIGURED" — the one detail
+ *  precise enough to identify the cause), [statusDescription]
+ *  (`getStatusDescription()`), and [vendorMessage] (`getVendorMessage()`). */
+internal fun operationFailureMessage(
+    resultsName: String?,
+    statusDescription: String?,
+    vendorMessage: String?,
+): String {
+    if (resultsName == "RFID_READER_REGION_NOT_CONFIGURED") {
+        return "The reader hasn't been assigned a regulatory region yet " +
+            "(RFID_READER_REGION_NOT_CONFIGURED). Set the reader's region on the Admin tab, then try again."
+    }
+    val detail = statusDescription.blankToNull() ?: vendorMessage.blankToNull()
+    return when {
+        resultsName.isNullOrBlank() && detail == null -> "Couldn't connect to the reader."
+        resultsName.isNullOrBlank() -> "Couldn't connect to the reader ($detail)."
+        detail == null -> "Couldn't connect to the reader ($resultsName)."
+        else -> "Couldn't connect to the reader ($resultsName: $detail)."
+    }
+}
+
+/** Same idea as [operationFailureMessage] but for `InvalidUsageException`,
+ *  which carries no `RFIDResults` constant — just `getInfo()` and
+ *  `getVendorMessage()`. */
+internal fun invalidUsageMessage(info: String?, vendorMessage: String?): String {
+    val detail = info.blankToNull() ?: vendorMessage.blankToNull()
+    return if (detail == null) "Couldn't connect to the reader." else "Couldn't connect to the reader ($detail)."
+}
+
+/** The pre-existing behavior for every other exception, unchanged: these
+ *  don't come from `com.zebra.*`, so `e.message` is still all there is. */
+internal fun genericMessage(raw: String?): String {
+    val trimmed = raw?.trim().orEmpty()
+    if (trimmed.endsWith(".") && trimmed.length > 12) return trimmed
+    return if (trimmed.isEmpty()) "Couldn't connect to the reader." else "Couldn't connect to the reader ($trimmed)."
+}
+
+private fun String?.blankToNull(): String? = this?.trim()?.takeUnless { it.isEmpty() }
