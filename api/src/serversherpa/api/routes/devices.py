@@ -148,11 +148,18 @@ def _offline_kiosk_clause(now: datetime):
     )
 
 
-def _clear_item(device: Device) -> ClearOfflineKioskItem:
+def _clear_item(device: Device, now: datetime) -> ClearOfflineKioskItem:
+    if device.token_expires_at is None:
+        registration = "unregistered"
+    elif device.token_expires_at < now:
+        registration = "expired"
+    else:
+        # Only reachable for `skipped`: re-registered between preview and
+        # confirm, so the token is valid again.
+        registration = "registered"
     return ClearOfflineKioskItem(
         id=device.id, name=device.name, sub_type=device.sub_type,
-        registration="unregistered" if device.token_expires_at is None else "expired",
-        last_seen_at=device.last_seen_at)
+        registration=registration, last_seen_at=device.last_seen_at)
 
 
 @router.post("/kiosks/clear-offline", response_model=ClearOfflineKiosksOut)
@@ -177,32 +184,35 @@ async def clear_offline_kiosks(
         matches = (await db.execute(
             select(Device).where(_offline_kiosk_clause(now))
             .order_by(Device.name))).scalars().all()
-        return ClearOfflineKiosksOut(dry_run=True,
-                                     kiosks=[_clear_item(d) for d in matches],
-                                     skipped=[])
+        return ClearOfflineKiosksOut(
+            dry_run=True, kiosks=[_clear_item(d, now) for d in matches],
+            skipped=[], not_found=0)
 
     ids = body.ids or []
     if not ids:
-        return ClearOfflineKiosksOut(dry_run=False, kiosks=[], skipped=[])
+        return ClearOfflineKiosksOut(dry_run=False, kiosks=[], skipped=[], not_found=0)
 
     named = (await db.execute(
-        select(Device).where(Device.id.in_(ids)).order_by(Device.name))).scalars().all()
+        select(Device).where(Device.id.in_(ids), Device.device_type == "kiosk")
+        .order_by(Device.name))).scalars().all()
     still_matching = {d.id for d in (await db.execute(
         select(Device).where(Device.id.in_(ids), _offline_kiosk_clause(now)))).scalars()}
 
     deleted, skipped = [], []
     for device in named:
         if device.id not in still_matching:
-            skipped.append(_clear_item(device))
+            skipped.append(_clear_item(device, now))
             continue
-        deleted.append(_clear_item(device))
+        deleted.append(_clear_item(device, now))
         audit(db, actor_id=actor.person.id, entity_type="device",
               entity_id=str(device.id), action="delete",
               changes={"name": device.name, "device_type": device.device_type,
                        "serial": device.serial, "reason": "clear_offline_kiosks"})
         await db.delete(device)
     await db.commit()
-    return ClearOfflineKiosksOut(dry_run=False, kiosks=deleted, skipped=skipped)
+    not_found = len(set(ids) - {d.id for d in named})
+    return ClearOfflineKiosksOut(dry_run=False, kiosks=deleted, skipped=skipped,
+                                 not_found=not_found)
 
 
 @router.get("/{device_id}/leases", response_model=list[DeviceLeaseItem])

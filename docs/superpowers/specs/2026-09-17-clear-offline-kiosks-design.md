@@ -59,14 +59,26 @@ One endpoint, one rule, two modes.
   nothing. This is what fills the confirmation modal.
 - `POST /devices/kiosks/clear-offline` `{"dry_run": false, "ids": [...]}` →
   **re-evaluates every id against the same rule** before deleting, then returns
-  `{"deleted": [...], "skipped": [...]}`.
+  `{"kiosks": [...], "skipped": [...], "not_found": N}`. `kiosks` is what was
+  actually deleted (named to match the dry-run field, since this is the same
+  list before and after confirmation). `not_found` counts ids that matched no
+  kiosk at all — already deleted, the wrong device type, or never existed — so
+  the operator's confirmed count reconciles against
+  `len(kiosks) + len(skipped) + not_found`. `ids` is capped at 500 entries.
+
+Registration state is one of three values: `unregistered` (no token ever issued),
+`expired` (token lapsed before `now`), or `registered` (a valid, future token).
+`registered` only appears in `skipped` — a `kiosks` entry is always unregistered or
+expired by construction — and covers the case where a kiosk re-registers in the
+window between the preview and the confirm; it must not be reported as `expired`.
 
 The re-check is the point, and it buys two things. The endpoint cannot be used to
 delete an arbitrary device id — anything passed in `ids` that does not match the rule
-is skipped, not deleted. And a kiosk that heartbeats in the seconds between preview
-and confirm is **spared**, because by then it no longer matches. The success notice
-reports what actually happened ("Deleted 2 kiosks · 1 skipped, seen just now")
-rather than what was predicted.
+is skipped, not deleted, and the query itself is scoped to `device_type = 'kiosk'`,
+so the endpoint never even describes a non-kiosk device. And a kiosk that heartbeats
+in the seconds between preview and confirm is **spared**, because by then it no
+longer matches. The success notice reports what actually happened ("Deleted 2
+kiosks · 1 skipped, seen just now") rather than what was predicted.
 
 ## Authorization — two gates
 
@@ -109,15 +121,24 @@ The match rule is a pure predicate over (`token_expires_at`, `last_seen_at`, `no
 so its cases are table-driven and cover every row of the table above, including the
 *Expires soon* + stale case that must survive.
 
-Three API tests carry specific weight:
+Several API tests carry specific weight:
 
 - A staff actor **with `scanning_hardware:delete` explicitly granted** still gets
   403. This is the case that silently regresses if someone later decides the rank
   check is redundant and removes it.
 - An id passed in `ids` that does not match the rule is skipped, not deleted — the
-  endpoint is not a general-purpose delete.
+  endpoint is not a general-purpose delete. Survival is asserted by re-querying the
+  database for the row, not by trusting the identity map, which would report a
+  deleted row as present regardless of what actually happened.
 - A kiosk whose `last_seen_at` moves between the dry run and the confirm is spared,
   and reported as skipped.
+- A kiosk whose token is renewed between the dry run and the confirm is spared and
+  reported as skipped with registration `registered`, never `expired`.
+- A non-kiosk id is neither deleted nor described, and counts toward `not_found`.
+- An id matching no device at all counts toward `not_found`.
+- `ids` past its 500-entry cap is rejected with 422.
+- The match uses the database clock even when the application host's clock is
+  skewed — proven by monkeypatching the route module's `datetime.now()`.
 
 Portal tests cover the modal's populated and empty states, and the button's absence
 for an actor below rank 60.

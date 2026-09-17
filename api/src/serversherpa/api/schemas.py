@@ -2479,24 +2479,33 @@ class ClearOfflineKiosksIn(BaseModel):
     names the rows the operator confirmed — every one is re-checked against
     the same rule first, so a kiosk that came back to life is skipped."""
     dry_run: bool = True
-    ids: list[uuid.UUID] | None = None
+    ids: list[uuid.UUID] | None = Field(default=None, max_length=500)
 
 
 class ClearOfflineKioskItem(BaseModel):
     id: uuid.UUID
     name: str
     sub_type: str | None
-    registration: Literal["unregistered", "expired"]
+    # "unregistered": token_expires_at is NULL. "expired": it is in the past.
+    # "registered": it is now valid — only possible in `skipped`, for a
+    # kiosk that re-registered between the preview and the confirm; a
+    # `kiosks` entry is always unregistered or expired by construction.
+    registration: Literal["unregistered", "expired", "registered"]
     last_seen_at: datetime | None
 
 
 class ClearOfflineKiosksOut(BaseModel):
     """`kiosks` is what WOULD be deleted on a dry run and what WAS deleted on
     a confirm. `skipped` is always empty on a dry run; on a confirm it holds
-    ids that no longer match the rule and were therefore left alone."""
+    ids that no longer match the rule and were therefore left alone.
+    `not_found` counts ids from the request that matched no kiosk at all
+    (already deleted, the wrong device type, or never existed), so the
+    operator's confirmed count reconciles against
+    len(kiosks) + len(skipped) + not_found."""
     dry_run: bool
     kiosks: list[ClearOfflineKioskItem]
     skipped: list[ClearOfflineKioskItem]
+    not_found: int = 0
 
 
 # ── kiosk setup ──
