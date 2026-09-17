@@ -251,4 +251,77 @@ class ZebraRfidReaderTest {
         assertEquals("Couldn't connect to the reader.", genericMessage(""))
         assertEquals("Couldn't connect to the reader.", genericMessage("   "))
     }
+
+    // ── batch-mode recovery (second attempt) ──
+    //
+    // The recovery sequence itself — calling the real `PostConnectReaderUpdate()`/
+    // `reconnect()` on a real `RFIDReader` stuck reporting
+    // `RFID_BATCHMODE_IN_PROGRESS` — cannot be exercised here: there is no
+    // sled under Robolectric, and `OperationFailureException`'s constructor
+    // is package-private outside `com.zebra.*` (see the note above). What
+    // *can* be proven without hardware: the pure usability decision
+    // ([batchModeRecoveryUsable]) the recovery logs feed into, and that a
+    // recovery which gives up ([BatchModeUnrecoverableException]) reaches
+    // the operator as the exact honest final message rather than a generic
+    // failure or a crash — that plumbing is real Kotlin code this test can
+    // drive end to end via [FakeVendorZebraRfidReader].
+
+    @Test fun batchModeRecoveryUsableRequiresConnectedAndBothFieldsPresent() {
+        assertTrue(batchModeRecoveryUsable(isConnected = true, actionsPresent = true, configPresent = true))
+        assertFalse(
+            "not connected must never count as usable, even with both fields present",
+            batchModeRecoveryUsable(isConnected = false, actionsPresent = true, configPresent = true),
+        )
+        assertFalse(
+            "a null Actions must never count as usable",
+            batchModeRecoveryUsable(isConnected = true, actionsPresent = false, configPresent = true),
+        )
+        assertFalse(
+            "a null Config must never count as usable",
+            batchModeRecoveryUsable(isConnected = true, actionsPresent = true, configPresent = false),
+        )
+    }
+
+    @Test fun batchModeUnrecoverableCarriesTheHonestFinalMessage() {
+        val message = BatchModeUnrecoverableException().message
+        assertEquals(BATCH_MODE_UNRECOVERABLE_MESSAGE, message)
+        assertTrue(
+            "must name the actual remedy, not just say it failed",
+            message!!.contains("123RFID Mobile"),
+        )
+        assertTrue(message.endsWith("."))
+    }
+
+    @Test fun aBatchModeRecoveryThatExhaustsBothAvenuesReportsTheFinalMessageRatherThanCrashingOrLooping() = runTest {
+        // Simulates recoverFromBatchMode() having tried
+        // PostConnectReaderUpdate() and reconnect() and given up — the one
+        // path openVendorConnection() itself cannot swallow or retry.
+        val r = fakeReaderThatThrows(backgroundScope, BatchModeUnrecoverableException())
+
+        val result = r.connect()
+        assertTrue("connect must not throw, it must report", result.isFailure)
+        assertTrue(
+            "must surface as the exact exception recoverFromBatchMode throws",
+            result.exceptionOrNull() is BatchModeUnrecoverableException,
+        )
+
+        val state = r.connection.value
+        assertTrue("expected a Failed state, got $state", state is RfidConnection.Failed)
+        assertEquals(BATCH_MODE_UNRECOVERABLE_MESSAGE, (state as RfidConnection.Failed).reason)
+    }
+
+    private class ThrowingVendorZebraRfidReader(
+        context: android.content.Context,
+        scope: CoroutineScope,
+        private val failure: Throwable,
+    ) : ZebraRfidReader(context, scope) {
+        override fun hasOpenVendorConnection(): Boolean = false
+
+        override fun openVendorConnection(): String = throw failure
+
+        override fun closeVendorConnection() = Unit
+    }
+
+    private fun fakeReaderThatThrows(scope: CoroutineScope, failure: Throwable) =
+        ThrowingVendorZebraRfidReader(ApplicationProvider.getApplicationContext(), scope, failure)
 }

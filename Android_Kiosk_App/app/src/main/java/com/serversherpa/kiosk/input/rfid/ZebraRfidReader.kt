@@ -268,75 +268,42 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
      *  offline (no host) session refuses to finish `rfid.connect()`: the SDK
      *  throws `OperationFailureException` with
      *  `RFIDResults.RFID_BATCHMODE_IN_PROGRESS` instead. [connectRfid]
-     *  recovers from exactly that, in place, against the same `rfid` this
-     *  function just obtained — purge the stored tags, disable batch mode,
-     *  persist the change — and only falls back to tearing down and building
-     *  a second, fresh connection (via [attemptVendorConnection], called
-     *  again below) if that in-place recovery leaves the connection
-     *  unusable. That second attempt is not itself allowed to recover — see
-     *  [connectRfid]'s doc for why one bounded attempt, never a loop, is the
-     *  whole of the recovery this function performs. */
+     *  recovers from exactly that, against the same `rfid` this function
+     *  just obtained — see [recoverFromBatchMode] for the sequence and why
+     *  it is an unverified hypothesis, not documented Zebra behavior.
+     *  Recovery either leaves this connection usable (`connectRfid` returns
+     *  `true`) or throws [BatchModeUnrecoverableException], which propagates
+     *  straight out of this function to `connect()`'s ordinary failure
+     *  handling. There is deliberately no further fallback attempt here: an
+     *  earlier version of this function tore down and tried one bare, fresh
+     *  `connect()` when in-place recovery failed, but that just repeated
+     *  `RFID_BATCHMODE_IN_PROGRESS` — the batch was never actually cleared,
+     *  because that recovery dereferenced `Actions`/`Config` while they were
+     *  still null and crashed before doing anything (see
+     *  `.superpowers/sdd/batchmode-report.md`) — so a second bare attempt
+     *  had nothing to gain. */
     protected open fun openVendorConnection(): String {
-        val first = attemptVendorConnection(allowBatchModeRecovery = true)
-        val ready = if (first is VendorConnectAttempt.Ready) {
-            first
-        } else {
-            Log.w(
-                TAG,
-                "Batch-mode recovery left no usable connection; tearing down and attempting one fresh " +
-                    "connection (batch mode is now disabled and saved, so this should connect normally).",
-            )
-            closeVendorConnection()
-            val second = attemptVendorConnection(allowBatchModeRecovery = false)
-            // allowBatchModeRecovery = false means connectRfid can only return
-            // a usable connection or throw — it never asks for a second
-            // fallback. See connectRfid's doc: recovery runs at most once.
-            check(second is VendorConnectAttempt.Ready) {
-                "unreachable: a fallback attempt cannot itself request another fallback"
-            }
-            // second.recoveredFromBatchMode is always false: it describes only
-            // what happened on THIS call to connectRfid, and this call ran
-            // with allowBatchModeRecovery = false, so its own plain-success
-            // path (return false) is the only way it reaches Ready. But the
-            // only way execution reaches this else branch at all is that
-            // `first` was NeedsFreshConnection — which connectRfid only
-            // returns after the in-place recovery (purgeTags/setBatchMode/
-            // saveConfig) already ran against the reader. So recovery did
-            // happen in this openVendorConnection() call; it just didn't
-            // leave the *first* connection usable. Force the flag rather than
-            // reading it off `second`, so the operator note and log below
-            // still fire for this path — see the Important #1 fix-review
-            // finding this addresses.
-            second.copy(recoveredFromBatchMode = true)
-        }
-        if (ready.recoveredFromBatchMode) {
+        val result = attemptVendorConnection()
+        if (result.recoveredFromBatchMode) {
             _connectNote.value = BATCH_MODE_RECOVERY_NOTE
-            Log.w(TAG, "Batch-mode recovery complete: connected to \"${ready.readerName}\".")
+            Log.w(TAG, "Batch-mode recovery complete: connected to \"${result.readerName}\".")
         }
-        return ready.readerName
+        return result.readerName
     }
 
-    /** What one call to [attemptVendorConnection] produced. */
-    private sealed class VendorConnectAttempt {
-        /** Connected — either normally, or after [connectRfid] recovered
-         *  in place from a batch-mode reader. */
-        data class Ready(val readerName: String, val recoveredFromBatchMode: Boolean) : VendorConnectAttempt()
+    /** What [attemptVendorConnection] produced: the reader's display name,
+     *  and whether getting there required [connectRfid] to recover from
+     *  batch mode. */
+    private data class VendorConnectResult(val readerName: String, val recoveredFromBatchMode: Boolean)
 
-        /** Batch-mode recovery ran but left the connection unusable. The
-         *  caller must tear down and try again exactly once — see
-         *  [openVendorConnection]. */
-        object NeedsFreshConnection : VendorConnectAttempt()
-    }
-
-    /** One full attempt to build a vendor connection: construct `Readers`,
+    /** The one attempt to build a vendor connection: construct `Readers`,
      *  obtain the one available `RFIDReader`, connect it (via [connectRfid],
-     *  which is where batch-mode recovery happens when
-     *  [allowBatchModeRecovery] is true), and — only once connected — wire up
-     *  [listener] and the physical trigger config. Pulled out of
-     *  [openVendorConnection] so that function can call this twice (the
-     *  initial attempt, and — only for the one allowed fallback — a second,
-     *  fresh one) without duplicating the `Readers`/`RFIDReader` setup. */
-    private fun attemptVendorConnection(allowBatchModeRecovery: Boolean): VendorConnectAttempt {
+     *  which is where batch-mode recovery happens), and — only once
+     *  connected — wire up [listener] and the physical trigger config via
+     *  [configurePostConnectSetup]. Pulled out of [openVendorConnection] so
+     *  that function reads as orchestration rather than mixing in the
+     *  `Readers`/`RFIDReader` setup. */
+    private fun attemptVendorConnection(): VendorConnectResult {
         // Readers registers a broadcast receiver internally with no
         // RECEIVER_EXPORTED/RECEIVER_NOT_EXPORTED flag. Android 14 (API 34)
         // enforces that one of those flags be supplied and throws
@@ -363,76 +330,159 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         // used here rather than a synthetic `device.rfidReader` property.
         val rfid = device.getRFIDReader()
         reader = rfid
-        val recoveredFromBatchMode = connectRfid(rfid, allowBatchModeRecovery)
-            ?: return VendorConnectAttempt.NeedsFreshConnection
+        val recoveredFromBatchMode = connectRfid(rfid)
         configurePostConnectSetup(rfid)
-        return VendorConnectAttempt.Ready(device.name ?: "RFID reader", recoveredFromBatchMode)
+        return VendorConnectResult(device.name ?: "RFID reader", recoveredFromBatchMode)
     }
 
-    /** Calls `rfid.connect()`, recovering in place — at most once — from a
-     *  reader that is holding a batch of stored tags from an earlier offline
-     *  session. Returns `false` if `connect()` just succeeded normally,
-     *  `true` if it succeeded only after recovery, or `null` if recovery ran
-     *  but left the connection unusable (the caller must tear down and try a
-     *  single fresh connection instead — see [openVendorConnection]).
-     *
-     *  Recovery is attempted only when [allowBatchModeRecovery] is true —
-     *  `false` on the one fallback attempt [openVendorConnection] is allowed
-     *  to make, so a second `RFID_BATCHMODE_IN_PROGRESS` (or any other
-     *  connect failure) on that attempt propagates straight out to
-     *  `connect()`'s own failure handling, exactly like any other connect
-     *  failure, rather than looping. */
-    private fun connectRfid(rfid: RFIDReader, allowBatchModeRecovery: Boolean): Boolean? {
+    /** Calls `rfid.connect()`. Returns `false` if it just succeeds normally,
+     *  or `true` if it succeeded only after [recoverFromBatchMode] recovered
+     *  from a reader holding a batch of stored tags from an earlier offline
+     *  session. Any other failure — including a batch-mode recovery that
+     *  exhausted every avenue it knows — propagates straight out, through
+     *  [attemptVendorConnection] and [openVendorConnection], to `connect()`'s
+     *  own failure handling. */
+    private fun connectRfid(rfid: RFIDReader): Boolean {
         try {
             rfid.connect()
             return false
         } catch (e: OperationFailureException) {
-            if (!allowBatchModeRecovery || e.results != RFIDResults.RFID_BATCHMODE_IN_PROGRESS) throw e
+            if (e.results != RFIDResults.RFID_BATCHMODE_IN_PROGRESS) throw e
             Log.w(
                 TAG,
                 "Connect failed with RFID_BATCHMODE_IN_PROGRESS: the reader is holding tags stored during " +
-                    "an earlier offline session. Attempting recovery: purge the stored tags, disable batch " +
-                    "mode, and save the change to the reader.",
+                    "an earlier offline session. connect() throws before populating Actions/Config/Events/" +
+                    "ReaderCapabilities (see the class doc), so those fields are null right now and cannot " +
+                    "be used directly. Attempting recovery via PostConnectReaderUpdate() instead.",
             )
-            val usable = try {
-                // The stored tags carry no move/site context and the kiosk has
-                // nowhere to file them, so they are discarded rather than
-                // retrieved (getBatchedTags() is deliberately not called).
-                rfid.Actions.purgeTags()
-                rfid.Config.setBatchMode(BATCH_MODE.DISABLE)
-                // Persisted, not just set in memory: batch mode is stored in
-                // the reader's own non-volatile config, so without saveConfig()
-                // a power cycle could restore whatever was last saved there
-                // (most likely left on by a prior 123RFID Mobile session) and
-                // reproduce this exact failure the next time the sled is used.
-                rfid.Config.saveConfig()
-                Log.w(TAG, "Batch-mode recovery: stored tags purged, batch mode disabled, saveConfig() ran.")
-                rfid.isConnected()
-            } catch (interrupt: InterruptedException) {
-                // A real cancellation (the 15s timeout in RfidController)
-                // landing mid-recovery, not a recovery failure — must reach
-                // the enclosing `runInterruptible` in connect() so it becomes
-                // a CancellationException there, exactly like every other
-                // vendor call site in this file. Swallowing it here the same
-                // way as an ordinary recovery failure below would defeat that.
-                throw interrupt
-            } catch (recoveryError: Exception) {
-                // The SDK gives no other signal for "is this connection still
-                // usable" than isConnected() — if the recovery calls
-                // themselves throw (anything other than the cancellation
-                // above), that is treated the same as isConnected() reporting
-                // false, not as a reason to keep trying against this same
-                // rfid instance.
-                Log.w(TAG, "Batch-mode recovery's own calls failed; treating the connection as unusable.", recoveryError)
-                false
-            }
-            return if (usable) {
-                Log.w(TAG, "Batch-mode recovery left a usable connection; continuing without a full reconnect.")
-                true
-            } else {
-                null
-            }
+            recoverFromBatchMode(rfid)
+            return true
         }
+    }
+
+    /**
+     * An unverified recovery sequence for a reader stuck reporting
+     * `RFID_BATCHMODE_IN_PROGRESS`, derived from `RFIDReader`'s public
+     * surface (`PostConnectReaderUpdate()`, `reconnect()`, `isConnected()`,
+     * `isCapabilitiesReceived()` — all confirmed present, with the exception
+     * signatures below, via `javap` against the shipped `.aar`), **not from
+     * any Zebra documentation** — nobody on this team has seen Zebra's own
+     * account of what a host is supposed to do here. The hypothesis:
+     * `PostConnectReaderUpdate()` is a method on the reader object itself,
+     * callable even though `Actions`/`Config` are still null, and its name
+     * suggests it finishes whatever setup `connect()` left undone —
+     * including, maybe, populating those fields. Tried first; if it throws,
+     * or leaves the reader still unusable, `reconnect()` is tried once as a
+     * second avenue. If neither works, this throws
+     * [BatchModeUnrecoverableException] and stops — no third avenue, no
+     * loop. [BatchModeUnrecoverableException]'s message is the *supported*
+     * remedy: Zebra's own 123RFID Mobile app is known to be able to connect
+     * to a sled in this state and clear it, which is genuinely useful for
+     * the operator to hear instead of a generic connect failure inviting
+     * another doomed retry.
+     *
+     * Every step is logged at warning level with exactly what the reader
+     * reported — `isConnected()`, `isCapabilitiesReceived()`, and whether
+     * `Actions`/`Config` are null — because that is how this hypothesis gets
+     * checked against real hardware; this logging is as much the point of
+     * this function as the recovery itself. Never dereferences
+     * `Actions`/`Config` without checking them first — that is exactly how
+     * the previous recovery attempt crashed (a `NullPointerException` on
+     * `Actions.purgeTags()`; see `.superpowers/sdd/batchmode-report.md`).
+     */
+    private fun recoverFromBatchMode(rfid: RFIDReader) {
+        if (tryBatchModeRecoveryAvenue("PostConnectReaderUpdate()", rfid) { rfid.PostConnectReaderUpdate() }) return
+        if (tryBatchModeRecoveryAvenue("reconnect()", rfid) { rfid.reconnect() }) return
+        Log.w(
+            TAG,
+            "Batch-mode recovery exhausted both avenues (PostConnectReaderUpdate() and reconnect()); the " +
+                "reader is still unusable. Stopping rather than retrying the same calls forever.",
+        )
+        throw BatchModeUnrecoverableException()
+    }
+
+    /**
+     * Runs one batch-mode recovery avenue: [action] (either
+     * `PostConnectReaderUpdate()` or `reconnect()`, named by [label] for
+     * logging), then checks and logs whether the reader now looks usable
+     * ([logAndCheckUsable]), then — only if it does — purges the stored
+     * tags and disables/persists batch mode ([purgeAndDisableBatchMode]).
+     * Returns `true` only once all of that has actually succeeded. Any
+     * failure at any step — [action] itself throwing, the reader still not
+     * reporting `Actions`/`Config` as populated, or the purge/disable/save
+     * calls throwing — returns `false` so [recoverFromBatchMode] can move on
+     * to the next avenue or give up. `InterruptedException` (a real
+     * cancellation, not a recovery failure) is deliberately excluded from
+     * "failure" and rethrown immediately, exactly like every other vendor
+     * call site in this file.
+     */
+    private fun tryBatchModeRecoveryAvenue(label: String, rfid: RFIDReader, action: () -> Unit): Boolean {
+        try {
+            action()
+        } catch (interrupt: InterruptedException) {
+            throw interrupt
+        } catch (e: Exception) {
+            Log.w(TAG, "Batch-mode recovery: $label threw; treating this avenue as failed.", e)
+            return false
+        }
+        if (!logAndCheckUsable(label, rfid)) return false
+        return try {
+            purgeAndDisableBatchMode(rfid)
+            true
+        } catch (interrupt: InterruptedException) {
+            throw interrupt
+        } catch (e: Exception) {
+            Log.w(TAG, "Batch-mode recovery: $label left the reader looking usable, but purge/disable/save failed.", e)
+            false
+        }
+    }
+
+    /** Logs exactly what [avenue] left behind — `isConnected()`,
+     *  `isCapabilitiesReceived()`, and whether `Actions`/`Config` are null —
+     *  and returns whether that is enough to purge/configure through: per
+     *  the recovery hypothesis, connected with both `Actions` and `Config`
+     *  non-null (see [batchModeRecoveryUsable]). `isCapabilitiesReceived()`
+     *  is logged only; it is not part of the usability decision — this
+     *  whole function exists to learn what the SDK actually does in this
+     *  state, and that field is part of what there is to learn. */
+    private fun logAndCheckUsable(avenue: String, rfid: RFIDReader): Boolean {
+        val connected = rfid.isConnected()
+        val capabilitiesReceived = rfid.isCapabilitiesReceived()
+        val actionsPresent = rfid.Actions != null
+        val configPresent = rfid.Config != null
+        Log.w(
+            TAG,
+            "Batch-mode recovery via $avenue: isConnected()=$connected " +
+                "isCapabilitiesReceived()=$capabilitiesReceived " +
+                "Actions=${if (actionsPresent) "present" else "null"} " +
+                "Config=${if (configPresent) "present" else "null"}",
+        )
+        return batchModeRecoveryUsable(connected, actionsPresent, configPresent)
+    }
+
+    /** Purges the stored tags and turns batch mode off, persisted. Only
+     *  ever called once [logAndCheckUsable] has confirmed `Actions`/`Config`
+     *  are non-null, but re-checks them here rather than trusting that call
+     *  site — never dereference a possibly-null vendor field without
+     *  checking it first, which is exactly how the previous recovery
+     *  attempt crashed (see `.superpowers/sdd/batchmode-report.md`). */
+    private fun purgeAndDisableBatchMode(rfid: RFIDReader) {
+        val actions = rfid.Actions
+        val config = rfid.Config
+        checkNotNull(actions) { "unreachable: caller already confirmed Actions is non-null" }
+        checkNotNull(config) { "unreachable: caller already confirmed Config is non-null" }
+        // The stored tags carry no move/site context and the kiosk has
+        // nowhere to file them, so they are discarded rather than retrieved
+        // (getBatchedTags() is deliberately not called).
+        actions.purgeTags()
+        config.setBatchMode(BATCH_MODE.DISABLE)
+        // Persisted, not just set in memory: batch mode is stored in the
+        // reader's own non-volatile config, so without saveConfig() a power
+        // cycle could restore whatever was last saved there (most likely
+        // left on by a prior 123RFID Mobile session) and reproduce this
+        // exact failure the next time the sled is used.
+        config.saveConfig()
+        Log.w(TAG, "Batch-mode recovery: stored tags purged, batch mode disabled, saveConfig() ran.")
     }
 
     /** The post-connect setup every successful attempt needs, whether it
@@ -719,6 +769,13 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
      *  what `ZebraRfidReaderTest` can actually exercise. */
     private fun readable(e: Throwable): String {
         return when (e) {
+            // BatchModeUnrecoverableException falls through to the `else`
+            // branch below on purpose: its message is already the exact
+            // operator-facing sentence (see BATCH_MODE_UNRECOVERABLE_MESSAGE),
+            // and genericMessage() passes an already-well-formed sentence
+            // through unchanged, so a dedicated branch here would be an
+            // untestable no-op — recoverFromBatchMode() already logs the
+            // step-by-step recovery detail this exception summarizes.
             is OperationFailureException -> {
                 val resultsName = e.results?.toString()
                 val statusDescription = e.statusDescription
@@ -794,3 +851,33 @@ internal fun genericMessage(raw: String?): String {
 }
 
 private fun String?.blankToNull(): String? = this?.trim()?.takeUnless { it.isEmpty() }
+
+/** Pure decision logic behind [ZebraRfidReader]'s batch-mode recovery: is
+ *  the reader connected, with both `Actions` and `Config` populated? Pulled
+ *  out of `logAndCheckUsable` so it is directly testable — unlike the rest
+ *  of the recovery sequence, which calls real vendor methods and so can
+ *  only be proven on hardware (see [ZebraRfidReader.recoverFromBatchMode]'s
+ *  doc). */
+internal fun batchModeRecoveryUsable(isConnected: Boolean, actionsPresent: Boolean, configPresent: Boolean): Boolean =
+    isConnected && actionsPresent && configPresent
+
+/** The message [ZebraRfidReader]'s batch-mode recovery surfaces to the
+ *  operator once every avenue it knows (`PostConnectReaderUpdate()`, then
+ *  `reconnect()`) has failed to leave the reader usable. This is the honest
+ *  end state, not a placeholder: this app has tried everything its vendor
+ *  SDK's public surface offers, so the message names the one remedy known
+ *  to actually work — Zebra's own 123RFID Mobile app connecting to the sled
+ *  and clearing it — instead of inviting another retry that would just fail
+ *  the same way. */
+internal const val BATCH_MODE_UNRECOVERABLE_MESSAGE =
+    "This reader is holding tags stored during an earlier offline session, and this app couldn't clear " +
+        "them. Open Zebra's 123RFID Mobile app and connect to the sled there — it can clear the stored " +
+        "batch. Once that's done, reconnect here and the sled will work normally."
+
+/** Thrown by [ZebraRfidReader.recoverFromBatchMode] when neither
+ *  `PostConnectReaderUpdate()` nor `reconnect()` leaves the reader usable.
+ *  Unlike `OperationFailureException`/`InvalidUsageException`, this is a
+ *  plain Kotlin exception this app defines itself — constructible from a
+ *  test, which is what makes a real end-to-end test of this failure message
+ *  possible without a `com.zebra.*` type (see `ZebraRfidReaderTest`). */
+internal class BatchModeUnrecoverableException : Exception(BATCH_MODE_UNRECOVERABLE_MESSAGE)
