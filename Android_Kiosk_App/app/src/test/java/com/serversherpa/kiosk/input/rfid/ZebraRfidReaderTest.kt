@@ -150,9 +150,13 @@ class ZebraRfidReaderTest {
     // ── connect-failure message building ──
     //
     // `OperationFailureException`/`InvalidUsageException` can't be
-    // constructed here — both come from `com.zebra.*`, and
-    // `OperationFailureException`'s constructor is package-private outside
-    // that package — so these exercise the pure formatting functions
+    // meaningfully constructed here — both come from `com.zebra.*`, and
+    // building one means supplying a real `RFIDResults`/status-code the
+    // vendor SDK itself normally provides, not this app (the 2.0.5.292
+    // `.aar` made `OperationFailureException`'s constructor `public` —
+    // confirmed via `javap`, where 2.0.2.82 had it package-private — but
+    // that alone doesn't give a test anything meaningful to pass it) — so
+    // these exercise the pure formatting functions
     // `ZebraRfidReader.kt` pulls the real `readable(Throwable)` logic out
     // into: [operationFailureMessage], [invalidUsageMessage], and
     // [genericMessage] take the already-unpacked `String?` values
@@ -259,8 +263,8 @@ class ZebraRfidReaderTest {
     // The recovery sequence itself — calling the real `PostConnectReaderUpdate()`/
     // `reconnect()` on a real `RFIDReader` stuck reporting
     // `RFID_BATCHMODE_IN_PROGRESS` — cannot be exercised here: there is no
-    // sled under Robolectric, and `OperationFailureException`'s constructor
-    // is package-private outside `com.zebra.*` (see the note above). What
+    // sled under Robolectric, and there is no meaningful way to build a real
+    // `OperationFailureException` outside `com.zebra.*` (see the note above). What
     // *can* be proven without hardware: the pure usability decision
     // ([batchModeRecoveryUsable]) the recovery logs feed into, and that a
     // recovery which gives up ([BatchModeUnrecoverableException]) reaches

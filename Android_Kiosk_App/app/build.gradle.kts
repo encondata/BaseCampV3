@@ -43,48 +43,8 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.isReturnDefaultValues = true
-        unitTests.all {
-            // The Zebra RFIDAPI3 .aar (see project(":RFIDAPI3Library")) bundles an
-            // incomplete vendor copy of Apache Xerces plus META-INF/services JAXP
-            // registration files. Those hijack DocumentBuilderFactory resolution on the
-            // unit test JVM's classpath toward the broken vendor impl; without this
-            // override, every Robolectric-backed test that parses AndroidManifest.xml
-            // fails with NoClassDefFoundError: org.apache.xerces.impl.dv.ObjectFactory.
-            it.systemProperty(
-                "javax.xml.parsers.DocumentBuilderFactory",
-                "com.sun.org.apache.xerces.internal.jaxp.DocumentBuilderFactoryImpl",
-            )
-        }
     }
 
-    packaging {
-        resources {
-            // The Zebra RFIDAPI3 .aar bundles JAXP META-INF/services registration files
-            // (see the systemProperty override above for the unit-test-side symptom).
-            // These land unmodified in the packaged APK and would hijack
-            // DocumentBuilderFactory/SAXParserFactory/etc. resolution at runtime on a
-            // real device toward the vendor's incomplete Xerces bundle, which is
-            // missing classes it needs. Exclude exactly the entries confirmed present
-            // in app-debug.apk; nothing else is swept up.
-            excludes += setOf(
-                "META-INF/services/javax.xml.datatype.DatatypeFactory",
-                "META-INF/services/javax.xml.parsers.DocumentBuilderFactory",
-                "META-INF/services/javax.xml.parsers.SAXParserFactory",
-                "META-INF/services/javax.xml.stream.XMLEventFactory",
-                "META-INF/services/javax.xml.validation.SchemaFactory",
-                "META-INF/services/org.w3c.dom.DOMImplementationSourceList",
-                "META-INF/services/org.xml.sax.driver",
-            )
-            // AGP's default `merges` set includes "/META-INF/services/**" and takes
-            // precedence over `excludes` for matching paths, so the excludes above are
-            // silently ignored unless this default is narrowed first. Removing it does
-            // not drop any legitimate service file: the app's only other
-            // META-INF/services/* entries (kotlinx.coroutines' CoroutineExceptionHandler
-            // and MainDispatcherFactory) each come from a single dependency, so they
-            // pass straight through with no duplicate to merge.
-            merges -= "/META-INF/services/**"
-        }
-    }
 }
 
 ksp { arg("room.generateKotlin", "true") }
@@ -117,35 +77,9 @@ dependencies {
     implementation(libs.okhttp.logging)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(project(":RFIDAPI3Library"))
     // The RFIDAPI3 .aar is wired in as a raw local artifact (see
-    // RFIDAPI3Library/build.gradle), not a real Maven/AAR dependency, and its
-    // Readers/API3Service/API3UsbService classes call four methods on the
-    // OLD android.support.v4.content.LocalBroadcastManager (getInstance,
-    // registerReceiver, unregisterReceiver, sendBroadcast) — confirmed by
-    // javap against classes.jar; that's the entire support-library surface
-    // the vendor code touches. AGP's Jetifier *does* still transform this
-    // artifact (verified: it rewrites those refs to
-    // androidx/localbroadcastmanager/content/LocalBroadcastManager), but
-    // flipping android.enableJetifier on doesn't supply that androidx class
-    // either — Jetifier only rewrites bytecode, it never adds the target
-    // dependency, so without this the app would just trade one
-    // NoClassDefFoundError for another. Depending directly on the real
-    // legacy artifact instead sidesteps Jetifier and rewriting entirely: the
-    // vendor .aar's bytecode is left completely alone, and the exact old
-    // package name it expects resolves as-is.
-    //
-    // localbroadcastmanager is its own standalone artifact, not bundled in
-    // support-compat (checked: support-compat 27.1.1 and 28.0.0 both lack
-    // the class; it only showed up pulled in transitively under
-    // support-core-utils, which also drags in support-compat, documentfile,
-    // loader and print — support-compat's manifest overrides
-    // android:appComponentFactory and collides with androidx-core's, which
-    // fails the manifest merge). Depending on localbroadcastmanager alone
-    // avoids all of that: it pulls in only support-annotations (a
-    // plain-jar, manifest-free annotations library), and its own manifest
-    // declares nothing that conflicts with AndroidX.
-    implementation("com.android.support:localbroadcastmanager:28.0.0")
+    // RFIDAPI3Library/build.gradle), not a real Maven/AAR dependency.
+    implementation(project(":RFIDAPI3Library"))
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

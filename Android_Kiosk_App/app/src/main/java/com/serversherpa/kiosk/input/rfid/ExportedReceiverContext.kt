@@ -14,21 +14,30 @@ import android.os.Handler
  * caller didn't ask for it.
  *
  * This class exists solely because of the bundled Zebra RFIDAPI3 vendor
- * library (`RFIDAPI3Library/API3_LIB-release.aar`, version 2.0.2.82, built
- * February 2022 — see `ZebraRfidReader.kt`'s class doc for why it's wired in
- * as a raw local artifact rather than a Maven dependency). Seven of its
- * classes — `com.zebra.rfid.api3.Readers`, `API3Service`, `API3UsbService`,
- * `com.zebra.rfid.api3.m`, `com.zebra.commoniolib.usbiomgr`,
- * `com.zebra.scannercontrol.SDKHandler`, and `com.zebra.scannercontrol.l` —
- * call `Context.registerReceiver` using the overloads that take no flags.
- * None of them was ever updated for the rule Android 14 introduced: a
+ * library (`RFIDAPI3Library/API3_LIB-release.aar`, version 2.0.5.292, from
+ * Zebra's public `ALT-RFID-SAMPLES` sample repository — see
+ * `ZebraRfidReader.kt`'s class doc for why it's wired in as a raw local
+ * artifact rather than a Maven dependency). Re-verified via `javap` against
+ * this version: `com.zebra.rfid.api3.Readers`, `API3Service`,
+ * `API3SystemService`, `API3UsbService` (and its inner classes),
+ * `com.zebra.commoniolib.usbiomgr`, and `com.zebra.scannercontrol.SDKHandler`
+ * still call `Context.registerReceiver` using the overloads that take no
+ * flags, so none of them was updated for the rule Android 14 introduced: a
  * dynamically registered receiver for a non-system broadcast now throws
  * `SecurityException` unless the caller passes `RECEIVER_EXPORTED` or
- * `RECEIVER_NOT_EXPORTED`. The `.aar` predates that rule by two years and
- * cannot be patched, so `ZebraRfidReader.openVendorConnection()` hands the
- * vendor's `Readers` constructor one of these instead of the raw app
+ * `RECEIVER_NOT_EXPORTED`. `com.zebra.scannercontrol.USBManager` is the one
+ * exception in this version — it now supplies `RECEIVER_EXPORTED` itself
+ * (confirmed via `javap`: that literal appears only in `USBManager.class`),
+ * but that class sits on the USB path, not the Bluetooth path this app
+ * actually uses (the RFD40 pairs over Bluetooth — see the manifest's own
+ * comment on the legacy `BLUETOOTH`/`BLUETOOTH_ADMIN` permissions). `Readers`
+ * is still unpatched, so `ZebraRfidReader.openVendorConnection()` still hands
+ * the vendor's `Readers` constructor one of these instead of the raw app
  * `Context`, supplying on the way in the flag the library never learned to
- * pass.
+ * pass. Do not remove this shim on the strength of the vendor version being
+ * newer — `RECEIVER_EXPORTED` landing in `USBManager` this release does not
+ * mean it landed anywhere this app's own Bluetooth-only vendor call sites
+ * touch.
  *
  * `RECEIVER_EXPORTED`, not `RECEIVER_NOT_EXPORTED`, is a deliberate choice.
  * Before Android 14, a dynamically registered receiver with no flag was

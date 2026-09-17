@@ -82,30 +82,27 @@ import kotlinx.coroutines.withContext
  * file exists to avoid.
  *
  * Every vendor call site also catches `LinkageError` alongside `Exception`,
- * kept as a belt-and-braces guard even though the specific cause below is
- * fixed: the RFIDAPI3 `.aar` is wired in as a raw local artifact (see
- * `RFIDAPI3Library/build.gradle`), and its `Readers`/`API3Service`/
- * `API3UsbService` classes call four methods (`getInstance`,
- * `registerReceiver`, `unregisterReceiver`, `sendBroadcast`) on the *old*
- * `android.support.v4.content.LocalBroadcastManager` — a class this
- * AndroidX-only app doesn't otherwise have on its classpath. `app/build.
- * gradle.kts` now depends directly on the real
- * `com.android.support:localbroadcastmanager:28.0.0` artifact to supply it
- * (see that dependency's comment for why: Jetifier does transform this raw
- * artifact, but only rewrites the *reference* — it never supplies the
- * androidx class the rewrite would then require, so flipping
- * `enableJetifier` on alone just trades one `NoClassDefFoundError` for
- * another). `ZebraReadersConstructibleTest` asserts `Readers` construction
- * never throws a `LinkageError`/`NoClassDefFoundError`, so a regression here
- * — this dependency going missing, or a future vendor `.aar` update needing
- * some other class this app doesn't have — fails a build-time test, not
- * just a real device. The runtime catch stays anyway: it's what keeps the
- * "connect() never throws, it reports" contract true for any other
- * classloading gap the test doesn't happen to exercise (a different reader
- * model's code path, a different Android version, a future SDK bump) —
- * `NoClassDefFoundError` and `UnsatisfiedLinkError` (a missing native `.so`)
- * are both `LinkageError`, not `Exception`, so a bare `catch (e: Exception)`
- * would let either fall straight through as an uncaught crash.
+ * a belt-and-braces guard against a future vendor `.aar` update referencing
+ * some class this app doesn't have on its classpath — the RFIDAPI3 `.aar` is
+ * wired in as a raw local artifact (see `RFIDAPI3Library/build.gradle`), not
+ * a real Maven/AAR dependency, so a bad reference fails silently at runtime
+ * instead of at build time. As of the 2.0.5.292 upgrade (see the `.aar`'s
+ * own history for the version this replaced) the vendor code no longer
+ * touches `android.support.v4.content.LocalBroadcastManager` at all —
+ * confirmed via `javap` against the new `classes.jar`, which is why the
+ * `com.android.support:localbroadcastmanager:28.0.0` dependency this
+ * comment used to explain was removed. `ZebraReadersConstructibleTest`
+ * asserts `Readers` construction never throws a `LinkageError`/
+ * `NoClassDefFoundError`, so a regression here — a future vendor `.aar`
+ * update needing some class this app doesn't have — fails a build-time
+ * test, not just a real device. The runtime catch stays anyway: it's what
+ * keeps the "connect() never throws, it reports" contract true for any
+ * other classloading gap the test doesn't happen to exercise (a different
+ * reader model's code path, a different Android version, a future SDK
+ * bump) — `NoClassDefFoundError` and `UnsatisfiedLinkError` (a missing
+ * native `.so`) are both `LinkageError`, not `Exception`, so a bare
+ * `catch (e: Exception)` would let either fall straight through as an
+ * uncaught crash.
  */
 open class ZebraRfidReader(private val context: Context, private val scope: CoroutineScope) : RfidReader {
     private val _connection = MutableStateFlow<RfidConnection>(RfidConnection.Disconnected)
@@ -990,10 +987,16 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
      *
      *  The actual formatting is pulled out into [operationFailureMessage]/
      *  [invalidUsageMessage]/[genericMessage] — plain functions over plain
-     *  values, not the vendor exception types themselves — because
-     *  `OperationFailureException`'s constructor is package-private and
-     *  can't be built from a test in the normal way; those functions are
-     *  what `ZebraRfidReaderTest` can actually exercise. */
+     *  values, not the vendor exception types themselves — because building
+     *  a real `OperationFailureException`/`InvalidUsageException` from a
+     *  test means constructing a meaningful `RFIDResults`/status-code
+     *  argument the vendor SDK itself normally supplies, not this app; those
+     *  functions are what `ZebraRfidReaderTest` can actually exercise. (The
+     *  2.0.5.292 `.aar` made `OperationFailureException`'s constructor
+     *  `public` — confirmed via `javap` — where the previous 2.0.2.82 `.aar`
+     *  had it package-private; that alone doesn't make constructing one from
+     *  this app's test package any more meaningful, so the plain-function
+     *  split stays.) */
     private fun readable(e: Throwable): String {
         return when (e) {
             // BatchModeUnrecoverableException falls through to the `else`
