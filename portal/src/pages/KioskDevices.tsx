@@ -14,13 +14,20 @@
  *  RegisterDaysModal → registerDevice; De-Register confirms then
  *  deregisterDevice. Row actions live behind the shared RowActionsMenu.
  *  Row action gating mirrors the API's permission split — 'add' for
- *  create, 'change' for edit/register/deregister, 'delete' for delete. */
+ *  create, 'change' for edit/register/deregister, 'delete' for delete.
+ *
+ *  "Clear offline" is the one bulk action: a dry run previews every kiosk
+ *  that is unregistered or expired AND unseen for 24h, the modal names them,
+ *  and confirming posts those ids back. The server re-checks each one, so the
+ *  notice is built from the confirm response — never from the preview. The
+ *  button is gated on rank, not on a permission, and hidden below it. */
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import {
-  ApiError, deleteDevice, deregisterDevice, listDevices, registerDevice, type DeviceItem,
+  ApiError, clearOfflineKiosks, deleteDevice, deregisterDevice, listDevices, registerDevice,
+  type ClearOfflineKioskItem, type ClearOfflineKiosksOut, type DeviceItem,
 } from '../lib/api';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
@@ -36,6 +43,7 @@ import {
   type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
+import ClearOfflineKiosksModal from '../components/hardware/ClearOfflineKiosksModal';
 import DeviceEditModal from '../components/hardware/DeviceEditModal';
 import RegisterDaysModal from '../components/hardware/RegisterDaysModal';
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
@@ -85,18 +93,56 @@ const CSV_COLUMNS: [string, (d: DeviceItem) => string][] = [
 const msgFor = (err: unknown): string =>
   err instanceof ApiError ? `Request failed (${err.code}).` : "Couldn't complete that action.";
 
+/** Bulk clear is admin-and-above only, matching the endpoint's own gate:
+ *  GATE_BYPASS_RANK in api/src/serversherpa/access/defaults.py. The button is
+ *  hidden rather than disabled below it — a disabled destructive control just
+ *  advertises a capability the viewer will never have. */
+const ADMIN_RANK = 60;
+
+const kioskCount = (n: number) => `${n} ${n === 1 ? 'kiosk' : 'kiosks'}`;
+
+/** The success notice is built from the CONFIRM response, never from the
+ *  preview: the server re-checks every id, so it can delete fewer kiosks than
+ *  the operator was shown. `not_found` is surfaced too, so the numbers
+ *  reconcile against what was approved instead of quietly not adding up. */
+function clearOfflineNotice(res: ClearOfflineKiosksOut): string {
+  const deleted = res.kiosks.length;
+  const skipped = res.skipped.length;
+  const gone = res.not_found ?? 0;
+
+  const extras: string[] = [];
+  if (skipped > 0) extras.push(`${skipped} skipped, seen since the preview`);
+  if (gone > 0) extras.push(`${kioskCount(gone)} no longer existed`);
+
+  if (deleted === 0) {
+    if (skipped > 0) {
+      const head = `Nothing deleted — ${kioskCount(skipped)} `
+        + `${skipped === 1 ? 'has' : 'have'} been seen since the preview`;
+      return gone > 0 ? `${head} · ${kioskCount(gone)} no longer existed` : head;
+    }
+    return gone > 0 ? `Nothing deleted — ${kioskCount(gone)} no longer existed` : 'Nothing deleted.';
+  }
+  return [`Deleted ${kioskCount(deleted)}`, ...extras].join(' · ');
+}
+
 export default function KioskDevices() {
-  const { can } = useAuth();
+  const { can, maxRank } = useAuth();
   const canAdd = can('scanning_hardware', 'add');
   const canChange = can('scanning_hardware', 'change');
   const canDelete = can('scanning_hardware', 'delete');
+  const canClearOffline = maxRank >= ADMIN_RANK;
 
   const [devices, setDevices] = useState<DeviceItem[] | null>(null);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
   const [facets, setFacets] = useState<FacetState>({});
   const [editing, setEditing] = useState<DeviceItem | 'new' | null>(null);
   const [registering, setRegistering] = useState<DeviceItem | null>(null);
+  // null = the modal is closed; an array (even an empty one) = it is open on
+  // that preview. Preview failures never open it — see startClearOffline.
+  const [clearMatches, setClearMatches] = useState<ClearOfflineKioskItem[] | null>(null);
+  const [clearBusy, setClearBusy] = useState(false);
 
   const {
     visibleCols, setVisibleCols,
@@ -215,6 +261,42 @@ export default function KioskDevices() {
     }
   };
 
+  /** The preview is a POST too, so read-only maintenance mode rejects it with
+   *  423 just like the delete. Report that instead of opening a modal whose
+   *  empty list would read as "nothing to clear". */
+  const startClearOffline = async () => {
+    setError('');
+    setNotice('');
+    try {
+      const res = await clearOfflineKiosks({ dry_run: true });
+      setClearMatches(res.kiosks);
+    } catch (err) {
+      setError(err instanceof ApiError && err.code === 'read_only_mode'
+        ? err.message
+        : `Couldn't check which kiosks can be cleared. ${msgFor(err)}`);
+    }
+  };
+
+  const confirmClearOffline = async () => {
+    if (!clearMatches) return;
+    setClearBusy(true);
+    setError('');
+    try {
+      const res = await clearOfflineKiosks({
+        dry_run: false, ids: clearMatches.map((k) => k.id),
+      });
+      setClearMatches(null);
+      setNotice(clearOfflineNotice(res));
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError && err.code === 'read_only_mode'
+        ? err.message
+        : `Couldn't clear the offline kiosks. ${msgFor(err)}`);
+    } finally {
+      setClearBusy(false);
+    }
+  };
+
   const cellFor = (d: DeviceItem, key: string) => {
     switch (key) {
       case 'mac':
@@ -285,6 +367,12 @@ export default function KioskDevices() {
           <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols}
                          onReorder={setColOrder} />
           <ExportButton onExport={() => exportCsv('kiosks', CSV_COLUMNS, visible)} />
+          {canClearOffline && (
+            <button type="button" className="mini-btn danger"
+                    onClick={() => void startClearOffline()}>
+              Clear offline
+            </button>
+          )}
           {canAdd && (
             <button type="button" className="btn-solid" onClick={() => setEditing('new')}>
               + New kiosk
@@ -296,6 +384,12 @@ export default function KioskDevices() {
       {error && (
         <div className="dir-empty" style={{ marginBottom: 12 }}>
           <b>{devices ? "Couldn't complete that action" : 'Cannot load kiosks'}</b>{error}
+        </div>
+      )}
+
+      {notice && (
+        <div className="dir-empty" style={{ marginBottom: 12 }} role="status">
+          <b>Clear offline and expired kiosks</b>{notice}
         </div>
       )}
 
@@ -369,6 +463,14 @@ export default function KioskDevices() {
           device={editing === 'new' ? null : editing}
           onClose={() => setEditing(null)}
           onSaved={() => { setEditing(null); void load(); }}
+        />
+      )}
+
+      {clearMatches !== null && (
+        <ClearOfflineKiosksModal
+          kiosks={clearMatches} busy={clearBusy}
+          onConfirm={() => void confirmClearOffline()}
+          onClose={() => { if (!clearBusy) setClearMatches(null); }}
         />
       )}
 

@@ -3599,6 +3599,34 @@ export interface ClearOfflineKioskItem {
   last_seen_at: string | null;
 }
 
+/** `kiosks` is what WOULD be deleted on a dry run and what WAS deleted on a
+ *  confirm — never both at once, so a caller reporting the outcome reads this
+ *  same field back off the confirm response rather than trusting the preview.
+ *  `skipped` is empty on a dry run; on a confirm it holds ids that no longer
+ *  match the rule. `not_found` counts confirmed ids that matched no kiosk at
+ *  all, so len(kiosks) + len(skipped) + not_found reconciles with what the
+ *  operator approved. */
+export interface ClearOfflineKiosksOut {
+  dry_run: boolean;
+  kiosks: ClearOfflineKioskItem[];
+  skipped: ClearOfflineKioskItem[];
+  not_found: number;
+}
+
+/** Both the preview and the delete are POSTs, so read-only maintenance mode
+ *  rejects the dry run too (423) — callers must handle a failed preview. */
+export async function clearOfflineKiosks(
+  body: { dry_run: boolean; ids?: string[] },
+): Promise<ClearOfflineKiosksOut> {
+  const resp = await apiFetch('/devices/kiosks/clear-offline', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export interface DeviceLease {
   id: string; mac: string; ip: string | null; hostname: string | null;
   reserved: boolean; up: boolean; last_seen_at: string | null;
