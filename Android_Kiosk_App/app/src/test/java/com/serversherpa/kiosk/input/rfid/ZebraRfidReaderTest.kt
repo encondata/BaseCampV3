@@ -310,6 +310,50 @@ class ZebraRfidReaderTest {
         assertEquals(BATCH_MODE_UNRECOVERABLE_MESSAGE, (state as RfidConnection.Failed).reason)
     }
 
+    // ── trigger-mode setup (barcode-vs-RFID personality) ──
+    //
+    // The sequence itself — calling the real `Config.setTriggerMode()`/
+    // `RFIDReader.switchMode()` against a real reader that is actually
+    // running its barcode engine — cannot be exercised here: there is no
+    // sled under Robolectric, `setTriggerMode`'s boolean result depends on
+    // real vendor/firmware state, and `ZebraRfidReader.configureTriggerMode`
+    // takes a real `RFIDReader`, which can't be constructed or faked from a
+    // test (see the class doc's note on why `openVendorConnection`/
+    // `closeVendorConnection` are the seam instead). What *can* be proven
+    // without hardware: the pure ordering logic behind which
+    // `updateScannerPlugin` flag is tried first, and the note-combining
+    // logic and note text that reach the operator when every avenue fails.
+
+    @Test fun triggerModePluginAttemptsTriesTheDataWedgePredictedFlagFirst() {
+        assertEquals(
+            "with DataWedge present, true (matches the host) must be tried before false",
+            listOf(true, false),
+            triggerModePluginAttempts(dataWedgePresent = true),
+        )
+        assertEquals(
+            "with DataWedge absent, false (matches the host) must be tried before true",
+            listOf(false, true),
+            triggerModePluginAttempts(dataWedgePresent = false),
+        )
+    }
+
+    @Test fun combineConnectNotesAppendsToAnExistingNote() {
+        assertEquals("first note. second note.", combineConnectNotes("first note.", "second note."))
+    }
+
+    @Test fun combineConnectNotesReturnsJustTheAdditionWhenNothingExistsYet() {
+        assertEquals("only note.", combineConnectNotes(null, "only note."))
+        assertEquals("only note.", combineConnectNotes("", "only note."))
+        assertEquals("only note.", combineConnectNotes("   ", "only note."))
+    }
+
+    @Test fun triggerModeStillBarcodeNoteIsAnHonestOperatorFacingSentence() {
+        val message = ZebraRfidReader.TRIGGER_MODE_STILL_BARCODE_NOTE
+        assertTrue("must say what mode it's stuck in", message.contains("barcode"))
+        assertTrue("must say the practical consequence", message.contains("trigger"))
+        assertTrue(message.endsWith("."))
+    }
+
     private class ThrowingVendorZebraRfidReader(
         context: android.content.Context,
         scope: CoroutineScope,
