@@ -114,8 +114,19 @@ fun RfidPanel() {
                 // to avoid showing a stale error from a previous attempt. Once the attempt
                 // completes, the controller's own connectionError will be repopulated if the
                 // new attempt failed, or cleared if it succeeded.
+                // Show the error line only when it actually adds something new: when
+                // its text differs from the line already displayed above. When a connection
+                // fails, both connectionLine() and connectionError carry the same reason,
+                // producing a duplicate sentence. But when a connect attempt times out,
+                // the reader stays in Connecting state (so connectionLine shows "Connecting…"),
+                // and only connectionError carries the actual reason, so both must appear.
                 if (!connectAttemptInFlight && !disconnectAttemptInFlight) {
-                    connectionError?.let { Text(it, color = ChipTone.RED.text) }
+                    connectionError?.let { error ->
+                        val statusLine = if (s.enabled) connectionLine(connection) else connectionLine(RfidConnection.Disabled)
+                        if (error != statusLine) {
+                            Text(error, color = ChipTone.RED.text)
+                        }
+                    }
                 }
                 if (s.enabled && missingPermissions.isNotEmpty()) {
                     Text("Android needs Bluetooth and location permission before the sled can connect. Grant them in this app's settings.", color = c.textMute)
