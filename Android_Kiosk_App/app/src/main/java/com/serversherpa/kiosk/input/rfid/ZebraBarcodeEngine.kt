@@ -77,8 +77,20 @@ import com.zebra.scannercontrol.SDKHandler
  * setup, that logging is how the team finds out whether any of this
  * actually works on a phone; nobody on this team has seen Zebra's own
  * account of what a host is supposed to do with this SDK either.
+ *
+ * [target] — the RFID reader's own identity, threaded in from
+ * [ZebraRfidReader.attemptVendorConnection] — is what [chooseScanner] (via
+ * [attemptStandDown]) matches candidates against, so this app connects only
+ * to its own sled and never to some other paired Bluetooth device (see
+ * [chooseScanner]'s doc for the field evidence this exists to fix). This
+ * class is `internal` (rather than the module-default public it used to be
+ * before [target] was added) purely so its constructor can take
+ * [SledIdentity] — also `internal` — without Kotlin's "public declaration
+ * exposes its internal type" check tripping; nothing outside this module
+ * ever constructed this class, so the narrower visibility changes nothing
+ * observable.
  */
-open class ZebraBarcodeEngine(private val context: Context) {
+internal open class ZebraBarcodeEngine(private val context: Context, private val target: SledIdentity) {
     private var sdkHandler: SDKHandler? = null
     private var scannerId: Int? = null
 
@@ -187,26 +199,49 @@ open class ZebraBarcodeEngine(private val context: Context) {
 
         val available = runCatching { handler.dcssdkGetAvailableScannersList() }.getOrNull().orEmpty()
         val active = runCatching { handler.dcssdkGetActiveScannersList() }.getOrNull().orEmpty()
-        Log.w(
-            TAG,
-            "Barcode engine: ${available.size} available scanner(s): ${available.describeAll()}; " +
-                "${active.size} active scanner(s): ${active.describeAll()}.",
-        )
 
         // Active scanners first: a scanner already active is a stronger
         // signal than one merely available, and de-duplicated by id so a
         // scanner present in both lists is not logged/considered twice.
         val candidates = (active + available).map { it.toCandidate() }.distinctBy { it.scannerId }
-        val chosen = chooseScanner(candidates)
+        // Extends the original "what did the SDK see" log line with the
+        // identity being matched against, so a device log shows both halves
+        // of the matching decision on one line: everything the SDK reported,
+        // and what this app was actually looking for among it.
+        Log.w(
+            TAG,
+            "Barcode engine: ${available.size} available scanner(s): ${available.describeAll()}; " +
+                "${active.size} active scanner(s): ${active.describeAll()}; matching against target identity " +
+                "name=${target.name} address=${target.address} serial=${target.serial}.",
+        )
+        val chosen = chooseScanner(candidates, target)
         if (chosen == null) {
-            Log.w(TAG, "Barcode engine: no scanner found via the scanner SDK; the imager cannot be reached this way.")
-            return ImagerStandDownOutcome.NoScannerFound
+            // Two distinct real outcomes, both real: no candidates at all
+            // (nothing paired, or the SDK saw nothing), versus candidates
+            // that just aren't this kiosk's sled (the stranger's-dive-
+            // computer case this whole matching rule exists to reject). Both
+            // reduce to the same ImagerStandDownOutcome.NotIdentified and
+            // the same operator-facing note — "couldn't be identified" is
+            // honest either way — but the log lines below say which one
+            // actually happened, because that distinction matters for
+            // diagnosing a real device.
+            if (candidates.isEmpty()) {
+                Log.w(TAG, "Barcode engine: no candidate scanners available at all; the imager could not be identified.")
+            } else {
+                Log.w(
+                    TAG,
+                    "Barcode engine: ${candidates.size} candidate scanner(s) seen but none matched the target " +
+                        "identity above; the imager could not be identified. Connecting to any of them would risk " +
+                        "reaching a stranger's device, so none will be tried.",
+                )
+            }
+            return ImagerStandDownOutcome.NotIdentified
         }
         Log.w(
             TAG,
             "Barcode engine: chose scanner id=${chosen.scannerId} name=${chosen.name} model=${chosen.model} " +
-                "serial=${chosen.serial} — ${candidates.size} candidate(s) total, first taken (see the line " +
-                "above for every candidate this kiosk saw).",
+                "serial=${chosen.serial} — matched the target identity among ${candidates.size} candidate(s) " +
+                "total (see the line above for every candidate this kiosk saw and the identity matched against).",
         )
         scannerId = chosen.scannerId
 
@@ -310,18 +345,70 @@ private fun DCSScannerInfo.toCandidate() =
  *  is testable without one (see [ZebraBarcodeEngineTest]). */
 internal data class ScannerCandidate(val scannerId: Int, val name: String?, val model: String?, val serial: String?)
 
+/** The hardware identity [chooseScanner] matches [ScannerCandidate]s
+ *  against — the plain fields of the `ReaderDevice`
+ *  [ZebraRfidReader.attemptVendorConnection] is already connected to
+ *  (`getName()`/`getAddress()`/`getSerialNumber()`), pulled out into a value
+ *  with no `com.zebra.*` type for the same reason [ScannerCandidate] is: so
+ *  the matching logic in [chooseScanner] is testable without one. */
+internal data class SledIdentity(val name: String?, val address: String?, val serial: String?)
+
+/** Strips `:`/`-`/whitespace separators and lowercases what's left, so two
+ *  representations of the same hardware token compare equal — e.g.
+ *  `"48:A4:93:BD:15:DB"` (a colon-separated Bluetooth MAC, the shape
+ *  `ReaderDevice.getAddress()` reports) and `"48a493bd15db"` (an
+ *  unpunctuated lowercase form some other vendor call site might report the
+ *  same address in). Used by [chooseScanner] on both sides of the
+ *  comparison, since neither side's exact formatting is guaranteed. `null`
+ *  in, `null` out — including for a value that is entirely separators — so
+ *  two absent fields never accidentally compare equal to each other. */
+private fun normalizeSledToken(value: String?): String? =
+    value?.replace(Regex("[:\\-\\s]"), "")?.lowercase()?.takeUnless { it.isEmpty() }
+
 /**
  * Pure selection behind [ZebraBarcodeEngine.attemptStandDown]: which
- * candidate to treat as the sled. This kiosk pairs with exactly one sled at
- * a time, so any candidate the SDK reports is presumably it — picking the
- * first keeps this deterministic without pretending to a matching rule this
- * app has no evidence for. If real hardware ever shows more than one
- * candidate, [ZebraBarcodeEngine.attemptStandDown]'s log line lists every
- * one of them (name, model, serial, id) so a real matching rule — e.g.
- * against the RFID reader's own name — can be written from actual field
- * data instead of a guess made from a desk. `null` only when [candidates] is
- * empty. */
-internal fun chooseScanner(candidates: List<ScannerCandidate>): ScannerCandidate? = candidates.firstOrNull()
+ * candidate, if any, is actually this kiosk's own sled. A phone's Bluetooth
+ * pairing list is not evidence of anything but pairing — the real field log
+ * this matching rule was written from (see
+ * `.superpowers/sdd/kiosk-sled-bugs-task-1-brief.md`) shows a bare
+ * `firstOrNull()` choosing `id=1 name=HSLT_a844`, a stranger's dive
+ * computer, over the kiosk's actual RFD40 sled at `id=10` further down the
+ * same list — so a candidate is trusted only if its hardware identity
+ * actually matches [target], the identity of the RFID reader
+ * [ZebraRfidReader.attemptVendorConnection] is already connected to.
+ *
+ * Matching rule: after normalizing both sides with [normalizeSledToken]
+ * (case-insensitive, `:`/`-`/whitespace stripped), a candidate matches only
+ * if its `serial` field equals [SledIdentity.address] or
+ * [SledIdentity.serial]. `serial` is the right field to compare against an
+ * address: for a classic-Bluetooth (SSI/RFCOMM) scanner, `DCSScannerInfo`
+ * has no `getAddress()` at all — `getScannerHWSerialNumber()` is the field
+ * that actually carries a colon-separated Bluetooth MAC (confirmed via
+ * `javap`; see the brief) — and [ScannerCandidate.serial] is exactly that
+ * field, so the same field can carry either a real serial or a MAC
+ * depending on what the SDK happened to populate it with, and both are
+ * worth checking against. `name` is deliberately never part of the
+ * matching rule — unlike an address or a serial, a name is not exact, so it
+ * is logged as context only (see the log line in
+ * [ZebraBarcodeEngine.attemptStandDown] right before this runs) and never
+ * used to select a candidate.
+ *
+ * Returns `null` — meaning the caller must not attempt a session with any
+ * candidate at all — when nothing matches, when [candidates] is empty, or
+ * when [target] itself carries neither an address nor a serial to match
+ * against. See [ZebraBarcodeEngine.attemptStandDown] for how a `null` here
+ * becomes [ImagerStandDownOutcome.NotIdentified].
+ */
+internal fun chooseScanner(candidates: List<ScannerCandidate>, target: SledIdentity): ScannerCandidate? {
+    val targetAddress = normalizeSledToken(target.address)
+    val targetSerial = normalizeSledToken(target.serial)
+    if (targetAddress == null && targetSerial == null) return null
+    return candidates.firstOrNull { candidate ->
+        val candidateSerial = normalizeSledToken(candidate.serial) ?: return@firstOrNull false
+        (targetAddress != null && candidateSerial == targetAddress) ||
+            (targetSerial != null && candidateSerial == targetSerial)
+    }
+}
 
 /** The `dcssdkExecuteCommandOpCodeInXMLForScanner` calls in
  *  [ZebraBarcodeEngine] need no XML body: `DCSSDK_DEVICE_SCAN_DISABLE`/
@@ -339,7 +426,13 @@ internal fun scanCommandInXml(): String = ""
  *  so [imagerStandDownNote] is testable without a real SDK. */
 internal sealed interface ImagerStandDownOutcome {
     data object Silenced : ImagerStandDownOutcome
-    data object NoScannerFound : ImagerStandDownOutcome
+
+    /** Covers both real "couldn't identify the sled" cases [chooseScanner]
+     *  can produce: no candidate scanners at all, and candidates that exist
+     *  but don't match — see [ZebraBarcodeEngine.attemptStandDown]'s log
+     *  lines for which one actually happened on a given attempt; this one
+     *  outcome/note is honest for either, so it isn't split into two. */
+    data object NotIdentified : ImagerStandDownOutcome
     data class SessionFailed(val result: String) : ImagerStandDownOutcome
     data class CommandFailed(val result: String) : ImagerStandDownOutcome
     data class Unreachable(val detail: String) : ImagerStandDownOutcome
@@ -358,8 +451,8 @@ internal sealed interface ImagerStandDownOutcome {
 internal fun imagerStandDownNote(outcome: ImagerStandDownOutcome): String = when (outcome) {
     ImagerStandDownOutcome.Silenced ->
         "The sled's barcode imager was told to stand down."
-    ImagerStandDownOutcome.NoScannerFound ->
-        "The sled's barcode imager couldn't be reached (no scanner found via the scanner SDK); " +
+    ImagerStandDownOutcome.NotIdentified ->
+        "The sled's barcode imager couldn't be identified among the available scanners; " +
             "it may still fire on a trigger pull."
     is ImagerStandDownOutcome.SessionFailed ->
         "The sled's barcode imager couldn't be reached (session failed: ${outcome.result}); " +

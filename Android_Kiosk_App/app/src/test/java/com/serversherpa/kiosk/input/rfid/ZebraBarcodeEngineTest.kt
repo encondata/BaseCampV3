@@ -7,10 +7,12 @@ import org.junit.Test
 
 /**
  * What can be proven without hardware: the pure logic
- * [ZebraBarcodeEngine.attemptStandDown] feeds into — picking a scanner from
- * whatever the SDK reports ([chooseScanner]), the (trivial but real) XML
- * body the scan-disable/scan-enable opcodes are sent with
- * ([scanCommandInXml]), and the operator-facing note text
+ * [ZebraBarcodeEngine.attemptStandDown] feeds into — matching a scanner the
+ * SDK reports against this kiosk's own sled identity ([chooseScanner]; see
+ * its doc for the exact rule and the real field bug — a stranger's dive
+ * computer being chosen instead of the actual sled — it exists to fix), the
+ * (trivial but real) XML body the scan-disable/scan-enable opcodes are sent
+ * with ([scanCommandInXml]), and the operator-facing note text
  * ([imagerStandDownNote]) for every outcome [ZebraBarcodeEngine.standDown]
  * can produce.
  *
@@ -29,24 +31,50 @@ import org.junit.Test
 class ZebraBarcodeEngineTest {
 
     // ── chooseScanner ──
+    //
+    // chooseScanner now takes the target SledIdentity to match against —
+    // see its doc for the exact matching rule (normalized serial equals
+    // normalized address OR normalized serial, name never used to select).
+    // Every discriminating test below places a non-matching "stranger"
+    // candidate ahead of the real sled in the list, so a revert back to the
+    // old, target-blind firstOrNull() behavior this task removed — the
+    // real bug: "chose scanner id=1 name=HSLT_a844 ... first taken" over
+    // the actual sled further down the list — would return the stranger and
+    // fail the assertion, not just happen to pass anyway.
 
-    @Test fun chooseScannerReturnsNullWhenNothingWasFound() {
-        assertNull(chooseScanner(emptyList()))
+    @Test fun chooseScannerReturnsNullWhenCandidateListIsEmpty() {
+        val target = SledIdentity(name = "RFD40+_23087520101428", address = "48:A4:93:BD:15:DB", serial = null)
+        assertNull(chooseScanner(emptyList(), target))
     }
 
-    @Test fun chooseScannerPicksTheOnlyCandidate() {
-        val only = ScannerCandidate(scannerId = 7, name = "RFD40", model = "RFD40", serial = "abc123")
-        assertEquals(only, chooseScanner(listOf(only)))
+    @Test fun chooseScannerMatchesByAddress() {
+        val target = SledIdentity(name = "RFD40+_23087520101428", address = "48:A4:93:BD:15:DB", serial = null)
+        val stranger = ScannerCandidate(scannerId = 1, name = "HSLT_a844", model = "Dive Computer", serial = "CA:4C:A1:81:A8:44")
+        val sled = ScannerCandidate(scannerId = 10, name = "RFD40+_23087520101428", model = "RFD40", serial = "48:A4:93:BD:15:DB")
+        assertEquals(sled, chooseScanner(listOf(stranger, sled), target))
     }
 
-    @Test fun chooseScannerPicksTheFirstOfSeveralCandidates() {
-        val first = ScannerCandidate(scannerId = 1, name = "first", model = null, serial = null)
-        val second = ScannerCandidate(scannerId = 2, name = "second", model = null, serial = null)
-        assertEquals(
-            "with no matching rule this app has evidence for, the first candidate wins — see chooseScanner's doc",
-            first,
-            chooseScanner(listOf(first, second)),
-        )
+    @Test fun chooseScannerMatchesDespiteColonAndCaseDifferences() {
+        val target = SledIdentity(name = null, address = "48:A4:93:BD:15:DB", serial = null)
+        val stranger = ScannerCandidate(scannerId = 1, name = "HSLT_a844", model = null, serial = "CA:4C:A1:81:A8:44")
+        // Same address as target, but unpunctuated and lowercase — must
+        // still match after normalizing both sides.
+        val sled = ScannerCandidate(scannerId = 10, name = "RFD40+", model = "RFD40", serial = "48a493bd15db")
+        assertEquals(sled, chooseScanner(listOf(stranger, sled), target))
+    }
+
+    @Test fun chooseScannerMatchesBySerialWhenAddressDoesNotMatchAnything() {
+        val target = SledIdentity(name = null, address = "00:00:00:00:00:00", serial = "23087520101428")
+        val stranger = ScannerCandidate(scannerId = 1, name = "HSLT_a844", model = null, serial = "CA:4C:A1:81:A8:44")
+        val sled = ScannerCandidate(scannerId = 10, name = "RFD40+", model = "RFD40", serial = "23087520101428")
+        assertEquals(sled, chooseScanner(listOf(stranger, sled), target))
+    }
+
+    @Test fun chooseScannerReturnsNullWhenNothingMatches() {
+        val target = SledIdentity(name = "RFD40+_23087520101428", address = "48:A4:93:BD:15:DB", serial = "23087520101428")
+        val stranger1 = ScannerCandidate(scannerId = 1, name = "HSLT_a844", model = "Dive Computer", serial = "CA:4C:A1:81:A8:44")
+        val stranger2 = ScannerCandidate(scannerId = 2, name = "Meshtastic_6014", model = null, serial = "11:22:33:44:55:66")
+        assertNull(chooseScanner(listOf(stranger1, stranger2), target))
     }
 
     // ── scanCommandInXml ──
@@ -68,9 +96,9 @@ class ZebraBarcodeEngineTest {
         assertTrue(note.endsWith("."))
     }
 
-    @Test fun imagerStandDownNoteForNoScannerFoundNamesTheProblemAndTheRisk() {
-        val note = imagerStandDownNote(ImagerStandDownOutcome.NoScannerFound)
-        assertTrue("must say the imager couldn't be reached", note.contains("couldn't be reached"))
+    @Test fun imagerStandDownNoteForNotIdentifiedNamesTheProblemAndTheRisk() {
+        val note = imagerStandDownNote(ImagerStandDownOutcome.NotIdentified)
+        assertTrue("must say the imager couldn't be identified", note.contains("couldn't be identified"))
         assertTrue("must warn it may still fire", note.contains("may still fire"))
         assertTrue(note.endsWith("."))
     }
@@ -99,7 +127,7 @@ class ZebraBarcodeEngineTest {
     @Test fun everyOutcomeProducesADistinctSentence() {
         val notes = listOf(
             imagerStandDownNote(ImagerStandDownOutcome.Silenced),
-            imagerStandDownNote(ImagerStandDownOutcome.NoScannerFound),
+            imagerStandDownNote(ImagerStandDownOutcome.NotIdentified),
             imagerStandDownNote(ImagerStandDownOutcome.SessionFailed("X")),
             imagerStandDownNote(ImagerStandDownOutcome.CommandFailed("Y")),
             imagerStandDownNote(ImagerStandDownOutcome.Unreachable("Z")),

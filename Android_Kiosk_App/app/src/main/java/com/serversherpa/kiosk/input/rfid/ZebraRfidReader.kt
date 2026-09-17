@@ -33,6 +33,10 @@ import com.zebra.rfid.api3.SESSION
 import com.zebra.rfid.api3.START_TRIGGER_TYPE
 import com.zebra.rfid.api3.STATUS_EVENT_TYPE
 import com.zebra.rfid.api3.STOP_TRIGGER_TYPE
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -193,6 +197,26 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
          *  line, never the red error tone `connectionError`/`applyError` use. */
         private const val BATCH_MODE_RECOVERY_NOTE =
             "The reader was holding tags from earlier offline use. They were discarded and batch mode is now off."
+
+        /** Wall-clock bound for [runBarcodeStandDownWithTimeout] — see that
+         *  function's doc for the mechanism. `RfidController` wraps the
+         *  entire `connect()` call in a 15s `withTimeoutOrNull`
+         *  (`RfidController.VENDOR_TIMEOUT_MS`), and everything that runs
+         *  ahead of [standDownBarcodeImager] inside [configurePostConnectSetup]
+         *  — `rfid.connect()` itself (inside [attemptVendorConnection]),
+         *  [recoverFromBatchMode] if a batch-mode recovery happened,
+         *  [configureTriggerMode]'s up-to-two `setTriggerMode` attempts, the
+         *  start/stop trigger pinning, and [preventBatchMode] — is ordinary
+         *  RFID-radio SDK traffic that has always finished comfortably
+         *  inside that 15s budget on real hardware. 5 seconds leaves that
+         *  work generous headroom while still giving a real but slow
+         *  *correct* sled (the scenario this bound exists for, now that Bug
+         *  1 no longer wastes ~13s reaching a wrong one) a fair chance to
+         *  finish rather than being cut off almost immediately — deliberately
+         *  well under half the overall 15s budget, not a value tuned against
+         *  real hardware (none was available to tune it against; see this
+         *  task's report). */
+        private const val BARCODE_STAND_DOWN_TIMEOUT_MS = 5_000L
     }
 
     /** [triggerPersonality]/[scannerPluginMode] are `RfidSettings`' two
@@ -367,8 +391,13 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         // used here rather than a synthetic `device.rfidReader` property.
         val rfid = device.getRFIDReader()
         reader = rfid
+        // The identity ZebraBarcodeEngine's chooseScanner() matches candidate
+        // scanners against — see that function's doc for why: without this,
+        // the barcode engine has no way to tell its own sled apart from some
+        // other Bluetooth device the phone happens to be paired with.
+        val sledIdentity = SledIdentity(name = device.name, address = device.address, serial = device.serialNumber)
         val recoveredFromBatchMode = connectRfid(rfid)
-        configurePostConnectSetup(rfid, triggerPersonality, scannerPluginMode)
+        configurePostConnectSetup(rfid, triggerPersonality, scannerPluginMode, sledIdentity)
         return VendorConnectResult(device.name ?: "RFID reader", recoveredFromBatchMode)
     }
 
@@ -426,6 +455,16 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
      * `Actions`/`Config` without checking them first — that is exactly how
      * the previous recovery attempt crashed (a `NullPointerException` on
      * `Actions.purgeTags()`; see `.superpowers/sdd/batchmode-report.md`).
+     *
+     * Now that [preventBatchMode] runs on every successful connect and
+     * leaves `BATCH_MODE.DISABLE` persisted, hitting
+     * `RFID_BATCHMODE_IN_PROGRESS` here at all is expected to become rare —
+     * this app no longer routinely leaves a reader in a state that causes
+     * it, so a real hit is more likely a sled that arrived already batching
+     * from some other source (e.g. Zebra's own 123RFID Mobile app) than
+     * anything this app itself did. This recovery path stays exactly as it
+     * is functionally either way: [preventBatchMode] is prevention, not a
+     * replacement for having a recovery path at all.
      */
     private fun recoverFromBatchMode(rfid: RFIDReader) {
         if (tryBatchModeRecoveryAvenue("PostConnectReaderUpdate()", rfid) { rfid.PostConnectReaderUpdate() }) return
@@ -522,15 +561,89 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         Log.w(TAG, "Batch-mode recovery: stored tags purged, batch mode disabled, saveConfig() ran.")
     }
 
+    /**
+     * Prevention, not just recovery: until now, the only defense against
+     * `RFID_BATCHMODE_IN_PROGRESS` was [recoverFromBatchMode] — reached only
+     * *after* a connect had already failed once. This runs on every
+     * successful connect instead, unconditionally, from
+     * [configurePostConnectSetup] — which itself already runs on every
+     * successful [connectRfid], whether that was the plain path or the
+     * batch-mode-recovery path — so from here on, this app leaves every
+     * reader it connects to with batch mode off and that turned-off state
+     * persisted, instead of only fixing it reactively the one time it's
+     * already caused a failure.
+     *
+     * Logged with a distinctive, greppable `"Batch-mode prevention: "`
+     * prefix — parallel to [purgeAndDisableBatchMode]'s own
+     * `"Batch-mode recovery: "` prefix — so this step's evidence (the
+     * before value, and, once changed, the after value) is easy to find in
+     * a device log (`adb logcat -s ZebraRfidReader`); that evidence is what
+     * proves this fix actually runs and actually works, the same reasoning
+     * behind nearly every other log line in this file.
+     *
+     * Never fails `connect()`: wrapped exactly the way every other
+     * non-essential vendor call in this file already is —
+     * `InterruptedException` rethrown as a real cancellation, `Exception`/
+     * `LinkageError` logged and degraded — the same idiom
+     * [tryBatchModeRecoveryAvenue] uses for its own vendor calls. A failure
+     * to read/set/save the batch-mode config here must never break an
+     * otherwise-successful connect.
+     */
+    private fun preventBatchMode(rfid: RFIDReader) {
+        try {
+            val config = rfid.Config
+            val before = config.getBatchModeConfig()
+            Log.w(TAG, "Batch-mode prevention: current batch mode is $before.")
+            if (before == BATCH_MODE.DISABLE) return
+            config.setBatchMode(BATCH_MODE.DISABLE)
+            // Persisted, not just set in memory — the same reasoning
+            // purgeAndDisableBatchMode's own saveConfig() call documents:
+            // batch mode is stored in the reader's own non-volatile config,
+            // so without this a power cycle could restore whatever was last
+            // saved there (most likely left on by a prior 123RFID Mobile
+            // session) and reintroduce RFID_BATCHMODE_IN_PROGRESS on some
+            // future connect despite this step having run.
+            config.saveConfig()
+            val after = config.getBatchModeConfig()
+            Log.w(TAG, "Batch-mode prevention: batch mode was $before, now disabled and saved (now reads $after).")
+        } catch (interrupt: InterruptedException) {
+            throw interrupt
+        } catch (e: Exception) {
+            Log.w(TAG, "Batch-mode prevention: reading/setting/saving batch mode threw; leaving it as-is.", e)
+        } catch (e: LinkageError) {
+            Log.w(TAG, "Batch-mode prevention: reading/setting/saving batch mode threw; leaving it as-is.", e)
+        }
+    }
+
     /** The post-connect setup every successful attempt needs, whether it
      *  connected normally or after [connectRfid] recovered from batch mode:
-     *  wire up [listener] and pin the physical trigger to immediate. Split
+     *  wire up [listener], pin the physical trigger to immediate, prevent
+     *  batch mode from recurring, and — last, and only for
+     *  [RfidTriggerPersonality.RFID] — stand the barcode imager down. Split
      *  out of [attemptVendorConnection] only so that function reads as one
-     *  attempt rather than two copies of this block. */
+     *  attempt rather than two copies of this block.
+     *
+     *  Ordering here is deliberate, not incidental — see [standDownBarcodeImager]'s
+     *  doc for the field evidence: [standDownBarcodeImager] talks to a
+     *  *different* Zebra SDK over the *same* shared Bluetooth stack this
+     *  function's own RFID calls use, and a slow/failed attempt on that
+     *  second SDK was observed tying the stack up long enough to break the
+     *  unguarded start/stop trigger pinning below — RFID setup that had
+     *  already succeeded. So every piece of setup this function treats as
+     *  safety-relevant and lets fail the whole connect (`configureTriggerMode`,
+     *  the start/stop trigger pinning) runs — and is fully settled — before
+     *  [standDownBarcodeImager] ever touches the Bluetooth stack, and
+     *  [standDownBarcodeImager] is bounded by its own wall-clock timeout (see
+     *  its doc) so it can never again tie that stack up for as long as it did
+     *  in that log. [preventBatchMode] runs in between: it only touches
+     *  `rfid.Config`, the same object the trigger pinning already used
+     *  successfully by that point, so there's no new contention risk in
+     *  running it before the barcode engine step. */
     private fun configurePostConnectSetup(
         rfid: RFIDReader,
         triggerPersonality: RfidTriggerPersonality,
         scannerPluginMode: ScannerPluginMode,
+        sledIdentity: SledIdentity,
     ) {
         rfid.Events.addEventsListener(listener)
         rfid.Events.setHandheldEvent(true)
@@ -545,18 +658,6 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         // still runs whether or not the radio/barcode switch actually took,
         // instead of one failed avenue aborting setup partway through.
         configureTriggerMode(rfid, triggerPersonality, scannerPluginMode)
-        // Only when the operator has the physical trigger driving the RFID
-        // radio does the barcode imager firing on the same pull actually
-        // corrupt anything — with BARCODE personality the imager firing is
-        // the point, so standing it down here would be actively wrong.
-        // Runs after configureTriggerMode() (which never throws except a
-        // real cancellation — see its doc) and standDownBarcodeImager()
-        // itself never throws either, so this cannot be mistaken for a
-        // trigger-mode failure and cannot abort the start/stop trigger
-        // pinning that follows.
-        if (triggerPersonality == RfidTriggerPersonality.RFID) {
-            standDownBarcodeImager()
-        }
         // Pin the reader's own start/stop trigger behavior to immediate: a
         // sled left on HANDHELD (its 123RFID Mobile default) would let its
         // own firmware decide when an inventory starts and stops, defeating
@@ -577,43 +678,145 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         // a best-effort convenience, so a throw here should fail the whole
         // connect() attempt exactly as it always has, via the ordinary
         // Exception/LinkageError handling in connect(). That is unchanged
-        // by this function's new configureTriggerMode() step: it runs
-        // first and never throws except a genuine cancellation, so a
-        // failure here can never be mistaken for a trigger-mode failure,
-        // and configureTriggerMode()'s own logging/connectNote work is
-        // already complete by the time any of this can throw.
+        // by this function's configureTriggerMode() step: it runs first and
+        // never throws except a genuine cancellation, so a failure here can
+        // never be mistaken for a trigger-mode failure, and
+        // configureTriggerMode()'s own logging/connectNote work is already
+        // complete by the time any of this can throw. Everything below this
+        // point runs only after all of the above has actually succeeded —
+        // see the class-level ordering note on this function's doc.
+        preventBatchMode(rfid)
+        // Only when the operator has the physical trigger driving the RFID
+        // radio does the barcode imager firing on the same pull actually
+        // corrupt anything — with BARCODE personality the imager firing is
+        // the point, so standing it down here would be actively wrong. This
+        // is deliberately the *last* thing this function does — see the
+        // ordering note on this function's own doc and [standDownBarcodeImager]'s
+        // doc for why.
+        if (triggerPersonality == RfidTriggerPersonality.RFID) {
+            standDownBarcodeImager(sledIdentity)
+        }
     }
 
-    /** Builds a [ZebraBarcodeEngine] and asks it to stand the sled's barcode
-     *  imager down — see that class's doc for the full story of why a
-     *  second Zebra SDK is needed at all. Only called from
-     *  [configurePostConnectSetup], and only when [RfidTriggerPersonality]
-     *  is RFID. [ZebraBarcodeEngine.standDown] never throws — it reduces
-     *  every outcome, success included, to an operator-facing sentence — so
-     *  this cannot fail the RFID connect it runs alongside; the `try`
-     *  around the call itself is the same belt-and-braces guard every other
-     *  vendor call site in this file uses, in case a future change to that
-     *  class ever lets something slip past its own guard. Appends to
-     *  [_connectNote] via [combineConnectNotes] rather than overwriting it,
-     *  the same reasoning [configureTriggerMode]'s own note-writing uses:
-     *  this and [configureTriggerMode] each leave an independently true
-     *  fact about the same connect attempt, and the operator should see
-     *  both. */
-    private fun standDownBarcodeImager() {
-        val engine = ZebraBarcodeEngine(context)
+    /** Builds a [ZebraBarcodeEngine] — identified by [sledIdentity] so it
+     *  matches candidates against this app's own sled rather than any other
+     *  paired Bluetooth device (see [chooseScanner]'s doc) — and asks it to
+     *  stand the sled's barcode imager down; see that class's doc for the
+     *  full story of why a second Zebra SDK is needed at all. Only called
+     *  from [configurePostConnectSetup], last, and only when
+     *  [RfidTriggerPersonality] is RFID — see that function's ordering note
+     *  for why "last" matters here specifically.
+     *
+     *  [ZebraBarcodeEngine.standDown] never throws — it reduces every
+     *  outcome, success included, to an operator-facing sentence — so
+     *  nothing it does can fail the RFID connect it runs alongside *by
+     *  throwing*. But the real field bug this function exists to prevent
+     *  was never a thrown exception: a real device log showed
+     *  [ZebraBarcodeEngine]'s attempt to reach the wrong device (see Bug 1)
+     *  taking roughly 13 seconds and tying up the phone's shared Bluetooth
+     *  stack for that whole time, which then made *separate,
+     *  already-succeeded* RFID SDK calls fail with
+     *  `RFID_OPERATION_IN_PROGRESS`. Bug 1 removes the "wrong device" half
+     *  of that (a sled this app can't positively identify is never
+     *  attempted at all), and [configurePostConnectSetup]'s reordering
+     *  removes the "breaks already-succeeded RFID setup" half by running
+     *  this after that setup is done — but a genuine, *correct*-device sled
+     *  can still be slow to answer, so [standDown] runs via
+     *  [runBarcodeStandDownWithTimeout] rather than being called directly
+     *  here: a plain, uninterruptible vendor call has no way to be bounded
+     *  by coroutine cancellation alone (see the class doc's
+     *  `runInterruptible` discussion — the same reasoning applies to a
+     *  second, nested blocking call like this one), so a real wall-clock
+     *  bound, independent of that, is what actually prevents a repeat of
+     *  the 13-second stall — see that function's doc for the mechanism and
+     *  the reasoning behind its exact timeout value.
+     *
+     *  Appends to [_connectNote] via [combineConnectNotes] rather than
+     *  overwriting it, the same reasoning [configureTriggerMode]'s own
+     *  note-writing uses: this and [configureTriggerMode] each leave an
+     *  independently true fact about the same connect attempt, and the
+     *  operator should see both. */
+    private fun standDownBarcodeImager(sledIdentity: SledIdentity) {
+        val engine = ZebraBarcodeEngine(context, sledIdentity)
         barcodeEngine = engine
-        val note = try {
-            engine.standDown()
+        val note = runBarcodeStandDownWithTimeout(engine)
+        _connectNote.value = combineConnectNotes(_connectNote.value, note)
+    }
+
+    /**
+     * Runs [engine]'s [ZebraBarcodeEngine.standDown] off this thread's own
+     * call stack, on a dedicated single-thread executor, and waits for it
+     * with a bounded `Future.get(timeoutMs, TimeUnit.MILLISECONDS)` — the
+     * `java.util.concurrent` mechanism [standDownBarcodeImager]'s doc
+     * points to instead of `withTimeout`/`withTimeoutOrNull`.
+     * [configurePostConnectSetup] (and everything that calls it, up to
+     * `connect()` itself) runs inside [runInterruptible] on [Dispatchers.IO]
+     * — a plain blocking call chain, not a suspend function — so a
+     * coroutine-based timeout cannot wrap it here without bridging back
+     * into a coroutine via `runBlocking` from already-blocking code, which
+     * this file's own `runInterruptible`/cancellation discipline (see the
+     * class doc) is built specifically to avoid needing. Running [engine]'s
+     * call on its own thread and bounding the wait with `Future.get`'s
+     * timeout sidesteps that entirely: it is a hard wall-clock bound with
+     * no dependency on coroutine machinery at all.
+     *
+     * [BARCODE_STAND_DOWN_TIMEOUT_MS] (see its own doc for the exact value
+     * and reasoning) is how long this function waits before giving up on
+     * [engine]. On a timeout, this deliberately does **not** call
+     * `future.cancel(true)`/interrupt the worker thread: this app has no
+     * way to know whether interrupting a vendor call mid-flight — inside a
+     * `.aar` it does not control the internals of — is safe, and getting
+     * that wrong risks a worse failure than the one this function exists to
+     * bound. Instead the executor is shut down with the ordinary
+     * (non-forcing) `shutdown()`, which lets an already-submitted task keep
+     * running to completion on its own thread even after this function has
+     * returned; whatever state that leaves in [engine] gets reconciled the
+     * conservative way — by [ZebraBarcodeEngine.tearDown], the next time
+     * this connection is torn down (see [disconnectBlocking]) — exactly the
+     * same "best-effort, never blocks the primary connect" contract this
+     * file already applies everywhere else a vendor call is not
+     * essential.
+     *
+     * `InterruptedException` from `future.get()` (this thread itself being
+     * interrupted — a real cancellation, e.g. `RfidController`'s 15s
+     * timeout landing here) is rethrown immediately, exactly like every
+     * other vendor call site in this file; it is deliberately not treated
+     * as a stand-down failure. `ExecutionException` — [engine.standDown]
+     * throwing despite its own contract that it never does — is handled
+     * only as a belt-and-braces guard, the same reasoning every other
+     * vendor call site in this file already uses for an `Exception`/
+     * `LinkageError` it doesn't expect either; `FutureTask` wraps both
+     * `Exception`s and `Error`s (including `LinkageError`) thrown from the
+     * submitted task the same way, as `ExecutionException`, so one catch
+     * covers both.
+     */
+    private fun runBarcodeStandDownWithTimeout(engine: ZebraBarcodeEngine): String {
+        val executor = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "ZebraBarcodeEngine-standDown").apply { isDaemon = true }
+        }
+        val future = executor.submit<String> { engine.standDown() }
+        // Non-forcing: see this function's doc for why a timeout here must
+        // not try to interrupt/cancel the in-flight vendor call.
+        executor.shutdown()
+        return try {
+            future.get(BARCODE_STAND_DOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         } catch (interrupt: InterruptedException) {
             throw interrupt
-        } catch (e: Exception) {
-            Log.w(TAG, "standDownBarcodeImager: ZebraBarcodeEngine.standDown() itself threw.", e)
-            "The sled's barcode imager couldn't be reached (${e.javaClass.simpleName}); it may still fire on a trigger pull."
-        } catch (e: LinkageError) {
-            Log.w(TAG, "standDownBarcodeImager: ZebraBarcodeEngine.standDown() itself threw a LinkageError.", e)
-            "The sled's barcode imager couldn't be reached (${e.javaClass.simpleName}); it may still fire on a trigger pull."
+        } catch (timeout: TimeoutException) {
+            Log.w(
+                TAG,
+                "standDownBarcodeImager: timed out after ${BARCODE_STAND_DOWN_TIMEOUT_MS}ms waiting for " +
+                    "ZebraBarcodeEngine.standDown() to finish; letting connect() proceed. This is a real, " +
+                    "expected outcome for a slow-to-answer (but correctly identified) sled now that Bug 1 no " +
+                    "longer wastes time reaching the wrong device — the attempt keeps running in the " +
+                    "background and whatever it leaves behind is reconciled by tearDown()/the next standDown().",
+            )
+            "The sled's barcode imager's stand-down is taking longer than expected; it may still fire on a trigger pull."
+        } catch (e: ExecutionException) {
+            val cause = e.cause ?: e
+            Log.w(TAG, "standDownBarcodeImager: ZebraBarcodeEngine.standDown() itself threw unexpectedly.", cause)
+            "The sled's barcode imager couldn't be reached (${cause.javaClass.simpleName}); it may still fire on a trigger pull."
         }
-        _connectNote.value = combineConnectNotes(_connectNote.value, note)
     }
 
     /**
