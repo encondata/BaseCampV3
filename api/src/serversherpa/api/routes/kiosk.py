@@ -241,9 +241,12 @@ async def heartbeat(
         raise _err(409, "serial_conflict")
     else:
         device.name = body.name
-        device.sub_type = kiosk_sub_type(body.mode, body.raw_info)
         device.version = body.version
+        # Merge first, then derive from the accumulated raw_info: a beat that
+        # omits `manufacturer`/`datawedge` must not demote a known Zebra back
+        # to plain `android` when the stored payload still identifies it.
         device.raw_info = {**(device.raw_info or {}), **body.raw_info}
+        device.sub_type = kiosk_sub_type(body.mode, device.raw_info)
         device.last_seen_at = now
         device.updated_at = now
     if body.sign_in:
