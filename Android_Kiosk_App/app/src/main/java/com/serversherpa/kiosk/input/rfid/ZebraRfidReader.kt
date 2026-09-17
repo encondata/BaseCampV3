@@ -1073,7 +1073,16 @@ open class ZebraRfidReader(private val context: Context, private val scope: Coro
         } catch (interrupt: InterruptedException) {
             throw interrupt
         } catch (e: Exception) {
-            Log.w(TAG, "Teardown: stopping the inventory before disconnect threw; continuing teardown anyway.", e)
+            // Expected, routine noise on most disconnects: Inventory.stop()
+            // throws whenever there was no inventory actually running to
+            // stop, which is the common case (a disconnect that never
+            // started scanning). Logged at a lower level than a genuine
+            // teardown problem so this line doesn't drown out real failures
+            // when grepping `adb logcat -s ZebraRfidReader` for teardown
+            // trouble — if this step is ever the actual cause of a bad
+            // disconnect, look here first, but expect to see it fire often
+            // and harmlessly.
+            Log.i(TAG, "Teardown: stopping the inventory before disconnect threw (expected when none was running); continuing teardown anyway.", e)
         } catch (e: LinkageError) {
             Log.w(TAG, "Teardown: stopping the inventory before disconnect threw; continuing teardown anyway.", e)
         }
@@ -1527,8 +1536,9 @@ internal const val BATCH_MODE_UNRECOVERABLE_MESSAGE =
         "completes one healthy connection with this sled, it turns batch mode off and keeps it off on " +
         "every disconnect, so the sled should not return to this state on its own again."
 
-/** Thrown by [ZebraRfidReader.recoverFromBatchMode] when neither
- *  `PostConnectReaderUpdate()` nor `reconnect()` leaves the reader usable.
+/** Thrown by [ZebraRfidReader.recoverFromBatchMode] when none of the three
+ *  avenues — `PostConnectReaderUpdate()`, `reconnect()`, or a bare second
+ *  `connect()` — leaves the reader usable.
  *  Unlike `OperationFailureException`/`InvalidUsageException`, this is a
  *  plain Kotlin exception this app defines itself — constructible from a
  *  test, which is what makes a real end-to-end test of this failure message

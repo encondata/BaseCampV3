@@ -306,10 +306,11 @@ class ZebraRfidReaderTest {
         assertTrue(message.endsWith("."))
     }
 
-    @Test fun aBatchModeRecoveryThatExhaustsBothAvenuesReportsTheFinalMessageRatherThanCrashingOrLooping() = runTest {
+    @Test fun aBatchModeRecoveryThatExhaustsAllThreeAvenuesReportsTheFinalMessageRatherThanCrashingOrLooping() = runTest {
         // Simulates recoverFromBatchMode() having tried
-        // PostConnectReaderUpdate() and reconnect() and given up — the one
-        // path openVendorConnection() itself cannot swallow or retry.
+        // PostConnectReaderUpdate(), reconnect(), and a bare second
+        // connect(), and given up — the one path openVendorConnection()
+        // itself cannot swallow or retry.
         val r = fakeReaderThatThrows(backgroundScope, BatchModeUnrecoverableException())
 
         val result = r.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
