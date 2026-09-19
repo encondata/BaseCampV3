@@ -130,6 +130,7 @@ const INITIATIVE: InitiativeDetailOut = {
   destination_logistics_partner_id: null,
   origin_vendor_involved: null, destination_vendor_involved: null,
   people_count: 1, links_count: 0,
+  parent_id: null, parent_role: null,
   archived_at: null, created_at: '2026-09-01T10:00:00Z',
   people: [PERSON],
   links_children: [], links_parents: [],

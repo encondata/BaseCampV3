@@ -182,11 +182,33 @@ async def _context(db: DbSession, initiatives: list[Initiative],
     parent_counts = dict((await db.execute(parents_q)).all()) if ids else {}
     link_counts = {i: child_counts.get(i, 0) + parent_counts.get(i, 0)
                    for i in ids}
-    return vocab, sites, clients, partners, people_counts, link_counts
+    # parent_id (and its chip role) obey the SAME scope as links_count: a
+    # child whose parent the actor cannot see gets None, so the id alone
+    # never confirms that an out-of-scope initiative exists. First link
+    # wins if a legacy row somehow has two -- the tree builder tolerates
+    # that too. `created_at` alone does not decide that: it defaults to
+    # transaction-scoped now(), so two links written in one transaction
+    # carry the identical timestamp and the winner would be whatever the
+    # planner returned first. `id` breaks the tie, so the same child gets
+    # the same parent on every request.
+    parent_q = (select(InitiativeLink.child_id, InitiativeLink.parent_id,
+                       InitiativeLink.role)
+                .join(Initiative, Initiative.id == InitiativeLink.parent_id)
+                .where(InitiativeLink.child_id.in_(ids))
+                .order_by(InitiativeLink.child_id, InitiativeLink.created_at,
+                          InitiativeLink.id))
+    if cond is not None:
+        parent_q = parent_q.where(cond)
+    parent_of: dict[uuid.UUID, tuple[uuid.UUID, str | None]] = {}
+    for child_id, parent_id, role in (
+            (await db.execute(parent_q)).all() if ids else []):
+        parent_of.setdefault(child_id, (parent_id, role))
+    return vocab, sites, clients, partners, people_counts, link_counts, parent_of
 
 
 def _item(i: Initiative, vocab: dict, sites: dict, clients: dict,
-          partners: dict, people_counts: dict, link_counts: dict) -> dict:
+          partners: dict, people_counts: dict, link_counts: dict,
+          parent_of: dict) -> dict:
     s_label, s_color = vocab["initiative"].get(
         i.status, (i.status, "#51606f"))
     t_label, t_color = vocab["initiative_type"].get(
@@ -227,6 +249,8 @@ def _item(i: Initiative, vocab: dict, sites: dict, clients: dict,
         "destination_vendor_involved": i.destination_vendor_involved,
         "people_count": people_counts.get(i.id, 0),
         "links_count": link_counts.get(i.id, 0),
+        "parent_id": parent_of.get(i.id, (None, None))[0],
+        "parent_role": parent_of.get(i.id, (None, None))[1],
         "archived_at": i.archived_at, "created_at": i.created_at,
     }
 
@@ -655,6 +679,17 @@ async def add_initiative_link(
     await db.execute(select(func.pg_advisory_xact_lock(LINK_GRAPH_LOCK_KEY)))
     if await _link_exists(db, initiative_id, body.child_id):
         raise _err(409, "duplicate_link")
+    # one parent per child: the list and timeline render a strict tree, and
+    # a UI-only guard could be bypassed. Legacy multi-parent rows (none
+    # exist) are tolerated by the readers; new ones are refused here.
+    # Excludes THIS parent so re-adding the exact same edge still falls
+    # through to the duplicate_link paths above/below (pre-check and, on a
+    # race, the IntegrityError catch) instead of being masked by this check.
+    if await db.scalar(select(InitiativeLink.id)
+                       .where(InitiativeLink.child_id == body.child_id,
+                              InitiativeLink.parent_id != initiative_id)
+                       .limit(1)):
+        raise _err(409, "already_has_parent")
     # cycle: the proposed child must not already be an ancestor of parent
     if body.child_id in await _ancestor_ids(db, initiative_id):
         raise _err(422, "circular_link")

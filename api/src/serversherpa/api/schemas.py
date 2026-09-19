@@ -1743,6 +1743,8 @@ class InitiativeItem(BaseModel):
     destination_vendor_involved: bool | None = None
     people_count: int = 0
     links_count: int = 0
+    parent_id: uuid.UUID | None = None
+    parent_role: str | None = None
     archived_at: datetime | None = None
     created_at: datetime
 

@@ -9,6 +9,7 @@ import type {
 import { boolTriToPatch, numberToPatch, type GodField } from './godEdit';
 import type { ColumnDef } from './listTools';
 import { displayRfid } from './format';
+import { parseApiDay } from './timeline';
 
 const day = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString() : '—';
@@ -79,6 +80,7 @@ export const INITIATIVE_ERRORS: Record<string, string> = {
   assignment_not_found: 'That assignment no longer exists.',
   self_link: 'An initiative cannot contain itself.',
   duplicate_link: 'Those initiatives are already linked.',
+  already_has_parent: 'That initiative is already inside another one. Remove the existing link first.',
   circular_link: 'That link would create a loop.',
   link_not_found: 'That link no longer exists.',
   forbidden: 'You do not have permission to change initiatives.',
@@ -570,4 +572,199 @@ export function legendCategories(blocks: RackBlock[]): LegendCategory[] {
     .sort((a, b) => a.label.localeCompare(b.label));
   if (uncategorized) out.push({ label: 'Uncategorized', color: UNCATEGORIZED_FILL });
   return out;
+}
+
+/* ── Hierarchy ──────────────────────────────────────────────────────────
+ * `initiative_links` makes one initiative the parent of another (a project
+ * contains its events). The list and the timeline both render that as
+ * nested rows, so the tree is built ONCE here, pure and page-agnostic, and
+ * both pages walk the flat result through their existing row markup.
+ * `InitiativeItem` satisfies `TreeItem` structurally.                     */
+
+export interface TreeItem {
+  id: string;
+  /** The API nulls this when the parent is outside the actor's scope, so a
+   *  child never points at an id whose existence it would leak. */
+  parent_id: string | null;
+  /** The link's role ("Event 1"), rendered as a chip after a child's name. */
+  parent_role?: string | null;
+  scheduled_start?: string | null;
+  scheduled_end?: string | null;
+}
+
+/** Compile-time only: a drift in api.ts's `InitiativeItem` (a dropped or
+ *  retyped field) must fail HERE, where the tree contract lives, and not
+ *  later in whichever page happens to pass the list through the builder.
+ *  Exported so `noUnusedLocals` leaves it alone. */
+type Extends<A extends B, B> = A;
+export type InitiativeItemIsTreeItem = Extends<InitiativeItem, TreeItem>;
+
+export interface InitiativeTreeRow<T extends TreeItem> {
+  item: T;
+  /** 0 for a root; one per level of nesting below it. */
+  depth: number;
+  /** True when expanding this row reveals something — i.e. `childCount > 0`. */
+  hasChildren: boolean;
+  /** Direct children that survive the page's filters, NOT the structural
+   *  count: a chevron that expands to nothing would be a lie. Unfiltered
+   *  (every id in `matched`) the two are the same number. */
+  childCount: number;
+  /** False only for a MATCHED node in `collapsed`; its subtree is then not
+   *  emitted. A context row is always expanded — collapsing it would hide
+   *  the very match it was pulled in to place. */
+  expanded: boolean;
+  /** An ancestor that does not itself match, kept so a matched descendant
+   *  keeps its place. Dimmed, not counted, not selectable. */
+  isContext: boolean;
+  /** `item.parent_role`, for the chip after a child's name. */
+  role: string | null;
+}
+
+/**
+ * Flatten `items` into render-ordered tree rows.
+ *
+ * @param items      already filtered to what the page may show at all, and
+ *                   already sorted — sibling order is input order, always.
+ * @param matched    ids passing the page's own filters/search. A row is
+ *                   emitted when it is matched or has a matched descendant
+ *                   (the latter flagged `isContext`); anything else is
+ *                   dropped entirely.
+ * @param collapsed  parent ids whose subtree is hidden.
+ *
+ * Roots are items with `parent_id === null` **or** whose parent is absent
+ * from `items`. An id already placed under one parent is never placed again
+ * (first occurrence wins) — new multi-parent links are refused by the API,
+ * but a legacy row must not duplicate a node or spin the walk forever.
+ */
+export function buildInitiativeTree<T extends TreeItem>(
+  items: readonly T[],
+  matched: ReadonlySet<string>,
+  collapsed: ReadonlySet<string>,
+): InitiativeTreeRow<T>[] {
+  const present = new Set(items.map((i) => i.id));
+  const roots: T[] = [];
+  const children = new Map<string, T[]>();
+  const placed = new Set<string>();
+
+  for (const item of items) {
+    if (placed.has(item.id)) continue;   // defensive: one home per id
+    placed.add(item.id);
+    const parentId = item.parent_id;
+    if (parentId === null || parentId === item.id || !present.has(parentId)) {
+      roots.push(item);
+    } else {
+      const sibs = children.get(parentId);
+      if (sibs) sibs.push(item);
+      else children.set(parentId, [item]);
+    }
+  }
+
+  /* Kept-ness is decided bottom-up before anything is emitted, so a matched
+   * leaf can still pull its ancestors in. Only nodes reachable from a root
+   * are ever visited, and the `placed` set above gives every id exactly one
+   * parent, so what is walked here is always a forest: a legacy cycle's
+   * members are simply never reached. */
+  const keep = new Map<string, boolean>();
+  const decide = (node: T): boolean => {
+    const cached = keep.get(node.id);
+    if (cached !== undefined) return cached;
+    /* Defensive and, as the construction above stands, unreachable: the
+     * walk is over a forest, so no node is ever re-entered. Kept as a
+     * cheap floor under any future change that loosens `placed`. */
+    keep.set(node.id, false);            // overwritten below
+    let ok = matched.has(node.id);
+    for (const kid of children.get(node.id) ?? []) if (decide(kid)) ok = true;
+    keep.set(node.id, ok);
+    return ok;
+  };
+  for (const r of roots) decide(r);
+
+  const out: InitiativeTreeRow<T>[] = [];
+  const emit = (node: T, depth: number) => {
+    if (!keep.get(node.id)) return;
+    const kids = (children.get(node.id) ?? []).filter((k) => keep.get(k.id));
+    const isContext = !matched.has(node.id);
+    /* A context row is force-expanded: it is only here to place a matched
+     * descendant, so honoring a stale collapse would swallow the one search
+     * result and leave the page reading "0 results" while a match exists.
+     * The collapsed set persists across sessions and is shared by both
+     * pages, so any user who ever collapsed a project would hit that. This
+     * is a no-op while nothing is filtered — then nothing is context. */
+    const expanded = !collapsed.has(node.id) || isContext;
+    out.push({
+      item: node,
+      depth,
+      hasChildren: kids.length > 0,
+      childCount: kids.length,
+      expanded,
+      isContext,
+      role: node.parent_role ?? null,
+    });
+    if (expanded) for (const kid of kids) emit(kid, depth + 1);
+  };
+  for (const r of roots) emit(r, 0);
+  return out;
+}
+
+/**
+ * The envelope a dateless parent borrows from its scheduled descendants —
+ * the honest answer to "when is this project?" when only its events carry
+ * dates. Returns null when `node` has a `scheduled_start` of its own (a real
+ * bar always wins; the derived span is never drawn over real dates) and when
+ * no descendant is scheduled at all.
+ *
+ * "Dates of its own" means a `scheduled_start`, exactly as `barFor` in
+ * lib/timeline.ts reads it: an end-only node draws no bar there, so
+ * suppressing its envelope too would leave its whole scheduled subtree
+ * looking unscheduled. Its own end date contributes nothing to the
+ * envelope — the span is the descendants' — but it no longer silences it.
+ *
+ * A descendant with only one of the two dates contributes it as both ends.
+ * Comparison goes through `parseApiDay` — the same reading the timeline
+ * gives these strings when it draws them — so the earliest/latest pair is
+ * the one the user sees, and two spellings of the same day ('…:00Z' and
+ * '…:00.000Z') never reorder. A raw `new Date(iso)` would agree only while
+ * every value is a midnight-UTC date-only string. The original strings are
+ * returned untouched.
+ */
+export function derivedSpan<T extends TreeItem>(
+  node: T, descendants: readonly T[],
+): { start: string; end: string } | null {
+  if (node.scheduled_start) return null;
+  let start: string | null = null;
+  let end: string | null = null;
+  const at = (iso: string) => parseApiDay(iso).getTime();
+  for (const d of descendants) {
+    const s = d.scheduled_start ?? d.scheduled_end;
+    const e = d.scheduled_end ?? d.scheduled_start;
+    if (!s || !e) continue;
+    if (start === null || at(s) < at(start)) start = s;
+    if (end === null || at(e) > at(end)) end = e;
+  }
+  return start !== null && end !== null ? { start, end } : null;
+}
+
+/** Collapsed parents, shared by the list and the timeline so collapsing a
+ *  project in one view collapses it in the other. Expanded is the default:
+ *  collapsed-by-default would hide the structure this exists to show. */
+export const COLLAPSED_KEY = 'initiatives.collapsed';
+
+/** The `containers.view` try/catch idiom — a private window or blocked
+ *  storage yields an empty set rather than throwing on render. */
+export function readCollapsed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_KEY);
+    if (!raw) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((v): v is string => typeof v === 'string'));
+  } catch {
+    return new Set();
+  }
+}
+
+export function writeCollapsed(s: ReadonlySet<string>): void {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...s]));
+  } catch { /* ignore — the set is a convenience, never load-bearing */ }
 }

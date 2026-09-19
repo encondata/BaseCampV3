@@ -41,8 +41,8 @@ import {
   type WorkerOption,
 } from '../lib/api';
 import {
-  INITIATIVE_ERRORS, INITIATIVE_GOD_FIELDS, initiativeCellText,
-  initiativeSearchText,
+  INITIATIVE_ERRORS, INITIATIVE_GOD_FIELDS, buildInitiativeTree,
+  initiativeCellText, initiativeSearchText, readCollapsed, writeCollapsed,
 } from '../lib/initiatives';
 import { ADMIN_RANK } from '../lib/access';
 import { initialOpenId } from '../lib/auditFormat';
@@ -249,25 +249,98 @@ export default function Initiatives() {
 
   const haystack = useSearchHaystacks(initiatives, initiativeSearchText);
 
-  const visible = useMemo(() => {
+  /* Everything the page may show AT ALL, in the current sort order — the
+   * tree's input. Only the archived facet narrows it, because an ancestor
+   * the actor can see has to stay available as context even when the
+   * type pill or a column filter excludes it; what the filters decide is
+   * `matchedIds`, not what renders. Siblings inherit this order: the
+   * builder never re-sorts. */
+  const sortedAll = useMemo(() => {
     if (!initiatives) return [];
-    const q = query.trim().toLowerCase();
     const showArchived = filters.archived?.values?.includes('Yes') ?? false;
-    const rows = initiatives.filter((i) => {
-      if (!showArchived && i.archived_at) return false;
-      if (typePill !== 'all' && i.initiative_type !== typePill) return false;
-      if (!passesColumnFilters(i, filters, cellText)) return false;
-      if (!q) return true;
-      return haystack(i).includes(q);
-    });
-    return rows.sort((a, b) =>
-      naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
-  }, [initiatives, filters, query, sortKey, sortDir, typePill, haystack, cellText]);
+    return initiatives
+      .filter((i) => showArchived || !i.archived_at)
+      .sort((a, b) =>
+        naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
+  }, [initiatives, filters, sortKey, sortDir]);
+
+  const matchedIds = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const out = new Set<string>();
+    for (const i of sortedAll) {
+      if (typePill !== 'all' && i.initiative_type !== typePill) continue;
+      if (!passesColumnFilters(i, filters, cellText)) continue;
+      if (q && !haystack(i).includes(q)) continue;
+      out.add(i.id);
+    }
+    return out;
+  }, [sortedAll, filters, query, typePill, haystack, cellText]);
+
+  const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsed);
+  const toggleCollapsed = (id: string) => setCollapsed((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+  /* Persisting is a side effect, so it lives in an effect and not in the
+   * updater above, which StrictMode double-invokes. The ref holds the set
+   * we last saw: on mount — and on StrictMode's second setup, which sees
+   * the very same object — it only records, never writes, because a write
+   * on mount would rewrite another tab's set with our own. */
+  const writtenCollapsed = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (writtenCollapsed.current === collapsed) return;
+    const firstSeen = writtenCollapsed.current === null;
+    writtenCollapsed.current = collapsed;
+    if (!firstSeen) writeCollapsed(collapsed);
+  }, [collapsed]);
+
+  const rows = useMemo(
+    () => buildInitiativeTree(sortedAll, matchedIds, collapsed),
+    [sortedAll, matchedIds, collapsed]);
+  /* Context ancestors are scaffolding, not results: they are not counted
+   * and not exported. Export stays the matched set rather than `rows` so a
+   * collapsed branch still exports its children. */
+  const matched = useMemo(
+    () => sortedAll.filter((i) => matchedIds.has(i.id)), [sortedAll, matchedIds]);
+  const shownCount = rows.filter((r) => !r.isContext).length;
 
   // Deep-link vs persisted-filter interplay — cloned from Containers.tsx.
   useEffect(() => {
-    if (!initiatives || !openId || visible.some((i) => i.id === openId)) return;
-    if (openId === deepLinkTarget.current && clearedDeepLink.current !== openId) {
+    if (!initiatives || !openId || rows.some((r) => r.item.id === openId)) return;
+    const isDeepLink = openId === deepLinkTarget.current;
+    /* Hidden only by a collapsed ancestor? Open the branch — a DEEP LINK
+     * asked for this row, and collapsing is a view convenience, not a
+     * filter. Gated on the deep-link ref, because for a row the user
+     * merely clicked open this branch would undo their very next collapse
+     * of its parent and leave the chevron looking dead. The one-shot
+     * `clearedDeepLink` guard the two branches below carry is theirs
+     * alone: dropping a collapse is idempotent and self-limiting, and an
+     * expand may still be owed after one of them has cleared a filter. */
+    const byId = new Map(sortedAll.map((i) => [i.id, i]));
+    if (isDeepLink && matchedIds.has(openId) && byId.has(openId)) {
+      const shut: string[] = [];
+      const seen = new Set<string>([openId]);
+      let pid = byId.get(openId)!.parent_id;
+      while (pid && !seen.has(pid)) {
+        seen.add(pid);
+        /* Only an ancestor that actually blocks: an unmatched one is a
+         * context row the builder force-expands anyway, so discarding its
+         * persisted collapse would cost the user their state for nothing. */
+        if (collapsed.has(pid) && matchedIds.has(pid)) shut.push(pid);
+        pid = byId.get(pid)?.parent_id ?? null;
+      }
+      if (shut.length > 0) {
+        setCollapsed((prev) => {
+          const next = new Set(prev);
+          for (const id of shut) next.delete(id);
+          return next;
+        });
+        return;
+      }
+    }
+    if (isDeepLink && clearedDeepLink.current !== openId) {
       clearedDeepLink.current = openId;
       const target = initiatives.find((i) => i.id === openId);
       if (target) {
@@ -283,14 +356,15 @@ export default function Initiatives() {
       }
     }
     setOpenId(null);
-  }, [initiatives, visible, openId, filters, clearFilters, typePill, cellText]);
+  }, [initiatives, rows, sortedAll, collapsed, matchedIds, openId, filters,
+      clearFilters, typePill, cellText]);
 
   useEffect(() => {
     if (deepLinkTarget.current
-        && visible.some((i) => i.id === deepLinkTarget.current)) {
+        && rows.some((r) => r.item.id === deepLinkTarget.current)) {
       deepLinkTarget.current = null;
     }
-  }, [visible]);
+  }, [rows]);
 
   const caret = (key: string) =>
     sortKey === key
@@ -384,13 +458,13 @@ export default function Initiatives() {
                    onChange={(e) => setQuery(e.target.value)} />
           </div>
           <span className="result-count">
-            {visible.length} of {initiatives?.length ?? 0} shown</span>
+            {shownCount} of {initiatives?.length ?? 0} shown</span>
           <FilterSummaryChip filters={filters} onClear={clearFilters} />
           <ColumnsButton columns={orderedCols} visible={visibleCols}
                          onChange={setVisibleCols} godMode={godMode}
                          onReorder={setColOrder} />
           <ExportButton onExport={() =>
-            exportCsv('initiatives', csvColumnsFor(shippingLabels), visible)} />
+            exportCsv('initiatives', csvColumnsFor(shippingLabels), matched)} />
           <GodEditToggle editing={god.editing} onToggle={god.toggle}
                          visible={godMode && canChange} />
           {canAdd && (
@@ -442,26 +516,55 @@ export default function Initiatives() {
                         onSort={(dir) => setSort('archived', dir)} />
           </div>
 
-          {initiatives && visible.length === 0 && (
+          {initiatives && rows.length === 0 && (
             <div className="dir-empty">
               <b>No matches</b>Try a different filter — or add an initiative.
               <EmptyClearFilters filters={filters} onClear={clearFilters} />
             </div>
           )}
 
-          <VirtualRows rows={visible}
-            renderRow={(i, vp) => {
-            const open = openId === i.id;
+          <VirtualRows rows={rows}
+            renderRow={(row, vp) => {
+            const i = row.item;
+            /* A context row is scaffolding, not a result: dimmed, uncounted
+             * and inert. It never reads as open either — a filter that turns
+             * an open row into context would otherwise leave a full-opacity
+             * detail panel, god-mode editing and all, under a dimmed head. */
+            const open = openId === i.id && !row.isContext;
             return (
               <div key={i.id}
-                   className={`dir-row ${open ? 'open' : ''} ${i.archived_at ? 'archived' : ''}`}
-                   {...vp} style={vp?.style}>
+                   className={`dir-row ${open ? 'open' : ''} ${i.archived_at ? 'archived' : ''} ${row.isContext ? 'context' : ''}`}
+                   {...vp}
+                   style={{ ...vp?.style, '--depth': row.depth } as CSSProperties}>
                 <div className="row-main" style={grid}
-                     onClick={() => {
+                     onClick={row.isContext ? undefined : () => {
                        deepLinkTarget.current = null;
                        setOpenId(open ? null : i.id);
                      }}>
                   <div className="cell cell-primary">
+                    {/* Gated on hasChildren, never on expanded — a leaf is
+                        "expanded" too, and a chevron that reveals nothing
+                        would be a lie. A context row is force-expanded by
+                        the builder whatever the collapsed set says, so its
+                        chevron would do nothing here and shut the branch
+                        later (and on the timeline) — it gets the spacer a
+                        leaf gets, so names at one depth still line up. */}
+                    {row.hasChildren && !row.isContext ? (
+                      <button type="button" className="tree-toggle"
+                              aria-expanded={row.expanded}
+                              aria-label={row.expanded ? 'Collapse' : 'Expand'}
+                              onClick={(e) => {
+                                e.stopPropagation();   // not the row's detail
+                                toggleCollapsed(i.id);
+                              }}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             strokeWidth="2.5" strokeLinecap="round"
+                             strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+                        <span className="tree-count">{row.childCount}</span>
+                      </button>
+                    ) : (
+                      <span className="tree-spacer" aria-hidden="true" />
+                    )}
                     {god.editing && godFieldFor('primary') ? (
                       <div className="pn god-primary-edit">
                         <GodCell row={i} gf={godFieldFor('primary')!}
@@ -472,6 +575,11 @@ export default function Initiatives() {
                     ) : (
                       <div className="pn"><b>{i.name}</b>
                         <span>{i.type_label}</span></div>
+                    )}
+                    {/* `role` survives on a depth-0 orphan whose parent is out
+                        of scope; the chip only makes sense under a parent. */}
+                    {row.role && row.depth > 0 && (
+                      <span className="chip c-slate">{row.role}</span>
                     )}
                   </div>
                   {shownCols.map((col) => (

@@ -5,8 +5,10 @@
  * covered by lib/timeline.test.ts; this covers what's page-specific:
  * rows + bars rendering, the unscheduled section, type/status filters,
  * cancelled hidden until the pill-check, Month view's day chips, the
- * ‹ › range navigation, the 45-day scale, and the month band above the
- * day ruler.
+ * ‹ › range navigation, the 45-day scale, the month band above the day
+ * ruler, and the hierarchy both views carry (nested rows and derived
+ * spans on the timeline, the shared collapsed set and `Parent › Child`
+ * segment labels on the calendar).
  *
  * A scheduled row's name renders twice when its bar is wide enough for
  * an inline label (once in the sticky `.pn b` row label, once in the
@@ -19,6 +21,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { InitiativeItem, StatusValue } from '../lib/api';
+import { COLLAPSED_KEY } from '../lib/initiatives';
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({ can: () => true }),
@@ -58,6 +61,7 @@ function initiative(over: Partial<InitiativeItem> = {}): InitiativeItem {
     destination_logistics_partner_id: null,
     origin_vendor_involved: null, destination_vendor_involved: null,
     people_count: 0, links_count: 0,
+    parent_id: null, parent_role: null,
     archived_at: null, created_at: '2026-01-01T00:00:00Z',
     ...over,
   };
@@ -426,4 +430,284 @@ it("leaves the timeline view's bars on their native title (calendar only)", asyn
   const bar = document.querySelector('.itl-bar') as HTMLElement;
   expect(bar.getAttribute('title')).toContain('Denver DC migration');
   expect(document.querySelector('.ihv-wrap')).toBeNull();
+});
+
+/* ── Hierarchy: nested rows, derived spans, calendar provenance ──────
+ * The flattening itself is covered by lib/initiatives.test.ts
+ * (buildInitiativeTree / derivedSpan); these cover what this page adds:
+ * the indent and chevron in the sticky row label, the outline bar a
+ * dateless parent borrows from its scheduled descendants, which rows the
+ * Unscheduled divider still owns, and the calendar's shared collapsed set
+ * and `Parent › Child` segment labels. */
+
+const PARENT = initiative({
+  id: 'p1', name: 'Denver DC migration',
+  initiative_type: 'project', type_label: 'Project',
+});
+const CHILD = initiative({
+  id: 'e1', name: 'Kickoff walkthrough',
+  initiative_type: 'event', type_label: 'Event',
+  parent_id: 'p1', parent_role: 'Event 1',
+  scheduled_start: '2026-09-07', scheduled_end: '2026-09-08',
+});
+
+const dateless = { scheduled_start: null, scheduled_end: null };
+
+/** Data rows only — the Unscheduled divider is an `.itl-row` too. */
+const itlRows = () =>
+  [...document.querySelectorAll('.itl-row:not(.itl-divider-row)')] as HTMLElement[];
+const itlRowNames = () =>
+  itlRows().map((r) => r.querySelector('.itl-row-label .pn b')?.textContent);
+const itlRowFor = (name: string) => itlRows().find(
+  (r) => r.querySelector('.itl-row-label .pn b')?.textContent === name) as HTMLElement;
+const chevronIn = (row: HTMLElement) =>
+  row.querySelector('button[aria-expanded]') as HTMLButtonElement | null;
+
+it('renders a child indented under its parent, with a chevron on the parent', async () => {
+  await renderPage([PARENT, CHILD]);
+  expect(itlRowNames()).toEqual(['Denver DC migration', 'Kickoff walkthrough']);
+
+  const parent = itlRowFor('Denver DC migration');
+  const child = itlRowFor('Kickoff walkthrough');
+  expect(parent.style.getPropertyValue('--depth')).toBe('0');
+  expect(child.style.getPropertyValue('--depth')).toBe('1');
+
+  // the link's role reads as a chip after a child's name, parent-side only
+  expect(child.querySelector('.itl-row-label .chip.c-slate')?.textContent)
+    .toBe('Event 1');
+  expect(parent.querySelector('.itl-row-label .chip.c-slate')).toBeNull();
+
+  const toggle = chevronIn(parent)!;
+  expect(toggle).not.toBeNull();
+  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toggle.getAttribute('aria-label')).toBe('Collapse');
+  expect(toggle.textContent).toContain('1');
+  // a leaf never offers a chevron, however "expanded" the builder calls it
+  expect(chevronIn(child)).toBeNull();
+});
+
+it('the chevron collapses the branch and writes the shared collapsed key', async () => {
+  await renderPage([PARENT, CHILD]);
+  expect(itlRowNames()).toHaveLength(2);
+
+  fireEvent.click(chevronIn(itlRowFor('Denver DC migration'))!);
+  expect(itlRowNames()).toEqual(['Denver DC migration']);
+  const toggle = chevronIn(itlRowFor('Denver DC migration'))!;
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  expect(toggle.getAttribute('aria-label')).toBe('Expand');
+  expect(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]')).toEqual(['p1']);
+
+  fireEvent.click(toggle);
+  expect(itlRowNames()).toEqual(['Denver DC migration', 'Kickoff walkthrough']);
+  expect(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]')).toEqual([]);
+});
+
+it('a dateless parent borrows an outline bar from its scheduled children', async () => {
+  await renderPage([
+    { ...PARENT, ...dateless },
+    CHILD,                                  // Sep 7 → Sep 8
+    initiative({
+      id: 'e2', name: 'Cutover weekend', parent_id: 'p1', parent_role: 'Event 2',
+      scheduled_start: '2026-09-12', scheduled_end: '2026-09-14',
+    }),
+  ]);
+  // a dateless parent with scheduled work is NOT unscheduled
+  expect(screen.queryByText('Unscheduled')).toBeNull();
+  expect(itlRowNames()).toEqual(
+    ['Denver DC migration', 'Kickoff walkthrough', 'Cutover weekend']);
+
+  const derived = itlRowFor('Denver DC migration')
+    .querySelector('.itl-bar.itl-bar-derived') as HTMLElement;
+  expect(derived).not.toBeNull();
+  expect(derived.getAttribute('title')).toBe('Derived from 2 scheduled initiatives');
+  // the envelope Sep 7 → Sep 14 inside the Sep 1 → Oct 1 month range
+  expect(parseFloat(derived.style.left)).toBeCloseTo((6 / 30) * 100, 4);
+  expect(parseFloat(derived.style.width)).toBeCloseTo((8 / 30) * 100, 4);
+  // never drawn as a real bar, and never over real dates
+  expect(document.querySelectorAll('.itl-bar-derived')).toHaveLength(1);
+});
+
+it('collects the envelope from the whole subtree, not just direct children', async () => {
+  await renderPage([
+    initiative({ id: 'g1', name: 'Program', ...dateless }),
+    initiative({
+      id: 's1', name: 'Site survey', parent_id: 'g1',
+      scheduled_start: '2026-09-05', scheduled_end: '2026-09-06',
+    }),
+    initiative({ id: 'p1', name: 'Phase two', parent_id: 'g1', ...dateless }),
+    initiative({                              // a GRANDCHILD sets the far end
+      id: 't1', name: 'Rack and stack', parent_id: 'p1',
+      scheduled_start: '2026-09-09', scheduled_end: '2026-09-11',
+    }),
+  ]);
+  const derived = itlRowFor('Program')
+    .querySelector('.itl-bar.itl-bar-derived') as HTMLElement;
+  expect(derived.getAttribute('title')).toBe('Derived from 2 scheduled initiatives');
+  // Sep 5 → Sep 11: without the grandchild it would stop at Sep 6
+  expect(parseFloat(derived.style.left)).toBeCloseTo((4 / 30) * 100, 4);
+  expect(parseFloat(derived.style.width)).toBeCloseTo((7 / 30) * 100, 4);
+});
+
+it('keeps a dateless root with no scheduled descendants under Unscheduled', async () => {
+  await renderPage([
+    { ...PARENT, ...dateless },
+    { ...CHILD, ...dateless },
+  ]);
+  expect(screen.getByText('Unscheduled')).not.toBeNull();
+  expect(document.querySelector('.itl-bar-derived')).toBeNull();
+  // the divider comes first; the branch keeps its shape below it
+  const divider = document.querySelector('.itl-divider-row') as HTMLElement;
+  const parent = itlRowFor('Denver DC migration');
+  expect(divider.compareDocumentPosition(parent) & Node.DOCUMENT_POSITION_FOLLOWING)
+    .toBeTruthy();
+  expect(itlRowFor('Kickoff walkthrough').style.getPropertyValue('--depth')).toBe('1');
+  expect(screen.getAllByText('No dates yet')).toHaveLength(2);
+});
+
+it('gives an end-only root a derived bar, not an Unscheduled heading', async () => {
+  // The edit modal's two date inputs are independent and neither is
+  // required, so a start-less, end-bearing initiative is reachable from
+  // the product's own form. It draws no real bar (barFor keys on
+  // scheduled_start), so it takes the envelope its scheduled child
+  // implies -- and the child must NOT be filed under "Unscheduled".
+  await renderPage([
+    { ...PARENT, scheduled_start: null, scheduled_end: '2026-09-20' },
+    CHILD,                                  // Sep 7 -> Sep 8
+  ]);
+  expect(screen.queryByText('Unscheduled')).toBeNull();
+  expect(itlRowNames()).toEqual(['Denver DC migration', 'Kickoff walkthrough']);
+
+  const parent = itlRowFor('Denver DC migration');
+  const derived = parent.querySelector('.itl-bar.itl-bar-derived') as HTMLElement;
+  expect(derived).not.toBeNull();
+  expect(derived.getAttribute('title')).toBe('Derived from 1 scheduled initiative');
+  // the envelope is the child's Sep 7 -> Sep 8, not the root's own end date
+  expect(parseFloat(derived.style.left)).toBeCloseTo((6 / 30) * 100, 4);
+  expect(parseFloat(derived.style.width)).toBeCloseTo((2 / 30) * 100, 4);
+  // an end alone is not a bar of its own
+  expect(parent.querySelectorAll('.itl-bar:not(.itl-bar-derived)')).toHaveLength(0);
+  expect(within(parent).queryByText('No dates yet')).toBeNull();
+  // the child keeps its real bar, nested where it belongs
+  const child = itlRowFor('Kickoff walkthrough');
+  expect(child.style.getPropertyValue('--depth')).toBe('1');
+  expect(child.querySelectorAll('.itl-bar:not(.itl-bar-derived)')).toHaveLength(1);
+});
+
+it('keeps an off-range parent as context so its in-range child stays nested', async () => {
+  // Pins the design: the pills and the range decide what MATCHES, and the
+  // tree is built over every row. Filtering the tree's INPUT by range
+  // instead would drop this parent and orphan the child at depth 0.
+  await renderPage([
+    { ...PARENT, scheduled_start: '2026-07-01', scheduled_end: '2026-07-10' },
+    CHILD,                                  // Sep 7 -> Sep 8, inside the range
+  ]);
+  expect(itlRowNames()).toEqual(['Denver DC migration', 'Kickoff walkthrough']);
+
+  const parent = itlRowFor('Denver DC migration');
+  expect(parent.classList.contains('context')).toBe(true);
+  expect(chevronIn(parent)).toBeNull();
+  expect(parent.querySelectorAll('.itl-bar')).toHaveLength(0);
+  // an empty track with no explanation reads as a bug
+  expect(within(parent).getByText('Scheduled outside this range')).not.toBeNull();
+
+  const child = itlRowFor('Kickoff walkthrough');
+  expect(child.style.getPropertyValue('--depth')).toBe('1');
+  expect(child.classList.contains('context')).toBe(false);
+  expect(child.querySelectorAll('.itl-bar')).toHaveLength(1);
+});
+
+it('leaves a dateless child nested under its scheduled parent', async () => {
+  await renderPage([PARENT, { ...CHILD, ...dateless }]);
+  // it must not jump out of the tree to the bottom of the page
+  expect(screen.queryByText('Unscheduled')).toBeNull();
+  expect(itlRowNames()).toEqual(['Denver DC migration', 'Kickoff walkthrough']);
+  const child = itlRowFor('Kickoff walkthrough');
+  expect(child.style.getPropertyValue('--depth')).toBe('1');
+  expect(within(child).getByText('No dates yet')).not.toBeNull();
+});
+
+it('a type pill matching only the child keeps the parent as a context row', async () => {
+  await renderPage([PARENT, CHILD]);
+  fireEvent.click(screen.getByRole('button', { name: /^Events/ }));
+
+  expect(itlRowNames()).toEqual(['Denver DC migration', 'Kickoff walkthrough']);
+  expect(itlRowFor('Denver DC migration').classList.contains('context')).toBe(true);
+  expect(itlRowFor('Kickoff walkthrough').classList.contains('context')).toBe(false);
+});
+
+it('a context row offers no chevron, and keeps its link to the detail page', async () => {
+  await renderPage([PARENT, CHILD]);
+  fireEvent.click(screen.getByRole('button', { name: /^Events/ }));
+
+  const parent = itlRowFor('Denver DC migration');
+  expect(parent.classList.contains('context')).toBe(true);
+  // the builder force-expands a context row, so a chevron here could not
+  // collapse anything — it would only write the id into the shared set and
+  // shut the branch later, here and in the list view
+  expect(chevronIn(parent)).toBeNull();
+  expect(itlRowNames()).toEqual(['Denver DC migration', 'Kickoff walkthrough']);
+  // dimmed, but a navigation is not inline editing: the name stays a link,
+  // and nothing in the stylesheet claims otherwise
+  expect(parent.querySelector('.itl-row-label a.pn')?.getAttribute('href'))
+    .toBe('/initiatives/p1');
+});
+
+/* ── Calendar: the shared collapsed set and `Parent › Child` labels ── */
+
+const spanNames = () =>
+  [...document.querySelectorAll('.itl-span-name')].map((s) => s.textContent);
+
+it("names a child's calendar segment after its parent", async () => {
+  await renderPage([
+    { ...PARENT, scheduled_start: '2026-09-05', scheduled_end: '2026-09-05' },
+    { ...CHILD, scheduled_start: '2026-09-12', scheduled_end: '2026-09-12' },
+  ]);
+  fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Calendar' }));
+  expect(spanNames()).toEqual([
+    'Denver DC migration',
+    'Denver DC migration › Kickoff walkthrough',
+  ]);
+});
+
+it('honors the timeline\'s collapsed set on the calendar', async () => {
+  localStorage.setItem(COLLAPSED_KEY, JSON.stringify(['p1']));
+  await renderPage([
+    { ...PARENT, scheduled_start: '2026-09-05', scheduled_end: '2026-09-05' },
+    { ...CHILD, scheduled_start: '2026-09-12', scheduled_end: '2026-09-12' },
+  ]);
+  fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Calendar' }));
+  expect(spanNames()).toEqual(['Denver DC migration']);
+});
+
+it('hides a grandchild under a collapsed grandparent on the calendar', async () => {
+  // The walk goes all the way up, not one level: p1 is expanded, so a
+  // single direct-parent check would leave the grandchild on the grid
+  // while its grandparent reads as collapsed.
+  localStorage.setItem(COLLAPSED_KEY, JSON.stringify(['g1']));
+  await renderPage([
+    initiative({
+      id: 'g1', name: 'Program',
+      scheduled_start: '2026-09-05', scheduled_end: '2026-09-05',
+    }),
+    initiative({
+      id: 'p1', name: 'Phase two', parent_id: 'g1',
+      scheduled_start: '2026-09-08', scheduled_end: '2026-09-08',
+    }),
+    initiative({
+      id: 't1', name: 'Rack and stack', parent_id: 'p1',
+      scheduled_start: '2026-09-12', scheduled_end: '2026-09-12',
+    }),
+  ]);
+  fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Calendar' }));
+  expect(spanNames()).toEqual(['Program']);
+});
+
+it('draws no calendar segment for a dateless parent — the envelope is timeline-only', async () => {
+  await renderPage([
+    { ...PARENT, ...dateless },
+    { ...CHILD, scheduled_start: '2026-09-12', scheduled_end: '2026-09-12' },
+  ]);
+  fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Calendar' }));
+  expect(document.querySelectorAll('.itl-span')).toHaveLength(1);
+  expect(spanNames()).toEqual(['Denver DC migration › Kickoff walkthrough']);
 });
