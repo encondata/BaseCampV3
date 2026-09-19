@@ -256,7 +256,16 @@
 .dir-row.open .row-main { background: rgba(var(--accent-rgb), 0.07); }
 
 .cell { min-width: 0; }
-.cell-primary { display: flex; align-items: center; gap: 12px; min-width: 0; }
+/* `--depth` is the tree indent a nested row (Initiatives.tsx) sets on
+   itself, so one rule serves every level; a flat list sets nothing and
+   reads as depth 0. */
+.cell-primary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding-left: calc(var(--depth, 0) * 20px);
+}
 .cell-primary .pn { min-width: 0; }
 .cell-primary .pn b {
   display: block;
@@ -277,6 +286,34 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ── tree rows: a parent's expand/collapse chevron and its child count,
+   and the dimmed context ancestor a filter drags along so a matched
+   child keeps its place in the hierarchy. ─────────────────────────── */
+.tree-toggle {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  margin-left: -4px;
+  padding: 3px 4px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--text-mute);
+  cursor: pointer;
+}
+.tree-toggle:hover { background: rgba(var(--accent-rgb), 0.14); color: var(--text-dark); }
+.tree-toggle svg { width: 12px; height: 12px; transition: transform 0.15s; }
+.tree-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+.tree-toggle .tree-count {
+  font-family: var(--font-mono);
+  font-size: var(--list-fs-primary-sub);
+}
+/* Scaffolding, not a result: dimmed, and it offers no hover affordance
+   because there is nothing to select here. */
+.dir-row.context .row-main { opacity: 0.55; cursor: default; }
+.dir-row.context .row-main:hover { background: none; }
 
 .cell .cell-top, .mini-row .cell-top, .data-table .cell-top { font-size: var(--list-fs-cell); color: var(--text-dark); }
 .cell .cell-sub, .mini-row .cell-sub, .data-table .cell-sub {
