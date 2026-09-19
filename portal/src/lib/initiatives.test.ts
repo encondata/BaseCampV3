@@ -1,13 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { InitiativeAssetRow, InitiativeItem, StatusValue } from './api';
 import {
-  deviceListRows, formFromInitiative, initiativeCellText, initiativePayload,
-  initiativeSearchText, legendCategories, MOVE_ASSET_EDIT_FIELDS, moveAssetCellText,
-  moveAssetProgress, moveAssetStatusBreakdown,
-  partnerOptionsForRole, rackLayout, sectionsForType, siteOptionsForClient,
+  buildInitiativeTree, COLLAPSED_KEY, derivedSpan, deviceListRows, formFromInitiative,
+  initiativeCellText, initiativePayload, initiativeSearchText, legendCategories,
+  MOVE_ASSET_EDIT_FIELDS, moveAssetCellText, moveAssetProgress, moveAssetStatusBreakdown,
+  partnerOptionsForRole, rackLayout, readCollapsed, sectionsForType, siteOptionsForClient,
+  writeCollapsed,
 } from './initiatives';
-import type { RackBlock } from './initiatives';
+import type { InitiativeTreeRow, RackBlock, TreeItem } from './initiatives';
 
 const row: InitiativeItem = {
   id: 'i1', name: 'Denver DC migration', description: null,
@@ -29,6 +30,7 @@ const row: InitiativeItem = {
   destination_cable_partner_id: null, destination_logistics_partner_id: null,
   origin_vendor_involved: null, destination_vendor_involved: null,
   people_count: 3, links_count: 1,
+  parent_id: null, parent_role: null,
   archived_at: null, created_at: '2026-08-24T00:00:00Z',
 };
 
@@ -655,5 +657,223 @@ describe('rackLayout ignores unplaced rows', () => {
       { ...base, id: 'one', source_ru: 1 },
     ] as InitiativeAssetRow[];
     expect(rackLayout(rows, 'R1', 'source').map((b) => b.id)).toEqual(['one']);
+  });
+});
+
+/* ── Hierarchy: buildInitiativeTree / derivedSpan / the collapsed set ──── */
+
+const n = (id: string, parent_id: string | null,
+           over: Partial<TreeItem> = {}): TreeItem => ({ id, parent_id, ...over });
+
+/** Every id matches — the unfiltered case most tests want. */
+const allOf = (items: readonly TreeItem[]) => new Set(items.map((i) => i.id));
+const NONE: ReadonlySet<string> = new Set<string>();
+
+/** Compact assertion shape: one tuple per emitted row. */
+const shape = (rows: InitiativeTreeRow<TreeItem>[]) =>
+  rows.map((r) => [r.item.id, r.depth, r.isContext, r.expanded,
+                   r.hasChildren, r.childCount]);
+
+describe('buildInitiativeTree', () => {
+  it('returns no rows for no items', () => {
+    expect(buildInitiativeTree([], NONE, NONE)).toEqual([]);
+  });
+
+  it('nests a three-level chain at depths 0/1/2', () => {
+    const items = [n('g', null), n('p', 'g'), n('c', 'p')];
+    expect(shape(buildInitiativeTree(items, allOf(items), NONE))).toEqual([
+      ['g', 0, false, true, true, 1],
+      ['p', 1, false, true, true, 1],
+      ['c', 2, false, true, false, 0],
+    ]);
+  });
+
+  it('keeps sibling order as given, for roots and for children', () => {
+    // Input order is deliberately NOT alphabetical: the caller has already
+    // sorted, and the builder must never re-sort.
+    const items = [n('z', null), n('a', null), n('z2', 'z'), n('z1', 'z')];
+    expect(buildInitiativeTree(items, allOf(items), NONE).map((r) => r.item.id))
+      .toEqual(['z', 'z2', 'z1', 'a']);
+  });
+
+  it('treats a child whose parent is not in the item set as a root', () => {
+    // The API nulls an out-of-scope parent_id, but a page-level filter can
+    // also drop a parent the child still points at.
+    const items = [n('orphan', 'missing'), n('r', null)];
+    expect(shape(buildInitiativeTree(items, allOf(items), NONE))).toEqual([
+      ['orphan', 0, false, true, false, 0],
+      ['r', 0, false, true, false, 0],
+    ]);
+  });
+
+  it('emits a collapsed node with expanded:false and hides its subtree', () => {
+    const items = [n('g', null), n('p', 'g'), n('c', 'p'), n('c2', 'p')];
+    const rows = buildInitiativeTree(items, allOf(items), new Set(['p']));
+    expect(shape(rows)).toEqual([
+      ['g', 0, false, true, true, 1],
+      ['p', 1, false, false, true, 2],
+    ]);
+  });
+
+  it('pulls unmatched ancestors in as context rows', () => {
+    const items = [n('g', null), n('p', 'g'), n('c', 'p')];
+    expect(shape(buildInitiativeTree(items, new Set(['c']), NONE))).toEqual([
+      ['g', 0, true, true, true, 1],
+      ['p', 1, true, true, true, 1],
+      ['c', 2, false, true, false, 0],
+    ]);
+  });
+
+  it('omits rows that are neither matched nor an ancestor of a match', () => {
+    const items = [n('a', null), n('b', null), n('b1', 'b')];
+    expect(buildInitiativeTree(items, new Set(['a']), NONE).map((r) => r.item.id))
+      .toEqual(['a']);
+  });
+
+  it('counts only children that survive the filter', () => {
+    // An honest chevron: expanding must reveal something.
+    const items = [n('p', null), n('c1', 'p'), n('c2', 'p')];
+    const rows = buildInitiativeTree(items, new Set(['p', 'c1']), NONE);
+    expect(shape(rows)).toEqual([
+      ['p', 0, false, true, true, 1],
+      ['c1', 1, false, true, false, 0],
+    ]);
+  });
+
+  it('places a defensively duplicated child once, under its first parent', () => {
+    // Legacy multi-parent rows must never duplicate a row or loop forever.
+    const items = [n('p1', null), n('p2', null), n('c', 'p1'), n('c', 'p2')];
+    const rows = buildInitiativeTree(items, allOf(items), NONE);
+    expect(shape(rows)).toEqual([
+      ['p1', 0, false, true, true, 1],
+      ['c', 1, false, true, false, 0],
+      ['p2', 0, false, true, false, 0],
+    ]);
+  });
+
+  it("takes each row's role from the item's own parent_role", () => {
+    const items = [n('p', null), n('c', 'p', { parent_role: 'Event 1' })];
+    expect(buildInitiativeTree(items, allOf(items), NONE).map((r) => r.role))
+      .toEqual([null, 'Event 1']);
+  });
+
+  it('does not hang on a legacy parent cycle', () => {
+    const items = [n('r', null), n('x', 'y'), n('y', 'x')];
+    expect(buildInitiativeTree(items, allOf(items), NONE).map((r) => r.item.id))
+      .toEqual(['r']);
+  });
+});
+
+describe('derivedSpan', () => {
+  const dated = (id: string, start: string | null, end: string | null) =>
+    n(id, 'p', { scheduled_start: start, scheduled_end: end });
+
+  it('returns null when the node has its own start', () => {
+    const node = n('p', null, { scheduled_start: '2026-05-01T00:00:00Z' });
+    expect(derivedSpan(node, [dated('c', '2026-01-01T00:00:00Z', null)])).toBeNull();
+  });
+
+  it('returns null when the node has its own end', () => {
+    const node = n('p', null, { scheduled_end: '2026-05-01T00:00:00Z' });
+    expect(derivedSpan(node, [dated('c', '2026-01-01T00:00:00Z', null)])).toBeNull();
+  });
+
+  it('returns null with no descendants', () => {
+    expect(derivedSpan(n('p', null), [])).toBeNull();
+  });
+
+  it('returns null when no descendant is scheduled', () => {
+    expect(derivedSpan(n('p', null), [dated('c', null, null)])).toBeNull();
+  });
+
+  it('spans the earliest start to the latest end across descendants', () => {
+    const kids = [
+      dated('c1', '2026-03-10T00:00:00Z', '2026-03-12T00:00:00Z'),
+      dated('c2', '2026-02-01T00:00:00Z', '2026-02-02T00:00:00Z'),
+      dated('c3', null, null),
+      dated('c4', '2026-03-01T00:00:00Z', '2026-04-20T00:00:00Z'),
+    ];
+    expect(derivedSpan(n('p', null), kids)).toEqual({
+      start: '2026-02-01T00:00:00Z', end: '2026-04-20T00:00:00Z',
+    });
+  });
+
+  it('falls back to a descendant start when it has no end', () => {
+    const kids = [dated('c1', '2026-06-05T00:00:00Z', null)];
+    expect(derivedSpan(n('p', null), kids)).toEqual({
+      start: '2026-06-05T00:00:00Z', end: '2026-06-05T00:00:00Z',
+    });
+  });
+
+  it('compares as dates, not as strings', () => {
+    // Same instants, differently formatted: a lexical min/max would pick
+    // the wrong pair here.
+    const kids = [
+      dated('c1', '2026-03-01T00:00:00.000Z', '2026-03-05T00:00:00Z'),
+      dated('c2', '2026-03-01T00:00:00Z', '2026-03-05T00:00:00.000Z'),
+    ];
+    const span = derivedSpan(n('p', null), kids);
+    expect(new Date(span!.start).getTime()).toBe(Date.parse('2026-03-01T00:00:00Z'));
+    expect(new Date(span!.end).getTime()).toBe(Date.parse('2026-03-05T00:00:00Z'));
+  });
+});
+
+describe('the shared collapsed set', () => {
+  /** A minimal in-memory Storage — the lib tests run without jsdom. */
+  function fakeStorage(): Storage & { map: Map<string, string> } {
+    const map = new Map<string, string>();
+    return {
+      map,
+      get length() { return map.size; },
+      clear: () => map.clear(),
+      getItem: (k: string) => (map.has(k) ? map.get(k)! : null),
+      key: (i: number) => [...map.keys()][i] ?? null,
+      removeItem: (k: string) => { map.delete(k); },
+      setItem: (k: string, v: string) => { map.set(k, v); },
+    } as Storage & { map: Map<string, string> };
+  }
+
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('round-trips a set through localStorage', () => {
+    const store = fakeStorage();
+    vi.stubGlobal('localStorage', store);
+    writeCollapsed(new Set(['a', 'b']));
+    expect(JSON.parse(store.getItem(COLLAPSED_KEY)!)).toEqual(['a', 'b']);
+    expect([...readCollapsed()]).toEqual(['a', 'b']);
+  });
+
+  it('reads an empty set when nothing is stored', () => {
+    vi.stubGlobal('localStorage', fakeStorage());
+    expect(readCollapsed().size).toBe(0);
+  });
+
+  it('reads an empty set when the stored value is not a string array', () => {
+    const store = fakeStorage();
+    store.setItem(COLLAPSED_KEY, '{"nope":1}');
+    vi.stubGlobal('localStorage', store);
+    expect(readCollapsed().size).toBe(0);
+  });
+
+  it('reads an empty set when the stored value is not JSON', () => {
+    const store = fakeStorage();
+    store.setItem(COLLAPSED_KEY, 'not json');
+    vi.stubGlobal('localStorage', store);
+    expect(readCollapsed().size).toBe(0);
+  });
+
+  it('survives storage that throws (a private window, blocked storage)', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () => { throw new Error('denied'); },
+      setItem: () => { throw new Error('denied'); },
+    } as unknown as Storage);
+    expect(readCollapsed().size).toBe(0);
+    expect(() => writeCollapsed(new Set(['a']))).not.toThrow();
+  });
+
+  it('survives no localStorage at all', () => {
+    vi.stubGlobal('localStorage', undefined);
+    expect(readCollapsed().size).toBe(0);
+    expect(() => writeCollapsed(new Set(['a']))).not.toThrow();
   });
 });

@@ -37,6 +37,7 @@ function initiative(over: Partial<InitiativeItem> = {}): InitiativeItem {
     destination_logistics_partner_id: null,
     origin_vendor_involved: null, destination_vendor_involved: null,
     people_count: 0, links_count: 0,
+    parent_id: null, parent_role: null,
     archived_at: null, created_at: '2026-01-01T00:00:00Z',
     ...over,
   };

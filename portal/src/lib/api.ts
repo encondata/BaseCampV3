@@ -2272,6 +2272,11 @@ export interface InitiativeItem {
   origin_vendor_involved: boolean | null;
   destination_vendor_involved: boolean | null;
   people_count: number; links_count: number;
+  /** The parent this initiative is linked under, or null — also null when
+   *  that parent is outside the actor's scope, so the id alone never
+   *  confirms an out-of-scope initiative exists (the `links_count`
+   *  invariant, extended). `parent_role` is that link's role. */
+  parent_id: string | null; parent_role: string | null;
   archived_at: string | null; created_at: string;
 }
 
