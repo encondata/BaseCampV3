@@ -433,12 +433,22 @@ async def test_parent_id_is_null_when_the_parent_is_out_of_scope(
     # the actor's own initiative) -- the actor may see the child but must
     # not learn the foreign parent's id.
     db.add(InitiativeLink(parent_id=ib.id, child_id=ia.id))
+    # The positive control: an in-scope link the SAME actor must still get
+    # back. Without it every assertion below also passes when the scoped
+    # parent query returns nothing at all.
+    ic = Initiative(name="Acme event", initiative_type="project",
+                    client_id=a.id)
+    db.add(ic)
+    await db.flush()
+    db.add(InitiativeLink(parent_id=ia.id, child_id=ic.id, role="Event 1"))
     await db.commit()
     hdrs = await client_login(db, client, a.id)
     rows = {r["name"]: r
             for r in (await client.get("/initiatives", headers=hdrs)).json()}
     assert "Bravo move" not in rows
     assert rows["Acme move"]["parent_id"] is None
+    assert rows["Acme event"]["parent_id"] == str(ia.id)
+    assert rows["Acme event"]["parent_role"] == "Event 1"
 
 
 async def test_global_staff_writes_unaffected(client, db, seeded_user):

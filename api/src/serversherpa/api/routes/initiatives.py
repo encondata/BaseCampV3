@@ -186,12 +186,17 @@ async def _context(db: DbSession, initiatives: list[Initiative],
     # child whose parent the actor cannot see gets None, so the id alone
     # never confirms that an out-of-scope initiative exists. First link
     # wins if a legacy row somehow has two -- the tree builder tolerates
-    # that too.
+    # that too. `created_at` alone does not decide that: it defaults to
+    # transaction-scoped now(), so two links written in one transaction
+    # carry the identical timestamp and the winner would be whatever the
+    # planner returned first. `id` breaks the tie, so the same child gets
+    # the same parent on every request.
     parent_q = (select(InitiativeLink.child_id, InitiativeLink.parent_id,
                        InitiativeLink.role)
                 .join(Initiative, Initiative.id == InitiativeLink.parent_id)
                 .where(InitiativeLink.child_id.in_(ids))
-                .order_by(InitiativeLink.child_id, InitiativeLink.created_at))
+                .order_by(InitiativeLink.child_id, InitiativeLink.created_at,
+                          InitiativeLink.id))
     if cond is not None:
         parent_q = parent_q.where(cond)
     parent_of: dict[uuid.UUID, tuple[uuid.UUID, str | None]] = {}

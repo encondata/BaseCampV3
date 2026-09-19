@@ -9,6 +9,7 @@ import type {
 import { boolTriToPatch, numberToPatch, type GodField } from './godEdit';
 import type { ColumnDef } from './listTools';
 import { displayRfid } from './format';
+import { parseApiDay } from './timeline';
 
 const day = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString() : '—';
@@ -591,6 +592,13 @@ export interface TreeItem {
   scheduled_end?: string | null;
 }
 
+/** Compile-time only: a drift in api.ts's `InitiativeItem` (a dropped or
+ *  retyped field) must fail HERE, where the tree contract lives, and not
+ *  later in whichever page happens to pass the list through the builder.
+ *  Exported so `noUnusedLocals` leaves it alone. */
+type Extends<A extends B, B> = A;
+export type InitiativeItemIsTreeItem = Extends<InitiativeItem, TreeItem>;
+
 export interface InitiativeTreeRow<T extends TreeItem> {
   item: T;
   /** 0 for a root; one per level of nesting below it. */
@@ -601,7 +609,9 @@ export interface InitiativeTreeRow<T extends TreeItem> {
    *  count: a chevron that expands to nothing would be a lie. Unfiltered
    *  (every id in `matched`) the two are the same number. */
   childCount: number;
-  /** False only for a node in `collapsed`; its subtree is then not emitted. */
+  /** False only for a MATCHED node in `collapsed`; its subtree is then not
+   *  emitted. A context row is always expanded — collapsing it would hide
+   *  the very match it was pulled in to place. */
   expanded: boolean;
   /** An ancestor that does not itself match, kept so a matched descendant
    *  keeps its place. Dimmed, not counted, not selectable. */
@@ -651,12 +661,17 @@ export function buildInitiativeTree<T extends TreeItem>(
 
   /* Kept-ness is decided bottom-up before anything is emitted, so a matched
    * leaf can still pull its ancestors in. Only nodes reachable from a root
-   * are ever visited, which is also what makes a legacy cycle harmless. */
+   * are ever visited, and the `placed` set above gives every id exactly one
+   * parent, so what is walked here is always a forest: a legacy cycle's
+   * members are simply never reached. */
   const keep = new Map<string, boolean>();
   const decide = (node: T): boolean => {
     const cached = keep.get(node.id);
     if (cached !== undefined) return cached;
-    keep.set(node.id, false);            // cycle guard, overwritten below
+    /* Defensive and, as the construction above stands, unreachable: the
+     * walk is over a forest, so no node is ever re-entered. Kept as a
+     * cheap floor under any future change that loosens `placed`. */
+    keep.set(node.id, false);            // overwritten below
     let ok = matched.has(node.id);
     for (const kid of children.get(node.id) ?? []) if (decide(kid)) ok = true;
     keep.set(node.id, ok);
@@ -668,14 +683,21 @@ export function buildInitiativeTree<T extends TreeItem>(
   const emit = (node: T, depth: number) => {
     if (!keep.get(node.id)) return;
     const kids = (children.get(node.id) ?? []).filter((k) => keep.get(k.id));
-    const expanded = !collapsed.has(node.id);
+    const isContext = !matched.has(node.id);
+    /* A context row is force-expanded: it is only here to place a matched
+     * descendant, so honoring a stale collapse would swallow the one search
+     * result and leave the page reading "0 results" while a match exists.
+     * The collapsed set persists across sessions and is shared by both
+     * pages, so any user who ever collapsed a project would hit that. This
+     * is a no-op while nothing is filtered — then nothing is context. */
+    const expanded = !collapsed.has(node.id) || isContext;
     out.push({
       item: node,
       depth,
       hasChildren: kids.length > 0,
       childCount: kids.length,
       expanded,
-      isContext: !matched.has(node.id),
+      isContext,
       role: node.parent_role ?? null,
     });
     if (expanded) for (const kid of kids) emit(kid, depth + 1);
@@ -692,8 +714,12 @@ export function buildInitiativeTree<T extends TreeItem>(
  * descendant is scheduled at all.
  *
  * A descendant with only one of the two dates contributes it as both ends.
- * Comparison is by instant, not by string: two spellings of the same time
- * ('…:00Z' and '…:00.000Z') must not reorder.
+ * Comparison goes through `parseApiDay` — the same reading the timeline
+ * gives these strings when it draws them — so the earliest/latest pair is
+ * the one the user sees, and two spellings of the same day ('…:00Z' and
+ * '…:00.000Z') never reorder. A raw `new Date(iso)` would agree only while
+ * every value is a midnight-UTC date-only string. The original strings are
+ * returned untouched.
  */
 export function derivedSpan<T extends TreeItem>(
   node: T, descendants: readonly T[],
@@ -701,7 +727,7 @@ export function derivedSpan<T extends TreeItem>(
   if (node.scheduled_start || node.scheduled_end) return null;
   let start: string | null = null;
   let end: string | null = null;
-  const at = (iso: string) => new Date(iso).getTime();
+  const at = (iso: string) => parseApiDay(iso).getTime();
   for (const d of descendants) {
     const s = d.scheduled_start ?? d.scheduled_end;
     const e = d.scheduled_end ?? d.scheduled_start;

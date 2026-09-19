@@ -715,6 +715,18 @@ describe('buildInitiativeTree', () => {
     ]);
   });
 
+  it('does not care whether a child arrives before its parent', () => {
+    // Every other tree test lists parents first. The builder indexes in a
+    // single pass over `items`, so a child-first input (a different sort,
+    // a page that appends a freshly linked row) must build the same tree.
+    const items = [n('c', 'p'), n('p', 'g'), n('g', null)];
+    expect(shape(buildInitiativeTree(items, allOf(items), NONE))).toEqual([
+      ['g', 0, false, true, true, 1],
+      ['p', 1, false, true, true, 1],
+      ['c', 2, false, true, false, 0],
+    ]);
+  });
+
   it('pulls unmatched ancestors in as context rows', () => {
     const items = [n('g', null), n('p', 'g'), n('c', 'p')];
     expect(shape(buildInitiativeTree(items, new Set(['c']), NONE))).toEqual([
@@ -722,6 +734,29 @@ describe('buildInitiativeTree', () => {
       ['p', 1, true, true, true, 1],
       ['c', 2, false, true, false, 0],
     ]);
+  });
+
+  it('force-expands a context ancestor, so a stale collapse cannot hide the only match', () => {
+    // The collapsed set persists across sessions and is shared by the list
+    // and the timeline: without this, anyone who had ever collapsed 'g'
+    // would search, get a single dimmed row, and read a count of 0 (context
+    // rows are not counted) while a real match sat inside it.
+    const items = [n('g', null), n('p', 'g'), n('c', 'p')];
+    const rows = buildInitiativeTree(items, new Set(['c']), new Set(['g']));
+    expect(shape(rows)).toEqual([
+      ['g', 0, true, true, true, 1],
+      ['p', 1, true, true, true, 1],
+      ['c', 2, false, true, false, 0],
+    ]);
+  });
+
+  it('still honors a collapse on a MATCHED row while filtering', () => {
+    // The force-expand is scoped to context rows: a row the user can see
+    // as a result of its own keeps its chevron state.
+    const items = [n('p', null), n('c', 'p')];
+    const rows = buildInitiativeTree(items, new Set(['p', 'c']),
+                                     new Set(['p']));
+    expect(shape(rows)).toEqual([['p', 0, false, false, true, 1]]);
   });
 
   it('omits rows that are neither matched nor an ancestor of a match', () => {
@@ -757,7 +792,11 @@ describe('buildInitiativeTree', () => {
       .toEqual([null, 'Event 1']);
   });
 
-  it('does not hang on a legacy parent cycle', () => {
+  it('omits a legacy parent cycle entirely (and does not hang)', () => {
+    // Pins OMISSION: neither cycle member is reachable from a root, so the
+    // walk never sees them. The `keep` pre-seed inside `decide` is a
+    // defensive floor, not what makes this pass -- delete it and this test
+    // still passes.
     const items = [n('r', null), n('x', 'y'), n('y', 'x')];
     expect(buildInitiativeTree(items, allOf(items), NONE).map((r) => r.item.id))
       .toEqual(['r']);
@@ -806,15 +845,34 @@ describe('derivedSpan', () => {
   });
 
   it('compares as dates, not as strings', () => {
-    // Same instants, differently formatted: a lexical min/max would pick
-    // the wrong pair here.
+    // Both children cover the same two DAYS, spelled differently. Lexically
+    // c2's start sorts before c1's ('.' < 'Z') and c2's end sorts after it,
+    // so a string min/max returns c2's spellings for both ends, while the
+    // day compare ties and keeps the first-seen c1 ones. Asserting the
+    // exact strings (not the instants) is what kills the string mutant --
+    // the instants are equal by construction, which is why the earlier
+    // version of this test passed either way.
     const kids = [
-      dated('c1', '2026-03-01T00:00:00.000Z', '2026-03-05T00:00:00Z'),
-      dated('c2', '2026-03-01T00:00:00Z', '2026-03-05T00:00:00.000Z'),
+      dated('c1', '2026-03-01T00:00:00Z', '2026-03-05T00:00:00Z'),
+      dated('c2', '2026-03-01T00:00:00.000Z', '2026-03-05T23:30:00Z'),
     ];
-    const span = derivedSpan(n('p', null), kids);
-    expect(new Date(span!.start).getTime()).toBe(Date.parse('2026-03-01T00:00:00Z'));
-    expect(new Date(span!.end).getTime()).toBe(Date.parse('2026-03-05T00:00:00Z'));
+    expect(derivedSpan(n('p', null), kids)).toEqual({
+      start: '2026-03-01T00:00:00Z', end: '2026-03-05T00:00:00Z',
+    });
+  });
+
+  it('reads an offset-bearing spelling as the day it is drawn on', () => {
+    // '2026-02-28T23:00:00-05:00' is Mar 1 04:00 UTC as an instant, but
+    // parseApiDay -- and so the timeline bar, and the list's date cell --
+    // reads the leading digits and puts it on Feb 28. The span must agree
+    // with the pixels, so the February string is the earlier one here.
+    const kids = [
+      dated('c1', '2026-03-01T00:00:00Z', '2026-03-01T00:00:00Z'),
+      dated('c2', '2026-02-28T23:00:00-05:00', '2026-02-28T23:00:00-05:00'),
+    ];
+    expect(derivedSpan(n('p', null), kids)).toEqual({
+      start: '2026-02-28T23:00:00-05:00', end: '2026-03-01T00:00:00Z',
+    });
   });
 });
 
