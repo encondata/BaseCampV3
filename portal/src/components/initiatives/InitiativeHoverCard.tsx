@@ -109,8 +109,14 @@ function chipStyle(color: string): CSSProperties {
   return { '--chip': color } as CSSProperties;
 }
 
-export default function InitiativeHoverCard({ item, className, style, children }: {
+export default function InitiativeHoverCard({
+  item, name, className, style, children,
+}: {
   item: InitiativeItem;
+  /** The heading, when the caller has a better one than the plain name —
+   *  the calendar passes `Parent › Child` so a child's provenance is
+   *  on the card as well as on the bar. Defaults to `item.name`. */
+  name?: string;
   /** Extra classes for the wrapper. */
   className?: string;
   /** Inline styles for the wrapper. */
@@ -175,7 +181,7 @@ export default function InitiativeHoverCard({ item, className, style, children }
       {pos && createPortal(
         <div className="ihv-card" role="tooltip"
              style={{ left: pos.left, top: pos.top }}>
-          <span className="ihv-name">{item.name}</span>
+          <span className="ihv-name">{name ?? item.name}</span>
           <span className="ihv-tags">
             <span className="chip custom" style={chipStyle(item.status_color)}>
               <span className="dot" />{item.status_label}

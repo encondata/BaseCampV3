@@ -119,6 +119,9 @@
 }
 .itl-row:last-child { border-bottom: 0; }
 
+/* `--depth` is the tree indent the row sets on itself (the
+   `.cell-primary` idiom in directory.css), so one rule serves every
+   level and a flat row reads as depth 0. */
 .itl-row-label {
   position: sticky;
   left: 0;
@@ -127,9 +130,10 @@
   flex: 0 0 260px;
   background: var(--surface);
   border-right: 1px solid var(--paper-line);
-  padding: 10px 14px;
+  padding: 10px 14px 10px calc(14px + var(--depth, 0) * 16px);
   display: flex;
   align-items: center;
+  gap: 8px;
   overflow: hidden;
 }
 .itl-row-label .pn {
@@ -140,6 +144,10 @@
 
 .itl-divider-row .itl-row-label { background: var(--surface-2); }
 .itl-divider { color: var(--text-mute); }
+
+/* An ancestor a filter dragged along so a matched descendant keeps its
+   place: scaffolding, not a result, so it is dimmed throughout. */
+.itl-row.context { opacity: 0.55; }
 
 .itl-row-bars {
   position: relative;
@@ -158,6 +166,14 @@
   overflow: hidden;
   padding: 0 6px;
 }
+/* The envelope a dateless parent borrows from its scheduled
+   descendants: an outline, never a fill, so it never reads as dates of
+   its own next to a real bar. */
+.itl-bar-derived {
+  background: none;
+  border: 1px dashed var(--chip);
+}
+
 .itl-bar-label {
   color: #fff;
   white-space: nowrap;

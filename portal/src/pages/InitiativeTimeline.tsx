@@ -12,9 +12,18 @@
  * toolbar state cleanly, so this follows the same plain-localStorage
  * idiom as Warehouse.tsx's remembered site). The range anchor date is
  * session state only, per the design spec.
+ *
+ * Hierarchy: both views read the same tree as Initiatives.tsx
+ * (lib/initiatives.ts's buildInitiativeTree) and the same collapsed set
+ * under `initiatives.collapsed`, so a project collapsed in one view is
+ * collapsed in the others. The timeline nests rows with a chevron and an
+ * indent, and gives a dateless parent the outline bar its scheduled
+ * descendants imply; the calendar, which has no rows to indent, shows
+ * the hierarchy as `Parent › Child` on a child's segment and draws no
+ * derived envelope at all.
  */
 
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 
 import ComboBox from '../components/ComboBox';
@@ -24,6 +33,10 @@ import {
   type InitiativeItem, type StatusValue,
 } from '../lib/api';
 import { longDateOf } from '../lib/format';
+import {
+  buildInitiativeTree, derivedSpan, readCollapsed, writeCollapsed,
+  type InitiativeTreeRow,
+} from '../lib/initiatives';
 import {
   barFor, calendarWeeks, monthBandsFor, monthGrid, parseApiDay, rangeFor, realBarFor,
   sortForTimeline, ticksFor, type CalendarSegment, type TimelineBar, type TimelineRange,
@@ -186,6 +199,29 @@ export default function InitiativeTimeline() {
     });
   }, [initiatives, showCancelled, typePill, statusPill, clientId]);
 
+  /* Everything this page may show AT ALL, in row order — the tree's
+   * input, and the map both views walk for parents and descendants.
+   * Only the archived facet narrows it: an ancestor excluded by a pill
+   * still has to be available as context under a matched child, and a
+   * dateless parent still borrows its envelope from descendants the
+   * pills hide. What the pills decide is `filtered`, not what renders. */
+  const sortedAll = useMemo(
+    () => sortForTimeline((initiatives ?? []).filter((i) => !i.archived_at)),
+    [initiatives]);
+
+  /* Shared with the list view under `initiatives.collapsed`, and with the
+   * calendar below, so collapsing a project anywhere collapses it
+   * everywhere. Read once on mount and written only on a toggle — a
+   * write on mount would rewrite another tab's set with our own. */
+  const [collapsed, setCollapsed] = useState<Set<string>>(readCollapsed);
+  const toggleCollapsed = useCallback((id: string) => setCollapsed((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    writeCollapsed(next);
+    return next;
+  }), []);
+
   const rangeLabel = view === 'calendar'
     ? `${MONTH_NAMES[anchor.getMonth()]} ${anchor.getFullYear()}`
     : null;
@@ -282,11 +318,13 @@ export default function InitiativeTimeline() {
       {!error && initiatives === null && <div className="dir-empty"><b>Loading…</b></div>}
 
       {!error && initiatives !== null && view === 'timeline' && (
-        <TimelineGrid items={filtered} anchor={anchor} scale={scale} />
+        <TimelineGrid items={filtered} all={sortedAll} anchor={anchor} scale={scale}
+                      collapsed={collapsed} onToggle={toggleCollapsed} />
       )}
 
       {!error && initiatives !== null && view === 'calendar' && (
-        <CalendarMonth items={filtered} anchor={anchor} />
+        <CalendarMonth items={filtered} all={sortedAll} anchor={anchor}
+                       collapsed={collapsed} />
       )}
     </div>
   );
@@ -294,9 +332,41 @@ export default function InitiativeTimeline() {
 
 /* ── Timeline view ────────────────────────────────────────────────── */
 
+/** One rendered timeline row: a tree row plus what its bar track shows.
+ *  `real` — the initiative's own scheduled dates. `derived` — the
+ *  envelope a dateless parent borrows from its scheduled descendants,
+ *  drawn as an outline bar. `none` — no dates anywhere beneath it.
+ *  `bar` is null on a `real`/`derived` row whose span falls outside the
+ *  visible range; the row keeps its place (a descendant may still be in
+ *  range) and simply draws nothing. */
+interface DrawnRow {
+  row: InitiativeTreeRow<InitiativeItem>;
+  kind: 'real' | 'derived' | 'none';
+  bar: TimelineBar | null;
+  realBar: TimelineBar | null;
+  /** `derived` only: how many scheduled descendants the envelope covers. */
+  derivedFrom: number;
+}
+
+/** The outline bar's tooltip. Pluralized rather than the flat wording the
+ *  spec sketched — a project with one scheduled event is the common case,
+ *  and "1 scheduled initiatives" reads as a bug. */
+function derivedTitle(n: number): string {
+  return `Derived from ${n} scheduled initiative${n === 1 ? '' : 's'}`;
+}
+
 function TimelineGrid({
-  items, anchor, scale,
-}: { items: InitiativeItem[]; anchor: Date; scale: TimelineScale }) {
+  items, all, anchor, scale, collapsed, onToggle,
+}: {
+  items: InitiativeItem[];
+  /** Every non-archived initiative, in row order — the tree's input and
+   *  the source of the derived envelopes, both of which have to see past
+   *  the toolbar pills. */
+  all: InitiativeItem[];
+  anchor: Date; scale: TimelineScale;
+  collapsed: ReadonlySet<string>;
+  onToggle: (id: string) => void;
+}) {
   const range = useMemo(() => rangeFor(anchor, scale), [anchor, scale]);
   const ticks = useMemo(() => ticksFor(range, scale), [range, scale]);
   // The day/week rulers read as "… 29 30 1 2 …" across a month boundary, so
@@ -307,15 +377,103 @@ function TimelineGrid({
   const today = useMemo(() => startOfToday(), []);
   const todayPct = useMemo(() => pctForDate(today, range), [today, range]);
 
-  const sorted = useMemo(() => sortForTimeline(items), [items]);
-  const scheduledRows = useMemo(() => {
-    const rows = sorted
-      .filter((i) => i.scheduled_start)
-      .map((item) => ({ item, bar: barFor(item, range), realBar: realBarFor(item, range, today) }))
-      .filter((r) => r.bar !== null);
-    return rows as { item: InitiativeItem; bar: TimelineBar; realBar: TimelineBar | null }[];
-  }, [sorted, range, today]);
-  const unscheduledRows = useMemo(() => sorted.filter((i) => !i.scheduled_start), [sorted]);
+  /* Direct children, the index the descendant walk below runs on. */
+  const childrenOf = useMemo(() => {
+    const m = new Map<string, InitiativeItem[]>();
+    for (const i of all) {
+      if (!i.parent_id || i.parent_id === i.id) continue;
+      const sibs = m.get(i.parent_id);
+      if (sibs) sibs.push(i);
+      else m.set(i.parent_id, [i]);
+    }
+    return m;
+  }, [all]);
+
+  /* Envelope and descendant count for every dateless initiative with
+   * scheduled work somewhere beneath it. The walk is recursive, not one
+   * level deep: a grandchild's dates belong in the program's envelope
+   * exactly as much as a child's, and a middle layer is often the
+   * dateless one. `seen` guards a legacy cycle the API now refuses. */
+  const derived = useMemo(() => {
+    const out = new Map<string, { span: { start: string; end: string }; from: number }>();
+    for (const item of all) {
+      if (item.scheduled_start || item.scheduled_end) continue;
+      const kin: InitiativeItem[] = [];
+      const seen = new Set<string>([item.id]);
+      const walk = (id: string) => {
+        for (const kid of childrenOf.get(id) ?? []) {
+          if (seen.has(kid.id)) continue;
+          seen.add(kid.id);
+          kin.push(kid);
+          walk(kid.id);
+        }
+      };
+      walk(item.id);
+      const span = derivedSpan(item, kin);
+      if (!span) continue;
+      out.set(item.id, {
+        span,
+        from: kin.filter((d) => d.scheduled_start || d.scheduled_end).length,
+      });
+    }
+    return out;
+  }, [all, childrenOf]);
+
+  /* The pills decide what MATCHES; the tree decides what renders. A
+   * scheduled initiative whose span misses the visible range leaves the
+   * match set the same way a filtered one does, so stepping ‹ › still
+   * empties the page — but it stays as a context row when a descendant
+   * of its own is in range, rather than orphaning that descendant. */
+  const matched = useMemo(() => {
+    const out = new Set<string>();
+    for (const i of items) {
+      if (i.scheduled_start && barFor(i, range) === null) continue;
+      out.add(i.id);
+    }
+    return out;
+  }, [items, range]);
+
+  const rows = useMemo(
+    () => buildInitiativeTree(all, matched, collapsed), [all, matched, collapsed]);
+
+  /* Render order, split at the "Unscheduled" divider. Only a ROOT with no
+   * dates and no scheduled descendant goes below it: a dateless child
+   * stays nested under its parent, where its place in the project is the
+   * whole point, and a dateless parent with scheduled work keeps its
+   * derived bar up top. Such a root's subtree is dateless by
+   * construction — any scheduled descendant would have given it an
+   * envelope — so the whole branch travels with it. */
+  const { top, bottom } = useMemo(() => {
+    const above: DrawnRow[] = [];
+    const below: DrawnRow[] = [];
+    let belowDivider = false;
+    for (const row of rows) {
+      const item = row.item;
+      let drawn: DrawnRow;
+      if (item.scheduled_start) {
+        drawn = {
+          row, kind: 'real', derivedFrom: 0,
+          bar: barFor(item, range),
+          realBar: realBarFor(item, range, today),
+        };
+      } else {
+        const env = derived.get(item.id);
+        drawn = env
+          ? {
+            row, kind: 'derived', derivedFrom: env.from, realBar: null,
+            bar: barFor({
+              name: item.name,
+              scheduled_start: env.span.start,
+              scheduled_end: env.span.end,
+            }, range),
+          }
+          : { row, kind: 'none', derivedFrom: 0, bar: null, realBar: null };
+      }
+      if (row.depth === 0) belowDivider = drawn.kind === 'none';
+      (belowDivider ? below : above).push(drawn);
+    }
+    return { top: above, bottom: below };
+  }, [rows, range, today, derived]);
 
   const rightWidth = scale === 'month' || scale === '45d'
     ? Math.max(760, ticks.length * 32)
@@ -323,7 +481,7 @@ function TimelineGrid({
       ? Math.max(760, ticks.length * 84)
       : Math.max(760, ticks.length * 110);
 
-  if (scheduledRows.length === 0 && unscheduledRows.length === 0) {
+  if (top.length === 0 && bottom.length === 0) {
     return <div className="dir-empty"><b>No initiatives in this range.</b></div>;
   }
 
@@ -357,55 +515,102 @@ function TimelineGrid({
           </div>
         </div>
 
-        {scheduledRows.map(({ item, bar, realBar }) => (
-          <div className="itl-row" key={item.id}>
-            <div className="itl-row-label">
-              <Link to={`/initiatives/${item.id}`} className="pn">
-                <b>{item.name}</b>
-                <span>{clientSiteLine(item)}</span>
-              </Link>
-            </div>
-            <div className="itl-row-bars" style={{ width: rightWidth }}>
-              {todayPct !== null && <div className="itl-today-line" style={{ left: `${todayPct}%` }} />}
-              <div className="itl-bar" title={spanTitle(item)}
-                   style={{
-                     left: `${bar.left}%`, width: `${bar.width}%`,
-                     '--chip': chipColor(item),
-                   } as CSSProperties}>
-                {(bar.width / 100) * rightWidth >= 80 && (
-                  <span className="itl-bar-label">{item.name}</span>
-                )}
-              </div>
-              {realBar && (
-                <div className="itl-real-bar"
-                     style={{
-                       left: `${realBar.left}%`, width: `${realBar.width}%`,
-                       '--chip': chipColor(item),
-                     } as CSSProperties} />
-              )}
-            </div>
-          </div>
+        {top.map((drawn) => (
+          <TimelineRow key={drawn.row.item.id} drawn={drawn} rightWidth={rightWidth}
+                       todayPct={todayPct} onToggle={onToggle} />
         ))}
 
-        {unscheduledRows.length > 0 && (
+        {bottom.length > 0 && (
           <div className="itl-row itl-divider-row">
             <div className="itl-row-label itl-divider">Unscheduled</div>
             <div className="itl-row-bars" style={{ width: rightWidth }} />
           </div>
         )}
-        {unscheduledRows.map((item) => (
-          <div className="itl-row" key={item.id}>
-            <div className="itl-row-label">
-              <Link to={`/initiatives/${item.id}`} className="pn">
-                <b>{item.name}</b>
-                <span>{clientSiteLine(item)}</span>
-              </Link>
-            </div>
-            <div className="itl-row-bars" style={{ width: rightWidth }}>
-              <span className="cell-top itl-no-dates">No dates yet</span>
-            </div>
-          </div>
+        {bottom.map((drawn) => (
+          <TimelineRow key={drawn.row.item.id} drawn={drawn} rightWidth={rightWidth}
+                       todayPct={todayPct} onToggle={onToggle} />
         ))}
+      </div>
+    </div>
+  );
+}
+
+/** One timeline row: the sticky label (chevron, name, role chip) and the
+ *  bar track beside it. `--depth` carries the indent, so one padding rule
+ *  in the stylesheet serves every level — the `.cell-primary` idiom the
+ *  list view uses. */
+function TimelineRow({
+  drawn, rightWidth, todayPct, onToggle,
+}: {
+  drawn: DrawnRow; rightWidth: number; todayPct: number | null;
+  onToggle: (id: string) => void;
+}) {
+  const { row, kind, bar, realBar } = drawn;
+  const item = row.item;
+  return (
+    <div className={`itl-row ${row.isContext ? 'context' : ''}`}
+         style={{ '--depth': row.depth } as CSSProperties}>
+      <div className="itl-row-label">
+        {/* Gated on hasChildren, never on expanded — a leaf is "expanded"
+            too, and a chevron that reveals nothing would be a lie. */}
+        {row.hasChildren && (
+          <button type="button" className="tree-toggle"
+                  aria-expanded={row.expanded}
+                  aria-label={row.expanded ? 'Collapse' : 'Expand'}
+                  onClick={(e) => {
+                    e.stopPropagation();   // never the row's own link
+                    onToggle(item.id);
+                  }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 strokeWidth="2.5" strokeLinecap="round"
+                 strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+            <span className="tree-count">{row.childCount}</span>
+          </button>
+        )}
+        <Link to={`/initiatives/${item.id}`} className="pn">
+          <b>{item.name}</b>
+          <span>{clientSiteLine(item)}</span>
+        </Link>
+        {/* `role` survives on a depth-0 orphan whose parent is out of the
+            actor's scope; the chip only makes sense under a parent. */}
+        {row.role && row.depth > 0 && (
+          <span className="chip c-slate">{row.role}</span>
+        )}
+      </div>
+      <div className="itl-row-bars" style={{ width: rightWidth }}>
+        {kind !== 'none' && todayPct !== null && (
+          <div className="itl-today-line" style={{ left: `${todayPct}%` }} />
+        )}
+        {kind === 'real' && bar && (
+          <div className="itl-bar" title={spanTitle(item)}
+               style={{
+                 left: `${bar.left}%`, width: `${bar.width}%`,
+                 '--chip': chipColor(item),
+               } as CSSProperties}>
+            {(bar.width / 100) * rightWidth >= 80 && (
+              <span className="itl-bar-label">{item.name}</span>
+            )}
+          </div>
+        )}
+        {/* Dashed and unfilled: borrowed dates, not dates of its own. No
+            inline label — there is no fill for white text to sit on. */}
+        {kind === 'derived' && bar && (
+          <div className="itl-bar itl-bar-derived" title={derivedTitle(drawn.derivedFrom)}
+               style={{
+                 left: `${bar.left}%`, width: `${bar.width}%`,
+                 '--chip': chipColor(item),
+               } as CSSProperties} />
+        )}
+        {realBar && (
+          <div className="itl-real-bar"
+               style={{
+                 left: `${realBar.left}%`, width: `${realBar.width}%`,
+                 '--chip': chipColor(item),
+               } as CSSProperties} />
+        )}
+        {kind === 'none' && (
+          <span className="cell-top itl-no-dates">No dates yet</span>
+        )}
       </div>
     </div>
   );
@@ -442,9 +647,46 @@ function spanTitle(i: InitiativeItem): string {
   return `${i.name} · ${i.status_label} · ${range}`;
 }
 
-function CalendarMonth({ items, anchor }: { items: InitiativeItem[]; anchor: Date }) {
+/** `Parent › Child` for a segment whose parent is on the page, the
+ *  child's own name otherwise. A month grid has no rows to indent, so
+ *  this breadcrumb is where a child's provenance shows. */
+function segmentLabel(i: InitiativeItem, byId: Map<string, InitiativeItem>): string {
+  const parent = i.parent_id ? byId.get(i.parent_id) : undefined;
+  return parent ? `${parent.name} › ${i.name}` : i.name;
+}
+
+function CalendarMonth({
+  items, all, anchor, collapsed,
+}: {
+  items: InitiativeItem[];
+  /** Every non-archived initiative — the parent lookup and the
+   *  collapsed-ancestor walk both have to see past the toolbar pills. */
+  all: InitiativeItem[];
+  anchor: Date;
+  collapsed: ReadonlySet<string>;
+}) {
   const cells = useMemo(() => monthGrid(anchor), [anchor]);
-  const weeks = useMemo(() => calendarWeeks(items, cells), [items, cells]);
+  const byId = useMemo(() => new Map(all.map((i) => [i.id, i])), [all]);
+
+  /* The shared collapsed set is what makes the two views agree: a project
+   * collapsed on the timeline hides its children's segments here too.
+   * The walk goes all the way up (a grandchild hides under a collapsed
+   * grandparent) and stops at a parent that isn't on the page. */
+  const visible = useMemo(() => {
+    if (collapsed.size === 0) return items;
+    return items.filter((i) => {
+      const seen = new Set<string>([i.id]);
+      let pid = i.parent_id;
+      while (pid && !seen.has(pid)) {
+        if (collapsed.has(pid)) return false;
+        seen.add(pid);
+        pid = byId.get(pid)?.parent_id ?? null;
+      }
+      return true;
+    });
+  }, [items, byId, collapsed]);
+
+  const weeks = useMemo(() => calendarWeeks(visible, cells), [visible, cells]);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   // A month step swaps the whole grid out from under the expanded row.
@@ -502,7 +744,8 @@ function CalendarMonth({ items, anchor }: { items: InitiativeItem[]; anchor: Dat
 
             <div className="itl-week-bars">
               {shown.map((seg) => (
-                <CalendarSpan key={seg.item.id} seg={seg} />
+                <CalendarSpan key={seg.item.id} seg={seg}
+                              label={segmentLabel(seg.item, byId)} />
               ))}
             </div>
 
@@ -522,14 +765,16 @@ function CalendarMonth({ items, anchor }: { items: InitiativeItem[]; anchor: Dat
 /** One run's bar across the days it covers in this week. A run reaching
  *  past either edge keeps its square end there, so a bar that carries on
  *  into the next week reads as continuing rather than ending on Sunday. */
-function CalendarSpan({ seg }: { seg: CalendarSegment<InitiativeItem> }) {
+function CalendarSpan({
+  seg, label,
+}: { seg: CalendarSegment<InitiativeItem>; label: string }) {
   const i = seg.item;
   return (
     // The hover card replaces the native `title` the bar used to carry:
     // one flat line on the browser's own schedule becomes the
     // initiative's high-level details on ours. The wrapper draws no box
     // of its own, so the bar keeps its place in the week grid.
-    <InitiativeHoverCard item={i}>
+    <InitiativeHoverCard item={i} name={label}>
       <Link to={`/initiatives/${i.id}`}
             className={`chip custom itl-span ${seg.continuesBefore ? 'cont-before' : ''} ` +
                        `${seg.continuesAfter ? 'cont-after' : ''}`}
@@ -539,7 +784,7 @@ function CalendarSpan({ seg }: { seg: CalendarSegment<InitiativeItem> }) {
               '--chip': chipColor(i),
             } as CSSProperties}>
         <span className="dot" />
-        <span className="itl-span-name">{i.name}</span>
+        <span className="itl-span-name">{label}</span>
       </Link>
     </InitiativeHoverCard>
   );
