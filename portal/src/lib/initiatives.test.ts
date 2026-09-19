@@ -812,9 +812,20 @@ describe('derivedSpan', () => {
     expect(derivedSpan(node, [dated('c', '2026-01-01T00:00:00Z', null)])).toBeNull();
   });
 
-  it('returns null when the node has its own end', () => {
+  it('still derives a span for an end-only node, which draws no real bar', () => {
+    // `barFor` keys on scheduled_start, so an end-only node has no bar of
+    // its own to protect -- suppressing the envelope here would leave its
+    // scheduled descendants looking unscheduled on the timeline. The node's
+    // own end contributes nothing; the span is the descendants'.
     const node = n('p', null, { scheduled_end: '2026-05-01T00:00:00Z' });
-    expect(derivedSpan(node, [dated('c', '2026-01-01T00:00:00Z', null)])).toBeNull();
+    expect(derivedSpan(node, [dated('c', '2026-01-01T00:00:00Z', null)])).toEqual({
+      start: '2026-01-01T00:00:00Z', end: '2026-01-01T00:00:00Z',
+    });
+  });
+
+  it('returns null for an end-only node with no scheduled descendant', () => {
+    const node = n('p', null, { scheduled_end: '2026-05-01T00:00:00Z' });
+    expect(derivedSpan(node, [dated('c', null, null)])).toBeNull();
   });
 
   it('returns null with no descendants', () => {

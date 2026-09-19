@@ -564,6 +564,58 @@ it('keeps a dateless root with no scheduled descendants under Unscheduled', asyn
   expect(screen.getAllByText('No dates yet')).toHaveLength(2);
 });
 
+it('gives an end-only root a derived bar, not an Unscheduled heading', async () => {
+  // The edit modal's two date inputs are independent and neither is
+  // required, so a start-less, end-bearing initiative is reachable from
+  // the product's own form. It draws no real bar (barFor keys on
+  // scheduled_start), so it takes the envelope its scheduled child
+  // implies -- and the child must NOT be filed under "Unscheduled".
+  await renderPage([
+    { ...PARENT, scheduled_start: null, scheduled_end: '2026-09-20' },
+    CHILD,                                  // Sep 7 -> Sep 8
+  ]);
+  expect(screen.queryByText('Unscheduled')).toBeNull();
+  expect(itlRowNames()).toEqual(['Denver DC migration', 'Kickoff walkthrough']);
+
+  const parent = itlRowFor('Denver DC migration');
+  const derived = parent.querySelector('.itl-bar.itl-bar-derived') as HTMLElement;
+  expect(derived).not.toBeNull();
+  expect(derived.getAttribute('title')).toBe('Derived from 1 scheduled initiative');
+  // the envelope is the child's Sep 7 -> Sep 8, not the root's own end date
+  expect(parseFloat(derived.style.left)).toBeCloseTo((6 / 30) * 100, 4);
+  expect(parseFloat(derived.style.width)).toBeCloseTo((2 / 30) * 100, 4);
+  // an end alone is not a bar of its own
+  expect(parent.querySelectorAll('.itl-bar:not(.itl-bar-derived)')).toHaveLength(0);
+  expect(within(parent).queryByText('No dates yet')).toBeNull();
+  // the child keeps its real bar, nested where it belongs
+  const child = itlRowFor('Kickoff walkthrough');
+  expect(child.style.getPropertyValue('--depth')).toBe('1');
+  expect(child.querySelectorAll('.itl-bar:not(.itl-bar-derived)')).toHaveLength(1);
+});
+
+it('keeps an off-range parent as context so its in-range child stays nested', async () => {
+  // Pins the design: the pills and the range decide what MATCHES, and the
+  // tree is built over every row. Filtering the tree's INPUT by range
+  // instead would drop this parent and orphan the child at depth 0.
+  await renderPage([
+    { ...PARENT, scheduled_start: '2026-07-01', scheduled_end: '2026-07-10' },
+    CHILD,                                  // Sep 7 -> Sep 8, inside the range
+  ]);
+  expect(itlRowNames()).toEqual(['Denver DC migration', 'Kickoff walkthrough']);
+
+  const parent = itlRowFor('Denver DC migration');
+  expect(parent.classList.contains('context')).toBe(true);
+  expect(chevronIn(parent)).toBeNull();
+  expect(parent.querySelectorAll('.itl-bar')).toHaveLength(0);
+  // an empty track with no explanation reads as a bug
+  expect(within(parent).getByText('Scheduled outside this range')).not.toBeNull();
+
+  const child = itlRowFor('Kickoff walkthrough');
+  expect(child.style.getPropertyValue('--depth')).toBe('1');
+  expect(child.classList.contains('context')).toBe(false);
+  expect(child.querySelectorAll('.itl-bar')).toHaveLength(1);
+});
+
 it('leaves a dateless child nested under its scheduled parent', async () => {
   await renderPage([PARENT, { ...CHILD, ...dateless }]);
   // it must not jump out of the tree to the bottom of the page
@@ -625,6 +677,29 @@ it('honors the timeline\'s collapsed set on the calendar', async () => {
   ]);
   fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Calendar' }));
   expect(spanNames()).toEqual(['Denver DC migration']);
+});
+
+it('hides a grandchild under a collapsed grandparent on the calendar', async () => {
+  // The walk goes all the way up, not one level: p1 is expanded, so a
+  // single direct-parent check would leave the grandchild on the grid
+  // while its grandparent reads as collapsed.
+  localStorage.setItem(COLLAPSED_KEY, JSON.stringify(['g1']));
+  await renderPage([
+    initiative({
+      id: 'g1', name: 'Program',
+      scheduled_start: '2026-09-05', scheduled_end: '2026-09-05',
+    }),
+    initiative({
+      id: 'p1', name: 'Phase two', parent_id: 'g1',
+      scheduled_start: '2026-09-08', scheduled_end: '2026-09-08',
+    }),
+    initiative({
+      id: 't1', name: 'Rack and stack', parent_id: 'p1',
+      scheduled_start: '2026-09-12', scheduled_end: '2026-09-12',
+    }),
+  ]);
+  fireEvent.click(within(viewSwitch()).getByRole('button', { name: 'Calendar' }));
+  expect(spanNames()).toEqual(['Program']);
 });
 
 it('draws no calendar segment for a dateless parent — the envelope is timeline-only', async () => {

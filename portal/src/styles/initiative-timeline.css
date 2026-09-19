@@ -146,8 +146,13 @@
 .itl-divider { color: var(--text-mute); }
 
 /* An ancestor a filter dragged along so a matched descendant keeps its
-   place: scaffolding, not a result, so it is dimmed throughout. */
-.itl-row.context { opacity: 0.55; }
+   place: scaffolding, not a result, so it is dimmed throughout. The dim
+   goes on the two halves, never on the row: opacity below 1 makes the row
+   a stacking context, which flattens the sticky label's z-index against
+   its own bars, and the label's opaque background stops masking them —
+   scrolling sideways would slide a bar through the frozen name column. */
+.itl-row.context .itl-row-label,
+.itl-row.context .itl-row-bars { opacity: 0.55; }
 
 .itl-row-bars {
   position: relative;

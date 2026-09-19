@@ -709,9 +709,15 @@ export function buildInitiativeTree<T extends TreeItem>(
 /**
  * The envelope a dateless parent borrows from its scheduled descendants —
  * the honest answer to "when is this project?" when only its events carry
- * dates. Returns null when `node` has any date of its own (a real bar always
- * wins; the derived span is never drawn over real dates) and when no
- * descendant is scheduled at all.
+ * dates. Returns null when `node` has a `scheduled_start` of its own (a real
+ * bar always wins; the derived span is never drawn over real dates) and when
+ * no descendant is scheduled at all.
+ *
+ * "Dates of its own" means a `scheduled_start`, exactly as `barFor` in
+ * lib/timeline.ts reads it: an end-only node draws no bar there, so
+ * suppressing its envelope too would leave its whole scheduled subtree
+ * looking unscheduled. Its own end date contributes nothing to the
+ * envelope — the span is the descendants' — but it no longer silences it.
  *
  * A descendant with only one of the two dates contributes it as both ends.
  * Comparison goes through `parseApiDay` — the same reading the timeline
@@ -724,7 +730,7 @@ export function buildInitiativeTree<T extends TreeItem>(
 export function derivedSpan<T extends TreeItem>(
   node: T, descendants: readonly T[],
 ): { start: string; end: string } | null {
-  if (node.scheduled_start || node.scheduled_end) return null;
+  if (node.scheduled_start) return null;
   let start: string | null = null;
   let end: string | null = null;
   const at = (iso: string) => parseApiDay(iso).getTime();

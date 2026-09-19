@@ -401,15 +401,28 @@ function TimelineGrid({
     return m;
   }, [all]);
 
-  /* Envelope and descendant count for every dateless initiative with
-   * scheduled work somewhere beneath it. The walk is recursive, not one
-   * level deep: a grandchild's dates belong in the program's envelope
-   * exactly as much as a child's, and a middle layer is often the
-   * dateless one. `seen` guards a legacy cycle the API now refuses. */
+  /* Envelope and descendant count for every initiative that draws no real
+   * bar of its own but has scheduled work somewhere beneath it. The walk is
+   * recursive, not one level deep: a grandchild's dates belong in the
+   * program's envelope exactly as much as a child's, and a middle layer is
+   * often the dateless one. `seen` guards a legacy cycle the API now
+   * refuses.
+   *
+   * The gate is `scheduled_start` alone — `barFor`'s own test — and not
+   * "any date". An end-only initiative (the edit modal's two date inputs
+   * are independent and neither is required, so the product reaches this)
+   * draws no real bar, so it needs the envelope exactly as much as a fully
+   * dateless one; skipping it here used to file its entire scheduled
+   * subtree under "Unscheduled".
+   *
+   * `withScheduledKin` is the same walk's other answer: does this branch
+   * hold any dates at all? The divider below reads it, so a root only
+   * falls under "Unscheduled" when its whole branch is dateless. */
   const derived = useMemo(() => {
-    const out = new Map<string, { span: { start: string; end: string }; from: number }>();
+    const spans = new Map<string, { span: { start: string; end: string }; from: number }>();
+    const withScheduledKin = new Set<string>();
     for (const item of all) {
-      if (item.scheduled_start || item.scheduled_end) continue;
+      if (item.scheduled_start) continue;
       const kin: InitiativeItem[] = [];
       const seen = new Set<string>([item.id]);
       const walk = (id: string) => {
@@ -421,14 +434,12 @@ function TimelineGrid({
         }
       };
       walk(item.id);
+      const from = kin.filter((d) => d.scheduled_start || d.scheduled_end).length;
+      if (from > 0) withScheduledKin.add(item.id);
       const span = derivedSpan(item, kin);
-      if (!span) continue;
-      out.set(item.id, {
-        span,
-        from: kin.filter((d) => d.scheduled_start || d.scheduled_end).length,
-      });
+      if (span) spans.set(item.id, { span, from });
     }
-    return out;
+    return { spans, withScheduledKin };
   }, [all, childrenOf]);
 
   /* The pills decide what MATCHES; the tree decides what renders. A
@@ -448,13 +459,13 @@ function TimelineGrid({
   const rows = useMemo(
     () => buildInitiativeTree(all, matched, collapsed), [all, matched, collapsed]);
 
-  /* Render order, split at the "Unscheduled" divider. Only a ROOT with no
-   * dates and no scheduled descendant goes below it: a dateless child
-   * stays nested under its parent, where its place in the project is the
-   * whole point, and a dateless parent with scheduled work keeps its
-   * derived bar up top. Such a root's subtree is dateless by
-   * construction — any scheduled descendant would have given it an
-   * envelope — so the whole branch travels with it. */
+  /* Render order, split at the "Unscheduled" divider. Only a ROOT whose
+   * whole branch is dateless goes below it: a dateless child stays nested
+   * under its parent, where its place in the project is the whole point,
+   * and a dateless parent with scheduled work keeps its derived bar up
+   * top. The test is the branch, not the root's own row — a root that
+   * somehow draws nothing while a descendant is scheduled would otherwise
+   * drag that descendant's real bar under an "Unscheduled" heading. */
   const { top, bottom } = useMemo(() => {
     const above: DrawnRow[] = [];
     const below: DrawnRow[] = [];
@@ -469,7 +480,7 @@ function TimelineGrid({
           realBar: realBarFor(item, range, today),
         };
       } else {
-        const env = derived.get(item.id);
+        const env = derived.spans.get(item.id);
         drawn = env
           ? {
             row, kind: 'derived', derivedFrom: env.from, realBar: null,
@@ -481,7 +492,9 @@ function TimelineGrid({
           }
           : { row, kind: 'none', derivedFrom: 0, bar: null, realBar: null };
       }
-      if (row.depth === 0) belowDivider = drawn.kind === 'none';
+      if (row.depth === 0) {
+        belowDivider = drawn.kind === 'none' && !derived.withScheduledKin.has(item.id);
+      }
       (belowDivider ? below : above).push(drawn);
     }
     return { top: above, bottom: below };
@@ -626,6 +639,12 @@ function TimelineRow({
         )}
         {kind === 'none' && (
           <span className="cell-top itl-no-dates">No dates yet</span>
+        )}
+        {/* Dated, but the span sits before or after the visible range: say
+            so rather than leaving an unexplained empty track. The row is
+            here because a descendant of its own is in range. */}
+        {kind !== 'none' && !bar && (
+          <span className="cell-top itl-no-dates">Scheduled outside this range</span>
         )}
       </div>
     </div>
