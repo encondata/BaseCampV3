@@ -124,3 +124,33 @@ async def test_link_target_404(client, db, seeded_user):
                              json={"child_id": str(uuid.uuid4())})
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "initiative_not_found"
+
+
+async def test_list_carries_parent_id_for_a_visible_parent(client, db,
+                                                            seeded_user):
+    headers = await login(client)
+    parent = await _initiative(client, headers, "Parent P", "project")
+    child = await _initiative(client, headers, "Child E", "event")
+    resp = await client.post(f"/initiatives/{parent}/links", headers=headers,
+                             json={"child_id": child, "role": "Event 1"})
+    assert resp.status_code == 201, resp.text
+    items = {i["name"]: i
+             for i in (await client.get("/initiatives",
+                                        headers=headers)).json()}
+    assert items["Child E"]["parent_id"] == parent
+    assert items["Child E"]["parent_role"] == "Event 1"
+    assert items["Parent P"]["parent_id"] is None
+
+
+async def test_a_second_parent_is_refused(client, db, seeded_user):
+    headers = await login(client)
+    p1 = await _initiative(client, headers, "P1", "project")
+    p2 = await _initiative(client, headers, "P2", "project")
+    c = await _initiative(client, headers, "C", "event")
+    ok = await client.post(f"/initiatives/{p1}/links", headers=headers,
+                           json={"child_id": c})
+    assert ok.status_code == 201, ok.text
+    dup = await client.post(f"/initiatives/{p2}/links", headers=headers,
+                            json={"child_id": c})
+    assert dup.status_code == 409
+    assert dup.json()["detail"]["code"] == "already_has_parent"

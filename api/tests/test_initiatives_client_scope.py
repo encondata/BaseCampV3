@@ -423,6 +423,24 @@ async def test_links_count_is_client_scoped(client, db, seeded_user):
     assert detail["links_count"] == 1
 
 
+async def test_parent_id_is_null_when_the_parent_is_out_of_scope(
+        client, db, seeded_user):
+    """Mirrors the links_count invariant: a child must not point at a
+    parent the actor cannot see -- that id alone confirms the parent
+    exists."""
+    a, _b, ia, ib, _n = await _two_clients_with_initiatives(db)
+    # ib (Bravo, another client's initiative) is the parent of ia (Acme,
+    # the actor's own initiative) -- the actor may see the child but must
+    # not learn the foreign parent's id.
+    db.add(InitiativeLink(parent_id=ib.id, child_id=ia.id))
+    await db.commit()
+    hdrs = await client_login(db, client, a.id)
+    rows = {r["name"]: r
+            for r in (await client.get("/initiatives", headers=hdrs)).json()}
+    assert "Bravo move" not in rows
+    assert rows["Acme move"]["parent_id"] is None
+
+
 async def test_global_staff_writes_unaffected(client, db, seeded_user):
     a, _b, ia, _ib, _n = await _two_clients_with_initiatives(db)
     hdrs = await _make(db, client, "admin", "adm-w@test.example.com")
