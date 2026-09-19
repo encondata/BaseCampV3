@@ -583,6 +583,23 @@ it('a type pill matching only the child keeps the parent as a context row', asyn
   expect(itlRowFor('Kickoff walkthrough').classList.contains('context')).toBe(false);
 });
 
+it('a context row offers no chevron, and keeps its link to the detail page', async () => {
+  await renderPage([PARENT, CHILD]);
+  fireEvent.click(screen.getByRole('button', { name: /^Events/ }));
+
+  const parent = itlRowFor('Denver DC migration');
+  expect(parent.classList.contains('context')).toBe(true);
+  // the builder force-expands a context row, so a chevron here could not
+  // collapse anything — it would only write the id into the shared set and
+  // shut the branch later, here and in the list view
+  expect(chevronIn(parent)).toBeNull();
+  expect(itlRowNames()).toEqual(['Denver DC migration', 'Kickoff walkthrough']);
+  // dimmed, but a navigation is not inline editing: the name stays a link,
+  // and nothing in the stylesheet claims otherwise
+  expect(parent.querySelector('.itl-row-label a.pn')?.getAttribute('href'))
+    .toBe('/initiatives/p1');
+});
+
 /* ── Calendar: the shared collapsed set and `Parent › Child` labels ── */
 
 const spanNames = () =>

@@ -281,9 +281,20 @@ export default function Initiatives() {
     const next = new Set(prev);
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    writeCollapsed(next);
     return next;
   });
+  /* Persisting is a side effect, so it lives in an effect and not in the
+   * updater above, which StrictMode double-invokes. The ref holds the set
+   * we last saw: on mount — and on StrictMode's second setup, which sees
+   * the very same object — it only records, never writes, because a write
+   * on mount would rewrite another tab's set with our own. */
+  const writtenCollapsed = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (writtenCollapsed.current === collapsed) return;
+    const firstSeen = writtenCollapsed.current === null;
+    writtenCollapsed.current = collapsed;
+    if (!firstSeen) writeCollapsed(collapsed);
+  }, [collapsed]);
 
   const rows = useMemo(
     () => buildInitiativeTree(sortedAll, matchedIds, collapsed),
@@ -298,29 +309,38 @@ export default function Initiatives() {
   // Deep-link vs persisted-filter interplay — cloned from Containers.tsx.
   useEffect(() => {
     if (!initiatives || !openId || rows.some((r) => r.item.id === openId)) return;
-    // Hidden only by a collapsed ancestor? Open the branch — a deep link
-    // asked for this row, and collapsing is a view convenience, not a filter.
+    const isDeepLink = openId === deepLinkTarget.current;
+    /* Hidden only by a collapsed ancestor? Open the branch — a DEEP LINK
+     * asked for this row, and collapsing is a view convenience, not a
+     * filter. Gated on the deep-link ref, because for a row the user
+     * merely clicked open this branch would undo their very next collapse
+     * of its parent and leave the chevron looking dead. The one-shot
+     * `clearedDeepLink` guard the two branches below carry is theirs
+     * alone: dropping a collapse is idempotent and self-limiting, and an
+     * expand may still be owed after one of them has cleared a filter. */
     const byId = new Map(sortedAll.map((i) => [i.id, i]));
-    if (byId.has(openId)) {
+    if (isDeepLink && matchedIds.has(openId) && byId.has(openId)) {
       const shut: string[] = [];
       const seen = new Set<string>([openId]);
       let pid = byId.get(openId)!.parent_id;
       while (pid && !seen.has(pid)) {
         seen.add(pid);
-        if (collapsed.has(pid)) shut.push(pid);
+        /* Only an ancestor that actually blocks: an unmatched one is a
+         * context row the builder force-expands anyway, so discarding its
+         * persisted collapse would cost the user their state for nothing. */
+        if (collapsed.has(pid) && matchedIds.has(pid)) shut.push(pid);
         pid = byId.get(pid)?.parent_id ?? null;
       }
       if (shut.length > 0) {
         setCollapsed((prev) => {
           const next = new Set(prev);
           for (const id of shut) next.delete(id);
-          writeCollapsed(next);
           return next;
         });
         return;
       }
     }
-    if (openId === deepLinkTarget.current && clearedDeepLink.current !== openId) {
+    if (isDeepLink && clearedDeepLink.current !== openId) {
       clearedDeepLink.current = openId;
       const target = initiatives.find((i) => i.id === openId);
       if (target) {
@@ -336,8 +356,8 @@ export default function Initiatives() {
       }
     }
     setOpenId(null);
-  }, [initiatives, rows, sortedAll, collapsed, openId, filters, clearFilters,
-      typePill, cellText]);
+  }, [initiatives, rows, sortedAll, collapsed, matchedIds, openId, filters,
+      clearFilters, typePill, cellText]);
 
   useEffect(() => {
     if (deepLinkTarget.current
@@ -506,22 +526,30 @@ export default function Initiatives() {
           <VirtualRows rows={rows}
             renderRow={(row, vp) => {
             const i = row.item;
-            const open = openId === i.id;
+            /* A context row is scaffolding, not a result: dimmed, uncounted
+             * and inert. It never reads as open either — a filter that turns
+             * an open row into context would otherwise leave a full-opacity
+             * detail panel, god-mode editing and all, under a dimmed head. */
+            const open = openId === i.id && !row.isContext;
             return (
               <div key={i.id}
                    className={`dir-row ${open ? 'open' : ''} ${i.archived_at ? 'archived' : ''} ${row.isContext ? 'context' : ''}`}
                    {...vp}
                    style={{ ...vp?.style, '--depth': row.depth } as CSSProperties}>
                 <div className="row-main" style={grid}
-                     onClick={() => {
+                     onClick={row.isContext ? undefined : () => {
                        deepLinkTarget.current = null;
                        setOpenId(open ? null : i.id);
                      }}>
                   <div className="cell cell-primary">
                     {/* Gated on hasChildren, never on expanded — a leaf is
                         "expanded" too, and a chevron that reveals nothing
-                        would be a lie. */}
-                    {row.hasChildren && (
+                        would be a lie. A context row is force-expanded by
+                        the builder whatever the collapsed set says, so its
+                        chevron would do nothing here and shut the branch
+                        later (and on the timeline) — it gets the spacer a
+                        leaf gets, so names at one depth still line up. */}
+                    {row.hasChildren && !row.isContext ? (
                       <button type="button" className="tree-toggle"
                               aria-expanded={row.expanded}
                               aria-label={row.expanded ? 'Collapse' : 'Expand'}
@@ -534,6 +562,8 @@ export default function Initiatives() {
                              strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
                         <span className="tree-count">{row.childCount}</span>
                       </button>
+                    ) : (
+                      <span className="tree-spacer" aria-hidden="true" />
                     )}
                     {god.editing && godFieldFor('primary') ? (
                       <div className="pn god-primary-edit">

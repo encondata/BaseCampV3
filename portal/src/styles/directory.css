@@ -304,16 +304,27 @@
   cursor: pointer;
 }
 .tree-toggle:hover { background: rgba(var(--accent-rgb), 0.14); color: var(--text-dark); }
+/* A row with no chevron still reserves its width, so names at one depth
+   line up whether or not their branch can be collapsed. */
+.tree-spacer, .tree-toggle { min-width: 30px; }
+.tree-spacer { flex: none; margin-left: -4px; }
 .tree-toggle svg { width: 12px; height: 12px; transition: transform 0.15s; }
 .tree-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
 .tree-toggle .tree-count {
   font-family: var(--font-mono);
   font-size: var(--list-fs-primary-sub);
 }
-/* Scaffolding, not a result: dimmed, and it offers no hover affordance
-   because there is nothing to select here. */
-.dir-row.context .row-main { opacity: 0.55; cursor: default; }
-.dir-row.context .row-main:hover { background: none; }
+/* Scaffolding, not a result: dimmed, with no hover affordance and no
+   detail chevron, because there is nothing to open here — the row's own
+   click handler is dropped to match (Initiatives.tsx). One rule, not a
+   `:hover` override: `.dir-row.context .row-main` already out-specifies
+   the plain `.row-main:hover`, and a context row can never be `.open`. */
+.dir-row.context .row-main {
+  opacity: 0.55;
+  cursor: default;
+  background: none;
+}
+.dir-row.context .chevron-cell { visibility: hidden; }
 
 .cell .cell-top, .mini-row .cell-top, .data-table .cell-top { font-size: var(--list-fs-cell); color: var(--text-dark); }
 .cell .cell-sub, .mini-row .cell-sub, .data-table .cell-sub {

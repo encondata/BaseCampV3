@@ -4,8 +4,11 @@
  * lib/initiatives.test.ts (buildInitiativeTree); this covers what the page
  * adds on top: the indent custom property, the chevron button and its
  * child count, the role chip on a child, dimmed context ancestors that a
- * search pulls in, the non-context result count, and the deep link that
- * opens a branch instead of giving up on its target.
+ * search pulls in (chevronless and inert — the builder force-expands them
+ * and there is nothing to open), the non-context result count, and the
+ * deep link that opens a branch instead of giving up on its target —
+ * where an ordinary click on a row is not a deep link and must not undo
+ * the collapse the user asks for next.
  *
  * Generic toolbar/column-menu/CSV behavior is covered by
  * lib/listTools.test.tsx and lib/columnMenu.test.tsx.
@@ -206,4 +209,67 @@ it('a deep link under a collapsed parent expands the branch instead of dropping 
     ['Denver DC migration', 'Kickoff walkthrough']));
   expect(rowFor('Kickoff walkthrough').classList.contains('open')).toBe(true);
   expect(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]')).toEqual([]);
+});
+
+it('collapsing a parent whose child is open leaves the branch collapsed', async () => {
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(rowNames()).toHaveLength(2));
+
+  // opening a row by clicking it is not a deep link — nothing may treat it
+  // as one and undo the collapse the user asks for next
+  await user.click(rowFor('Kickoff walkthrough').querySelector('.row-main')!);
+  await waitFor(() => expect(
+    rowFor('Kickoff walkthrough').classList.contains('open')).toBe(true));
+
+  await user.click(chevronIn(rowFor('Denver DC migration'))!);
+  await waitFor(() => expect(rowNames()).toEqual(['Denver DC migration']));
+  expect(chevronIn(rowFor('Denver DC migration'))!.getAttribute('aria-expanded'))
+    .toBe('false');
+  expect(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]')).toEqual(['p1']);
+});
+
+it('a context row offers no chevron — the builder force-expands it anyway', async () => {
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(rowNames()).toHaveLength(2));
+
+  await user.type(screen.getByPlaceholderText('Filter this list…'), 'Kickoff');
+  await waitFor(() => expect(
+    rowFor('Denver DC migration').classList.contains('context')).toBe(true));
+
+  // a chevron here would leave the subtree open and still write the id to
+  // the shared collapsed set, shutting the branch later and on the timeline
+  expect(chevronIn(rowFor('Denver DC migration'))).toBeNull();
+  expect(chevronIn(rowFor('Kickoff walkthrough'))).toBeNull();
+});
+
+it('clicking a context row does not open its detail', async () => {
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(rowNames()).toHaveLength(2));
+
+  await user.type(screen.getByPlaceholderText('Filter this list…'), 'Kickoff');
+  await waitFor(() => expect(
+    rowFor('Denver DC migration').classList.contains('context')).toBe(true));
+
+  await user.click(rowFor('Denver DC migration').querySelector('.row-main')!);
+  expect(document.querySelector('.dir-row.open')).toBeNull();
+  expect(api.getInitiative).not.toHaveBeenCalled();
+});
+
+it('a filter that turns an open row into context closes its detail', async () => {
+  const user = userEvent.setup();
+  mount();
+  await waitFor(() => expect(rowNames()).toHaveLength(2));
+
+  await user.click(rowFor('Denver DC migration').querySelector('.row-main')!);
+  await waitFor(() => expect(
+    rowFor('Denver DC migration').classList.contains('open')).toBe(true));
+
+  await user.type(screen.getByPlaceholderText('Filter this list…'), 'Kickoff');
+  await waitFor(() => expect(
+    rowFor('Denver DC migration').classList.contains('context')).toBe(true));
+  // a full-opacity detail panel under a 0.55-opacity header would be a lie
+  expect(document.querySelector('.dir-row.open')).toBeNull();
 });

@@ -23,7 +23,9 @@
  * derived envelope at all.
  */
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import {
+  useCallback, useEffect, useMemo, useRef, useState, type CSSProperties,
+} from 'react';
 import { Link } from 'react-router-dom';
 
 import ComboBox from '../components/ComboBox';
@@ -218,9 +220,19 @@ export default function InitiativeTimeline() {
     const next = new Set(prev);
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    writeCollapsed(next);
     return next;
   }), []);
+  /* The write is a side effect, so it belongs in an effect and not in the
+   * updater above, which StrictMode double-invokes. The ref holds the set
+   * we last saw: on mount — and on StrictMode's second setup, which sees
+   * the very same object — it only records, never writes. */
+  const writtenCollapsed = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (writtenCollapsed.current === collapsed) return;
+    const firstSeen = writtenCollapsed.current === null;
+    writtenCollapsed.current = collapsed;
+    if (!firstSeen) writeCollapsed(collapsed);
+  }, [collapsed]);
 
   const rangeLabel = view === 'calendar'
     ? `${MONTH_NAMES[anchor.getMonth()]} ${anchor.getFullYear()}`
@@ -552,8 +564,12 @@ function TimelineRow({
          style={{ '--depth': row.depth } as CSSProperties}>
       <div className="itl-row-label">
         {/* Gated on hasChildren, never on expanded — a leaf is "expanded"
-            too, and a chevron that reveals nothing would be a lie. */}
-        {row.hasChildren && (
+            too, and a chevron that reveals nothing would be a lie. A
+            context row is force-expanded by the builder whatever the
+            collapsed set says, so its chevron could not collapse anything
+            here; it would only write the id into the shared set and shut
+            the branch later, here and in the list view. */}
+        {row.hasChildren && !row.isContext && (
           <button type="button" className="tree-toggle"
                   aria-expanded={row.expanded}
                   aria-label={row.expanded ? 'Collapse' : 'Expand'}
