@@ -41,6 +41,7 @@ import {
   listShippingTypes,
   listSites,
   listWorkerOptions,
+  recheckInitiativePlacement,
   removeInitiativeAsset,
   removeInitiativeLink,
   removeInitiativePerson,
@@ -81,6 +82,7 @@ import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
 import { formatMinutes } from '../lib/timeFormat';
 import StatusHover from '../components/StatusHover';
+import { useToast } from '../lib/notificationsContext';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
@@ -189,6 +191,7 @@ export default function InitiativeDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { can, godMode, maxRank } = useAuth();
+  const toast = useToast();
   const canChange = can('initiatives', 'change');
   const canViewSites = can('sites', 'view');
   const canViewClients = can('clients', 'view');
@@ -458,6 +461,14 @@ export default function InitiativeDetail() {
       setAssetsBusy(false);
     }
   };
+
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const recheckPlacement = () => runAssets(async () => {
+    const r = await recheckInitiativePlacement(id!);
+    toast(`Placement re-checked: ${plural(r.collisions, 'collision', 'collisions')}, `
+      + `${plural(r.orphans, 'orphan node', 'orphan nodes')}, `
+      + `${plural(r.cleared, 'flag', 'flags')} cleared.`);
+  });
 
   const runLinks = async (op: () => Promise<unknown>) => {
     setLinksBusy(true);
@@ -780,6 +791,13 @@ export default function InitiativeDetail() {
                                  onReorder={setAssetsColOrder} />
                   <ExportButton onExport={() =>
                     exportCsv('move-assets', ASSET_CSV_COLUMNS, visibleAssets)} />
+                  {canChange && (
+                    <button type="button" className="mini-btn" disabled={assetsBusy}
+                            onClick={() => void recheckPlacement()}
+                            title="Re-run the rack placement rule: flags collisions and orphan nodes, clears stale flags. Rows that have progressed are never touched.">
+                      Re-check placement
+                    </button>
+                  )}
                   <GodEditToggle editing={assetsEditing}
                                  onToggle={() => setAssetsEditing((e) => !e)}
                                  visible={maxRank >= ADMIN_RANK && canChange} />

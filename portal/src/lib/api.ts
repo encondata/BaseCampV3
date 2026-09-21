@@ -2476,6 +2476,20 @@ export async function removeInitiativeAsset(assocId: string): Promise<void> {
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+export interface PlacementRecheck {
+  checked: number; collisions: number; orphans: number; cleared: number;
+}
+
+/** POST /initiatives/{id}/assets/recheck-placement — re-run the rack
+ *  placement rule over the roster; restates loaded_in_system /
+ *  location_collision / orphan_node and never touches progressed rows. */
+export async function recheckInitiativePlacement(id: string): Promise<PlacementRecheck> {
+  const resp = await apiFetch(`/initiatives/${id}/assets/recheck-placement`,
+    { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 // ── move-assets bulk import jobs ─────────────────────────────────────
 // The API queues the job; a separate worker process runs it. The portal
 // polls getImportJob until the job reaches a terminal status.
