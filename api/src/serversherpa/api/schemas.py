@@ -1196,6 +1196,7 @@ class AssetItem(BaseModel):
     serial_number: str | None = None
     name: str | None = None
     rfid_tag: str | None = None
+    pod_number: str | None = None
     model_id: uuid.UUID | None = None
     model: AssetModelRef | None = None
     client_id: uuid.UUID | None = None
@@ -1216,6 +1217,7 @@ class AssetCreateIn(BaseModel):
     serial_number: str | None = None
     name: str | None = None
     rfid_tag: str | None = None
+    pod_number: str | None = None
     model_id: uuid.UUID | None = None
     client_id: uuid.UUID | None = None
     site_id: uuid.UUID | None = None
@@ -1229,6 +1231,7 @@ class AssetUpdateIn(BaseModel):
     serial_number: str | None = None
     name: str | None = None
     rfid_tag: str | None = None
+    pod_number: str | None = None
     model_id: uuid.UUID | None = None
     client_id: uuid.UUID | None = None
     site_id: uuid.UUID | None = None

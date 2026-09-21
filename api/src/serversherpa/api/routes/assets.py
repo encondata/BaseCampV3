@@ -24,8 +24,8 @@ from serversherpa.status.labels import UNKNOWN_COLOR, status_labels
 router = APIRouter(prefix="/assets", tags=["assets"])
 
 ASSET_FIELDS = [
-    "serial_number", "name", "rfid_tag", "model_id", "client_id", "site_id",
-    "location_detail", "status", "has_rails",
+    "serial_number", "name", "rfid_tag", "pod_number", "model_id",
+    "client_id", "site_id", "location_detail", "status", "has_rails",
 ]
 NON_NULLABLE_ASSET_FIELDS = ("location_detail", "status")
 
@@ -80,7 +80,8 @@ def _item(a: Asset, statuses: dict, models: dict, clients: dict,
     return {
         "id": a.id, "legacy_id": a.legacy_id,
         "serial_number": a.serial_number, "name": a.name,
-        "rfid_tag": a.rfid_tag, "model_id": a.model_id,
+        "rfid_tag": a.rfid_tag, "pod_number": a.pod_number,
+        "model_id": a.model_id,
         "model": models.get(a.model_id),
         "client_id": a.client_id, "client_name": clients.get(a.client_id),
         "site_id": a.site_id, "site_name": sites.get(a.site_id),
