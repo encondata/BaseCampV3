@@ -327,7 +327,7 @@ export default function ModelEditModal({
                   <option value="">Not set</option>
                   {FORM_FACTORS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
-                <p className="field-hint">
+                <p className="page-hint field-hint">
                   Chassis holds nodes at fractional RUs (33.1, 33.2). Node lives inside a chassis and
                   needs no rails. Leave unset for ordinary rack-mounted devices.
                 </p></div>
