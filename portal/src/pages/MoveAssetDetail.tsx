@@ -143,10 +143,12 @@ export default function MoveAssetDetail() {
           <div className="detail-block">
             <p className="eyebrow-sm">Placement</p>
             <dl className="kv">
+              <dt>Source pod</dt><dd>{row.source_pod ?? '—'}</dd>
               <dt>Source rack</dt><dd>{row.source_rack ?? '—'}</dd>
               <dt>Source RU</dt><dd>{row.source_ru ?? '—'}</dd>
               <dt>Source position</dt><dd>{row.source_position ?? '—'}</dd>
               <dt>Source verified</dt><dd>{yesNo(row.source_verified)}</dd>
+              <dt>Destination pod</dt><dd>{row.destination_pod ?? '—'}</dd>
               <dt>Destination rack</dt><dd>{row.destination_rack ?? '—'}</dd>
               <dt>Destination RU</dt><dd>{row.destination_ru ?? '—'}</dd>
               <dt>Destination position</dt><dd>{row.destination_position ?? '—'}</dd>

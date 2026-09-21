@@ -23,7 +23,7 @@ afterEach(cleanup);
 function makeAsset(overrides: Partial<InitiativeAssetSummary> = {}): InitiativeAssetSummary {
   return {
     id: 'asset-1', legacy_id: null, serial_number: 'SN-1', name: 'w1-hs4-m0407',
-    rfid_tag: null, model_make: null, model_name: null, ru_size: 1,
+    rfid_tag: null, pod_number: null, model_make: null, model_name: null, ru_size: 1,
     model_form_factor: null, location_detail: null, client_name: null,
     model_category: null, model_category_label: null, model_category_color: null,
     status: 'active', status_label: 'Active', status_color: '#000',
@@ -35,6 +35,7 @@ function makeRow(overrides: Partial<InitiativeAssetRow> = {}): InitiativeAssetRo
   return {
     id: 'row-1', asset_id: 'asset-1',
     priority_wave: null, disposition: null, owner: null,
+    source_pod: null, destination_pod: null,
     source_rack: 'R1', source_ru: 10, source_verified: true, source_position: 'rear',
     destination_rack: null, destination_ru: null,
     destination_verified: null, destination_position: null,

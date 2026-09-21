@@ -16,6 +16,7 @@ afterEach(cleanup);
 
 const row = (n: number, over: Partial<InitiativeAssetRow> & { name?: string; serial?: string; make?: string; model?: string } = {}): InitiativeAssetRow => ({
   id: `j${n}`, asset_id: `a${n}`, priority_wave: null, disposition: null, owner: null,
+  source_pod: null, destination_pod: null,
   source_rack: over.source_rack ?? `R${n}`, source_ru: over.source_ru ?? n,
   source_verified: null, source_position: null, destination_rack: null, destination_ru: null,
   destination_verified: null, destination_position: null, cable_info: null, vendor_involved: null,

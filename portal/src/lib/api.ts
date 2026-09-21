@@ -2292,7 +2292,7 @@ export interface InitiativePersonRow {
  *  InitiativeAssetSummary schema (routes/initiatives.py) field-for-field. */
 export interface InitiativeAssetSummary {
   id: string; legacy_id: number | null; serial_number: string | null;
-  name: string | null; rfid_tag: string | null;
+  name: string | null; rfid_tag: string | null; pod_number: string | null;
   model_make: string | null; model_name: string | null;
   ru_size: number | null; model_form_factor: string | null;
   location_detail: string | null;
@@ -2308,9 +2308,10 @@ export interface InitiativeAssetSummary {
 export interface InitiativeAssetRow {
   id: string; asset_id: string;
   priority_wave: string | null; disposition: string | null; owner: string | null;
-  source_rack: string | null; source_ru: number | null;
+  source_pod: string | null; source_rack: string | null; source_ru: number | null;
   source_verified: boolean | null; source_position: string | null;
-  destination_rack: string | null; destination_ru: number | null;
+  destination_pod: string | null; destination_rack: string | null;
+  destination_ru: number | null;
   destination_verified: boolean | null; destination_position: string | null;
   cable_info: string | null; vendor_involved: boolean | null;
   status: string; status_label: string; status_color: string;

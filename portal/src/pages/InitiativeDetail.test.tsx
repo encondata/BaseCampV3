@@ -92,6 +92,7 @@ const PERSON: InitiativePersonRow = {
 const ASSET: InitiativeAssetRow = {
   id: 'ia1', asset_id: 'a1',
   priority_wave: null, disposition: null, owner: null,
+  source_pod: null, destination_pod: null,
   source_rack: null, source_ru: null,
   source_verified: null, source_position: null,
   destination_rack: null, destination_ru: null,
@@ -101,7 +102,7 @@ const ASSET: InitiativeAssetRow = {
   created_at: '2026-09-01T10:00:00Z', updated_at: '2026-09-01T10:00:00Z',
   asset: {
     id: 'a1', legacy_id: null, serial_number: 'SN-0001', name: 'switch-01',
-    rfid_tag: null, model_make: 'Cisco', model_name: 'C9300',
+    rfid_tag: null, pod_number: null, model_make: 'Cisco', model_name: 'C9300',
     ru_size: 1, model_form_factor: null, location_detail: null, client_name: null,
     model_category: 'network', model_category_label: 'Network',
     model_category_color: '#3b82f6',
