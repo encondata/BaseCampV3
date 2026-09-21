@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildRackPrintHtml } from './rackPrint';
 
 const row = { id: 'a', name: 'top-dev', makeModel: 'Dell R740', ruText: '40..41',
-  categoryColor: '#1668a7', group: 'FRONT' as const };
+  categoryColor: '#1668a7', group: 'FRONT' as const, indent: false, orphan: false };
 
 describe('buildRackPrintHtml', () => {
   it('embeds heading, svgs, list rows, legend, page sizing, and auto-print', () => {

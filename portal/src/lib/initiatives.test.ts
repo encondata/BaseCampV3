@@ -5,7 +5,7 @@ import {
   buildInitiativeTree, COLLAPSED_KEY, derivedSpan, deviceListRows, formFromInitiative,
   initiativeCellText, initiativePayload, initiativeSearchText, legendCategories,
   MOVE_ASSET_EDIT_FIELDS, moveAssetCellText, moveAssetProgress, moveAssetStatusBreakdown,
-  partnerOptionsForRole, rackLayout, readCollapsed, sectionsForType, siteOptionsForClient,
+  partnerOptionsForRole, rackLayout, readCollapsed, ruSlot, sectionsForType, siteOptionsForClient,
   writeCollapsed,
 } from './initiatives';
 import type { InitiativeTreeRow, RackBlock, TreeItem } from './initiatives';
@@ -498,9 +498,44 @@ describe('rackLayout', () => {
     expect(rackLayout(rows, 'BJ08', 'destination').map((b) => b.ru)).toEqual([20]);
   });
 
-  it('passes decimal RU values through unchanged', () => {
-    const rows = [assetRow({ id: 'a', source_rack: 'BJ08', source_ru: 8.5 })];
-    expect(rackLayout(rows, 'BJ08', 'source')[0].ru).toBe(8.5);
+  it('attaches a node at N.x as a child of the block that starts at N', () => {
+    const rows = [
+      assetRow({ id: 'ch', source_rack: 'BJ08', source_ru: 33,
+                 asset: { ...assetRow().asset, name: 'chassis', ru_size: 4 } }),
+      assetRow({ id: 'n2', source_rack: 'BJ08', source_ru: 33.2, source_verified: false,
+                 asset: { ...assetRow().asset, name: 'node-2', serial_number: 'S2', ru_size: null } }),
+      assetRow({ id: 'n1', source_rack: 'BJ08', source_ru: 33.1, source_verified: true,
+                 asset: { ...assetRow().asset, name: 'node-1', serial_number: 'S1', ru_size: null } }),
+    ];
+    const blocks = rackLayout(rows, 'BJ08', 'source');
+    expect(blocks.map((b) => b.id)).toEqual(['ch']);
+    expect(blocks[0].children.map((c) => [c.id, c.slot, c.label, c.serial, c.verified]))
+      .toEqual([['n1', 1, 'node-1', 'S1', true], ['n2', 2, 'node-2', 'S2', false]]);
+    expect(blocks[0].slot).toBe(0);
+    expect(blocks[0].orphan).toBe(false);
+  });
+
+  it('draws a node with no block at its RU as a 1U orphan block at the base', () => {
+    const rows = [assetRow({ id: 'a', source_rack: 'BJ08', source_ru: 8.5,
+                             asset: { ...assetRow().asset, ru_size: 2 } })];
+    const [b] = rackLayout(rows, 'BJ08', 'source');
+    expect([b.ru, b.slot, b.height, b.orphan, b.children]).toEqual([8, 5, 1, true, []]);
+  });
+
+  it('a node whose RU is only covered from below is still an orphan (no block STARTS there)', () => {
+    const rows = [
+      assetRow({ id: 'srv', source_rack: 'BJ08', source_ru: 32,
+                 asset: { ...assetRow().asset, ru_size: 2 } }),
+      assetRow({ id: 'n', source_rack: 'BJ08', source_ru: 33.1 }),
+    ];
+    const blocks = rackLayout(rows, 'BJ08', 'source');
+    expect(blocks.map((b) => [b.id, b.orphan])).toEqual([['srv', false], ['n', true]]);
+  });
+
+  it('ruSlot splits base and slot', () => {
+    expect(ruSlot(33.4)).toEqual({ base: 33, slot: 4 });
+    expect(ruSlot(10)).toEqual({ base: 10, slot: 0 });
+    expect(ruSlot(5.3000001)).toEqual({ base: 5, slot: 3 });
   });
 
   it('defaults block height to 1 when the asset model has no ru_size', () => {
@@ -580,7 +615,8 @@ describe('rackLayout', () => {
 
 const block = (over: Partial<RackBlock>): RackBlock => ({
   id: 'b1', label: 'dev', ru: 1, height: 1, verified: false, position: null,
-  categoryLabel: null, categoryColor: null, makeModel: '', ...over,
+  categoryLabel: null, categoryColor: null, makeModel: '',
+  slot: 0, children: [], orphan: false, ...over,
 });
 
 describe('deviceListRows', () => {
@@ -603,6 +639,25 @@ describe('deviceListRows', () => {
     expect(rows[0].makeModel).toBe('Dell R740');
     expect(rows[1].ruText).toBe('1');
     expect(rows[1].makeModel).toBe('—');
+  });
+
+  it('lists children indented under their block, in slot order, and marks orphans', () => {
+    const rows = deviceListRows([
+      block({ id: 'ch', label: 'chassis', ru: 33, height: 4, categoryColor: '#123456',
+              children: [
+                { id: 'n2', label: 'node-2', slot: 2, serial: null, makeModel: 'Dell node', verified: false },
+                { id: 'n1', label: 'node-1', slot: 1, serial: null, makeModel: '', verified: true },
+              ] }),
+      block({ id: 'o', label: 'san-01', ru: 3, height: 1, slot: 5, orphan: true }),
+    ], []);
+    expect(rows.map((r) => [r.id, r.ruText, r.indent, r.orphan])).toEqual([
+      ['ch', '33..36', false, false],
+      ['n2', '33.2', true, false],
+      ['n1', '33.1', true, false],
+      ['o', '3.5', false, true],
+    ]);
+    expect(rows[1].categoryColor).toBe('#123456');
+    expect(rows[2].makeModel).toBe('—');
   });
 });
 
