@@ -794,7 +794,10 @@ describe('deviceListRows', () => {
     const rows = deviceListRows([
       block({ id: 'ch', label: 'chassis', ru: 33, height: 4, categoryColor: '#123456',
               children: [
-                child({ id: 'n2', label: 'node-2', slot: 2, makeModel: 'Dell node' }),
+                child({
+                  id: 'n2', label: 'node-2', slot: 2, makeModel: 'Dell node',
+                  categoryColor: '#abcdef',
+                }),
                 child({ id: 'n1', label: 'node-1', slot: 1, verified: true }),
               ] }),
       block({ id: 'o', label: 'san-01', ru: 3, height: 1, slot: 5, orphan: 'no_chassis' }),
@@ -805,7 +808,10 @@ describe('deviceListRows', () => {
       ['n1', '33.1', true, false],
       ['o', '3.5', false, true],
     ]);
-    expect(rows[1].categoryColor).toBe('#123456');
+    // n2 carries its own categoryColor and wins; n1 has none and falls
+    // back to the parent chassis's.
+    expect(rows[1].categoryColor).toBe('#abcdef');
+    expect(rows[2].categoryColor).toBe('#123456');
     expect(rows[2].makeModel).toBe('—');
   });
 });

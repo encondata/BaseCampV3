@@ -64,6 +64,41 @@ describe('renderRackSvg', () => {
     const out = renderRackSvg({ rackName: 'R1', side: 'destination', rows: [row({})] });
     expect(out).toContain('No assets recorded at this rack');
   });
+  it('draws a second FRONT · NODES elevation for a chassis housing node rows, ' +
+     'with both node names and no legacy Slot aria-labels', () => {
+    const out = renderRackSvg({ rackName: 'R1', side: 'source', rows: [
+      row({
+        id: 'ch', source_ru: 33,
+        asset: { name: 'chassis-a', serial_number: 'SNC', ru_size: 4, model_form_factor: null,
+                 model_make: 'Dell', model_name: 'C6400',
+                 model_category_label: null, model_category_color: null },
+      }),
+      row({
+        id: 'n1', source_ru: 33.1,
+        asset: { name: 'node-1', serial_number: 'SN1', ru_size: 1, model_form_factor: null,
+                 model_make: null, model_name: null,
+                 model_category_label: null, model_category_color: null },
+      }),
+      row({
+        id: 'n2', source_ru: 33.2,
+        asset: { name: 'node-2', serial_number: 'SN2', ru_size: 1, model_form_factor: null,
+                 model_make: null, model_name: null,
+                 model_category_label: null, model_category_color: null },
+      }),
+    ] });
+    const doc = new DOMParser().parseFromString(out, 'text/html');
+    const elevations = [...doc.querySelectorAll('.rack-elevation')];
+    expect(elevations.map((el) => el.querySelector('.rack-elevation-heading')?.textContent))
+      .toEqual(['FRONT', 'FRONT · NODES']);
+    expect(elevations[1].textContent).toContain('node-1');
+    expect(elevations[1].textContent).toContain('node-2');
+    expect(out).not.toMatch(/aria-label="Slot /);
+  });
+  it('yields exactly one rack-elevation for a row set with only child-less devices', () => {
+    const out = renderRackSvg({ rackName: 'R1', side: 'source', rows: [row({})] });
+    const doc = new DOMParser().parseFromString(out, 'text/html');
+    expect(doc.querySelectorAll('.rack-elevation').length).toBe(1);
+  });
 });
 
 it('keeps SVG-only properties out of the outer <style> but inside every <svg> copy', async () => {

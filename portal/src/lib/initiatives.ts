@@ -708,7 +708,7 @@ export function deviceListRows(
           id: c.id, name: c.label,
           makeModel: c.makeModel || '—',
           ruText: `${b.ru}.${c.slot}`,
-          categoryColor: b.categoryColor, group,
+          categoryColor: c.categoryColor ?? b.categoryColor, group,
           indent: true, orphan: false,
         })),
       ]);

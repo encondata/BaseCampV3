@@ -97,11 +97,20 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   // the frame still reads against the same rack.
   const frontNodes = nodeBlocks(frontBlocks);
   const rearNodes = nodeBlocks(rearBlocks);
-  const nodeDisplay = (sideBlocks: typeof blocks, cells: typeof blocks): DisplayBlock[] =>
-    [...cells, ...ghostBlocksFor(sideBlocks.filter((b) => b.children.length === 0))];
+  // Mirrors the devices frame's own-side/opposite-side ghosting: the
+  // opposite side's REAL blocks (unfiltered) are ghosted too, so the nodes
+  // frame never differs from the devices frame beside it in occupancy or
+  // height.
+  const nodeDisplay = (
+    ownBlocks: typeof blocks, cells: typeof blocks, oppositeBlocks: typeof blocks,
+  ): DisplayBlock[] => [
+    ...cells,
+    ...ghostBlocksFor(ownBlocks.filter((b) => b.children.length === 0)),
+    ...ghostBlocksFor(oppositeBlocks),
+  ];
   const rowsById = new Map(rows.map((r) => [r.id, r]));
   const listRows = deviceListRows(frontBlocks, rearBlocks);
-  const categories = legendCategories(blocks);
+  const categories = legendCategories([...blocks, ...frontNodes, ...rearNodes]);
 
   const place = (e: React.MouseEvent<SVGGElement>) => {
     const container = containerRef.current;
@@ -187,7 +196,7 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
             />
             {frontNodes.length > 0 && (
               <RackElevation
-                heading="FRONT · NODES" blocks={nodeDisplay(frontBlocks, frontNodes)}
+                heading="FRONT · NODES" blocks={nodeDisplay(frontBlocks, frontNodes, rearBlocks)}
                 ariaLabel={`Rack ${rackName} — ${sideLabel} — front nodes elevation`}
                 onHoverBlock={handleHover} onLeaveBlock={handleLeave}
               />
@@ -201,7 +210,7 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
             )}
             {showRear && rearNodes.length > 0 && (
               <RackElevation
-                heading="REAR · NODES" blocks={nodeDisplay(rearBlocks, rearNodes)}
+                heading="REAR · NODES" blocks={nodeDisplay(rearBlocks, rearNodes, frontBlocks)}
                 ariaLabel={`Rack ${rackName} — ${sideLabel} — rear nodes elevation`}
                 onHoverBlock={handleHover} onLeaveBlock={handleLeave}
               />

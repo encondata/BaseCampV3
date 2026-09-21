@@ -61,15 +61,24 @@ export function renderRackSvg(input: RenderRackInput): string {
   // child-less devices as ghosts for RU context (see `nodeBlocks`).
   const frontNodes = nodeBlocks(front);
   const rearNodes = nodeBlocks(rear);
-  const nodeDisplay = (sideBlocks: typeof blocks, cells: typeof blocks): DisplayBlock[] =>
-    [...cells, ...ghostBlocksFor(sideBlocks.filter((b) => b.children.length === 0))];
+  // Mirrors the devices frame's own-side/opposite-side ghosting: the
+  // opposite side's REAL blocks (unfiltered) are ghosted too, so the nodes
+  // frame never differs from the devices frame beside it in occupancy or
+  // height.
+  const nodeDisplay = (
+    ownBlocks: typeof blocks, cells: typeof blocks, oppositeBlocks: typeof blocks,
+  ): DisplayBlock[] => [
+    ...cells,
+    ...ghostBlocksFor(ownBlocks.filter((b) => b.children.length === 0)),
+    ...ghostBlocksFor(oppositeBlocks),
+  ];
   const sideLabel = input.side === 'source' ? 'Source' : 'Destination';
   const markup = renderToStaticMarkup(
     <div className="rack-elevations">
       <RackElevation heading="FRONT" blocks={frontDisplay}
                      ariaLabel={`Rack ${input.rackName} — ${sideLabel} — front elevation`} />
       {frontNodes.length > 0 && (
-        <RackElevation heading="FRONT · NODES" blocks={nodeDisplay(front, frontNodes)}
+        <RackElevation heading="FRONT · NODES" blocks={nodeDisplay(front, frontNodes, rear)}
                        ariaLabel={`Rack ${input.rackName} — ${sideLabel} — front nodes elevation`} />
       )}
       {rear.length > 0 && (
@@ -77,7 +86,7 @@ export function renderRackSvg(input: RenderRackInput): string {
                        ariaLabel={`Rack ${input.rackName} — ${sideLabel} — rear elevation`} />
       )}
       {rear.length > 0 && rearNodes.length > 0 && (
-        <RackElevation heading="REAR · NODES" blocks={nodeDisplay(rear, rearNodes)}
+        <RackElevation heading="REAR · NODES" blocks={nodeDisplay(rear, rearNodes, front)}
                        ariaLabel={`Rack ${input.rackName} — ${sideLabel} — rear nodes elevation`} />
       )}
     </div>,
