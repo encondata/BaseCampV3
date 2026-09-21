@@ -162,8 +162,10 @@ report-side change. The report's device list rows use the same
 ## Phase two: model form factor
 
 Migration `0068` adds `asset_models.form_factor text null` with values
-`standalone`, `chassis`, `node`. Null means unknown and behaves as
-`standalone` everywhere. The vocabulary is a module constant next to
+`standalone`, `chassis`, `node`. Null means unknown. Consumers that need
+a value (the rail report, the drawings) treat null as `standalone`; the
+placement rule never infers a mismatch from a null, because the common
+case is a model the importer created with no form factor at all. The vocabulary is a module constant next to
 `MOUNT_TYPES`, validated on write (`422 unknown_form_factor`), exposed
 in the model API, editable in the portal's Makes / Models editor as a
 three-option select with a short explainer, and shown as a small chip in
