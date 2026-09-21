@@ -450,6 +450,13 @@ describe('Asset ID column', () => {
   });
 });
 
+describe('assetSearchText', () => {
+  it('matches the pod number so filtering by pod finds the row', () => {
+    expect(assetSearchText(asset({ pod_number: 'P-14' }))).toContain('p-14');
+    expect(assetSearchText(asset({ pod_number: null }))).not.toContain('null');
+  });
+});
+
 describe('identity columns (Serial / Name, Serial, Name)', () => {
   it('assetCellText reads the split serial and name columns', () => {
     const a = asset({ serial_number: 'SN9', name: 'web-09' });

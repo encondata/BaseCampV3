@@ -38,8 +38,8 @@ export function formatDims(
 }
 
 export function assetSearchText(a: AssetItem): string {
-  return [a.legacy_id != null ? String(a.legacy_id) : null, a.serial_number, a.name, a.rfid_tag, a.location_detail,
-          a.client_name, a.site_name, a.model?.make, a.model?.model]
+  return [a.legacy_id != null ? String(a.legacy_id) : null, a.serial_number, a.name, a.rfid_tag, a.pod_number,
+          a.location_detail, a.client_name, a.site_name, a.model?.make, a.model?.model]
     .filter(Boolean).join(' ').toLowerCase();
 }
 

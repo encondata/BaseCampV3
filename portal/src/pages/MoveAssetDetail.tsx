@@ -123,6 +123,7 @@ export default function MoveAssetDetail() {
           <dt>Name</dt><dd>{asset?.name ?? '—'}</dd>
           <dt>Serial</dt><dd className="mono">{asset?.serial_number ?? '—'}</dd>
           <dt>RFID tag</dt><dd className="mono" title={asset?.rfid_tag ?? undefined}>{displayRfid(asset?.rfid_tag)}</dd>
+          <dt>Pod #</dt><dd className="mono">{asset?.pod_number ?? '—'}</dd>
           <dt>Model</dt>
           <dd>{asset?.model ? `${asset.model.make} ${asset.model.model}` : '—'}</dd>
           <dt>Category</dt><dd>{asset?.model?.category_label ?? '—'}</dd>
