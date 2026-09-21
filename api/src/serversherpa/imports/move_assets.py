@@ -137,6 +137,8 @@ def parse_row(n: int, canonical: dict, raw: dict, *,
         "priority_wave": priority,
         "disposition": canonical["disposition"].strip() or None,
         "owner": canonical["owner"].strip() or None,
+        "source_pod": canonical["source_pod"].strip() or None,
+        "destination_pod": canonical["destination_pod"].strip() or None,
         "source_rack": canonical["source_rack"].strip() or None,
         "source_ru": _ru("source_ru"),
         "source_position": canonical["source_position"].strip() or None,
@@ -160,6 +162,7 @@ class _SimAsset:
     def __init__(self, serial: str) -> None:
         self.serial_number = serial
         self.rfid_tag: str | None = None
+        self.pod_number: str | None = None
 
 
 _SIM_ASSOC = object()   # roster marker for validate-mode attachments
@@ -248,6 +251,8 @@ def _apply_row(assoc: InitiativeAsset, r: dict, now: datetime) -> None:
     assoc.priority_wave = r["priority_wave"]
     assoc.disposition = r["disposition"]
     assoc.owner = r["owner"]
+    assoc.source_pod = r["source_pod"]
+    assoc.destination_pod = r["destination_pod"]
     assoc.source_rack = r["source_rack"]
     assoc.source_ru = (Decimal(str(r["source_ru"]))
                        if r["source_ru"] is not None else None)
@@ -391,6 +396,7 @@ async def run_import(
                 asset = Asset(
                     serial_number=serial, name=r["asset_name"],
                     rfid_tag=rfid_to_write,
+                    pod_number=r["source_pod"],
                     model_id=model_obj.id if model_obj is not None else None,
                     source="import", source_ref=source_label or None,
                     created_by=added_by)
@@ -402,11 +408,17 @@ async def run_import(
             assets[serial] = asset
             if rfid_to_write:
                 rfid_map[rfid_to_write.lower()] = asset
-        elif rfid_to_write:
-            if write:
-                asset.rfid_tag = rfid_to_write
+        else:
+            if rfid_to_write:
+                if write:
+                    asset.rfid_tag = rfid_to_write
+                    asset.updated_at = now
+                rfid_map[rfid_to_write.lower()] = asset
+            # The import states where the asset is today; a blank cell
+            # says nothing and never clears a known pod.
+            if write and r["source_pod"] and asset.pod_number != r["source_pod"]:
+                asset.pod_number = r["source_pod"]
                 asset.updated_at = now
-            rfid_map[rfid_to_write.lower()] = asset
 
         if serial in roster:
             assoc = roster[serial]

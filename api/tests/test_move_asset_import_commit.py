@@ -265,3 +265,43 @@ async def test_review_row_keeps_rfid_skip_note(db):
     assert d["status"] == "review"
     assert "not found" in d["message"]
     assert "TAG-R" in d["message"] and "skipped" in d["message"]
+
+
+async def test_pods_land_on_roster_and_source_pod_on_asset(db):
+    ini = await _move(db)
+    kept = Asset(serial_number="sn-kept", pod_number="3")
+    moved = Asset(serial_number="sn-moved", pod_number="3")
+    db.add_all([kept, moved])
+    await db.commit()
+    rows = [
+        _row(2, serial_number="SN-NEW", source_pod="14", destination_pod="9"),
+        _row(3, serial_number="SN-KEPT", destination_pod="9"),   # blank source keeps 3
+        _row(4, serial_number="SN-MOVED", source_pod="14"),      # overwrites 3
+    ]
+    await run_import(db, initiative_id=ini.id, added_by=None, rows=rows,
+                     write=True)
+    new = await db.scalar(select(Asset).where(Asset.serial_number == "sn-new"))
+    assert new.pod_number == "14"
+    await db.refresh(kept)
+    await db.refresh(moved)
+    assert kept.pod_number == "3"
+    assert moved.pod_number == "14"
+    assoc = await db.scalar(select(InitiativeAsset).where(
+        InitiativeAsset.asset_id == new.id))
+    assert (assoc.source_pod, assoc.destination_pod) == ("14", "9")
+    assoc_kept = await db.scalar(select(InitiativeAsset).where(
+        InitiativeAsset.asset_id == kept.id))
+    assert (assoc_kept.source_pod, assoc_kept.destination_pod) == (None, "9")
+
+
+async def test_validate_mode_writes_no_pods(db):
+    ini = await _move(db)
+    bare = Asset(serial_number="sn-bare")
+    db.add(bare)
+    await db.commit()
+    rows = [_row(2, serial_number="SN-BARE", source_pod="14")]
+    result = await run_import(db, initiative_id=ini.id, added_by=None,
+                              rows=rows, write=False)
+    assert result["summary"]["created"] == 1
+    await db.refresh(bare)
+    assert bare.pod_number is None
