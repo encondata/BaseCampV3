@@ -5,10 +5,10 @@ import {
   buildInitiativeTree, COLLAPSED_KEY, derivedSpan, deviceListRows, formFromInitiative,
   initiativeCellText, initiativePayload, initiativeSearchText, legendCategories,
   MOVE_ASSET_EDIT_FIELDS, moveAssetCellText, moveAssetProgress, moveAssetStatusBreakdown,
-  partnerOptionsForRole, rackLayout, readCollapsed, ruSlot, sectionsForType, siteOptionsForClient,
-  writeCollapsed,
+  nodeBlocks, partnerOptionsForRole, rackLayout, readCollapsed, ruSlot, sectionsForType,
+  siteOptionsForClient, writeCollapsed,
 } from './initiatives';
-import type { InitiativeTreeRow, RackBlock, TreeItem } from './initiatives';
+import type { InitiativeTreeRow, RackBlock, RackChild, TreeItem } from './initiatives';
 
 const row: InitiativeItem = {
   id: 'i1', name: 'Denver DC migration', description: null,
@@ -512,14 +512,15 @@ describe('rackLayout', () => {
     expect(blocks[0].children.map((c) => [c.id, c.slot, c.label, c.serial, c.verified]))
       .toEqual([['n1', 1, 'node-1', 'S1', true], ['n2', 2, 'node-2', 'S2', false]]);
     expect(blocks[0].slot).toBe(0);
-    expect(blocks[0].orphan).toBe(false);
+    expect(blocks[0].orphan).toBe(null);
   });
 
   it('draws a node with no block at its RU as a 1U orphan block at the base', () => {
     const rows = [assetRow({ id: 'a', source_rack: 'BJ08', source_ru: 8.5,
                              asset: { ...assetRow().asset, ru_size: 2 } })];
     const [b] = rackLayout(rows, 'BJ08', 'source');
-    expect([b.ru, b.slot, b.height, b.orphan, b.children]).toEqual([8, 5, 1, true, []]);
+    expect([b.ru, b.slot, b.height, b.orphan, b.children])
+      .toEqual([8, 5, 1, 'no_chassis', []]);
   });
 
   it('two whole-RU blocks at the same base: the first in row order adopts the node', () => {
@@ -546,6 +547,30 @@ describe('rackLayout', () => {
     expect(blocks[1].children.map((c) => [c.id, c.position])).toEqual([['n', 'rear']]);
   });
 
+  it('a blank-position node attaches to the rear chassis at its base when no front block starts there', () => {
+    // A blank position note is UNSTATED, not "front": the node plainly
+    // sits in the only chassis that starts at its RU.
+    const rows = [
+      assetRow({ id: 'ch', source_rack: 'BJ08', source_ru: 25, source_position: 'rear',
+                 asset: { ...assetRow().asset, ru_size: 2 } }),
+      assetRow({ id: 'n', source_rack: 'BJ08', source_ru: 25.1, source_position: null }),
+    ];
+    const blocks = rackLayout(rows, 'BJ08', 'source');
+    expect(blocks.map((b) => b.id)).toEqual(['ch']);
+    expect(blocks[0].children.map((c) => [c.id, c.position])).toEqual([['n', null]]);
+  });
+
+  it('a blank-position node prefers the front chassis when both sides have one at that RU', () => {
+    const rows = [
+      assetRow({ id: 'front', source_rack: 'BJ08', source_ru: 25, source_position: 'front' }),
+      assetRow({ id: 'rear', source_rack: 'BJ08', source_ru: 25, source_position: 'rear' }),
+      assetRow({ id: 'n', source_rack: 'BJ08', source_ru: 25.1, source_position: '  ' }),
+    ];
+    const blocks = rackLayout(rows, 'BJ08', 'source');
+    expect(blocks[0].children.map((c) => c.id)).toEqual(['n']);
+    expect(blocks[1].children).toEqual([]);
+  });
+
   it('a node with only an opposite-side block at its base is an orphan on its own side', () => {
     const rows = [
       assetRow({ id: 'front', source_rack: 'BJ08', source_ru: 30, source_position: 'front' }),
@@ -553,7 +578,7 @@ describe('rackLayout', () => {
     ];
     const blocks = rackLayout(rows, 'BJ08', 'source');
     expect(blocks.map((b) => [b.id, b.orphan, b.position]))
-      .toEqual([['front', false, 'front'], ['n', true, 'rear']]);
+      .toEqual([['front', null, 'front'], ['n', 'no_chassis', 'rear']]);
     expect(blocks[0].children).toEqual([]);
   });
 
@@ -564,7 +589,7 @@ describe('rackLayout', () => {
     })];
     const [b] = rackLayout(rows, 'BJ08', 'source');
     // it keeps its height and can still be a parent; only the marker changes
-    expect([b.ru, b.slot, b.height, b.orphan]).toEqual([12, 0, 2, true]);
+    expect([b.ru, b.slot, b.height, b.orphan]).toEqual([12, 0, 2, 'form_factor']);
   });
 
   it('a standalone-form-factor model at a fractional RU is not adopted and draws as an orphan', () => {
@@ -576,7 +601,7 @@ describe('rackLayout', () => {
     ];
     const blocks = rackLayout(rows, 'BJ08', 'source');
     expect(blocks.map((b) => [b.id, b.ru, b.slot, b.orphan]))
-      .toEqual([['ch', 40, 0, false], ['sa', 40, 1, true]]);
+      .toEqual([['ch', 40, 0, null], ['sa', 40, 1, 'form_factor']]);
     expect(blocks[0].children).toEqual([]);
   });
 
@@ -587,7 +612,8 @@ describe('rackLayout', () => {
       assetRow({ id: 'n', source_rack: 'BJ08', source_ru: 33.1 }),
     ];
     const blocks = rackLayout(rows, 'BJ08', 'source');
-    expect(blocks.map((b) => [b.id, b.orphan])).toEqual([['srv', false], ['n', true]]);
+    expect(blocks.map((b) => [b.id, b.orphan]))
+      .toEqual([['srv', null], ['n', 'no_chassis']]);
   });
 
   it('ruSlot splits base and slot', () => {
@@ -674,7 +700,69 @@ describe('rackLayout', () => {
 const block = (over: Partial<RackBlock>): RackBlock => ({
   id: 'b1', label: 'dev', ru: 1, height: 1, verified: false, position: null,
   categoryLabel: null, categoryColor: null, makeModel: '',
-  slot: 0, children: [], orphan: false, ...over,
+  slot: 0, children: [], orphan: null, ...over,
+});
+
+const child = (over: Partial<RackChild>): RackChild => ({
+  id: 'c1', label: 'node', slot: 1, serial: null, makeModel: '',
+  verified: false, position: null, categoryLabel: null, categoryColor: null,
+  ...over,
+});
+
+describe('nodeBlocks', () => {
+  const nodes = (n: number) => Array.from({ length: n }, (_, i) =>
+    child({ id: `n${i + 1}`, label: `node-${i + 1}`, slot: i + 1 }));
+  const chassis = (children: RackChild[], over: Partial<RackBlock> = {}) =>
+    block({ id: 'ch', label: 'chassis-a', ru: 33, height: 4, position: 'front',
+            categoryLabel: 'Server', categoryColor: '#1668a7', children, ...over });
+
+  it('gives four nodes in a 4U chassis a 1U cell each, ascending slot from the bottom', () => {
+    expect(nodeBlocks([chassis(nodes(4))]).map((c) => [c.id, c.ru, c.height]))
+      .toEqual([['n1', 33, 1], ['n2', 34, 1], ['n3', 35, 1], ['n4', 36, 1]]);
+  });
+
+  it('gives two nodes in a 4U chassis a 2U cell each', () => {
+    expect(nodeBlocks([chassis(nodes(2))]).map((c) => [c.id, c.ru, c.height]))
+      .toEqual([['n1', 33, 2], ['n2', 35, 2]]);
+  });
+
+  it('gives four nodes in a 1U chassis fractional cells', () => {
+    expect(nodeBlocks([chassis(nodes(4), { height: 1 })]).map((c) => [c.ru, c.height]))
+      .toEqual([[33, 0.25], [33.25, 0.25], [33.5, 0.25], [33.75, 0.25]]);
+  });
+
+  it('orders the cells by the slot order the block carries, not by id', () => {
+    const cells = nodeBlocks([chassis([
+      child({ id: 'low', slot: 1 }), child({ id: 'high', slot: 4 }),
+    ])]);
+    expect(cells.map((c) => [c.id, c.slot, c.ru])).toEqual([['low', 1, 33], ['high', 4, 35]]);
+  });
+
+  it("keeps the node's own category and falls back to the chassis's", () => {
+    const cells = nodeBlocks([chassis([
+      child({ id: 'own', slot: 1, categoryLabel: 'Compute', categoryColor: '#0f7c86' }),
+      child({ id: 'bare', slot: 2 }),
+    ])]);
+    expect(cells.map((c) => [c.categoryLabel, c.categoryColor])).toEqual([
+      ['Compute', '#0f7c86'], ['Server', '#1668a7'],
+    ]);
+  });
+
+  it('records the chassis on each cell and leaves the cell itself unflagged', () => {
+    const [cell] = nodeBlocks([chassis([
+      child({ id: 'n1', label: 'node-1', slot: 1, verified: true, makeModel: 'Dell node' }),
+    ])]);
+    expect([cell.parentRu, cell.parentLabel, cell.position, cell.orphan]).toEqual(
+      [33, 'chassis-a', 'front', null]);
+    expect([cell.label, cell.verified, cell.makeModel, cell.children])
+      .toEqual(['node-1', true, 'Dell node', []]);
+  });
+
+  it('includes nothing for child-less blocks', () => {
+    expect(nodeBlocks([block({ id: 'sw' }), block({ id: 'srv', ru: 10 })])).toEqual([]);
+    expect(nodeBlocks([block({ id: 'sw' }), chassis(nodes(1))]).map((c) => c.id))
+      .toEqual(['n1']);
+  });
 });
 
 describe('deviceListRows', () => {
@@ -703,10 +791,10 @@ describe('deviceListRows', () => {
     const rows = deviceListRows([
       block({ id: 'ch', label: 'chassis', ru: 33, height: 4, categoryColor: '#123456',
               children: [
-                { id: 'n2', label: 'node-2', slot: 2, serial: null, makeModel: 'Dell node', verified: false, position: null },
-                { id: 'n1', label: 'node-1', slot: 1, serial: null, makeModel: '', verified: true, position: null },
+                child({ id: 'n2', label: 'node-2', slot: 2, makeModel: 'Dell node' }),
+                child({ id: 'n1', label: 'node-1', slot: 1, verified: true }),
               ] }),
-      block({ id: 'o', label: 'san-01', ru: 3, height: 1, slot: 5, orphan: true }),
+      block({ id: 'o', label: 'san-01', ru: 3, height: 1, slot: 5, orphan: 'no_chassis' }),
     ], []);
     expect(rows.map((r) => [r.id, r.ruText, r.indent, r.orphan])).toEqual([
       ['ch', '33..36', false, false],

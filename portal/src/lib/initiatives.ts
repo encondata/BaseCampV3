@@ -489,6 +489,7 @@ export function MOVE_ASSET_EDIT_FIELDS(
 export interface RackChild {
   id: string; label: string; slot: number; serial: string | null;
   makeModel: string; verified: boolean; position: string | null;
+  categoryLabel: string | null; categoryColor: string | null;
 }
 
 /** Front/rear elevation assignment: a side position note that mentions
@@ -505,10 +506,12 @@ export function isRearPosition(position: string | null | undefined): boolean {
  *  starts at; `height` the RUs it occupies. A row at a fractional RU is a
  *  node in slot x of RU N: it becomes a `children` entry of the block that
  *  starts at N on its own side, or, when no such block exists, its own 1U
- *  block at N with `orphan: true` and its `slot` recorded so the RU can
- *  still be shown as "N.x". Whole-RU blocks have `slot: 0`. `orphan` means
- *  no device starts at this RU, or the model's form factor contradicts its
- *  position. */
+ *  block at N with an `orphan` reason and its `slot` recorded so the RU
+ *  can still be shown as "N.x". Whole-RU blocks have `slot: 0`. `orphan`
+ *  names WHY the block is flagged — `'no_chassis'` (nothing starts at this
+ *  RU) or `'form_factor'` (the model's form factor contradicts its
+ *  position) — and is `null` for an ordinary block, so a plain truthiness
+ *  test still reads as "is this flagged?". */
 export interface RackBlock {
   id: string; label: string; ru: number; height: number;
   verified: boolean; position: string | null;
@@ -516,7 +519,10 @@ export interface RackBlock {
   makeModel: string;
   slot: number;
   children: RackChild[];
-  orphan: boolean;
+  orphan: 'no_chassis' | 'form_factor' | null;
+  /** Node cells only (`nodeBlocks`): the chassis this node sits in. */
+  parentRu?: number;
+  parentLabel?: string;
 }
 
 /** Splits a stored RU into its whole part and its slot digit: 33.4 is slot
@@ -559,7 +565,8 @@ export function rackLayout(
     .filter((r) => rackOf(r) === rackName && (ruOf(r) ?? 0) >= 1)
     .map((r) => ({ r, ...ruSlot(ruOf(r) as number) }));
 
-  const toBlock = (r: InitiativeAssetRow, base: number, slot: number, orphan: boolean): RackBlock => ({
+  const toBlock = (r: InitiativeAssetRow, base: number, slot: number,
+                   orphan: RackBlock['orphan']): RackBlock => ({
     id: r.id,
     label: labelOf(r),
     ru: base,
@@ -587,29 +594,76 @@ export function rackLayout(
     if (slot !== 0) continue;
     // A `node` model at a whole RU contradicts its position: it keeps its
     // height and can still house nodes, but draws with the orphan marker.
-    const b = toBlock(r, base, 0, r.asset.model_form_factor === 'node');
+    const b = toBlock(r, base, 0,
+      r.asset.model_form_factor === 'node' ? 'form_factor' : null);
     blocks.push(b);
     const key = sideKey(positionOf(r), base);
     if (!byBase.has(key)) byBase.set(key, b);
   }
+  // A BLANK position is unstated, not "front": such a node takes the front
+  // chassis at its base when there is one, and otherwise the rear one,
+  // rather than being orphaned beside a rear chassis it plainly sits in.
+  const parentAt = (position: string | null, base: number) => (
+    position?.trim()
+      ? byBase.get(sideKey(position, base))
+      : byBase.get(`F:${base}`) ?? byBase.get(`R:${base}`));
   for (const { r, base, slot } of placed) {
     if (slot === 0) continue;
     // A `standalone` model at a slot contradicts its position too: it is
     // never adopted and stands alone as an orphan at its base.
-    const parent = r.asset.model_form_factor === 'standalone'
-      ? undefined : byBase.get(sideKey(positionOf(r), base));
+    const standalone = r.asset.model_form_factor === 'standalone';
+    const parent = standalone ? undefined : parentAt(positionOf(r), base);
     if (parent) {
       parent.children.push({
         id: r.id, label: labelOf(r), slot, serial: r.asset.serial_number,
         makeModel: makeModelOf(r), verified: verifiedOf(r),
         position: positionOf(r),
+        categoryLabel: r.asset.model_category_label,
+        categoryColor: r.asset.model_category_color,
       });
     } else {
-      blocks.push(toBlock(r, base, slot, true));
+      blocks.push(toBlock(r, base, slot,
+        standalone ? 'form_factor' : 'no_chassis'));
     }
   }
   for (const b of blocks) b.children.sort((a, c) => a.slot - c.slot);
   return blocks;
+}
+
+/** The node elevation's blocks: every child of every block that has
+ *  children, as its own cell filling an equal share of the parent's RU
+ *  span, ascending slot from the bottom. A 4U chassis with four nodes
+ *  gives four 1U cells; the same chassis with two nodes gives two 2U
+ *  cells; a 1U chassis with four nodes gives four 0.25U cells (the
+ *  elevation positions and sizes by RU arithmetic, so fractions draw
+ *  correctly). Nothing else is included: the caller adds ghosts for the
+ *  child-less devices so the frame keeps its RU context. */
+export function nodeBlocks(blocks: RackBlock[]): RackBlock[] {
+  const out: RackBlock[] = [];
+  for (const b of blocks) {
+    const n = b.children.length;
+    if (n === 0) continue;
+    const share = b.height / n;
+    b.children.forEach((c, i) => out.push({
+      id: c.id,
+      label: c.label,
+      ru: b.ru + i * share,
+      height: share,
+      verified: c.verified,
+      // The cell is drawn on the chassis's face, whatever the node's own
+      // position note says; that note surfaces in the hover detail.
+      position: b.position,
+      categoryLabel: c.categoryLabel ?? b.categoryLabel,
+      categoryColor: c.categoryColor ?? b.categoryColor,
+      makeModel: c.makeModel,
+      slot: c.slot,
+      children: [],
+      orphan: null,
+      parentRu: b.ru,
+      parentLabel: b.label,
+    }));
+  }
+  return out;
 }
 
 export interface DeviceListRow {
@@ -640,7 +694,8 @@ export function deviceListRows(
           makeModel: b.makeModel || '—',
           ruText: ruTextOf(b),
           categoryColor: b.categoryColor, group,
-          indent: false, orphan: b.orphan,
+          // the manifest only marks THAT a row is flagged, not why
+          indent: false, orphan: !!b.orphan,
         },
         ...b.children.map((c) => ({
           id: c.id, name: c.label,

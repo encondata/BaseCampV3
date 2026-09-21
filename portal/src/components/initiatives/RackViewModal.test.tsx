@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assignLanes, FACEPLATE_USABLE_WIDTH, ghostBlocksFor, isRearPosition, laneGeometry,
-  rackLabel, slotPillGeometry, tooltipRows,
+  rackLabel, tooltipRows,
 } from './RackViewModal';
 
 /* ── rack view collision layout (Task 6 fix-round) — laneGeometry is the
@@ -221,7 +221,7 @@ describe('ghostBlocksFor', () => {
     const source = [
       { id: 'a', label: 'server-a', ru: 12, height: 2, verified: true, position: 'rear',
         categoryLabel: null, categoryColor: null, makeModel: '',
-        slot: 0, children: [], orphan: false },
+        slot: 0, children: [], orphan: null },
     ];
     const ghosts = ghostBlocksFor(source);
     expect(ghosts).toHaveLength(1);
@@ -234,10 +234,10 @@ describe('ghostBlocksFor', () => {
     const source = [
       { id: 'a', label: 'x', ru: 1, height: 1, verified: false, position: null,
         categoryLabel: null, categoryColor: null, makeModel: '',
-        slot: 0, children: [], orphan: false },
+        slot: 0, children: [], orphan: null },
       { id: 'b', label: 'y', ru: 5, height: 1, verified: true, position: 'front',
         categoryLabel: null, categoryColor: null, makeModel: '',
-        slot: 0, children: [], orphan: false },
+        slot: 0, children: [], orphan: null },
     ];
     const ghosts = ghostBlocksFor(source);
     expect(ghosts.map((g) => g.id)).toEqual(['a', 'b']);
@@ -299,39 +299,28 @@ describe('tooltipRows', () => {
 });
 
 describe('tooltipRows for nodes', () => {
-  it('adds Inside for a child and a Note for an orphan', () => {
+  it('adds Inside for a node cell, keeping its own side note', () => {
     const child = tooltipRows({ serial: 'S1', makeModel: 'Dell node', ru: '33.1',
-                                position: null, parentLabel: 'chassis-a' });
+                                position: 'rear', parentLabel: 'chassis-a' });
     expect(child.map((r) => [r.label, r.value])).toEqual([
-      ['Serial', 'S1'], ['Make/Model', 'Dell node'], ['RU', '33.1'], ['Inside', 'chassis-a']]);
-    const orphan = tooltipRows({ serial: null, makeModel: '', ru: '3.5', position: null, orphan: true });
-    expect(orphan.map((r) => r.label)).toEqual(['Serial', 'Make/Model', 'RU', 'Note']);
-    expect(orphan[3].value).toBe(
-      'No device starts at this RU, or the model form factor does not match its position');
+      ['Serial', 'S1'], ['Make/Model', 'Dell node'], ['RU', '33.1'],
+      ['Inside', 'chassis-a'], ['Position', 'rear']]);
   });
-});
 
-describe('slotPillGeometry', () => {
-  it('fits nine pills inside the right half of a default-width faceplate', () => {
-    const pills = slotPillGeometry(0, 130, 9);
-    expect(pills).toHaveLength(9);
-    const last = pills[8];
-    expect(last.x + last.width).toBeLessThanOrEqual(0 + 130 * 0.5 + (130 * 0.5 - 4) + 1e-9);
-    expect(pills.every((p) => p.width > 0)).toBe(true);
-    expect(pills[0].showLabel).toBe(false);          // ~6.7px each: too narrow for a digit
+  it('spells out the Note per orphan reason', () => {
+    const none = tooltipRows({ serial: null, makeModel: '', ru: '3.5',
+                               position: null, orphan: 'no_chassis' });
+    expect(none.map((r) => r.label)).toEqual(['Serial', 'Make/Model', 'RU', 'Note']);
+    expect(none[3].value).toBe('No device starts at this RU');
+    const ff = tooltipRows({ serial: null, makeModel: '', ru: 12,
+                             position: null, orphan: 'form_factor' });
+    expect(ff.find((r) => r.label === 'Note')!.value)
+      .toBe('Model form factor does not match its position');
   });
-  it('fits two pills inside a lane-squeezed 40px faceplate', () => {
-    const pills = slotPillGeometry(10, 40, 2);
-    const last = pills[1];
-    expect(last.x + last.width).toBeLessThanOrEqual(10 + 40 * 0.5 + (40 * 0.5 - 4) + 1e-9);
-  });
-  it('shows digits and a 2px gap for four or fewer pills at default width', () => {
-    const pills = slotPillGeometry(0, 130, 4);
-    expect(pills.every((p) => p.showLabel)).toBe(true);
-    expect(pills[1].x - (pills[0].x + pills[0].width)).toBeCloseTo(2);
-  });
-  it('returns nothing for zero children', () => {
-    expect(slotPillGeometry(0, 130, 0)).toEqual([]);
+
+  it('omits the Note entirely for an ordinary block', () => {
+    expect(tooltipRows({ serial: null, makeModel: '', ru: 12, position: null, orphan: null })
+      .some((r) => r.label === 'Note')).toBe(false);
   });
 });
 

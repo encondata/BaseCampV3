@@ -9,7 +9,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import { RackElevation, ghostBlocksFor, isRearPosition } from '../components/initiatives/RackElevation';
 import type { DisplayBlock } from '../components/initiatives/RackElevation';
-import { rackLayout } from '../lib/initiatives';
+import { rackLayout, nodeBlocks } from '../lib/initiatives';
 import type { InitiativeAssetRow, InitiativeAssetSummary } from '../lib/api';
 import rackCss from '../styles/rack-svg.css?raw';
 
@@ -56,14 +56,29 @@ export function renderRackSvg(input: RenderRackInput): string {
   const rear = blocks.filter((b) => isRearPosition(b.position));
   const frontDisplay: DisplayBlock[] = [...front, ...ghostBlocksFor(rear)];
   const rearDisplay: DisplayBlock[] = [...rear, ...ghostBlocksFor(front)];
+  // Mirrors the modal: a side whose devices house nodes gets a second
+  // frame of node cells right after its devices frame, with that side's
+  // child-less devices as ghosts for RU context (see `nodeBlocks`).
+  const frontNodes = nodeBlocks(front);
+  const rearNodes = nodeBlocks(rear);
+  const nodeDisplay = (sideBlocks: typeof blocks, cells: typeof blocks): DisplayBlock[] =>
+    [...cells, ...ghostBlocksFor(sideBlocks.filter((b) => b.children.length === 0))];
   const sideLabel = input.side === 'source' ? 'Source' : 'Destination';
   const markup = renderToStaticMarkup(
     <div className="rack-elevations">
       <RackElevation heading="FRONT" blocks={frontDisplay}
                      ariaLabel={`Rack ${input.rackName} — ${sideLabel} — front elevation`} />
+      {frontNodes.length > 0 && (
+        <RackElevation heading="FRONT · NODES" blocks={nodeDisplay(front, frontNodes)}
+                       ariaLabel={`Rack ${input.rackName} — ${sideLabel} — front nodes elevation`} />
+      )}
       {rear.length > 0 && (
         <RackElevation heading="REAR" blocks={rearDisplay}
                        ariaLabel={`Rack ${input.rackName} — ${sideLabel} — rear elevation`} />
+      )}
+      {rear.length > 0 && rearNodes.length > 0 && (
+        <RackElevation heading="REAR · NODES" blocks={nodeDisplay(rear, rearNodes)}
+                       ariaLabel={`Rack ${input.rackName} — ${sideLabel} — rear nodes elevation`} />
       )}
     </div>,
   );

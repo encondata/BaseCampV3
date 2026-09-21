@@ -40,8 +40,13 @@
      42U rack's aspect ratio is ~234mm tall — taller than the text area, so
      the heading and the elevation would land on separate pages. Narrow the
      column (one per side: FRONT, and REAR when it has blocks) so a rack page
-     stays a single page. */
-  .rack-page .elev .rack-elevation { width: 44mm; }
+     stays a single page. A side whose devices house nodes adds a second
+     frame, so a rack can bring FOUR: the fragment pins each column at
+     `flex: none`, which would push the third and fourth off the paper, so
+     they are allowed to shrink and share the 96mm column instead (one or
+     two frames still get the full 44mm). Wrapping them onto a second row
+     would double the block's height and split the rack page. */
+  .rack-page .elev .rack-elevation { width: 44mm; flex: 0 1 auto; min-width: 0; }
   .rack-page .elev svg { width: 100%; height: auto; }
   .rack-page .list { flex: 1; min-width: 0; }
   .note { color: #555; font-style: italic; }

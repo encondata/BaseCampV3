@@ -56,7 +56,7 @@ describe('RackViewModal (render smoke)', () => {
     expect(screen.getByRole('img', { name: /Rack R1 — Source — rear elevation/i })).toBeTruthy();
   });
 
-  it('draws nodes as labeled slot pills inside their chassis and lists them indented', () => {
+  it('draws the nodes in a second NODES elevation, not on the chassis faceplate', () => {
     const rows = [
       makeRow({ id: 'ch', source_ru: 33, source_position: null,
                 asset: makeAsset({ id: 'a-ch', name: 'nvlarch03-i', ru_size: 4 }) }),
@@ -66,8 +66,18 @@ describe('RackViewModal (render smoke)', () => {
                 asset: makeAsset({ id: 'a-n2', name: 'nvlarch03-mgmt030', ru_size: null }) }),
     ];
     render(<RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />);
-    expect(screen.getByRole('img', { name: 'Slot 1: nvlarch03-mgmt032' })).toBeTruthy();
-    expect(screen.getByRole('img', { name: 'Slot 2: nvlarch03-mgmt030' })).toBeTruthy();
+    const devices = screen.getByRole('img', { name: 'Rack R1 — Source — front elevation' });
+    const nodes = screen.getByRole('img', { name: 'Rack R1 — Source — front nodes elevation' });
+    expect(screen.getByText('FRONT · NODES')).toBeTruthy();
+    // the devices frame draws the chassis and nothing of its nodes
+    expect(within(devices).getByText('nvlarch03-i')).toBeTruthy();
+    expect(within(devices).queryByText('nvlarch03-mgmt032')).toBeNull();
+    // the nodes frame draws each node as its own faceplate
+    expect(within(nodes).getByText('nvlarch03-mgmt032')).toBeTruthy();
+    expect(within(nodes).getByText('nvlarch03-mgmt030')).toBeTruthy();
+    expect(within(nodes).queryByText('nvlarch03-i')).toBeNull();
+    // the slot pills are gone for good
+    expect(screen.queryByRole('img', { name: /^Slot / })).toBeNull();
     // device list: chassis, then its nodes indented with dotted RUs
     const list = document.querySelector('.rack-device-list') as HTMLElement;
     const names = [...list.querySelectorAll('.rack-list-name')].map((el) => el.textContent);
@@ -76,6 +86,16 @@ describe('RackViewModal (render smoke)', () => {
     expect(within(list).getByText('33.1')).toBeTruthy();
     // nodes live in blocks[].children, so nothing here is "unplaced"
     expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('renders one elevation only when no device on the side houses nodes', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ id: 'a', source_ru: 5, source_position: null }),
+      makeRow({ id: 'b', source_ru: 40, source_position: null,
+                asset: makeAsset({ id: 'a2', serial_number: 'SN-9', name: 'top-dev' }) }),
+    ]} />);
+    expect(screen.getAllByRole('img', { name: /elevation/i })).toHaveLength(1);
+    expect(screen.queryByText('FRONT · NODES')).toBeNull();
   });
 
   it('draws a node with no chassis as a dashed orphan block and names it in the list', () => {
@@ -94,7 +114,7 @@ describe('RackViewModal (render smoke)', () => {
     expect(within(list).getByText('3.5')).toBeTruthy();
   });
 
-  it('hovering a slot pill shows the node with its parent', () => {
+  it('hovering a node cell shows the node with its parent and dotted RU', () => {
     const rows = [
       makeRow({ id: 'ch', source_ru: 33, source_position: null,
                 asset: makeAsset({ id: 'a-ch', name: 'chassis-a', ru_size: 4 }) }),
@@ -102,7 +122,8 @@ describe('RackViewModal (render smoke)', () => {
                 asset: makeAsset({ id: 'a-n1', name: 'node-a1', serial_number: 'SN-N1', ru_size: null }) }),
     ];
     render(<RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />);
-    fireEvent.mouseEnter(screen.getByRole('img', { name: 'Slot 1: node-a1' }));
+    const nodes = screen.getByRole('img', { name: /front nodes elevation/i });
+    fireEvent.mouseEnter(within(nodes).getByText('node-a1').closest('g')!);
     const tip = document.querySelector('.rack-tooltip') as HTMLElement;
     expect(within(tip).getByText('node-a1')).toBeTruthy();
     expect(within(tip).getByText('SN-N1')).toBeTruthy();

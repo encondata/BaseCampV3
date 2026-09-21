@@ -16,9 +16,17 @@
  * color are INLINE attributes, not classes: category colors are
  * data-driven, and both the modal's print sheet (lib/rackPrint.ts) and
  * the report worker serialize this markup outside the app's stylesheet.
+ *
+ * Nodes housed inside a chassis are NOT drawn on the chassis faceplate:
+ * the modal (and the report) render a SECOND elevation per side whose
+ * blocks are the node cells themselves (`nodeBlocks` in lib/initiatives),
+ * each filling an equal share of its chassis's RU span. Nothing here
+ * treats them specially — a node cell is an ordinary block that happens
+ * to be a fraction of a U tall, which is why the label is dropped below
+ * 10px of cell height.
  */
 import { UNCATEGORIZED_FILL } from '../../lib/initiatives';
-import type { RackBlock, RackChild } from '../../lib/initiatives';
+import type { RackBlock } from '../../lib/initiatives';
 import { readableTextColor } from '../../lib/color';
 
 /** Racks render at 52U by default (standard cabinets are 42–48U; some run
@@ -109,26 +117,6 @@ export function assignLanes(
 }
 
 export interface LaneRect { id: string; x: number; width: number; }
-
-export interface SlotPillRect { x: number; width: number; showLabel: boolean; }
-
-/** Lays `count` slot pills across the right half of a faceplate of the
- *  given x/width. Pills always fit inside that half: the gap shrinks to
- *  1px past four pills and there is no minimum pill width. When a pill
- *  is too narrow to hold a digit (under 9px) the digit is omitted and the
- *  pill stays as a marker; hover still names the node. */
-export function slotPillGeometry(x: number, width: number, count: number): SlotPillRect[] {
-  if (count <= 0) return [];
-  const gap = count <= 4 ? 2 : 1;
-  const areaX = x + width * 0.5;
-  const areaWidth = Math.max(0, width * 0.5 - 4);
-  const pillWidth = Math.max(0, (areaWidth - gap * (count - 1)) / count);
-  return Array.from({ length: count }, (_, i) => ({
-    x: areaX + i * (pillWidth + gap),
-    width: pillWidth,
-    showLabel: pillWidth >= 9,
-  }));
-}
 
 /** Splits `blocks` into groups that are mutually reachable through RU-range
  *  overlap ("connected components" of the overlap graph) — e.g. A overlaps
@@ -242,7 +230,7 @@ export function tooltipRows(info: {
   position: string | null | undefined;
   categoryLabel?: string | null | undefined;
   parentLabel?: string | null | undefined;
-  orphan?: boolean;
+  orphan?: RackBlock['orphan'];
 }): TooltipRow[] {
   const rows: TooltipRow[] = [
     { label: 'Serial', value: info.serial ?? '—' },
@@ -255,7 +243,9 @@ export function tooltipRows(info: {
   if (info.orphan) {
     rows.push({
       label: 'Note',
-      value: 'No device starts at this RU, or the model form factor does not match its position',
+      value: info.orphan === 'form_factor'
+        ? 'Model form factor does not match its position'
+        : 'No device starts at this RU',
     });
   }
   if (info.categoryLabel) {
@@ -278,14 +268,13 @@ export function tooltipRows(info: {
  *  halves of one shared frame, so each reads as a complete elevation on
  *  its own — including when only one of the two is shown. */
 export function RackElevation({
-  heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock, onHoverChild,
+  heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock,
 }: {
   heading: string;
   ariaLabel: string;
   blocks: DisplayBlock[];
   onHoverBlock?: (block: DisplayBlock, e: React.MouseEvent<SVGGElement>) => void;
   onLeaveBlock?: () => void;
-  onHoverChild?: (block: DisplayBlock, child: RackChild, e: React.MouseEvent<SVGGElement>) => void;
 }) {
   const geometry = new Map(
     laneGeometry(blocks, FACEPLATE_USABLE_WIDTH).map((g) => [g.id, g]),
@@ -360,11 +349,11 @@ export function RackElevation({
               </g>
             );
           }
-          const hasChildren = b.children.length > 0;
-          // with nodes inside, the parent's label keeps the left half and the
-          // slot pills take the right half
-          const labelWidth = hasChildren ? width * 0.5 - 8 : width;
-          const label = (b.orphan ? '! ' : '') + rackLabel(b.label, b.position, labelWidth);
+          // A node cell can be a fraction of a U (four nodes in a 1U
+          // chassis are 4px each): too short to hold a line of text, so it
+          // draws as a bare cell and hover names it.
+          const showLabel = height >= 10;
+          const label = (b.orphan ? '! ' : '') + rackLabel(b.label, b.position, width);
           const fill = b.categoryColor ?? UNCATEGORIZED_FILL;
           const textColor = readableTextColor(fill);
           const border = b.orphan
@@ -372,44 +361,18 @@ export function RackElevation({
             : b.verified
               ? { stroke: '#15803d', strokeWidth: 2 }
               : { stroke: '#111827', strokeWidth: 1.25, strokeDasharray: '4 3' };
-          const pills = slotPillGeometry(x, width, b.children.length);
-          const pillHeight = Math.max(8, height - 4);
-          const pillFill = textColor === '#ffffff' ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.12)';
           return (
             <g key={b.id} onMouseEnter={onHoverBlock ? (e) => onHoverBlock(b, e) : undefined}
                onMouseLeave={onLeaveBlock}>
               <rect x={x} y={y} width={width} height={height} rx={2}
                     fill={fill} {...border}
                     className={b.orphan ? 'rack-faceplate rack-faceplate-orphan' : 'rack-faceplate'} />
-              <text x={x + 8} y={y + height / 2} dominantBaseline="middle"
-                    fill={textColor} className="rack-block-label">
-                {label}
-              </text>
-              {b.children.map((c, i) => {
-                const pill = pills[i];
-                return (
-                  <g key={c.id} role="img" aria-label={`Slot ${c.slot}: ${c.label}`}
-                     className="rack-node"
-                     onMouseEnter={onHoverChild ? (e) => { e.stopPropagation(); onHoverChild(b, c, e); } : undefined}
-                     /* Leaving a pill lands back on the parent faceplate, but
-                        the parent's own mouseenter does not re-fire, so the
-                        child tooltip would stay pinned: re-hover the parent. */
-                     onMouseLeave={onHoverBlock ? (e) => onHoverBlock(b, e) : undefined}>
-                    <rect x={pill.x} y={y + 2} width={pill.width} height={pillHeight} rx={2}
-                          fill={pillFill}
-                          stroke={c.verified ? '#15803d' : textColor}
-                          strokeWidth={0.75}
-                          strokeDasharray={c.verified ? undefined : '2 2'} />
-                    {pill.showLabel && (
-                      <text x={pill.x + pill.width / 2} y={y + 2 + pillHeight / 2}
-                            textAnchor="middle" dominantBaseline="middle"
-                            fill={textColor} className="rack-node-label">
-                        {c.slot}
-                      </text>
-                    )}
-                  </g>
-                );
-              })}
+              {showLabel && (
+                <text x={x + 8} y={y + height / 2} dominantBaseline="middle"
+                      fill={textColor} className="rack-block-label">
+                  {label}
+                </text>
+              )}
             </g>
           );
         })}

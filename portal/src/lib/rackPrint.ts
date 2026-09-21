@@ -63,7 +63,8 @@ const SHEET_CSS = `
 `;
 
 export function buildRackPrintHtml(input: {
-  rackName: string; sideLabel: string; svgs: string[];
+  rackName: string; sideLabel: string;
+  frames: { heading: string; svg: string }[];
   listRows: DeviceListRow[]; grouped: boolean; legend: LegendCategory[];
 }): string {
   let lastGroup: string | null = null;
@@ -77,13 +78,14 @@ export function buildRackPrintHtml(input: {
       + `<span class="model">${esc(r.makeModel)}</span>`
       + `<span class="ru">${esc(r.ruText)}</span></div>`;
   }).join('');
-  // A two-elevation sheet captions each frame FRONT / REAR — on paper the
+  // Any sheet with more than one frame captions each one with its own
+  // heading (FRONT, FRONT · NODES, REAR, REAR · NODES) — on paper the
   // reader has no hover to disambiguate; a lone frame needs no caption.
-  const elevationsHtml = input.svgs.length === 2
-    ? input.svgs.map((svg, i) =>
-        `<div class="elev"><div class="cap">${i === 0 ? 'FRONT' : 'REAR'}</div>${svg}</div>`)
+  const elevationsHtml = input.frames.length > 1
+    ? input.frames.map((f) =>
+        `<div class="elev"><div class="cap">${esc(f.heading)}</div>${f.svg}</div>`)
         .join('')
-    : input.svgs.join('');
+    : input.frames.map((f) => f.svg).join('');
   const legendHtml = [
     ...input.legend.map((c) =>
       `<span><span class="swatch" style="background:${esc(c.color)}"></span>${esc(c.label)}</span>`),

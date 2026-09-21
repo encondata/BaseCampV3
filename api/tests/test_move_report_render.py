@@ -185,3 +185,35 @@ def test_rack_page_layout_keeps_elevations_on_page_and_clear_of_table():
     assert page_a is page_b, "FRONT and REAR must share a page"
     assert front.position_y == rear.position_y, "FRONT and REAR sit side by side"
     assert front.position_x < rear.position_x
+
+
+def test_a_four_frame_rack_page_keeps_every_elevation_inside_its_column():
+    """A rack with rear devices AND nodes on both sides draws four frames
+    (FRONT, FRONT NODES, REAR, REAR NODES). They must share the elevation
+    column — shrinking, not spilling onto the paper or onto a second row,
+    which would split the rack page."""
+    from weasyprint import HTML
+
+    fragment = FIXTURE.read_text()
+    frames = re.findall(r'<div class="rack-elevation">[\s\S]*?</svg></div>', fragment)
+    assert len(frames) == 2
+    four = fragment.replace("".join(frames), "".join(frames * 2))
+
+    html = render_html(_ctx(options={**ALL_ON, "destination_racks": False},
+                            racks=[RackSvg("R1", four, [_asset(1)])]))
+    pages = HTML(string=html).render().pages
+    seen = 0
+    for page in pages:
+        elevs = _boxes_by_class(page, "elev")
+        if not elevs:
+            continue
+        elev, = elevs
+        boxes = _boxes_by_class(page, "rack-elevation")
+        assert len(boxes) == 4, "all four frames on one page"
+        for box in boxes:
+            assert box.position_x >= 0
+            assert box.position_x + box.width <= elev.position_x + elev.width + 0.01
+        assert len({round(b.position_y, 2) for b in boxes}) == 1, "one row, not wrapped"
+        assert elev.height <= page.height, "the rack page still fits its page"
+        seen += 1
+    assert seen == 1
