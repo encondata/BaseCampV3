@@ -9,6 +9,7 @@ pipeline (run_import), and the post-commit placement re-check
 
 import json
 import random
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -50,6 +51,22 @@ def resolve_make_model_for_creation(asset_make: str,
         if make and model.lower().startswith(make.lower() + " "):
             model = model[len(make) + 1:].strip()
     return make, model
+
+
+_HEIGHT_TOKEN = re.compile(r"\s+\d+u$", re.IGNORECASE)
+
+
+def normalize_model_key(text: str) -> str:
+    """The lookup key for matching an imported make/model string against
+    the catalog. Every word is kept — "(Chassis)" and "(Node)" tell two
+    real rows apart — and only the noise that manufactures accidental
+    duplicates goes: underscores become spaces, parentheses are dropped,
+    a trailing height token such as "4U" is removed, whitespace collapses,
+    case folds. Lookup only; stored make and model are never rewritten."""
+    s = text.replace("_", " ").replace("(", " ").replace(")", " ")
+    s = " ".join(s.split())
+    s = _HEIGHT_TOKEN.sub("", s)
+    return s.lower()
 
 
 def generate_serial(asset_name: str) -> str:
@@ -166,13 +183,13 @@ async def _lookups(db: AsyncSession, initiative_id: uuid.UUID,
     models: dict[str, tuple] = {}
     for m in await db.scalars(select(AssetModel)):
         display = f"{m.make} {m.model}".strip()
-        models[display.lower()] = (m, "exact", display)
+        models[normalize_model_key(display)] = (m, "exact", display)
     alias_rows = (await db.execute(
         select(AssetModelAlias.alias, AssetModel)
         .join(AssetModel, AssetModel.id == AssetModelAlias.model_id))).all()
     for alias, m in alias_rows:                # exact wins over alias
         models.setdefault(
-            alias.lower(), (m, "fuzzy", f"{m.make} {m.model}".strip()))
+            normalize_model_key(alias), (m, "fuzzy", f"{m.make} {m.model}".strip()))
 
     roster: dict[str, object] = {}
     ids = [a.id for a in assets.values()]
@@ -267,13 +284,13 @@ async def run_import(
         if asset is None:
             model_obj = None
             if r["make_model_str"]:
-                mm_key = r["make_model_str"].lower()
+                mm_key = normalize_model_key(r["make_model_str"])
                 matched = model_map.get(mm_key)
                 if matched is None:
                     mk, md = resolve_make_model_for_creation(
                         r["asset_make"], r["asset_model"])
                     resolved_display = f"{mk} {md}".strip()
-                    resolved_key = resolved_display.lower()
+                    resolved_key = normalize_model_key(resolved_display)
                     matched = model_map.get(resolved_key)
                     if matched is not None:
                         model_map[mm_key] = matched

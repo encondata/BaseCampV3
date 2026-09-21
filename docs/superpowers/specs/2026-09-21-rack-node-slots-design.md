@@ -196,20 +196,23 @@ Where the form factor earns its keep:
 
 ## Phase three: matcher normalization
 
-`resolve_make_model_for_creation` and the fuzzy lookup key both
-normalize a make/model string before comparing: strip a trailing
-parenthetical `(Chassis)`, `(Node)`, `(Enclosure)` and the standalone
-words `Chassis`, `Node`, `Storage` at the end; collapse `_` to a space;
-drop a trailing `2U`/`4U`-style height token. The normalized form is
-used for **lookup only**; the stored make and model are never rewritten.
+`normalize_model_key` is the lookup key for every catalog match in the
+importer, exact rows and aliases alike: underscores become spaces,
+parentheses are dropped, a trailing height token such as `4U` is removed,
+whitespace collapses and case folds. Every word is kept, because
+`(Chassis)` and `(Node)` are what tell two real catalog rows apart. The
+normalized form is used for **lookup only**; stored make and model are
+never rewritten.
 
-With that in place, `Dell H5600 node` finds `DellEMC_Isilon H5600
-Storage (Node)` on the next import of this customer's file. Existing
-assets already pointed at the force-created lookalikes are **not**
-re-pointed by this work; V3 has no merge tool, and re-pointing 41 live
-rows silently is not something an import should do. The migration's
-form-factor backfill makes the lookalikes behave correctly in the
-meantime.
+That closes the accidental-duplicate cases (`DellEMC_Isilon H5600
+Chassis 4U` now finds `DellEMC Isilon H5600 (Chassis)`). It does not,
+and should not, bridge `Dell H5600 node` to `DellEMC_Isilon H5600
+Storage (Node)`: the import string has no `Isilon` and the catalog row
+has no bare `Dell`. Those two force-created models stay in the catalog
+with their 41 assets; the migration's form-factor backfill gives them the
+right form factor, and the next import of the same strings matches them
+exactly as it already does. Folding them into the V2-imported rows is a
+merge-tool job (a separate parity item).
 
 ## Out of scope
 
