@@ -298,6 +298,18 @@ describe('tooltipRows', () => {
   });
 });
 
+describe('tooltipRows for nodes', () => {
+  it('adds Inside for a child and a Note for an orphan', () => {
+    const child = tooltipRows({ serial: 'S1', makeModel: 'Dell node', ru: '33.1',
+                                position: null, parentLabel: 'chassis-a' });
+    expect(child.map((r) => [r.label, r.value])).toEqual([
+      ['Serial', 'S1'], ['Make/Model', 'Dell node'], ['RU', '33.1'], ['Inside', 'chassis-a']]);
+    const orphan = tooltipRows({ serial: null, makeModel: '', ru: '3.5', position: null, orphan: true });
+    expect(orphan.map((r) => r.label)).toEqual(['Serial', 'Make/Model', 'RU', 'Note']);
+    expect(orphan[3].value).toBe('No device starts at this RU');
+  });
+});
+
 describe('rackRuCount', () => {
   it('is 52 by default and expands to the highest occupied RU + 1 rounded up to even', () => {
     expect(DEFAULT_RU_COUNT).toBe(52);

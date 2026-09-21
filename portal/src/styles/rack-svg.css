@@ -63,3 +63,11 @@
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 8.5px;
 }
+
+/* slot pills: the nodes housed inside a chassis, numbered by slot. Fill
+   and stroke are inline (they derive from the parent's category color). */
+.rack-node-label {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 7px;
+  font-weight: 600;
+}

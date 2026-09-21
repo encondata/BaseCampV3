@@ -33,6 +33,7 @@ import { useRef, useState, useEffect } from 'react';
 
 import { rackLayout, deviceListRows, legendCategories } from '../../lib/initiatives';
 import type { InitiativeAssetRow } from '../../lib/api';
+import type { RackChild } from '../../lib/initiatives';
 import { buildRackPrintHtml } from '../../lib/rackPrint';
 
 import RackDeviceList from './RackDeviceList';
@@ -47,7 +48,7 @@ export {
 } from './RackElevation';
 export type { DisplayBlock, LaneRect, TooltipRow } from './RackElevation';
 
-interface HoverState { block: DisplayBlock; x: number; y: number; }
+interface HoverState { block: DisplayBlock; child?: RackChild; x: number; y: number; }
 
 export default function RackViewModal({ rackName, side, rows, onClose }: {
   rackName: string;
@@ -84,16 +85,23 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   const listRows = deviceListRows(frontBlocks, rearBlocks);
   const categories = legendCategories(blocks);
 
-  const handleHover = (block: DisplayBlock, e: React.MouseEvent<SVGGElement>) => {
+  const place = (e: React.MouseEvent<SVGGElement>) => {
     const container = containerRef.current;
-    if (!container) return;
+    if (!container) return null;
     const targetRect = e.currentTarget.getBoundingClientRect();
     const containerRect = container.getBoundingClientRect();
-    setHover({
-      block,
+    return {
       x: targetRect.left - containerRect.left + targetRect.width / 2,
       y: targetRect.top - containerRect.top,
-    });
+    };
+  };
+  const handleHover = (block: DisplayBlock, e: React.MouseEvent<SVGGElement>) => {
+    const at = place(e);
+    if (at) setHover({ block, ...at });
+  };
+  const handleHoverChild = (block: DisplayBlock, child: RackChild, e: React.MouseEvent<SVGGElement>) => {
+    const at = place(e);
+    if (at) setHover({ block, child, ...at });
   };
   const handleLeave = () => setHover(null);
 
@@ -111,7 +119,7 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
     win.document.close();
   };
 
-  const hoveredRow = hover ? rowsById.get(hover.block.id) : undefined;
+  const hoveredRow = hover ? rowsById.get(hover.child?.id ?? hover.block.id) : undefined;
   const hoveredAsset = hoveredRow?.asset;
   const hoveredMakeModel = hoveredAsset
     ? [hoveredAsset.model_make, hoveredAsset.model_name].filter(Boolean).join(' ')
@@ -119,9 +127,13 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   const hoveredRows = hover ? tooltipRows({
     serial: hoveredAsset?.serial_number,
     makeModel: hoveredMakeModel,
-    ru: hover.block.ru,
-    position: hover.block.position,
-    categoryLabel: hover.block.categoryLabel,
+    ru: hover.child
+      ? `${hover.block.ru}.${hover.child.slot}`
+      : hover.block.orphan ? `${hover.block.ru}.${hover.block.slot}` : hover.block.ru,
+    position: hover.child ? null : hover.block.position,
+    categoryLabel: hover.child ? null : hover.block.categoryLabel,
+    parentLabel: hover.child ? hover.block.label : null,
+    orphan: !hover.child && hover.block.orphan,
   }) : [];
 
   return (
@@ -144,12 +156,14 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
               heading="FRONT" blocks={frontDisplay}
               ariaLabel={`Rack ${rackName} — ${sideLabel} — front elevation`}
               onHoverBlock={handleHover} onLeaveBlock={handleLeave}
+              onHoverChild={handleHoverChild}
             />
             {showRear && (
               <RackElevation
                 heading="REAR" blocks={rearDisplay}
                 ariaLabel={`Rack ${rackName} — ${sideLabel} — rear elevation`}
                 onHoverBlock={handleHover} onLeaveBlock={handleLeave}
+                onHoverChild={handleHoverChild}
               />
             )}
             <RackDeviceList rows={listRows} grouped={showRear} />

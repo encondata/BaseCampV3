@@ -40,6 +40,7 @@ const SHEET_CSS = `
             border: 1px solid rgba(17,24,39,0.35); }
   .model { color: #374151; }
   .ru { text-align: right; min-width: 0.4in; }
+  .child { padding-left: 10px; }
   .legend { display: flex; gap: 0.2in; margin-top: 0.12in; font-size: 8pt;
             align-items: center; flex-wrap: wrap; }
   .legend .swatch { display: inline-block; vertical-align: -1px; margin-right: 4px; }
@@ -72,7 +73,7 @@ export function buildRackPrintHtml(input: {
     lastGroup = r.group;
     return `${head}<div class="row">`
       + `<span class="swatch" style="background:${esc(r.categoryColor ?? UNCATEGORIZED_FILL)}"></span>`
-      + `<span>${esc(r.name)}</span>`
+      + `<span${r.indent ? ' class="child"' : ''}>${esc(r.orphan ? `! ${r.name}` : r.name)}</span>`
       + `<span class="model">${esc(r.makeModel)}</span>`
       + `<span class="ru">${esc(r.ruText)}</span></div>`;
   }).join('');

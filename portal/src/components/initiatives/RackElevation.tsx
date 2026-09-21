@@ -18,7 +18,7 @@
  * the report worker serialize this markup outside the app's stylesheet.
  */
 import { UNCATEGORIZED_FILL } from '../../lib/initiatives';
-import type { RackBlock } from '../../lib/initiatives';
+import type { RackBlock, RackChild } from '../../lib/initiatives';
 import { readableTextColor } from '../../lib/color';
 
 /** Racks render at 52U by default (standard cabinets are 42–48U; some run
@@ -220,15 +220,23 @@ export interface TooltipRow { label: string; value: string; }
 export function tooltipRows(info: {
   serial: string | null | undefined;
   makeModel: string | null | undefined;
-  ru: number;
+  ru: number | string;
   position: string | null | undefined;
   categoryLabel?: string | null | undefined;
+  parentLabel?: string | null | undefined;
+  orphan?: boolean;
 }): TooltipRow[] {
   const rows: TooltipRow[] = [
     { label: 'Serial', value: info.serial ?? '—' },
     { label: 'Make/Model', value: info.makeModel || '—' },
     { label: 'RU', value: String(info.ru) },
   ];
+  if (info.parentLabel) {
+    rows.push({ label: 'Inside', value: info.parentLabel });
+  }
+  if (info.orphan) {
+    rows.push({ label: 'Note', value: 'No device starts at this RU' });
+  }
   if (info.categoryLabel) {
     rows.push({ label: 'Category', value: info.categoryLabel });
   }
@@ -248,12 +256,15 @@ export function tooltipRows(info: {
  *  (FRONT always, REAR only when it has real blocks) rather than as two
  *  halves of one shared frame, so each reads as a complete elevation on
  *  its own — including when only one of the two is shown. */
-export function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock }: {
+export function RackElevation({
+  heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock, onHoverChild,
+}: {
   heading: string;
   ariaLabel: string;
   blocks: DisplayBlock[];
   onHoverBlock?: (block: DisplayBlock, e: React.MouseEvent<SVGGElement>) => void;
   onLeaveBlock?: () => void;
+  onHoverChild?: (block: DisplayBlock, child: RackChild, e: React.MouseEvent<SVGGElement>) => void;
 }) {
   const geometry = new Map(
     laneGeometry(blocks, FACEPLATE_USABLE_WIDTH).map((g) => [g.id, g]),
@@ -328,20 +339,54 @@ export function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeav
               </g>
             );
           }
-          const label = rackLabel(b.label, b.position, width);
+          const hasChildren = b.children.length > 0;
+          // with nodes inside, the parent's label keeps the left half and the
+          // slot pills take the right half
+          const labelWidth = hasChildren ? width * 0.5 - 8 : width;
+          const label = (b.orphan ? '! ' : '') + rackLabel(b.label, b.position, labelWidth);
           const fill = b.categoryColor ?? UNCATEGORIZED_FILL;
-          const border = b.verified
-            ? { stroke: '#15803d', strokeWidth: 2 }
-            : { stroke: '#111827', strokeWidth: 1.25, strokeDasharray: '4 3' };
+          const textColor = readableTextColor(fill);
+          const border = b.orphan
+            ? { stroke: '#b45309', strokeWidth: 1.5, strokeDasharray: '2 2' }
+            : b.verified
+              ? { stroke: '#15803d', strokeWidth: 2 }
+              : { stroke: '#111827', strokeWidth: 1.25, strokeDasharray: '4 3' };
+          const pillGap = 2;
+          const pillAreaX = x + width * 0.5;
+          const pillAreaWidth = width * 0.5 - 4;
+          const pillWidth = Math.max(10,
+            (pillAreaWidth - pillGap * (b.children.length - 1)) / Math.max(1, b.children.length));
+          const pillHeight = Math.max(8, height - 4);
+          const pillFill = textColor === '#ffffff' ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.12)';
           return (
             <g key={b.id} onMouseEnter={onHoverBlock ? (e) => onHoverBlock(b, e) : undefined}
                onMouseLeave={onLeaveBlock}>
               <rect x={x} y={y} width={width} height={height} rx={2}
-                    fill={fill} {...border} className="rack-faceplate" />
+                    fill={fill} {...border}
+                    className={b.orphan ? 'rack-faceplate rack-faceplate-orphan' : 'rack-faceplate'} />
               <text x={x + 8} y={y + height / 2} dominantBaseline="middle"
-                    fill={readableTextColor(fill)} className="rack-block-label">
+                    fill={textColor} className="rack-block-label">
                 {label}
               </text>
+              {b.children.map((c, i) => {
+                const px = pillAreaX + i * (pillWidth + pillGap);
+                return (
+                  <g key={c.id} role="img" aria-label={`Slot ${c.slot}: ${c.label}`}
+                     className="rack-node"
+                     onMouseEnter={onHoverChild ? (e) => { e.stopPropagation(); onHoverChild(b, c, e); } : undefined}>
+                    <rect x={px} y={y + 2} width={pillWidth} height={pillHeight} rx={2}
+                          fill={pillFill}
+                          stroke={c.verified ? '#15803d' : textColor}
+                          strokeWidth={0.75}
+                          strokeDasharray={c.verified ? undefined : '2 2'} />
+                    <text x={px + pillWidth / 2} y={y + 2 + pillHeight / 2}
+                          textAnchor="middle" dominantBaseline="middle"
+                          fill={textColor} className="rack-node-label">
+                      {c.slot}
+                    </text>
+                  </g>
+                );
+              })}
             </g>
           );
         })}
