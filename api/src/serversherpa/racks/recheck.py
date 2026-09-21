@@ -39,7 +39,8 @@ async def recheck_placement(db: AsyncSession, initiative_id: uuid.UUID) -> dict:
             placed.append(place(key=str(ia.id), label=name or serial or "",
                                 rack=ia.destination_rack, ru=ia.destination_ru,
                                 height=ru_size, form_factor=form_factor))
-    result = evaluate(placed)
+    # only the key sets are read below, so skip materializing the pairs
+    result = evaluate(placed, collect=False)
     colliding = result.colliding_keys
     orphaned = result.orphan_keys - colliding
 

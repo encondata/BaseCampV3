@@ -34,6 +34,12 @@ def test_place_accepts_decimal_and_rounds_slot():
     assert _p("a", 5.30000001).slot == 3
 
 
+def test_place_rounds_a_half_slot_up_like_the_portal():
+    # banker's rounding would make this slot 2; the portal's Math.round
+    # says 3, and the two must agree
+    assert _p("a", 3.25).slot == 3
+
+
 def test_two_spans_sharing_an_ru_overlap():
     r = evaluate([_p("a", 10, 2), _p("b", 11), _p("c", 30)])
     assert _kinds(r) == [("a", "b", "ru_overlap")]
@@ -77,15 +83,17 @@ def test_node_with_nothing_at_its_base_is_an_orphan_not_a_collision():
 def test_node_whose_base_is_covered_from_below_collides_and_is_orphaned():
     # a 2U server at 32 reaches into 33; the node at 33.1 claims a chassis
     # that is not there, so it collides with the server AND has no chassis
+    # (a, b) is positional — `evaluate` sorted the rack, so the lower
+    # device comes first; it is never reordered by key
     r = evaluate([_p("srv", 32, 2), _p("n", 33.1)])
-    assert _kinds(r) == [("n", "srv", "ru_overlap")]
+    assert _kinds(r) == [("srv", "n", "ru_overlap")]
     assert r.conflicts[0].overlapping_rus == [33]
     assert _orphans(r) == [("n", "no_chassis")]
 
 
 def test_node_contained_by_chassis_but_also_covered_from_below():
     r = evaluate([_p("srv", 32, 2), _p("chassis", 33, 4), _p("n", 33.1)])
-    assert _kinds(r) == [("chassis", "srv", "ru_overlap"), ("n", "srv", "ru_overlap")]
+    assert _kinds(r) == [("srv", "chassis", "ru_overlap"), ("srv", "n", "ru_overlap")]
     assert r.orphans == []
 
 
@@ -130,3 +138,15 @@ def test_example_rack_from_the_las_vegas_cluster_move():
     r = evaluate(rows)
     assert r.checked == 46
     assert r.conflicts == [] and r.orphans == []
+
+
+def test_collect_false_yields_the_same_colliding_and_orphan_keys():
+    rows = [_p("srv", 32, 2), _p("n", 33.1)]
+    full = evaluate(rows)
+    lean = evaluate(rows, collect=False)
+    assert lean.conflicts == []
+    assert lean.colliding == full.colliding == {"srv", "n"}
+    assert lean.colliding_keys == full.colliding_keys
+    assert lean.orphan_keys == full.orphan_keys == {"n"}
+    assert _orphans(lean) == _orphans(full) == [("n", "no_chassis")]
+    assert lean.checked == full.checked

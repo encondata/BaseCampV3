@@ -55,7 +55,10 @@ def place(key: str, label: str, rack: str, ru: float | Decimal, height: int | No
           form_factor: str | None = None) -> Placed:
     raw = float(ru)
     base = floor(raw)
-    slot = round((raw - base) * 10)
+    # Half-UP, not Python's banker's rounding: RU 3.25 is slot 3, matching
+    # the portal's `Math.round` in lib/initiatives.ts's `ruSlot`. `round()`
+    # would give 2 here and silently disagree with the drawing.
+    slot = int(floor((raw - base) * 10 + 0.5))
     return Placed(key=key, label=label, rack=rack, base=base, slot=slot,
                   height=max(1, int(height or 1)), form_factor=form_factor)
 
@@ -82,10 +85,13 @@ class PlacementResult:
     conflicts: list[Conflict] = field(default_factory=list)
     orphans: list[Orphan] = field(default_factory=list)
     checked: int = 0
+    #: Always populated, whether or not `evaluate` collected the conflicts
+    #: themselves — see `evaluate(collect=False)`.
+    colliding: frozenset[str] = frozenset()
 
     @property
-    def colliding_keys(self) -> set[str]:
-        return {p.key for c in self.conflicts for p in (c.a, c.b)}
+    def colliding_keys(self) -> frozenset[str]:
+        return self.colliding
 
     @property
     def orphan_keys(self) -> set[str]:
@@ -96,8 +102,11 @@ def _pair(rack: str, pa: Placed, pb: Placed) -> Conflict | None:
     if not pa.is_slot and not pb.is_slot:
         overlap = pa.span & pb.span
         if overlap:
-            a, b = (pa, pb) if pa.key < pb.key else (pb, pa)
-            return Conflict(rack, RU_OVERLAP, a, b, sorted(overlap), None)
+            # Positional order, like the other two branches: `evaluate`
+            # already sorted the rack by (base, slot, label, key), so `pa`
+            # is the lower device. Reordering by key would randomize the
+            # Move Report's "Asset A / Asset B" columns (keys are UUIDs).
+            return Conflict(rack, RU_OVERLAP, pa, pb, sorted(overlap), None)
         return None
     if pa.is_slot and pb.is_slot:
         if pa.base == pb.base and pa.slot == pb.slot:
@@ -105,23 +114,36 @@ def _pair(rack: str, pa: Placed, pb: Placed) -> Conflict | None:
         return None
     node, span_row = (pa, pb) if pa.is_slot else (pb, pa)
     if node.base in span_row.span and span_row.base != node.base:
-        return Conflict(rack, RU_OVERLAP, node, span_row, [node.base], None)
+        return Conflict(rack, RU_OVERLAP, pa, pb, [node.base], None)
     return None
 
 
-def evaluate(rows: list[Placed]) -> PlacementResult:
+def evaluate(rows: list[Placed], *, collect: bool = True) -> PlacementResult:
+    """Run the rule over every row, grouped by rack.
+
+    `collect=False` keeps only the colliding KEYS and leaves `conflicts`
+    empty. Callers that just restate statuses (recheck_placement) never
+    read the pairs, and a degenerate roster — a thousand rows all at RU 1
+    — would otherwise materialize ~500k Conflict objects in the import
+    worker. `colliding` / `colliding_keys` and the orphans are identical
+    either way.
+    """
     racks: dict[str, list[Placed]] = defaultdict(list)
     for r in rows:
         racks[r.rack].append(r)
     conflicts: list[Conflict] = []
     orphans: list[Orphan] = []
+    colliding: set[str] = set()
     for rack in sorted(racks):
         placed = sorted(racks[rack], key=lambda p: (p.base, p.slot, p.label, p.key))
         starts = {p.base for p in placed if not p.is_slot}
         for pa, pb in combinations(placed, 2):
             c = _pair(rack, pa, pb)
             if c is not None:
-                conflicts.append(c)
+                colliding.add(c.a.key)
+                colliding.add(c.b.key)
+                if collect:
+                    conflicts.append(c)
         for p in placed:
             if p.is_slot:
                 if p.base not in starts:
@@ -130,4 +152,5 @@ def evaluate(rows: list[Placed]) -> PlacementResult:
                     orphans.append(Orphan(rack, p, FORM_FACTOR_MISMATCH))
             elif p.form_factor == "node":
                 orphans.append(Orphan(rack, p, FORM_FACTOR_MISMATCH))
-    return PlacementResult(conflicts=conflicts, orphans=orphans, checked=len(rows))
+    return PlacementResult(conflicts=conflicts, orphans=orphans, checked=len(rows),
+                           colliding=frozenset(colliding))
