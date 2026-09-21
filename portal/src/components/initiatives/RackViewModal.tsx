@@ -72,7 +72,10 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   // drawn — say so, or an all-unplaced rack reads as "no assets" while the
   // table clearly shows assets on it.
   const rackKey = side === 'source' ? 'source_rack' : 'destination_rack';
-  const unplaced = rows.filter((r) => r[rackKey] === rackName).length - blocks.length;
+  // Nodes live in `blocks[].children`, not in `blocks` — count them as
+  // drawn or every attached node reads as "assigned without an RU".
+  const drawn = blocks.length + blocks.reduce((n, b) => n + b.children.length, 0);
+  const unplaced = rows.filter((r) => r[rackKey] === rackName).length - drawn;
   const frontBlocks = blocks.filter((b) => !isRearPosition(b.position));
   const rearBlocks = blocks.filter((b) => isRearPosition(b.position));
   // REAR renders only when a REAL rear-mounted asset exists — unaffected

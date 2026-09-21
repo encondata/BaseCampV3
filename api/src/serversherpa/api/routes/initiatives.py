@@ -827,6 +827,7 @@ async def _initiative_asset_rows(
                 model_make=model.make if model else None,
                 model_name=model.model if model else None,
                 ru_size=model.ru_size if model else None,
+                model_form_factor=model.form_factor if model else None,
                 model_category=cat.key if cat else None,
                 model_category_label=cat.label if cat else None,
                 model_category_color=cat.color if cat else None,

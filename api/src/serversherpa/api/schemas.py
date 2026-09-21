@@ -1890,6 +1890,7 @@ class InitiativeAssetSummary(BaseModel):
     model_make: str | None = None
     model_name: str | None = None
     ru_size: int | None = None
+    model_form_factor: str | None = None
     model_category: str | None = None
     model_category_label: str | None = None
     model_category_color: str | None = None

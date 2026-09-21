@@ -2294,7 +2294,8 @@ export interface InitiativeAssetSummary {
   id: string; legacy_id: number | null; serial_number: string | null;
   name: string | null; rfid_tag: string | null;
   model_make: string | null; model_name: string | null;
-  ru_size: number | null; location_detail: string | null;
+  ru_size: number | null; model_form_factor: string | null;
+  location_detail: string | null;
   client_name: string | null;
   model_category: string | null; model_category_label: string | null;
   model_category_color: string | null;

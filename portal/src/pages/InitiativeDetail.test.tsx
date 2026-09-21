@@ -102,7 +102,7 @@ const ASSET: InitiativeAssetRow = {
   asset: {
     id: 'a1', legacy_id: null, serial_number: 'SN-0001', name: 'switch-01',
     rfid_tag: null, model_make: 'Cisco', model_name: 'C9300',
-    ru_size: 1, location_detail: null, client_name: null,
+    ru_size: 1, model_form_factor: null, location_detail: null, client_name: null,
     model_category: 'network', model_category_label: 'Network',
     model_category_color: '#3b82f6',
     status: 'active', status_label: 'Active', status_color: '#178a4c',

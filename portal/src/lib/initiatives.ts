@@ -488,15 +488,27 @@ export function MOVE_ASSET_EDIT_FIELDS(
  *  parent is the block that starts at RU N. */
 export interface RackChild {
   id: string; label: string; slot: number; serial: string | null;
-  makeModel: string; verified: boolean;
+  makeModel: string; verified: boolean; position: string | null;
+}
+
+/** Front/rear elevation assignment: a side position note that mentions
+ *  "rear" (case-insensitively, substring match — "rear-left" counts)
+ *  places the row in the REAR elevation; everything else (front,
+ *  left/right, blank) lands in FRONT. Lives here beside the placement
+ *  math because `rackLayout` parents a node only to a block on its own
+ *  side; `RackElevation` re-exports it for its existing importers. */
+export function isRearPosition(position: string | null | undefined): boolean {
+  return !!position && position.toLowerCase().includes('rear');
 }
 
 /** One asset's block in a rack elevation. `ru` is the whole RU the block
  *  starts at; `height` the RUs it occupies. A row at a fractional RU is a
  *  node in slot x of RU N: it becomes a `children` entry of the block that
- *  starts at N, or, when no block starts there, its own 1U block at N with
- *  `orphan: true` and its `slot` recorded so the RU can still be shown as
- *  "N.x". Whole-RU blocks have `slot: 0`. */
+ *  starts at N on its own side, or, when no such block exists, its own 1U
+ *  block at N with `orphan: true` and its `slot` recorded so the RU can
+ *  still be shown as "N.x". Whole-RU blocks have `slot: 0`. `orphan` means
+ *  no device starts at this RU, or the model's form factor contradicts its
+ *  position. */
 export interface RackBlock {
   id: string; label: string; ru: number; height: number;
   verified: boolean; position: string | null;
@@ -518,9 +530,13 @@ export function ruSlot(ru: number): { base: number; slot: number } {
  *  given side, and maps each to its elevation block. A row without an RU
  *  recorded on that side has nothing to place, so it's excluded outright.
  *  `ru_size` defaults to 1 RU. Whole-RU rows become blocks; fractional-RU
- *  rows attach to the block that starts at their RU (ascending slot) or
- *  stand alone as orphan blocks. Blocks come out in row order, orphans
- *  after the whole-RU blocks. */
+ *  rows attach to the block that starts at their RU ON THEIR OWN SIDE
+ *  (ascending slot) or stand alone as orphan blocks. The model's form
+ *  factor adds two more orphan cases without changing what a row occupies:
+ *  a `node` model at a whole RU keeps its height but draws with the orphan
+ *  marker, and a `standalone` model at a fractional RU is never adopted as
+ *  a child. Blocks come out in row order, orphans after the whole-RU
+ *  blocks. */
 export function rackLayout(
   rows: InitiativeAssetRow[], rackName: string, side: 'source' | 'destination',
 ): RackBlock[] {
@@ -547,7 +563,9 @@ export function rackLayout(
     id: r.id,
     label: labelOf(r),
     ru: base,
-    height: orphan ? 1 : (r.asset.ru_size ?? 1),
+    // A node standing alone occupies its single slot cell; a whole-RU row
+    // keeps its model height even when it draws with the orphan marker.
+    height: slot === 0 ? (r.asset.ru_size ?? 1) : 1,
     verified: verifiedOf(r),
     position: positionOf(r),
     categoryLabel: r.asset.model_category_label,
@@ -558,21 +576,33 @@ export function rackLayout(
     orphan,
   });
 
+  // A node is housed by a chassis on the SAME physical face of the rack,
+  // so the adoption map is keyed on side + base, not base alone.
+  const sideKey = (position: string | null, base: number) =>
+    `${isRearPosition(position) ? 'R' : 'F'}:${base}`;
+
   const blocks: RackBlock[] = [];
-  const byBase = new Map<number, RackBlock>();
+  const byBase = new Map<string, RackBlock>();
   for (const { r, base, slot } of placed) {
     if (slot !== 0) continue;
-    const b = toBlock(r, base, 0, false);
+    // A `node` model at a whole RU contradicts its position: it keeps its
+    // height and can still house nodes, but draws with the orphan marker.
+    const b = toBlock(r, base, 0, r.asset.model_form_factor === 'node');
     blocks.push(b);
-    if (!byBase.has(base)) byBase.set(base, b);
+    const key = sideKey(positionOf(r), base);
+    if (!byBase.has(key)) byBase.set(key, b);
   }
   for (const { r, base, slot } of placed) {
     if (slot === 0) continue;
-    const parent = byBase.get(base);
+    // A `standalone` model at a slot contradicts its position too: it is
+    // never adopted and stands alone as an orphan at its base.
+    const parent = r.asset.model_form_factor === 'standalone'
+      ? undefined : byBase.get(sideKey(positionOf(r), base));
     if (parent) {
       parent.children.push({
         id: r.id, label: labelOf(r), slot, serial: r.asset.serial_number,
         makeModel: makeModelOf(r), verified: verifiedOf(r),
+        position: positionOf(r),
       });
     } else {
       blocks.push(toBlock(r, base, slot, true));

@@ -199,14 +199,12 @@ export function rackLabel(
   return maxChars === 1 ? '…' : `${full.slice(0, maxChars - 1)}…`;
 }
 
-/** Front/rear elevation assignment: a side position note that mentions
- *  "rear" (case-insensitively, substring match — "rear-left" counts)
- *  places the block in the REAR elevation; everything else (front,
- *  left/right, blank) lands in FRONT. Exported for testing without
- *  mounting the SVG. */
-export function isRearPosition(position: string | null | undefined): boolean {
-  return !!position && position.toLowerCase().includes('rear');
-}
+/** Front/rear elevation assignment — now defined in lib/initiatives beside
+ *  `rackLayout` (which needs it to parent a node only to a block on its
+ *  own side) and re-exported here so every existing importer, including
+ *  RackViewModal's own re-export list and the report renderer, keeps
+ *  resolving it through this module. */
+export { isRearPosition } from '../../lib/initiatives';
 
 /** A block placed in an elevation it doesn't actually belong to, standing
  *  in for "something is mounted here from the other physical side" — no
@@ -255,7 +253,10 @@ export function tooltipRows(info: {
     rows.push({ label: 'Inside', value: info.parentLabel });
   }
   if (info.orphan) {
-    rows.push({ label: 'Note', value: 'No device starts at this RU' });
+    rows.push({
+      label: 'Note',
+      value: 'No device starts at this RU, or the model form factor does not match its position',
+    });
   }
   if (info.categoryLabel) {
     rows.push({ label: 'Category', value: info.categoryLabel });
@@ -389,7 +390,11 @@ export function RackElevation({
                 return (
                   <g key={c.id} role="img" aria-label={`Slot ${c.slot}: ${c.label}`}
                      className="rack-node"
-                     onMouseEnter={onHoverChild ? (e) => { e.stopPropagation(); onHoverChild(b, c, e); } : undefined}>
+                     onMouseEnter={onHoverChild ? (e) => { e.stopPropagation(); onHoverChild(b, c, e); } : undefined}
+                     /* Leaving a pill lands back on the parent faceplate, but
+                        the parent's own mouseenter does not re-fire, so the
+                        child tooltip would stay pinned: re-hover the parent. */
+                     onMouseLeave={onHoverBlock ? (e) => onHoverBlock(b, e) : undefined}>
                     <rect x={pill.x} y={y + 2} width={pill.width} height={pillHeight} rx={2}
                           fill={pillFill}
                           stroke={c.verified ? '#15803d' : textColor}

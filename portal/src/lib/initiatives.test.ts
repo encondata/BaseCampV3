@@ -216,7 +216,7 @@ function assetRow(overrides: Partial<InitiativeAssetRow> = {}): InitiativeAssetR
     asset: {
       id: 'a1', legacy_id: 4021, serial_number: 'SN-001', name: 'Server A',
       rfid_tag: 'RFID-1', model_make: 'Dell', model_name: 'R740',
-      ru_size: 2, location_detail: 'Row 3', client_name: 'Acme',
+      ru_size: 2, model_form_factor: null, location_detail: 'Row 3', client_name: 'Acme',
       model_category: null, model_category_label: null, model_category_color: null,
       status: 'active', status_label: 'Active', status_color: '#31F527',
     },
@@ -522,6 +522,64 @@ describe('rackLayout', () => {
     expect([b.ru, b.slot, b.height, b.orphan, b.children]).toEqual([8, 5, 1, true, []]);
   });
 
+  it('two whole-RU blocks at the same base: the first in row order adopts the node', () => {
+    const rows = [
+      assetRow({ id: 'b1', source_rack: 'BJ08', source_ru: 10, source_position: 'front' }),
+      assetRow({ id: 'b2', source_rack: 'BJ08', source_ru: 10, source_position: 'front' }),
+      assetRow({ id: 'n', source_rack: 'BJ08', source_ru: 10.1, source_position: 'front' }),
+    ];
+    const blocks = rackLayout(rows, 'BJ08', 'source');
+    expect(blocks.map((b) => b.id)).toEqual(['b1', 'b2']);
+    expect(blocks[0].children.map((c) => c.id)).toEqual(['n']);
+    expect(blocks[1].children).toEqual([]);
+  });
+
+  it('a rear node attaches to the rear block at its base, not the front one', () => {
+    const rows = [
+      assetRow({ id: 'front', source_rack: 'BJ08', source_ru: 20, source_position: 'front' }),
+      assetRow({ id: 'rear', source_rack: 'BJ08', source_ru: 20, source_position: 'rear' }),
+      assetRow({ id: 'n', source_rack: 'BJ08', source_ru: 20.1, source_position: 'rear' }),
+    ];
+    const blocks = rackLayout(rows, 'BJ08', 'source');
+    expect(blocks.map((b) => b.id)).toEqual(['front', 'rear']);
+    expect(blocks[0].children).toEqual([]);
+    expect(blocks[1].children.map((c) => [c.id, c.position])).toEqual([['n', 'rear']]);
+  });
+
+  it('a node with only an opposite-side block at its base is an orphan on its own side', () => {
+    const rows = [
+      assetRow({ id: 'front', source_rack: 'BJ08', source_ru: 30, source_position: 'front' }),
+      assetRow({ id: 'n', source_rack: 'BJ08', source_ru: 30.2, source_position: 'rear' }),
+    ];
+    const blocks = rackLayout(rows, 'BJ08', 'source');
+    expect(blocks.map((b) => [b.id, b.orphan, b.position]))
+      .toEqual([['front', false, 'front'], ['n', true, 'rear']]);
+    expect(blocks[0].children).toEqual([]);
+  });
+
+  it('a node-form-factor model at an integer RU draws with the orphan marker', () => {
+    const rows = [assetRow({
+      id: 'a', source_rack: 'BJ08', source_ru: 12,
+      asset: { ...assetRow().asset, ru_size: 2, model_form_factor: 'node' },
+    })];
+    const [b] = rackLayout(rows, 'BJ08', 'source');
+    // it keeps its height and can still be a parent; only the marker changes
+    expect([b.ru, b.slot, b.height, b.orphan]).toEqual([12, 0, 2, true]);
+  });
+
+  it('a standalone-form-factor model at a fractional RU is not adopted and draws as an orphan', () => {
+    const rows = [
+      assetRow({ id: 'ch', source_rack: 'BJ08', source_ru: 40,
+                 asset: { ...assetRow().asset, ru_size: 2, model_form_factor: 'chassis' } }),
+      assetRow({ id: 'sa', source_rack: 'BJ08', source_ru: 40.1,
+                 asset: { ...assetRow().asset, ru_size: null, model_form_factor: 'standalone' } }),
+    ];
+    const blocks = rackLayout(rows, 'BJ08', 'source');
+    expect(blocks.map((b) => [b.id, b.ru, b.slot, b.orphan]))
+      .toEqual([['ch', 40, 0, false], ['sa', 40, 1, true]]);
+    expect(blocks[0].children).toEqual([]);
+  });
+
   it('a node whose RU is only covered from below is still an orphan (no block STARTS there)', () => {
     const rows = [
       assetRow({ id: 'srv', source_rack: 'BJ08', source_ru: 32,
@@ -641,12 +699,12 @@ describe('deviceListRows', () => {
     expect(rows[1].makeModel).toBe('—');
   });
 
-  it('lists children indented under their block, in slot order, and marks orphans', () => {
+  it('lists children indented under their block in the order the block carries them, and marks orphans', () => {
     const rows = deviceListRows([
       block({ id: 'ch', label: 'chassis', ru: 33, height: 4, categoryColor: '#123456',
               children: [
-                { id: 'n2', label: 'node-2', slot: 2, serial: null, makeModel: 'Dell node', verified: false },
-                { id: 'n1', label: 'node-1', slot: 1, serial: null, makeModel: '', verified: true },
+                { id: 'n2', label: 'node-2', slot: 2, serial: null, makeModel: 'Dell node', verified: false, position: null },
+                { id: 'n1', label: 'node-1', slot: 1, serial: null, makeModel: '', verified: true, position: null },
               ] }),
       block({ id: 'o', label: 'san-01', ru: 3, height: 1, slot: 5, orphan: true }),
     ], []);

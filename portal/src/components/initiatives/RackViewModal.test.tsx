@@ -306,7 +306,8 @@ describe('tooltipRows for nodes', () => {
       ['Serial', 'S1'], ['Make/Model', 'Dell node'], ['RU', '33.1'], ['Inside', 'chassis-a']]);
     const orphan = tooltipRows({ serial: null, makeModel: '', ru: '3.5', position: null, orphan: true });
     expect(orphan.map((r) => r.label)).toEqual(['Serial', 'Make/Model', 'RU', 'Note']);
-    expect(orphan[3].value).toBe('No device starts at this RU');
+    expect(orphan[3].value).toBe(
+      'No device starts at this RU, or the model form factor does not match its position');
   });
 });
 

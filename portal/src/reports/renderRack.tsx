@@ -37,7 +37,8 @@ export type RackRow =
     | 'destination_position'>
   & {
     asset: Pick<InitiativeAssetSummary,
-      'name' | 'serial_number' | 'ru_size' | 'model_make' | 'model_name'
+      'name' | 'serial_number' | 'ru_size' | 'model_form_factor'
+      | 'model_make' | 'model_name'
       | 'model_category_label' | 'model_category_color'>;
   };
 

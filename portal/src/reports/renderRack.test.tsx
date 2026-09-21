@@ -7,7 +7,8 @@ const row = (over: Record<string, unknown>) => ({
   id: 'r1', source_rack: 'R1', source_ru: 10, source_verified: true, source_position: null,
   destination_rack: null, destination_ru: null, destination_verified: null,
   destination_position: null,
-  asset: { name: 'web-01', serial_number: 'SN1', ru_size: 2, model_make: 'Dell', model_name: 'R740',
+  asset: { name: 'web-01', serial_number: 'SN1', ru_size: 2, model_form_factor: null,
+           model_make: 'Dell', model_name: 'R740',
            model_category_label: null, model_category_color: null },
   ...over,
 });
