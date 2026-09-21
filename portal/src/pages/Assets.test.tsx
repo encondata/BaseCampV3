@@ -51,7 +51,7 @@ vi.mock('../lib/api', async (importActual) => ({
 const ASSETS: AssetItem[] = [
   {
     id: 'a1', legacy_id: 100042, serial_number: 'SN-ALPHA', name: 'web-01',
-    rfid_tag: null, model_id: null, model: null,
+    rfid_tag: null, pod_number: null, model_id: null, model: null,
     client_id: null, client_name: 'Acme', site_id: null, site_name: 'DC1',
     location_detail: 'Rack 3', status: 'active', status_label: 'Active',
     status_color: '#178a4c', has_rails: null, last_seen_at: null,

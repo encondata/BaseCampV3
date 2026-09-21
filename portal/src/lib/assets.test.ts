@@ -12,7 +12,7 @@ import {
 
 const asset = (over: Partial<AssetItem> = {}): AssetItem => ({
   id: 'a1', legacy_id: 100042, serial_number: 'SN1', name: 'web-01', rfid_tag: null,
-  model_id: null, model: null, client_id: null, client_name: null,
+  pod_number: null, model_id: null, model: null, client_id: null, client_name: null,
   site_id: null, site_name: null, location_detail: '', status: 'active',
   status_label: 'Active', status_color: '#178a4c', has_rails: null,
   last_seen_at: null, archived_at: null, created_at: '2026-08-05T00:00:00Z',
@@ -81,6 +81,15 @@ describe('asset form round-trip', () => {
     expect(p.serial_number).toBe('SN9');
     expect(p.has_rails).toBe(true);
     expect(p.rfid_tag).toBeNull();     // null clears on PATCH; POST ignores it
+  });
+
+  it('pod_number round-trips and nulls when blank', () => {
+    const f = formFromAsset(asset({ pod_number: '14' }));
+    expect(f.pod_number).toBe('14');
+    f.pod_number = '  ';
+    expect(assetPayload(f).pod_number).toBeNull();
+    f.pod_number = ' P-07 ';
+    expect(assetPayload(f).pod_number).toBe('P-07');
   });
 });
 
@@ -166,6 +175,7 @@ describe('duplicateSerials', () => {
 describe('assetCellText', () => {
   const full = asset({
     serial_number: 'SN9', name: 'web-09', rfid_tag: 'RF1',
+    pod_number: '14',
     location_detail: 'Rack 3, U12',
     model_id: 'm1', model: {
       id: 'm1', make: 'Dell', model: 'R740', category: 'server',
@@ -181,6 +191,7 @@ describe('assetCellText', () => {
 
   const blank = asset({
     serial_number: null, name: null, rfid_tag: null,
+    pod_number: null,
     location_detail: '', model_id: null, model: null,
     client_id: null, client_name: null, site_id: null, site_name: null,
     has_rails: null, last_seen_at: null, archived_at: '2026-01-01T00:00:00Z',
@@ -222,6 +233,11 @@ describe('assetCellText', () => {
   it('rfid reads rfid_tag, dashing when null', () => {
     expect(assetCellText(full, 'rfid')).toBe('RF1');
     expect(assetCellText(blank, 'rfid')).toBe('—');
+  });
+
+  it('pod reads pod_number, dashing when null', () => {
+    expect(assetCellText(full, 'pod')).toBe('14');
+    expect(assetCellText(blank, 'pod')).toBe('—');
   });
 
   it('ru reads the model ru_size, dashing when unset', () => {
@@ -327,7 +343,7 @@ describe('modelCellText', () => {
 /* ── god-edit descriptors ──────────────────────────────────────────── */
 
 const ASSET_WRITABLE_FIELDS = new Set([
-  'serial_number', 'name', 'rfid_tag', 'model_id', 'client_id',
+  'serial_number', 'name', 'rfid_tag', 'pod_number', 'model_id', 'client_id',
   'site_id', 'location_detail', 'status', 'has_rails',
 ]);
 
@@ -351,12 +367,12 @@ describe('ASSET_GOD_FIELDS', () => {
 
   it('every fromRow round-trips a sample row', () => {
     const a = asset({
-      serial_number: 'SN9', name: 'web-09', rfid_tag: 'RF1',
+      serial_number: 'SN9', name: 'web-09', rfid_tag: 'RF1', pod_number: '14',
       model_id: 'model-1', client_id: 'client-1', site_id: 'site-1',
       location_detail: 'Rack 3', status: 'active', has_rails: true,
     });
     const expected: Record<string, string> = {
-      primary: 'SN9', primary2: 'web-09', rfid: 'RF1', location: 'Rack 3',
+      primary: 'SN9', primary2: 'web-09', rfid: 'RF1', pod: '14', location: 'Rack 3',
       model: 'model-1', client: 'client-1', site: 'site-1', status: 'active',
       has_rails: 'yes',
     };
