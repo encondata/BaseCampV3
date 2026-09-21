@@ -8,6 +8,7 @@ pipeline (run_import), and the post-commit placement re-check
 """
 
 import json
+import logging
 import random
 import re
 import uuid
@@ -22,6 +23,8 @@ from serversherpa.db.models import (
     Asset, AssetModel, AssetModelAlias, InitiativeAsset,
 )
 from serversherpa.racks.recheck import recheck_placement
+
+logger = logging.getLogger(__name__)
 
 PRIORITY_MAX = 30
 BATCH_SIZE = 500
@@ -180,16 +183,36 @@ async def _lookups(db: AsyncSession, initiative_id: uuid.UUID,
                 select(Asset).where(Asset.rfid_tag.in_(tags))):
             rfid[(a.rfid_tag or "").lower()] = a
 
+    # Two catalog rows can normalize to the same key ("Shelf 1U" / "Shelf
+    # 2U", "Dell R740 (Chassis)" / "Dell R740 Chassis"). Guessing one would
+    # be non-deterministic, so an ambiguous key is dropped from the map
+    # entirely and the row falls through to the review / force path. The
+    # ORDER BY only makes the scan itself reproducible.
     models: dict[str, tuple] = {}
-    for m in await db.scalars(select(AssetModel)):
+    ambiguous: set[str] = set()
+    for m in await db.scalars(select(AssetModel).order_by(
+            AssetModel.make, AssetModel.model, AssetModel.id)):
         display = f"{m.make} {m.model}".strip()
-        models[normalize_model_key(display)] = (m, "exact", display)
+        key = normalize_model_key(display)
+        if key in models:
+            ambiguous.add(key)
+        else:
+            models[key] = (m, "exact", display)
     alias_rows = (await db.execute(
         select(AssetModelAlias.alias, AssetModel)
         .join(AssetModel, AssetModel.id == AssetModelAlias.model_id))).all()
     for alias, m in alias_rows:                # exact wins over alias
-        models.setdefault(
-            normalize_model_key(alias), (m, "fuzzy", f"{m.make} {m.model}".strip()))
+        key = normalize_model_key(alias)
+        if key in ambiguous:                   # an alias cannot break the tie
+            continue
+        models.setdefault(key, (m, "fuzzy", f"{m.make} {m.model}".strip()))
+    for key in ambiguous:
+        models.pop(key, None)
+    if ambiguous:
+        logger.warning(
+            "move-assets import: %d ambiguous make/model key(s) skipped, "
+            "rows using them go to review: %s",
+            len(ambiguous), ", ".join(sorted(ambiguous)))
 
     roster: dict[str, object] = {}
     ids = [a.id for a in assets.values()]

@@ -41,3 +41,42 @@ async def test_import_matches_an_underscore_and_parenthesis_variant(db):
     detail = result["details"][0]
     assert detail["match_method"] == "exact", detail
     assert result["summary"].get("models_created", 0) == 0
+
+
+async def test_two_catalog_rows_with_the_same_key_send_the_row_to_review(db):
+    """"Panel 1U" and "Panel 2U" both normalize to "blank panel". Picking
+    one would be a coin flip, so neither matches and the row is reviewed."""
+    ini = await _move(db)
+    db.add(AssetModel(make="Blank", model="Panel 1U", ru_size=1))
+    db.add(AssetModel(make="Blank", model="Panel 2U", ru_size=2))
+    await db.commit()
+    canonical = {c: "" for c in CANONICAL}
+    canonical.update(serial_number="BP-1", asset_make="Blank",
+                     asset_model="Panel 2U",
+                     destination_rack="R1", destination_ru="10")
+    row = parse_row(2, canonical, {}, generate_serials=False)
+    result = await run_import(db, initiative_id=ini.id, added_by=None,
+                              rows=[row], make_model_mode="fuzzy", write=True)
+    detail = result["details"][0]
+    assert detail["match_method"] == "review", detail
+    assert result["summary"].get("models_created", 0) == 0
+
+
+async def test_an_unambiguous_key_still_matches_exactly(db):
+    """The collision guard drops only the ambiguous keys; a neighbouring
+    row with a key of its own still matches."""
+    ini = await _move(db)
+    db.add(AssetModel(make="Blank", model="Panel 1U", ru_size=1))
+    db.add(AssetModel(make="Blank", model="Panel 2U", ru_size=2))
+    db.add(AssetModel(make="Dell", model="R740", ru_size=2))
+    await db.commit()
+    canonical = {c: "" for c in CANONICAL}
+    canonical.update(serial_number="SRV-1", asset_make="Dell",
+                     asset_model="R740",
+                     destination_rack="R1", destination_ru="10")
+    row = parse_row(2, canonical, {}, generate_serials=False)
+    result = await run_import(db, initiative_id=ini.id, added_by=None,
+                              rows=[row], make_model_mode="fuzzy", write=True)
+    detail = result["details"][0]
+    assert detail["match_method"] == "exact", detail
+    assert result["summary"].get("models_created", 0) == 0
