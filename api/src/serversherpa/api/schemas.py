@@ -1138,6 +1138,7 @@ class AssetModelItem(BaseModel):
     height_cm: float | None = None
     mount_type: str | None = None
     rail_type: str | None = None
+    form_factor: str | None = None
     knowledge: str
     aliases: list[str] = []
     created_at: datetime
@@ -1159,6 +1160,7 @@ class AssetModelCreateIn(BaseModel):
     height_cm: float | None = Field(default=None, ge=0, le=99999)
     mount_type: str | None = None
     rail_type: str | None = None
+    form_factor: str | None = None
     knowledge: str = ""
     model_config = ConfigDict(extra="forbid")
 
@@ -1178,6 +1180,7 @@ class AssetModelUpdateIn(BaseModel):
     height_cm: float | None = Field(default=None, ge=0, le=99999)
     mount_type: str | None = None
     rail_type: str | None = None
+    form_factor: str | None = None
     knowledge: str | None = None
     model_config = ConfigDict(extra="forbid")
 
