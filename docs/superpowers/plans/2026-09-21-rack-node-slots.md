@@ -2614,3 +2614,96 @@ Append to `/Users/jrh1812/.claude/projects/-Users-jrh1812-Developer-BaseCampV3/m
 **Placeholders.** None. Two conditional instructions are deliberate and mechanical: adding missing `RackBlock` / `AssetModelItem` fields to any fixture `tsc` flags, and the fallback test-file globs in Tasks 9 and 12.
 
 **Type consistency.** `place(key, label, rack, ru, height, form_factor)` is called with keywords everywhere. `recheck_placement` returns the four keys `checked / collisions / orphans / cleared`, which `PlacementRecheckOut`, the audit changes, the portal `PlacementRecheck` interface and the toast all use. `RackBlock.slot / children / orphan` and `RackChild` are defined in Task 6 and consumed by name in Task 7. `FORM_FACTORS` is defined in both the API route (tuple) and `lib/assets.ts` (option list) under the same name, in different languages. `Collision.collision_type` values match `COLLISION_LABELS` keys after Task 3.
+
+---
+
+## Amendment 2026-09-21: user direction after live review
+
+### Task 14: Two rack elevations when nodes are present (replaces the slot pills)
+
+**User direction (2026-09-21):** "I'm not a fan of how we are displaying the parent and child devices on the rack view. Let's generate 2 rack views when nodes or children are present, kind of the same as we do for front and rear views. One view holds parent devices and the other shows the nodes spaced evenly in the available space without the parent name."
+
+**Files:**
+- Modify: `portal/src/lib/initiatives.ts` (`RackChild`, `RackBlock`, `rackLayout`, new `nodeBlocks`)
+- Modify: `portal/src/components/initiatives/RackElevation.tsx` (remove pills; label suppression for short cells; tooltip)
+- Modify: `portal/src/components/initiatives/RackViewModal.tsx` (render the node elevations; hover for node cells)
+- Modify: `portal/src/reports/renderRack.tsx` (mirror the modal)
+- Modify: `portal/src/lib/rackPrint.ts` (captions for any number of frames)
+- Modify: `portal/src/styles/rack-svg.css` (drop the pill rule), `api/tests/fixtures/rack_fragment.html` (re-capture, same in-place recipe as the Task 7 fix report)
+- Modify: `api/src/serversherpa/reports/move_report/templates/move_report.html` and/or `render.py` CSS if a rack page with three or four frames overflows the page width
+- Tests: `portal/src/lib/initiatives.test.ts`, `portal/src/components/initiatives/RackViewModal.test.tsx`, `RackViewModal.render.test.tsx`, `portal/src/lib/rackPrint.test.ts`, `api/tests/test_move_report_render.py`
+
+**Interfaces:**
+- Consumes: `rackLayout` output (`RackBlock` with `children: RackChild[]`), `RackElevation`, `ghostBlocksFor`, `isRearPosition`, `tooltipRows`.
+- Produces: `nodeBlocks(blocks: RackBlock[]): RackBlock[]`; `RackBlock.orphan: 'no_chassis' | 'form_factor' | null` (was boolean); `RackBlock.parentRu?: number`, `RackBlock.parentLabel?: string` (set only on node cells); `RackChild` gains `position: string | null` (already), `categoryLabel: string | null`, `categoryColor: string | null`; `buildRackPrintHtml` takes `frames: { heading: string; svg: string }[]` instead of `svgs: string[]`.
+
+#### Design
+
+**Model (`lib/initiatives.ts`).**
+
+1. `RackChild` carries the node's own `categoryLabel` and `categoryColor` (from `r.asset.model_category_label/color`) in addition to `id, label, slot, serial, makeModel, verified, position`.
+2. `RackBlock.orphan` becomes `'no_chassis' | 'form_factor' | null`. `rackLayout` sets `'form_factor'` for a `node`-form-factor row at an integer RU and for a `standalone`-form-factor row at a slot; `'no_chassis'` for a slot row with no adoptable parent; `null` otherwise. Truthiness checks (`b.orphan ?`) keep working; update the type of the `block()` test helper and every fixture.
+3. Parent lookup for a slot row (this is final-review N2): if the row's own position is set, look up `sideKey(position, base)`; if it is blank, try `F:${base}` then `R:${base}` (blank means unstated, not front). A `standalone`-form-factor row is never adopted.
+4. New pure helper:
+
+```ts
+/** The node elevation's blocks: every child of every block that has
+ *  children, as its own cell filling an equal share of the parent's RU
+ *  span, ascending slot from the bottom. Nothing else is included; the
+ *  caller adds ghosts for the child-less devices so the frame keeps its
+ *  RU context. */
+export function nodeBlocks(blocks: RackBlock[]): RackBlock[] {
+  const out: RackBlock[] = [];
+  for (const b of blocks) {
+    const n = b.children.length;
+    if (n === 0) continue;
+    const share = b.height / n;
+    b.children.forEach((c, i) => out.push({
+      id: c.id, label: c.label,
+      ru: b.ru + i * share, height: share,
+      verified: c.verified, position: b.position,
+      categoryLabel: c.categoryLabel ?? b.categoryLabel,
+      categoryColor: c.categoryColor ?? b.categoryColor,
+      makeModel: c.makeModel, slot: c.slot, children: [], orphan: null,
+      parentRu: b.ru, parentLabel: b.label,
+    }));
+  }
+  return out;
+}
+```
+
+   A 4U chassis at 33 with nodes in slots 1 to 4 yields cells at ru 33, 34, 35, 36 each of height 1; with two nodes, cells at 33 and 35 of height 2; a 1U chassis (unknown `ru_size`) with four nodes yields four 0.25U cells. `RackElevation` already positions by `yForRu(ru + height)` and sizes by `height * U_PX`, so fractional values draw correctly.
+
+**Drawing (`RackElevation.tsx`).**
+
+5. Remove the slot pills entirely: `slotPillGeometry`, `SlotPillRect`, the `onHoverChild` prop, the pill JSX, and the `.rack-node-label` rule in `rack-svg.css`. Re-capture `api/tests/fixtures/rack_fragment.html` in place exactly as the Task 7 fix did (replace the three `<style>` bodies with the current stylesheet, comments stripped, outer copy filtered by `htmlOnlyCss`), then run `api/tests/test_move_report_render.py`.
+6. A block whose pixel height is under 10px draws its rect but no label (a 0.25U cell is 4px tall). Keep the label logic otherwise unchanged; an orphan still gets the `! ` prefix and the dashed amber outline; the `Note` row of `tooltipRows` now says exactly one thing per reason: `'No device starts at this RU'` for `no_chassis`, `'Model form factor does not match its position'` for `form_factor` (pass the reason string in, not a boolean).
+7. `tooltipRows` gains `position` for node cells (N5: the node's own side) and keeps `parentLabel` → `Inside`.
+
+**Modal (`RackViewModal.tsx`).**
+
+8. For each side that is rendered (FRONT always; REAR when it has real blocks), if `nodeBlocks(sideBlocks)` is non-empty, render a second `<RackElevation>` immediately after it with heading `FRONT · NODES` / `REAR · NODES`, `ariaLabel` `Rack ${rackName} — ${sideLabel} — front nodes elevation` (and `rear nodes`), and blocks `[...nodeBlocks(sideBlocks), ...ghostBlocksFor(sideBlocks.filter((b) => b.children.length === 0))]` so switches and other child-less devices appear as blank outlines for RU context while every chassis area is filled by its node cells. The devices view draws chassis as ordinary faceplates (no pills) with their children invisible there.
+9. Hover on a node cell resolves the roster row by the cell's `id` (a child's id is its row id), shows the node's name as the title and `tooltipRows({ serial, makeModel, ru: `${parentRu}.${slot}`, position: <the child's own position from the roster row>, parentLabel })`. Hover on a chassis in the devices view shows the chassis as today.
+10. `deviceListRows` and `RackDeviceList` are unchanged. The unplaced count already includes children; keep it.
+
+**Print sheet and report.**
+
+11. `buildRackPrintHtml` takes `frames: { heading: string; svg: string }[]`; caption every frame with its heading when there is more than one frame (today captions exist only for exactly two). The modal collects headings from the rendered `.rack-elevation-heading` elements next to each `.rack-svg`, or simply builds the array itself from the same conditions it used to render.
+12. `renderRack.tsx` mirrors the modal: front devices, front nodes (if any), rear devices (if any real rear blocks), rear nodes (if any). Rebuild the bundle (`npm --prefix portal run build:rack-renderer`).
+13. Check the report's rack page for width: a rack with rear devices and nodes on both sides is four 190px frames plus 24px gaps. Read the `.rack-page` / `.rack-elevations` CSS in `move_report.html` (and `rack-svg.css` outer copy) and, if four frames cannot fit the printable width, add `flex-wrap: wrap` to `.rack-elevations` in the report's stylesheet only (not the modal). Add an assertion in `test_move_report_render.py` only if you changed the template.
+
+**Tests.**
+
+- `initiatives.test.ts`: `nodeBlocks` cases for 4-in-4U, 2-in-4U, 4-in-1U (fractional), slot order bottom-up, category fallback to the parent, `parentRu`/`parentLabel`; the N2 case "a blank-position node attaches to the rear chassis at its base when no front block starts there"; the orphan reason values for both mismatch cases and for no_chassis.
+- `RackViewModal.render.test.tsx`: the chassis-with-nodes test now expects two `role="img"` elevations for the source side named `… front elevation` and `… front nodes elevation`, node names as faceplate labels inside the nodes elevation (query within that svg), NO element with an aria-label starting `Slot `, no `role="status"` note; a hover test on a node cell asserting `Inside chassis-a`, RU `33.1`; a test that a rack with only child-less devices renders exactly one elevation.
+- `RackViewModal.test.tsx`: delete the `slotPillGeometry` describe; extend the `tooltipRows` test for the two Note strings.
+- `rackPrint.test.ts`: captions for one, two and three frames.
+- Whole portal suite, `tsc`, bundle build, and `api/tests/test_move_report_render.py` all clean.
+
+**Commit** (portal + fixture + any template change together):
+
+```
+feat(portal): rack view draws a second Nodes elevation per side, nodes filling their chassis span; pills removed
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+```
