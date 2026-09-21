@@ -82,6 +82,15 @@ def test_collision_section_says_none_when_clean():
     assert "No collisions" in html
 
 
+def test_collision_section_lists_orphan_nodes():
+    html = render_html(_ctx(assets=[_asset(1, destination_ru=20.0),
+                                    _asset(2, destination_ru=31.2)]))
+    assert "No collisions" in html
+    assert "Orphan nodes" in html
+    assert "web-02" in html and "31.2" in html
+    assert "No device starts at this RU" in html
+
+
 def _pdf_objects(pdf: bytes) -> bytes:
     """WeasyPrint writes the page objects into compressed object streams, so
     the object dictionaries only show up once the streams are inflated."""

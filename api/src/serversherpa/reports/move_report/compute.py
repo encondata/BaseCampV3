@@ -4,9 +4,8 @@ as pure functions over MoveAsset lists."""
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
-from itertools import combinations
-from math import floor
 
+from serversherpa.racks.placement import Placed, evaluate, place
 from serversherpa.reports.move_report.gather import MoveAsset
 
 LBS_PER_KG = 2.20462
@@ -120,17 +119,20 @@ class Placement:
     asset: MoveAsset
     base: int
     slot: int
-    occupied: frozenset[int]
 
     @property
     def name(self) -> str:
         return self.asset.label
 
+    @property
+    def ru_text(self) -> str:
+        return f"{self.base}.{self.slot}" if self.slot else str(self.base)
+
 
 @dataclass(frozen=True)
 class Collision:
     rack: str
-    collision_type: str            # ru_overlap | slot_conflict | ru_and_slot_conflict
+    collision_type: str            # ru_overlap | slot_conflict
     overlapping_rus: list[int]
     slot_conflict: int | None
     asset_a: Placement
@@ -138,8 +140,16 @@ class Collision:
 
 
 @dataclass(frozen=True)
+class OrphanRow:
+    rack: str
+    asset: Placement
+    reason: str                    # no_chassis | form_factor_mismatch
+
+
+@dataclass(frozen=True)
 class CollisionReport:
     items: list[Collision] = field(default_factory=list)
+    orphans: list[OrphanRow] = field(default_factory=list)
     assets_checked: int = 0
 
     @property
@@ -151,38 +161,27 @@ class CollisionReport:
         return len({p.asset.row_id for c in self.items for p in (c.asset_a, c.asset_b)})
 
 
-def _placement(a: MoveAsset) -> Placement:
-    raw = float(a.destination_ru)                      # caller guarantees not None
-    base = floor(raw)
-    slot = round((raw - base) * 10)
-    return Placement(asset=a, base=base, slot=slot,
-                     occupied=frozenset(range(base, base + _ru(a))))
-
-
 def collisions(assets: list[MoveAsset]) -> CollisionReport:
-    """Destination-side only (V2 semantics): pairwise within a rack, RU
-    overlap and/or same-base same-non-zero-slot."""
-    racks: dict[str, list[Placement]] = defaultdict(list)
-    checked = 0
+    """Destination-side only (V2 semantics). The rule itself lives in
+    serversherpa.racks.placement and is shared with the importer and the
+    re-check endpoint; this only maps MoveAsset rows in and out."""
+    placed: dict[str, tuple[MoveAsset, Placed]] = {}
     for a in assets:
         if a.destination_rack and a.destination_ru is not None:
-            racks[a.destination_rack].append(_placement(a))
-            checked += 1
-    items: list[Collision] = []
-    for rack in sorted(racks):
-        placed = sorted(racks[rack], key=lambda p: (p.base, p.slot, p.name))
-        for pa, pb in combinations(placed, 2):
-            overlap = pa.occupied & pb.occupied
-            slot_hit = pa.base == pb.base and pa.slot == pb.slot and pa.slot > 0
-            if not overlap and not slot_hit:
-                continue
-            kind = ("ru_and_slot_conflict" if overlap and slot_hit
-                    else "slot_conflict" if slot_hit else "ru_overlap")
-            items.append(Collision(
-                rack=rack, collision_type=kind,
-                overlapping_rus=sorted(overlap) if overlap else [pa.base],
-                slot_conflict=pa.slot if slot_hit else None, asset_a=pa, asset_b=pb))
-    return CollisionReport(items=items, assets_checked=checked)
+            placed[a.row_id] = (a, place(key=a.row_id, label=a.label, rack=a.destination_rack,
+                                         ru=a.destination_ru, height=_ru(a),
+                                         form_factor=a.form_factor))
+    result = evaluate([p for _, p in placed.values()])
+
+    def wrap(p: Placed) -> Placement:
+        return Placement(asset=placed[p.key][0], base=p.base, slot=p.slot)
+
+    items = [Collision(rack=c.rack, collision_type=c.kind,
+                       overlapping_rus=list(c.overlapping_rus), slot_conflict=c.slot,
+                       asset_a=wrap(c.a), asset_b=wrap(c.b)) for c in result.conflicts]
+    orphans = [OrphanRow(rack=o.rack, asset=wrap(o.row), reason=o.reason)
+               for o in result.orphans]
+    return CollisionReport(items=items, orphans=orphans, assets_checked=result.checked)
 
 
 def sorted_by_side(assets: list[MoveAsset], side: str) -> list[MoveAsset]:

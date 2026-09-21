@@ -150,6 +150,18 @@
     {% endfor %}</tbody>
   </table>
   {% else %}<p class="note">No collisions.</p>{% endif %}
+  {% if ctx.collisions.orphans %}
+  <h3>Orphan nodes</h3>
+  <p class="note">A node (fractional RU) is expected to sit inside a device that starts at its RU. These do not.</p>
+  <table>
+    <thead><tr><th>Rack</th><th>Asset</th><th>RU</th><th>Why</th></tr></thead>
+    <tbody>{% for o in ctx.collisions.orphans %}
+    <tr><td>{{ o.rack }}</td>
+      <td>{{ o.asset.name }}<br><small>{{ o.asset.asset.serial or "" }} · {{ o.asset.asset.make_model }}</small></td>
+      <td>{{ o.asset.ru_text }}</td><td>{{ ctx.orphan_label(o.reason) }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  {% endif %}
 </section>
 {% endif %}
 

@@ -53,6 +53,11 @@ class MoveAsset:
     # keep constructing.
     category_label: str | None = None
     category_color: str | None = None
+    # Model form factor: standalone | chassis | node | None. Read by the
+    # placement rule and (later) the rail report; defaulted so fixtures
+    # without one keep constructing. Populated by gather() once the
+    # asset_models column exists (migration 0068).
+    form_factor: str | None = None
 
     @property
     def label(self) -> str:

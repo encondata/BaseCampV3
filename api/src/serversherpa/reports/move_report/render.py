@@ -42,8 +42,9 @@ css_string = _css_string
 
 _ENV.filters["cssstr"] = _css_string
 
-COLLISION_LABELS = {"ru_overlap": "RU overlap", "slot_conflict": "Slot conflict",
-                    "ru_and_slot_conflict": "RU overlap + slot conflict"}
+COLLISION_LABELS = {"ru_overlap": "RU overlap", "slot_conflict": "Slot conflict"}
+ORPHAN_LABELS = {"no_chassis": "No device starts at this RU",
+                 "form_factor_mismatch": "Model form factor does not match its position"}
 
 
 @dataclass
@@ -83,6 +84,9 @@ class ReportContext:
     @staticmethod
     def collision_label(kind: str) -> str:
         return COLLISION_LABELS.get(kind, kind)
+
+    def orphan_label(self, reason: str) -> str:
+        return ORPHAN_LABELS.get(reason, reason)
 
 
 def build_context(data: MoveData, options: dict, *, source_racks: list[RackSvg],
