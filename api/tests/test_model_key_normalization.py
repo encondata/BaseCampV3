@@ -43,9 +43,10 @@ async def test_import_matches_an_underscore_and_parenthesis_variant(db):
     assert result["summary"].get("models_created", 0) == 0
 
 
-async def test_two_catalog_rows_with_the_same_key_send_the_row_to_review(db):
-    """"Panel 1U" and "Panel 2U" both normalize to "blank panel". Picking
-    one would be a coin flip, so neither matches and the row is reviewed."""
+async def test_a_literal_name_wins_over_an_ambiguous_normalized_key(db):
+    """"Panel 1U" and "Panel 2U" both normalize to "blank panel", so the
+    normalized tier holds neither — but the row names "Blank Panel 2U"
+    verbatim, and a literal catalog name always matches."""
     ini = await _move(db)
     db.add(AssetModel(make="Blank", model="Panel 1U", ru_size=1))
     db.add(AssetModel(make="Blank", model="Panel 2U", ru_size=2))
@@ -58,12 +59,32 @@ async def test_two_catalog_rows_with_the_same_key_send_the_row_to_review(db):
     result = await run_import(db, initiative_id=ini.id, added_by=None,
                               rows=[row], make_model_mode="fuzzy", write=True)
     detail = result["details"][0]
+    assert detail["match_method"] == "exact", detail
+    assert result["summary"].get("models_created", 0) == 0
+
+
+async def test_a_non_literal_row_on_an_ambiguous_key_goes_to_review(db):
+    """"Blank_Panel 2U" names no catalog row literally, and normalizing
+    it lands on the ambiguous "blank panel". Picking one of the two
+    panels would be a coin flip, so the row is reviewed."""
+    ini = await _move(db)
+    db.add(AssetModel(make="Blank", model="Panel 1U", ru_size=1))
+    db.add(AssetModel(make="Blank", model="Panel 2U", ru_size=2))
+    await db.commit()
+    canonical = {c: "" for c in CANONICAL}
+    canonical.update(serial_number="BP-2", asset_make="",
+                     asset_model="Blank_Panel 2U",
+                     destination_rack="R1", destination_ru="10")
+    row = parse_row(2, canonical, {}, generate_serials=False)
+    result = await run_import(db, initiative_id=ini.id, added_by=None,
+                              rows=[row], make_model_mode="fuzzy", write=True)
+    detail = result["details"][0]
     assert detail["match_method"] == "review", detail
     assert result["summary"].get("models_created", 0) == 0
 
 
 async def test_an_unambiguous_key_still_matches_exactly(db):
-    """The collision guard drops only the ambiguous keys; a neighbouring
+    """The collision guard drops only the ambiguous keys; a neighboring
     row with a key of its own still matches."""
     ini = await _move(db)
     db.add(AssetModel(make="Blank", model="Panel 1U", ru_size=1))

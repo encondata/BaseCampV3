@@ -140,7 +140,7 @@
   <h2>Collision Report</h2>
   <p>{{ ctx.collisions.assets_checked }} assets with destination assignments checked ·
      {{ ctx.collisions.collision_count }} collisions · {{ ctx.collisions.assets_flagged }} assets flagged ·
-     {{ ctx.collisions.orphans|length }} orphan nodes</p>
+     {% set n = ctx.collisions.orphans|length %}{{ n }} orphan {{ 'node' if n == 1 else 'nodes' }}</p>
   {% if ctx.collisions.items %}
   <table>
     <thead><tr><th>Rack</th><th>Type</th><th>Overlapping RUs</th><th>Asset A</th><th>Asset B</th></tr></thead>

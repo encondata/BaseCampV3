@@ -58,7 +58,7 @@ def place(key: str, label: str, rack: str, ru: float | Decimal, height: int | No
     # Half-UP, not Python's banker's rounding: RU 3.25 is slot 3, matching
     # the portal's `Math.round` in lib/initiatives.ts's `ruSlot`. `round()`
     # would give 2 here and silently disagree with the drawing.
-    slot = int(floor((raw - base) * 10 + 0.5))
+    slot = floor((raw - base) * 10 + 0.5)
     return Placed(key=key, label=label, rack=rack, base=base, slot=slot,
                   height=max(1, int(height or 1)), form_factor=form_factor)
 

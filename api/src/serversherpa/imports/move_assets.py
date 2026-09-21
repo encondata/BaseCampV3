@@ -166,9 +166,10 @@ _SIM_ASSOC = object()   # roster marker for validate-mode attachments
 
 
 async def _lookups(db: AsyncSession, initiative_id: uuid.UUID,
-                   rows: list[dict]) -> tuple[dict, dict, dict, dict]:
+                   rows: list[dict]) -> tuple[dict, dict, dict, dict, dict]:
     """Batch lookups for the whole file: assets by serial, RFID holders,
-    make/model exact + alias fuzzy, current roster rows by serial."""
+    make/model literal + normalized (exact + alias fuzzy), current roster
+    rows by serial."""
     serials = list({r["serial_number"] for r in rows})
     assets: dict[str, Asset] = {}
     if serials:
@@ -183,16 +184,24 @@ async def _lookups(db: AsyncSession, initiative_id: uuid.UUID,
                 select(Asset).where(Asset.rfid_tag.in_(tags))):
             rfid[(a.rfid_tag or "").lower()] = a
 
-    # Two catalog rows can normalize to the same key ("Shelf 1U" / "Shelf
-    # 2U", "Dell R740 (Chassis)" / "Dell R740 Chassis"). Guessing one would
-    # be non-deterministic, so an ambiguous key is dropped from the map
-    # entirely and the row falls through to the review / force path. The
-    # ORDER BY only makes the scan itself reproducible.
+    # Matching is two-tier. `literal` is keyed on the catalog display name
+    # (and on each alias) exactly as it is written, lowercased only; it is
+    # unique by DB constraint, so a row that names a catalog entry
+    # verbatim ALWAYS matches it. Only the looser normalized tier can be
+    # ambiguous: two catalog rows can normalize to the same key ("Shelf
+    # 1U" / "Shelf 2U", "Blank / Panel 1U" / "Blank / Panel 2U", "Dell
+    # R740 (Chassis)" / "Dell R740 Chassis"). Guessing one would be
+    # non-deterministic, so an ambiguous key is dropped from the
+    # normalized map entirely and a row that only reaches it falls through
+    # to the review / force path. The ORDER BYs only make the scans
+    # themselves reproducible.
+    literal: dict[str, tuple] = {}
     models: dict[str, tuple] = {}
     ambiguous: set[str] = set()
     for m in await db.scalars(select(AssetModel).order_by(
             AssetModel.make, AssetModel.model, AssetModel.id)):
         display = f"{m.make} {m.model}".strip()
+        literal[display.lower()] = (m, "exact", display)
         key = normalize_model_key(display)
         if key in models:
             ambiguous.add(key)
@@ -200,12 +209,22 @@ async def _lookups(db: AsyncSession, initiative_id: uuid.UUID,
             models[key] = (m, "exact", display)
     alias_rows = (await db.execute(
         select(AssetModelAlias.alias, AssetModel)
-        .join(AssetModel, AssetModel.id == AssetModelAlias.model_id))).all()
+        .join(AssetModel, AssetModel.id == AssetModelAlias.model_id)
+        .order_by(AssetModelAlias.alias, AssetModel.id))).all()
     for alias, m in alias_rows:                # exact wins over alias
+        display = f"{m.make} {m.model}".strip()
+        literal.setdefault(alias.lower(), (m, "fuzzy", display))
         key = normalize_model_key(alias)
         if key in ambiguous:                   # an alias cannot break the tie
             continue
-        models.setdefault(key, (m, "fuzzy", f"{m.make} {m.model}".strip()))
+        prior = models.get(key)
+        if prior is None:
+            models[key] = (m, "fuzzy", display)
+        elif prior[0].id != m.id:
+            # The alias normalizes onto another model — an exact row's key
+            # or a second alias. Two answers, so the normalized tier has
+            # none; both strings still match literally.
+            ambiguous.add(key)
     for key in ambiguous:
         models.pop(key, None)
     if ambiguous:
@@ -222,7 +241,7 @@ async def _lookups(db: AsyncSession, initiative_id: uuid.UUID,
                 InitiativeAsset.initiative_id == initiative_id,
                 InitiativeAsset.asset_id.in_(ids))):
             roster[by_id[assoc.asset_id]] = assoc
-    return assets, rfid, models, roster
+    return assets, rfid, literal, models, roster
 
 
 def _apply_row(assoc: InitiativeAsset, r: dict, now: datetime) -> None:
@@ -265,7 +284,7 @@ async def run_import(
     from serversherpa.services.audit import audit
 
     ok_rows = [r for r in rows if r["status"] == "ok"]
-    assets, rfid_map, model_map, roster = await _lookups(
+    assets, rfid_map, literal_map, model_map, roster = await _lookups(
         db, initiative_id, ok_rows)
     force = make_model_mode in ("force", "hybrid")
 
@@ -308,13 +327,18 @@ async def run_import(
             model_obj = None
             if r["make_model_str"]:
                 mm_key = normalize_model_key(r["make_model_str"])
-                matched = model_map.get(mm_key)
+                # A verbatim catalog name (or alias) wins outright; the
+                # normalized map is the fallback and may have dropped the
+                # key as ambiguous.
+                matched = (literal_map.get(r["make_model_str"].lower())
+                           or model_map.get(mm_key))
                 if matched is None:
                     mk, md = resolve_make_model_for_creation(
                         r["asset_make"], r["asset_model"])
                     resolved_display = f"{mk} {md}".strip()
                     resolved_key = normalize_model_key(resolved_display)
-                    matched = model_map.get(resolved_key)
+                    matched = (literal_map.get(resolved_display.lower())
+                               or model_map.get(resolved_key))
                     if matched is not None:
                         model_map[mm_key] = matched
                 if matched is not None:

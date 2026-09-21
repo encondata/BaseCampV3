@@ -90,7 +90,7 @@ def test_collision_section_lists_orphan_nodes():
     assert "Orphan nodes" in html
     assert "web-02" in html and "31.2" in html
     assert "No device starts at this RU" in html
-    assert "1 orphan nodes" in html
+    assert "1 orphan node" in html
 
 
 def _pdf_objects(pdf: bytes) -> bytes:
