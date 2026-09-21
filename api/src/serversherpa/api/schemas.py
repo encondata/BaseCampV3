@@ -1944,6 +1944,15 @@ class InitiativeAssetUpdateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PlacementRecheckOut(BaseModel):
+    """Result of POST /initiatives/{id}/assets/recheck-placement."""
+
+    checked: int
+    collisions: int
+    orphans: int
+    cleared: int
+
+
 class ImportJobOut(BaseModel):
     """import_jobs row as served to the portal's polling loop."""
 
