@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assignLanes, FACEPLATE_USABLE_WIDTH, ghostBlocksFor, isRearPosition, laneGeometry,
-  rackLabel, tooltipRows,
+  rackLabel, slotPillGeometry, tooltipRows,
 } from './RackViewModal';
 
 /* ── rack view collision layout (Task 6 fix-round) — laneGeometry is the
@@ -307,6 +307,30 @@ describe('tooltipRows for nodes', () => {
     const orphan = tooltipRows({ serial: null, makeModel: '', ru: '3.5', position: null, orphan: true });
     expect(orphan.map((r) => r.label)).toEqual(['Serial', 'Make/Model', 'RU', 'Note']);
     expect(orphan[3].value).toBe('No device starts at this RU');
+  });
+});
+
+describe('slotPillGeometry', () => {
+  it('fits nine pills inside the right half of a default-width faceplate', () => {
+    const pills = slotPillGeometry(0, 130, 9);
+    expect(pills).toHaveLength(9);
+    const last = pills[8];
+    expect(last.x + last.width).toBeLessThanOrEqual(0 + 130 * 0.5 + (130 * 0.5 - 4) + 1e-9);
+    expect(pills.every((p) => p.width > 0)).toBe(true);
+    expect(pills[0].showLabel).toBe(false);          // ~6.7px each: too narrow for a digit
+  });
+  it('fits two pills inside a lane-squeezed 40px faceplate', () => {
+    const pills = slotPillGeometry(10, 40, 2);
+    const last = pills[1];
+    expect(last.x + last.width).toBeLessThanOrEqual(10 + 40 * 0.5 + (40 * 0.5 - 4) + 1e-9);
+  });
+  it('shows digits and a 2px gap for four or fewer pills at default width', () => {
+    const pills = slotPillGeometry(0, 130, 4);
+    expect(pills.every((p) => p.showLabel)).toBe(true);
+    expect(pills[1].x - (pills[0].x + pills[0].width)).toBeCloseTo(2);
+  });
+  it('returns nothing for zero children', () => {
+    expect(slotPillGeometry(0, 130, 0)).toEqual([]);
   });
 });
 

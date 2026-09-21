@@ -47,6 +47,19 @@ describe('buildRackPrintHtml', () => {
     expect(html).toContain('>REAR<');
   });
 
+  it('indents a child row and marks an orphan row with a "! " prefix', () => {
+    const html = buildRackPrintHtml({
+      rackName: 'R1', sideLabel: 'Source', svgs: [],
+      listRows: [
+        { ...row, id: 'c', name: 'node-a1', indent: true },
+        { ...row, id: 'o', name: 'san-01', orphan: true },
+      ],
+      grouped: false, legend: [],
+    });
+    expect(html).toContain('class="child"');
+    expect(html).toContain('>! san-01');
+  });
+
   it('captions the elevations FRONT/REAR only when both are printed', () => {
     const two = buildRackPrintHtml({
       rackName: 'R1', sideLabel: 'Source',

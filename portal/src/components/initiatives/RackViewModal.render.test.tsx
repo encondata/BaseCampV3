@@ -82,9 +82,12 @@ describe('RackViewModal (render smoke)', () => {
     render(<RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />);
     expect(document.querySelector('.rack-faceplate-orphan')).toBeTruthy();
     // both the SVG faceplate label and the device-list row carry the "! "
-    // prefix for an orphan, so this is deliberately an *AllBy* query.
-    expect(screen.getAllByText('! san-01').length).toBeGreaterThan(0);
+    // prefix for an orphan; check each surface on its own so a regression
+    // in either one is caught (an *AllBy* count alone can't tell them apart).
+    const svg = document.querySelector('svg.rack-svg') as HTMLElement;
+    expect(within(svg).getByText('! san-01')).toBeTruthy();
     const list = document.querySelector('.rack-device-list') as HTMLElement;
+    expect(within(list).getByText('! san-01')).toBeTruthy();
     expect(list.querySelector('.rack-list-orphan')).toBeTruthy();
     expect(within(list).getByText('3.5')).toBeTruthy();
   });

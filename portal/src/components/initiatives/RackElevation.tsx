@@ -110,6 +110,26 @@ export function assignLanes(
 
 export interface LaneRect { id: string; x: number; width: number; }
 
+export interface SlotPillRect { x: number; width: number; showLabel: boolean; }
+
+/** Lays `count` slot pills across the right half of a faceplate of the
+ *  given x/width. Pills always fit inside that half: the gap shrinks to
+ *  1px past four pills and there is no minimum pill width. When a pill
+ *  is too narrow to hold a digit (under 9px) the digit is omitted and the
+ *  pill stays as a marker; hover still names the node. */
+export function slotPillGeometry(x: number, width: number, count: number): SlotPillRect[] {
+  if (count <= 0) return [];
+  const gap = count <= 4 ? 2 : 1;
+  const areaX = x + width * 0.5;
+  const areaWidth = Math.max(0, width * 0.5 - 4);
+  const pillWidth = Math.max(0, (areaWidth - gap * (count - 1)) / count);
+  return Array.from({ length: count }, (_, i) => ({
+    x: areaX + i * (pillWidth + gap),
+    width: pillWidth,
+    showLabel: pillWidth >= 9,
+  }));
+}
+
 /** Splits `blocks` into groups that are mutually reachable through RU-range
  *  overlap ("connected components" of the overlap graph) — e.g. A overlaps
  *  B and B overlaps C puts all three in one group even if A and C don't
@@ -351,11 +371,7 @@ export function RackElevation({
             : b.verified
               ? { stroke: '#15803d', strokeWidth: 2 }
               : { stroke: '#111827', strokeWidth: 1.25, strokeDasharray: '4 3' };
-          const pillGap = 2;
-          const pillAreaX = x + width * 0.5;
-          const pillAreaWidth = width * 0.5 - 4;
-          const pillWidth = Math.max(10,
-            (pillAreaWidth - pillGap * (b.children.length - 1)) / Math.max(1, b.children.length));
+          const pills = slotPillGeometry(x, width, b.children.length);
           const pillHeight = Math.max(8, height - 4);
           const pillFill = textColor === '#ffffff' ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.12)';
           return (
@@ -369,21 +385,23 @@ export function RackElevation({
                 {label}
               </text>
               {b.children.map((c, i) => {
-                const px = pillAreaX + i * (pillWidth + pillGap);
+                const pill = pills[i];
                 return (
                   <g key={c.id} role="img" aria-label={`Slot ${c.slot}: ${c.label}`}
                      className="rack-node"
                      onMouseEnter={onHoverChild ? (e) => { e.stopPropagation(); onHoverChild(b, c, e); } : undefined}>
-                    <rect x={px} y={y + 2} width={pillWidth} height={pillHeight} rx={2}
+                    <rect x={pill.x} y={y + 2} width={pill.width} height={pillHeight} rx={2}
                           fill={pillFill}
                           stroke={c.verified ? '#15803d' : textColor}
                           strokeWidth={0.75}
                           strokeDasharray={c.verified ? undefined : '2 2'} />
-                    <text x={px + pillWidth / 2} y={y + 2 + pillHeight / 2}
-                          textAnchor="middle" dominantBaseline="middle"
-                          fill={textColor} className="rack-node-label">
-                      {c.slot}
-                    </text>
+                    {pill.showLabel && (
+                      <text x={pill.x + pill.width / 2} y={y + 2 + pillHeight / 2}
+                            textAnchor="middle" dominantBaseline="middle"
+                            fill={textColor} className="rack-node-label">
+                        {c.slot}
+                      </text>
+                    )}
                   </g>
                 );
               })}
