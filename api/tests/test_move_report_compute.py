@@ -52,11 +52,11 @@ def test_rail_summary_counts_and_na():
         ("Dell", "R740", 2, "Sliding"), ("HPE", "DL380", 1, "N/A")]
 
 
-def test_collisions_overlap_partial_slot_and_none():
+def test_collisions_overlap_slot_conflict_and_orphans():
     a = _asset(row_id="a", name="a", ru_size=2, destination_rack="R1", destination_ru=10)
     b = _asset(row_id="b", name="b", ru_size=1, destination_rack="R1", destination_ru=11)   # overlaps a's top RU
     c = _asset(row_id="c", name="c", ru_size=1, destination_rack="R1", destination_ru=20.1)
-    d = _asset(row_id="d", name="d", ru_size=1, destination_rack="R1", destination_ru=20.1)  # same slot
+    d = _asset(row_id="d", name="d", ru_size=1, destination_rack="R1", destination_ru=20.1)  # same slot, no chassis
     e = _asset(row_id="e", name="e", ru_size=1, destination_rack="R2", destination_ru=10)    # other rack
     f = _asset(row_id="f", name="f", ru_size=1, destination_rack=None, destination_ru=10)    # no rack
     g = _asset(row_id="g", name="g", ru_size=4, destination_rack="R1", destination_ru=30)
@@ -64,14 +64,27 @@ def test_collisions_overlap_partial_slot_and_none():
     rep = collisions([a, b, c, d, e, f, g, h])
     assert rep.assets_checked == 7                      # f has no rack
     kinds = {(x.asset_a.name, x.asset_b.name): x.collision_type for x in rep.items}
-    assert kinds == {("a", "b"): "ru_overlap", ("c", "d"): "ru_and_slot_conflict",
+    assert kinds == {("a", "b"): "ru_overlap", ("c", "d"): "slot_conflict",
                      ("g", "h"): "ru_overlap"}
     ab = next(x for x in rep.items if x.asset_a.name == "a")
     assert ab.rack == "R1" and ab.overlapping_rus == [11]
+    cd = next(x for x in rep.items if x.asset_a.name == "c")
+    assert cd.slot_conflict == 1 and cd.asset_a.ru_text == "20.1"
     assert rep.collision_count == 3 and rep.assets_flagged == 6
+    assert [(o.asset.name, o.reason) for o in rep.orphans] == [("c", "no_chassis"),
+                                                               ("d", "no_chassis")]
 
 
-def test_collisions_slot_conflict_without_overlap_is_impossible_but_zero_slot_ignored():
+def test_nodes_inside_a_chassis_do_not_collide_or_orphan():
+    chassis = _asset(row_id="ch", name="ch", ru_size=4, destination_rack="R1", destination_ru=33)
+    nodes = [_asset(row_id=f"n{i}", name=f"n{i}", ru_size=None, destination_rack="R1",
+                    destination_ru=33 + i / 10) for i in (1, 2, 3, 4)]
+    rep = collisions([chassis, *nodes])
+    assert rep.items == [] and rep.orphans == []
+    assert rep.assets_checked == 5
+
+
+def test_collisions_slot_zero_is_plain_overlap():
     # slot 0 (integer RU) is never a "slot conflict" — plain overlap only
     a = _asset(row_id="a", name="a", destination_rack="R1", destination_ru=5)
     b = _asset(row_id="b", name="b", destination_rack="R1", destination_ru=5)
@@ -85,3 +98,27 @@ def test_sorted_by_side_orders_rack_then_ru_nulls_last():
             _asset(row_id="3", source_rack="A", source_ru=2),
             _asset(row_id="4", source_rack=None, source_ru=None)]
     assert [r.row_id for r in sorted_by_side(rows, "source")] == ["3", "2", "1", "4"]
+
+
+def test_rail_summary_skips_nodes_but_load_summary_keeps_them():
+    chassis = _asset(row_id="c", make="Dell", model="H5600", rail_type="Static",
+                     ru_size=4, form_factor="chassis", weight_lbs=Decimal("120"))
+    nodes = [_asset(row_id=f"n{i}", make="Dell", model="H5600 node", rail_type=None,
+                    ru_size=None, form_factor="node", weight_lbs=Decimal("20"))
+             for i in (1, 2)]
+    r = rail_summary([chassis, *nodes])
+    assert r.total_assets == 1
+    assert [(x.rail_type, x.count) for x in r.rail_types] == [("Static", 1)]
+    assert [(m.model, m.count) for m in r.models] == [("H5600", 1)]
+    s = load_summary([chassis, *nodes])
+    assert s.total_assets == 3 and s.total_weight_lbs == 160.0
+
+
+def test_collisions_report_form_factor_mismatch_orphans():
+    ch = _asset(row_id="c", name="c", ru_size=4, form_factor="chassis",
+                destination_rack="R1", destination_ru=10)
+    bad = _asset(row_id="b", name="b", form_factor="standalone",
+                 destination_rack="R1", destination_ru=10.1)
+    rep = collisions([ch, bad])
+    assert rep.items == []
+    assert [(o.asset.name, o.reason) for o in rep.orphans] == [("b", "form_factor_mismatch")]

@@ -1138,6 +1138,7 @@ class AssetModelItem(BaseModel):
     height_cm: float | None = None
     mount_type: str | None = None
     rail_type: str | None = None
+    form_factor: str | None = None
     knowledge: str
     aliases: list[str] = []
     created_at: datetime
@@ -1159,6 +1160,7 @@ class AssetModelCreateIn(BaseModel):
     height_cm: float | None = Field(default=None, ge=0, le=99999)
     mount_type: str | None = None
     rail_type: str | None = None
+    form_factor: str | None = None
     knowledge: str = ""
     model_config = ConfigDict(extra="forbid")
 
@@ -1178,6 +1180,7 @@ class AssetModelUpdateIn(BaseModel):
     height_cm: float | None = Field(default=None, ge=0, le=99999)
     mount_type: str | None = None
     rail_type: str | None = None
+    form_factor: str | None = None
     knowledge: str | None = None
     model_config = ConfigDict(extra="forbid")
 
@@ -1887,6 +1890,7 @@ class InitiativeAssetSummary(BaseModel):
     model_make: str | None = None
     model_name: str | None = None
     ru_size: int | None = None
+    model_form_factor: str | None = None
     model_category: str | None = None
     model_category_label: str | None = None
     model_category_color: str | None = None
@@ -1942,6 +1946,15 @@ class InitiativeAssetUpdateIn(BaseModel):
     vendor_involved: bool | None = None
     status: str | None = None
     model_config = ConfigDict(extra="forbid")
+
+
+class PlacementRecheckOut(BaseModel):
+    """Result of POST /initiatives/{id}/assets/recheck-placement."""
+
+    checked: int
+    collisions: int
+    orphans: int
+    cleared: int
 
 
 class ImportJobOut(BaseModel):

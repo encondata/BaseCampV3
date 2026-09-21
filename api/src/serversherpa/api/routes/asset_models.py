@@ -22,11 +22,13 @@ router = APIRouter(prefix="/asset-models", tags=["assets"])
 categories_router = APIRouter(tags=["assets"])
 
 MOUNT_TYPES = ("rails", "ears", "shelf", "custom")
+FORM_FACTORS = ("standalone", "chassis", "node")
 
 MODEL_FIELDS = [
     "make", "model", "category", "ru_size",
     "weight_lbs", "weight_kg", "length_in", "width_in", "height_in",
-    "length_cm", "width_cm", "height_cm", "mount_type", "rail_type", "knowledge",
+    "length_cm", "width_cm", "height_cm", "mount_type", "rail_type",
+    "form_factor", "knowledge",
 ]
 NON_NULLABLE_MODEL_FIELDS = ("make", "model")
 
@@ -72,6 +74,7 @@ def _item(m: AssetModel, cats: dict, aliases: dict) -> dict:
         "height_in": f(m.height_in), "length_cm": f(m.length_cm),
         "width_cm": f(m.width_cm), "height_cm": f(m.height_cm),
         "mount_type": m.mount_type, "rail_type": m.rail_type,
+        "form_factor": m.form_factor,
         "knowledge": m.knowledge, "aliases": aliases.get(m.id, []),
         "created_at": m.created_at, "updated_at": m.updated_at,
     }
@@ -90,6 +93,9 @@ async def _validate(db: DbSession, data: dict) -> None:
     if data.get("mount_type") is not None and \
             data["mount_type"] not in MOUNT_TYPES:
         raise _err(422, "unknown_mount_type")
+    if data.get("form_factor") is not None and \
+            data["form_factor"] not in FORM_FACTORS:
+        raise _err(422, "unknown_form_factor")
 
 
 async def _check_duplicate(db: DbSession, make: str, model: str,

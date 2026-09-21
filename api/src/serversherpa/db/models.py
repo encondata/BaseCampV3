@@ -575,6 +575,7 @@ class AssetModel(Base):
     height_cm: Mapped[Decimal | None] = mapped_column(Numeric(8, 2))
     mount_type: Mapped[str | None]
     rail_type: Mapped[str | None]
+    form_factor: Mapped[str | None]      # standalone | chassis | node | null (0068)
     knowledge: Mapped[str] = mapped_column(server_default="")
     legacy_id: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

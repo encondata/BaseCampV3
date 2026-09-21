@@ -40,6 +40,7 @@ const SHEET_CSS = `
             border: 1px solid rgba(17,24,39,0.35); }
   .model { color: #374151; }
   .ru { text-align: right; min-width: 0.4in; }
+  .child { padding-left: 10px; }
   .legend { display: flex; gap: 0.2in; margin-top: 0.12in; font-size: 8pt;
             align-items: center; flex-wrap: wrap; }
   .legend .swatch { display: inline-block; vertical-align: -1px; margin-right: 4px; }
@@ -62,7 +63,8 @@ const SHEET_CSS = `
 `;
 
 export function buildRackPrintHtml(input: {
-  rackName: string; sideLabel: string; svgs: string[];
+  rackName: string; sideLabel: string;
+  frames: { heading: string; svg: string }[];
   listRows: DeviceListRow[]; grouped: boolean; legend: LegendCategory[];
 }): string {
   let lastGroup: string | null = null;
@@ -72,17 +74,18 @@ export function buildRackPrintHtml(input: {
     lastGroup = r.group;
     return `${head}<div class="row">`
       + `<span class="swatch" style="background:${esc(r.categoryColor ?? UNCATEGORIZED_FILL)}"></span>`
-      + `<span>${esc(r.name)}</span>`
+      + `<span${r.indent ? ' class="child"' : ''}>${esc(r.orphan ? `! ${r.name}` : r.name)}</span>`
       + `<span class="model">${esc(r.makeModel)}</span>`
       + `<span class="ru">${esc(r.ruText)}</span></div>`;
   }).join('');
-  // A two-elevation sheet captions each frame FRONT / REAR — on paper the
+  // Any sheet with more than one frame captions each one with its own
+  // heading (FRONT, FRONT · NODES, REAR, REAR · NODES) — on paper the
   // reader has no hover to disambiguate; a lone frame needs no caption.
-  const elevationsHtml = input.svgs.length === 2
-    ? input.svgs.map((svg, i) =>
-        `<div class="elev"><div class="cap">${i === 0 ? 'FRONT' : 'REAR'}</div>${svg}</div>`)
+  const elevationsHtml = input.frames.length > 1
+    ? input.frames.map((f) =>
+        `<div class="elev"><div class="cap">${esc(f.heading)}</div>${f.svg}</div>`)
         .join('')
-    : input.svgs.join('');
+    : input.frames.map((f) => f.svg).join('');
   const legendHtml = [
     ...input.legend.map((c) =>
       `<span><span class="swatch" style="background:${esc(c.color)}"></span>${esc(c.label)}</span>`),

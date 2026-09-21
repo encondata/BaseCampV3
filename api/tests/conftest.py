@@ -246,7 +246,8 @@ async def clean_db():
               ('asset','e_waste','e-waste','','#ee27f5',0,100),
               ('asset','pending_client_handover','Pending Client Handover','','#00ff00',0,95),
               ('asset','historical','Historical','','#27f5f2',0,NULL),
-              ('asset','location_collision','Location Collision','','#ff0000',0,NULL)
+              ('asset','location_collision','Location Collision','','#ff0000',0,NULL),
+              ('asset','orphan_node','Orphan node','A node (fractional RU) with no device starting at its RU. Review the rack position.','#d97706',0,NULL)
         """))
         # container vocabulary — restore canonical seeds (0015)
         await session.execute(text(

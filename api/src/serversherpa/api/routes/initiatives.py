@@ -24,7 +24,7 @@ from serversherpa.api.schemas import (
     InitiativeDetailOut, InitiativeItem, InitiativeLinkAddIn,
     InitiativeLinkRow, InitiativeLinksOut, InitiativeLinkUpdateIn,
     InitiativeNextColorOut, InitiativePersonAddIn, InitiativePersonRow,
-    InitiativePersonUpdateIn, InitiativeUpdateIn,
+    InitiativePersonUpdateIn, InitiativeUpdateIn, PlacementRecheckOut,
 )
 from serversherpa.db.models import (
     Asset, AssetCategory, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
@@ -34,6 +34,7 @@ from serversherpa.db.models import (
 from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx,
 )
+from serversherpa.racks.recheck import recheck_placement
 from serversherpa.scans.manual import record_status_edit
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import put_object
@@ -826,6 +827,7 @@ async def _initiative_asset_rows(
                 model_make=model.make if model else None,
                 model_name=model.model if model else None,
                 ru_size=model.ru_size if model else None,
+                model_form_factor=model.form_factor if model else None,
                 model_category=cat.key if cat else None,
                 model_category_label=cat.label if cat else None,
                 model_category_color=cat.color if cat else None,
@@ -895,6 +897,33 @@ async def add_initiative_assets(
         await db.rollback()
         raise _err(409, "assets_already_on_initiative") from None
     return await _initiative_asset_rows(db, initiative_id)
+
+
+@router.post("/{initiative_id}/assets/recheck-placement",
+             response_model=PlacementRecheckOut)
+async def recheck_initiative_placement(
+    initiative_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> PlacementRecheckOut:
+    """Run the placement rule over the whole destination roster and restate
+    the three placement statuses (loaded_in_system / location_collision /
+    orphan_node). Rows that have progressed past those are never touched.
+    The importer runs the same function after every commit pass; this is
+    the way to clear stale flags without re-uploading the file."""
+    initiative = await _get_initiative(db, initiative_id, actor)
+    _require_global(actor)
+    if initiative.initiative_type != "move":
+        raise _err(422, "not_a_move")
+    result = await recheck_placement(db, initiative_id)
+    # a re-check that restated nothing is not a change to the initiative
+    if result["collisions"] + result["orphans"] + result["cleared"] > 0:
+        initiative.updated_at = datetime.now(UTC)
+    audit(db, actor_id=actor.person.id, entity_type="initiative",
+          entity_id=str(initiative_id), action="placement_recheck",
+          changes=result)
+    await db.commit()
+    return PlacementRecheckOut(**result)
 
 
 async def _get_initiative_asset(db: DbSession, assoc_id: uuid.UUID,

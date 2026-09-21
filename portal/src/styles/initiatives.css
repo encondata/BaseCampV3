@@ -475,6 +475,9 @@
 }
 .rack-list-model { color: #6b7280; }
 .rack-list-ru { text-align: right; min-width: 44px; }
+.rack-list-child .rack-list-name { padding-left: 14px; }
+.rack-list-child .rack-list-swatch { opacity: 0.55; }
+.rack-list-orphan .rack-list-name { color: #b45309; }
 
 /* hover detail tooltip — real HTML element (not a native title tooltip),
    positioned off the hovered faceplate's bounding rect; styled like the

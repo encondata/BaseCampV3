@@ -25,7 +25,7 @@ import {
   type AssetModelItem,
 } from '../../lib/api';
 import {
-  MODEL_ERRORS,
+  FORM_FACTORS, MODEL_ERRORS,
   formFromModel, formatDims, IN_TO_CM, LB_TO_KG, modelPayload, needsModelCreate, parseDims,
   partnerFor, type ModelFormState,
 } from '../../lib/assets';
@@ -321,6 +321,16 @@ export default function ModelEditModal({
               <div><label>Rail type</label>
                 <input value={form.rail_type} disabled={locked}
                        onChange={(e) => setField('rail_type', e.target.value)} /></div>
+              <div><label>Form factor</label>
+                <select className="org-select" value={form.form_factor} disabled={locked}
+                        onChange={(e) => setField('form_factor', e.target.value)}>
+                  <option value="">Not set</option>
+                  {FORM_FACTORS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+                <p className="page-hint field-hint">
+                  Chassis holds nodes at fractional RUs (33.1, 33.2). Node lives inside a chassis and
+                  needs no rails. Leave unset for ordinary rack-mounted devices.
+                </p></div>
             </div>
 
             <div className="modal-section">Field knowledge</div>

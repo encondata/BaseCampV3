@@ -107,11 +107,22 @@ export function migrateIdentityColumns(stored: StoredListPrefs): StoredListPrefs
 }
 
 export function modelSearchText(m: AssetModelItem): string {
-  return [m.make, m.model, m.rail_type, ...m.aliases].filter(Boolean).join(' ').toLowerCase();
+  return [m.make, m.model, m.rail_type, m.form_factor, ...m.aliases]
+    .filter(Boolean).join(' ').toLowerCase();
 }
 
 export const titleCase = (v: string | null): string =>
   v ? v[0].toUpperCase() + v.slice(1) : '—';
+
+export const FORM_FACTORS = [
+  { value: 'standalone', label: 'Standalone' },
+  { value: 'chassis', label: 'Chassis' },
+  { value: 'node', label: 'Node' },
+];
+
+/** "Chassis" / "Node" / "Standalone", or a dash when unset. */
+export const formFactorLabel = (v: string | null): string =>
+  FORM_FACTORS.find((f) => f.value === v)?.label ?? '—';
 
 /** Column-menu accessor (lib/columnMenu.tsx's `CellText<T>`) for the
  *  AssetModels page. Mirrors the page's own cell renderer exactly —
@@ -127,6 +138,7 @@ export function modelCellText(m: AssetModelItem, colKey: string): string {
     case 'weight': return m.weight_lbs !== null ? `${m.weight_lbs} lb / ${m.weight_kg} kg` : '—';
     case 'dims': return formatDims(m.length_in, m.width_in, m.height_in, 'in');
     case 'mount': return titleCase(m.mount_type);
+    case 'form': return formFactorLabel(m.form_factor);
     case 'rail': return m.rail_type ?? '—';
     case 'aliases': return m.aliases.length ? m.aliases.join(', ') : '—';
     case 'weight_lbs': return m.weight_lbs !== null ? String(m.weight_lbs) : '—';
@@ -215,6 +227,7 @@ export const MODEL_ERRORS: Record<string, string> = {
   duplicate_model: 'A model with this make + model already exists.',
   unknown_category: 'Pick a category from the list.',
   unknown_mount_type: 'Mount type must be rails, ears, shelf, or custom.',
+  unknown_form_factor: 'Form factor must be standalone, chassis, or node.',
   alias_in_use: 'One of these aliases already belongs to another model.',
   make_required: 'Make is required.',
   model_required: 'Model is required.',
@@ -228,7 +241,7 @@ export interface ModelFormState {
   weight_lbs: string; weight_kg: string;
   length_in: string; width_in: string; height_in: string;
   length_cm: string; width_cm: string; height_cm: string;
-  mount_type: string; rail_type: string; knowledge: string;
+  mount_type: string; rail_type: string; form_factor: string; knowledge: string;
 }
 
 const numStr = (v: number | null): string => (v === null ? '' : String(v));
@@ -245,6 +258,7 @@ export function formFromModel(
     length_cm: numStr(m?.length_cm ?? null), width_cm: numStr(m?.width_cm ?? null),
     height_cm: numStr(m?.height_cm ?? null),
     mount_type: m?.mount_type ?? '', rail_type: m?.rail_type ?? '',
+    form_factor: m?.form_factor ?? '',
     knowledge: m?.knowledge ?? '',
   };
 }
@@ -280,6 +294,7 @@ export function modelPayload(
   changedStr('category', orig('category'));
   changedStr('mount_type', orig('mount_type'));
   changedStr('rail_type', orig('rail_type'));
+  changedStr('form_factor', orig('form_factor'));
   if (form.knowledge !== ((orig('knowledge') ?? '') as string)) {
     out.knowledge = form.knowledge;
   }
@@ -406,6 +421,8 @@ export function MODEL_GOD_FIELDS(lookups: ModelGodLookups): GodField<AssetModelI
     num('height_cm', 'height_cm'),
     { column: 'mount', field: 'mount_type', kind: 'select',
       fromRow: (m) => m.mount_type ?? '', options: () => GOD_MOUNT_OPTIONS },
+    { column: 'form', field: 'form_factor', kind: 'select',
+      fromRow: (m) => m.form_factor ?? '', options: () => FORM_FACTORS },
     { column: 'rail', field: 'rail_type', kind: 'text',
       fromRow: (m) => m.rail_type ?? '' },
     { column: 'knowledge', field: 'knowledge', kind: 'text',

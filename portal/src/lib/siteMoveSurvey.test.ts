@@ -8,7 +8,8 @@ import {
 function asset(over: Partial<InitiativeAssetRow['asset']> = {}): InitiativeAssetRow['asset'] {
   return {
     id: 'a', legacy_id: 1, serial_number: 'SN1', name: null, rfid_tag: null,
-    model_make: 'Dell', model_name: 'R640', ru_size: 1, location_detail: null,
+    model_make: 'Dell', model_name: 'R640', ru_size: 1, model_form_factor: null,
+    location_detail: null,
     client_name: null, model_category: null, model_category_label: null,
     model_category_color: null, status: 'active', status_label: 'Active',
     status_color: '#000', ...over,

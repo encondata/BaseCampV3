@@ -53,6 +53,10 @@ class MoveAsset:
     # keep constructing.
     category_label: str | None = None
     category_color: str | None = None
+    # Model form factor: standalone | chassis | node | None. Read by the
+    # placement rule and the rail report; defaulted so fixtures without
+    # one keep constructing.
+    form_factor: str | None = None
 
     @property
     def label(self) -> str:
@@ -73,7 +77,9 @@ class MoveAsset:
             "destination_verified": self.destination_verified,
             "destination_position": self.destination_position,
             "asset": {"name": self.name, "serial_number": self.serial,
-                      "ru_size": self.ru_size, "model_make": self.make,
+                      "ru_size": self.ru_size,
+                      "model_form_factor": self.form_factor,
+                      "model_make": self.make,
                       "model_name": self.model,
                       "model_category_label": self.category_label,
                       "model_category_color": self.category_color},
@@ -143,6 +149,7 @@ async def gather(db: AsyncSession, initiative_id: uuid.UUID) -> MoveData:
         destination_position=ia.destination_position,
         category_label=cat.label if cat else None,
         category_color=cat.color if cat else None,
+        form_factor=m.form_factor if m else None,
     ) for ia, a, m, cat in rows]
 
     return MoveData(

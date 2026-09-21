@@ -16,6 +16,17 @@
  * color are INLINE attributes, not classes: category colors are
  * data-driven, and both the modal's print sheet (lib/rackPrint.ts) and
  * the report worker serialize this markup outside the app's stylesheet.
+ *
+ * Nodes housed inside a chassis are NOT drawn on the chassis faceplate:
+ * the modal (and the report) render a SECOND elevation per side whose
+ * blocks are the node cells themselves (`nodeBlocks` in lib/initiatives),
+ * each carrying its chassis's own full RU span but drawn as one of
+ * `laneCount` vertical slabs side by side across the faceplate width
+ * (`nodeColumnGeometry`) — a row of books, not stacked rack devices. A
+ * node cell is excluded from `laneGeometry`'s RU-overlap lanes (every
+ * node in a chassis shares its parent's ru/height, so they'd otherwise
+ * all read as one giant collision) and its name runs up the slab like a
+ * spine, dropped entirely once the slab is under 9px wide.
  */
 import { UNCATEGORIZED_FILL } from '../../lib/initiatives';
 import type { RackBlock } from '../../lib/initiatives';
@@ -165,6 +176,20 @@ export function laneGeometry(
   return result;
 }
 
+export interface NodeColumnRect { x: number; width: number; showLabel: boolean; }
+
+/** Lays `count` node slabs across a faceplate of `usableWidth` starting at
+ *  `x0`, equal widths with a 2px gap, no minimum width. A slab narrower
+ *  than 9px gets no spine label. */
+export function nodeColumnGeometry(x0: number, usableWidth: number, count: number): NodeColumnRect[] {
+  if (count <= 0) return [];
+  const gap = 2;
+  const width = Math.max(0, (usableWidth - gap * (count - 1)) / count);
+  return Array.from({ length: count }, (_, i) => ({
+    x: x0 + i * (width + gap), width, showLabel: width >= 9,
+  }));
+}
+
 /** One-line faceplate label — `${name} (${position})` when the side has a
  *  position note, else just the name — truncated with an ellipsis to fit
  *  `laneWidth` on a simple char-budget (laneWidth / 5.2px per mono char is
@@ -179,14 +204,12 @@ export function rackLabel(
   return maxChars === 1 ? '…' : `${full.slice(0, maxChars - 1)}…`;
 }
 
-/** Front/rear elevation assignment: a side position note that mentions
- *  "rear" (case-insensitively, substring match — "rear-left" counts)
- *  places the block in the REAR elevation; everything else (front,
- *  left/right, blank) lands in FRONT. Exported for testing without
- *  mounting the SVG. */
-export function isRearPosition(position: string | null | undefined): boolean {
-  return !!position && position.toLowerCase().includes('rear');
-}
+/** Front/rear elevation assignment — now defined in lib/initiatives beside
+ *  `rackLayout` (which needs it to parent a node only to a block on its
+ *  own side) and re-exported here so every existing importer, including
+ *  RackViewModal's own re-export list and the report renderer, keeps
+ *  resolving it through this module. */
+export { isRearPosition } from '../../lib/initiatives';
 
 /** A block placed in an elevation it doesn't actually belong to, standing
  *  in for "something is mounted here from the other physical side" — no
@@ -220,15 +243,28 @@ export interface TooltipRow { label: string; value: string; }
 export function tooltipRows(info: {
   serial: string | null | undefined;
   makeModel: string | null | undefined;
-  ru: number;
+  ru: number | string;
   position: string | null | undefined;
   categoryLabel?: string | null | undefined;
+  parentLabel?: string | null | undefined;
+  orphan?: RackBlock['orphan'];
 }): TooltipRow[] {
   const rows: TooltipRow[] = [
     { label: 'Serial', value: info.serial ?? '—' },
     { label: 'Make/Model', value: info.makeModel || '—' },
     { label: 'RU', value: String(info.ru) },
   ];
+  if (info.parentLabel) {
+    rows.push({ label: 'Inside', value: info.parentLabel });
+  }
+  if (info.orphan) {
+    rows.push({
+      label: 'Note',
+      value: info.orphan === 'form_factor'
+        ? 'Model form factor does not match its position'
+        : 'No device starts at this RU',
+    });
+  }
   if (info.categoryLabel) {
     rows.push({ label: 'Category', value: info.categoryLabel });
   }
@@ -248,15 +284,22 @@ export function tooltipRows(info: {
  *  (FRONT always, REAR only when it has real blocks) rather than as two
  *  halves of one shared frame, so each reads as a complete elevation on
  *  its own — including when only one of the two is shown. */
-export function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock }: {
+export function RackElevation({
+  heading, ariaLabel, blocks, onHoverBlock, onLeaveBlock,
+}: {
   heading: string;
   ariaLabel: string;
   blocks: DisplayBlock[];
   onHoverBlock?: (block: DisplayBlock, e: React.MouseEvent<SVGGElement>) => void;
   onLeaveBlock?: () => void;
 }) {
+  // Node cells (identified by carrying `laneCount`) are laid out as slabs
+  // side by side across the full faceplate width via `nodeColumnGeometry`,
+  // not by `laneGeometry`'s RU-overlap lanes — they always "overlap" (same
+  // ru/height as their chassis) but must never be treated as a collision.
   const geometry = new Map(
-    laneGeometry(blocks, FACEPLATE_USABLE_WIDTH).map((g) => [g.id, g]),
+    laneGeometry(blocks.filter((b) => b.laneCount == null), FACEPLATE_USABLE_WIDTH)
+      .map((g) => [g.id, g]),
   );
   const ruCount = rackRuCount(blocks);
   const { ruAreaHeight, totalHeight, ruList, yForRu, ruTop } = frameGeometry(ruCount);
@@ -311,9 +354,18 @@ export function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeav
             No assets recorded at this rack
           </text>
         ) : blocks.map((b) => {
+          // Node cells are slabs side by side across the full faceplate
+          // width (a "row of books"), not lane-collision geometry — same
+          // ru/height as their chassis, so every node in it "overlaps"
+          // every other one and would otherwise get squeezed by
+          // laneGeometry as if it were a real RU collision.
+          const isNodeCell = b.laneCount != null;
+          const nodeRect = isNodeCell
+            ? nodeColumnGeometry(FACEPLATE_X0, FACEPLATE_USABLE_WIDTH, b.laneCount!)[b.lane!]
+            : undefined;
           const g = geometry.get(b.id);
-          const x = FACEPLATE_X0 + (g?.x ?? 0);
-          const width = g?.width ?? FACEPLATE_USABLE_WIDTH;
+          const x = nodeRect ? nodeRect.x : FACEPLATE_X0 + (g?.x ?? 0);
+          const width = nodeRect ? nodeRect.width : (g?.width ?? FACEPLATE_USABLE_WIDTH);
           const fullHeight = b.height * U_PX;
           const y = yForRu(b.ru + b.height) + 1;
           const height = fullHeight - 2;
@@ -328,20 +380,49 @@ export function RackElevation({ heading, ariaLabel, blocks, onHoverBlock, onLeav
               </g>
             );
           }
-          const label = rackLabel(b.label, b.position, width);
           const fill = b.categoryColor ?? UNCATEGORIZED_FILL;
-          const border = b.verified
-            ? { stroke: '#15803d', strokeWidth: 2 }
-            : { stroke: '#111827', strokeWidth: 1.25, strokeDasharray: '4 3' };
+          const textColor = readableTextColor(fill);
+          const border = b.orphan
+            ? { stroke: '#b45309', strokeWidth: 1.5, strokeDasharray: '2 2' }
+            : b.verified
+              ? { stroke: '#15803d', strokeWidth: 2 }
+              : { stroke: '#111827', strokeWidth: 1.25, strokeDasharray: '4 3' };
+          if (isNodeCell) {
+            // A book-spine slab: the name runs bottom to top up the slab's
+            // vertical center, truncated against the slab's HEIGHT (the
+            // pixel budget the text actually runs along), and dropped
+            // entirely once the slab is too narrow to hold it.
+            const showLabel = nodeRect!.showLabel;
+            const cx = x + width / 2;
+            const cy = y + height / 2;
+            return (
+              <g key={b.id} onMouseEnter={onHoverBlock ? (e) => onHoverBlock(b, e) : undefined}
+                 onMouseLeave={onLeaveBlock}>
+                <rect x={x} y={y} width={width} height={height} rx={2}
+                      fill={fill} {...border} className="rack-faceplate" />
+                {showLabel && (
+                  <text transform={`rotate(-90 ${cx} ${cy})`} x={cx} y={cy} textAnchor="middle"
+                        dominantBaseline="middle" fill={textColor} className="rack-block-label">
+                    {rackLabel(b.label, null, height - 6)}
+                  </text>
+                )}
+              </g>
+            );
+          }
+          const showLabel = height >= 10;
+          const label = (b.orphan ? '! ' : '') + rackLabel(b.label, b.position, width);
           return (
             <g key={b.id} onMouseEnter={onHoverBlock ? (e) => onHoverBlock(b, e) : undefined}
                onMouseLeave={onLeaveBlock}>
               <rect x={x} y={y} width={width} height={height} rx={2}
-                    fill={fill} {...border} className="rack-faceplate" />
-              <text x={x + 8} y={y + height / 2} dominantBaseline="middle"
-                    fill={readableTextColor(fill)} className="rack-block-label">
-                {label}
-              </text>
+                    fill={fill} {...border}
+                    className={b.orphan ? 'rack-faceplate rack-faceplate-orphan' : 'rack-faceplate'} />
+              {showLabel && (
+                <text x={x + 8} y={y + height / 2} dominantBaseline="middle"
+                      fill={textColor} className="rack-block-label">
+                  {label}
+                </text>
+              )}
             </g>
           );
         })}

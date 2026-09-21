@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assignLanes, FACEPLATE_USABLE_WIDTH, ghostBlocksFor, isRearPosition, laneGeometry,
-  rackLabel, tooltipRows,
+  nodeColumnGeometry, rackLabel, tooltipRows,
 } from './RackViewModal';
 
 /* ── rack view collision layout (Task 6 fix-round) — laneGeometry is the
@@ -204,6 +204,40 @@ describe('laneGeometry with FACEPLATE_USABLE_WIDTH (per-elevation)', () => {
   });
 });
 
+/* ── node column geometry (Task 15) — nodes drawn as vertical slabs side
+      by side across their chassis's faceplate width, like a row of books,
+      instead of stacked vertically. Equal widths, a 2px gap, no minimum
+      width; a slab under 9px wide gets no spine label since the text
+      wouldn't fit. ─────────────────────────────────────────────────────── */
+
+describe('nodeColumnGeometry', () => {
+  it('returns an empty list for zero nodes', () => {
+    expect(nodeColumnGeometry(10, 130, 0)).toEqual([]);
+  });
+
+  it('fits four slabs inside the usable width, starting at x0', () => {
+    const rects = nodeColumnGeometry(10, 130, 4);
+    expect(rects).toHaveLength(4);
+    const last = rects[rects.length - 1];
+    expect(last.x + last.width).toBeLessThanOrEqual(10 + 130);
+    expect(rects[0].x).toBe(10);
+  });
+
+  it('gives four slabs a 2px gap and a label (wide enough)', () => {
+    const rects = nodeColumnGeometry(0, 130, 4);
+    for (let i = 1; i < rects.length; i += 1) {
+      expect(rects[i].x).toBeCloseTo(rects[i - 1].x + rects[i - 1].width + 2);
+    }
+    expect(rects.every((r) => r.showLabel)).toBe(true);
+  });
+
+  it('suppresses the spine label once nine slabs make each one too narrow', () => {
+    const rects = nodeColumnGeometry(0, 60, 9);
+    expect(rects).toHaveLength(9);
+    expect(rects.every((r) => !r.showLabel)).toBe(true);
+  });
+});
+
 /* ── cross-side ghost blocks (round 3) — every elevation shows a blank
       "ghost" for each asset actually mounted on the OPPOSITE physical
       side, same RU/height, so occupied space reads correctly from both
@@ -220,7 +254,8 @@ describe('ghostBlocksFor', () => {
   it('mirrors each source block with the same id/ru/height/position, tagged isGhost', () => {
     const source = [
       { id: 'a', label: 'server-a', ru: 12, height: 2, verified: true, position: 'rear',
-        categoryLabel: null, categoryColor: null, makeModel: '' },
+        categoryLabel: null, categoryColor: null, makeModel: '',
+        slot: 0, children: [], orphan: null },
     ];
     const ghosts = ghostBlocksFor(source);
     expect(ghosts).toHaveLength(1);
@@ -232,9 +267,11 @@ describe('ghostBlocksFor', () => {
   it('preserves the source array length and each id 1:1 for multiple blocks', () => {
     const source = [
       { id: 'a', label: 'x', ru: 1, height: 1, verified: false, position: null,
-        categoryLabel: null, categoryColor: null, makeModel: '' },
+        categoryLabel: null, categoryColor: null, makeModel: '',
+        slot: 0, children: [], orphan: null },
       { id: 'b', label: 'y', ru: 5, height: 1, verified: true, position: 'front',
-        categoryLabel: null, categoryColor: null, makeModel: '' },
+        categoryLabel: null, categoryColor: null, makeModel: '',
+        slot: 0, children: [], orphan: null },
     ];
     const ghosts = ghostBlocksFor(source);
     expect(ghosts.map((g) => g.id)).toEqual(['a', 'b']);
@@ -292,6 +329,32 @@ describe('tooltipRows', () => {
     expect(tooltipRows({ ...base, position: null }).some((r) => r.label === 'Category')).toBe(false);
     expect(tooltipRows({ ...base, position: null, categoryLabel: null })
       .some((r) => r.label === 'Category')).toBe(false);
+  });
+});
+
+describe('tooltipRows for nodes', () => {
+  it('adds Inside for a node cell, keeping its own side note', () => {
+    const child = tooltipRows({ serial: 'S1', makeModel: 'Dell node', ru: '33.1',
+                                position: 'rear', parentLabel: 'chassis-a' });
+    expect(child.map((r) => [r.label, r.value])).toEqual([
+      ['Serial', 'S1'], ['Make/Model', 'Dell node'], ['RU', '33.1'],
+      ['Inside', 'chassis-a'], ['Position', 'rear']]);
+  });
+
+  it('spells out the Note per orphan reason', () => {
+    const none = tooltipRows({ serial: null, makeModel: '', ru: '3.5',
+                               position: null, orphan: 'no_chassis' });
+    expect(none.map((r) => r.label)).toEqual(['Serial', 'Make/Model', 'RU', 'Note']);
+    expect(none[3].value).toBe('No device starts at this RU');
+    const ff = tooltipRows({ serial: null, makeModel: '', ru: 12,
+                             position: null, orphan: 'form_factor' });
+    expect(ff.find((r) => r.label === 'Note')!.value)
+      .toBe('Model form factor does not match its position');
+  });
+
+  it('omits the Note entirely for an ordinary block', () => {
+    expect(tooltipRows({ serial: null, makeModel: '', ru: 12, position: null, orphan: null })
+      .some((r) => r.label === 'Note')).toBe(false);
   });
 });
 

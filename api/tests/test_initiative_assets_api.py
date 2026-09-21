@@ -56,7 +56,7 @@ async def test_attach_list_and_embedded_asset(client, db, seeded_user):
     db.add(org)
     await db.flush()
     model = AssetModel(make="Dell", model="R740", ru_size=2,
-                       category="server")
+                       category="server", form_factor="chassis")
     db.add(model)
     await db.flush()
     a1 = await _asset(db, serial_number="SN-2", name="web-02",
@@ -87,11 +87,13 @@ async def test_attach_list_and_embedded_asset(client, db, seeded_user):
     assert row["asset"]["model_make"] == "Dell"
     assert row["asset"]["model_name"] == "R740"
     assert row["asset"]["ru_size"] == 2
+    assert row["asset"]["model_form_factor"] == "chassis"
     assert row["asset"]["model_category"] == "server"
     assert row["asset"]["model_category_label"] == "Server"
     assert row["asset"]["model_category_color"] == "#1668a7"
     # the model-less asset gets nulls
     bare = next(r for r in rows if r["asset"]["serial_number"] == "SN-1")
+    assert bare["asset"]["model_form_factor"] is None
     assert bare["asset"]["model_category"] is None
     assert bare["asset"]["model_category_label"] is None
     assert bare["asset"]["model_category_color"] is None

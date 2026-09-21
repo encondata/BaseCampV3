@@ -3,11 +3,14 @@
 Pure of HTTP and job-queue concerns: callers hand in parsed rows and
 options and get back the report dict that lands in import_jobs.results.
 Contains the complete pipeline: row helpers, the shared validate/commit
-pipeline (run_import), and collision detection (flag_collisions).
+pipeline (run_import), and the post-commit placement re-check
+(serversherpa.racks.recheck).
 """
 
 import json
+import logging
 import random
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -19,6 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import (
     Asset, AssetModel, AssetModelAlias, InitiativeAsset,
 )
+from serversherpa.racks.recheck import recheck_placement
+
+logger = logging.getLogger(__name__)
 
 PRIORITY_MAX = 30
 BATCH_SIZE = 500
@@ -48,6 +54,22 @@ def resolve_make_model_for_creation(asset_make: str,
         if make and model.lower().startswith(make.lower() + " "):
             model = model[len(make) + 1:].strip()
     return make, model
+
+
+_HEIGHT_TOKEN = re.compile(r"\s+\d+u$", re.IGNORECASE)
+
+
+def normalize_model_key(text: str) -> str:
+    """The lookup key for matching an imported make/model string against
+    the catalog. Every word is kept — "(Chassis)" and "(Node)" tell two
+    real rows apart — and only the noise that manufactures accidental
+    duplicates goes: underscores become spaces, parentheses are dropped,
+    a trailing height token such as "4U" is removed, whitespace collapses,
+    case folds. Lookup only; stored make and model are never rewritten."""
+    s = text.replace("_", " ").replace("(", " ").replace(")", " ")
+    s = " ".join(s.split())
+    s = _HEIGHT_TOKEN.sub("", s)
+    return s.lower()
 
 
 def generate_serial(asset_name: str) -> str:
@@ -144,9 +166,10 @@ _SIM_ASSOC = object()   # roster marker for validate-mode attachments
 
 
 async def _lookups(db: AsyncSession, initiative_id: uuid.UUID,
-                   rows: list[dict]) -> tuple[dict, dict, dict, dict]:
+                   rows: list[dict]) -> tuple[dict, dict, dict, dict, dict]:
     """Batch lookups for the whole file: assets by serial, RFID holders,
-    make/model exact + alias fuzzy, current roster rows by serial."""
+    make/model literal + normalized (exact + alias fuzzy), current roster
+    rows by serial."""
     serials = list({r["serial_number"] for r in rows})
     assets: dict[str, Asset] = {}
     if serials:
@@ -161,16 +184,54 @@ async def _lookups(db: AsyncSession, initiative_id: uuid.UUID,
                 select(Asset).where(Asset.rfid_tag.in_(tags))):
             rfid[(a.rfid_tag or "").lower()] = a
 
+    # Matching is two-tier. `literal` is keyed on the catalog display name
+    # (and on each alias) exactly as it is written, lowercased only; it is
+    # unique by DB constraint, so a row that names a catalog entry
+    # verbatim ALWAYS matches it. Only the looser normalized tier can be
+    # ambiguous: two catalog rows can normalize to the same key ("Shelf
+    # 1U" / "Shelf 2U", "Blank / Panel 1U" / "Blank / Panel 2U", "Dell
+    # R740 (Chassis)" / "Dell R740 Chassis"). Guessing one would be
+    # non-deterministic, so an ambiguous key is dropped from the
+    # normalized map entirely and a row that only reaches it falls through
+    # to the review / force path. The ORDER BYs only make the scans
+    # themselves reproducible.
+    literal: dict[str, tuple] = {}
     models: dict[str, tuple] = {}
-    for m in await db.scalars(select(AssetModel)):
+    ambiguous: set[str] = set()
+    for m in await db.scalars(select(AssetModel).order_by(
+            AssetModel.make, AssetModel.model, AssetModel.id)):
         display = f"{m.make} {m.model}".strip()
-        models[display.lower()] = (m, "exact", display)
+        literal[display.lower()] = (m, "exact", display)
+        key = normalize_model_key(display)
+        if key in models:
+            ambiguous.add(key)
+        else:
+            models[key] = (m, "exact", display)
     alias_rows = (await db.execute(
         select(AssetModelAlias.alias, AssetModel)
-        .join(AssetModel, AssetModel.id == AssetModelAlias.model_id))).all()
+        .join(AssetModel, AssetModel.id == AssetModelAlias.model_id)
+        .order_by(AssetModelAlias.alias, AssetModel.id))).all()
     for alias, m in alias_rows:                # exact wins over alias
-        models.setdefault(
-            alias.lower(), (m, "fuzzy", f"{m.make} {m.model}".strip()))
+        display = f"{m.make} {m.model}".strip()
+        literal.setdefault(alias.lower(), (m, "fuzzy", display))
+        key = normalize_model_key(alias)
+        if key in ambiguous:                   # an alias cannot break the tie
+            continue
+        prior = models.get(key)
+        if prior is None:
+            models[key] = (m, "fuzzy", display)
+        elif prior[0].id != m.id:
+            # The alias normalizes onto another model — an exact row's key
+            # or a second alias. Two answers, so the normalized tier has
+            # none; both strings still match literally.
+            ambiguous.add(key)
+    for key in ambiguous:
+        models.pop(key, None)
+    if ambiguous:
+        logger.warning(
+            "move-assets import: %d ambiguous make/model key(s) skipped, "
+            "rows using them go to review: %s",
+            len(ambiguous), ", ".join(sorted(ambiguous)))
 
     roster: dict[str, object] = {}
     ids = [a.id for a in assets.values()]
@@ -180,7 +241,7 @@ async def _lookups(db: AsyncSession, initiative_id: uuid.UUID,
                 InitiativeAsset.initiative_id == initiative_id,
                 InitiativeAsset.asset_id.in_(ids))):
             roster[by_id[assoc.asset_id]] = assoc
-    return assets, rfid, models, roster
+    return assets, rfid, literal, models, roster
 
 
 def _apply_row(assoc: InitiativeAsset, r: dict, now: datetime) -> None:
@@ -223,7 +284,7 @@ async def run_import(
     from serversherpa.services.audit import audit
 
     ok_rows = [r for r in rows if r["status"] == "ok"]
-    assets, rfid_map, model_map, roster = await _lookups(
+    assets, rfid_map, literal_map, model_map, roster = await _lookups(
         db, initiative_id, ok_rows)
     force = make_model_mode in ("force", "hybrid")
 
@@ -232,6 +293,14 @@ async def run_import(
     created_models: list[str] = []
     cancelled = False
     now = datetime.now(UTC)
+    # Per-run cache for matches found through the RESOLVED display name
+    # (see below) — never written into `model_map`, which is the
+    # ambiguity-guarded normalized map `_lookups` built. `mm_key` here may
+    # be a key `_lookups` deliberately dropped as ambiguous; writing a
+    # literal-tier result back into `model_map` under it would re-open that
+    # guard for a later row whose string normalizes to the same key but
+    # matches nothing literally.
+    resolved_cache: dict[str, tuple] = {}
 
     async def _one_row(r: dict) -> None:
         nonlocal created, updated, review, errors
@@ -265,16 +334,26 @@ async def run_import(
         if asset is None:
             model_obj = None
             if r["make_model_str"]:
-                mm_key = r["make_model_str"].lower()
-                matched = model_map.get(mm_key)
+                mm_key = normalize_model_key(r["make_model_str"])
+                # A verbatim catalog name (or alias) wins outright; the
+                # normalized map is the fallback and may have dropped the
+                # key as ambiguous. `resolved_cache` holds matches this
+                # same run already found through the RESOLVED display name
+                # below — checked here, before the guarded normalized map,
+                # so a repeat of this row's exact string reuses that result
+                # without ever writing back into `model_map`.
+                matched = (literal_map.get(r["make_model_str"].lower())
+                           or resolved_cache.get(mm_key)
+                           or model_map.get(mm_key))
                 if matched is None:
                     mk, md = resolve_make_model_for_creation(
                         r["asset_make"], r["asset_model"])
                     resolved_display = f"{mk} {md}".strip()
-                    resolved_key = resolved_display.lower()
-                    matched = model_map.get(resolved_key)
+                    resolved_key = normalize_model_key(resolved_display)
+                    matched = (literal_map.get(resolved_display.lower())
+                               or model_map.get(resolved_key))
                     if matched is not None:
-                        model_map[mm_key] = matched
+                        resolved_cache[mm_key] = matched
                 if matched is not None:
                     model_obj, match_method, make_model_final = matched
                 elif force:
@@ -377,8 +456,9 @@ async def run_import(
         summary["models_created"] = len(created_models)
 
     if write and not cancelled:
-        summary["collisions_flagged"] = await flag_collisions(
-            db, initiative_id)
+        placement = await recheck_placement(db, initiative_id)
+        summary["collisions_flagged"] = placement["collisions"]
+        summary["orphans_flagged"] = placement["orphans"]
         audit(db, actor_id=added_by, entity_type="initiative",
               entity_id=str(initiative_id), action="asset_import",
               changes={**summary, "source": source_label})
@@ -387,45 +467,3 @@ async def run_import(
             await progress(processed, created, updated, errors)
         await db.commit()
     return {"summary": summary, "details": details, "cancelled": cancelled}
-
-
-async def flag_collisions(db: AsyncSession,
-                          initiative_id: uuid.UUID) -> int:
-    """Destination rack/RU collision detection (V2 parity, run after a
-    commit pass): expand every roster row with a destination to its
-    occupied RU range (start = int(destination_ru), height = model
-    ru_size, default 1) and flag every member of an overlapping pair
-    with status 'location_collision'. Returns rows flagged. The caller
-    owns the commit."""
-    from collections import defaultdict
-
-    rows = (await db.execute(
-        select(InitiativeAsset, AssetModel.ru_size)
-        .join(Asset, Asset.id == InitiativeAsset.asset_id)
-        .outerjoin(AssetModel, AssetModel.id == Asset.model_id)
-        .where(InitiativeAsset.initiative_id == initiative_id,
-               InitiativeAsset.destination_rack.is_not(None),
-               InitiativeAsset.destination_ru.is_not(None)))).all()
-
-    racks: dict[str, list[tuple[InitiativeAsset, set[int]]]] = defaultdict(list)
-    for assoc, ru_size in rows:
-        try:
-            start = int(float(assoc.destination_ru))
-            size = int(ru_size) if ru_size else 1
-        except (TypeError, ValueError):
-            continue
-        racks[assoc.destination_rack].append(
-            (assoc, set(range(start, start + size))))
-
-    colliding: set[uuid.UUID] = set()
-    by_id: dict[uuid.UUID, InitiativeAsset] = {}
-    for entries in racks.values():
-        for i in range(len(entries)):
-            for j in range(i + 1, len(entries)):
-                if entries[i][1] & entries[j][1]:
-                    for assoc, _ in (entries[i], entries[j]):
-                        colliding.add(assoc.id)
-                        by_id[assoc.id] = assoc
-    for assoc in by_id.values():
-        assoc.status = "location_collision"
-    return len(colliding)

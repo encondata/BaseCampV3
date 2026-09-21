@@ -23,7 +23,13 @@
  * this rack/side carries a "rear" position note. Each elevation also
  * shows a blank "ghost" box for every asset actually mounted on the
  * OPPOSITE physical side at the same RU/height, so occupied space reads
- * correctly from both faces of the rack (see `ghostBlocksFor`). Hover
+ * correctly from both faces of the rack (see `ghostBlocksFor`).
+ * A side whose devices house nodes gets a SECOND frame right after it —
+ * "FRONT · NODES" / "REAR · NODES" — drawing each node as its own cell
+ * filling an equal share of its chassis's RU span (`nodeBlocks`), with
+ * the side's child-less devices as blank ghosts for RU context. The
+ * devices frame draws every chassis as an ordinary faceplate: the nodes
+ * are never marked on it. Hover
  * detail (name/serial/make-model/RU/category/position, the last two
  * omitted when they wouldn't add information — see `tooltipRows`) is a
  * real HTML tooltip positioned off each faceplate's (or ghost's) bounding
@@ -31,7 +37,9 @@
  */
 import { useRef, useState, useEffect } from 'react';
 
-import { rackLayout, deviceListRows, legendCategories } from '../../lib/initiatives';
+import {
+  rackLayout, nodeBlocks, deviceListRows, legendCategories,
+} from '../../lib/initiatives';
 import type { InitiativeAssetRow } from '../../lib/api';
 import { buildRackPrintHtml } from '../../lib/rackPrint';
 
@@ -43,9 +51,9 @@ import type { DisplayBlock } from './RackElevation';
 
 export {
   FACEPLATE_USABLE_WIDTH, assignLanes, ghostBlocksFor, isRearPosition, laneGeometry,
-  rackLabel, tooltipRows,
+  nodeColumnGeometry, rackLabel, tooltipRows,
 } from './RackElevation';
-export type { DisplayBlock, LaneRect, TooltipRow } from './RackElevation';
+export type { DisplayBlock, LaneRect, NodeColumnRect, TooltipRow } from './RackElevation';
 
 interface HoverState { block: DisplayBlock; x: number; y: number; }
 
@@ -71,7 +79,10 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   // drawn — say so, or an all-unplaced rack reads as "no assets" while the
   // table clearly shows assets on it.
   const rackKey = side === 'source' ? 'source_rack' : 'destination_rack';
-  const unplaced = rows.filter((r) => r[rackKey] === rackName).length - blocks.length;
+  // Nodes live in `blocks[].children`, not in `blocks` — count them as
+  // drawn or every attached node reads as "assigned without an RU".
+  const drawn = blocks.length + blocks.reduce((n, b) => n + b.children.length, 0);
+  const unplaced = rows.filter((r) => r[rackKey] === rackName).length - drawn;
   const frontBlocks = blocks.filter((b) => !isRearPosition(b.position));
   const rearBlocks = blocks.filter((b) => isRearPosition(b.position));
   // REAR renders only when a REAL rear-mounted asset exists — unaffected
@@ -80,48 +91,86 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
   const showRear = rearBlocks.length > 0;
   const frontDisplay: DisplayBlock[] = [...frontBlocks, ...ghostBlocksFor(rearBlocks)];
   const rearDisplay: DisplayBlock[] = [...rearBlocks, ...ghostBlocksFor(frontBlocks)];
+  // Nodes get their own elevation per side rather than markings on the
+  // chassis faceplate: the node cells fill their chassis's RU span, and
+  // every child-less device of that side comes along as a blank ghost so
+  // the frame still reads against the same rack.
+  const frontNodes = nodeBlocks(frontBlocks);
+  const rearNodes = nodeBlocks(rearBlocks);
+  // Mirrors the devices frame's own-side/opposite-side ghosting: the
+  // opposite side's REAL blocks (unfiltered) are ghosted too, so the nodes
+  // frame never differs from the devices frame beside it in occupancy or
+  // height.
+  const nodeDisplay = (
+    ownBlocks: typeof blocks, cells: typeof blocks, oppositeBlocks: typeof blocks,
+  ): DisplayBlock[] => [
+    ...cells,
+    ...ghostBlocksFor(ownBlocks.filter((b) => b.children.length === 0)),
+    ...ghostBlocksFor(oppositeBlocks),
+  ];
   const rowsById = new Map(rows.map((r) => [r.id, r]));
   const listRows = deviceListRows(frontBlocks, rearBlocks);
-  const categories = legendCategories(blocks);
+  const categories = legendCategories([...blocks, ...frontNodes, ...rearNodes]);
 
-  const handleHover = (block: DisplayBlock, e: React.MouseEvent<SVGGElement>) => {
+  const place = (e: React.MouseEvent<SVGGElement>) => {
     const container = containerRef.current;
-    if (!container) return;
+    if (!container) return null;
     const targetRect = e.currentTarget.getBoundingClientRect();
     const containerRect = container.getBoundingClientRect();
-    setHover({
-      block,
+    return {
       x: targetRect.left - containerRect.left + targetRect.width / 2,
       y: targetRect.top - containerRect.top,
-    });
+    };
+  };
+  const handleHover = (block: DisplayBlock, e: React.MouseEvent<SVGGElement>) => {
+    const at = place(e);
+    if (at) setHover({ block, ...at });
   };
   const handleLeave = () => setHover(null);
 
   const sideLabel = side === 'source' ? 'Source' : 'Destination';
 
   const handlePrint = () => {
-    const svgs = [...(containerRef.current?.querySelectorAll('.rack-svg') ?? [])]
-      .map((el) => el.outerHTML);
+    // Read the frames off the rendered DOM — heading and SVG together —
+    // so the sheet captions whatever is actually on screen (FRONT, FRONT ·
+    // NODES, REAR, REAR · NODES) without re-deriving the conditions here.
+    const frames = [...(containerRef.current?.querySelectorAll('.rack-elevation') ?? [])]
+      .map((el) => ({
+        heading: el.querySelector('.rack-elevation-heading')?.textContent ?? '',
+        svg: el.querySelector('.rack-svg')?.outerHTML ?? '',
+      }))
+      .filter((f) => f.svg);
     const win = window.open('', '_blank');
     if (!win) return; // popup blocked — quiet no-op
     win.document.write(buildRackPrintHtml({
-      rackName, sideLabel, svgs, listRows, grouped: showRear,
+      rackName, sideLabel, frames, listRows, grouped: showRear,
       legend: categories,
     }));
     win.document.close();
   };
 
+  // A node cell's id IS its roster row's id (see `nodeBlocks`), so one
+  // lookup serves every kind of cell — chassis, node, orphan or ghost.
   const hoveredRow = hover ? rowsById.get(hover.block.id) : undefined;
   const hoveredAsset = hoveredRow?.asset;
   const hoveredMakeModel = hoveredAsset
     ? [hoveredAsset.model_make, hoveredAsset.model_name].filter(Boolean).join(' ')
     : '';
+  // A node cell is drawn on its CHASSIS's face, so its block carries the
+  // chassis's position; the node's own side note lives on its roster row.
+  const hoveredPosition = hoveredRow
+    ? (side === 'source' ? hoveredRow.source_position : hoveredRow.destination_position)
+    : hover?.block.position ?? null;
   const hoveredRows = hover ? tooltipRows({
     serial: hoveredAsset?.serial_number,
     makeModel: hoveredMakeModel,
-    ru: hover.block.ru,
-    position: hover.block.position,
+    ru: hover.block.parentRu !== undefined
+      ? `${hover.block.parentRu}.${hover.block.slot}`
+      : hover.block.orphan ? `${hover.block.ru}.${hover.block.slot}` : hover.block.ru,
+    position: hoveredPosition,
     categoryLabel: hover.block.categoryLabel,
+    parentLabel: hover.block.parentLabel ?? null,
+    orphan: hover.block.orphan,
   }) : [];
 
   return (
@@ -145,10 +194,24 @@ export default function RackViewModal({ rackName, side, rows, onClose }: {
               ariaLabel={`Rack ${rackName} — ${sideLabel} — front elevation`}
               onHoverBlock={handleHover} onLeaveBlock={handleLeave}
             />
+            {frontNodes.length > 0 && (
+              <RackElevation
+                heading="FRONT · NODES" blocks={nodeDisplay(frontBlocks, frontNodes, rearBlocks)}
+                ariaLabel={`Rack ${rackName} — ${sideLabel} — front nodes elevation`}
+                onHoverBlock={handleHover} onLeaveBlock={handleLeave}
+              />
+            )}
             {showRear && (
               <RackElevation
                 heading="REAR" blocks={rearDisplay}
                 ariaLabel={`Rack ${rackName} — ${sideLabel} — rear elevation`}
+                onHoverBlock={handleHover} onLeaveBlock={handleLeave}
+              />
+            )}
+            {showRear && rearNodes.length > 0 && (
+              <RackElevation
+                heading="REAR · NODES" blocks={nodeDisplay(rearBlocks, rearNodes, frontBlocks)}
+                ariaLabel={`Rack ${rackName} — ${sideLabel} — rear nodes elevation`}
                 onHoverBlock={handleHover} onLeaveBlock={handleLeave}
               />
             )}

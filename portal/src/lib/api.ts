@@ -1326,7 +1326,7 @@ export interface AssetModelItem {
   weight_lbs: number | null; weight_kg: number | null;
   length_in: number | null; width_in: number | null; height_in: number | null;
   length_cm: number | null; width_cm: number | null; height_cm: number | null;
-  mount_type: string | null; rail_type: string | null;
+  mount_type: string | null; rail_type: string | null; form_factor: string | null;
   knowledge: string; aliases: string[]; created_at: string; updated_at: string;
 }
 
@@ -2294,7 +2294,8 @@ export interface InitiativeAssetSummary {
   id: string; legacy_id: number | null; serial_number: string | null;
   name: string | null; rfid_tag: string | null;
   model_make: string | null; model_name: string | null;
-  ru_size: number | null; location_detail: string | null;
+  ru_size: number | null; model_form_factor: string | null;
+  location_detail: string | null;
   client_name: string | null;
   model_category: string | null; model_category_label: string | null;
   model_category_color: string | null;
@@ -2474,6 +2475,20 @@ export async function removeInitiativeAsset(assocId: string): Promise<void> {
   const resp = await apiFetch(`/initiatives/assets/${assocId}`,
     { method: 'DELETE' });
   if (!resp.ok) throw await errorFrom(resp);
+}
+
+export interface PlacementRecheck {
+  checked: number; collisions: number; orphans: number; cleared: number;
+}
+
+/** POST /initiatives/{id}/assets/recheck-placement — re-run the rack
+ *  placement rule over the roster; restates loaded_in_system /
+ *  location_collision / orphan_node and never touches progressed rows. */
+export async function recheckInitiativePlacement(id: string): Promise<PlacementRecheck> {
+  const resp = await apiFetch(`/initiatives/${id}/assets/recheck-placement`,
+    { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
 }
 
 // ── move-assets bulk import jobs ─────────────────────────────────────

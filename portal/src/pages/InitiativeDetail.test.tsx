@@ -74,6 +74,7 @@ const api = vi.hoisted(() => ({
   addInitiativeLink: vi.fn(),
   removeInitiativeLink: vi.fn(),
   updateInitiativeLink: vi.fn(),
+  recheckInitiativePlacement: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -101,7 +102,7 @@ const ASSET: InitiativeAssetRow = {
   asset: {
     id: 'a1', legacy_id: null, serial_number: 'SN-0001', name: 'switch-01',
     rfid_tag: null, model_make: 'Cisco', model_name: 'C9300',
-    ru_size: 1, location_detail: null, client_name: null,
+    ru_size: 1, model_form_factor: null, location_detail: null, client_name: null,
     model_category: 'network', model_category_label: 'Network',
     model_category_color: '#3b82f6',
     status: 'active', status_label: 'Active', status_color: '#178a4c',
@@ -232,6 +233,28 @@ it('assets row: Actions → Remove, confirmed, removes the asset', async () => {
   await user.click(screen.getByRole('menuitem', { name: 'Remove' }));
 
   await waitFor(() => expect(api.removeInitiativeAsset).toHaveBeenCalledWith('ia1'));
+});
+
+it('assets toolbar: Re-check placement calls the endpoint and refetches the roster', async () => {
+  api.recheckInitiativePlacement.mockResolvedValue(
+    { checked: 46, collisions: 0, orphans: 1, cleared: 41 });
+  const user = userEvent.setup();
+  renderPage();
+  await assetRow();
+  const before = api.listInitiativeAssets.mock.calls.length;
+
+  await user.click(await screen.findByRole('button', { name: 'Re-check placement' }));
+
+  await waitFor(() => expect(api.recheckInitiativePlacement).toHaveBeenCalledWith('i1'));
+  await waitFor(() => expect(api.listInitiativeAssets.mock.calls.length).toBe(before + 1));
+});
+
+it('assets toolbar: Re-check placement is hidden without change permission', async () => {
+  auth.can = (resource, action) => !(resource === 'initiatives' && action === 'change');
+  renderPage();
+  await assetRow();
+  expect(screen.queryByRole('button', { name: 'Re-check placement' })).toBeNull();
+  auth.can = () => true;
 });
 
 it('assets row: items are disabled, not dropped, while the row is in flight', async () => {

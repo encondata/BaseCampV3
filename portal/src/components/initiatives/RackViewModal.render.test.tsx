@@ -24,7 +24,7 @@ function makeAsset(overrides: Partial<InitiativeAssetSummary> = {}): InitiativeA
   return {
     id: 'asset-1', legacy_id: null, serial_number: 'SN-1', name: 'w1-hs4-m0407',
     rfid_tag: null, model_make: null, model_name: null, ru_size: 1,
-    location_detail: null, client_name: null,
+    model_form_factor: null, location_detail: null, client_name: null,
     model_category: null, model_category_label: null, model_category_color: null,
     status: 'active', status_label: 'Active', status_color: '#000',
     ...overrides,
@@ -56,6 +56,89 @@ describe('RackViewModal (render smoke)', () => {
     expect(screen.getByRole('img', { name: /Rack R1 — Source — rear elevation/i })).toBeTruthy();
   });
 
+  it('draws the nodes in a second NODES elevation, not on the chassis faceplate', () => {
+    // A tall (8U) chassis so each node's book-spine slab has enough height
+    // budget to hold the full node name without truncating it.
+    const rows = [
+      makeRow({ id: 'ch', source_ru: 33, source_position: null,
+                asset: makeAsset({ id: 'a-ch', name: 'nvlarch03-i', ru_size: 8 }) }),
+      makeRow({ id: 'n1', source_ru: 33.1, source_position: null,
+                asset: makeAsset({ id: 'a-n1', name: 'nvlarch03-mgmt032', ru_size: null }) }),
+      makeRow({ id: 'n2', source_ru: 33.2, source_position: null,
+                asset: makeAsset({ id: 'a-n2', name: 'nvlarch03-mgmt030', ru_size: null }) }),
+    ];
+    render(<RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />);
+    const devices = screen.getByRole('img', { name: 'Rack R1 — Source — front elevation' });
+    const nodes = screen.getByRole('img', { name: 'Rack R1 — Source — front nodes elevation' });
+    expect(screen.getByText('FRONT · NODES')).toBeTruthy();
+    // the devices frame draws the chassis and nothing of its nodes
+    expect(within(devices).getByText('nvlarch03-i')).toBeTruthy();
+    expect(within(devices).queryByText('nvlarch03-mgmt032')).toBeNull();
+    // the nodes frame draws each node as its own faceplate, spine label
+    // rotated to read like a book on the shelf
+    const n1Text = within(nodes).getByText('nvlarch03-mgmt032');
+    const n2Text = within(nodes).getByText('nvlarch03-mgmt030');
+    expect(n1Text).toBeTruthy();
+    expect(n2Text).toBeTruthy();
+    expect(n1Text.getAttribute('transform')).toMatch(/^rotate\(-90/);
+    expect(n2Text.getAttribute('transform')).toMatch(/^rotate\(-90/);
+    expect(within(nodes).queryByText('nvlarch03-i')).toBeNull();
+    // the slot pills are gone for good
+    expect(screen.queryByRole('img', { name: /^Slot / })).toBeNull();
+    // device list: chassis, then its nodes indented with dotted RUs
+    const list = document.querySelector('.rack-device-list') as HTMLElement;
+    const names = [...list.querySelectorAll('.rack-list-name')].map((el) => el.textContent);
+    expect(names).toEqual(['nvlarch03-i', 'nvlarch03-mgmt032', 'nvlarch03-mgmt030']);
+    expect(list.querySelectorAll('.rack-list-child').length).toBe(2);
+    expect(within(list).getByText('33.1')).toBeTruthy();
+    // nodes live in blocks[].children, so nothing here is "unplaced"
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('renders one elevation only when no device on the side houses nodes', () => {
+    render(<RackViewModal rackName="R1" side="source" onClose={() => {}} rows={[
+      makeRow({ id: 'a', source_ru: 5, source_position: null }),
+      makeRow({ id: 'b', source_ru: 40, source_position: null,
+                asset: makeAsset({ id: 'a2', serial_number: 'SN-9', name: 'top-dev' }) }),
+    ]} />);
+    expect(screen.getAllByRole('img', { name: /elevation/i })).toHaveLength(1);
+    expect(screen.queryByText('FRONT · NODES')).toBeNull();
+  });
+
+  it('draws a node with no chassis as a dashed orphan block and names it in the list', () => {
+    const rows = [makeRow({ id: 'o', source_ru: 3.5, source_position: null,
+                            asset: makeAsset({ id: 'a-o', name: 'san-01', ru_size: 1 }) })];
+    render(<RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />);
+    expect(document.querySelector('.rack-faceplate-orphan')).toBeTruthy();
+    // both the SVG faceplate label and the device-list row carry the "! "
+    // prefix for an orphan; check each surface on its own so a regression
+    // in either one is caught (an *AllBy* count alone can't tell them apart).
+    const svg = document.querySelector('svg.rack-svg') as HTMLElement;
+    expect(within(svg).getByText('! san-01')).toBeTruthy();
+    const list = document.querySelector('.rack-device-list') as HTMLElement;
+    expect(within(list).getByText('! san-01')).toBeTruthy();
+    expect(list.querySelector('.rack-list-orphan')).toBeTruthy();
+    expect(within(list).getByText('3.5')).toBeTruthy();
+  });
+
+  it('hovering a node cell shows the node with its parent and dotted RU', () => {
+    const rows = [
+      makeRow({ id: 'ch', source_ru: 33, source_position: null,
+                asset: makeAsset({ id: 'a-ch', name: 'chassis-a', ru_size: 4 }) }),
+      makeRow({ id: 'n1', source_ru: 33.1, source_position: null,
+                asset: makeAsset({ id: 'a-n1', name: 'node-a1', serial_number: 'SN-N1', ru_size: null }) }),
+    ];
+    render(<RackViewModal rackName="R1" side="source" rows={rows} onClose={() => {}} />);
+    const nodes = screen.getByRole('img', { name: /front nodes elevation/i });
+    fireEvent.mouseEnter(within(nodes).getByText('node-a1').closest('g')!);
+    const tip = document.querySelector('.rack-tooltip') as HTMLElement;
+    expect(within(tip).getByText('node-a1')).toBeTruthy();
+    expect(within(tip).getByText('SN-N1')).toBeTruthy();
+    expect(within(tip).getByText('33.1')).toBeTruthy();
+    expect(within(tip).getByText('Inside')).toBeTruthy();
+    expect(within(tip).getByText('chassis-a')).toBeTruthy();
+  });
+
   it('omits the REAR elevation entirely when nothing is rear-mounted, centering FRONT alone', () => {
     render(
       <RackViewModal
@@ -79,14 +162,17 @@ describe('RackViewModal (render smoke)', () => {
     expect(screen.queryByText('REAR')).toBeNull();
   });
 
-  it('renders overlapping decimal-RU blocks in the same elevation (collision lanes) without crashing', () => {
+  it('renders overlapping whole-RU blocks in the same elevation (collision lanes) without crashing', () => {
+    // Both at whole RU 10 (not a decimal .1/.2 slot, which Task 6 reserves
+    // for a node housed in a chassis) so they're two independent real
+    // blocks that overlap in RU range, exercising assignLanes/laneGeometry.
     const rows: InitiativeAssetRow[] = [
       makeRow({
-        id: 'row-a', source_ru: 10.5, // both "rear" -> same elevation -> must share lanes
+        id: 'row-a', source_ru: 10, // both "rear" -> same elevation -> must share lanes
         asset: makeAsset({ id: 'asset-a', name: 'server-a', ru_size: 2 }),
       }),
       makeRow({
-        id: 'row-b', source_ru: 10.5, source_verified: false,
+        id: 'row-b', source_ru: 10, source_verified: false,
         asset: makeAsset({ id: 'asset-b', name: null, serial_number: 'SN-B', ru_size: 2 }),
       }),
     ];

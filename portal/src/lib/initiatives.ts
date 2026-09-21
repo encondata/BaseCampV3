@@ -484,21 +484,71 @@ export function MOVE_ASSET_EDIT_FIELDS(
       elevation, pulled out as a pure helper per repo convention (pages/
       components stay thin; TDD'd in initiatives.test.ts). ────────────── */
 
-/** One asset's block in a rack elevation. `ru` is the RU the asset's slot
- *  starts at (decimal-aware — v2 allowed half-RU placements); `height` is
- *  the number of RUs it occupies. */
+/** A node housed inside another device: a roster row at RU `N.x` whose
+ *  parent is the block that starts at RU N. */
+export interface RackChild {
+  id: string; label: string; slot: number; serial: string | null;
+  makeModel: string; verified: boolean; position: string | null;
+  categoryLabel: string | null; categoryColor: string | null;
+}
+
+/** Front/rear elevation assignment: a side position note that mentions
+ *  "rear" (case-insensitively, substring match — "rear-left" counts)
+ *  places the row in the REAR elevation; everything else (front,
+ *  left/right, blank) lands in FRONT. Lives here beside the placement
+ *  math because `rackLayout` parents a node only to a block on its own
+ *  side; `RackElevation` re-exports it for its existing importers. */
+export function isRearPosition(position: string | null | undefined): boolean {
+  return !!position && position.toLowerCase().includes('rear');
+}
+
+/** One asset's block in a rack elevation. `ru` is the whole RU the block
+ *  starts at; `height` the RUs it occupies. A row at a fractional RU is a
+ *  node in slot x of RU N: it becomes a `children` entry of the block that
+ *  starts at N on its own side, or, when no such block exists, its own 1U
+ *  block at N with an `orphan` reason and its `slot` recorded so the RU
+ *  can still be shown as "N.x". Whole-RU blocks have `slot: 0`. `orphan`
+ *  names WHY the block is flagged — `'no_chassis'` (nothing starts at this
+ *  RU) or `'form_factor'` (the model's form factor contradicts its
+ *  position) — and is `null` for an ordinary block, so a plain truthiness
+ *  test still reads as "is this flagged?". */
 export interface RackBlock {
   id: string; label: string; ru: number; height: number;
   verified: boolean; position: string | null;
   categoryLabel: string | null; categoryColor: string | null;
   makeModel: string;
+  slot: number;
+  children: RackChild[];
+  orphan: 'no_chassis' | 'form_factor' | null;
+  /** Node cells only (`nodeBlocks`): the chassis this node sits in. */
+  parentRu?: number;
+  parentLabel?: string;
+  /** Node cells only (`nodeBlocks`): this node's position (ascending slot
+   *  order) among its chassis's other nodes, and how many there are —
+   *  drawn as `laneCount` vertical slabs side by side across the chassis's
+   *  full RU span, this cell in slab `lane`. */
+  lane?: number;
+  laneCount?: number;
+}
+
+/** Splits a stored RU into its whole part and its slot digit: 33.4 is slot
+ *  4 of RU 33; 10 is slot 0. Mirrors serversherpa.racks.placement.place(). */
+export function ruSlot(ru: number): { base: number; slot: number } {
+  const base = Math.floor(ru);
+  return { base, slot: Math.round((ru - base) * 10) };
 }
 
 /** Filters a move's asset rows down to the ones racked in `rackName` on the
  *  given side, and maps each to its elevation block. A row without an RU
- *  recorded on that side has nothing to place, so it's excluded outright
- *  (matches the spec's "clicked side ... equals the clicked rack name").
- *  `ru_size` defaults to 1 RU, same as the rest of the move-assets slice. */
+ *  recorded on that side has nothing to place, so it's excluded outright.
+ *  `ru_size` defaults to 1 RU. Whole-RU rows become blocks; fractional-RU
+ *  rows attach to the block that starts at their RU ON THEIR OWN SIDE
+ *  (ascending slot) or stand alone as orphan blocks. The model's form
+ *  factor adds two more orphan cases without changing what a row occupies:
+ *  a `node` model at a whole RU keeps its height but draws with the orphan
+ *  marker, and a `standalone` model at a fractional RU is never adopted as
+ *  a child. Blocks come out in row order, orphans after the whole-RU
+ *  blocks. */
 export function rackLayout(
   rows: InitiativeAssetRow[], rackName: string, side: 'source' | 'destination',
 ): RackBlock[] {
@@ -510,47 +560,158 @@ export function rackLayout(
     !!(side === 'source' ? r.source_verified : r.destination_verified);
   const positionOf = (r: InitiativeAssetRow) =>
     (side === 'source' ? r.source_position : r.destination_position);
+  const labelOf = (r: InitiativeAssetRow) =>
+    r.asset.name ?? r.asset.serial_number ?? BLANK;
+  const makeModelOf = (r: InitiativeAssetRow) =>
+    [r.asset.model_make, r.asset.model_name].filter(Boolean).join(' ');
 
-  return rows
-    // RU 0 (or anything below the first usable unit) is "unplaced" — the
-    // bottom cap is not a mounting position, so such rows never render.
+  // RU 0 (or anything below the first usable unit) is "unplaced" — the
+  // bottom cap is not a mounting position, so such rows never render.
+  const placed = rows
     .filter((r) => rackOf(r) === rackName && (ruOf(r) ?? 0) >= 1)
-    .map((r) => ({
-      id: r.id,
-      label: r.asset.name ?? r.asset.serial_number ?? BLANK,
-      ru: ruOf(r) as number,
-      height: r.asset.ru_size ?? 1,
-      verified: verifiedOf(r),
-      position: positionOf(r),
-      categoryLabel: r.asset.model_category_label,
-      categoryColor: r.asset.model_category_color,
-      makeModel: [r.asset.model_make, r.asset.model_name]
-        .filter(Boolean).join(' '),
+    .map((r) => ({ r, ...ruSlot(ruOf(r) as number) }));
+
+  const toBlock = (r: InitiativeAssetRow, base: number, slot: number,
+                   orphan: RackBlock['orphan']): RackBlock => ({
+    id: r.id,
+    label: labelOf(r),
+    ru: base,
+    // A node standing alone occupies its single slot cell; a whole-RU row
+    // keeps its model height even when it draws with the orphan marker.
+    height: slot === 0 ? (r.asset.ru_size ?? 1) : 1,
+    verified: verifiedOf(r),
+    position: positionOf(r),
+    categoryLabel: r.asset.model_category_label,
+    categoryColor: r.asset.model_category_color,
+    makeModel: makeModelOf(r),
+    slot,
+    children: [],
+    orphan,
+  });
+
+  // A node is housed by a chassis on the SAME physical face of the rack,
+  // so the adoption map is keyed on side + base, not base alone.
+  const sideKey = (position: string | null, base: number) =>
+    `${isRearPosition(position) ? 'R' : 'F'}:${base}`;
+
+  const blocks: RackBlock[] = [];
+  const byBase = new Map<string, RackBlock>();
+  for (const { r, base, slot } of placed) {
+    if (slot !== 0) continue;
+    // A `node` model at a whole RU contradicts its position: it keeps its
+    // height and can still house nodes, but draws with the orphan marker.
+    const b = toBlock(r, base, 0,
+      r.asset.model_form_factor === 'node' ? 'form_factor' : null);
+    blocks.push(b);
+    const key = sideKey(positionOf(r), base);
+    if (!byBase.has(key)) byBase.set(key, b);
+  }
+  // A BLANK position is unstated, not "front": such a node takes the front
+  // chassis at its base when there is one, and otherwise the rear one,
+  // rather than being orphaned beside a rear chassis it plainly sits in.
+  const parentAt = (position: string | null, base: number) => (
+    position?.trim()
+      ? byBase.get(sideKey(position, base))
+      : byBase.get(`F:${base}`) ?? byBase.get(`R:${base}`));
+  for (const { r, base, slot } of placed) {
+    if (slot === 0) continue;
+    // A `standalone` model at a slot contradicts its position too: it is
+    // never adopted and stands alone as an orphan at its base.
+    const standalone = r.asset.model_form_factor === 'standalone';
+    const parent = standalone ? undefined : parentAt(positionOf(r), base);
+    if (parent) {
+      parent.children.push({
+        id: r.id, label: labelOf(r), slot, serial: r.asset.serial_number,
+        makeModel: makeModelOf(r), verified: verifiedOf(r),
+        position: positionOf(r),
+        categoryLabel: r.asset.model_category_label,
+        categoryColor: r.asset.model_category_color,
+      });
+    } else {
+      blocks.push(toBlock(r, base, slot,
+        standalone ? 'form_factor' : 'no_chassis'));
+    }
+  }
+  for (const b of blocks) b.children.sort((a, c) => a.slot - c.slot);
+  return blocks;
+}
+
+/** The node elevation's blocks: every child of every block that has
+ *  children, as its own cell spanning the PARENT's full RU span (`ru`,
+ *  `height` unchanged from the chassis), laid out side by side across the
+ *  faceplate's width instead of stacked — `lane` is the cell's position
+ *  (ascending slot from the bottom) among its chassis's `laneCount` nodes,
+ *  like a row of books rather than rack devices. Nothing else is
+ *  included: the caller adds ghosts for the child-less devices so the
+ *  frame keeps its RU context. */
+export function nodeBlocks(blocks: RackBlock[]): RackBlock[] {
+  const out: RackBlock[] = [];
+  for (const b of blocks) {
+    const n = b.children.length;
+    if (n === 0) continue;
+    b.children.forEach((c, i) => out.push({
+      id: c.id,
+      label: c.label,
+      ru: b.ru,
+      height: b.height,
+      verified: c.verified,
+      // The cell is drawn on the chassis's face, whatever the node's own
+      // position note says; that note surfaces in the hover detail.
+      position: b.position,
+      categoryLabel: c.categoryLabel ?? b.categoryLabel,
+      categoryColor: c.categoryColor ?? b.categoryColor,
+      makeModel: c.makeModel,
+      slot: c.slot,
+      children: [],
+      orphan: null,
+      parentRu: b.ru,
+      parentLabel: b.label,
+      lane: i,
+      laneCount: n,
     }));
+  }
+  return out;
 }
 
 export interface DeviceListRow {
   id: string; name: string; makeModel: string; ruText: string;
   categoryColor: string | null; group: 'FRONT' | 'REAR';
+  indent: boolean; orphan: boolean;
 }
 
 /** Rack-order device list rows: each elevation's REAL blocks sorted top
  *  of rack first (descending top RU, ties by name), FRONT group before
- *  REAR. RU text is a dot-range ("40..42") for multi-U devices, per the
- *  rack/RU convention (a device at RU 4-5 is "4..5"). */
+ *  REAR. RU text is a dot-range ("40..42") for multi-U devices, "33.1" for
+ *  a node. A block's children follow it, indented, in the order the block
+ *  carries them (rackLayout sorts them by slot). */
 export function deviceListRows(
   front: RackBlock[], rear: RackBlock[],
 ): DeviceListRow[] {
+  const ruTextOf = (b: RackBlock) => {
+    if (b.orphan) return `${b.ru}.${b.slot}`;
+    return b.height > 1 ? `${b.ru}..${b.ru + b.height - 1}` : String(b.ru);
+  };
   const toRows = (blocks: RackBlock[], group: 'FRONT' | 'REAR') =>
     [...blocks]
       .sort((a, b) => (b.ru + b.height) - (a.ru + a.height)
         || a.label.localeCompare(b.label))
-      .map((b) => ({
-        id: b.id, name: b.label,
-        makeModel: b.makeModel || '—',
-        ruText: b.height > 1 ? `${b.ru}..${b.ru + b.height - 1}` : String(b.ru),
-        categoryColor: b.categoryColor, group,
-      }));
+      .flatMap((b) => [
+        {
+          id: b.id, name: b.label,
+          makeModel: b.makeModel || '—',
+          ruText: ruTextOf(b),
+          categoryColor: b.categoryColor, group,
+          // the manifest only marks THAT a row is flagged, not why
+          indent: false, orphan: !!b.orphan,
+        },
+        ...b.children.map((c) => ({
+          id: c.id, name: c.label,
+          makeModel: c.makeModel || '—',
+          ruText: `${b.ru}.${c.slot}`,
+          categoryColor: c.categoryColor ?? b.categoryColor, group,
+          indent: true, orphan: false,
+        })),
+      ]);
   return [...toRows(front, 'FRONT'), ...toRows(rear, 'REAR')];
 }
 

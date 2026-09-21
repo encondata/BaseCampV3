@@ -58,6 +58,7 @@ def test_all_sections_render_with_data():
         assert heading in html
     assert "NAP11 move" in html and "Acme" in html and "1 Main St" in html
     assert "web-01" in html and "Sliding" in html
+    assert "assets with rails counted" in html      # RailSummary.total_assets
     assert "ru_overlap" in html or "RU overlap" in html          # both at D1 RU 20 collide
     assert html.count("<svg>") == 2                              # source + destination rack
     assert "Generated 2026-09-09" in html and "Alice Anderson" in html
@@ -80,6 +81,16 @@ def test_no_assets_still_renders_summary_note():
 def test_collision_section_says_none_when_clean():
     html = render_html(_ctx(assets=[_asset(1, destination_ru=20.0), _asset(2, destination_ru=30.0)]))
     assert "No collisions" in html
+
+
+def test_collision_section_lists_orphan_nodes():
+    html = render_html(_ctx(assets=[_asset(1, destination_ru=20.0),
+                                    _asset(2, destination_ru=31.2)]))
+    assert "No collisions" in html
+    assert "Orphan nodes" in html
+    assert "web-02" in html and "31.2" in html
+    assert "No device starts at this RU" in html
+    assert "1 orphan node" in html
 
 
 def _pdf_objects(pdf: bytes) -> bytes:
@@ -174,3 +185,35 @@ def test_rack_page_layout_keeps_elevations_on_page_and_clear_of_table():
     assert page_a is page_b, "FRONT and REAR must share a page"
     assert front.position_y == rear.position_y, "FRONT and REAR sit side by side"
     assert front.position_x < rear.position_x
+
+
+def test_a_four_frame_rack_page_keeps_every_elevation_inside_its_column():
+    """A rack with rear devices AND nodes on both sides draws four frames
+    (FRONT, FRONT NODES, REAR, REAR NODES). They must share the elevation
+    column — shrinking, not spilling onto the paper or onto a second row,
+    which would split the rack page."""
+    from weasyprint import HTML
+
+    fragment = FIXTURE.read_text()
+    frames = re.findall(r'<div class="rack-elevation">[\s\S]*?</svg></div>', fragment)
+    assert len(frames) == 2
+    four = fragment.replace("".join(frames), "".join(frames * 2))
+
+    html = render_html(_ctx(options={**ALL_ON, "destination_racks": False},
+                            racks=[RackSvg("R1", four, [_asset(1)])]))
+    pages = HTML(string=html).render().pages
+    seen = 0
+    for page in pages:
+        elevs = _boxes_by_class(page, "elev")
+        if not elevs:
+            continue
+        elev, = elevs
+        boxes = _boxes_by_class(page, "rack-elevation")
+        assert len(boxes) == 4, "all four frames on one page"
+        for box in boxes:
+            assert box.position_x >= 0
+            assert box.position_x + box.width <= elev.position_x + elev.width + 0.01
+        assert len({round(b.position_y, 2) for b in boxes}) == 1, "one row, not wrapped"
+        assert elev.height <= page.height, "the rack page still fits its page"
+        seen += 1
+    assert seen == 1
