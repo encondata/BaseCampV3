@@ -2707,3 +2707,60 @@ feat(portal): rack view draws a second Nodes elevation per side, nodes filling t
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 ```
+
+---
+
+## Amendment 2026-09-21 (2): nodes as a row of books
+
+### Task 15: nodes drawn side by side across their chassis ("a row of books")
+
+**User direction (2026-09-21):** "The only change is to make the node devices look more like a row of books than being stacked like rack devices."
+
+In the `FRONT · NODES` / `REAR · NODES` elevation (Task 14), a chassis's nodes are currently stacked vertically, each taking an equal slice of the chassis height. Instead, every node becomes a vertical slab: full chassis height, equal share of the faceplate WIDTH, side by side left to right in ascending slot order, with the node name written up the slab like a book spine. Nothing else about Task 14 changes: the devices elevation, ghosts, the device list, hover, print captions and the report all stay as they are.
+
+**Files:**
+- Modify: `portal/src/lib/initiatives.ts` (`RackBlock`, `nodeBlocks`)
+- Modify: `portal/src/components/initiatives/RackElevation.tsx` (column geometry helper; slab rendering)
+- Tests: `portal/src/lib/initiatives.test.ts`, `portal/src/components/initiatives/RackViewModal.test.tsx`, `RackViewModal.render.test.tsx`
+- Do NOT change `portal/src/styles/rack-svg.css` (it is pinned by an API fixture); all new presentation is inline attributes, and the label reuses the existing `rack-block-label` class.
+
+**Interfaces:**
+- `RackBlock` gains optional `lane?: number; laneCount?: number` (set only on node cells).
+- `nodeBlocks(blocks)` emits, per child of each block with children, a cell with the PARENT's `ru` and `height`, `lane` = index in ascending slot order, `laneCount` = number of children, plus the fields Task 14 already sets (`parentRu`, `parentLabel`, `slot`, category fallback, `verified`, `position`, `makeModel`, `orphan: null`, `children: []`).
+- New exported pure helper in `RackElevation.tsx`:
+
+```ts
+export interface NodeColumnRect { x: number; width: number; showLabel: boolean; }
+
+/** Lays `count` node slabs across a faceplate of `usableWidth` starting at
+ *  `x0`, equal widths with a 2px gap, no minimum width. A slab narrower
+ *  than 9px gets no spine label. */
+export function nodeColumnGeometry(x0: number, usableWidth: number, count: number): NodeColumnRect[] {
+  if (count <= 0) return [];
+  const gap = 2;
+  const width = Math.max(0, (usableWidth - gap * (count - 1)) / count);
+  return Array.from({ length: count }, (_, i) => ({
+    x: x0 + i * (width + gap), width, showLabel: width >= 9,
+  }));
+}
+```
+
+**Rendering in `RackElevation`:**
+- Node cells (those with `laneCount`) are excluded from `laneGeometry` (pass only the other blocks to it) and positioned with `nodeColumnGeometry(FACEPLATE_X0, FACEPLATE_USABLE_WIDTH, b.laneCount)[b.lane]`. Their rect spans the parent's full height (`y = yForRu(b.ru + b.height) + 1`, `height = b.height * U_PX - 2`), same rx, same category fill, same verified/planned stroke rules as any block.
+- The spine label: the node name only, truncated with `rackLabel(b.label, null, height - 6)` (the pixel budget is the slab's height because the text runs vertically), rendered as
+  `<text transform={`rotate(-90 ${cx} ${cy})`} x={cx} y={cy} textAnchor="middle" dominantBaseline="middle" fill={readableTextColor(fill)} className="rack-block-label">` where `cx`/`cy` is the slab's center, so it reads bottom to top like a book spine. Omit the text when `showLabel` is false.
+- Everything else (ghost boxes, orphan marker, hover wiring via `onHoverBlock`) unchanged.
+
+**Tests:**
+- `initiatives.test.ts` › `nodeBlocks`: replace the fractional-share expectations with: a 4U chassis at 33 with four nodes yields four cells all with `ru: 33, height: 4`, `lane` 0..3 in ascending slot order and `laneCount: 4`; two nodes yield `laneCount: 2`; a 1U chassis with four nodes yields `height: 1` cells (no fractional heights anywhere); `parentRu`/`parentLabel`/category fallback unchanged.
+- `RackViewModal.test.tsx`: `describe('nodeColumnGeometry')` with: four slabs in 130px fit inside (last `x + width <= x0 + 130`), nine slabs fit and have `showLabel: false`, four slabs have `showLabel: true` and a 2px gap, zero returns `[]`.
+- `RackViewModal.render.test.tsx`: in the chassis-with-nodes test, assert within the nodes elevation svg that each node name is present as text and that its `<text>` element carries a `transform` attribute starting with `rotate(-90`; keep the existing assertions (two elevations, no `Slot ` labels, no status note).
+- Whole portal suite, `tsc`, and `npm --prefix portal run build:rack-renderer` clean. Run `api/tests/test_move_report_render.py` once to confirm the fixture pin still holds (no CSS changed, so it must).
+
+**Commit:**
+
+```
+feat(portal): nodes elevation lays nodes side by side across their chassis like a row of books
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+```
