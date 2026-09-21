@@ -13,7 +13,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.imports import move_assets
 from serversherpa.imports.move_assets import (
-    flag_collisions, parse_row, run_import,
+    parse_row, run_import,
 )
 from serversherpa.imports.parsing import CANONICAL
 
@@ -95,7 +95,8 @@ async def test_reimport_updates_and_resets_status(db):
                               rows=rows, write=True)
     assert result["summary"] == {
         "total_rows": 1, "processed_rows": 1, "created": 0, "updated": 1,
-        "review": 0, "errors": 0, "collisions_flagged": 0}
+        "review": 0, "errors": 0, "collisions_flagged": 0,
+        "orphans_flagged": 0}
     await db.refresh(assoc)
     assert assoc.status == "loaded_in_system"       # v2 parity reset
     assert assoc.destination_rack == "B1"
@@ -159,6 +160,7 @@ async def test_collision_detection_flags_overlaps(db):
     result = await run_import(db, initiative_id=ini.id, added_by=None,
                               rows=rows, write=True)
     assert result["summary"]["collisions_flagged"] == 2
+    assert result["summary"]["orphans_flagged"] == 0
     statuses = dict((await db.execute(
         select(Asset.serial_number, InitiativeAsset.status)
         .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id))).all())
@@ -166,6 +168,43 @@ async def test_collision_detection_flags_overlaps(db):
     assert statuses["sn-b"] == "location_collision"
     assert statuses["sn-c"] == "loaded_in_system"
     assert statuses["sn-d"] == "loaded_in_system"
+
+
+async def test_nodes_inside_a_chassis_are_not_collisions(db):
+    """The example initiative's shape: a chassis at an integer RU with
+    nodes at .1 to .4 under it. Neither model carries an ru_size, exactly
+    as the import force-creates them."""
+    ini = await _move(db)
+    rows = [_row(2, serial_number="CH-33", asset_make="Dell",
+                 asset_model="Isilon H5600",
+                 destination_rack="R1", destination_ru="33")]
+    rows += [_row(2 + i, serial_number=f"ND-33-{i}", asset_make="Dell",
+                  asset_model="H5600 node",
+                  destination_rack="R1", destination_ru=f"33.{i}")
+             for i in (1, 2, 3, 4)]
+    result = await run_import(db, initiative_id=ini.id, added_by=None,
+                              rows=rows, make_model_mode="force", write=True)
+    assert result["summary"]["collisions_flagged"] == 0
+    assert result["summary"]["orphans_flagged"] == 0
+    statuses = set(await db.scalars(select(InitiativeAsset.status)))
+    assert statuses == {"loaded_in_system"}
+
+
+async def test_node_without_a_chassis_is_flagged_orphan(db):
+    ini = await _move(db)
+    rows = [_row(2, serial_number="ND-1", destination_rack="R1",
+                 destination_ru="20.1"),
+            _row(3, serial_number="SRV-1", destination_rack="R1",
+                 destination_ru="30")]
+    result = await run_import(db, initiative_id=ini.id, added_by=None,
+                              rows=rows, write=True)
+    assert result["summary"]["collisions_flagged"] == 0
+    assert result["summary"]["orphans_flagged"] == 1
+    statuses = dict((await db.execute(
+        select(Asset.serial_number, InitiativeAsset.status)
+        .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id))).all())
+    assert statuses["nd-1"] == "orphan_node"
+    assert statuses["srv-1"] == "loaded_in_system"
 
 
 async def test_batching_progress_and_cancel(db, monkeypatch):

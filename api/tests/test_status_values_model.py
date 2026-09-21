@@ -139,6 +139,7 @@ async def test_merged_asset_weights_seeded_verbatim(db):
         "pending_client_handover": 95,
         "historical": None,
         "location_collision": None,
+        "orphan_node": None,
     }
 
 

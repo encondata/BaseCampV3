@@ -3,7 +3,8 @@
 Pure of HTTP and job-queue concerns: callers hand in parsed rows and
 options and get back the report dict that lands in import_jobs.results.
 Contains the complete pipeline: row helpers, the shared validate/commit
-pipeline (run_import), and collision detection (flag_collisions).
+pipeline (run_import), and the post-commit placement re-check
+(serversherpa.racks.recheck).
 """
 
 import json
@@ -19,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import (
     Asset, AssetModel, AssetModelAlias, InitiativeAsset,
 )
+from serversherpa.racks.recheck import recheck_placement
 
 PRIORITY_MAX = 30
 BATCH_SIZE = 500
@@ -377,8 +379,9 @@ async def run_import(
         summary["models_created"] = len(created_models)
 
     if write and not cancelled:
-        summary["collisions_flagged"] = await flag_collisions(
-            db, initiative_id)
+        placement = await recheck_placement(db, initiative_id)
+        summary["collisions_flagged"] = placement["collisions"]
+        summary["orphans_flagged"] = placement["orphans"]
         audit(db, actor_id=added_by, entity_type="initiative",
               entity_id=str(initiative_id), action="asset_import",
               changes={**summary, "source": source_label})
@@ -387,45 +390,3 @@ async def run_import(
             await progress(processed, created, updated, errors)
         await db.commit()
     return {"summary": summary, "details": details, "cancelled": cancelled}
-
-
-async def flag_collisions(db: AsyncSession,
-                          initiative_id: uuid.UUID) -> int:
-    """Destination rack/RU collision detection (V2 parity, run after a
-    commit pass): expand every roster row with a destination to its
-    occupied RU range (start = int(destination_ru), height = model
-    ru_size, default 1) and flag every member of an overlapping pair
-    with status 'location_collision'. Returns rows flagged. The caller
-    owns the commit."""
-    from collections import defaultdict
-
-    rows = (await db.execute(
-        select(InitiativeAsset, AssetModel.ru_size)
-        .join(Asset, Asset.id == InitiativeAsset.asset_id)
-        .outerjoin(AssetModel, AssetModel.id == Asset.model_id)
-        .where(InitiativeAsset.initiative_id == initiative_id,
-               InitiativeAsset.destination_rack.is_not(None),
-               InitiativeAsset.destination_ru.is_not(None)))).all()
-
-    racks: dict[str, list[tuple[InitiativeAsset, set[int]]]] = defaultdict(list)
-    for assoc, ru_size in rows:
-        try:
-            start = int(float(assoc.destination_ru))
-            size = int(ru_size) if ru_size else 1
-        except (TypeError, ValueError):
-            continue
-        racks[assoc.destination_rack].append(
-            (assoc, set(range(start, start + size))))
-
-    colliding: set[uuid.UUID] = set()
-    by_id: dict[uuid.UUID, InitiativeAsset] = {}
-    for entries in racks.values():
-        for i in range(len(entries)):
-            for j in range(i + 1, len(entries)):
-                if entries[i][1] & entries[j][1]:
-                    for assoc, _ in (entries[i], entries[j]):
-                        colliding.add(assoc.id)
-                        by_id[assoc.id] = assoc
-    for assoc in by_id.values():
-        assoc.status = "location_collision"
-    return len(colliding)
