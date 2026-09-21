@@ -293,6 +293,14 @@ async def run_import(
     created_models: list[str] = []
     cancelled = False
     now = datetime.now(UTC)
+    # Per-run cache for matches found through the RESOLVED display name
+    # (see below) — never written into `model_map`, which is the
+    # ambiguity-guarded normalized map `_lookups` built. `mm_key` here may
+    # be a key `_lookups` deliberately dropped as ambiguous; writing a
+    # literal-tier result back into `model_map` under it would re-open that
+    # guard for a later row whose string normalizes to the same key but
+    # matches nothing literally.
+    resolved_cache: dict[str, tuple] = {}
 
     async def _one_row(r: dict) -> None:
         nonlocal created, updated, review, errors
@@ -329,8 +337,13 @@ async def run_import(
                 mm_key = normalize_model_key(r["make_model_str"])
                 # A verbatim catalog name (or alias) wins outright; the
                 # normalized map is the fallback and may have dropped the
-                # key as ambiguous.
+                # key as ambiguous. `resolved_cache` holds matches this
+                # same run already found through the RESOLVED display name
+                # below — checked here, before the guarded normalized map,
+                # so a repeat of this row's exact string reuses that result
+                # without ever writing back into `model_map`.
                 matched = (literal_map.get(r["make_model_str"].lower())
+                           or resolved_cache.get(mm_key)
                            or model_map.get(mm_key))
                 if matched is None:
                     mk, md = resolve_make_model_for_creation(
@@ -340,7 +353,7 @@ async def run_import(
                     matched = (literal_map.get(resolved_display.lower())
                                or model_map.get(resolved_key))
                     if matched is not None:
-                        model_map[mm_key] = matched
+                        resolved_cache[mm_key] = matched
                 if matched is not None:
                     model_obj, match_method, make_model_final = matched
                 elif force:

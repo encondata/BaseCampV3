@@ -83,6 +83,37 @@ async def test_a_non_literal_row_on_an_ambiguous_key_goes_to_review(db):
     assert result["summary"].get("models_created", 0) == 0
 
 
+async def test_a_resolved_match_is_not_cached_into_the_guarded_normalized_map(db):
+    """A literal match earlier in the same file must never write its
+    result back into `model_map` under a normalized key `_lookups` had
+    already dropped as ambiguous — doing so would re-open that guard for
+    a later row in the SAME file whose string normalizes to the same key
+    but matches nothing literally. Both rows land in one `run_import`
+    call (one file, one shared `_lookups`), unlike the two tests above
+    which each get their own fresh lookup."""
+    ini = await _move(db)
+    db.add(AssetModel(make="Blank", model="Panel 1U", ru_size=1))
+    db.add(AssetModel(make="Blank", model="Panel 2U", ru_size=2))
+    await db.commit()
+    canonical1 = {c: "" for c in CANONICAL}
+    canonical1.update(serial_number="BP-1", asset_make="Blank",
+                      asset_model="Panel 2U",
+                      destination_rack="R1", destination_ru="10")
+    canonical2 = {c: "" for c in CANONICAL}
+    canonical2.update(serial_number="BP-2", asset_make="",
+                      asset_model="Blank_Panel 2U",
+                      destination_rack="R1", destination_ru="11")
+    row1 = parse_row(2, canonical1, {}, generate_serials=False)
+    row2 = parse_row(3, canonical2, {}, generate_serials=False)
+    result = await run_import(db, initiative_id=ini.id, added_by=None,
+                              rows=[row1, row2], make_model_mode="fuzzy",
+                              write=True)
+    detail1, detail2 = result["details"]
+    assert detail1["match_method"] == "exact", detail1
+    assert detail2["match_method"] == "review", detail2
+    assert result["summary"].get("models_created", 0) == 0
+
+
 async def test_an_unambiguous_key_still_matches_exactly(db):
     """The collision guard drops only the ambiguous keys; a neighboring
     row with a key of its own still matches."""
