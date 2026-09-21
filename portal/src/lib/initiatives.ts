@@ -523,6 +523,12 @@ export interface RackBlock {
   /** Node cells only (`nodeBlocks`): the chassis this node sits in. */
   parentRu?: number;
   parentLabel?: string;
+  /** Node cells only (`nodeBlocks`): this node's position (ascending slot
+   *  order) among its chassis's other nodes, and how many there are —
+   *  drawn as `laneCount` vertical slabs side by side across the chassis's
+   *  full RU span, this cell in slab `lane`. */
+  lane?: number;
+  laneCount?: number;
 }
 
 /** Splits a stored RU into its whole part and its slot digit: 33.4 is slot
@@ -631,24 +637,23 @@ export function rackLayout(
 }
 
 /** The node elevation's blocks: every child of every block that has
- *  children, as its own cell filling an equal share of the parent's RU
- *  span, ascending slot from the bottom. A 4U chassis with four nodes
- *  gives four 1U cells; the same chassis with two nodes gives two 2U
- *  cells; a 1U chassis with four nodes gives four 0.25U cells (the
- *  elevation positions and sizes by RU arithmetic, so fractions draw
- *  correctly). Nothing else is included: the caller adds ghosts for the
- *  child-less devices so the frame keeps its RU context. */
+ *  children, as its own cell spanning the PARENT's full RU span (`ru`,
+ *  `height` unchanged from the chassis), laid out side by side across the
+ *  faceplate's width instead of stacked — `lane` is the cell's position
+ *  (ascending slot from the bottom) among its chassis's `laneCount` nodes,
+ *  like a row of books rather than rack devices. Nothing else is
+ *  included: the caller adds ghosts for the child-less devices so the
+ *  frame keeps its RU context. */
 export function nodeBlocks(blocks: RackBlock[]): RackBlock[] {
   const out: RackBlock[] = [];
   for (const b of blocks) {
     const n = b.children.length;
     if (n === 0) continue;
-    const share = b.height / n;
     b.children.forEach((c, i) => out.push({
       id: c.id,
       label: c.label,
-      ru: b.ru + i * share,
-      height: share,
+      ru: b.ru,
+      height: b.height,
       verified: c.verified,
       // The cell is drawn on the chassis's face, whatever the node's own
       // position note says; that note surfaces in the hover detail.
@@ -661,6 +666,8 @@ export function nodeBlocks(blocks: RackBlock[]): RackBlock[] {
       orphan: null,
       parentRu: b.ru,
       parentLabel: b.label,
+      lane: i,
+      laneCount: n,
     }));
   }
   return out;

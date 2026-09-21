@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   assignLanes, FACEPLATE_USABLE_WIDTH, ghostBlocksFor, isRearPosition, laneGeometry,
-  rackLabel, tooltipRows,
+  nodeColumnGeometry, rackLabel, tooltipRows,
 } from './RackViewModal';
 
 /* ── rack view collision layout (Task 6 fix-round) — laneGeometry is the
@@ -201,6 +201,40 @@ describe('laneGeometry with FACEPLATE_USABLE_WIDTH (per-elevation)', () => {
     }
     const [first, second] = [...rects].sort((a, b) => a.x - b.x);
     expect(first.x + first.width).toBeLessThanOrEqual(second.x);
+  });
+});
+
+/* ── node column geometry (Task 15) — nodes drawn as vertical slabs side
+      by side across their chassis's faceplate width, like a row of books,
+      instead of stacked vertically. Equal widths, a 2px gap, no minimum
+      width; a slab under 9px wide gets no spine label since the text
+      wouldn't fit. ─────────────────────────────────────────────────────── */
+
+describe('nodeColumnGeometry', () => {
+  it('returns an empty list for zero nodes', () => {
+    expect(nodeColumnGeometry(10, 130, 0)).toEqual([]);
+  });
+
+  it('fits four slabs inside the usable width, starting at x0', () => {
+    const rects = nodeColumnGeometry(10, 130, 4);
+    expect(rects).toHaveLength(4);
+    const last = rects[rects.length - 1];
+    expect(last.x + last.width).toBeLessThanOrEqual(10 + 130);
+    expect(rects[0].x).toBe(10);
+  });
+
+  it('gives four slabs a 2px gap and a label (wide enough)', () => {
+    const rects = nodeColumnGeometry(0, 130, 4);
+    for (let i = 1; i < rects.length; i += 1) {
+      expect(rects[i].x).toBeCloseTo(rects[i - 1].x + rects[i - 1].width + 2);
+    }
+    expect(rects.every((r) => r.showLabel)).toBe(true);
+  });
+
+  it('suppresses the spine label once nine slabs make each one too narrow', () => {
+    const rects = nodeColumnGeometry(0, 60, 9);
+    expect(rects).toHaveLength(9);
+    expect(rects.every((r) => !r.showLabel)).toBe(true);
   });
 });
 

@@ -20,10 +20,13 @@
  * Nodes housed inside a chassis are NOT drawn on the chassis faceplate:
  * the modal (and the report) render a SECOND elevation per side whose
  * blocks are the node cells themselves (`nodeBlocks` in lib/initiatives),
- * each filling an equal share of its chassis's RU span. Nothing here
- * treats them specially — a node cell is an ordinary block that happens
- * to be a fraction of a U tall, which is why the label is dropped below
- * 10px of cell height.
+ * each carrying its chassis's own full RU span but drawn as one of
+ * `laneCount` vertical slabs side by side across the faceplate width
+ * (`nodeColumnGeometry`) — a row of books, not stacked rack devices. A
+ * node cell is excluded from `laneGeometry`'s RU-overlap lanes (every
+ * node in a chassis shares its parent's ru/height, so they'd otherwise
+ * all read as one giant collision) and its name runs up the slab like a
+ * spine, dropped entirely once the slab is under 9px wide.
  */
 import { UNCATEGORIZED_FILL } from '../../lib/initiatives';
 import type { RackBlock } from '../../lib/initiatives';
@@ -173,6 +176,20 @@ export function laneGeometry(
   return result;
 }
 
+export interface NodeColumnRect { x: number; width: number; showLabel: boolean; }
+
+/** Lays `count` node slabs across a faceplate of `usableWidth` starting at
+ *  `x0`, equal widths with a 2px gap, no minimum width. A slab narrower
+ *  than 9px gets no spine label. */
+export function nodeColumnGeometry(x0: number, usableWidth: number, count: number): NodeColumnRect[] {
+  if (count <= 0) return [];
+  const gap = 2;
+  const width = Math.max(0, (usableWidth - gap * (count - 1)) / count);
+  return Array.from({ length: count }, (_, i) => ({
+    x: x0 + i * (width + gap), width, showLabel: width >= 9,
+  }));
+}
+
 /** One-line faceplate label — `${name} (${position})` when the side has a
  *  position note, else just the name — truncated with an ellipsis to fit
  *  `laneWidth` on a simple char-budget (laneWidth / 5.2px per mono char is
@@ -276,8 +293,13 @@ export function RackElevation({
   onHoverBlock?: (block: DisplayBlock, e: React.MouseEvent<SVGGElement>) => void;
   onLeaveBlock?: () => void;
 }) {
+  // Node cells (identified by carrying `laneCount`) are laid out as slabs
+  // side by side across the full faceplate width via `nodeColumnGeometry`,
+  // not by `laneGeometry`'s RU-overlap lanes — they always "overlap" (same
+  // ru/height as their chassis) but must never be treated as a collision.
   const geometry = new Map(
-    laneGeometry(blocks, FACEPLATE_USABLE_WIDTH).map((g) => [g.id, g]),
+    laneGeometry(blocks.filter((b) => b.laneCount == null), FACEPLATE_USABLE_WIDTH)
+      .map((g) => [g.id, g]),
   );
   const ruCount = rackRuCount(blocks);
   const { ruAreaHeight, totalHeight, ruList, yForRu, ruTop } = frameGeometry(ruCount);
@@ -332,9 +354,18 @@ export function RackElevation({
             No assets recorded at this rack
           </text>
         ) : blocks.map((b) => {
+          // Node cells are slabs side by side across the full faceplate
+          // width (a "row of books"), not lane-collision geometry — same
+          // ru/height as their chassis, so every node in it "overlaps"
+          // every other one and would otherwise get squeezed by
+          // laneGeometry as if it were a real RU collision.
+          const isNodeCell = b.laneCount != null;
+          const nodeRect = isNodeCell
+            ? nodeColumnGeometry(FACEPLATE_X0, FACEPLATE_USABLE_WIDTH, b.laneCount!)[b.lane!]
+            : undefined;
           const g = geometry.get(b.id);
-          const x = FACEPLATE_X0 + (g?.x ?? 0);
-          const width = g?.width ?? FACEPLATE_USABLE_WIDTH;
+          const x = nodeRect ? nodeRect.x : FACEPLATE_X0 + (g?.x ?? 0);
+          const width = nodeRect ? nodeRect.width : (g?.width ?? FACEPLATE_USABLE_WIDTH);
           const fullHeight = b.height * U_PX;
           const y = yForRu(b.ru + b.height) + 1;
           const height = fullHeight - 2;
@@ -349,11 +380,6 @@ export function RackElevation({
               </g>
             );
           }
-          // A node cell can be a fraction of a U (four nodes in a 1U
-          // chassis are 4px each): too short to hold a line of text, so it
-          // draws as a bare cell and hover names it.
-          const showLabel = height >= 10;
-          const label = (b.orphan ? '! ' : '') + rackLabel(b.label, b.position, width);
           const fill = b.categoryColor ?? UNCATEGORIZED_FILL;
           const textColor = readableTextColor(fill);
           const border = b.orphan
@@ -361,6 +387,30 @@ export function RackElevation({
             : b.verified
               ? { stroke: '#15803d', strokeWidth: 2 }
               : { stroke: '#111827', strokeWidth: 1.25, strokeDasharray: '4 3' };
+          if (isNodeCell) {
+            // A book-spine slab: the name runs bottom to top up the slab's
+            // vertical center, truncated against the slab's HEIGHT (the
+            // pixel budget the text actually runs along), and dropped
+            // entirely once the slab is too narrow to hold it.
+            const showLabel = nodeRect!.showLabel;
+            const cx = x + width / 2;
+            const cy = y + height / 2;
+            return (
+              <g key={b.id} onMouseEnter={onHoverBlock ? (e) => onHoverBlock(b, e) : undefined}
+                 onMouseLeave={onLeaveBlock}>
+                <rect x={x} y={y} width={width} height={height} rx={2}
+                      fill={fill} {...border} className="rack-faceplate" />
+                {showLabel && (
+                  <text transform={`rotate(-90 ${cx} ${cy})`} x={cx} y={cy} textAnchor="middle"
+                        dominantBaseline="middle" fill={textColor} className="rack-block-label">
+                    {rackLabel(b.label, null, height - 6)}
+                  </text>
+                )}
+              </g>
+            );
+          }
+          const showLabel = height >= 10;
+          const label = (b.orphan ? '! ' : '') + rackLabel(b.label, b.position, width);
           return (
             <g key={b.id} onMouseEnter={onHoverBlock ? (e) => onHoverBlock(b, e) : undefined}
                onMouseLeave={onLeaveBlock}>

@@ -57,9 +57,11 @@ describe('RackViewModal (render smoke)', () => {
   });
 
   it('draws the nodes in a second NODES elevation, not on the chassis faceplate', () => {
+    // A tall (8U) chassis so each node's book-spine slab has enough height
+    // budget to hold the full node name without truncating it.
     const rows = [
       makeRow({ id: 'ch', source_ru: 33, source_position: null,
-                asset: makeAsset({ id: 'a-ch', name: 'nvlarch03-i', ru_size: 4 }) }),
+                asset: makeAsset({ id: 'a-ch', name: 'nvlarch03-i', ru_size: 8 }) }),
       makeRow({ id: 'n1', source_ru: 33.1, source_position: null,
                 asset: makeAsset({ id: 'a-n1', name: 'nvlarch03-mgmt032', ru_size: null }) }),
       makeRow({ id: 'n2', source_ru: 33.2, source_position: null,
@@ -72,9 +74,14 @@ describe('RackViewModal (render smoke)', () => {
     // the devices frame draws the chassis and nothing of its nodes
     expect(within(devices).getByText('nvlarch03-i')).toBeTruthy();
     expect(within(devices).queryByText('nvlarch03-mgmt032')).toBeNull();
-    // the nodes frame draws each node as its own faceplate
-    expect(within(nodes).getByText('nvlarch03-mgmt032')).toBeTruthy();
-    expect(within(nodes).getByText('nvlarch03-mgmt030')).toBeTruthy();
+    // the nodes frame draws each node as its own faceplate, spine label
+    // rotated to read like a book on the shelf
+    const n1Text = within(nodes).getByText('nvlarch03-mgmt032');
+    const n2Text = within(nodes).getByText('nvlarch03-mgmt030');
+    expect(n1Text).toBeTruthy();
+    expect(n2Text).toBeTruthy();
+    expect(n1Text.getAttribute('transform')).toMatch(/^rotate\(-90/);
+    expect(n2Text.getAttribute('transform')).toMatch(/^rotate\(-90/);
     expect(within(nodes).queryByText('nvlarch03-i')).toBeNull();
     // the slot pills are gone for good
     expect(screen.queryByRole('img', { name: /^Slot / })).toBeNull();

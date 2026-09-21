@@ -716,26 +716,28 @@ describe('nodeBlocks', () => {
     block({ id: 'ch', label: 'chassis-a', ru: 33, height: 4, position: 'front',
             categoryLabel: 'Server', categoryColor: '#1668a7', children, ...over });
 
-  it('gives four nodes in a 4U chassis a 1U cell each, ascending slot from the bottom', () => {
-    expect(nodeBlocks([chassis(nodes(4))]).map((c) => [c.id, c.ru, c.height]))
-      .toEqual([['n1', 33, 1], ['n2', 34, 1], ['n3', 35, 1], ['n4', 36, 1]]);
+  it('gives four nodes in a 4U chassis the full chassis span, one lane each, ascending slot', () => {
+    expect(nodeBlocks([chassis(nodes(4))]).map((c) => [c.id, c.ru, c.height, c.lane, c.laneCount]))
+      .toEqual([
+        ['n1', 33, 4, 0, 4], ['n2', 33, 4, 1, 4], ['n3', 33, 4, 2, 4], ['n4', 33, 4, 3, 4],
+      ]);
   });
 
-  it('gives two nodes in a 4U chassis a 2U cell each', () => {
-    expect(nodeBlocks([chassis(nodes(2))]).map((c) => [c.id, c.ru, c.height]))
-      .toEqual([['n1', 33, 2], ['n2', 35, 2]]);
+  it('gives two nodes in a 4U chassis the full chassis span, two lanes', () => {
+    expect(nodeBlocks([chassis(nodes(2))]).map((c) => [c.id, c.ru, c.height, c.lane, c.laneCount]))
+      .toEqual([['n1', 33, 4, 0, 2], ['n2', 33, 4, 1, 2]]);
   });
 
-  it('gives four nodes in a 1U chassis fractional cells', () => {
-    expect(nodeBlocks([chassis(nodes(4), { height: 1 })]).map((c) => [c.ru, c.height]))
-      .toEqual([[33, 0.25], [33.25, 0.25], [33.5, 0.25], [33.75, 0.25]]);
+  it('gives four nodes in a 1U chassis the full 1U span, no fractional heights anywhere', () => {
+    expect(nodeBlocks([chassis(nodes(4), { height: 1 })]).map((c) => [c.ru, c.height, c.lane]))
+      .toEqual([[33, 1, 0], [33, 1, 1], [33, 1, 2], [33, 1, 3]]);
   });
 
   it('orders the cells by the slot order the block carries, not by id', () => {
     const cells = nodeBlocks([chassis([
       child({ id: 'low', slot: 1 }), child({ id: 'high', slot: 4 }),
     ])]);
-    expect(cells.map((c) => [c.id, c.slot, c.ru])).toEqual([['low', 1, 33], ['high', 4, 35]]);
+    expect(cells.map((c) => [c.id, c.slot, c.lane])).toEqual([['low', 1, 0], ['high', 4, 1]]);
   });
 
   it("keeps the node's own category and falls back to the chassis's", () => {
@@ -756,6 +758,7 @@ describe('nodeBlocks', () => {
       [33, 'chassis-a', 'front', null]);
     expect([cell.label, cell.verified, cell.makeModel, cell.children])
       .toEqual(['node-1', true, 'Dell node', []]);
+    expect([cell.ru, cell.height, cell.lane, cell.laneCount]).toEqual([33, 4, 0, 1]);
   });
 
   it('includes nothing for child-less blocks', () => {

@@ -51,9 +51,9 @@ import type { DisplayBlock } from './RackElevation';
 
 export {
   FACEPLATE_USABLE_WIDTH, assignLanes, ghostBlocksFor, isRearPosition, laneGeometry,
-  rackLabel, tooltipRows,
+  nodeColumnGeometry, rackLabel, tooltipRows,
 } from './RackElevation';
-export type { DisplayBlock, LaneRect, TooltipRow } from './RackElevation';
+export type { DisplayBlock, LaneRect, NodeColumnRect, TooltipRow } from './RackElevation';
 
 interface HoverState { block: DisplayBlock; x: number; y: number; }
 
