@@ -19,7 +19,8 @@ import {
   type AssetModelItem,
 } from '../lib/api';
 import {
-  MODEL_ERRORS, MODEL_GOD_FIELDS, formatDims, modelCellText, modelSearchText, titleCase,
+  MODEL_ERRORS, MODEL_GOD_FIELDS, formatDims, formFactorLabel, modelCellText, modelSearchText,
+  titleCase,
 } from '../lib/assets';
 import { initialOpenId } from '../lib/auditFormat';
 import {
@@ -53,6 +54,7 @@ const COLUMNS: ColumnDef[] = [
   { key: 'weight', label: 'Weight', width: '1.2fr', default: true },
   { key: 'dims', label: 'Dimensions', width: '1.6fr', default: true },
   { key: 'mount', label: 'Mount', width: '0.8fr', default: true },
+  { key: 'form', label: 'Form factor', width: '0.8fr', default: true },
   { key: 'rail', label: 'Rail type', width: '0.8fr', default: false },
   { key: 'aliases', label: 'Aliases', width: '0.6fr', default: false },
   { key: 'weight_lbs', label: 'Weight (lb)', width: '0.8fr', default: false, godOnly: true },
@@ -87,6 +89,7 @@ function sortValueFor(m: AssetModelItem, key: string): string {
     case 'weight': return String(m.weight_lbs ?? 0);
     case 'dims': return String(m.length_in ?? 0);
     case 'mount': return (m.mount_type ?? '').toLowerCase();
+    case 'form': return (m.form_factor ?? '').toLowerCase();
     case 'rail': return (m.rail_type ?? '').toLowerCase();
     case 'aliases': return m.aliases.join(' ').toLowerCase();
     case 'weight_lbs': return String(m.weight_lbs ?? 0);
@@ -114,6 +117,7 @@ const CSV_COLUMNS: [string, (m: AssetModelItem) => string][] = [
   ['Width (in)', (m) => (m.width_in === null ? '' : String(m.width_in))],
   ['Height (in)', (m) => (m.height_in === null ? '' : String(m.height_in))],
   ['Mount type', (m) => m.mount_type ?? ''],
+  ['Form factor', (m) => m.form_factor ?? ''],
   ['Rail type', (m) => m.rail_type ?? ''],
   ['Aliases', (m) => m.aliases.join('; ')],
   ['Knowledge', (m) => m.knowledge],
@@ -262,6 +266,10 @@ export default function AssetModels() {
         return <span className="cell-top">{formatDims(m.length_in, m.width_in, m.height_in, 'in')}</span>;
       case 'mount':
         return <span className="cell-top">{titleCase(m.mount_type)}</span>;
+      case 'form':
+        return m.form_factor
+          ? <span className="chip tag">{formFactorLabel(m.form_factor)}</span>
+          : <span className="cell-top">—</span>;
       case 'rail':
         return <span className="mono">{m.rail_type ?? '—'}</span>;
       case 'aliases':
@@ -464,6 +472,7 @@ function ModelRowDetail({
           <dt>Dimensions (cm)</dt>
           <dd>{formatDims(model.length_cm, model.width_cm, model.height_cm, 'cm')}</dd>
           <dt>Mount type</dt><dd>{titleCase(model.mount_type)}</dd>
+          <dt>Form factor</dt><dd>{formFactorLabel(model.form_factor)}</dd>
           <dt>Rail type</dt><dd>{model.rail_type ?? '—'}</dd>
         </dl>
       </div>

@@ -6,8 +6,8 @@ import { applyColumnOrder } from './listTools';
 import {
   ASSET_ERRORS, ASSET_GOD_FIELDS, IDENTITY_KEYS, MODEL_ERRORS, MODEL_GOD_FIELDS,
   assetCellText, assetSearchText, assetPayload, duplicateSerials, formFromAsset, formFromModel,
-  formatDims, identityFirst, migrateIdentityColumns, modelCellText, modelPayload, needsModelCreate,
-  parseDims, partnerFor,
+  formatDims, formFactorLabel, identityFirst, migrateIdentityColumns, modelCellText, modelPayload,
+  needsModelCreate, parseDims, partnerFor,
 } from './assets';
 
 const asset = (over: Partial<AssetItem> = {}): AssetItem => ({
@@ -24,7 +24,7 @@ const assetModel = (over: Partial<AssetModelItem> = {}): AssetModelItem => ({
   category_label: 'Server', category_color: '#1668a7', ru_size: 2,
   weight_lbs: 50, weight_kg: 22.68, length_in: 32, width_in: 17,
   height_in: 3.4, length_cm: 81.28, width_cm: 43.18, height_cm: 8.64,
-  mount_type: 'rails', rail_type: 'B7', knowledge: 'Careful with rails.',
+  mount_type: 'rails', rail_type: 'B7', form_factor: null, knowledge: 'Careful with rails.',
   aliases: ['R740'], created_at: '', updated_at: '',
   ...over,
 });
@@ -83,7 +83,7 @@ describe('model form payload', () => {
     category_label: 'Server', category_color: '#1668a7', ru_size: 2,
     weight_lbs: 50, weight_kg: 22.68, length_in: 32, width_in: 17,
     height_in: 3.4, length_cm: 81.28, width_cm: 43.18, height_cm: 8.64,
-    mount_type: 'rails', rail_type: 'B7', knowledge: '', aliases: [],
+    mount_type: 'rails', rail_type: 'B7', form_factor: 'chassis', knowledge: '', aliases: [],
     created_at: '', updated_at: '',
   };
   it('sends only the CHANGED unit side so the API recomputes the partner', () => {
@@ -114,6 +114,20 @@ describe('model form payload', () => {
     const p = modelPayload(f, model);
     expect(p.weight_lbs).toBeNull();
     expect('weight_kg' in p).toBe(false);   // untouched side omitted; server clears it
+  });
+  it('sends form_factor when changed and null when cleared', () => {
+    const f = formFromModel(model);
+    expect(f.form_factor).toBe('chassis');
+    f.form_factor = 'node';
+    expect(modelPayload(f, model)).toEqual({ form_factor: 'node' });
+    f.form_factor = '';
+    expect(modelPayload(f, model)).toEqual({ form_factor: null });
+  });
+  it('modelCellText and formFactorLabel read the form factor', () => {
+    expect(modelCellText(model, 'form')).toBe('Chassis');
+    expect(modelCellText({ ...model, form_factor: null }, 'form')).toBe('—');
+    expect(formFactorLabel('node')).toBe('Node');
+    expect(formFactorLabel(null)).toBe('—');
   });
 });
 
@@ -313,7 +327,7 @@ const ASSET_WRITABLE_FIELDS = new Set([
 const MODEL_WRITABLE_FIELDS = new Set([
   'make', 'model', 'category', 'ru_size', 'weight_lbs', 'weight_kg',
   'length_in', 'width_in', 'height_in', 'length_cm', 'width_cm',
-  'height_cm', 'mount_type', 'rail_type', 'knowledge',
+  'height_cm', 'mount_type', 'rail_type', 'form_factor', 'knowledge',
 ]);
 
 describe('ASSET_GOD_FIELDS', () => {
@@ -369,7 +383,7 @@ describe('MODEL_GOD_FIELDS', () => {
       primary: 'Dell', primary2: 'R740', category: 'server', ru: '2',
       weight_lbs: '50', weight_kg: '22.68', length_in: '32', width_in: '17',
       height_in: '3.4', length_cm: '81.28', width_cm: '43.18', height_cm: '8.64',
-      mount: 'rails', rail: 'B7', knowledge: 'Careful with rails.',
+      mount: 'rails', rail: 'B7', form: '', knowledge: 'Careful with rails.',
     };
     expect(fields.map((f) => f.column).sort()).toEqual(Object.keys(expected).sort());
     for (const f of fields) expect(f.fromRow(m)).toBe(expected[f.column]);

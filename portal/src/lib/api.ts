@@ -1326,7 +1326,7 @@ export interface AssetModelItem {
   weight_lbs: number | null; weight_kg: number | null;
   length_in: number | null; width_in: number | null; height_in: number | null;
   length_cm: number | null; width_cm: number | null; height_cm: number | null;
-  mount_type: string | null; rail_type: string | null;
+  mount_type: string | null; rail_type: string | null; form_factor: string | null;
   knowledge: string; aliases: string[]; created_at: string; updated_at: string;
 }
 
