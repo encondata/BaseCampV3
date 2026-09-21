@@ -1890,6 +1890,7 @@ class InitiativeAssetSummary(BaseModel):
     serial_number: str | None = None
     name: str | None = None
     rfid_tag: str | None = None
+    pod_number: str | None = None
     model_make: str | None = None
     model_name: str | None = None
     ru_size: int | None = None
@@ -1914,10 +1915,12 @@ class InitiativeAssetOut(BaseModel):
     source_ru: float | None = None
     source_verified: bool | None = None
     source_position: str | None = None
+    source_pod: str | None = None
     destination_rack: str | None = None
     destination_ru: float | None = None
     destination_verified: bool | None = None
     destination_position: str | None = None
+    destination_pod: str | None = None
     cable_info: str | None = None
     vendor_involved: bool | None = None
     status: str
@@ -1941,10 +1944,12 @@ class InitiativeAssetUpdateIn(BaseModel):
     source_ru: str | float | int | None = None
     source_verified: bool | None = None
     source_position: str | None = None
+    source_pod: str | None = None
     destination_rack: str | None = None
     destination_ru: str | float | int | None = None
     destination_verified: bool | None = None
     destination_position: str | None = None
+    destination_pod: str | None = None
     cable_info: str | None = None
     vendor_involved: bool | None = None
     status: str | None = None

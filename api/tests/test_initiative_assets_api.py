@@ -406,3 +406,29 @@ async def test_view_only_user_gets_get_not_write(client, db, seeded_user):
     assert (await client.delete(
         f"/initiatives/assets/{assoc_id}", headers=view_headers)
             ).status_code == 403
+
+
+async def test_patch_pods_and_embedded_asset_pod(client, db, seeded_user):
+    headers = await login(client)
+    iid = await _move(client, headers)
+    a = await _asset(db, serial_number="SN-pod", pod_number="14")
+    await db.commit()
+    rows = (await client.post(
+        f"/initiatives/{iid}/assets", headers=headers,
+        json={"asset_ids": [str(a.id)]})).json()
+    assert rows[0]["asset"]["pod_number"] == "14"
+    assert rows[0]["source_pod"] is None
+    assoc_id = rows[0]["id"]
+
+    resp = await client.patch(f"/initiatives/assets/{assoc_id}",
+                              headers=headers,
+                              json={"source_pod": "14", "destination_pod": "9"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["source_pod"] == "14"
+    assert resp.json()["destination_pod"] == "9"
+
+    resp = await client.patch(f"/initiatives/assets/{assoc_id}",
+                              headers=headers, json={"destination_pod": ""})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["destination_pod"] is None
+    assert resp.json()["source_pod"] == "14"
