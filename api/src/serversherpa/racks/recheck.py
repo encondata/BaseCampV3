@@ -27,17 +27,18 @@ RESETTABLE = frozenset({CLEAR, COLLISION, ORPHAN})
 
 async def recheck_placement(db: AsyncSession, initiative_id: uuid.UUID) -> dict:
     rows = (await db.execute(
-        select(InitiativeAsset, Asset.name, Asset.serial_number, AssetModel.ru_size)
+        select(InitiativeAsset, Asset.name, Asset.serial_number,
+               AssetModel.ru_size, AssetModel.form_factor)
         .join(Asset, Asset.id == InitiativeAsset.asset_id)
         .outerjoin(AssetModel, AssetModel.id == Asset.model_id)
         .where(InitiativeAsset.initiative_id == initiative_id))).all()
 
     placed: list[Placed] = []
-    for ia, name, serial, ru_size in rows:
+    for ia, name, serial, ru_size, form_factor in rows:
         if ia.destination_rack and ia.destination_ru is not None:
             placed.append(place(key=str(ia.id), label=name or serial or "",
                                 rack=ia.destination_rack, ru=ia.destination_ru,
-                                height=ru_size))
+                                height=ru_size, form_factor=form_factor))
     result = evaluate(placed)
     colliding = result.colliding_keys
     orphaned = result.orphan_keys - colliding

@@ -98,8 +98,12 @@ class RailSummary:
 
 
 def rail_summary(assets: list[MoveAsset]) -> RailSummary:
+    """Nodes live inside a chassis and have no rails of their own, so a
+    model flagged `node` is left out of the rail counts entirely. The load
+    summary still counts them: they move as separate items."""
+    railed = [a for a in assets if a.form_factor != "node"]
     groups: dict[tuple[str, str], list[MoveAsset]] = defaultdict(list)
-    for a in assets:
+    for a in railed:
         groups[_model_key(a)].append(a)
     counts: dict[str, int] = defaultdict(int)
     models = []
@@ -111,7 +115,7 @@ def rail_summary(assets: list[MoveAsset]) -> RailSummary:
                                 rail_type=rail, ru_size=_ru(rows[0])))
     rail_types = sorted((RailTypeCount(k, v) for k, v in counts.items()),
                         key=lambda x: (-x.count, x.rail_type))
-    return RailSummary(total_assets=len(assets), rail_types=rail_types, models=models)
+    return RailSummary(total_assets=len(railed), rail_types=rail_types, models=models)
 
 
 @dataclass(frozen=True)

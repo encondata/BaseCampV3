@@ -98,3 +98,27 @@ def test_sorted_by_side_orders_rack_then_ru_nulls_last():
             _asset(row_id="3", source_rack="A", source_ru=2),
             _asset(row_id="4", source_rack=None, source_ru=None)]
     assert [r.row_id for r in sorted_by_side(rows, "source")] == ["3", "2", "1", "4"]
+
+
+def test_rail_summary_skips_nodes_but_load_summary_keeps_them():
+    chassis = _asset(row_id="c", make="Dell", model="H5600", rail_type="Static",
+                     ru_size=4, form_factor="chassis", weight_lbs=Decimal("120"))
+    nodes = [_asset(row_id=f"n{i}", make="Dell", model="H5600 node", rail_type=None,
+                    ru_size=None, form_factor="node", weight_lbs=Decimal("20"))
+             for i in (1, 2)]
+    r = rail_summary([chassis, *nodes])
+    assert r.total_assets == 1
+    assert [(x.rail_type, x.count) for x in r.rail_types] == [("Static", 1)]
+    assert [(m.model, m.count) for m in r.models] == [("H5600", 1)]
+    s = load_summary([chassis, *nodes])
+    assert s.total_assets == 3 and s.total_weight_lbs == 160.0
+
+
+def test_collisions_report_form_factor_mismatch_orphans():
+    ch = _asset(row_id="c", name="c", ru_size=4, form_factor="chassis",
+                destination_rack="R1", destination_ru=10)
+    bad = _asset(row_id="b", name="b", form_factor="standalone",
+                 destination_rack="R1", destination_ru=10.1)
+    rep = collisions([ch, bad])
+    assert rep.items == []
+    assert [(o.asset.name, o.reason) for o in rep.orphans] == [("b", "form_factor_mismatch")]

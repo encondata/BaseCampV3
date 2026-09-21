@@ -98,3 +98,29 @@ async def test_collision_wins_over_orphan_for_the_same_row(db):
     await db.commit()
     assert result["collisions"] == 2 and result["orphans"] == 0
     assert (await _statuses(db, ini))["node"] == "location_collision"
+
+
+async def test_form_factor_mismatch_is_an_orphan(db):
+    ini = Initiative(name="Move F", initiative_type="move", status="planned")
+    db.add(ini)
+    await db.flush()
+    chassis_m = AssetModel(make="Dell", model="H5600 chassis", ru_size=4, form_factor="chassis")
+    node_m = AssetModel(make="Dell", model="H5600 node", form_factor="node")
+    plain_m = AssetModel(make="Dell", model="R740", ru_size=1, form_factor="standalone")
+    db.add_all([chassis_m, node_m, plain_m])
+    await db.flush()
+    specs = [("ch", chassis_m, "33"), ("n1", node_m, "33.1"),
+             ("loose", node_m, "40"), ("srv", plain_m, "33.2")]
+    for serial, model, ru in specs:
+        a = Asset(serial_number=serial, name=serial, model_id=model.id)
+        db.add(a)
+        await db.flush()
+        db.add(InitiativeAsset(initiative_id=ini.id, asset_id=a.id,
+                               destination_rack="R1", destination_ru=Decimal(ru)))
+    await db.commit()
+    result = await recheck_placement(db, ini.id)
+    await db.commit()
+    assert result == {"checked": 4, "collisions": 0, "orphans": 2, "cleared": 0}
+    st = await _statuses(db, ini)
+    assert st == {"ch": "loaded_in_system", "n1": "loaded_in_system",
+                  "loose": "orphan_node", "srv": "orphan_node"}

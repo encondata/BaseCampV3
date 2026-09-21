@@ -54,9 +54,8 @@ class MoveAsset:
     category_label: str | None = None
     category_color: str | None = None
     # Model form factor: standalone | chassis | node | None. Read by the
-    # placement rule and (later) the rail report; defaulted so fixtures
-    # without one keep constructing. Populated by gather() once the
-    # asset_models column exists (migration 0068).
+    # placement rule and the rail report; defaulted so fixtures without
+    # one keep constructing.
     form_factor: str | None = None
 
     @property
@@ -148,6 +147,7 @@ async def gather(db: AsyncSession, initiative_id: uuid.UUID) -> MoveData:
         destination_position=ia.destination_position,
         category_label=cat.label if cat else None,
         category_color=cat.color if cat else None,
+        form_factor=m.form_factor if m else None,
     ) for ia, a, m, cat in rows]
 
     return MoveData(
