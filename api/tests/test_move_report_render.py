@@ -58,6 +58,7 @@ def test_all_sections_render_with_data():
         assert heading in html
     assert "NAP11 move" in html and "Acme" in html and "1 Main St" in html
     assert "web-01" in html and "Sliding" in html
+    assert "assets with rails counted" in html      # RailSummary.total_assets
     assert "ru_overlap" in html or "RU overlap" in html          # both at D1 RU 20 collide
     assert html.count("<svg>") == 2                              # source + destination rack
     assert "Generated 2026-09-09" in html and "Alice Anderson" in html
@@ -89,6 +90,7 @@ def test_collision_section_lists_orphan_nodes():
     assert "Orphan nodes" in html
     assert "web-02" in html and "31.2" in html
     assert "No device starts at this RU" in html
+    assert "1 orphan nodes" in html
 
 
 def _pdf_objects(pdf: bytes) -> bytes:

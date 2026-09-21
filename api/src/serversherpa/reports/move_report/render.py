@@ -85,7 +85,8 @@ class ReportContext:
     def collision_label(kind: str) -> str:
         return COLLISION_LABELS.get(kind, kind)
 
-    def orphan_label(self, reason: str) -> str:
+    @staticmethod
+    def orphan_label(reason: str) -> str:
         return ORPHAN_LABELS.get(reason, reason)
 
 

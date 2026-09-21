@@ -125,6 +125,7 @@
 {% if ctx.options.rail_usage %}
 <section>
   <h2>Rail Usage Report</h2>
+  <p>{{ ctx.rails.total_assets }} assets with rails counted · nodes housed in a chassis are excluded</p>
   <table><thead><tr><th>Rail Type</th><th class="num">Count</th></tr></thead>
     <tbody>{% for r in ctx.rails.rail_types %}<tr><td>{{ r.rail_type }}</td><td class="num">{{ r.count }}</td></tr>{% endfor %}</tbody></table>
   <table><thead><tr><th>Make/Model</th><th class="num">Count</th><th>Rail Type</th><th class="num">RU Size</th></tr></thead>
@@ -138,7 +139,8 @@
 <section>
   <h2>Collision Report</h2>
   <p>{{ ctx.collisions.assets_checked }} assets with destination assignments checked ·
-     {{ ctx.collisions.collision_count }} collisions · {{ ctx.collisions.assets_flagged }} assets flagged</p>
+     {{ ctx.collisions.collision_count }} collisions · {{ ctx.collisions.assets_flagged }} assets flagged ·
+     {{ ctx.collisions.orphans|length }} orphan nodes</p>
   {% if ctx.collisions.items %}
   <table>
     <thead><tr><th>Rack</th><th>Type</th><th>Overlapping RUs</th><th>Asset A</th><th>Asset B</th></tr></thead>

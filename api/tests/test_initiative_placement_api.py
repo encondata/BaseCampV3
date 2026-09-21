@@ -8,7 +8,7 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from serversherpa.db.models import (
-    Asset, AssetModel, AuditLog, Initiative, InitiativeAsset,
+    Asset, AssetModel, AuditLog, InitiativeAsset,
 )
 
 from .test_assets_api import login

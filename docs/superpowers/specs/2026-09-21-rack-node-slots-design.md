@@ -122,7 +122,7 @@ behavior of stamping the status directly.
 A new endpoint `POST /initiatives/{id}/assets/recheck-placement`
 (permission `initiatives:change`, global scope) runs the placement rule
 over the whole destination roster and applies the status transitions
-above. It returns `{flagged_collisions, flagged_orphans, cleared}` and
+above. It returns `{checked, collisions, orphans, cleared}` and
 writes one audit row. The importer calls the same function after its
 commit pass instead of its own copy.
 
@@ -156,8 +156,9 @@ under their chassis with the RU shown as `33.1`.
 
 Because the server-side report renderer runs this same portal code
 under Node, the Move Report's rack drawings pick this up with no
-report-side change. The report's device list rows use the same
-`deviceListRows()` helper and inherit the indentation.
+report-side change. The report's per-rack device table is its own
+Jinja table over `RackSvg.assets` and does not indent nodes; the
+drawing is where the nesting shows in the PDF.
 
 ## Phase two: model form factor
 

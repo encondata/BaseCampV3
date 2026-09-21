@@ -8,7 +8,9 @@ retire_handheld_reader(conn)."""
 import importlib.util
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 
 from serversherpa.db.models import AssetModel, StatusValue
 
@@ -27,8 +29,6 @@ def _load():
 async def test_column_exists_with_check_constraint(db):
     await db.execute(text("INSERT INTO asset_models (make, model, form_factor) "
                           "VALUES ('A', 'ok', 'chassis')"))
-    import pytest
-    from sqlalchemy.exc import DBAPIError
     with pytest.raises(DBAPIError):
         await db.execute(text("INSERT INTO asset_models (make, model, form_factor) "
                               "VALUES ('A', 'bad', 'blade')"))

@@ -916,7 +916,9 @@ async def recheck_initiative_placement(
     if initiative.initiative_type != "move":
         raise _err(422, "not_a_move")
     result = await recheck_placement(db, initiative_id)
-    initiative.updated_at = datetime.now(UTC)
+    # a re-check that restated nothing is not a change to the initiative
+    if result["collisions"] + result["orphans"] + result["cleared"] > 0:
+        initiative.updated_at = datetime.now(UTC)
     audit(db, actor_id=actor.person.id, entity_type="initiative",
           entity_id=str(initiative_id), action="placement_recheck",
           changes=result)

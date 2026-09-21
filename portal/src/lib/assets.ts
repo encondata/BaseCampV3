@@ -107,7 +107,8 @@ export function migrateIdentityColumns(stored: StoredListPrefs): StoredListPrefs
 }
 
 export function modelSearchText(m: AssetModelItem): string {
-  return [m.make, m.model, m.rail_type, ...m.aliases].filter(Boolean).join(' ').toLowerCase();
+  return [m.make, m.model, m.rail_type, m.form_factor, ...m.aliases]
+    .filter(Boolean).join(' ').toLowerCase();
 }
 
 export const titleCase = (v: string | null): string =>

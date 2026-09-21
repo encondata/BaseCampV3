@@ -7,7 +7,7 @@ import {
   ASSET_ERRORS, ASSET_GOD_FIELDS, IDENTITY_KEYS, MODEL_ERRORS, MODEL_GOD_FIELDS,
   assetCellText, assetSearchText, assetPayload, duplicateSerials, formFromAsset, formFromModel,
   formatDims, formFactorLabel, identityFirst, migrateIdentityColumns, modelCellText, modelPayload,
-  needsModelCreate, parseDims, partnerFor,
+  modelSearchText, needsModelCreate, parseDims, partnerFor,
 } from './assets';
 
 const asset = (over: Partial<AssetItem> = {}): AssetItem => ({
@@ -27,6 +27,13 @@ const assetModel = (over: Partial<AssetModelItem> = {}): AssetModelItem => ({
   mount_type: 'rails', rail_type: 'B7', form_factor: null, knowledge: 'Careful with rails.',
   aliases: ['R740'], created_at: '', updated_at: '',
   ...over,
+});
+
+describe('modelSearchText', () => {
+  it('includes the form factor so searching "chassis" finds flagged models', () => {
+    expect(modelSearchText(assetModel({ form_factor: 'chassis' }))).toContain('chassis');
+    expect(modelSearchText(assetModel({ form_factor: null }))).not.toContain('chassis');
+  });
 });
 
 describe('partnerFor', () => {
