@@ -744,6 +744,29 @@ export async function getEffective(personId: string): Promise<EffectiveOut> {
   return resp.json();
 }
 
+export type CopyPart = 'roles' | 'groups' | 'overrides';
+export type CopyMode = 'replace' | 'add';
+export interface CopyAccessIn {
+  source_id: string; target_ids: string[]; parts: CopyPart[]; mode: CopyMode; dry_run: boolean;
+}
+export interface CopyPlanRow {
+  person_id: string; display_name: string; avatar_url: string | null;
+  status: 'ok' | 'skipped';
+  reason: 'cannot_target_self' | 'rank_too_low' | 'no_account' | 'role_rank_too_low' | null;
+  roles: { from: string[]; to: string[] } | null;
+  groups: { from: string[]; to: string[] } | null;
+  overrides: { added: number; removed: number; changed: number } | null;
+}
+export interface CopyAccessOut { mode: CopyMode; parts: CopyPart[]; targets: CopyPlanRow[]; applied: boolean }
+
+export async function copyAccess(body: CopyAccessIn): Promise<CopyAccessOut> {
+  const resp = await apiFetch('/access/copy', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /** Slim org projection (id/name) for resolving a scope's client/partner
  *  ids to display names — Explorer tab's "Sees: {org names}" line.
  *  `archived_at` rides along on the raw /clients and /partners payloads

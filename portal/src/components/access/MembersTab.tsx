@@ -10,13 +10,15 @@ import { useAuth } from '../../auth/AuthContext';
 import { canTouchRank, RANK_LABELS, rolesPayloadForGlobalChange } from '../../lib/access';
 import {
   ApiError, listMembers, setUserRoles,
-  type AccessSummary, type MemberItem,
+  type AccessSummary, type CopyAccessOut, type MemberItem,
 } from '../../lib/api';
 import { avatarGradient, initials } from '../../lib/format';
 import {
   ColumnsButton, ExportButton, FilterButton, exportCsv, passesFacets,
   type ColumnDef, type FacetGroup, type FacetState,
 } from '../../lib/listTools';
+import { useToast } from '../../lib/notificationsContext';
+import CopyAccessModal from './CopyAccessModal';
 import OverrideEditor from './OverrideEditor';
 
 interface Props {
@@ -52,6 +54,7 @@ type SortKey = 'name' | 'roles' | 'rank' | 'org';
 export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Props) {
   const { person: me } = useAuth();
   const selfId = me?.id ?? null;
+  const toast = useToast();
 
   const [members, setMembers] = useState<MemberItem[] | null>(null);
   const [error, setError] = useState('');
@@ -65,6 +68,7 @@ export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Pro
   const [rowBusy, setRowBusy] = useState<Record<string, boolean>>({});
   const [overrideCounts, setOverrideCounts] = useState<Record<string, number>>({});
   const [editingOverridesFor, setEditingOverridesFor] = useState<MemberItem | null>(null);
+  const [copyFor, setCopyFor] = useState<{ open: boolean; sourceId: string | null }>({ open: false, sourceId: null });
 
   const load = () => {
     listMembers().then(setMembers).catch(() => setError('Failed to load members.'));
@@ -152,7 +156,7 @@ export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Pro
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const shownCols = COLUMNS.filter((c) => visibleCols.has(c.key));
-  const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 1.2fr 110px` };
+  const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 1.2fr 170px` };
 
   const changeRole = async (member: MemberItem, newRole: string) => {
     setRowBusy((b) => ({ ...b, [member.person_id]: true }));
@@ -219,6 +223,11 @@ export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Pro
           <FilterButton groups={facetGroups} state={facets} onChange={setFacets} />
           <ColumnsButton columns={COLUMNS} visible={visibleCols} onChange={setVisibleCols} />
           <ExportButton onExport={() => exportCsv('members', CSV_COLUMNS, visible)} />
+          {canEdit && (
+            <button className="mini-btn accent" onClick={() => setCopyFor({ open: true, sourceId: null })}>
+              Copy access…
+            </button>
+          )}
         </div>
       </div>
 
@@ -284,6 +293,11 @@ export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Pro
                     Overrides
                     {(overrideCounts[m.person_id] ?? 0) > 0 && ` (${overrideCounts[m.person_id]})`}
                   </button>
+                  {canEdit && (
+                    <button className="mini-btn" onClick={() => setCopyFor({ open: true, sourceId: m.person_id })}>
+                      Copy
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -301,6 +315,23 @@ export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Pro
           onClose={() => setEditingOverridesFor(null)}
           onLoaded={(count) => setOverrideCounts((c) => ({ ...c, [editingOverridesFor.person_id]: count }))}
           onSaved={() => { setEditingOverridesFor(null); onChanged(); }}
+        />
+      )}
+
+      {copyFor.open && members && (
+        <CopyAccessModal
+          members={members}
+          sourceId={copyFor.sourceId}
+          onClose={() => setCopyFor({ open: false, sourceId: null })}
+          onApplied={(result: CopyAccessOut) => {
+            setCopyFor({ open: false, sourceId: null });
+            const changed = result.targets.filter((t) => t.status === 'ok' && (t.roles || t.groups || t.overrides)).length;
+            const skipped = result.targets.filter((t) => t.status === 'skipped').length;
+            toast(`Access copied to ${changed} ${changed === 1 ? 'person' : 'people'}`
+              + (skipped ? `, ${skipped} skipped` : ''));
+            load();
+            onChanged();
+          }}
         />
       )}
     </div>

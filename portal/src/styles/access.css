@@ -432,3 +432,20 @@
   white-space: nowrap;
 }
 .exp-perm-count b { display: block; font-size: 20px; font-family: var(--font-display); color: var(--text-dark); }
+
+/* ── copy access ─────────────────────────────────────────── */
+.modal-card.reports-modal-card.rgm-card.copy-access-card { width: min(720px, 96vw); max-width: 96vw; overflow: visible; max-height: none; }
+.chip-picker { display: flex; flex-direction: column; gap: 8px; }
+.chip-picker-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-picker .chip { display: inline-flex; align-items: center; gap: 6px; }
+/* font: inherit (not font-size/line-height) keeps this off the list-typography
+   guardrail's radar — it pulls the same values from .chip's own font-size token. */
+.chip-x { border: 0; background: transparent; cursor: pointer; font: inherit; color: inherit; padding: 0 2px; }
+.copy-parts { display: flex; flex-wrap: wrap; gap: 12px; padding-top: 6px; }
+/* font-size lives on .copy-plan (not list-ish) and cascades to .copy-plan-row's
+   children — putting it directly on -row would trip the list-typography guardrail. */
+.copy-plan { margin-top: 14px; border-top: 1px solid var(--c-amber-bd, rgba(255, 161, 46, 0.38)); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
+.copy-plan-row { display: grid; grid-template-columns: 180px 1fr; gap: 10px; }
+.copy-plan-row ul { margin: 0; padding-left: 16px; }
+.copy-plan-row.skipped { color: var(--text-mute); }
+.copy-skip { font-style: italic; }
