@@ -1212,6 +1212,31 @@ class ReviewDismissIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class MergeIn(BaseModel):
+    source_id: uuid.UUID
+    dry_run: bool = False
+    model_config = ConfigDict(extra="forbid")
+
+
+class MergeConflict(BaseModel):
+    alias: str
+    model_id: uuid.UUID
+    make: str
+    model: str
+
+
+class MergePlanOut(BaseModel):
+    target: ModelSummary
+    source: ModelSummary
+    moves: dict[str, int]
+    fills: dict[str, float | int | str | None]
+    alias_added: str | None
+    aliases_after: list[str]
+    conflicts: list[MergeConflict]
+    can_merge: bool
+    applied: bool
+
+
 class AssetItem(BaseModel):
     id: uuid.UUID
     legacy_id: int | None = None   # the human Asset ID (V2 ids kept; V3 from 100000)

@@ -12,8 +12,10 @@ from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     AssetCategoryCreateIn, AssetCategoryOut, AssetCategoryUpdateIn,
     AssetModelAliasesIn, AssetModelCreateIn, AssetModelItem,
-    AssetModelUpdateIn, ReviewDismissIn, ReviewItem, ReviewOut,
+    AssetModelUpdateIn, MergeIn, MergePlanOut, ModelSummary,
+    ReviewDismissIn, ReviewItem, ReviewOut,
 )
+from serversherpa.assets.merge import apply_plan, build_plan
 from serversherpa.assets.review import duplicate_groups, is_imported
 from serversherpa.assets.units import apply_unit_pairs
 from serversherpa.db.models import (
@@ -297,6 +299,59 @@ async def set_asset_model_aliases(
               changes={"added": sorted(added), "removed": sorted(removed)})
     await db.commit()
     return await _detail(db, m)
+
+
+@router.post("/{target_id}/merge", response_model=MergePlanOut)
+async def merge_asset_model(
+    target_id: uuid.UUID,
+    body: MergeIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("asset_models", "change"),
+) -> MergePlanOut:
+    """Fold `source_id` into this model. Dry run returns the plan only."""
+    _require_global(actor)
+    if body.source_id == target_id:
+        raise _err(409, "cannot_merge_self")
+    target = await db.get(AssetModel, target_id)
+    source = await db.get(AssetModel, body.source_id)
+    if target is None or source is None:
+        raise _err(404, "asset_model_not_found")
+    now = datetime.now(UTC)
+    plan = await build_plan(db, target, source, now)
+
+    cats = await _cats(db)
+    aliases = await _aliases_by_model(db, [target.id, source.id])
+    counts = await _counts(db, [target.id, source.id])
+
+    def summary(m: AssetModel) -> ModelSummary:
+        a, s = counts.get(m.id, (0, 0))
+        return ModelSummary(**_item(m, cats, aliases), asset_count=a, stock_line_count=s)
+
+    out = MergePlanOut(target=summary(target), source=summary(source),
+                       moves=plan.moves, fills=plan.fills,
+                       alias_added=plan.alias_added, aliases_after=plan.aliases_after,
+                       conflicts=plan.conflicts, can_merge=plan.can_merge,
+                       applied=False)
+    if body.dry_run:
+        return out
+    if not plan.can_merge:
+        raise _err(409, "alias_conflict", conflicts=plan.conflicts)
+    source_name = f"{source.make} {source.model}"
+    source_id = str(source.id)
+    await apply_plan(db, target, source, plan, now)
+    audit(db, actor_id=actor.person.id, entity_type="asset_model",
+          entity_id=str(target.id), action="merge",
+          changes={"source_id": source_id, "source_make_model": source_name,
+                   "moves": plan.moves, "fills": plan.fills,
+                   "alias_added": plan.alias_added,
+                   "aliases_moved": plan.aliases_moved})
+    audit(db, actor_id=actor.person.id, entity_type="asset_model",
+          entity_id=source_id, action="merged_into",
+          changes={"target_id": str(target.id),
+                   "target_make_model": f"{target.make} {target.model}"})
+    await db.commit()
+    out.applied = True
+    return out
 
 
 @categories_router.get("/asset-categories", response_model=list[AssetCategoryOut])
