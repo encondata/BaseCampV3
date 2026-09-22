@@ -143,3 +143,30 @@ def test_can_touch_rank():
     assert can_touch_rank(60, 60) is False     # strictly below only
     assert can_touch_rank(40, 60) is False
     assert can_touch_rank(60, 100) is False
+
+
+async def test_role_grants_override_replaces_one_role(db):
+    p = await make_person(db, "staff")
+    a = await resolve_access(db, p.id, role_grants_override={
+        "staff": {("workers", "view"), ("access", "view")}})
+    assert a.perms["workers"] == {"view": True, "add": False,
+                                  "change": False, "delete": False}
+    # a role the person does not hold is ignored
+    b = await resolve_access(db, p.id, role_grants_override={
+        "admin": {("settings", "change")}})
+    assert b.perms["settings"]["change"] is False
+    # no override -> unchanged behavior
+    c = await resolve_access(db, p.id)
+    assert c.perms["workers"]["delete"] is True
+
+
+async def test_effective_cells_override_keeps_sourcing(db):
+    from serversherpa.access.effective import effective_cells
+    p = await make_person(db, "staff")
+    db.add(PermissionOverride(person_id=p.id, resource="workers",
+                              action="view", allow=True))
+    await db.commit()
+    eff = await effective_cells(db, p.id, role_grants_override={
+        "staff": {("access", "view")}})
+    assert eff.cells["workers"]["view"] == {"value": True, "source": "override"}
+    assert eff.cells["workers"]["add"] == {"value": False, "source": "role"}

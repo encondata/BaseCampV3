@@ -22,6 +22,28 @@ def can_touch_rank(actor_rank: int, target_rank: int) -> bool:
     return actor_rank >= TOP_RANK or target_rank < actor_rank
 
 
+RoleGrants = dict[str, set[tuple[str, str]]]
+
+
+async def role_grants(db: AsyncSession, role_names: set[str],
+                      override: RoleGrants | None = None) -> dict[str, set[str]]:
+    """resource -> granted actions for the union of `role_names`. A role
+    named in `override` contributes exactly those (resource, action) pairs
+    instead of its role_permissions rows — the matrix-preview hook."""
+    granted: dict[str, set[str]] = {}
+    override = override or {}
+    from_table = {r for r in role_names if r not in override}
+    if from_table:
+        for res, action in (await db.execute(
+            select(RolePermission.resource, RolePermission.action)
+            .where(RolePermission.role.in_(from_table)))).all():
+            granted.setdefault(res, set()).add(action)
+    for name in role_names & set(override):
+        for res, action in override[name]:
+            granted.setdefault(res, set()).add(action)
+    return granted
+
+
 @dataclass
 class AccessInfo:
     perms: dict[str, dict[str, bool]] = field(default_factory=dict)
@@ -36,7 +58,8 @@ class AccessInfo:
         return self.perms.get(resource, {}).get(action, False)
 
 
-async def resolve_access(db: AsyncSession, person_id: uuid.UUID) -> AccessInfo:
+async def resolve_access(db: AsyncSession, person_id: uuid.UUID, *,
+                         role_grants_override: RoleGrants | None = None) -> AccessInfo:
     grants = (await db.execute(
         select(PersonRole.role, PersonRole.client_id, PersonRole.partner_id,
                Role.rank, Role.scope_anchor)
@@ -58,13 +81,7 @@ async def resolve_access(db: AsyncSession, person_id: uuid.UUID) -> AccessInfo:
     info.is_global = "global" in info.anchors
     role_set = set(info.role_names)
 
-    granted: dict[str, set[str]] = {}
-    if role_set:
-        for res, action in (await db.execute(
-            select(RolePermission.resource, RolePermission.action)
-            .where(RolePermission.role.in_(role_set))
-        )).all():
-            granted.setdefault(res, set()).add(action)
+    granted = await role_grants(db, role_set, role_grants_override)
 
     overrides: dict[str, dict[str, bool]] = {}
     for res, action, allow in (await db.execute(
