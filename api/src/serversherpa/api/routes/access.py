@@ -143,13 +143,12 @@ async def _load_role_for_edit(
     return role
 
 
-@router.put("/roles/{name}/matrix")
-async def put_matrix(
-    name: str,
-    body: MatrixIn,
-    db: DbSession,
-    actor: AuthContext = require_permission("access", "change"),
-) -> dict:
+async def _validated_matrix_edit(
+    db: DbSession, actor: AuthContext, name: str, body: MatrixIn,
+) -> tuple[Role, set[tuple[str, str]], set[tuple[str, str]]]:
+    """Guards shared by the matrix PUT and its preview: role editable at the
+    actor's rank, not a role the actor holds, known cells, developer-only
+    and access:view locks. Returns (role, before, desired)."""
     role = await _load_role_for_edit(db, actor, name)
     if role.name in actor.roles:
         # rank alone doesn't catch this: an actor can outrank a role they
@@ -168,11 +167,21 @@ async def put_matrix(
                 raise _err(422, "developer_only_resource")
     if not body.matrix.get("access", {}).get("view", False):
         raise _err(422, "access_view_locked")
-
     before = {(rp.resource, rp.action) for rp in await db.scalars(
         select(RolePermission).where(RolePermission.role == name))}
     desired = {(res, a) for res, actions in body.matrix.items()
                for a, on in actions.items() if on}
+    return role, before, desired
+
+
+@router.put("/roles/{name}/matrix")
+async def put_matrix(
+    name: str,
+    body: MatrixIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("access", "change"),
+) -> dict:
+    role, before, desired = await _validated_matrix_edit(db, actor, name, body)
     for res, a in before - desired:
         await db.execute(
             RolePermission.__table__.delete().where(
@@ -187,6 +196,51 @@ async def put_matrix(
                    "revoked": sorted(f"{r}:{a}" for r, a in before - desired)})
     await db.commit()
     return {"role": name, "grants": len(desired)}
+
+
+@router.post("/roles/{name}/matrix/preview")
+async def preview_matrix(
+    name: str,
+    body: MatrixIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("access", "change"),
+) -> dict:
+    """Who a matrix change would affect: every member's effective cells are
+    re-resolved with this role's grants swapped for the draft. Writes nothing."""
+    _, before, desired = await _validated_matrix_edit(db, actor, name, body)
+    changed = (desired - before) | (before - desired)
+    members = (await db.execute(
+        select(Person)
+        .join(PersonRole, PersonRole.person_id == Person.id)
+        .where(PersonRole.role == name, PersonRole.revoked_at.is_(None))
+        .distinct().order_by(Person.last_name, Person.first_name))).scalars().all()
+    out = []
+    affected = 0
+    for person in members:
+        current = await effective_cells(db, person.id)
+        draft = await effective_cells(db, person.id,
+                                      role_grants_override={name: desired})
+        flips, masked = [], []
+        for res, action in sorted(changed):
+            was = current.cells[res][action]["value"]
+            now = draft.cells[res][action]
+            if was != now["value"]:
+                flips.append({"resource": res, "action": action,
+                              "from": was, "to": now["value"]})
+            else:
+                masked.append({"resource": res, "action": action, "by": now["source"]})
+        if flips:
+            affected += 1
+        out.append({"person_id": str(person.id), "display_name": person.display_name,
+                    "avatar_url": presign_get(person.avatar_key),
+                    "max_rank": current.access.max_rank,
+                    "flips": flips, "masked": masked})
+    out.sort(key=lambda m: (-len(m["flips"]), m["display_name"]))
+    return {"role": name,
+            "granted": sorted(f"{r}:{a}" for r, a in desired - before),
+            "revoked": sorted(f"{r}:{a}" for r, a in before - desired),
+            "member_count": len(members), "affected_count": affected,
+            "members": out}
 
 
 @router.post("/roles", status_code=201)
