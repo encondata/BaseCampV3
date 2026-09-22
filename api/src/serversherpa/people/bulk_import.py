@@ -207,6 +207,9 @@ async def _reference_data(db: AsyncSession) -> dict:
     profiles = {pr.person_id: pr for pr in await db.scalars(select(WorkerProfile))}
     worker_ids = set(await db.scalars(select(PersonRole.person_id).where(
         PersonRole.role == "worker", PersonRole.revoked_at.is_(None))))
+    # people who can log in: the rank guard on person fields applies to them
+    # only, exactly as PATCH /workers/{person_id}/person does it
+    account_ids = set(await db.scalars(select(UserAccount.person_id)))
     max_rank = dict((await db.execute(
         select(PersonRole.person_id, func.max(Role.rank))
         .join(Role, Role.name == PersonRole.role)
@@ -216,7 +219,8 @@ async def _reference_data(db: AsyncSession) -> dict:
             "partner_names": partner_names, "by_email": by_email,
             "by_phone": by_phone, "by_name": by_name, "by_rfid": by_rfid,
             "archived_emails": archived_emails, "archived_rfids": archived_rfids,
-            "profiles": profiles, "worker_ids": worker_ids, "max_rank": max_rank}
+            "profiles": profiles, "worker_ids": worker_ids, "max_rank": max_rank,
+            "account_ids": account_ids}
 
 
 def _row_display_name(row: dict) -> str:
@@ -274,8 +278,10 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
             errors.append("duplicate phone within the import")
 
         row_names = name_keys(row["first_name"], row["last_name"], row["preferred_name"])
+        # a shared name only blocks rows with no stronger key: an email or a
+        # phone disambiguates the row and carries its own duplicate check
         dup_name = any(len(names_seen[k]) > 1 for k in row_names)
-        if dup_name:
+        if dup_name and not row["email"] and not phone_key:
             errors.append(f"duplicate name '{_row_display_name(row)}' within the import")
 
         rfid_key = row["rfid_tag"].lower()
@@ -326,6 +332,13 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
                 hits["name"] = list(seen.values())
             shown = {"email": email_key, "phone": row["phone"],
                      "name": _row_display_name(row)}
+            # a name shared by two people is not fatal when the row carries a
+            # stronger key that lands on exactly one person: that key decides
+            strong = [hits[k] for k in ("email", "phone") if hits.get(k)]
+            if len(hits.get("name", [])) > 1 and strong and all(
+                    len(people) == 1 for people in strong) and len(
+                    {people[0].id for people in strong}) == 1:
+                hits.pop("name")
             for key, people in hits.items():
                 if len(people) > 1:
                     errors.append(f"two people share the {key} '{shown[key]}'")
@@ -345,23 +358,32 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
             if holder is not None and (target is None or holder.id != target.id):
                 errors.append(f"rfid_tag '{row['rfid_tag']}' belongs to {holder.display_name}")
 
+        changes: dict | None = None
         if not errors:
             profile = ref["profiles"].get(target.id) if target is not None else None
             if data["status"] == "blacklist" and not (
                     row["status_note"] or (profile.status_note if profile else None)):
                 errors.append("blacklist requires a status_note")
-            if target is not None and not blank["status"]:
-                old_status = profile.status if profile else "active"
-                if data["status"] != old_status:
-                    if target.id == actor_id:
-                        errors.append("cannot change your own status")
-                    elif not can_touch_rank(actor_rank, ref["max_rank"].get(target.id, 0)):
-                        errors.append("rank too low to change status")
+            if target is not None:
+                changes = _diff_row(
+                    target, profile, target.id in ref["worker_ids"], data, blank,
+                    partner_obj, ref["partner_names"])
+                # the guards the single-record endpoints apply: a status change
+                # is guarded on anyone (PUT /workers/{id}/profile), every other
+                # edit only on people who can log in (PATCH …/person, which
+                # also lets you edit yourself).
+                guarded = "status" in changes or (
+                    target.id != actor_id and target.id in ref["account_ids"])
+                if "status" in changes and target.id == actor_id:
+                    errors.append("cannot change your own status")
+                elif changes and guarded and not can_touch_rank(
+                        actor_rank, ref["max_rank"].get(target.id, 0)):
+                    errors.append("rank too low to edit this person")
 
         pending.append({"row": n, "cells": dict(row), "name": _row_display_name(row),
                         "errors": errors, "data": data, "blank": blank,
                         "target": target, "matched_by": matched_by,
-                        "partner_obj": partner_obj})
+                        "partner_obj": partner_obj, "changes": changes})
 
     # two upload rows resolving to the same person would apply twice, last
     # write winning silently — both rows are errors instead
@@ -383,10 +405,7 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
             action = "error"
         elif target is not None:
             person_id = str(target.id)
-            changes = _diff_row(
-                target, ref["profiles"].get(target.id),
-                target.id in ref["worker_ids"], p["data"], p["blank"],
-                p["partner_obj"], ref["partner_names"])
+            changes = p["changes"] or {}       # computed with the rank guard above
             action = "update" if changes else "unchanged"
             diff_out = changes or None
         results.append({"row": p["row"], "name": p["name"] or None,

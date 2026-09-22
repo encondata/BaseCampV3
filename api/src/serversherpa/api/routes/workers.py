@@ -220,6 +220,10 @@ async def bulk_import_commit(
     actor: AuthContext = require_permission("workers", "add"),
 ) -> dict:
     require_bulk_rank(actor)
+    # the commit edits existing people as well as creating them, so it must
+    # express the authority it exercises — `change`, not `add` alone
+    if not actor.access.can("workers", "change"):
+        raise _err(403, "forbidden")
     try:
         body = await request.json()
     except ValueError:

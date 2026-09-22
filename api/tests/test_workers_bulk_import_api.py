@@ -7,7 +7,9 @@ import openpyxl
 import pytest
 from sqlalchemy import select
 
-from serversherpa.db.models import Person, PersonRole, WorkerProfile
+from serversherpa.db.models import (
+    PermissionOverride, Person, PersonRole, UserAccount, WorkerProfile,
+)
 from serversherpa.people import bulk_import as bi
 from tests.test_sites_api import login, make_login
 
@@ -93,6 +95,52 @@ async def test_preview_json_and_file_paths(client, db, seeded_user, admin_hdrs):
     missing = await client.post("/workers/bulk-import/preview", headers=admin_hdrs,
                                 files={"other": ("x.csv", b"a", "text/csv")})
     assert missing.status_code == 422 and missing.json()["detail"]["code"] == "missing_file"
+
+
+async def test_commit_also_requires_workers_change(client, db, seeded_user, admin_hdrs):
+    """Template/export/preview ride on workers:add; the commit edits people
+    who already exist, so it must hold workers:change as well. The admin's
+    grant is removed with a deny override — no seeded role splits the two."""
+    admin = await db.scalar(select(Person).where(Person.email == "ada@test.example.com"))
+    db.add(PermissionOverride(person_id=admin.id, resource="workers",
+                              action="change", allow=False))
+    await db.commit()
+    rows = [{"first_name": "Jay", "last_name": "Son"}]
+    ok = await client.post("/workers/bulk-import/preview", headers=admin_hdrs,
+                           json={"rows": rows})
+    assert ok.status_code == 200
+    denied = await client.post("/workers/bulk-import/commit", headers=admin_hdrs,
+                               json={"rows": rows, "approved_updates": []})
+    assert denied.status_code == 403
+    assert await db.scalar(select(Person).where(Person.last_name == "Son")) is None
+
+
+async def test_commit_refuses_a_row_that_outranks_the_actor(client, db, seeded_user,
+                                                            admin_hdrs):
+    """A hand-rolled commit cannot slip past the preview's rank guard: the
+    re-preview inside commit_rows refuses the whole payload."""
+    boss = Person(first_name="Big", last_name="Boss", email="boss@test.example.com")
+    db.add(boss)
+    await db.flush()
+    db.add(PersonRole(person_id=boss.id, role="worker"))
+    db.add(PersonRole(person_id=boss.id, role="developer"))     # rank above admin's 60
+    db.add(WorkerProfile(person_id=boss.id, status="active"))
+    db.add(UserAccount(person_id=boss.id, email="boss.login@test.example.com",
+                       password_hash="x"))
+    await db.commit()
+
+    resp = await client.post("/workers/bulk-import/commit", headers=admin_hdrs, json={
+        "rows": [{"first_name": "Big", "last_name": "Boss", "status": "standby",
+                  "city": "Reno"}],
+        "approved_updates": [str(boss.id)], "source": "crew.csv"})
+    assert resp.status_code == 422
+    detail = resp.json()["detail"]
+    assert detail["code"] == "rows_invalid"
+    assert detail["rows"][0]["errors"] == ["rank too low to edit this person"]
+    profile = await db.get(WorkerProfile, boss.id)
+    await db.refresh(profile)
+    await db.refresh(boss)
+    assert profile.status == "active" and boss.city is None
 
 
 async def test_commit_end_to_end_with_approved_and_skipped(client, db, seeded_user, admin_hdrs):

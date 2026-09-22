@@ -130,6 +130,18 @@ async def test_export_rows_shape_and_round_trip(db, admin):
     assert [r["action"] for r in out["rows"]] == ["unchanged", "unchanged"]
 
 
+async def test_export_round_trips_with_two_workers_sharing_a_name(db, admin):
+    """The promise that an export re-uploads clean is what the name rule buys:
+    two Chris Lees round-trip because the export carries their emails."""
+    await mk_worker(db, "Chris", "Lee", email="c1@test.example.com")
+    await mk_worker(db, "Chris", "Lee", email="c2@test.example.com")
+    await mk_worker(db, "Amy", "Alpha", phone="555-000-2222")
+    csv_text = bi.build_rows_csv(await bi.export_rows(db))
+    out = await preview(db, admin, [r for _, r in bi.parse_upload("e.csv", csv_text.encode())])
+    assert [r["action"] for r in out["rows"]] == ["unchanged", "unchanged", "unchanged"]
+    assert out["can_commit"] is True
+
+
 async def test_reference_lists(db, admin):
     db.add(Partner(name="Bee Co"))
     db.add(Partner(name="Ant Co"))
@@ -235,16 +247,31 @@ async def test_keys_that_agree_are_listed_and_keys_that_disagree_are_errors(db, 
     assert bad["errors"] == ["email matches Robert Smith, phone matches Roberta Smith"]
 
 
-async def test_ambiguous_name_without_another_key_is_error(db, admin):
+async def test_ambiguous_name_is_an_error_only_without_a_stronger_key(db, admin):
     await mk_worker(db, "Chris", "Lee", email="c1@test.example.com")
-    await mk_worker(db, "Chris", "Lee", email="c2@test.example.com")
+    c2 = await mk_worker(db, "Chris", "Lee", email="c2@test.example.com")
     bare = await one(db, admin, {"first_name": "Chris", "last_name": "Lee"})
     assert bare["errors"] == ["two people share the name 'Chris Lee'"]
-    # an email that points at one of them does not rescue the row: any key
-    # hitting two people is an error, so the file must carry a unique key only
+    # an email landing on exactly one of them decides the row: the shared
+    # name drops out of the match instead of blocking it
     keyed = await one(db, admin, {"first_name": "Chris", "last_name": "Lee",
                                   "email": "c2@test.example.com"})
-    assert keyed["errors"] == ["two people share the name 'Chris Lee'"]
+    assert keyed["errors"] == []
+    assert (keyed["matched_by"], keyed["action"]) == ("email", "unchanged")
+    assert keyed["person_id"] == str(c2.id)
+
+
+async def test_two_rows_sharing_a_name_are_split_by_their_emails(db, admin):
+    a = await mk_worker(db, "Chris", "Lee", email="c1@test.example.com")
+    b = await mk_worker(db, "Chris", "Lee", email="c2@test.example.com")
+    out = await preview(db, admin, [
+        {"first_name": "Chris", "last_name": "Lee", "email": "c1@test.example.com"},
+        {"first_name": "Chris", "last_name": "Lee", "email": "c2@test.example.com"},
+    ])
+    assert [r["action"] for r in out["rows"]] == ["unchanged", "unchanged"]
+    assert [r["matched_by"] for r in out["rows"]] == ["email", "email"]
+    assert [r["person_id"] for r in out["rows"]] == [str(a.id), str(b.id)]
+    assert out["can_commit"] is True
 
 
 async def test_two_rows_on_one_person_and_archived_never_match(db, admin):
@@ -311,8 +338,32 @@ async def test_status_change_guards_rank_and_self(db, admin):
         {"first_name": "Ada", "last_name": "Admin", "status": "standby"},
     ])
     rows = out["rows"]
-    assert rows[0]["errors"] == ["rank too low to change status"]
+    assert rows[0]["errors"] == ["rank too low to edit this person"]
     assert rows[1]["errors"] == ["cannot change your own status"]
+
+
+async def test_rank_guard_covers_every_edit_of_an_account_holder(db, admin):
+    """PATCH /workers/{id}/person refuses any edit to a higher-ranked person
+    who can log in; the bulk path must refuse the same edit."""
+    boss = await mk_worker(db, "Big", "Boss", email="boss@test.example.com",
+                           account=True)
+    db.add(PersonRole(person_id=boss.id, role="developer"))     # rank 100
+    await db.commit()
+    blocked = await one(db, admin, {"first_name": "Big", "last_name": "Boss",
+                                    "email": "boss@test.example.com", "city": "Reno"})
+    assert blocked["errors"] == ["rank too low to edit this person"]
+    # an unchanged row never trips the guard — an export of the whole
+    # workforce still previews clean
+    same = await one(db, admin, {"first_name": "Big", "last_name": "Boss",
+                                 "email": "boss@test.example.com"})
+    assert same["errors"] == [] and same["action"] == "unchanged"
+    # the guard follows the login account, exactly as the endpoint does
+    plain = await mk_worker(db, "No", "Account", email="na@test.example.com")
+    db.add(PersonRole(person_id=plain.id, role="developer"))
+    await db.commit()
+    ok = await one(db, admin, {"first_name": "No", "last_name": "Account",
+                               "email": "na@test.example.com", "city": "Reno"})
+    assert ok["errors"] == [] and ok["action"] == "update"
 
 
 # ── commit ──────────────────────────────────────────────────────────

@@ -127,8 +127,15 @@ Resolution, per row, after field validation:
    email, phone, name (`"email, name"`); `matched_name` is the person's
    display name.
 
+A shared name never blocks a row that carries a stronger key: when the row's
+email and/or phone lands on exactly one person, name ambiguity — two people
+sharing the name in the database, or two rows sharing it in the upload — is
+ignored and that key decides the match. Rows carrying neither an email nor a
+phone keep the strict rule, so an ambiguous name is still an error for them.
+
 Within the upload the same three keys are indexed, so two rows sharing an
-email, phone, or name are both errors, and two rows resolving to the same
+email or phone are both errors (two rows sharing only a name are errors only
+when neither carries a stronger key), and two rows resolving to the same
 existing person are both errors. Archived people never match. A matched
 person who does not hold the worker role (a plain user, a contact) is still a
 match: applying the update grants the role and creates the profile, and the
@@ -149,10 +156,12 @@ All row errors, never silent fixes:
   vocabulary; `status` blacklist requires a `status_note` (from the row, or
   already on the profile)
 - `country`, when given, must be two letters (stored upper-cased)
-- A status change on a matched person whose highest active role rank exceeds
-  the actor's (`can_touch_rank`) → error `rank too low to change status`; a
-  status change on the actor themself → error `cannot change your own
-  status`. These mirror `PUT /workers/{id}/profile`.
+- A status change on a matched person whose highest active role rank the
+  actor cannot manage (`can_touch_rank`) → error `rank too low to edit this
+  person`; the same error covers any other change to such a person when they
+  hold a login account. A status change on the actor themself → error
+  `cannot change your own status` (other self-edits are allowed). These
+  mirror `PUT /workers/{id}/profile` and `PATCH /workers/{id}/person`.
 
 ## Preview and diff
 
@@ -192,7 +201,10 @@ skipped row carries the diff it would have applied.
 
 Export: every non-archived person holding an active `worker` grant, ordered
 by last then first name, in template shape (partner by name, blanks for
-nulls), formula-guarded. Re-uploading an export previews all `unchanged`.
+nulls), formula-guarded. Re-uploading an export previews all `unchanged` —
+which is exactly what the name-ambiguity rule above buys: a workforce with
+two people sharing a name still round-trips, because the exported email or
+phone identifies each of them.
 
 ## API
 
@@ -207,7 +219,9 @@ literal path is not swallowed by the UUID parameter:
 - `POST /workers/bulk-import/commit` — JSON `{rows, approved_updates:
   [person_id], source}`
 
-All four: `require_permission("workers", "add")` plus the sites bulk gate
+All four: `require_permission("workers", "add")` — the commit additionally
+requires `workers:change`, the permission its updates exercise — plus the
+sites bulk gate
 (global actor, `max_rank >= GATE_BYPASS_RANK`), moved to a shared helper so
 both routers use one. `BulkImportError` → 422 `{code, …extra}`;
 `unknown_format` → 422.
