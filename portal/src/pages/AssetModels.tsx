@@ -207,15 +207,18 @@ export default function AssetModels() {
 
   // What still wants a human decision: every model the review returned, once
   // each (a model can be both import-created and part of a duplicate group).
-  // Dismissed rows are excluded even while "Show dismissed" is on.
-  const reviewCount = useMemo(() => {
-    if (!reviewData) return null;
+  // Counted only from a fetch that excluded dismissed rows: with "Show
+  // dismissed" on, the server groups over the wider list, so a kept model can
+  // rejoin a group with its dismissed twin — that must not move the badge.
+  const [reviewCount, setReviewCount] = useState<number | null>(null);
+  useEffect(() => {
+    if (!reviewData || showDismissed) return;
     const ids = new Set<string>();
     for (const m of [...reviewData.imported, ...reviewData.duplicates.flat()]) {
       if (m.review_dismissed_at === null) ids.add(m.id);
     }
-    return ids.size;
-  }, [reviewData]);
+    setReviewCount(ids.size);
+  }, [reviewData, showDismissed]);
 
   const godFields = useMemo(() => MODEL_GOD_FIELDS({
     categories: () => categories.map((c) => ({ value: c.key, label: c.label })),

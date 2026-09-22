@@ -115,12 +115,12 @@ async def test_alias_conflict_blocks_real_run(client, db, seeded_user):
     hdrs = await login(client)
     target = await _model(db, "Dell", "R640")
     source = await _model(db, "Dell", "R-640", aliases=("R640 rack",))
-    third = await _model(db, "Dell", "R650", aliases=("Dell R-640",))    # owns the source's NAME as alias
+    third = await _model(db, "Dell", "R650", aliases=("dell r-640",))    # owns the source's NAME as alias, other case
     resp = await client.post(f"/asset-models/{target.id}/merge", headers=hdrs,
                              json={"source_id": str(source.id), "dry_run": True})
     plan = resp.json()
     assert plan["can_merge"] is False
-    assert plan["conflicts"] == [{"alias": "Dell R-640", "model_id": str(third.id),
+    assert plan["conflicts"] == [{"alias": "dell r-640", "model_id": str(third.id),
                                   "make": "Dell", "model": "R650"}]
     resp = await client.post(f"/asset-models/{target.id}/merge", headers=hdrs,
                              json={"source_id": str(source.id), "dry_run": False})

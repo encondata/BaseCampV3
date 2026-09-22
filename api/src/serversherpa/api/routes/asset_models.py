@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm.exc import StaleDataError
+from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
@@ -362,16 +362,18 @@ async def merge_asset_model(
               changes={"target_id": str(target.id),
                        "target_make_model": f"{target.make} {target.model}",
                        "name": {"to": source_name}})
+        # `source` is the summary from before the merge (the model no longer
+        # exists); `target` is re-read so the response carries what the merge
+        # actually produced — new asset/stock counts and the added alias.
+        # Read inside the guard so a target deleted underneath us is a 409
+        # like every other race, not a 500 after the commit.
+        await db.refresh(target)
+        out.target = summary(target, await _aliases_by_model(db, [target.id]),
+                             await _counts(db, [target.id]))
         await db.commit()
-    except (IntegrityError, StaleDataError):
+    except (IntegrityError, StaleDataError, ObjectDeletedError):
         await db.rollback()
         raise _err(409, "merge_conflict") from None
-    # `source` is the summary from before the merge (the model no longer
-    # exists); `target` is re-read so the response carries what the merge
-    # actually produced — new asset/stock counts and the added alias.
-    await db.refresh(target)
-    out.target = summary(target, await _aliases_by_model(db, [target.id]),
-                         await _counts(db, [target.id]))
     out.applied = True
     return out
 
