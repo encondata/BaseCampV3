@@ -199,8 +199,7 @@ async def bulk_import_preview(
 ) -> dict:
     _require_bulk_rank(actor)
     numbered = await _rows_from_request(request)
-    return await bulk.preview_rows(
-        db, numbered, allow_updates=actor.access.can("devtools", "change"))
+    return await bulk.preview_rows(db, numbered)
 
 
 @router.post("/bulk-import/commit")
@@ -219,13 +218,9 @@ async def bulk_import_commit(
     except bulk.BulkImportError as exc:
         raise _bulk_err(exc) from None
     approved = {str(s) for s in body.get("approved_updates") or []}
-    allow = actor.access.can("devtools", "change")
-    if approved and not allow:
-        raise _err(422, "updates_not_allowed")
     try:
         return await bulk.commit_rows(
-            db, actor.person.id, numbered, allow_updates=allow,
-            approved_updates=approved,
+            db, actor.person.id, numbered, approved_updates=approved,
             source_label=str(body.get("source") or "paste"))
     except bulk.BulkImportError as exc:
         raise _bulk_err(exc) from None

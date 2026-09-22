@@ -10,6 +10,7 @@ normalized `data` dict has already had defaults applied by diff time.
 import csv
 import io
 import json
+import re
 import uuid
 from typing import Any
 
@@ -184,6 +185,15 @@ def _split_clients(cell: str) -> list[str]:
     return [part.strip() for part in cell.split(";") if part.strip()]
 
 
+_NON_ALNUM = re.compile(r"[^0-9a-z]+")
+
+
+def normalize_address(text: str) -> str:
+    """Match key for address_line1: case, punctuation and spacing noise
+    removed so '607 14th St. NW' and '607 14th st nw' meet."""
+    return " ".join(_NON_ALNUM.sub(" ", (text or "").lower()).split())
+
+
 def _coord(value: str, lo: float, hi: float,
            errors: list[str], label: str) -> float | None:
     if value == "":
@@ -199,21 +209,26 @@ def _coord(value: str, lo: float, hi: float,
     return num
 
 
-async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]],
-                       *, allow_updates: bool) -> dict:
+async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]]) -> dict:
     ref = await _reference_data(db)
     names_seen: dict[str, list[int]] = {}
+    addrs_seen: dict[str, list[int]] = {}
     for n, row in numbered:
         if row["name"]:
             names_seen.setdefault(row["name"].lower(), []).append(n)
+        key = normalize_address(row["address_line1"])
+        if key:
+            addrs_seen.setdefault(key, []).append(n)
 
-    existing: dict[str, list[Site]] = {}
-    wanted = [row["name"] for _, row in numbered if row["name"]]
-    if wanted:
-        for site in await db.scalars(select(Site).where(Site.name.in_(wanted))):
-            existing.setdefault(site.name.lower(), []).append(site)
+    by_name: dict[str, list[Site]] = {}
+    by_addr: dict[str, list[Site]] = {}
+    for site in await db.scalars(select(Site).where(Site.archived_at.is_(None))):
+        by_name.setdefault(site.name.lower(), []).append(site)
+        key = normalize_address(site.address_line1 or "")
+        if key:
+            by_addr.setdefault(key, []).append(site)
 
-    dup_sites = [s for sites in existing.values() for s in sites]
+    dup_sites = [s for sites in by_name.values() for s in sites]
     current_clients: dict[uuid.UUID, dict[uuid.UUID, str]] = {}
     partner_names: dict[uuid.UUID, str] = {}
     if dup_sites:
@@ -237,6 +252,10 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]],
             errors.append("name is required")
         elif len(names_seen[name.lower()]) > 1:
             errors.append(f"duplicate name '{name}' within the import")
+
+        addr_key = normalize_address(row["address_line1"])
+        if addr_key and len(addrs_seen[addr_key]) > 1:
+            errors.append("duplicate address within the import")
 
         if row["type"] and row["type"] not in ref["types"]:
             errors.append(f"unknown type '{row['type']}'")
@@ -277,33 +296,43 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]],
         if blank["country"]:
             data["country"] = "US"
 
-        dupes = existing.get(name.lower(), []) if name else []
+        name_hits = by_name.get(name.lower(), []) if name else []
+        addr_hits = by_addr.get(addr_key, []) if addr_key else []
+        target: Site | None = None
+        matched_by: str | None = None
+        if not errors:
+            if len(name_hits) > 1:
+                errors.append(f"multiple existing sites named '{name}'")
+            elif name_hits:
+                target, matched_by = name_hits[0], "name"
+                if addr_hits and all(s.id != target.id for s in addr_hits):
+                    errors.append(f"name matches '{target.name}' but address "
+                                  f"matches '{addr_hits[0].name}'")
+            elif len(addr_hits) > 1:
+                names = ", ".join(sorted(s.name for s in addr_hits))
+                errors.append(f"multiple existing sites at that address: {names}")
+            elif addr_hits:
+                target, matched_by = addr_hits[0], "address"
+
         action, diff_out, site_id = "create", None, None
         if errors:
             action = "error"
-        elif dupes:
-            if len(dupes) > 1:
-                action = "error"
-                errors.append(f"multiple existing sites named '{name}'")
-            elif not allow_updates:
-                action = "error"
-                errors.append(f"site '{name}' already exists")
-            else:
-                site = dupes[0]
-                site_id = str(site.id)
-                changes = _diff_row(
-                    site, data, blank, partner_obj, client_objs,
-                    current_clients.get(site.id, {}), partner_names)
-                action = "update" if changes else "unchanged"
-                diff_out = changes or None
+        elif target is not None:
+            site_id = str(target.id)
+            changes = _diff_row(
+                target, data, blank, partner_obj, client_objs,
+                current_clients.get(target.id, {}), partner_names)
+            action = "update" if changes else "unchanged"
+            diff_out = changes or None
 
         results.append({"row": n, "name": name or None, "action": action,
+                        "matched_by": matched_by if action != "error" else None,
+                        "matched_name": target.name if target is not None and action != "error" else None,
                         "errors": errors, "diff": diff_out, "site_id": site_id,
                         "data": data if action != "error" else None})
 
     can_commit = bool(results) and all(r["action"] != "error" for r in results)
-    return {"rows": results, "can_commit": can_commit,
-            "update_allowed": allow_updates}
+    return {"rows": results, "can_commit": can_commit}
 
 
 def _diff_row(site: Site, data: dict, blank: dict,
@@ -328,6 +357,8 @@ def _diff_row(site: Site, data: dict, blank: dict,
         if raw == "":
             continue
         old = getattr(site, attr)
+        if col == "address_line1" and normalize_address(old or "") == normalize_address(raw):
+            continue        # same match key as the lookup above — formatting noise, not a change
         if (old or "") != raw:
             out[col] = {"old": old, "new": raw}
     if data["partner"] and partner_obj is not None:
@@ -346,14 +377,14 @@ def _diff_row(site: Site, data: dict, blank: dict,
 # ── commit ──────────────────────────────────────────────────────────
 
 async def commit_rows(db: AsyncSession, actor_person_id: uuid.UUID,
-                      numbered: list[tuple[int, dict]], *, allow_updates: bool,
+                      numbered: list[tuple[int, dict]], *,
                       approved_updates: set[str], source_label: str) -> dict:
     """All-or-nothing: re-validates everything, then commits creates plus
     APPROVED updates in one transaction. Raises rows_invalid (carrying the
     full preview payload) if anything blocks — nothing is written."""
     from serversherpa.services.audit import audit
 
-    preview = await preview_rows(db, numbered, allow_updates=allow_updates)
+    preview = await preview_rows(db, numbered)
     blocked = [r for r in preview["rows"] if r["action"] == "error"]
     unapproved = [r for r in preview["rows"]
                   if r["action"] == "update" and r["site_id"] not in approved_updates]
