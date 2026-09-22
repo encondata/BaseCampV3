@@ -19,6 +19,7 @@ import {
 } from '../../lib/api';
 import DataTable from '../DataTable';
 import '../../styles/sites.css';
+import '../../styles/bulk.css';
 
 interface Props {
   onClose: () => void;

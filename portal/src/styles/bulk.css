@@ -14,3 +14,39 @@
   color: var(--text-mute);
   margin: 0 0 12px;
 }
+
+/* ── bulk import pane ─────────────────────────────────────────── */
+
+.bulk-import { display: flex; flex-direction: column; gap: 12px; }
+
+.bulk-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.bulk-file-row { display: flex; flex-direction: column; gap: 4px; }
+
+/* the preview is a <DataTable> now — directory.css's .data-table supplies
+   the borders/padding/typography; this just keeps multi-line diff cells
+   top-aligned and tints the Action column per row outcome. */
+.bulk-preview td { vertical-align: top; }
+.bulk-preview .pf-error { display: block; }
+.bulk-row-error td:nth-child(4) { color: var(--c-red, #c03540); }
+.bulk-row-create td:nth-child(4) { color: var(--c-green, #178a4c); }
+.bulk-row-update td:nth-child(4) { color: var(--c-amber, #a36207); }
+.bulk-row-unchanged td:nth-child(4) { color: var(--muted, #51606f); }
+.bulk-row-skipped td:nth-child(4) { color: var(--muted, #51606f); }
+
+.bulk-diff { display: flex; flex-direction: column; gap: 2px; }
+.bulk-diff span { color: var(--muted, #51606f); }
+.bulk-diff label { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+
+/* the apply summary reuses the preview's table styling but has its own
+   column order (Row / Site / Result / Changes) — Result is the 3rd td,
+   not the 4th, so it needs its own color rules, and the 4th-column
+   tint above needs resetting so it doesn't bleed onto the Changes cell. */
+.bulk-summary .bulk-row-create td:nth-child(3) { color: var(--c-green, #178a4c); }
+.bulk-summary .bulk-row-update td:nth-child(3) { color: var(--c-amber, #a36207); }
+.bulk-summary .bulk-row-unchanged td:nth-child(3) { color: var(--muted, #51606f); }
+.bulk-summary .bulk-row-skipped td:nth-child(3) { color: var(--muted, #51606f); }
+.bulk-summary .bulk-row-create td:nth-child(4),
+.bulk-summary .bulk-row-update td:nth-child(4),
+.bulk-summary .bulk-row-unchanged td:nth-child(4),
+.bulk-summary .bulk-row-skipped td:nth-child(4) { color: inherit; }
