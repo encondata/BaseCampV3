@@ -252,3 +252,98 @@ async def test_blank_cells_are_no_change_on_update(db, seeded_user):
                    containers=[crate])
     row = await one(db, {"name": "Truck 1"})
     assert row["action"] == "unchanged" and row["diff"] is None
+
+
+# ── commit ──────────────────────────────────────────────────────────
+
+async def test_commit_creates_truck_with_links_and_audit(db, seeded_user):
+    site = Site(name="DC-East")
+    crate = Container(name="Crate A")
+    db.add_all([site, crate])
+    await db.flush()
+    move = await mk_initiative(db, "Move A")
+    out = await commit(db, seeded_user, [{
+        "name": "Truck 1", "status": "active", "team_drive": "yes",
+        "driver_name": "Marcus", "tracking_type": "gps", "tracker_id": "T-1",
+        "initiative": "Move A", "start_site": "DC-East", "containers": "Crate A"}],
+        source="fleet.xlsx")
+    assert (out["created"], out["updated"], out["skipped"], out["unchanged"]) == (1, 0, 0, 0)
+    row = out["rows"][0]
+    assert row["action"] == "created" and row["name"] == "Truck 1" and row["diff"] is None
+    truck = await db.get(Truck, uuid.UUID(row["truck_id"]))
+    assert truck.status == "active" and truck.team_drive is True
+    assert truck.driver_name == "Marcus" and truck.contact_info == ""
+    assert truck.tracking_type == {"type": "gps", "tracker_id": "T-1"}
+    assert truck.initiative_id == move.id and truck.start_site_id == site.id
+    assert truck.created_by == seeded_user.id
+    assert set(await db.scalars(select(TruckContainer.container_id).where(
+        TruckContainer.truck_id == truck.id))) == {crate.id}
+    actions = sorted(await db.scalars(select(AuditLog.action).where(
+        AuditLog.entity_type == "truck")))
+    assert actions == ["bulk_import", "create"]
+    bulk_row = await db.scalar(select(AuditLog).where(AuditLog.action == "bulk_import"))
+    assert bulk_row.changes == {"created": 1, "updated": 0, "skipped": 0,
+                                "unchanged": 0, "source": "fleet.xlsx"}
+
+
+async def test_commit_updates_approved_skips_unapproved(db, seeded_user):
+    crate_a, crate_b = Container(name="Crate A"), Container(name="Crate B")
+    db.add_all([crate_a, crate_b])
+    await db.flush()
+    a = await mk_truck(db, "Truck A", tracking_type={"type": "gps", "tracker_id": "T-A"},
+                       containers=[crate_a])
+    b = await mk_truck(db, "Truck B", driver_name="Keep Me")
+    await mk_truck(db, "Truck C")
+    out = await commit(db, seeded_user, [
+        {"name": "Truck A", "status": "in_transit", "tracking_type": "cell",
+         "containers": "Crate B"},
+        {"name": "Truck B", "driver_name": "Changed"},
+        {"name": "Truck C"},
+        {"name": "Truck D"},
+    ], approved=[str(a.id)])
+    assert (out["created"], out["updated"], out["skipped"], out["unchanged"]) == (1, 1, 1, 1)
+    by_name = {r["name"]: r for r in out["rows"]}
+    assert by_name["Truck A"]["action"] == "updated"
+    assert by_name["Truck A"]["diff"]["containers"] == {"add": ["Crate B"], "remove": ["Crate A"]}
+    assert by_name["Truck B"]["action"] == "skipped"
+    assert by_name["Truck B"]["diff"] == {"driver_name": {"old": "Keep Me", "new": "Changed"}}
+    assert by_name["Truck C"]["action"] == "unchanged"
+    assert by_name["Truck D"]["action"] == "created"
+    await db.refresh(a)
+    await db.refresh(b)
+    assert a.status == "in_transit"
+    assert a.tracking_type == {"type": "cell", "tracker_id": "T-A"}      # merged, not replaced
+    assert set(await db.scalars(select(TruckContainer.container_id).where(
+        TruckContainer.truck_id == a.id))) == {crate_b.id}
+    assert b.driver_name == "Keep Me"                                    # skipped row untouched
+    update_audit = await db.scalar(select(AuditLog).where(
+        AuditLog.action == "update", AuditLog.entity_type == "truck"))
+    assert update_audit.entity_id == str(a.id)
+    assert update_audit.changes["containers"] == {"add": ["Crate B"], "remove": ["Crate A"]}
+
+
+async def test_commit_blank_cells_never_clear(db, seeded_user):
+    t = await mk_truck(db, "Truck 1", status="active", team_drive=True,
+                       contact_info="keep", tracking_type={"type": "gps"})
+    out = await commit(db, seeded_user, [
+        {"name": "Truck 1", "status": "", "team_drive": "", "contact_info": "",
+         "tracking_type": "", "load_number": "L-1"}], approved=[str(t.id)])
+    assert out["updated"] == 1
+    await db.refresh(t)
+    assert t.status == "active" and t.team_drive is True
+    assert t.contact_info == "keep" and t.tracking_type == {"type": "gps"}
+    assert t.load_number == "L-1"
+
+
+async def test_commit_is_all_or_nothing(db, seeded_user):
+    with pytest.raises(bi.BulkImportError) as exc:
+        # the second row needs a non-blank companion cell so the shared
+        # core doesn't treat it as a fully-blank skipped line (see the
+        # same gotcha in test_validation_errors above)
+        await commit(db, seeded_user, [
+            {"name": "Good"}, {"name": "", "driver_name": "Bad"}])
+    assert exc.value.code == "rows_invalid"
+    assert [r["action"] for r in exc.value.extra["rows"]] == ["create", "error"]
+    assert await db.scalar(select(func.count()).select_from(Truck)) == 0
+    with pytest.raises(bi.BulkImportError):
+        await commit(db, seeded_user, [])

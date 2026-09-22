@@ -353,3 +353,127 @@ def _diff_row(truck: Truck, data: dict, blank: dict, refs: dict,
         if add or remove:
             out["containers"] = {"add": add, "remove": remove}
     return out
+
+
+# ── commit ──────────────────────────────────────────────────────────
+
+async def commit_rows(db: AsyncSession, actor_id: uuid.UUID,
+                      numbered: list[tuple[int, dict]], *,
+                      approved_updates: set[str], source_label: str) -> dict:
+    """All-or-nothing: re-validates everything, then writes creates plus
+    APPROVED updates in one transaction; unapproved updates are skipped.
+    Raises rows_invalid (carrying the full preview payload) if any row
+    errors — nothing is written. `numbered` must be the ORIGINAL uploaded
+    cells (the preview's `cells`), never its normalized `data`."""
+    preview = await preview_rows(db, numbered)
+    if not preview["rows"] or any(r["action"] == "error" for r in preview["rows"]):
+        raise BulkImportError("rows_invalid", rows=preview["rows"])
+
+    ref = await _reference_data(db)
+    counts = {"created": 0, "updated": 0, "skipped": 0, "unchanged": 0}
+    applied: list[dict] = []
+    for r in preview["rows"]:
+        if r["action"] == "unchanged":
+            action = "unchanged"
+        elif r["action"] == "create":
+            truck = await _create_truck(db, actor_id, r["data"], ref)
+            r["truck_id"] = str(truck.id)
+            action = "created"
+        elif r["truck_id"] in approved_updates:
+            await _apply_update(db, actor_id, r, ref)
+            action = "updated"
+        else:
+            action = "skipped"
+        counts[action] += 1
+        applied.append({"row": r["row"], "name": r["name"],
+                        "truck_id": r["truck_id"], "action": action,
+                        "diff": r["diff"] if action in ("updated", "skipped") else None})
+    audit(db, actor_id=actor_id, entity_type="truck", entity_id=None,
+          action="bulk_import", changes={**counts, "source": source_label})
+    await db.commit()
+    return {**counts, "rows": applied}
+
+
+def _ref_id(ref: dict, col: str, name: str) -> uuid.UUID | None:
+    """The id for a canonical reference name resolved at preview time; a
+    name that vanished between preview and commit raises so the whole
+    transaction rolls back rather than auditing a change never applied."""
+    if not name:
+        return None
+    index = ref["initiatives"] if col == "initiative" else ref["sites"]
+    matches = index.get(name.lower(), [])
+    if len(matches) != 1:
+        raise ValueError(f"{col} '{name}' vanished between preview and commit")
+    return matches[0].id
+
+
+def _container_ids(ref: dict, names: list[str]) -> set[uuid.UUID]:
+    out = set()
+    for cname in names:
+        matches = ref["containers"].get(cname.lower(), [])
+        if len(matches) != 1:
+            raise ValueError(f"container '{cname}' vanished between preview and commit")
+        out.add(matches[0].id)
+    return out
+
+
+async def _create_truck(db: AsyncSession, actor_id: uuid.UUID, data: dict,
+                        ref: dict) -> Truck:
+    tracking = {key: data[col] for col, key in TRACKING_KEYS.items() if data[col]}
+    truck = Truck(
+        name=data["name"], driver_name=data["driver_name"] or None,
+        co_driver_name=data["co_driver_name"] or None,
+        team_drive=data["team_drive"], contact_info=data["contact_info"],
+        status=data["status"], load_number=data["load_number"] or None,
+        seal_id=data["seal_id"] or None, tracking_type=tracking,
+        initiative_id=_ref_id(ref, "initiative", data["initiative"]),
+        start_site_id=_ref_id(ref, "start_site", data["start_site"]),
+        end_site_id=_ref_id(ref, "end_site", data["end_site"]),
+        created_by=actor_id)
+    db.add(truck)
+    await db.flush()
+    for container_id in sorted(_container_ids(ref, data["containers"]), key=str):
+        db.add(TruckContainer(truck_id=truck.id, container_id=container_id))
+    changes = {field: {"from": None, "to": value}
+               for field, value in snapshot(truck, AUDIT_FIELDS).items()
+               if value not in (None, "", {}, False)}
+    if data["containers"]:
+        changes["containers"] = {"from": [], "to": sorted(data["containers"])}
+    audit(db, actor_id=actor_id, entity_type="truck",
+          entity_id=str(truck.id), action="create", changes=changes)
+    return truck
+
+
+async def _apply_update(db: AsyncSession, actor_id: uuid.UUID, r: dict,
+                        ref: dict) -> None:
+    truck = await db.get(Truck, uuid.UUID(r["truck_id"]))
+    changes: dict = {}
+    tracking = dict(truck.tracking_type or {})
+    tracking_changed = False
+    for col, change in (r["diff"] or {}).items():
+        if col in TEXT_COLUMNS or col in ("status", "team_drive"):
+            setattr(truck, col, change["new"])
+        elif col in TRACKING_KEYS:
+            tracking[TRACKING_KEYS[col]] = change["new"]
+            tracking_changed = True
+        elif col in REF_COLUMNS:
+            setattr(truck, REF_COLUMNS[col], _ref_id(ref, col, change["new"]))
+        elif col == "containers":
+            want = _container_ids(ref, r["data"]["containers"])
+            current = set(await db.scalars(
+                select(TruckContainer.container_id)
+                .where(TruckContainer.truck_id == truck.id)))
+            for container_id in current - want:
+                await db.execute(delete(TruckContainer).where(
+                    TruckContainer.truck_id == truck.id,
+                    TruckContainer.container_id == container_id))
+            for container_id in want - current:
+                db.add(TruckContainer(truck_id=truck.id, container_id=container_id))
+            changes["containers"] = change
+            continue
+        changes[col] = {"from": change["old"], "to": change["new"]}
+    if tracking_changed:
+        truck.tracking_type = tracking
+    truck.updated_at = datetime.now(UTC)
+    audit(db, actor_id=actor_id, entity_type="truck",
+          entity_id=str(truck.id), action="update", changes=changes)
