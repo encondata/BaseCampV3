@@ -1371,7 +1371,9 @@ export interface AssetModelItem {
   length_in: number | null; width_in: number | null; height_in: number | null;
   length_cm: number | null; width_cm: number | null; height_cm: number | null;
   mount_type: string | null; rail_type: string | null; form_factor: string | null;
-  knowledge: string; aliases: string[]; created_at: string; updated_at: string;
+  knowledge: string; aliases: string[];
+  review_dismissed_at: string | null;
+  created_at: string; updated_at: string;
 }
 
 export interface AssetCategoryOut {
@@ -1468,6 +1470,42 @@ export async function setAssetModelAliases(
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ aliases }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export interface ModelSummary extends AssetModelItem { asset_count: number; stock_line_count: number }
+export interface ReviewItem extends ModelSummary { reason: 'imported' | 'duplicate'; group_key: string | null }
+export interface ReviewOut { imported: ReviewItem[]; duplicates: ReviewItem[][]; dismissed_count: number }
+export interface MergeConflict { alias: string; model_id: string; make: string; model: string }
+export interface MergePlanOut {
+  target: ModelSummary; source: ModelSummary;
+  moves: { assets: number; stock_lines: number; aliases: number };
+  fills: Record<string, number | string | null>;
+  alias_added: string | null; aliases_after: string[];
+  conflicts: MergeConflict[]; can_merge: boolean; applied: boolean;
+}
+
+export async function reviewAssetModels(includeDismissed = false): Promise<ReviewOut> {
+  const resp = await apiFetch(`/asset-models/review?include_dismissed=${includeDismissed}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function dismissAssetModelReview(id: string, dismissed: boolean): Promise<AssetModelItem> {
+  const resp = await apiFetch(`/asset-models/${id}/review`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dismissed }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function mergeAssetModel(targetId: string, sourceId: string, dryRun: boolean): Promise<MergePlanOut> {
+  const resp = await apiFetch(`/asset-models/${targetId}/merge`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_id: sourceId, dry_run: dryRun }),
   });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();

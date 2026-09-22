@@ -76,3 +76,11 @@
   border-radius: 999px;
   background: var(--surface, #fff);
 }
+
+/* ── merge dialog ─────────────────────────────────────────── */
+.modal-card.reports-modal-card.rgm-card.model-merge-card { width: min(820px, 96vw); max-width: 96vw; overflow: visible; max-height: none; }
+.mm-source { padding: 8px 0; }
+.mm-plan { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.mm-table td, .mm-table th { padding: 6px 10px; text-align: left; vertical-align: top; }
+.mm-table tr.filled td:last-child { color: var(--c-green); }
+.mm-conflicts { margin: 0; padding-left: 18px; color: var(--c-red); }
