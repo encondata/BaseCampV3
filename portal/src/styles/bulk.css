@@ -2,3 +2,15 @@
 .bulk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 16px; }
 .bulk-card { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 12px; background: var(--surface); border: 1px solid var(--c-slate-bd, rgba(81, 96, 111, 0.25)); }
 .bulk-card .btn-solid { align-self: flex-start; }
+
+/* /bulk/sites — column guide, downloads, upload sections. */
+.bulk-section { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+/* directory.css scopes .eyebrow-sm to .detail-block — mirror it here */
+.bulk-section .eyebrow-sm {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  margin: 0 0 12px;
+}

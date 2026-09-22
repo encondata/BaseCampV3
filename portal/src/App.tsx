@@ -12,6 +12,7 @@ import AssetDetail from './pages/AssetDetail';
 import AssetModels from './pages/AssetModels';
 import Audit from './pages/Audit';
 import BulkActions from './pages/BulkActions';
+import BulkSites from './pages/BulkSites';
 import Clients from './pages/Clients';
 import ClientDashboard from './pages/ClientDashboard';
 import Containers from './pages/Containers';
@@ -199,6 +200,9 @@ export default function App() {
                 } />
                 <Route path="/bulk" element={
                   <ProtectedRoute minRank={ADMIN_RANK}><BulkActions /></ProtectedRoute>
+                } />
+                <Route path="/bulk/sites" element={
+                  <ProtectedRoute resource="sites" minRank={ADMIN_RANK}><BulkSites /></ProtectedRoute>
                 } />
                 <Route path="/system/processes/:name/logs" element={
                   <ProtectedRoute resource="devtools"><ProcessLogs /></ProtectedRoute>

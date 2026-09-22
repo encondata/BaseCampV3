@@ -1,5 +1,10 @@
 [
   {
+    "file": "styles/bulk.css",
+    "selector": ".bulk-section .eyebrow-sm",
+    "reason": "not list content: eyebrow label (out of scope per spec)"
+  },
+  {
     "file": "styles/directory.css",
     "selector": ".mini-btn",
     "reason": "not list content: detail-panel action button (regex matches the 'mini-' substring it shares with the .mini-row/.mini-list list primitives, not a coincidence to migrate)"

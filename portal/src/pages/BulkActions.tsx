@@ -23,7 +23,13 @@ export interface BulkTool {
   button: string;
 }
 
-export const BULK_TOOLS: BulkTool[] = [];
+export const BULK_TOOLS: BulkTool[] = [
+  {
+    key: 'sites', title: 'Add or update sites in bulk',
+    description: 'Download a template or the current list, fill it in, upload it, and review adds and updates before applying.',
+    resource: 'sites', action: 'add', to: '/bulk/sites', button: 'Open',
+  },
+];
 
 export default function BulkActions() {
   const { can } = useAuth();
