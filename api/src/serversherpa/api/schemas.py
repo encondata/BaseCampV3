@@ -1226,6 +1226,9 @@ class MergeConflict(BaseModel):
 
 
 class MergePlanOut(BaseModel):
+    # On an applied merge `target` is re-read afterwards (post-merge counts
+    # and aliases); `source` is always the duplicate as it was BEFORE the
+    # merge — the row itself is gone by the time the response is built.
     target: ModelSummary
     source: ModelSummary
     moves: dict[str, int]

@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import StaleDataError
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
@@ -323,11 +325,12 @@ async def merge_asset_model(
     aliases = await _aliases_by_model(db, [target.id, source.id])
     counts = await _counts(db, [target.id, source.id])
 
-    def summary(m: AssetModel) -> ModelSummary:
+    def summary(m: AssetModel, aliases: dict, counts: dict) -> ModelSummary:
         a, s = counts.get(m.id, (0, 0))
         return ModelSummary(**_item(m, cats, aliases), asset_count=a, stock_line_count=s)
 
-    out = MergePlanOut(target=summary(target), source=summary(source),
+    out = MergePlanOut(target=summary(target, aliases, counts),
+                       source=summary(source, aliases, counts),
                        moves=plan.moves, fills=plan.fills,
                        alias_added=plan.alias_added, aliases_after=plan.aliases_after,
                        conflicts=plan.conflicts, can_merge=plan.can_merge,
@@ -338,18 +341,37 @@ async def merge_asset_model(
         raise _err(409, "alias_conflict", conflicts=plan.conflicts)
     source_name = f"{source.make} {source.model}"
     source_id = str(source.id)
-    await apply_plan(db, target, source, plan, now)
-    audit(db, actor_id=actor.person.id, entity_type="asset_model",
-          entity_id=str(target.id), action="merge",
-          changes={"source_id": source_id, "source_make_model": source_name,
-                   "moves": plan.moves, "fills": plan.fills,
-                   "alias_added": plan.alias_added,
-                   "aliases_moved": plan.aliases_moved})
-    audit(db, actor_id=actor.person.id, entity_type="asset_model",
-          entity_id=source_id, action="merged_into",
-          changes={"target_id": str(target.id),
-                   "target_make_model": f"{target.make} {target.model}"})
-    await db.commit()
+    # The plan was built from rows read a moment ago; another request can
+    # delete or re-alias either model in between. Anything the write path
+    # raises over that race is a conflict the caller fixes by refreshing —
+    # never a 500.
+    try:
+        await apply_plan(db, target, source, plan, now)
+        audit(db, actor_id=actor.person.id, entity_type="asset_model",
+              entity_id=str(target.id), action="merge",
+              changes={"source_id": source_id, "source_make_model": source_name,
+                       "moves": plan.moves, "fills": plan.fills,
+                       "alias_added": plan.alias_added,
+                       "aliases_moved": plan.aliases_moved})
+        # The source row is gone, so the audit viewer can never resolve its
+        # name from the database. auditFormat's targetLabel() falls back to
+        # changes["name"]["to"], so writing the merged-away name there is
+        # what keeps this row findable by what it happened to.
+        audit(db, actor_id=actor.person.id, entity_type="asset_model",
+              entity_id=source_id, action="merged_into",
+              changes={"target_id": str(target.id),
+                       "target_make_model": f"{target.make} {target.model}",
+                       "name": {"to": source_name}})
+        await db.commit()
+    except (IntegrityError, StaleDataError):
+        await db.rollback()
+        raise _err(409, "merge_conflict") from None
+    # `source` is the summary from before the merge (the model no longer
+    # exists); `target` is re-read so the response carries what the merge
+    # actually produced — new asset/stock counts and the added alias.
+    await db.refresh(target)
+    out.target = summary(target, await _aliases_by_model(db, [target.id]),
+                         await _counts(db, [target.id]))
     out.applied = True
     return out
 

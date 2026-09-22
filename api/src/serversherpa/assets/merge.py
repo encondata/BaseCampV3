@@ -62,13 +62,20 @@ async def build_plan(db: AsyncSession, target: AssetModel, source: AssetModel,
         AssetModelAlias.model_id == target.id).order_by(AssetModelAlias.alias)))
     source_aliases = list(await db.scalars(select(AssetModelAlias.alias).where(
         AssetModelAlias.model_id == source.id).order_by(AssetModelAlias.alias)))
+    # Aliases the target already "owns", so a source alias equal to one of
+    # them is dropped rather than moved. The target-alias half is defensive
+    # only: asset_model_aliases.alias carries a global CITEXT unique index,
+    # so no two models can ever hold the same alias — only the target-NAME
+    # case (a source alias spelled like "Dell PowerEdge R740") is reachable.
     taken = {a.lower() for a in target_aliases} | {_name(target).lower()}
 
     candidates = list(source_aliases) + [_name(source)]
     owners = (await db.execute(
         select(AssetModelAlias.alias, AssetModel.id, AssetModel.make, AssetModel.model)
         .join(AssetModel, AssetModel.id == AssetModelAlias.model_id)
-        .where(func.lower(AssetModelAlias.alias).in_([c.lower() for c in candidates]),
+        # CITEXT compares case-insensitively in SQL, so the plain IN is both
+        # correct and index-usable — lower(alias) would not hit the unique.
+        .where(AssetModelAlias.alias.in_(candidates),
                AssetModelAlias.model_id.not_in([target.id, source.id])))).all()
     plan.conflicts = [{"alias": alias, "model_id": str(mid), "make": mk, "model": md}
                       for alias, mid, mk, md in owners]

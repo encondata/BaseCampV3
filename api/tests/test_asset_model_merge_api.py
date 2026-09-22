@@ -3,12 +3,13 @@ import uuid
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.orm.exc import StaleDataError
 
 from serversherpa.db.models import (
     Asset, AssetModel, AssetModelAlias, AuditLog, Site, StockLine,
 )
 from tests.test_asset_model_review_api import _model
-from tests.test_assets_api import login
+from tests.test_assets_api import _client_contact, login
 
 
 async def _stock(db, model_id):
@@ -66,7 +67,13 @@ async def test_merge_applies_everything_and_audits(client, db, seeded_user):
     resp = await client.post(f"/asset-models/{target.id}/merge", headers=hdrs,
                              json={"source_id": str(source.id), "dry_run": False})
     assert resp.status_code == 200, resp.text
-    assert resp.json()["applied"] is True
+    body = resp.json()
+    assert body["applied"] is True
+    # the target summary is rebuilt AFTER the merge: 1 own + 2 moved assets,
+    # and the duplicate's name now sits on it as an alias
+    assert body["target"]["asset_count"] == 3
+    assert "Dell PowerEdge_R740" in body["target"]["aliases"]
+    assert body["source"]["asset_count"] == 2          # as it was before
     await db.refresh(target)
     # not db.get(): source is still resident in this session's identity map
     # from _model()'s commit above, and get() returns an identity-mapped
@@ -90,6 +97,8 @@ async def test_merge_applies_everything_and_audits(client, db, seeded_user):
     assert rows["merge"].changes["fills"] == {"category": "server"}
     assert rows["merged_into"].entity_id == str(source.id)
     assert rows["merged_into"].changes["target_id"] == str(target.id)
+    # the row survives the source's deletion: targetLabel() reads changes.name.to
+    assert rows["merged_into"].changes["name"]["to"] == "Dell PowerEdge_R740"
 
 
 async def test_notes_when_target_has_none(client, db, seeded_user):
@@ -132,3 +141,87 @@ async def test_merge_guards(client, db, seeded_user):
     resp = await client.post(f"/asset-models/{uuid.uuid4()}/merge", headers=hdrs,
                              json={"source_id": str(a.id), "dry_run": True})
     assert resp.status_code == 404
+
+
+async def test_unit_group_fill_lands_on_the_numeric_columns(client, db, seeded_user):
+    """The dry run reports fills as floats — check the REAL run writes them
+    back onto the Numeric columns, both halves of each unit group."""
+    hdrs = await login(client)
+    target = await _model(db, "Dell", "PowerEdge R740")           # all specs blank
+    source = await _model(db, "Dell", "PowerEdge_R740")
+    source.weight_lbs, source.weight_kg = Decimal("50.00"), Decimal("22.68")
+    source.length_in, source.width_in, source.height_in = (
+        Decimal("32.00"), Decimal("17.00"), Decimal("3.40"))
+    source.length_cm, source.width_cm, source.height_cm = (
+        Decimal("81.28"), Decimal("43.18"), Decimal("8.64"))
+    await db.commit()
+
+    resp = await client.post(f"/asset-models/{target.id}/merge", headers=hdrs,
+                             json={"source_id": str(source.id), "dry_run": False})
+    assert resp.status_code == 200, resp.text
+    await db.refresh(target)
+    assert target.weight_lbs == Decimal("50.00")
+    assert target.weight_kg == Decimal("22.68")
+    assert target.height_in == Decimal("3.40")
+    assert target.width_cm == Decimal("43.18")
+
+
+async def test_metric_only_source_fills_kg_and_leaves_lbs_null(client, db, seeded_user):
+    """A unit group fills as a whole: the half the source never had stays null."""
+    hdrs = await login(client)
+    target = await _model(db, "HPE", "DL380")
+    source = await _model(db, "HPE", "DL 380")
+    source.weight_kg = Decimal("10.00")
+    await db.commit()
+
+    resp = await client.post(f"/asset-models/{target.id}/merge", headers=hdrs,
+                             json={"source_id": str(source.id), "dry_run": False})
+    assert resp.status_code == 200, resp.text
+    await db.refresh(target)
+    assert target.weight_kg == Decimal("10.00")
+    assert target.weight_lbs is None
+
+
+async def test_source_alias_equal_to_target_name_is_dropped_not_moved(client, db, seeded_user):
+    hdrs = await login(client)
+    target = await _model(db, "Dell", "R740")
+    source = await _model(db, "Dell", "R-740", aliases=("dell r740", "keepme"))
+
+    resp = await client.post(f"/asset-models/{target.id}/merge", headers=hdrs,
+                             json={"source_id": str(source.id), "dry_run": False})
+    assert resp.status_code == 200, resp.text
+    # "dell r740" == the target's own name, so it is deleted with the source;
+    # "keepme" moves, and the source's name is added as an alias.
+    aliases = set(await db.scalars(select(AssetModelAlias.alias)))
+    assert aliases == {"keepme", "Dell R-740"}
+    assert await db.scalar(select(AssetModel).where(AssetModel.id == source.id)) is None
+
+
+async def test_concurrent_change_during_apply_is_a_clean_409(client, db, seeded_user,
+                                                             monkeypatch):
+    """Another request deleting or re-aliasing a model mid-merge surfaces as
+    409 merge_conflict, not a 500, and leaves both models alone."""
+    hdrs = await login(client)
+    target = await _model(db, "Dell", "R740")
+    source = await _model(db, "Dell", "R-740")
+
+    def boom(*args, **kwargs):
+        raise StaleDataError("x")
+
+    monkeypatch.setattr("serversherpa.api.routes.asset_models.apply_plan", boom)
+    resp = await client.post(f"/asset-models/{target.id}/merge", headers=hdrs,
+                             json={"source_id": str(source.id), "dry_run": False})
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "merge_conflict"
+    assert await db.scalar(select(AssetModel).where(AssetModel.id == source.id)) is not None
+
+
+async def test_client_actor_cannot_merge(client, db, seeded_user):
+    """The catalog is internal-only — a client-anchored actor gets 403."""
+    target = await _model(db, "Dell", "R740")
+    source = await _model(db, "Dell", "R-740")
+    _org, hdrs = await _client_contact(db, client, "Acme M", "mm@acme.example.com")
+    resp = await client.post(f"/asset-models/{target.id}/merge", headers=hdrs,
+                             json={"source_id": str(source.id), "dry_run": True})
+    assert resp.status_code == 403
+    assert await db.scalar(select(AssetModel).where(AssetModel.id == source.id)) is not None
