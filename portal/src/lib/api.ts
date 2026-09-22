@@ -1250,6 +1250,70 @@ export function downloadWorkerExport(format: 'csv' | 'xlsx'): Promise<void> {
   return downloadAttachment(`/workers/bulk-import/export?format=${format}`, `workers-export.${format}`);
 }
 
+// ── trucks bulk import ──────────────────────────────────────────────
+
+export interface TruckBulkRowResult {
+  row: number;
+  name: string | null;
+  action: 'create' | 'update' | 'unchanged' | 'error';
+  matched_by: string | null;
+  matched_name: string | null;
+  errors: string[];
+  diff: BulkDiff | null;
+  truck_id: string | null;
+  cells: Record<string, string>;
+  data: Record<string, unknown> | null;
+}
+
+export interface TruckBulkPreview {
+  rows: TruckBulkRowResult[];
+  can_commit: boolean;
+}
+
+export interface TruckBulkAppliedRow {
+  row: number;
+  name: string | null;
+  truck_id: string;
+  action: 'created' | 'updated' | 'skipped' | 'unchanged';
+  diff: BulkDiff | null;
+}
+
+export interface TruckBulkCommitResult {
+  created: number;
+  updated: number;
+  skipped: number;
+  unchanged: number;
+  rows: TruckBulkAppliedRow[];
+}
+
+export async function previewTruckBulk(file: File | Blob, filename: string): Promise<TruckBulkPreview> {
+  const fd = new FormData();
+  fd.append('file', file, filename);
+  const resp = await apiFetch('/trucks/bulk-import/preview', { method: 'POST', body: fd });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function commitTruckBulk(
+  rows: Record<string, unknown>[], approved: string[], source: string,
+): Promise<TruckBulkCommitResult> {
+  const resp = await apiFetch('/trucks/bulk-import/commit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows, approved_updates: approved, source }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export function downloadTruckTemplate(format: 'csv' | 'xlsx'): Promise<void> {
+  return downloadAttachment(`/trucks/bulk-import/template?format=${format}`, `trucks-template.${format}`);
+}
+
+export function downloadTruckExport(format: 'csv' | 'xlsx'): Promise<void> {
+  return downloadAttachment(`/trucks/bulk-import/export?format=${format}`, `trucks-export.${format}`);
+}
+
 export async function listSiteTypes(): Promise<SiteLookup[]> {
   const resp = await apiFetch('/site-types');
   if (!resp.ok) throw await errorFrom(resp);
