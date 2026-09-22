@@ -31,6 +31,11 @@ async def preview(db, admin, rows):
                                  actor_id=admin.id, actor_rank=ADMIN_RANK)
 
 
+async def one(db, admin, row):
+    """Preview a single row — matching scenarios must not share keys across rows."""
+    return (await preview(db, admin, [row]))["rows"][0]
+
+
 async def commit(db, admin, rows, approved=(), source="test.csv"):
     return await bi.commit_rows(db, bi.number_json_rows(rows), actor_id=admin.id,
                                 actor_rank=ADMIN_RANK,
@@ -133,3 +138,178 @@ async def test_reference_lists(db, admin):
     assert levels == ["L1", "L2", "L3", "L4", "L5", "L6"]
     assert statuses == ["active", "standby", "blacklist"]
     assert partners == ["Ant Co", "Bee Co"]
+
+
+# ── preview: validation ─────────────────────────────────────────────
+
+async def test_required_names_and_field_validation(db, admin):
+    out = await preview(db, admin, [
+        {"first_name": "", "last_name": "Solo"},
+        {"first_name": "No", "last_name": ""},
+        {"first_name": "Bad", "last_name": "Email", "email": "not-an-email"},
+        {"first_name": "Short", "last_name": "Phone", "phone": "12345"},
+        {"first_name": "Long", "last_name": "Country", "country": "USA"},
+        {"first_name": "No", "last_name": "Partner", "partner": "Nobody"},
+        {"first_name": "No", "last_name": "Level", "level": "L9"},
+        {"first_name": "No", "last_name": "Status", "status": "haunted"},
+        {"first_name": "No", "last_name": "Note", "status": "blacklist"},
+    ])
+    errs = {r["row"]: r["errors"] for r in out["rows"]}
+    assert errs[1] == ["first_name is required"]
+    assert errs[2] == ["last_name is required"]
+    assert errs[3] == ["email 'not-an-email' is not valid"]
+    assert errs[4] == ["phone needs at least 7 digits"]
+    assert errs[5] == ["country must be a two-letter code"]
+    assert errs[6] == ["unknown partner 'Nobody'"]
+    assert errs[7] == ["unknown level 'L9'"]
+    assert errs[8] == ["unknown status 'haunted'"]
+    assert errs[9] == ["blacklist requires a status_note"]
+    assert out["can_commit"] is False
+
+
+async def test_create_row_normalizes_and_defaults(db, admin):
+    db.add(Partner(name="Haul It"))
+    await db.commit()
+    out = await preview(db, admin, [{
+        "first_name": " Robert ", "last_name": "Smith", "country": "us",
+        "partner": "haul it", "level": "L3"}])
+    row = out["rows"][0]
+    assert row["action"] == "create" and row["matched_by"] is None
+    assert row["name"] == "Robert Smith"
+    assert row["data"]["first_name"] == "Robert"
+    assert row["data"]["country"] == "US" and row["data"]["status"] == "active"
+    assert row["data"]["partner"] == "Haul It"       # canonical partner name
+    assert row["cells"]["country"] == "us" and row["cells"]["status"] == ""
+    assert out["can_commit"] is True
+
+
+async def test_duplicate_keys_within_the_upload(db, admin):
+    out = await preview(db, admin, [
+        {"first_name": "A", "last_name": "One", "email": "Dup@Example.com"},
+        {"first_name": "B", "last_name": "Two", "email": "dup@example.com"},
+        {"first_name": "C", "last_name": "Three", "phone": "555-111-2222"},
+        {"first_name": "D", "last_name": "Four", "phone": "(555) 111 2222"},
+        {"first_name": "Bob", "last_name": "Smith"},
+        {"first_name": "Robert", "last_name": "Smith", "preferred_name": "Bob"},
+        {"first_name": "E", "last_name": "Five", "rfid_tag": "TAG1"},
+        {"first_name": "F", "last_name": "Six", "rfid_tag": "tag1"},
+    ])
+    errs = {r["row"]: r["errors"] for r in out["rows"]}
+    assert errs[1] == errs[2] == ["duplicate email 'dup@example.com' within the import"]
+    assert errs[3] == errs[4] == ["duplicate phone within the import"]
+    assert errs[5] == ["duplicate name 'Bob Smith' within the import"]
+    assert errs[6] == ["duplicate name 'Bob Smith' within the import"]
+    assert errs[7] == errs[8] == ["duplicate rfid_tag 'tag1' within the import"]
+
+
+# ── preview: matching ───────────────────────────────────────────────
+
+async def test_match_by_each_key_alone(db, admin):
+    await mk_worker(db, "Robert", "Smith", preferred="Bob",
+                    email="bob@test.example.com", phone="555-123-4567")
+    cases = [
+        ({"first_name": "X", "last_name": "Y", "email": "BOB@test.example.com"}, "email", "update"),
+        ({"first_name": "X", "last_name": "Y", "phone": "1 (555) 123-4567"}, "phone", "update"),
+        ({"first_name": "Robert", "last_name": "Smith"}, "name", "unchanged"),
+        ({"first_name": "Bob", "last_name": "Smith"}, "name", "update"),
+    ]
+    for row, key, action in cases:
+        out = await one(db, admin, row)
+        assert (out["matched_by"], out["action"], out["matched_name"]) == (key, action, "Bob Smith"), row
+    bob = await one(db, admin, cases[3][0])
+    assert bob["diff"]["first_name"] == {"old": "Robert", "new": "Bob"}
+
+
+async def test_keys_that_agree_are_listed_and_keys_that_disagree_are_errors(db, admin):
+    a = await mk_worker(db, "Robert", "Smith", email="a@test.example.com", phone="555-000-0001")
+    await mk_worker(db, "Roberta", "Smith", email="b@test.example.com", phone="555-000-0002")
+    good = await one(db, admin, {
+        "first_name": "Robert", "last_name": "Smith", "email": "a@test.example.com",
+        "phone": "555-000-0001"})
+    assert good["action"] == "unchanged" and good["matched_by"] == "email, phone, name"
+    assert good["person_id"] == str(a.id)
+    bad = await one(db, admin, {
+        "first_name": "Zed", "last_name": "Zulu", "email": "a@test.example.com",
+        "phone": "555-000-0002"})
+    assert bad["action"] == "error"
+    assert bad["errors"] == ["email matches Robert Smith, phone matches Roberta Smith"]
+
+
+async def test_ambiguous_name_without_another_key_is_error(db, admin):
+    await mk_worker(db, "Chris", "Lee", email="c1@test.example.com")
+    await mk_worker(db, "Chris", "Lee", email="c2@test.example.com")
+    bare = await one(db, admin, {"first_name": "Chris", "last_name": "Lee"})
+    assert bare["errors"] == ["two people share the name 'Chris Lee'"]
+    # an email that points at one of them does not rescue the row: any key
+    # hitting two people is an error, so the file must carry a unique key only
+    keyed = await one(db, admin, {"first_name": "Chris", "last_name": "Lee",
+                                  "email": "c2@test.example.com"})
+    assert keyed["errors"] == ["two people share the name 'Chris Lee'"]
+
+
+async def test_two_rows_on_one_person_and_archived_never_match(db, admin):
+    await mk_worker(db, "Robert", "Smith", email="bob@test.example.com")
+    await mk_worker(db, "Old", "Timer", email="old@test.example.com", archived=True)
+    out = await preview(db, admin, [
+        {"first_name": "Robert", "last_name": "Smith"},
+        {"first_name": "Zed", "last_name": "Zulu", "email": "bob@test.example.com"},
+        {"first_name": "Old", "last_name": "Timer"},
+        {"first_name": "New", "last_name": "Person", "email": "old@test.example.com"},
+    ])
+    rows = out["rows"]
+    assert rows[0]["errors"] == ["two rows match the same existing person 'Robert Smith'"]
+    assert rows[1]["errors"] == ["two rows match the same existing person 'Robert Smith'"]
+    assert rows[2]["action"] == "create"
+    assert rows[3]["errors"] == ["email 'old@test.example.com' belongs to an archived person"]
+
+
+async def test_rfid_tag_collisions(db, admin):
+    holder = await mk_worker(db, "Tag", "Holder", email="tag@test.example.com", rfid="ABC123")
+    await mk_worker(db, "Gone", "Tag", rfid="OLD1", archived=True)
+    other = await one(db, admin, {"first_name": "Other", "last_name": "Person", "rfid_tag": "abc123"})
+    assert other["errors"] == ["rfid_tag 'abc123' belongs to Tag Holder"]
+    own = await one(db, admin, {"first_name": "Tag", "last_name": "Holder",
+                                "email": "tag@test.example.com", "rfid_tag": "ABC123"})
+    assert own["action"] == "unchanged" and own["person_id"] == str(holder.id)
+    stale = await one(db, admin, {"first_name": "Third", "last_name": "Person", "rfid_tag": "old1"})
+    assert stale["errors"] == ["rfid_tag 'old1' belongs to an archived person"]
+
+
+async def test_non_worker_user_matches_and_gets_the_role_in_the_diff(db, admin):
+    user = await mk_worker(db, "Office", "User", email="ou@test.example.com", role=False)
+    out = await preview(db, admin, [
+        {"first_name": "Office", "last_name": "User", "trade": "Cable"}])
+    row = out["rows"][0]
+    assert row["action"] == "update" and row["person_id"] == str(user.id)
+    assert row["diff"]["worker_role"] == {"old": None, "new": "granted"}
+    assert row["diff"]["trade"] == {"old": None, "new": "Cable"}
+
+
+async def test_update_diff_blank_means_no_change_and_phone_email_normalize(db, admin):
+    pt = Partner(name="Haul It")
+    db.add(pt)
+    await db.flush()
+    await mk_worker(db, "Robert", "Smith", email="Bob@test.example.com", phone="(555) 123-4567",
+                    profile={"trade": "Cable", "level": "L2", "status": "standby",
+                             "partner_id": pt.id})
+    out = await preview(db, admin, [{
+        "first_name": "Robert", "last_name": "Smith", "email": "bob@test.example.com",
+        "phone": "555.123.4567", "status": "", "country": "", "city": "Reno",
+        "level": "L3", "partner": ""}])
+    row = out["rows"][0]
+    assert row["action"] == "update"
+    assert row["diff"] == {"city": {"old": None, "new": "Reno"},
+                           "level": {"old": "L2", "new": "L3"}}
+
+
+async def test_status_change_guards_rank_and_self(db, admin):
+    boss = await mk_worker(db, "Big", "Boss", email="boss@test.example.com")
+    db.add(PersonRole(person_id=boss.id, role="developer"))     # rank above admin's 60
+    await db.commit()
+    out = await preview(db, admin, [
+        {"first_name": "Big", "last_name": "Boss", "status": "standby"},
+        {"first_name": "Ada", "last_name": "Admin", "status": "standby"},
+    ])
+    rows = out["rows"]
+    assert rows[0]["errors"] == ["rank too low to change status"]
+    assert rows[1]["errors"] == ["cannot change your own status"]

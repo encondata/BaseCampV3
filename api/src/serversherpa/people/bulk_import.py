@@ -170,3 +170,274 @@ async def export_rows(db: AsyncSession) -> list[dict]:
         row["status_note"] = (profile.status_note if profile else None) or ""
         out.append(row)
     return out
+
+
+# ── validation + preview ────────────────────────────────────────────
+
+async def _reference_data(db: AsyncSession) -> dict:
+    levels = set(await db.scalars(select(WorkerLevel.level)))
+    statuses = set(await db.scalars(select(StatusValue.key).where(
+        StatusValue.record_type == "worker")))
+    partners: dict[str, list[Partner]] = {}
+    partner_names: dict[uuid.UUID, str] = {}
+    for p in await db.scalars(select(Partner)):
+        partners.setdefault(p.name.lower(), []).append(p)
+        partner_names[p.id] = p.name
+
+    people = list(await db.scalars(select(Person).where(Person.archived_at.is_(None))))
+    by_email: dict[str, list[Person]] = {}
+    by_phone: dict[str, list[Person]] = {}
+    by_name: dict[str, list[Person]] = {}
+    by_rfid: dict[str, Person] = {}
+    for p in people:
+        if p.email:
+            by_email.setdefault(p.email.casefold(), []).append(p)
+        phone_key = normalize_phone(p.phone or "")
+        if phone_key:
+            by_phone.setdefault(phone_key, []).append(p)
+        for key in name_keys(p.first_name, p.last_name, p.preferred_name or ""):
+            by_name.setdefault(key, []).append(p)
+        if p.rfid_tag:
+            by_rfid[p.rfid_tag.lower()] = p
+
+    archived = list(await db.scalars(select(Person).where(Person.archived_at.is_not(None))))
+    archived_emails = {p.email.casefold() for p in archived if p.email}
+    archived_rfids = {p.rfid_tag.lower() for p in archived if p.rfid_tag}
+
+    profiles = {pr.person_id: pr for pr in await db.scalars(select(WorkerProfile))}
+    worker_ids = set(await db.scalars(select(PersonRole.person_id).where(
+        PersonRole.role == "worker", PersonRole.revoked_at.is_(None))))
+    max_rank = dict((await db.execute(
+        select(PersonRole.person_id, func.max(Role.rank))
+        .join(Role, Role.name == PersonRole.role)
+        .where(PersonRole.revoked_at.is_(None))
+        .group_by(PersonRole.person_id))).all())
+    return {"levels": levels, "statuses": statuses, "partners": partners,
+            "partner_names": partner_names, "by_email": by_email,
+            "by_phone": by_phone, "by_name": by_name, "by_rfid": by_rfid,
+            "archived_emails": archived_emails, "archived_rfids": archived_rfids,
+            "profiles": profiles, "worker_ids": worker_ids, "max_rank": max_rank}
+
+
+def _row_display_name(row: dict) -> str:
+    return f"{row['preferred_name'] or row['first_name']} {row['last_name']}".strip()
+
+
+def _valid_email(text: str) -> bool:
+    try:
+        _EMAIL.validate_python(text)
+        return True
+    except ValidationError:
+        return False
+
+
+async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
+                       actor_id: uuid.UUID, actor_rank: int) -> dict:
+    ref = await _reference_data(db)
+
+    # in-upload duplicate keys → both rows are errors
+    emails_seen: dict[str, list[int]] = {}
+    phones_seen: dict[str, list[int]] = {}
+    names_seen: dict[str, list[int]] = {}
+    rfids_seen: dict[str, list[int]] = {}
+    for n, row in numbered:
+        if row["email"]:
+            emails_seen.setdefault(row["email"].casefold(), []).append(n)
+        phone_key = normalize_phone(row["phone"])
+        if phone_key:
+            phones_seen.setdefault(phone_key, []).append(n)
+        for key in name_keys(row["first_name"], row["last_name"], row["preferred_name"]):
+            names_seen.setdefault(key, []).append(n)
+        if row["rfid_tag"]:
+            rfids_seen.setdefault(row["rfid_tag"].lower(), []).append(n)
+
+    pending: list[dict] = []
+    for n, row in numbered:
+        errors: list[str] = []
+        if not row["first_name"]:
+            errors.append("first_name is required")
+        if not row["last_name"]:
+            errors.append("last_name is required")
+
+        email_key = row["email"].casefold()
+        if row["email"] and not _valid_email(row["email"]):
+            errors.append(f"email '{row['email']}' is not valid")
+        elif row["email"] and len(emails_seen[email_key]) > 1:
+            errors.append(f"duplicate email '{email_key}' within the import")
+        elif email_key in ref["archived_emails"]:
+            errors.append(f"email '{row['email']}' belongs to an archived person")
+
+        phone_key = normalize_phone(row["phone"])
+        if row["phone"] and not phone_key:
+            errors.append("phone needs at least 7 digits")
+        elif phone_key and len(phones_seen[phone_key]) > 1:
+            errors.append("duplicate phone within the import")
+
+        row_names = name_keys(row["first_name"], row["last_name"], row["preferred_name"])
+        dup_name = any(len(names_seen[k]) > 1 for k in row_names)
+        if dup_name:
+            errors.append(f"duplicate name '{_row_display_name(row)}' within the import")
+
+        rfid_key = row["rfid_tag"].lower()
+        if rfid_key and len(rfids_seen[rfid_key]) > 1:
+            errors.append(f"duplicate rfid_tag '{rfid_key}' within the import")
+        elif rfid_key in ref["archived_rfids"]:
+            errors.append(f"rfid_tag '{row['rfid_tag']}' belongs to an archived person")
+
+        if row["country"] and not _COUNTRY.match(row["country"]):
+            errors.append("country must be a two-letter code")
+
+        partner_obj: Partner | None = None
+        if row["partner"]:
+            matches = ref["partners"].get(row["partner"].lower(), [])
+            if len(matches) == 0:
+                errors.append(f"unknown partner '{row['partner']}'")
+            elif len(matches) > 1:
+                errors.append(f"ambiguous partner '{row['partner']}'")
+            else:
+                partner_obj = matches[0]
+        if row["level"] and row["level"] not in ref["levels"]:
+            errors.append(f"unknown level '{row['level']}'")
+        if row["status"] and row["status"] not in ref["statuses"]:
+            errors.append(f"unknown status '{row['status']}'")
+
+        blank = {"status": row["status"] == "", "country": row["country"] == ""}
+        data = dict(row)
+        if blank["status"]:
+            data["status"] = "active"
+        data["country"] = "US" if blank["country"] else row["country"].upper()
+        if partner_obj is not None:
+            data["partner"] = partner_obj.name
+
+        # resolve the target — only for rows that are otherwise clean
+        target: Person | None = None
+        matched_by: str | None = None
+        if not errors:
+            hits: dict[str, list[Person]] = {}
+            if row["email"]:
+                hits["email"] = ref["by_email"].get(email_key, [])
+            if phone_key:
+                hits["phone"] = ref["by_phone"].get(phone_key, [])
+            if row_names:
+                seen: dict[uuid.UUID, Person] = {}
+                for k in row_names:
+                    for p in ref["by_name"].get(k, []):
+                        seen[p.id] = p
+                hits["name"] = list(seen.values())
+            shown = {"email": email_key, "phone": row["phone"],
+                     "name": _row_display_name(row)}
+            for key, people in hits.items():
+                if len(people) > 1:
+                    errors.append(f"two people share the {key} '{shown[key]}'")
+            if not errors:
+                distinct = {p.id: p for people in hits.values() for p in people}
+                if len(distinct) > 1:
+                    errors.append(", ".join(
+                        f"{key} matches {people[0].display_name}"
+                        for key, people in hits.items() if people))
+                elif distinct:
+                    target = next(iter(distinct.values()))
+                    matched_by = ", ".join(k for k in ("email", "phone", "name")
+                                           if hits.get(k))
+
+        if not errors and rfid_key:
+            holder = ref["by_rfid"].get(rfid_key)
+            if holder is not None and (target is None or holder.id != target.id):
+                errors.append(f"rfid_tag '{row['rfid_tag']}' belongs to {holder.display_name}")
+
+        if not errors:
+            profile = ref["profiles"].get(target.id) if target is not None else None
+            if data["status"] == "blacklist" and not (
+                    row["status_note"] or (profile.status_note if profile else None)):
+                errors.append("blacklist requires a status_note")
+            if target is not None and not blank["status"]:
+                old_status = profile.status if profile else "active"
+                if data["status"] != old_status:
+                    if target.id == actor_id:
+                        errors.append("cannot change your own status")
+                    elif not can_touch_rank(actor_rank, ref["max_rank"].get(target.id, 0)):
+                        errors.append("rank too low to change status")
+
+        pending.append({"row": n, "cells": dict(row), "name": _row_display_name(row),
+                        "errors": errors, "data": data, "blank": blank,
+                        "target": target, "matched_by": matched_by,
+                        "partner_obj": partner_obj})
+
+    # two upload rows resolving to the same person would apply twice, last
+    # write winning silently — both rows are errors instead
+    same_target: dict[uuid.UUID, list[dict]] = {}
+    for p in pending:
+        if p["target"] is not None:
+            same_target.setdefault(p["target"].id, []).append(p)
+    for group in same_target.values():
+        if len(group) > 1:
+            for p in group:
+                p["errors"].append("two rows match the same existing person "
+                                   f"'{p['target'].display_name}'")
+
+    results = []
+    for p in pending:
+        errors, target = p["errors"], p["target"]
+        action, diff_out, person_id = "create", None, None
+        if errors:
+            action = "error"
+        elif target is not None:
+            person_id = str(target.id)
+            changes = _diff_row(
+                target, ref["profiles"].get(target.id),
+                target.id in ref["worker_ids"], p["data"], p["blank"],
+                p["partner_obj"], ref["partner_names"])
+            action = "update" if changes else "unchanged"
+            diff_out = changes or None
+        results.append({"row": p["row"], "name": p["name"] or None,
+                        "action": action,
+                        "matched_by": p["matched_by"] if action != "error" else None,
+                        "matched_name": (target.display_name
+                                         if target is not None and action != "error" else None),
+                        "errors": errors, "diff": diff_out, "person_id": person_id,
+                        "cells": p["cells"],
+                        "data": p["data"] if action != "error" else None})
+
+    can_commit = bool(results) and all(r["action"] != "error" for r in results)
+    return {"rows": results, "can_commit": can_commit}
+
+
+def _diff_row(person: Person, profile: WorkerProfile | None, is_worker: bool,
+              data: dict, blank: dict, partner_obj: Partner | None,
+              partner_names: dict) -> dict:
+    """Changed fields only; blank in the row = no change. `blank` remembers
+    the create-only status/country defaults so they never read as edits."""
+    out: dict = {}
+    for col, attr in PERSON_ATTR.items():
+        raw = data[col]
+        if col == "country" and blank["country"]:
+            continue
+        if raw == "":
+            continue
+        old = getattr(person, attr)
+        if col == "email" and (old or "").casefold() == raw.casefold():
+            continue
+        if col == "phone" and old and normalize_phone(old) == normalize_phone(raw):
+            continue
+        if (old or "") != raw:
+            out[col] = {"old": old, "new": raw}
+    for col in PROFILE_COLUMNS:
+        raw = data[col]
+        if col == "status" and blank["status"]:
+            continue
+        if raw == "":
+            continue
+        if profile is not None:
+            old = getattr(profile, col)
+        else:
+            old = "active" if col == "status" else None
+        if (old or "") != raw:
+            out[col] = {"old": old, "new": raw}
+    if data["partner"] and partner_obj is not None:
+        old_pid = profile.partner_id if profile is not None else None
+        if old_pid != partner_obj.id:
+            out["partner"] = {"old": partner_names.get(old_pid) if old_pid else None,
+                              "new": partner_obj.name}
+    if not is_worker:
+        out["worker_role"] = {"old": None, "new": "granted"}
+    return out
