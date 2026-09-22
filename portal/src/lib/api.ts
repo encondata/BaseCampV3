@@ -1096,6 +1096,8 @@ export interface BulkRowResult {
   row: number;
   name: string | null;
   action: 'create' | 'update' | 'unchanged' | 'error';
+  matched_by: 'name' | 'address' | null;
+  matched_name: string | null;
   errors: string[];
   diff: Record<
     string,
@@ -1108,17 +1110,8 @@ export interface BulkRowResult {
 export interface BulkPreview {
   rows: BulkRowResult[];
   can_commit: boolean;
-  update_allowed: boolean;
 }
 
-export async function getSiteBulkSample(): Promise<Record<string, string>[]> {
-  const resp = await apiFetch('/sites/bulk-import/template?format=json');
-  if (!resp.ok) throw await errorFrom(resp);
-  return resp.json();
-}
-
-/** Pasted JSON rides the same multipart path as a real file: the caller
- * wraps it in a Blob named paste.json, so the API has one parsing entry. */
 export async function previewSiteBulk(
   file: File | Blob, filename: string,
 ): Promise<BulkPreview> {
@@ -1153,6 +1146,20 @@ export async function downloadSiteTemplate(format: 'csv' | 'xlsx'): Promise<void
   const a = document.createElement('a');
   a.href = url;
   a.download = `sites-template.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+export async function downloadSiteExport(format: 'csv' | 'xlsx'): Promise<void> {
+  const resp = await apiFetch(`/sites/bulk-import/export?format=${format}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `sites-export.${format}`;
   document.body.appendChild(a);
   a.click();
   a.remove();

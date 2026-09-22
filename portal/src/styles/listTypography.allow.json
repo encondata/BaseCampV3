@@ -340,11 +340,6 @@
     "reason": "not list content: settings inline form input"
   },
   {
-    "file": "styles/sites.css",
-    "selector": ".bulk-import textarea",
-    "reason": "not list content: bulk-import paste textarea (form input, not table content)"
-  },
-  {
     "file": "styles/system.css",
     "selector": ".sysconf-tab",
     "reason": "not list content: system-config tab button"
