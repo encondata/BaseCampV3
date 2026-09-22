@@ -5,6 +5,11 @@ Blank-cell rule: on create rows, blank status/country take the defaults
 (active/US); on update rows a blank cell means "no change", never a clear —
 the original cell blankness is tracked out-of-band (`_blank`) because the
 normalized `data` dict has already had defaults applied by diff time.
+
+Each preview row therefore also carries `cells`: the uploaded cells exactly as
+`_cell()` normalized them, before any default was filled in. The commit replays
+those cells, never `data` — replaying `data` would turn a blank status/country
+into an explicit write.
 """
 
 import csv
@@ -59,15 +64,34 @@ class BulkImportError(Exception):
 
 # ── parsing ─────────────────────────────────────────────────────────
 
+FORMULA_LEAD = ("=", "+", "-", "@")
+_NUMERIC = re.compile(r"^[+-]?\d+(\.\d+)?$")
+
+
 def _cell(value: Any) -> str:
     """Spreadsheet cells arrive as str/float/int/bool/None — normalize to
     trimmed text. Integral floats (openpyxl's 89501.0) drop the .0 so
-    numeric-looking text columns round-trip."""
+    numeric-looking text columns round-trip. One leading apostrophe in front
+    of a formula lead character is dropped, so our own guarded CSV export
+    (see `_guard_cell`) re-uploads as the value it started as."""
     if value is None:
         return ""
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
-    return str(value).strip()
+    text = str(value).strip()
+    if text[:1] == "'" and text[1:2] in FORMULA_LEAD:
+        text = text[1:]
+    return text
+
+
+def _guard_cell(text: str) -> str:
+    """OWASP CSV-injection guard, mirroring the portal's `csvCell`: a cell
+    that opens with = + - @ gets a leading apostrophe so Excel/Sheets read it
+    as text — unless the whole cell is a number, so -119.8138 stays a
+    coordinate."""
+    if text[:1] in FORMULA_LEAD and not _NUMERIC.match(text):
+        return f"'{text}"
+    return text
 
 
 def _check_columns(keys: list[str]) -> None:
@@ -140,7 +164,8 @@ def build_rows_csv(rows: list[dict]) -> str:
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=COLUMNS, lineterminator="\n")
     writer.writeheader()
-    writer.writerows(rows)
+    writer.writerows({c: _guard_cell(str(row[c])) for c in COLUMNS}
+                     for row in rows)
     return buf.getvalue()
 
 
@@ -153,6 +178,11 @@ def build_rows_xlsx(rows: list[dict], type_keys: list[str],
     ws.append(COLUMNS)
     for row in rows:
         ws.append([row[c] for c in COLUMNS])
+        # a cell openpyxl would otherwise store as a formula is pinned to
+        # text, so a site named "=HYPERLINK(…)" can never execute on open
+        for cell in ws[ws.max_row]:
+            if isinstance(cell.value, str) and cell.value[:1] in FORMULA_LEAD:
+                cell.data_type = "s"
     ref = wb.create_sheet("Reference")
     ref.append(["Valid type keys"])
     for key in type_keys:
@@ -175,7 +205,12 @@ def build_template_xlsx(type_keys: list[str], status_keys: list[str]) -> bytes:
 
 
 def _coord_text(value) -> str:
-    return "" if value is None else format(value, "f").rstrip("0").rstrip(".")
+    """Plain decimal text. Only a fractional part may lose trailing zeros —
+    a whole-degree 40 must not come back as '4'."""
+    if value is None:
+        return ""
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 async def export_rows(db: AsyncSession) -> list[dict]:
@@ -284,7 +319,7 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]]) -> di
                 select(Partner.id, Partner.name).where(Partner.id.in_(pids))
             )).all())
 
-    results = []
+    pending: list[dict] = []
     for n, row in numbered:
         errors: list[str] = []
         name = row["name"]
@@ -345,31 +380,55 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]]) -> di
                 errors.append(f"multiple existing sites named '{name}'")
             elif name_hits:
                 target, matched_by = name_hits[0], "name"
-                if addr_hits and all(s.id != target.id for s in addr_hits):
+                other = sorted(s.name for s in addr_hits if s.id != target.id)
+                if len(other) == len(addr_hits) and other:
                     errors.append(f"name matches '{target.name}' but address "
-                                  f"matches '{addr_hits[0].name}'")
+                                  f"matches '{other[0]}'")
             elif len(addr_hits) > 1:
                 names = ", ".join(sorted(s.name for s in addr_hits))
                 errors.append(f"multiple existing sites at that address: {names}")
             elif addr_hits:
                 target, matched_by = addr_hits[0], "address"
 
+        pending.append({"row": n, "cells": dict(row), "name": name,
+                        "errors": errors, "data": data, "blank": blank,
+                        "target": target, "matched_by": matched_by,
+                        "partner_obj": partner_obj, "client_objs": client_objs})
+
+    # two upload rows resolving to the same existing site would apply twice,
+    # last write winning silently — both rows are errors instead
+    same_target: dict[uuid.UUID, list[dict]] = {}
+    for p in pending:
+        if not p["errors"] and p["target"] is not None:
+            same_target.setdefault(p["target"].id, []).append(p)
+    for group in same_target.values():
+        if len(group) > 1:
+            for p in group:
+                p["errors"].append("two rows match the same existing site "
+                                   f"'{p['target'].name}'")
+
+    results = []
+    for p in pending:
+        errors, target = p["errors"], p["target"]
         action, diff_out, site_id = "create", None, None
         if errors:
             action = "error"
         elif target is not None:
             site_id = str(target.id)
             changes = _diff_row(
-                target, data, blank, partner_obj, client_objs,
-                current_clients.get(target.id, {}), partner_names)
+                target, p["data"], p["blank"], p["partner_obj"],
+                p["client_objs"], current_clients.get(target.id, {}),
+                partner_names)
             action = "update" if changes else "unchanged"
             diff_out = changes or None
 
-        results.append({"row": n, "name": name or None, "action": action,
-                        "matched_by": matched_by if action != "error" else None,
+        results.append({"row": p["row"], "name": p["name"] or None,
+                        "action": action,
+                        "matched_by": p["matched_by"] if action != "error" else None,
                         "matched_name": target.name if target is not None and action != "error" else None,
                         "errors": errors, "diff": diff_out, "site_id": site_id,
-                        "data": data if action != "error" else None})
+                        "cells": p["cells"],
+                        "data": p["data"] if action != "error" else None})
 
     can_commit = bool(results) and all(r["action"] != "error" for r in results)
     return {"rows": results, "can_commit": can_commit}
@@ -397,8 +456,6 @@ def _diff_row(site: Site, data: dict, blank: dict,
         if raw == "":
             continue
         old = getattr(site, attr)
-        if col == "address_line1" and normalize_address(old or "") == normalize_address(raw):
-            continue        # same match key as the lookup above — formatting noise, not a change
         if (old or "") != raw:
             out[col] = {"old": old, "new": raw}
     if data["partner"] and partner_obj is not None:
@@ -421,7 +478,11 @@ async def commit_rows(db: AsyncSession, actor_person_id: uuid.UUID,
                       approved_updates: set[str], source_label: str) -> dict:
     """All-or-nothing: re-validates everything, then commits creates plus
     APPROVED updates in one transaction. Raises rows_invalid (carrying the
-    full preview payload) if anything blocks — nothing is written."""
+    full preview payload) if anything blocks — nothing is written.
+
+    `numbered` must be the ORIGINAL uploaded cells (the preview's `cells`),
+    not its normalized `data`: re-previewing `data` would read a filled-in
+    status/country default as an explicit edit."""
     from serversherpa.services.audit import audit
 
     preview = await preview_rows(db, numbered)

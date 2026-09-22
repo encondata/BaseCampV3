@@ -9,7 +9,7 @@ import openpyxl
 import pytest
 from sqlalchemy import func, select
 
-from serversherpa.db.models import Person, PersonRole, Site
+from serversherpa.db.models import AuditLog, Person, PersonRole, Site
 from serversherpa.sites import bulk_import as bi
 from tests.test_sites_api import login, make_login
 
@@ -104,6 +104,10 @@ async def test_preview_json_and_file_paths(client, seeded_user, admin_hdrs):
     assert via_file.status_code == 200, via_file.text
     a, b = via_json.json()["rows"][0], via_file.json()["rows"][0]
     assert a["data"] == b["data"]
+    # `cells` is what the portal replays on commit: the uploaded cells, with
+    # no create-only defaults filled in
+    assert a["cells"] == b["cells"]
+    assert a["cells"]["status"] == "" and a["data"]["status"] == "active"
 
     bad = await client.post(
         "/sites/bulk-import/preview", headers=admin_hdrs,
@@ -174,3 +178,31 @@ async def test_commit_approval_flow(client, db, seeded_user, dev_hdrs):
     assert ok.json()["updated"] == 1
     await db.refresh(site)
     assert site.city == "New"
+
+
+async def test_commit_replays_uploaded_cells_and_defaults_the_source(
+        client, db, seeded_user, admin_hdrs):
+    """The portal posts the preview's `cells`; a blank status/country in them
+    must stay blank on an existing site, and an unlabeled run reads as an
+    upload in the audit trail."""
+    site = Site(name="Replayed", city="Old", country="CH", status="planned")
+    db.add(site)
+    await db.commit()
+    body = (await client.post(
+        "/sites/bulk-import/preview", headers=admin_hdrs,
+        json={"rows": [{"name": "Replayed", "city": "New"}]})).json()
+    cells = body["rows"][0]["cells"]
+
+    ok = await client.post("/sites/bulk-import/commit", headers=admin_hdrs,
+                           json={"rows": [cells],
+                                 "approved_updates": [str(site.id)]})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["updated"] == 1
+    await db.refresh(site)
+    assert site.city == "New"
+    assert site.status == "planned" and site.country == "CH"
+
+    summary = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "site_bulk_import").order_by(
+        AuditLog.at.desc()))
+    assert summary.changes["source"] == "upload"

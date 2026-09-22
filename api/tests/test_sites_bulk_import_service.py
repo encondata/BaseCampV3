@@ -221,7 +221,10 @@ async def test_address_match_renames_and_reports_matched_by(db, seeded_user):
     assert row["action"] == "update"
     assert row["matched_by"] == "address" and row["matched_name"] == "Old Name"
     assert row["diff"]["name"] == {"old": "Old Name", "new": "New Name"}
-    assert "address_line1" not in row["diff"]
+    # the address matched on its normalized key, but the cleanup itself is an
+    # ordinary field change the approver gets to see
+    assert row["diff"]["address_line1"] == {"old": "100 Server Way",
+                                            "new": "100 server-way"}
 
 
 async def test_new_row_reports_no_match(db, seeded_user):
@@ -441,3 +444,114 @@ async def test_export_rows_round_trip_as_unchanged(db, seeded_user):
     assert bi.build_rows_csv(rows).splitlines()[0] == ",".join(bi.COLUMNS)
     parsed = bi.parse_upload("e.xlsx", bi.build_rows_xlsx(rows, ["datacenter"], ["active"]))
     assert [r for _, r in parsed][0]["name"] == rows[0]["name"]
+
+
+async def test_two_rows_matching_the_same_site_are_errors(db, seeded_user):
+    """One by name, one by address — applying both would silently let the
+    last row win, so neither is applied."""
+    from serversherpa.db.models import Site
+    db.add(Site(name="Alpha", address_line1="100 Main", country="US",
+                status="active"))
+    await db.commit()
+    rows = bi.number_json_rows([{"name": "Alpha", "city": "Reno"},
+                                {"name": "Beta", "address_line1": "100 Main"}])
+    out = await bi.preview_rows(db, rows)
+    assert [r["action"] for r in out["rows"]] == ["error", "error"]
+    assert all("two rows match the same existing site 'Alpha'" in r["errors"]
+               for r in out["rows"])
+    assert out["can_commit"] is False
+
+
+async def test_preview_cells_keep_the_uploaded_blanks(db, seeded_user):
+    rows = bi.number_json_rows([{"name": "Cellophane", "city": "Reno"}])
+    row = (await bi.preview_rows(db, rows))["rows"][0]
+    assert row["cells"]["status"] == "" and row["cells"]["country"] == ""
+    assert row["data"]["status"] == "active"      # defaults live in data only
+    assert row["cells"]["clients"] == ""          # unsplit, template-shaped
+
+
+async def test_commit_blank_status_country_never_written(db, seeded_user):
+    """Replaying the preview's `cells` (what the portal sends) must not carry
+    the create-only status/country defaults onto an existing site."""
+    from serversherpa.db.models import Site
+    site = Site(name="Planned One", city="Old", country="CH", status="planned")
+    db.add(site)
+    await db.commit()
+    site_id = str(site.id)
+
+    rows = bi.number_json_rows([{"name": "Planned One", "city": "New"}])
+    preview = await bi.preview_rows(db, rows)
+    row = preview["rows"][0]
+    assert row["action"] == "update" and row["site_id"] == site_id
+    assert set(row["diff"]) == {"city"}
+
+    out = await bi.commit_rows(db, seeded_user.id,
+                               bi.number_json_rows([row["cells"]]),
+                               approved_updates={site_id},
+                               source_label="upload")
+    assert out["updated"] == 1
+    await db.refresh(site)
+    assert site.city == "New"
+    assert site.status == "planned" and site.country == "CH"
+
+    # and a name-only row stays a no-op through preview AND commit
+    bare = await bi.preview_rows(db, bi.number_json_rows([{"name": "Planned One"}]))
+    assert bare["rows"][0]["action"] == "unchanged"
+    again = await bi.commit_rows(db, seeded_user.id,
+                                 bi.number_json_rows([bare["rows"][0]["cells"]]),
+                                 approved_updates=set(), source_label="upload")
+    assert (again["created"], again["updated"], again["unchanged"]) == (0, 0, 1)
+    await db.refresh(site)
+    assert site.status == "planned" and site.country == "CH"
+
+
+async def test_export_guards_formula_cells_and_round_trips(db, seeded_user):
+    import io
+
+    import openpyxl
+    from serversherpa.db.models import Site
+    evil = '=HYPERLINK("http://evil","x")'
+    db.add(Site(name=evil, country="US", status="active",
+                latitude=39.5296, longitude=-119.8138))
+    await db.commit()
+    rows = await bi.export_rows(db)
+    mine = next(r for r in rows if r["name"] == evil)
+
+    csv_text = bi.build_rows_csv(rows)
+    # guarded, then csv-quoted (the inner quotes double) — never a bare "="
+    assert '"\'=HYPERLINK(""http://evil"",""x"")"' in csv_text
+    assert "-119.8138" in csv_text and "'-119.8138" not in csv_text
+
+    blob = bi.build_rows_xlsx(rows, ["datacenter"], ["active"])
+    ws = openpyxl.load_workbook(io.BytesIO(blob))["Sites"]
+    cells = {c.value: c for line in ws.iter_rows() for c in line
+             if isinstance(c.value, str)}
+    assert cells[evil].data_type == "s"           # text, never a formula
+    assert cells["-119.8138"].data_type == "s"
+
+    # both guarded exports re-upload as the row they came from
+    from_csv = bi.parse_upload("e.csv", csv_text.encode())
+    assert dict(from_csv[0][1])["name"] == evil
+    from_xlsx = bi.parse_upload("e.xlsx", blob)
+    assert dict(from_xlsx[0][1])["name"] == evil
+    out = await bi.preview_rows(db, from_csv)
+    assert {r["action"] for r in out["rows"]} == {"unchanged"}
+    assert mine["longitude"] == "-119.8138"
+
+
+def test_coord_text_keeps_whole_degrees():
+    assert bi._coord_text(40) == "40"
+    assert bi._coord_text(39.5296) == "39.5296"
+    assert bi._coord_text(-119.8) == "-119.8"
+    assert bi._coord_text(None) == ""
+
+
+async def test_export_rows_excludes_archived_sites(db, seeded_user):
+    from datetime import UTC, datetime
+    from serversherpa.db.models import Site
+    db.add(Site(name="Live Export", country="US", status="active"))
+    db.add(Site(name="Archived Export", country="US", status="active",
+                archived_at=datetime.now(UTC)))
+    await db.commit()
+    names = {r["name"] for r in await bi.export_rows(db)}
+    assert "Live Export" in names and "Archived Export" not in names

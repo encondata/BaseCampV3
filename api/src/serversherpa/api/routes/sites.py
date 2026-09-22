@@ -246,7 +246,7 @@ async def bulk_import_commit(
     try:
         return await bulk.commit_rows(
             db, actor.person.id, numbered, approved_updates=approved,
-            source_label=str(body.get("source") or "paste"))
+            source_label=str(body.get("source") or "upload"))
     except bulk.BulkImportError as exc:
         raise _bulk_err(exc) from None
 

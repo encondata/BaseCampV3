@@ -39,11 +39,17 @@ row:
   action create).
 - Two rows in the same upload with the same normalized address → error
   `duplicate address within the import` on both (mirrors the name rule).
+- Two rows resolving to the same existing site (one by name, one by address)
+  → error `two rows match the same existing site '{name}'` on every row in
+  the group, naming the site's current name. Applying both would let the
+  last row win silently.
 
 An address match with a different name produces a `name` entry in the diff,
-so a rename is visible and approved like any other change. Preview rows gain
-`matched_by` and `matched_name` (the existing site's current name, null for
-creates).
+so a rename is visible and approved like any other change. The address itself
+is diffed like any other field, so an address cleanup (case, punctuation,
+spacing) is shown as an ordinary field change even though the match key is
+unchanged. Preview rows gain `matched_by` and `matched_name` (the existing
+site's current name, null for creates).
 
 ## Updates
 
@@ -63,6 +69,11 @@ same Reference sheet as the template. File names `sites-export.csv` /
 `sites-export.xlsx`. `export_rows(db)` in `bulk_import.py` builds the rows;
 `build_export_csv(rows)` / `build_export_xlsx(rows, types, statuses)` write them
 (the template builders are refactored to share the writers).
+
+Both writers carry the portal's formula-injection guard: a cell opening with
+`=`, `+`, `-` or `@` that is not a plain number is written as text — prefixed
+with `'` in CSV, pinned to a string cell in XLSX — and `_cell()` drops that
+one leading `'` on import, so a guarded export re-uploads as `unchanged`.
 
 ## Page
 
@@ -93,7 +104,11 @@ bulk", resource `sites`, action `add`, button "Open"). Page sections:
    (Added / Updated / No change) / Changes (field: old → new), a "Download
    summary (.csv)" button (client-side CSV, columns Row, Site, Result,
    Changes), and an "Open Sites" link. The summary stays until a new file is
-   chosen.
+   chosen. The commit replays the uploaded cells, never the preview's
+   normalized data: each preview row carries `cells` (the uploaded cells after
+   normalization, before the create-only status/country defaults) beside
+   `data`, and the portal posts `cells` for every non-error row, so a blank
+   status or country can never be written onto an existing site.
 
 `SiteBulkImport.tsx` becomes `SiteBulkUpload.tsx` (the upload + preview +
 apply block, used by the page). The New Site dialog loses its Bulk tab and the
