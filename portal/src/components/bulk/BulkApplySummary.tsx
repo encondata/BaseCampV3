@@ -41,10 +41,10 @@ const ROW_CLASS = {
 export function changesText(diff: BulkDiff | null): string {
   if (!diff) return '';
   return Object.entries(diff).map(([field, change]) => {
-    if (field === 'clients') {
+    if (change.add !== undefined || change.remove !== undefined) {
       const add = (change.add ?? []).map((n) => `+${n}`);
       const remove = (change.remove ?? []).map((n) => `−${n}`);
-      return `clients: ${[...add, ...remove].join(', ')}`;
+      return `${field}: ${[...add, ...remove].join(', ')}`;
     }
     const from = change.old === null || change.old === undefined ? '—' : String(change.old);
     return `${field}: ${from} → ${String(change.new)}`;
