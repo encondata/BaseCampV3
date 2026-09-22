@@ -1140,6 +1140,7 @@ class AssetModelItem(BaseModel):
     rail_type: str | None = None
     form_factor: str | None = None
     knowledge: str
+    review_dismissed_at: datetime | None = None
     aliases: list[str] = []
     created_at: datetime
     updated_at: datetime
@@ -1188,6 +1189,27 @@ class AssetModelUpdateIn(BaseModel):
 class AssetModelAliasesIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     aliases: list[str]
+
+
+class ModelSummary(AssetModelItem):
+    asset_count: int = 0
+    stock_line_count: int = 0
+
+
+class ReviewItem(ModelSummary):
+    reason: Literal["imported", "duplicate"]
+    group_key: str | None = None
+
+
+class ReviewOut(BaseModel):
+    imported: list[ReviewItem]
+    duplicates: list[list[ReviewItem]]
+    dismissed_count: int
+
+
+class ReviewDismissIn(BaseModel):
+    dismissed: bool
+    model_config = ConfigDict(extra="forbid")
 
 
 class AssetItem(BaseModel):

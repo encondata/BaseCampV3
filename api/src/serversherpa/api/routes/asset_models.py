@@ -6,16 +6,19 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     AssetCategoryCreateIn, AssetCategoryOut, AssetCategoryUpdateIn,
     AssetModelAliasesIn, AssetModelCreateIn, AssetModelItem,
-    AssetModelUpdateIn,
+    AssetModelUpdateIn, ReviewDismissIn, ReviewItem, ReviewOut,
 )
+from serversherpa.assets.review import duplicate_groups, is_imported
 from serversherpa.assets.units import apply_unit_pairs
-from serversherpa.db.models import AssetCategory, AssetModel, AssetModelAlias
+from serversherpa.db.models import (
+    Asset, AssetCategory, AssetModel, AssetModelAlias, StockLine,
+)
 from serversherpa.services.audit import audit, diff, snapshot
 
 router = APIRouter(prefix="/asset-models", tags=["assets"])
@@ -75,7 +78,8 @@ def _item(m: AssetModel, cats: dict, aliases: dict) -> dict:
         "width_cm": f(m.width_cm), "height_cm": f(m.height_cm),
         "mount_type": m.mount_type, "rail_type": m.rail_type,
         "form_factor": m.form_factor,
-        "knowledge": m.knowledge, "aliases": aliases.get(m.id, []),
+        "knowledge": m.knowledge, "review_dismissed_at": m.review_dismissed_at,
+        "aliases": aliases.get(m.id, []),
         "created_at": m.created_at, "updated_at": m.updated_at,
     }
 
@@ -108,6 +112,22 @@ async def _check_duplicate(db: DbSession, make: str, model: str,
         raise _err(409, "duplicate_model")
 
 
+async def _counts(db: DbSession, model_ids: list[uuid.UUID]) -> dict[uuid.UUID, tuple[int, int]]:
+    """(assets, stock lines) referencing each model."""
+    if not model_ids:
+        return {}
+    out = {mid: [0, 0] for mid in model_ids}
+    for mid, n in (await db.execute(
+        select(Asset.model_id, func.count()).where(Asset.model_id.in_(model_ids))
+        .group_by(Asset.model_id))).all():
+        out[mid][0] = n
+    for mid, n in (await db.execute(
+        select(StockLine.model_id, func.count()).where(StockLine.model_id.in_(model_ids))
+        .group_by(StockLine.model_id))).all():
+        out[mid][1] = n
+    return {k: (v[0], v[1]) for k, v in out.items()}
+
+
 @router.get("", response_model=list[AssetModelItem])
 async def list_asset_models(
     db: DbSession,
@@ -118,6 +138,54 @@ async def list_asset_models(
     cats = await _cats(db)
     aliases = await _aliases_by_model(db, [m.id for m in models])
     return [AssetModelItem(**_item(m, cats, aliases)) for m in models]
+
+
+@router.get("/review", response_model=ReviewOut)
+async def review_asset_models(
+    db: DbSession,
+    include_dismissed: bool = False,
+    _actor: AuthContext = require_permission("asset_models", "view"),
+) -> ReviewOut:
+    all_models = (await db.scalars(
+        select(AssetModel).order_by(AssetModel.make, AssetModel.model))).all()
+    dismissed_count = sum(1 for m in all_models if m.review_dismissed_at is not None)
+    models = [m for m in all_models
+              if include_dismissed or m.review_dismissed_at is None]
+    cats = await _cats(db)
+    aliases = await _aliases_by_model(db, [m.id for m in models])
+    counts = await _counts(db, [m.id for m in models])
+
+    def item(m: AssetModel, reason: str, key: str | None) -> ReviewItem:
+        a, s = counts.get(m.id, (0, 0))
+        return ReviewItem(**_item(m, cats, aliases), asset_count=a,
+                          stock_line_count=s, reason=reason, group_key=key)
+
+    imported = [item(m, "imported", None) for m in models if is_imported(m)]
+    groups = [[item(m, "duplicate", key) for m in ms]
+              for key, ms in duplicate_groups(models, aliases, counts)]
+    return ReviewOut(imported=imported, duplicates=groups,
+                     dismissed_count=dismissed_count)
+
+
+@router.post("/{model_id}/review", response_model=AssetModelItem)
+async def dismiss_asset_model_review(
+    model_id: uuid.UUID,
+    body: ReviewDismissIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("asset_models", "change"),
+) -> AssetModelItem:
+    _require_global(actor)
+    m = await db.get(AssetModel, model_id)
+    if m is None:
+        raise _err(404, "asset_model_not_found")
+    currently = m.review_dismissed_at is not None
+    if body.dismissed != currently:
+        m.review_dismissed_at = datetime.now(UTC) if body.dismissed else None
+        audit(db, actor_id=actor.person.id, entity_type="asset_model",
+              entity_id=str(model_id),
+              action="review.dismiss" if body.dismissed else "review.restore")
+        await db.commit()
+    return await _detail(db, m)
 
 
 @router.get("/{model_id}", response_model=AssetModelItem)
