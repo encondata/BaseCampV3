@@ -184,28 +184,41 @@ def _index(objs) -> dict[str, list]:
 
 
 async def _reference_data(db: AsyncSession) -> dict:
+    """Sites and containers are indexed twice — live and archived. An
+    archived record still has to resolve, otherwise an export of a truck
+    that points at one comes back as `unknown site '…'` and blocks the
+    whole upload; `preview_rows` then decides whether the archived hit is
+    allowed. `site_names` covers every site (live and archived) so a
+    diff's `old` renders a name instead of null."""
     statuses = set(await db.scalars(select(StatusValue.key).where(
         StatusValue.record_type == "truck")))
     initiatives = _index(await db.scalars(select(Initiative)))
-    sites = _index(await db.scalars(select(Site).where(Site.archived_at.is_(None))))
-    containers = _index(await db.scalars(
-        select(Container).where(Container.archived_at.is_(None))))
+    all_sites = list(await db.scalars(select(Site)))
+    all_containers = list(await db.scalars(select(Container)))
     trucks = list(await db.scalars(select(Truck).where(Truck.archived_at.is_(None))))
     return {
-        "statuses": statuses, "initiatives": initiatives, "sites": sites,
-        "containers": containers, "by_name": _index(trucks),
+        "statuses": statuses, "initiatives": initiatives,
+        "sites": _index(s for s in all_sites if s.archived_at is None),
+        "sites_archived": _index(s for s in all_sites if s.archived_at is not None),
+        "containers": _index(c for c in all_containers if c.archived_at is None),
+        "containers_archived": _index(
+            c for c in all_containers if c.archived_at is not None),
+        "by_name": _index(trucks),
         "linked": await _linked_containers(db, [t.id for t in trucks]),
         "initiative_names": {i.id: i.name for group in initiatives.values() for i in group},
-        "site_names": {s.id: s.name for group in sites.values() for s in group},
+        "site_names": {s.id: s.name for s in all_sites},
     }
 
 
-def _resolve_one(index: dict, name: str, label: str, errors: list[str]):
+def _resolve_one(index: dict, name: str, label: str, errors: list[str],
+                 archived: dict | None = None):
     """Exactly one record by name, else a row error. None when blank or
-    unresolved."""
+    unresolved. With no live match we fall back to `archived` (same
+    one-or-error rule) so the caller can tell "archived" from "unknown";
+    the live index always wins, so live behavior is unchanged."""
     if not name:
         return None
-    matches = index.get(name.lower(), [])
+    matches = index.get(name.lower(), []) or (archived or {}).get(name.lower(), [])
     if not matches:
         errors.append(f"unknown {label} '{name}'")
         return None
@@ -239,12 +252,15 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]]) -> di
             errors.append(f"seal_id is longer than {SEAL_MAX} characters")
         refs = {
             "initiative": _resolve_one(ref["initiatives"], row["initiative"], "initiative", errors),
-            "start_site": _resolve_one(ref["sites"], row["start_site"], "site", errors),
-            "end_site": _resolve_one(ref["sites"], row["end_site"], "site", errors),
+            "start_site": _resolve_one(ref["sites"], row["start_site"], "site",
+                                       errors, ref["sites_archived"]),
+            "end_site": _resolve_one(ref["sites"], row["end_site"], "site",
+                                     errors, ref["sites_archived"]),
         }
         container_objs = []
         for cname in split_names(row["containers"]):
-            obj = _resolve_one(ref["containers"], cname, "container", errors)
+            obj = _resolve_one(ref["containers"], cname, "container", errors,
+                               ref["containers_archived"])
             if obj is not None:
                 container_objs.append(obj)
 
@@ -267,6 +283,23 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]]) -> di
                 errors.append(f"multiple existing trucks named '{name}'")
             elif hits:
                 target, matched_by = hits[0], "name"
+
+        # An archived site or container is only allowed where it is what
+        # the matched truck already has — that is what lets an export of
+        # an older fleet re-upload as `unchanged` (an unchanged value
+        # never produces a diff). Anything else, create rows included, is
+        # a row error that names the real reason instead of "unknown".
+        for col in ("start_site", "end_site"):
+            obj = refs[col]
+            if obj is not None and obj.archived_at is not None and not (
+                    target is not None
+                    and getattr(target, REF_COLUMNS[col]) == obj.id):
+                errors.append(f"site '{obj.name}' is archived")
+        for obj in container_objs:
+            if obj.archived_at is not None and not (
+                    target is not None
+                    and obj.id in ref["linked"].get(target.id, {})):
+                errors.append(f"container '{obj.name}' is archived")
 
         pending.append({"row": n, "cells": dict(row), "name": name,
                         "errors": errors, "data": data, "blank": blank,
@@ -400,8 +433,13 @@ def _ref_id(ref: dict, col: str, name: str) -> uuid.UUID | None:
     transaction rolls back rather than auditing a change never applied."""
     if not name:
         return None
-    index = ref["initiatives"] if col == "initiative" else ref["sites"]
-    matches = index.get(name.lower(), [])
+    if col == "initiative":
+        index, archived = ref["initiatives"], {}
+    else:
+        index, archived = ref["sites"], ref["sites_archived"]
+    # same live-then-archived fallback as the preview: an approved update
+    # may legitimately keep an archived value it already had
+    matches = index.get(name.lower(), []) or archived.get(name.lower(), [])
     if len(matches) != 1:
         raise ValueError(f"{col} '{name}' vanished between preview and commit")
     return matches[0].id
@@ -410,7 +448,8 @@ def _ref_id(ref: dict, col: str, name: str) -> uuid.UUID | None:
 def _container_ids(ref: dict, names: list[str]) -> set[uuid.UUID]:
     out = set()
     for cname in names:
-        matches = ref["containers"].get(cname.lower(), [])
+        matches = (ref["containers"].get(cname.lower(), [])
+                   or ref["containers_archived"].get(cname.lower(), []))
         if len(matches) != 1:
             raise ValueError(f"container '{cname}' vanished between preview and commit")
         out.add(matches[0].id)
@@ -469,7 +508,12 @@ async def _apply_update(db: AsyncSession, actor_id: uuid.UUID, r: dict,
                     TruckContainer.container_id == container_id))
             for container_id in want - current:
                 db.add(TruckContainer(truck_id=truck.id, container_id=container_id))
-            changes["containers"] = change
+            # the audit row speaks the single-record endpoint's vocabulary
+            # ({from, to} full lists, which auditFormat.ts renders); the
+            # preview/commit response keeps its own {add, remove} diff
+            changes["containers"] = {
+                "from": sorted(ref["linked"].get(truck.id, {}).values()),
+                "to": sorted(r["data"]["containers"])}
             continue
         changes[col] = {"from": change["old"], "to": change["new"]}
     if tracking_changed:

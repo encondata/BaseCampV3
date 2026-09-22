@@ -116,6 +116,50 @@ async def test_export_rows_shape_and_round_trip(db, seeded_user):
     assert [r["action"] for r in out["rows"]] == ["unchanged", "unchanged"]
 
 
+async def test_export_round_trips_with_archived_references(db, seeded_user):
+    """A truck pointing at an archived site, or linked to an archived
+    container, still previews `unchanged` from its own export — the
+    archived name resolves and matches what the truck already has."""
+    old_site = Site(name="Old DC", archived_at=func.now())
+    old_crate = Container(name="Old Crate", archived_at=func.now())
+    db.add_all([old_site, old_crate])
+    await db.flush()
+    await mk_truck(db, "Vintage", start_site_id=old_site.id,
+                   containers=[old_crate])
+    rows = await bi.export_rows(db)
+    assert rows[0]["start_site"] == "Old DC" and rows[0]["containers"] == "Old Crate"
+    csv_text = bi.build_rows_csv(rows)
+    out = await preview(db, [r for _, r in bi.parse_upload("e.csv", csv_text.encode())])
+    assert [r["action"] for r in out["rows"]] == ["unchanged"]
+    assert out["can_commit"] is True
+
+
+async def test_archived_reference_errors_unless_the_truck_has_it(db, seeded_user):
+    old_site = Site(name="Old DC", archived_at=func.now())
+    old_crate = Container(name="Old Crate", archived_at=func.now())
+    live_crate = Container(name="Crate A")
+    db.add_all([old_site, old_crate, live_crate])
+    await db.flush()
+    await mk_truck(db, "Truck 1", containers=[live_crate])
+    out = await preview(db, [
+        {"name": "Brand New", "start_site": "Old DC"},
+        {"name": "Truck 1", "containers": "Old Crate"},
+    ])
+    assert out["rows"][0]["errors"] == ["site 'Old DC' is archived"]
+    assert out["rows"][1]["errors"] == ["container 'Old Crate' is archived"]
+    assert out["can_commit"] is False
+
+
+async def test_diff_old_shows_an_archived_site_name(db, seeded_user):
+    old_site = Site(name="Old DC", archived_at=func.now())
+    db.add_all([old_site, Site(name="DC-East")])
+    await db.flush()
+    await mk_truck(db, "Truck 1", start_site_id=old_site.id)
+    row = await one(db, {"name": "Truck 1", "start_site": "DC-East"})
+    assert row["action"] == "update"
+    assert row["diff"]["start_site"] == {"old": "Old DC", "new": "DC-East"}
+
+
 async def test_reference_lists(db, seeded_user):
     db.add(Site(name="Bee Site"))
     db.add(Site(name="Ant Site"))
@@ -134,7 +178,11 @@ async def test_validation_errors(db, seeded_user):
     db.add(Site(name="Twin Site"))
     db.add(Site(name="twin site"))
     db.add(Container(name="Crate A"))
+    db.add(Container(name="Twin Crate"))
+    db.add(Container(name="twin crate"))
     await db.commit()
+    await mk_initiative(db, "Twin Move")
+    await mk_initiative(db, "twin move")
     out = await preview(db, [
         {"name": "", "driver_name": "x"},  # non-blank companion cell so the
                                             # shared core doesn't treat this
@@ -148,6 +196,8 @@ async def test_validation_errors(db, seeded_user):
         {"name": "G", "containers": "Crate A; Crate Z"},
         {"name": "Dup"},
         {"name": "dup"},
+        {"name": "H", "initiative": "Twin Move"},
+        {"name": "I", "containers": "Twin Crate"},
     ])
     errs = {r["row"]: r["errors"] for r in out["rows"]}
     assert errs[1] == ["name is required"]
@@ -158,8 +208,11 @@ async def test_validation_errors(db, seeded_user):
     assert errs[6] == ["ambiguous site 'Twin Site'"]
     assert errs[7] == ["unknown site 'Nowhere'"]
     assert errs[8] == ["unknown container 'Crate Z'"]
-    assert errs[9] == errs[10] == ["duplicate name 'Dup' within the import"] or \
-        errs[10] == ["duplicate name 'dup' within the import"]
+    # each row echoes its own cell, so the two messages differ in case
+    assert errs[9] == ["duplicate name 'Dup' within the import"]
+    assert errs[10] == ["duplicate name 'dup' within the import"]
+    assert errs[11] == ["ambiguous initiative 'Twin Move'"]
+    assert errs[12] == ["ambiguous container 'Twin Crate'"]
     assert out["can_commit"] is False
 
 
@@ -219,7 +272,7 @@ async def test_update_diff_every_column_kind(db, seeded_user):
     db.add_all([site_a, site_b, crate_a, crate_b, crate_c])
     await db.flush()
     move_a = await mk_initiative(db, "Move A")
-    move_b = await mk_initiative(db, "Move B")
+    await mk_initiative(db, "Move B")          # referenced by name below
     await mk_truck(db, "Truck 1", status="created", team_drive=False, contact_info="",
                    tracking_type={"type": "gps", "tracker_id": "T-1"},
                    initiative_id=move_a.id, start_site_id=site_a.id,
@@ -319,7 +372,8 @@ async def test_commit_updates_approved_skips_unapproved(db, seeded_user):
     update_audit = await db.scalar(select(AuditLog).where(
         AuditLog.action == "update", AuditLog.entity_type == "truck"))
     assert update_audit.entity_id == str(a.id)
-    assert update_audit.changes["containers"] == {"add": ["Crate B"], "remove": ["Crate A"]}
+    # the response diff stays {add, remove}; the audit row is {from, to}
+    assert update_audit.changes["containers"] == {"from": ["Crate A"], "to": ["Crate B"]}
 
 
 async def test_commit_blank_cells_never_clear(db, seeded_user):
