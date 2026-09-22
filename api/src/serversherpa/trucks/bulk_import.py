@@ -172,3 +172,184 @@ async def export_rows(db: AsyncSession) -> list[dict]:
             row[col] = str(value) if value not in (None, "") else ""
         out.append(row)
     return out
+
+
+# ── validation + preview ────────────────────────────────────────────
+
+def _index(objs) -> dict[str, list]:
+    out: dict[str, list] = {}
+    for o in objs:
+        out.setdefault(o.name.lower(), []).append(o)
+    return out
+
+
+async def _reference_data(db: AsyncSession) -> dict:
+    statuses = set(await db.scalars(select(StatusValue.key).where(
+        StatusValue.record_type == "truck")))
+    initiatives = _index(await db.scalars(select(Initiative)))
+    sites = _index(await db.scalars(select(Site).where(Site.archived_at.is_(None))))
+    containers = _index(await db.scalars(
+        select(Container).where(Container.archived_at.is_(None))))
+    trucks = list(await db.scalars(select(Truck).where(Truck.archived_at.is_(None))))
+    return {
+        "statuses": statuses, "initiatives": initiatives, "sites": sites,
+        "containers": containers, "by_name": _index(trucks),
+        "linked": await _linked_containers(db, [t.id for t in trucks]),
+        "initiative_names": {i.id: i.name for group in initiatives.values() for i in group},
+        "site_names": {s.id: s.name for group in sites.values() for s in group},
+    }
+
+
+def _resolve_one(index: dict, name: str, label: str, errors: list[str]):
+    """Exactly one record by name, else a row error. None when blank or
+    unresolved."""
+    if not name:
+        return None
+    matches = index.get(name.lower(), [])
+    if not matches:
+        errors.append(f"unknown {label} '{name}'")
+        return None
+    if len(matches) > 1:
+        errors.append(f"ambiguous {label} '{name}'")
+        return None
+    return matches[0]
+
+
+async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]]) -> dict:
+    ref = await _reference_data(db)
+    names_seen: dict[str, list[int]] = {}
+    for n, row in numbered:
+        if row["name"]:
+            names_seen.setdefault(row["name"].lower(), []).append(n)
+
+    pending: list[dict] = []
+    for n, row in numbered:
+        errors: list[str] = []
+        name = row["name"]
+        if not name:
+            errors.append("name is required")
+        elif len(names_seen[name.lower()]) > 1:
+            errors.append(f"duplicate name '{name}' within the import")
+        if row["status"] and row["status"] not in ref["statuses"]:
+            errors.append(f"unknown status '{row['status']}'")
+        team_drive = parse_bool(row["team_drive"])
+        if row["team_drive"] and team_drive is None:
+            errors.append("team_drive must be yes or no")
+        if len(row["seal_id"]) > SEAL_MAX:
+            errors.append(f"seal_id is longer than {SEAL_MAX} characters")
+        refs = {
+            "initiative": _resolve_one(ref["initiatives"], row["initiative"], "initiative", errors),
+            "start_site": _resolve_one(ref["sites"], row["start_site"], "site", errors),
+            "end_site": _resolve_one(ref["sites"], row["end_site"], "site", errors),
+        }
+        container_objs = []
+        for cname in split_names(row["containers"]):
+            obj = _resolve_one(ref["containers"], cname, "container", errors)
+            if obj is not None:
+                container_objs.append(obj)
+
+        blank = {"status": row["status"] == "", "team_drive": row["team_drive"] == "",
+                 "contact_info": row["contact_info"] == "",
+                 "containers": row["containers"] == ""}
+        data = dict(row)
+        data["status"] = row["status"] or "created"
+        data["team_drive"] = team_drive if team_drive is not None else False
+        for col, obj in refs.items():
+            if obj is not None:
+                data[col] = obj.name
+        data["containers"] = [c.name for c in container_objs]
+
+        target: Truck | None = None
+        matched_by: str | None = None
+        if not errors:
+            hits = ref["by_name"].get(name.lower(), [])
+            if len(hits) > 1:
+                errors.append(f"multiple existing trucks named '{name}'")
+            elif hits:
+                target, matched_by = hits[0], "name"
+
+        pending.append({"row": n, "cells": dict(row), "name": name,
+                        "errors": errors, "data": data, "blank": blank,
+                        "target": target, "matched_by": matched_by,
+                        "refs": refs, "container_objs": container_objs})
+
+    # two upload rows resolving to the same truck would apply twice, last
+    # write winning silently — both rows are errors instead
+    same_target: dict[uuid.UUID, list[dict]] = {}
+    for p in pending:
+        if p["target"] is not None:
+            same_target.setdefault(p["target"].id, []).append(p)
+    for group in same_target.values():
+        if len(group) > 1:
+            for p in group:
+                p["errors"].append("two rows match the same existing truck "
+                                   f"'{p['target'].name}'")
+
+    results = []
+    for p in pending:
+        errors, target = p["errors"], p["target"]
+        action, diff_out, truck_id = "create", None, None
+        if errors:
+            action = "error"
+        elif target is not None:
+            truck_id = str(target.id)
+            changes = _diff_row(target, p["data"], p["blank"], p["refs"],
+                                p["container_objs"],
+                                ref["linked"].get(target.id, {}), ref)
+            action = "update" if changes else "unchanged"
+            diff_out = changes or None
+        results.append({"row": p["row"], "name": p["name"] or None,
+                        "action": action,
+                        "matched_by": p["matched_by"] if action != "error" else None,
+                        "matched_name": (target.name if target is not None
+                                         and action != "error" else None),
+                        "errors": errors, "diff": diff_out, "truck_id": truck_id,
+                        "cells": p["cells"],
+                        "data": p["data"] if action != "error" else None})
+
+    can_commit = bool(results) and all(r["action"] != "error" for r in results)
+    return {"rows": results, "can_commit": can_commit}
+
+
+def _diff_row(truck: Truck, data: dict, blank: dict, refs: dict,
+              container_objs: list, linked: dict, ref: dict) -> dict:
+    """Changed fields only; blank in the row = no change. `blank` remembers
+    the create-only defaults so they never read as edits."""
+    out: dict = {}
+    for col in TEXT_COLUMNS:
+        raw = data[col]
+        if col == "contact_info" and blank["contact_info"]:
+            continue
+        if raw == "":
+            continue
+        old = getattr(truck, col)
+        if (old or "") != raw:
+            out[col] = {"old": old, "new": raw}
+    if not blank["status"] and (truck.status or "") != data["status"]:
+        out["status"] = {"old": truck.status, "new": data["status"]}
+    if not blank["team_drive"] and bool(truck.team_drive) != data["team_drive"]:
+        out["team_drive"] = {"old": bool(truck.team_drive), "new": data["team_drive"]}
+    tracking = truck.tracking_type or {}
+    for col, key in TRACKING_KEYS.items():
+        raw = data[col]
+        if raw == "":
+            continue
+        old = tracking.get(key)
+        old_text = str(old) if old not in (None, "") else ""
+        if old_text != raw:
+            out[col] = {"old": old if old_text else None, "new": raw}
+    for col, attr in REF_COLUMNS.items():
+        obj = refs[col]
+        if obj is None:
+            continue
+        current = getattr(truck, attr)
+        if current != obj.id:
+            names = ref["initiative_names"] if col == "initiative" else ref["site_names"]
+            out[col] = {"old": names.get(current) if current else None, "new": obj.name}
+    if not blank["containers"]:
+        want = {c.id: c.name for c in container_objs}
+        add = sorted(n for i, n in want.items() if i not in linked)
+        remove = sorted(n for i, n in linked.items() if i not in want)
+        if add or remove:
+            out["containers"] = {"add": add, "remove": remove}
+    return out

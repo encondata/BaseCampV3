@@ -126,3 +126,129 @@ async def test_reference_lists(db, seeded_user):
                         "inactive", "historical"]
     assert initiatives == ["Move Z"]
     assert sites == ["Ant Site", "Bee Site"]
+
+
+# ── preview: validation ─────────────────────────────────────────────
+
+async def test_validation_errors(db, seeded_user):
+    db.add(Site(name="Twin Site"))
+    db.add(Site(name="twin site"))
+    db.add(Container(name="Crate A"))
+    await db.commit()
+    out = await preview(db, [
+        {"name": "", "driver_name": "x"},  # non-blank companion cell so the
+                                            # shared core doesn't treat this
+                                            # as a fully-blank skipped row
+        {"name": "A", "status": "flying"},
+        {"name": "B", "team_drive": "maybe"},
+        {"name": "C", "seal_id": "S" * 25},
+        {"name": "D", "initiative": "Nowhere"},
+        {"name": "E", "start_site": "Twin Site"},
+        {"name": "F", "end_site": "Nowhere"},
+        {"name": "G", "containers": "Crate A; Crate Z"},
+        {"name": "Dup"},
+        {"name": "dup"},
+    ])
+    errs = {r["row"]: r["errors"] for r in out["rows"]}
+    assert errs[1] == ["name is required"]
+    assert errs[2] == ["unknown status 'flying'"]
+    assert errs[3] == ["team_drive must be yes or no"]
+    assert errs[4] == ["seal_id is longer than 24 characters"]
+    assert errs[5] == ["unknown initiative 'Nowhere'"]
+    assert errs[6] == ["ambiguous site 'Twin Site'"]
+    assert errs[7] == ["unknown site 'Nowhere'"]
+    assert errs[8] == ["unknown container 'Crate Z'"]
+    assert errs[9] == errs[10] == ["duplicate name 'Dup' within the import"] or \
+        errs[10] == ["duplicate name 'dup' within the import"]
+    assert out["can_commit"] is False
+
+
+async def test_create_row_normalizes_and_defaults(db, seeded_user):
+    site = Site(name="DC-East")
+    crate = Container(name="Crate A")
+    db.add_all([site, crate])
+    await db.flush()
+    await mk_initiative(db, "Move A")
+    out = await preview(db, [{
+        "name": "  Truck 1 ", "team_drive": "YES", "initiative": "move a",
+        "start_site": "dc-east", "containers": "crate a", "tracking_type": "gps"}])
+    row = out["rows"][0]
+    assert row["action"] == "create" and row["matched_by"] is None
+    assert row["name"] == "Truck 1"
+    assert row["data"]["status"] == "created" and row["data"]["team_drive"] is True
+    assert row["data"]["initiative"] == "Move A" and row["data"]["start_site"] == "DC-East"
+    assert row["data"]["containers"] == ["Crate A"]
+    assert row["cells"]["status"] == "" and row["cells"]["initiative"] == "move a"
+    assert out["can_commit"] is True
+
+
+# ── preview: matching ───────────────────────────────────────────────
+
+async def test_match_by_name_and_ambiguity(db, seeded_user):
+    await mk_truck(db, "Truck 7", driver_name="Old Driver")
+    await mk_truck(db, "Twin")
+    await mk_truck(db, "twin")
+    await mk_truck(db, "Retired", archived_at=func.now())
+    out = await preview(db, [
+        {"name": "truck 7", "driver_name": "New Driver"},
+        {"name": "Twin", "driver_name": "x"},
+        {"name": "Retired"},
+    ])
+    rows = out["rows"]
+    assert rows[0]["action"] == "update" and rows[0]["matched_by"] == "name"
+    assert rows[0]["matched_name"] == "Truck 7"
+    assert rows[0]["diff"]["driver_name"] == {"old": "Old Driver", "new": "New Driver"}
+    assert rows[0]["diff"]["name"] == {"old": "Truck 7", "new": "truck 7"}
+    assert rows[1]["errors"] == ["multiple existing trucks named 'Twin'"]
+    assert rows[2]["action"] == "create"          # archived trucks never match
+
+
+async def test_two_rows_on_one_truck_are_errors(db, seeded_user):
+    await mk_truck(db, "Truck 7")
+    out = await preview(db, [
+        {"name": "Truck 7", "driver_name": "A"},
+        {"name": "TRUCK 7", "driver_name": "B"},
+    ])
+    # both rows collide on the in-upload name key before the target check
+    assert all("within the import" in r["errors"][0] for r in out["rows"])
+
+
+async def test_update_diff_every_column_kind(db, seeded_user):
+    site_a, site_b = Site(name="DC-East"), Site(name="DC-West")
+    crate_a, crate_b, crate_c = Container(name="Crate A"), Container(name="Crate B"), Container(name="Crate C")
+    db.add_all([site_a, site_b, crate_a, crate_b, crate_c])
+    await db.flush()
+    move_a = await mk_initiative(db, "Move A")
+    move_b = await mk_initiative(db, "Move B")
+    await mk_truck(db, "Truck 1", status="created", team_drive=False, contact_info="",
+                   tracking_type={"type": "gps", "tracker_id": "T-1"},
+                   initiative_id=move_a.id, start_site_id=site_a.id,
+                   containers=[crate_a, crate_b])
+    row = await one(db, {
+        "name": "Truck 1", "status": "in_transit", "team_drive": "yes",
+        "contact_info": "", "load_number": "L-9", "tracking_type": "cell",
+        "tracking_update_type": "manual", "tracker_id": "T-1",
+        "initiative": "Move B", "start_site": "DC-East", "end_site": "DC-West",
+        "containers": "Crate B; Crate C"})
+    assert row["action"] == "update"
+    assert row["diff"] == {
+        "status": {"old": "created", "new": "in_transit"},
+        "team_drive": {"old": False, "new": True},
+        "load_number": {"old": None, "new": "L-9"},
+        "tracking_type": {"old": "gps", "new": "cell"},
+        "tracking_update_type": {"old": None, "new": "manual"},
+        "initiative": {"old": "Move A", "new": "Move B"},
+        "end_site": {"old": None, "new": "DC-West"},
+        "containers": {"add": ["Crate C"], "remove": ["Crate A"]},
+    }
+
+
+async def test_blank_cells_are_no_change_on_update(db, seeded_user):
+    crate = Container(name="Crate A")
+    db.add(crate)
+    await db.flush()
+    await mk_truck(db, "Truck 1", status="active", team_drive=True,
+                   contact_info="call me", tracking_type={"type": "gps"},
+                   containers=[crate])
+    row = await one(db, {"name": "Truck 1"})
+    assert row["action"] == "unchanged" and row["diff"] is None
