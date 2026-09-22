@@ -569,4 +569,26 @@ describe('mergeFieldRows', () => {
     expect(byKey.rail_type).toMatchObject({ keep: 'A1', dup: 'B7', result: 'A1' });
     expect(byKey.weight.result).toBe('50 lb / 22.68 kg');
   });
+
+  it('shows the metric side of a group the source only has in metric', () => {
+    const target = assetModel({
+      weight_lbs: null, weight_kg: null,
+      length_in: null, width_in: null, height_in: null,
+      length_cm: null, width_cm: null, height_cm: null,
+    });
+    const source = assetModel({
+      weight_lbs: null, weight_kg: 22.68,
+      length_in: null, width_in: null, height_in: null,
+      length_cm: 81.28, width_cm: 43.18, height_cm: 8.64,
+    });
+    // a kg-only source only puts its own columns in `fills`
+    const rows = mergeFieldRows(target, source, {
+      weight_kg: 22.68, length_cm: 81.28, width_cm: 43.18, height_cm: 8.64,
+    });
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
+    expect(byKey.weight).toMatchObject({ keep: '—', dup: '22.68 kg', result: '22.68 kg' });
+    expect(byKey.dims).toMatchObject({
+      keep: '—', dup: '81.28 × 43.18 × 8.64 cm', result: '81.28 × 43.18 × 8.64 cm',
+    });
+  });
 });

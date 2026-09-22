@@ -2,13 +2,14 @@
  * ModelReviewPanel — the Makes / Models Review view: models the importer
  * created by guessing, and groups of models whose normalized names or
  * aliases collide. Each row offers Merge into…, Edit and Dismiss (Restore
- * for dismissed rows). Data is loaded here; the page bumps `reloadKey`
- * after any catalog write.
+ * for dismissed rows). The PAGE owns the data (it needs the same payload
+ * for the Review tab's count badge) and reloads it on `onChanged()`; this
+ * panel only renders it and writes dismiss/restore.
  */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
 import {
-  ApiError, dismissAssetModelReview, reviewAssetModels,
+  ApiError, dismissAssetModelReview,
   type AssetModelItem, type ReviewItem, type ReviewOut,
 } from '../../lib/api';
 import { MODEL_ERRORS } from '../../lib/assets';
@@ -17,32 +18,27 @@ const msgFor = (err: unknown): string =>
   err instanceof ApiError ? (MODEL_ERRORS[err.code] ?? `Request failed (${err.code}).`)
     : 'Network error — nothing was changed.';
 
-export default function ModelReviewPanel({ canChange, onMerge, onEdit, reloadKey }: {
+export default function ModelReviewPanel({
+  canChange, data, loadError, showDismissed, onToggleDismissed, onMerge, onEdit, onChanged,
+}: {
   canChange: boolean;
+  data: ReviewOut | null;
+  loadError: string;
+  showDismissed: boolean;
+  onToggleDismissed: (next: boolean) => void;
   onMerge: (source: AssetModelItem, presetTargetId: string | null) => void;
   onEdit: (id: string) => void;
-  reloadKey: number;
+  onChanged: () => void;
 }) {
-  const [data, setData] = useState<ReviewOut | null>(null);
-  const [showDismissed, setShowDismissed] = useState(false);
   const [error, setError] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    let live = true;
-    reviewAssetModels(showDismissed)
-      .then((d) => { if (live) { setData(d); setError(''); } })
-      .catch((e) => { if (live) setError(msgFor(e)); });
-    return () => { live = false; };
-  }, [showDismissed, reloadKey, tick]);
 
   const dismiss = async (m: ReviewItem, dismissed: boolean) => {
     setBusyId(m.id);
     setError('');
     try {
       await dismissAssetModelReview(m.id, dismissed);
-      setTick((t) => t + 1);
+      onChanged();
     } catch (e) {
       setError(msgFor(e));
     } finally {
@@ -75,19 +71,21 @@ export default function ModelReviewPanel({ canChange, onMerge, onEdit, reloadKey
     );
   };
 
-  if (error && !data) return <div className="dir-empty"><b>Cannot load review</b>{error}</div>;
+  const shownError = error || loadError;
+  if (shownError && !data) return <div className="dir-empty"><b>Cannot load review</b>{shownError}</div>;
   if (!data) return <p className="page-hint">Loading…</p>;
   const empty = data.imported.length === 0 && data.duplicates.length === 0;
 
   return (
     <div className="rv-panel">
       <label className="init-check rv-toggle">
-        <input type="checkbox" checked={showDismissed} onChange={(e) => setShowDismissed(e.target.checked)} />
+        <input type="checkbox" checked={showDismissed}
+               onChange={(e) => onToggleDismissed(e.target.checked)} />
         Show dismissed ({data.dismissed_count})
       </label>
-      {error && <span className="pf-error">{error}</span>}
+      {shownError && <span className="pf-error">{shownError}</span>}
       {empty && (
-        <div className="dir-empty"><b>Nothing to review</b>Nothing to review — the catalog has no import-created or overlapping models.</div>
+        <div className="dir-empty"><b>Nothing to review</b>The catalog has no import-created or overlapping models.</div>
       )}
       {data.imported.length > 0 && (
         <section className="rv-section">

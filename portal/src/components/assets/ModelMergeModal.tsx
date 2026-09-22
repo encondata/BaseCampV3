@@ -105,7 +105,7 @@ export default function ModelMergeModal({ source, models, presetTargetId, onClos
                          ariaLabel="Merge field comparison" />
               <p className="set-note">
                 {plural(plan.moves.assets, 'asset', 'assets')} and {plural(plan.moves.stock_lines, 'stock line', 'stock lines')} move;
-                {' '}{plan.moves.aliases} aliases move; alias added: {plan.alias_added ?? 'none'}
+                {' '}{plural(plan.moves.aliases, 'alias moves', 'aliases move')}; alias added: {plan.alias_added ?? 'none'}
               </p>
               <div className="chips">
                 {plan.aliases_after.length

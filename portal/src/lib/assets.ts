@@ -157,11 +157,28 @@ export function modelCellText(m: AssetModelItem, colKey: string): string {
 
 export interface MergeFieldRow { key: string; label: string; keep: string; dup: string; result: string }
 
+/** Weight and Dimensions are unit GROUPS: a model can carry only the metric
+ *  half (a kg-only import), and the merge fills the group as a whole — so
+ *  show whichever side the model actually has rather than a dash. */
+const WEIGHT_KEYS = ['weight_lbs', 'weight_kg'];
+const DIMS_KEYS = ['length_in', 'width_in', 'height_in',
+                   'length_cm', 'width_cm', 'height_cm'];
+
+function weightText(m: AssetModelItem): string {
+  if (m.weight_lbs !== null) return `${m.weight_lbs} lb / ${m.weight_kg} kg`;
+  return m.weight_kg !== null ? `${m.weight_kg} kg` : '—';
+}
+
+function dimsText(m: AssetModelItem): string {
+  const inches = formatDims(m.length_in, m.width_in, m.height_in, 'in');
+  return inches !== '—' ? inches : formatDims(m.length_cm, m.width_cm, m.height_cm, 'cm');
+}
+
 const MERGE_FIELDS: [string, string, (m: AssetModelItem) => string][] = [
   ['category', 'Category', (m) => m.category_label ?? m.category ?? '—'],
   ['ru_size', 'RU size', (m) => (m.ru_size !== null ? String(m.ru_size) : '—')],
-  ['weight', 'Weight', (m) => (m.weight_lbs !== null ? `${m.weight_lbs} lb / ${m.weight_kg} kg` : '—')],
-  ['dims', 'Dimensions (in)', (m) => formatDims(m.length_in, m.width_in, m.height_in, 'in')],
+  ['weight', 'Weight', weightText],
+  ['dims', 'Dimensions', dimsText],
   ['mount_type', 'Mount type', (m) => titleCase(m.mount_type)],
   ['form_factor', 'Form factor', (m) => formFactorLabel(m.form_factor)],
   ['rail_type', 'Rail type', (m) => m.rail_type ?? '—'],
@@ -172,8 +189,10 @@ const MERGE_FIELDS: [string, string, (m: AssetModelItem) => string][] = [
 export function mergeFieldRows(
   target: AssetModelItem, source: AssetModelItem, fills: Record<string, unknown>,
 ): MergeFieldRow[] {
-  const filled = (key: string) => key === 'weight' ? 'weight_lbs' in fills
-    : key === 'dims' ? 'length_in' in fills : key in fills;
+  // a group fills as a whole, but a metric-only source only puts its own
+  // columns in `fills` — so ANY member of the group means "filled".
+  const filled = (key: string) => key === 'weight' ? WEIGHT_KEYS.some((k) => k in fills)
+    : key === 'dims' ? DIMS_KEYS.some((k) => k in fills) : key in fills;
   return MERGE_FIELDS.map(([key, label, read]) => ({
     key, label, keep: read(target), dup: read(source),
     result: filled(key) ? read(source) : read(target),
@@ -263,6 +282,7 @@ export const MODEL_ERRORS: Record<string, string> = {
   cannot_merge_self: 'A model cannot be merged into itself.',
   alias_conflict: 'An alias on the duplicate belongs to a third model — remove it there first.',
   asset_model_not_found: 'That model was already merged or deleted — refresh and try again.',
+  merge_conflict: 'That model changed while you were merging — refresh and try again.',
 };
 
 /* ── model edit/create form ────────────────────────────────────── */
