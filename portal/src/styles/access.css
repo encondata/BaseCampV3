@@ -449,3 +449,21 @@
 .copy-plan-row ul { margin: 0; padding-left: 16px; }
 .copy-plan-row.skipped { color: var(--text-mute); }
 .copy-skip { font-style: italic; }
+
+/* ── role change review ──────────────────────────────────── */
+.modal-card.reports-modal-card.rgm-card.role-review-card { width: min(760px, 96vw); max-width: 96vw; }
+.rr-summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.rr-grants { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 12.5px; margin-bottom: 14px; }
+.rr-grants > div { display: flex; flex-direction: column; gap: 3px; }
+.rr-grants b { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--text-mute); }
+.rr-members { display: flex; flex-direction: column; gap: 4px; max-height: 340px; overflow: auto; }
+/* .rr-member-head matches the list-typography guardrail's "head" trigger, so
+   its layout uses `font: inherit` (not font-size/line-height) — same idiom
+   as .chip-x above. */
+.rr-member-head { display: grid; grid-template-columns: 32px 1fr 110px 170px; align-items: center; gap: 10px; width: 100%; padding: 6px 8px; border: 0; background: transparent; text-align: left; cursor: pointer; border-radius: 8px; font: inherit; color: inherit; }
+.rr-member-head:hover { background: var(--surface-2); }
+.rr-name { font-weight: 600; }
+.rr-rank, .rr-count { font-size: 12px; color: var(--text-mute); }
+.rr-count.on { color: var(--text-dark); font-weight: 600; }
+.rr-detail { margin: 0 0 6px 50px; padding-left: 16px; font-size: 12.5px; }
+.rr-masked { color: var(--text-mute); }

@@ -668,6 +668,26 @@ export async function putRoleMatrix(
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+export interface MatrixPreviewMember {
+  person_id: string; display_name: string; avatar_url: string | null; max_rank: number;
+  flips: { resource: string; action: Action; from: boolean; to: boolean }[];
+  masked: { resource: string; action: Action; by: 'override' | 'gate' | 'hard_gate' | 'floor' | 'role' }[];
+}
+export interface MatrixPreviewOut {
+  role: string; granted: string[]; revoked: string[];
+  member_count: number; affected_count: number; members: MatrixPreviewMember[];
+}
+
+export async function previewRoleMatrix(
+  name: string, matrix: Record<string, Record<Action, boolean>>,
+): Promise<MatrixPreviewOut> {
+  const resp = await apiFetch(`/access/roles/${name}/matrix/preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ matrix }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export async function cloneRole(
   body: { source: string; name: string; label: string; rank: number },
 ): Promise<void> {
