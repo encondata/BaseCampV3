@@ -5,7 +5,7 @@
  * until the server says can_commit AND every `update` row is approved.
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 
 import {
   ApiError,
@@ -53,6 +53,7 @@ function describeDiff(
 }
 
 export default function SiteBulkUpload({ onDone }: Props) {
+  const fileRef = useRef<HTMLInputElement | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<BulkPreview | null>(null);
   const [approved, setApproved] = useState<Set<string>>(new Set());
@@ -96,14 +97,21 @@ export default function SiteBulkUpload({ onDone }: Props) {
     try {
       // the ORIGINAL cells, never the preview's normalized `data` — replaying
       // `data` would write its create-only status/country defaults
-      const rows = preview.rows
-        .filter((r) => r.action !== 'error')
-        .map((r) => r.cells);
-      const counts = await commitSiteBulk(rows, [...approved], file.name);
+      const posted = preview.rows.filter((r) => r.action !== 'error');
+      const counts = await commitSiteBulk(posted.map((r) => r.cells), [...approved], file.name);
+      // The commit numbers rows from 1 (JSON path); the preview numbered the
+      // spreadsheet lines from 2. Relabel so the summary ties back to the
+      // file the approver just read — order and length line up because no
+      // posted row is blank.
+      const result = {
+        ...counts,
+        rows: counts.rows.map((r, i) => ({ ...r, row: posted[i]?.row ?? r.row })),
+      };
       setPreview(null);
       setFile(null);
-      setResult(counts);
-      onDone(counts);
+      if (fileRef.current) fileRef.current.value = '';   // re-picking the same file must fire change
+      setResult(result);
+      onDone(result);
     } catch (err) {
       setError(mapError(err));
       setPreview(null);   // stale after a failed commit — force re-preview
@@ -126,6 +134,7 @@ export default function SiteBulkUpload({ onDone }: Props) {
         <label htmlFor="site-bulk-file">Upload a file (.csv or .xlsx)</label>
         <input
           id="site-bulk-file"
+          ref={fileRef}
           type="file"
           accept=".csv,.xlsx"
           disabled={busy}

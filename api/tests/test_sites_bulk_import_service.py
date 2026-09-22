@@ -540,6 +540,9 @@ async def test_export_guards_formula_cells_and_round_trips(db, seeded_user):
 
 
 def test_coord_text_keeps_whole_degrees():
+    from decimal import Decimal
+    assert bi._coord_text(Decimal("40")) == "40"      # formats without a point: nothing to strip
+    assert bi._coord_text(Decimal("40.000000")) == "40"
     assert bi._coord_text(40) == "40"
     assert bi._coord_text(39.5296) == "39.5296"
     assert bi._coord_text(-119.8) == "-119.8"

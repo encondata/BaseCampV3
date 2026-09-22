@@ -58,9 +58,9 @@ it('previews and keeps Apply disabled while errors exist', async () => {
 const commitResult = {
   created: 1, updated: 1, unchanged: 0,
   rows: [
-    { row: 2, name: 'New Name', site_id: 's1', action: 'updated' as const,
+    { row: 1, name: 'New Name', site_id: 's1', action: 'updated' as const,
       diff: { name: { old: 'Old Name', new: 'New Name' } } },
-    { row: 3, name: 'Fresh', site_id: 's2', action: 'created' as const, diff: null },
+    { row: 2, name: 'Fresh', site_id: 's2', action: 'created' as const, diff: null },
   ],
 };
 
@@ -86,9 +86,16 @@ it('gates Apply on approving every update, shows matched-by, commits approved id
   // the uploaded cells, not the normalized data (no status/country defaults)
   await waitFor(() => expect(api.commitSiteBulk).toHaveBeenCalledWith(
     [{ name: 'New Name' }, { name: 'Fresh' }], ['s1'], 'sites.csv'));
-  await waitFor(() => expect(onDone).toHaveBeenCalledWith(commitResult));
+  await waitFor(() => expect(onDone).toHaveBeenCalledWith({
+    ...commitResult,
+    rows: [{ ...commitResult.rows[0], row: 2 }, { ...commitResult.rows[1], row: 3 }],   // relabeled to the preview's lines
+  }));
 
   expect(await screen.findByText('Applied: 1 added · 1 updated · 0 unchanged')).toBeTruthy();
+  // the commit numbers rows from 1; the summary must show the preview's spreadsheet lines (2, 3)
+  const summaryRows = [...document.querySelectorAll('.bulk-summary tbody tr')]
+    .map((tr) => tr.querySelector('td')!.textContent);
+  expect(summaryRows).toEqual(['2', '3']);
   const link = screen.getByRole('link', { name: 'New Name' }) as HTMLAnchorElement;
   expect(link.getAttribute('href')).toMatch(/\/sites\?open=s1$/);
   expect(screen.getByText('name: Old Name → New Name')).toBeTruthy();
@@ -100,7 +107,7 @@ it('gates Apply on approving every update, shows matched-by, commits approved id
     expect.arrayContaining([
       expect.any(Array), expect.any(Array), expect.any(Array), expect.any(Array),
     ]),
-    commitResult.rows,
+    [{ ...commitResult.rows[0], row: 2 }, { ...commitResult.rows[1], row: 3 }],
   );
   expect(listTools.exportCsv.mock.calls[0][1]).toHaveLength(4);
 });
