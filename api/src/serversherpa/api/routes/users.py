@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
+from serversherpa.access.apply import apply_global_roles, apply_groups
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.effective import effective_cells
 from serversherpa.access.resolver import can_touch_rank
@@ -610,27 +611,15 @@ async def set_roles(
                 actor.access.max_rank, role.rank):
             raise _err(403, "rank_too_low")
 
-    now = datetime.now(UTC)
     # Org-anchored grants (client/partner contacts) are managed entirely
     # through the org-contact flows, not here — `desired` can never
     # legally contain one (rejected above), so plain `current - desired`
     # would silently revoke a person's untouched contact-role grant just
     # because this call's payload only carries their non-org-anchored
-    # roles. Exclude client/partner-anchored roles from what's eligible
-    # for revocation via this endpoint.
-    revocable_current = {
-        name for name in current
-        if role_rows.get(name) is None or role_rows[name].scope_anchor not in ("client", "partner")
-    }
-    for role in revocable_current - desired:
-        await db.execute(
-            update(PersonRole)
-            .where(PersonRole.person_id == person_id, PersonRole.role == role,
-                   PersonRole.revoked_at.is_(None))
-            .values(revoked_at=now, revoked_by=actor.person.id, updated_at=now)
-        )
-    for role in desired - current:
-        db.add(PersonRole(person_id=person_id, role=role, granted_by=actor.person.id))
+    # roles. apply_global_roles excludes client/partner-anchored roles
+    # from what's eligible for revocation via this endpoint.
+    await apply_global_roles(db, actor_id=actor.person.id, person_id=person_id,
+                             desired=desired, role_rows=role_rows)
     audit(db, actor_id=actor.person.id, entity_type="person",
           entity_id=str(person_id), action="role.set",
           changes={"roles": {"from": sorted(current), "to": sorted(desired)}})
@@ -650,25 +639,15 @@ async def set_access_groups(
     the person instead of one per group."""
     await _load_target(db, actor, person_id)
     desired = set(body.group_ids)
-    current_rows = list(await db.scalars(
-        select(AccessGroupMember).where(AccessGroupMember.person_id == person_id)))
-    current = {m.group_id for m in current_rows}
-    names = {g.id: g.name for g in await db.scalars(
-        select(AccessGroup).where(AccessGroup.id.in_((desired | current) or {uuid.uuid4()})))}
-    if any(gid not in names for gid in desired):
+    try:
+        diff = await apply_groups(db, actor_id=actor.person.id,
+                                  person_id=person_id, desired=desired)
+    except KeyError:
         raise _err(404, "group_not_found")
-    if desired != current:
-        for gid in current - desired:
-            await db.execute(AccessGroupMember.__table__.delete().where(
-                AccessGroupMember.group_id == gid,
-                AccessGroupMember.person_id == person_id))
-        for gid in desired - current:
-            db.add(AccessGroupMember(group_id=gid, person_id=person_id,
-                                     added_by=actor.person.id))
+    if diff is not None:
         audit(db, actor_id=actor.person.id, entity_type="person",
               entity_id=str(person_id), action="access_groups.set",
-              changes={"groups": {"from": sorted(names[g] for g in current),
-                                  "to": sorted(names[g] for g in desired)}})
+              changes={"groups": diff})
         await db.commit()
     return AccessGroupsOut(group_ids=sorted(desired, key=str))
 

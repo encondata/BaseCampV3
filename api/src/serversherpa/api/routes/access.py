@@ -2,12 +2,12 @@
 global-anchor role — anti-lockout); writes need access:change + rank rules."""
 
 import uuid
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
+from serversherpa.access.apply import apply_overrides
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.effective import effective_cells
 from serversherpa.access.resolver import can_touch_rank
@@ -410,27 +410,10 @@ async def put_overrides(
             if a not in ACTIONS:
                 raise _err(422, "unknown_action")
 
-    current = {(o.resource, o.action): o for o in await db.scalars(
-        select(PermissionOverride).where(
-            PermissionOverride.person_id == person_id))}
     desired = {(res, a): v for res, actions in body.overrides.items()
                for a, v in actions.items() if v is not None}
-    changes: dict = {}
-    for key, row in current.items():
-        if key not in desired:
-            changes[f"{key[0]}:{key[1]}"] = {"from": row.allow, "to": None}
-            await db.delete(row)
-        elif row.allow != desired[key]:
-            changes[f"{key[0]}:{key[1]}"] = {"from": row.allow, "to": desired[key]}
-            row.allow = desired[key]
-            row.set_by = actor.person.id
-            row.set_at = datetime.now(UTC)
-    for key, value in desired.items():
-        if key not in current:
-            changes[f"{key[0]}:{key[1]}"] = {"from": None, "to": value}
-            db.add(PermissionOverride(person_id=person_id, resource=key[0],
-                                      action=key[1], allow=value,
-                                      set_by=actor.person.id))
+    changes = await apply_overrides(db, actor_id=actor.person.id,
+                                    person_id=person_id, desired=desired)
     audit(db, actor_id=actor.person.id, entity_type="person",
           entity_id=str(person_id), action="override.set", changes=changes)
     await db.commit()
