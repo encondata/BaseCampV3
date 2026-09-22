@@ -436,22 +436,33 @@ async def commit_rows(db: AsyncSession, actor_person_id: uuid.UUID,
 
     ref = await _reference_data(db)
     created = updated = unchanged = 0
+    applied: list[dict] = []
     for r in preview["rows"]:
         data = r["data"]
         if r["action"] == "unchanged":
             unchanged += 1
+            applied.append({"row": r["row"], "name": r["name"],
+                            "site_id": r["site_id"], "action": "unchanged",
+                            "diff": None})
         elif r["action"] == "create":
-            await _create_site(db, actor_person_id, data, ref)
+            site = await _create_site(db, actor_person_id, data, ref)
             created += 1
+            applied.append({"row": r["row"], "name": r["name"],
+                            "site_id": str(site.id), "action": "created",
+                            "diff": None})
         else:
             await _apply_update(db, actor_person_id, r, ref)
             updated += 1
+            applied.append({"row": r["row"], "name": r["name"],
+                            "site_id": r["site_id"], "action": "updated",
+                            "diff": r["diff"]})
     audit(db, actor_id=actor_person_id, entity_type="site_bulk_import",
           entity_id=None, action="bulk_import",
           changes={"created": created, "updated": updated,
                    "unchanged": unchanged, "source": source_label})
     await db.commit()
-    return {"created": created, "updated": updated, "unchanged": unchanged}
+    return {"created": created, "updated": updated, "unchanged": unchanged,
+            "rows": applied}
 
 
 def _resolve_partner(ref: dict, name: str) -> Partner | None:
@@ -460,7 +471,7 @@ def _resolve_partner(ref: dict, name: str) -> Partner | None:
 
 
 async def _create_site(db: AsyncSession, actor_person_id: uuid.UUID,
-                       data: dict, ref: dict) -> None:
+                       data: dict, ref: dict) -> Site:
     from serversherpa.services.audit import audit
 
     fields = {attr: data[col] for col, attr in SITE_ATTR.items()
@@ -481,6 +492,7 @@ async def _create_site(db: AsyncSession, actor_person_id: uuid.UUID,
         changes["clients"] = {"from": [], "to": sorted(data["clients"])}
     audit(db, actor_id=actor_person_id, entity_type="site",
           entity_id=str(site.id), action="create", changes=changes)
+    return site
 
 
 def _audit_value(value: Any) -> Any:

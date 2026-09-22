@@ -135,7 +135,11 @@ async def test_commit_end_to_end(client, db, seeded_user, admin_hdrs):
                                             {"name": "Bulk Two"}],
                                    "source": "e2e.csv"})
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"created": 2, "updated": 0, "unchanged": 0}
+    body = resp.json()
+    assert (body["created"], body["updated"], body["unchanged"]) == (2, 0, 0)
+    assert len(body["rows"]) == 2
+    assert [r["action"] for r in body["rows"]] == ["created", "created"]
+    assert all(r["site_id"] for r in body["rows"])
     count = await db.scalar(select(func.count()).select_from(Site).where(
         Site.name.in_(["Bulk One", "Bulk Two"])))
     assert count == 2

@@ -3,7 +3,6 @@
  * downloads, then SiteBulkUpload (upload → preview → apply).
  */
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 
 import SiteBulkUpload from '../components/sites/SiteBulkUpload';
 import DataTable from '../components/DataTable';
@@ -13,7 +12,6 @@ import '../styles/bulk.css';
 import '../styles/sites.css';
 
 export default function BulkSites() {
-  const [result, setResult] = useState<{ created: number; updated: number; unchanged: number } | null>(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
 
@@ -61,13 +59,7 @@ export default function BulkSites() {
 
       <section className="bulk-section">
         <p className="eyebrow-sm">Upload</p>
-        <SiteBulkUpload onDone={setResult} />
-        {result && (
-          <p className="set-note">
-            Applied: {result.created} added, {result.updated} updated, {result.unchanged} unchanged.{' '}
-            <Link to="/sites">Open Sites</Link>
-          </p>
-        )}
+        <SiteBulkUpload onDone={() => {}} />
       </section>
     </div>
   );

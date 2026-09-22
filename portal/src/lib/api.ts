@@ -1112,6 +1112,21 @@ export interface BulkPreview {
   can_commit: boolean;
 }
 
+export interface BulkAppliedRow {
+  row: number;
+  name: string;
+  site_id: string;
+  action: 'created' | 'updated' | 'unchanged';
+  diff: BulkRowResult['diff'];
+}
+
+export interface BulkCommitResult {
+  created: number;
+  updated: number;
+  unchanged: number;
+  rows: BulkAppliedRow[];
+}
+
 export async function previewSiteBulk(
   file: File | Blob, filename: string,
 ): Promise<BulkPreview> {
@@ -1128,7 +1143,7 @@ export async function previewSiteBulk(
 
 export async function commitSiteBulk(
   rows: Record<string, unknown>[], approved: string[], source: string,
-): Promise<{ created: number; updated: number; unchanged: number }> {
+): Promise<BulkCommitResult> {
   const resp = await apiFetch('/sites/bulk-import/commit', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

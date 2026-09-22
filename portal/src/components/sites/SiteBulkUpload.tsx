@@ -11,14 +11,16 @@ import {
   ApiError,
   commitSiteBulk,
   previewSiteBulk,
+  type BulkCommitResult,
   type BulkPreview,
   type BulkRowResult,
 } from '../../lib/api';
 import { SITE_BULK_ERRORS } from '../../lib/siteBulk';
+import BulkApplySummary from './BulkApplySummary';
 import DataTable from '../DataTable';
 
 interface Props {
-  onDone(counts: { created: number; updated: number; unchanged: number }): void;
+  onDone(result: BulkCommitResult): void;
 }
 
 const ACTION_LABEL: Record<BulkRowResult['action'], string> = {
@@ -69,6 +71,7 @@ export default function SiteBulkUpload({ onDone }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<BulkPreview | null>(null);
   const [approved, setApproved] = useState<Set<string>>(new Set());
+  const [result, setResult] = useState<BulkCommitResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -112,6 +115,7 @@ export default function SiteBulkUpload({ onDone }: Props) {
       const counts = await commitSiteBulk(rows, [...approved], file.name);
       setPreview(null);
       setFile(null);
+      setResult(counts);
       onDone(counts);
     } catch (err) {
       setError(mapError(err));
@@ -141,6 +145,7 @@ export default function SiteBulkUpload({ onDone }: Props) {
           onChange={(e) => {
             setFile(e.target.files?.[0] ?? null);
             setPreview(null);
+            setResult(null);
           }}
         />
       </div>
@@ -166,6 +171,8 @@ export default function SiteBulkUpload({ onDone }: Props) {
       </div>
 
       {error && <p className="pf-error">{error}</p>}
+
+      {result && <BulkApplySummary result={result} />}
 
       {preview && (
         <>

@@ -297,7 +297,9 @@ async def test_commit_creates_sites_links_and_audit(db, seeded_user):
     ])
     out = await bi.commit_rows(db, seeded_user.id, rows,
                                approved_updates=set(), source_label="paste")
-    assert out == {"created": 2, "updated": 0, "unchanged": 0}
+    assert (out["created"], out["updated"], out["unchanged"]) == (2, 0, 0)
+    assert [r["action"] for r in out["rows"]] == ["created", "created"]
+    assert all(r["site_id"] for r in out["rows"])
 
     one = await db.scalar(select(Site).where(Site.name == "BC One"))
     assert one.status == "active" and one.country == "US"
@@ -314,6 +316,24 @@ async def test_commit_creates_sites_links_and_audit(db, seeded_user):
         AuditLog.entity_type == "site_bulk_import"))
     assert summary.changes["created"] == 2
     assert summary.changes["source"] == "paste"
+
+
+async def test_commit_returns_per_row_results(db, seeded_user):
+    from serversherpa.db.models import Site
+    db.add(Site(name="Keep Me", city="Old", country="US", status="active"))
+    await db.commit()
+    rows = bi.number_json_rows([{"name": "Keep Me", "city": "New"},
+                                {"name": "Fresh One"},
+                                {"name": "Keep Me 2"}])
+    keep = (await bi.preview_rows(db, rows))["rows"][0]["site_id"]
+    out = await bi.commit_rows(db, seeded_user.id, rows, approved_updates={keep},
+                               source_label="t.csv")
+    assert (out["created"], out["updated"], out["unchanged"]) == (2, 1, 0)
+    assert [r["action"] for r in out["rows"]] == ["updated", "created", "created"]
+    assert out["rows"][0] == {"row": 1, "name": "Keep Me", "site_id": keep,
+                              "action": "updated", "diff": {"city": {"old": "Old", "new": "New"}}}
+    assert all(r["site_id"] for r in out["rows"])
+    assert out["rows"][1]["diff"] is None
 
 
 async def test_commit_all_or_nothing(db, seeded_user):
@@ -364,7 +384,10 @@ async def test_commit_unchanged_rows_skipped(db, seeded_user):
     rows = bi.number_json_rows([{"name": "Static", "city": "Reno"}])
     out = await bi.commit_rows(db, seeded_user.id, rows,
                                approved_updates=set(), source_label="paste")
-    assert out == {"created": 0, "updated": 0, "unchanged": 1}
+    assert (out["created"], out["updated"], out["unchanged"]) == (0, 0, 1)
+    assert out["rows"] == [{"row": 1, "name": "Static", "site_id": str(
+        (await db.scalar(select(Site).where(Site.name == "Static"))).id),
+        "action": "unchanged", "diff": None}]
     assert await db.scalar(select(AuditLog.id).where(
         AuditLog.entity_type == "site", AuditLog.action == "update")) is None
 
