@@ -769,8 +769,8 @@ async def remove_initiative_link(
 
 NULLABLE_TEXT_ASSET_FIELDS = (
     "priority_wave", "disposition", "owner", "source_rack",
-    "source_position", "destination_rack", "destination_position",
-    "cable_info",
+    "source_position", "source_pod", "destination_rack",
+    "destination_position", "destination_pod", "cable_info",
 )
 
 
@@ -813,10 +813,12 @@ async def _initiative_asset_rows(
             owner=ia.owner, source_rack=ia.source_rack,
             source_ru=ia.source_ru, source_verified=ia.source_verified,
             source_position=ia.source_position,
+            source_pod=ia.source_pod,
             destination_rack=ia.destination_rack,
             destination_ru=ia.destination_ru,
             destination_verified=ia.destination_verified,
             destination_position=ia.destination_position,
+            destination_pod=ia.destination_pod,
             cable_info=ia.cable_info, vendor_involved=ia.vendor_involved,
             status=ia.status, status_label=s_label, status_color=s_color,
             created_at=ia.created_at, updated_at=ia.updated_at,
@@ -824,6 +826,7 @@ async def _initiative_asset_rows(
                 id=asset.id, legacy_id=asset.legacy_id,
                 serial_number=asset.serial_number, name=asset.name,
                 rfid_tag=asset.rfid_tag,
+                pod_number=asset.pod_number,
                 model_make=model.make if model else None,
                 model_name=model.model if model else None,
                 ru_size=model.ru_size if model else None,

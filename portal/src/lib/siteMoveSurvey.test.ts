@@ -7,7 +7,7 @@ import {
 
 function asset(over: Partial<InitiativeAssetRow['asset']> = {}): InitiativeAssetRow['asset'] {
   return {
-    id: 'a', legacy_id: 1, serial_number: 'SN1', name: null, rfid_tag: null,
+    id: 'a', legacy_id: 1, serial_number: 'SN1', name: null, rfid_tag: null, pod_number: null,
     model_make: 'Dell', model_name: 'R640', ru_size: 1, model_form_factor: null,
     location_detail: null,
     client_name: null, model_category: null, model_category_label: null,
@@ -18,6 +18,7 @@ function asset(over: Partial<InitiativeAssetRow['asset']> = {}): InitiativeAsset
 function row(id: string, over: Partial<InitiativeAssetRow> = {}): InitiativeAssetRow {
   return {
     id, asset_id: id, priority_wave: null, disposition: null, owner: null,
+    source_pod: null, destination_pod: null,
     source_rack: 'R1', source_ru: 1, source_verified: null, source_position: null,
     destination_rack: null, destination_ru: null, destination_verified: null,
     destination_position: null, cable_info: null, vendor_involved: null,

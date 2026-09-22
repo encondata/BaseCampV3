@@ -96,13 +96,14 @@ function ini(over: Partial<InitiativeItem> = {}): InitiativeItem {
 function assetRow(id: string, over: Partial<InitiativeAssetRow['asset']> = {}): InitiativeAssetRow {
   return {
     id, asset_id: id, priority_wave: null, disposition: null, owner: null,
+    source_pod: null, destination_pod: null,
     source_rack: 'R1', source_ru: 1, source_verified: null, source_position: null,
     destination_rack: null, destination_ru: null, destination_verified: null,
     destination_position: null, cable_info: null, vendor_involved: null,
     status: 'active', status_label: 'Active', status_color: '#000',
     created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
     asset: {
-      id, legacy_id: 1, serial_number: 'SN', name: null, rfid_tag: null,
+      id, legacy_id: 1, serial_number: 'SN', name: null, rfid_tag: null, pod_number: null,
       model_make: 'Dell', model_name: 'R640', ru_size: 1, model_form_factor: null,
       location_detail: null,
       client_name: null, model_category: null, model_category_label: null,

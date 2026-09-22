@@ -295,13 +295,16 @@ export const MOVE_ASSET_COLUMNS: ColumnDef[] = [
   { key: 'owner', label: 'Owner', width: '1fr', default: false },
   { key: 'source_verified', label: 'Source Verified', width: '0.9fr', default: false },
   { key: 'source_position', label: 'Source Position', width: '1fr', default: false },
+  { key: 'source_pod', label: 'Source Pod', width: '0.8fr', default: false },
   { key: 'destination_verified', label: 'Destination Verified', width: '1fr', default: false },
   { key: 'destination_position', label: 'Destination Position', width: '1.1fr', default: false },
+  { key: 'destination_pod', label: 'Destination Pod', width: '0.9fr', default: false },
   { key: 'cable_info', label: 'Cable Info', width: '1.2fr', default: false },
   { key: 'vendor_involved', label: 'Vendor Involved', width: '1fr', default: false },
   { key: 'asset_status', label: 'Asset Status', width: '1.1fr', default: false },
   { key: 'rfid_tag', label: 'RFID Tag', width: '1fr', default: false },
   { key: 'location', label: 'Location', width: '1.1fr', default: false },
+  { key: 'pod_number', label: 'Pod #', width: '0.7fr', default: false },
   { key: 'client', label: 'Client', width: '1fr', default: false },
   { key: 'added', label: 'Added', width: '0.9fr', default: false },
   { key: 'updated', label: 'Updated', width: '0.9fr', default: false },
@@ -333,13 +336,16 @@ export function moveAssetCellText(row: InitiativeAssetRow, colKey: string): stri
     case 'owner': return row.owner ?? BLANK;
     case 'source_verified': return yesNo(row.source_verified);
     case 'source_position': return row.source_position ?? BLANK;
+    case 'source_pod': return row.source_pod ?? BLANK;
     case 'destination_verified': return yesNo(row.destination_verified);
     case 'destination_position': return row.destination_position ?? BLANK;
+    case 'destination_pod': return row.destination_pod ?? BLANK;
     case 'cable_info': return row.cable_info ?? BLANK;
     case 'vendor_involved': return yesNo(row.vendor_involved);
     case 'asset_status': return row.asset.status_label;
     case 'rfid_tag': return displayRfid(row.asset.rfid_tag);
     case 'location': return row.asset.location_detail ?? BLANK;
+    case 'pod_number': return row.asset.pod_number ?? BLANK;
     case 'client': return row.asset.client_name ?? BLANK;
     case 'added': return dayOf(row.created_at);
     case 'updated': return dayOf(row.updated_at);
@@ -460,6 +466,8 @@ export function MOVE_ASSET_EDIT_FIELDS(
       toPatch: numberToPatch },
     { column: 'source_position', field: 'source_position', kind: 'text',
       fromRow: (r) => r.source_position ?? '' },
+    { column: 'source_pod', field: 'source_pod', kind: 'text',
+      fromRow: (r) => r.source_pod ?? '' },
     { column: 'source_verified', field: 'source_verified', kind: 'bool',
       fromRow: (r) => triFromBool(r.source_verified), toPatch: boolTriToPatch },
     { column: 'destination_rack', field: 'destination_rack', kind: 'text',
@@ -469,6 +477,8 @@ export function MOVE_ASSET_EDIT_FIELDS(
       toPatch: numberToPatch },
     { column: 'destination_position', field: 'destination_position', kind: 'text',
       fromRow: (r) => r.destination_position ?? '' },
+    { column: 'destination_pod', field: 'destination_pod', kind: 'text',
+      fromRow: (r) => r.destination_pod ?? '' },
     { column: 'destination_verified', field: 'destination_verified', kind: 'bool',
       fromRow: (r) => triFromBool(r.destination_verified), toPatch: boolTriToPatch },
     { column: 'cable_info', field: 'cable_info', kind: 'text',

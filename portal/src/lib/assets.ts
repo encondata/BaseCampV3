@@ -38,8 +38,8 @@ export function formatDims(
 }
 
 export function assetSearchText(a: AssetItem): string {
-  return [a.legacy_id != null ? String(a.legacy_id) : null, a.serial_number, a.name, a.rfid_tag, a.location_detail,
-          a.client_name, a.site_name, a.model?.make, a.model?.model]
+  return [a.legacy_id != null ? String(a.legacy_id) : null, a.serial_number, a.name, a.rfid_tag, a.pod_number,
+          a.location_detail, a.client_name, a.site_name, a.model?.make, a.model?.model]
     .filter(Boolean).join(' ').toLowerCase();
 }
 
@@ -64,6 +64,7 @@ export function assetCellText(a: AssetItem, colKey: string): string {
     case 'model': return a.model ? `${a.model.make} ${a.model.model}` : '';
     case 'location': return a.location_detail || '—';
     case 'rfid': return displayRfid(a.rfid_tag);
+    case 'pod': return a.pod_number ?? '—';
     case 'ru': return a.model?.ru_size != null ? String(a.model.ru_size) : '—';
     case 'last_seen': return a.last_seen_at ? new Date(a.last_seen_at).toLocaleDateString() : '—';
     case 'has_rails': return a.has_rails === null ? '—' : a.has_rails ? 'Yes' : 'No';
@@ -179,7 +180,7 @@ export const ASSET_ERRORS: Record<string, string> = {
 /* ── asset edit/create form ────────────────────────────────────── */
 
 export interface AssetFormState {
-  serial_number: string; name: string; rfid_tag: string;
+  serial_number: string; name: string; rfid_tag: string; pod_number: string;
   model_id: string; client_id: string; site_id: string;
   location_detail: string; status: string;
   has_rails: '' | 'yes' | 'no';        // tri-state: '' = unknown
@@ -190,6 +191,7 @@ export function formFromAsset(a: AssetItem | null): AssetFormState {
     serial_number: a?.serial_number ?? '',
     name: a?.name ?? '',
     rfid_tag: a?.rfid_tag ?? '',
+    pod_number: a?.pod_number ?? '',
     model_id: a?.model_id ?? '',
     client_id: a?.client_id ?? '',
     site_id: a?.site_id ?? '',
@@ -212,6 +214,7 @@ export function assetPayload(form: AssetFormState): Record<string, unknown> {
   put('serial_number', form.serial_number);
   put('name', form.name);
   put('rfid_tag', form.rfid_tag);
+  put('pod_number', form.pod_number);
   put('model_id', form.model_id);
   put('client_id', form.client_id);
   put('site_id', form.site_id);
@@ -372,6 +375,8 @@ export function ASSET_GOD_FIELDS(lookups: AssetGodLookups): GodField<AssetItem>[
       fromRow: (a) => a.name ?? '' },
     { column: 'rfid', field: 'rfid_tag', kind: 'text',
       fromRow: (a) => a.rfid_tag ?? '' },
+    { column: 'pod', field: 'pod_number', kind: 'text',
+      fromRow: (a) => a.pod_number ?? '' },
     { column: 'location', field: 'location_detail', kind: 'text',
       fromRow: (a) => a.location_detail },
     { column: 'model', field: 'model_id', kind: 'combo',

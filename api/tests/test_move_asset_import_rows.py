@@ -81,3 +81,11 @@ def test_make_model_str_single_half():
                      {}, generate_serials=False)["make_model_str"] == "Dell"
     assert parse_row(2, _canonical(serial_number="s"),
                      {}, generate_serials=False)["make_model_str"] is None
+
+
+def test_pods_parse_stripped_and_blank_is_none():
+    out = parse_row(2, _canonical(serial_number="SN-1", source_pod=" 14 ",
+                                  destination_pod=""), {},
+                    generate_serials=False)
+    assert out["source_pod"] == "14"
+    assert out["destination_pod"] is None

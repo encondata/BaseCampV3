@@ -42,6 +42,8 @@ export default function AssetEditDialog({ asset, moveStatuses, onClose, onSaved 
     asset.destination_position ?? '');
   const [destinationVerified, setDestinationVerified] = useState(
     asset.destination_verified ?? false);
+  const [sourcePod, setSourcePod] = useState(asset.source_pod ?? '');
+  const [destinationPod, setDestinationPod] = useState(asset.destination_pod ?? '');
   const [vendorInvolved, setVendorInvolved] = useState(asset.vendor_involved ?? false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -56,10 +58,12 @@ export default function AssetEditDialog({ asset, moveStatuses, onClose, onSaved 
         priority_wave: wave || null,
         disposition: disposition || null,
         owner: owner || null,
+        source_pod: sourcePod || null,
         source_rack: sourceRack || null,
         source_ru: sourceRu || null,
         source_verified: sourceVerified,
         source_position: sourcePosition || null,
+        destination_pod: destinationPod || null,
         destination_rack: destinationRack || null,
         destination_ru: destinationRu || null,
         destination_verified: destinationVerified,
@@ -128,6 +132,12 @@ export default function AssetEditDialog({ asset, moveStatuses, onClose, onSaved 
               <span>Source</span><span>Destination</span>
             </div>
             <div className="pf-form">
+              <div><label>Pod</label>
+                <input value={sourcePod} disabled={saving}
+                       onChange={(e) => setSourcePod(e.target.value)} /></div>
+              <div><label>Pod</label>
+                <input value={destinationPod} disabled={saving}
+                       onChange={(e) => setDestinationPod(e.target.value)} /></div>
               <div><label>Rack</label>
                 <input value={sourceRack} disabled={saving}
                        onChange={(e) => setSourceRack(e.target.value)} /></div>

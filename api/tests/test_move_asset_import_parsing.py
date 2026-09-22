@@ -112,3 +112,27 @@ def test_xlsx_blank_header_cell_does_not_shift_columns():
     assert canonical["serial_number"] == "SN-1"
     assert canonical["asset_name"] == "web-01"     # not shifted into the spacer
     assert list(raw.values()) == ["SN-1", "web-01"]
+
+
+def test_pod_headers_map():
+    content = (b"Serial Number,Source Pod #,Destination Pod Number\n"
+               b"sn-1,14,9\n")
+    [(_, canonical, _)] = parse_upload("a.csv", content)
+    assert canonical["source_pod"] == "14"
+    assert canonical["destination_pod"] == "9"
+
+
+def test_bare_pod_header_is_the_source_pod():
+    content = b"Serial Number,Pod #\nsn-1,14\n"
+    [(_, canonical, _)] = parse_upload("a.csv", content)
+    assert canonical["source_pod"] == "14"
+    assert canonical["destination_pod"] == ""
+
+
+def test_template_places_pod_before_rack():
+    assert TEMPLATE_HEADERS.index("Source Pod") + 1 == \
+        TEMPLATE_HEADERS.index("Source Rack")
+    assert TEMPLATE_HEADERS.index("Destination Pod") + 1 == \
+        TEMPLATE_HEADERS.index("Destination Rack")
+    for sample in SAMPLE_ROWS:
+        assert set(sample) == set(TEMPLATE_HEADERS)

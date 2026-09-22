@@ -166,6 +166,9 @@ export default function AssetEditModal({
               <div><label>Location detail</label>
                 <input value={form.location_detail} disabled={locked}
                        onChange={(e) => setField('location_detail', e.target.value)} /></div>
+              <div><label>Pod #</label>
+                <input value={form.pod_number} disabled={locked}
+                       onChange={(e) => setField('pod_number', e.target.value)} /></div>
             </div>
 
             <div className="modal-section">Relationships</div>

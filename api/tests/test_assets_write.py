@@ -157,3 +157,25 @@ async def test_archive_requires_delete_not_just_change(client, db, seeded_user):
                               headers=admin)).status_code == 204
     assert (await client.post(f"/assets/{asset_id}/unarchive",
                               headers=admin)).status_code == 204
+
+
+async def test_pod_number_create_patch_and_clear(client, db, seeded_user):
+    hdrs = await login(client)
+    resp = await client.post("/assets", headers=hdrs, json={
+        "serial_number": "SN-POD", "name": "pod-01", "pod_number": "14"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["pod_number"] == "14"
+    asset_id = resp.json()["id"]
+
+    resp = await client.patch(f"/assets/{asset_id}", headers=hdrs,
+                              json={"pod_number": "P-07"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pod_number"] == "P-07"
+    upd = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "asset", AuditLog.action == "update"))
+    assert upd.changes["pod_number"] == {"from": "14", "to": "P-07"}
+
+    resp = await client.patch(f"/assets/{asset_id}", headers=hdrs,
+                              json={"pod_number": None})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pod_number"] is None

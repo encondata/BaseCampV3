@@ -206,6 +206,7 @@ function assetRow(overrides: Partial<InitiativeAssetRow> = {}): InitiativeAssetR
   return {
     id: 'ia1', asset_id: 'a1',
     priority_wave: 'Wave 1', disposition: 'Relocate', owner: 'Jane Doe',
+    source_pod: null, destination_pod: null,
     source_rack: 'BJ08', source_ru: 12, source_verified: true,
     source_position: 'front',
     destination_rack: '11.01.01.01A.02', destination_ru: 8.5,
@@ -215,7 +216,7 @@ function assetRow(overrides: Partial<InitiativeAssetRow> = {}): InitiativeAssetR
     created_at: '2026-08-20T00:00:00Z', updated_at: '2026-08-21T00:00:00Z',
     asset: {
       id: 'a1', legacy_id: 4021, serial_number: 'SN-001', name: 'Server A',
-      rfid_tag: 'RFID-1', model_make: 'Dell', model_name: 'R740',
+      rfid_tag: 'RFID-1', pod_number: null, model_make: 'Dell', model_name: 'R740',
       ru_size: 2, model_form_factor: null, location_detail: 'Row 3', client_name: 'Acme',
       model_category: null, model_category_label: null, model_category_color: null,
       status: 'active', status_label: 'Active', status_color: '#31F527',
@@ -415,6 +416,14 @@ describe('moveAssetCellText', () => {
   it('returns empty string for an unknown column key', () => {
     expect(moveAssetCellText(assetRow(), 'nonsense')).toBe('');
   });
+
+  it('reads the pod columns, dashing when blank', () => {
+    const row = assetRow({ source_pod: '14', destination_pod: null,
+                           asset: { ...assetRow().asset, pod_number: '3' } });
+    expect(moveAssetCellText(row, 'source_pod')).toBe('14');
+    expect(moveAssetCellText(row, 'destination_pod')).toBe('—');
+    expect(moveAssetCellText(row, 'pod_number')).toBe('3');
+  });
 });
 
 describe('MOVE_ASSET_EDIT_FIELDS', () => {
@@ -422,12 +431,12 @@ describe('MOVE_ASSET_EDIT_FIELDS', () => {
   const fields = MOVE_ASSET_EDIT_FIELDS(lookups);
   const fieldFor = (column: string) => fields.find((f) => f.column === column)!;
 
-  it('covers exactly the 14 per-move fields, none of the asset-identity columns', () => {
+  it('covers exactly the 16 per-move fields, none of the asset-identity columns', () => {
     expect(fields.map((f) => f.column).sort()).toEqual([
-      'cable_info', 'destination_position', 'destination_rack', 'destination_ru',
-      'destination_verified', 'disposition', 'owner', 'source_position',
-      'source_rack', 'source_ru', 'source_verified', 'status', 'vendor_involved',
-      'wave',
+      'cable_info', 'destination_pod', 'destination_position', 'destination_rack',
+      'destination_ru', 'destination_verified', 'disposition', 'owner',
+      'source_pod', 'source_position', 'source_rack', 'source_ru',
+      'source_verified', 'status', 'vendor_involved', 'wave',
     ].sort());
   });
 

@@ -602,6 +602,7 @@ class Asset(Base):
     serial_number: Mapped[str | None] = mapped_column(CITEXT)
     name: Mapped[str | None] = mapped_column(CITEXT)
     rfid_tag: Mapped[str | None] = mapped_column(CITEXT)
+    pod_number: Mapped[str | None]
     model_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("asset_models.id"))
     client_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("clients.id"))
     site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
@@ -1104,6 +1105,8 @@ class InitiativeAsset(Base):
     priority_wave: Mapped[str | None] = mapped_column(String(30))
     disposition: Mapped[str | None]
     owner: Mapped[str | None]
+    source_pod: Mapped[str | None]
+    destination_pod: Mapped[str | None]
     source_rack: Mapped[str | None]
     source_ru: Mapped[Decimal | None] = mapped_column(Numeric)
     source_verified: Mapped[bool | None] = mapped_column(Boolean)

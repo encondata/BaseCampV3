@@ -75,6 +75,7 @@ const COLUMNS: ColumnDef[] = [
   { key: 'status', label: 'Status', width: '1.1fr', default: true },
   { key: 'ru', label: 'RU', width: '0.5fr', default: false },
   { key: 'location', label: 'Location', width: '1.4fr', default: false },
+  { key: 'pod', label: 'Pod #', width: '0.7fr', default: false },
   { key: 'rfid', label: 'RFID', width: '1fr', default: false },
   { key: 'last_seen', label: 'Last seen', width: '1fr', default: false },
   { key: 'has_rails', label: 'Rails', width: '0.8fr', default: false, godOnly: true },
@@ -108,6 +109,7 @@ function sortValueFor(a: AssetItem, key: string): string {
     case 'ru': return String(a.model?.ru_size ?? 0);
     case 'location': return a.location_detail.toLowerCase();
     case 'rfid': return (a.rfid_tag ?? '').toLowerCase();
+    case 'pod': return (a.pod_number ?? '').toLowerCase();
     case 'last_seen': return a.last_seen_at ?? '';
     case 'has_rails': return a.has_rails === null ? '' : a.has_rails ? 'yes' : 'no';
     case 'archived': return a.archived_at ? '1' : '0';
@@ -126,6 +128,7 @@ const CSV_COLUMNS: [string, (a: AssetItem) => string][] = [
   ['Client', (a) => a.client_name ?? ''],
   ['Site', (a) => a.site_name ?? ''],
   ['Location', (a) => a.location_detail],
+  ['Pod #', (a) => a.pod_number ?? ''],
   ['Status', (a) => a.status_label],
   ['RFID', (a) => a.rfid_tag ?? ''],
   ['Has rails', (a) => (a.has_rails === null ? '' : String(a.has_rails))],
@@ -395,6 +398,8 @@ export default function Assets() {
         return <span className="cell-top">{a.location_detail || '—'}</span>;
       case 'rfid':
         return <span className="mono" title={a.rfid_tag ?? undefined}>{displayRfid(a.rfid_tag)}</span>;
+      case 'pod':
+        return <span className="mono">{a.pod_number ?? '—'}</span>;
       case 'last_seen':
         return <span className="mono">
           {a.last_seen_at ? new Date(a.last_seen_at).toLocaleDateString() : '—'}
