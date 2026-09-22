@@ -4,12 +4,8 @@ the container/container_type vocabularies (label OR key). Unresolvable
 values are per-row errors, never silent drops — no hidden defaults (the
 V2 bug this replaces).
 
-Only `BulkImportError` is imported from sites/bulk_import.py: its
-`number_json_rows`/`parse_upload`/`_check_columns` are entangled with
-sites' own COLUMNS list (e.g. "code", "type", "partner"), so reusing them
-here would reject legitimate container columns like "container_type" and
-"site_name". The row-numbering logic below is a minimal, content-agnostic
-copy scoped to this module's own TEMPLATE_COLUMNS.
+Parsing/numbering comes from the shared core (imports/bulk.py); only the
+resolution and commit logic is container-specific.
 """
 
 import uuid
@@ -19,9 +15,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Container, Site, StatusValue
+from serversherpa.imports import bulk as core
+from serversherpa.imports.bulk import MAX_ROWS, BulkImportError
 from serversherpa.labels.tags import resolve_label_tag
 from serversherpa.services.audit import audit, snapshot
-from serversherpa.sites.bulk_import import BulkImportError  # content-agnostic
 
 TEMPLATE_COLUMNS = [
     "name", "container_type", "rfid_tag", "site_name",
@@ -31,40 +28,16 @@ AUDIT_FIELDS = [
     "name", "rfid_tag", "container_type", "status", "site_id",
     "label_tag", "location_detail",
 ]
-MAX_ROWS = 1000
 
 
 def check_columns(keys: list[str]) -> None:
-    if unknown := [k for k in keys if k not in TEMPLATE_COLUMNS]:
-        raise BulkImportError("unknown_columns", columns=unknown)
-
-
-def _cell(value: Any) -> str:
-    """Normalize a raw JSON cell (str/float/int/bool/None) to trimmed text.
-    Integral floats drop the .0 so numeric-looking text round-trips."""
-    if value is None:
-        return ""
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    return str(value).strip()
+    core.check_columns(keys, TEMPLATE_COLUMNS)
 
 
 def number_json_rows(rows: Any) -> list[tuple[int, dict]]:
     """A bare JSON payload has no header line, so rows are numbered from 1
     (unlike CSV parsing, which would start data at row 2)."""
-    if isinstance(rows, dict):
-        rows = [rows]           # a single bare object is a one-row import
-    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
-        raise BulkImportError("invalid_json")
-    if len(rows) > MAX_ROWS:
-        raise BulkImportError("too_many_rows", limit=MAX_ROWS)
-    out: list[tuple[int, dict]] = []
-    for i, raw in enumerate(rows):
-        check_columns(list(raw.keys()))
-        row = {col: _cell(raw.get(col)) for col in TEMPLATE_COLUMNS}
-        if any(v != "" for v in row.values()):        # skip fully blank rows
-            out.append((1 + i, row))
-    return out
+    return core.number_json_rows(rows, TEMPLATE_COLUMNS)
 
 
 def build_template_csv() -> str:

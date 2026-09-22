@@ -13,6 +13,7 @@
  *   app, which redirects to login gracefully, preserving location.
  */
 
+import type { BulkDiff } from '../components/bulk/BulkApplySummary';
 import type { TagKey } from '../labels/tagTypes';
 import type { Action, PermMap, ScopeInfo } from './access';
 import type { OrgItem } from './orgs';
@@ -1157,32 +1158,96 @@ export async function commitSiteBulk(
   return resp.json();
 }
 
-export async function downloadSiteTemplate(format: 'csv' | 'xlsx'): Promise<void> {
-  const resp = await apiFetch(`/sites/bulk-import/template?format=${format}`);
+/** GET an attachment and hand it to the browser as a download. */
+async function downloadAttachment(path: string, filename: string): Promise<void> {
+  const resp = await apiFetch(path);
   if (!resp.ok) throw await errorFrom(resp);
   const blob = await resp.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `sites-template.${format}`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
 }
 
-export async function downloadSiteExport(format: 'csv' | 'xlsx'): Promise<void> {
-  const resp = await apiFetch(`/sites/bulk-import/export?format=${format}`);
+export function downloadSiteTemplate(format: 'csv' | 'xlsx'): Promise<void> {
+  return downloadAttachment(`/sites/bulk-import/template?format=${format}`, `sites-template.${format}`);
+}
+
+export function downloadSiteExport(format: 'csv' | 'xlsx'): Promise<void> {
+  return downloadAttachment(`/sites/bulk-import/export?format=${format}`, `sites-export.${format}`);
+}
+
+// ── workers bulk import ─────────────────────────────────────────────
+
+export interface WorkerBulkRowResult {
+  row: number;
+  name: string | null;
+  action: 'create' | 'update' | 'unchanged' | 'error';
+  /** Comma-joined keys that agreed: "email", "phone", "name", "email, name" … */
+  matched_by: string | null;
+  matched_name: string | null;
+  errors: string[];
+  diff: BulkDiff | null;
+  person_id: string | null;
+  /** The uploaded cells, no defaults — what the commit replays. */
+  cells: Record<string, string>;
+  data: Record<string, unknown> | null;
+}
+
+export interface WorkerBulkPreview {
+  rows: WorkerBulkRowResult[];
+  can_commit: boolean;
+}
+
+export interface WorkerBulkAppliedRow {
+  row: number;
+  /** null when the row carried no name at all — rendered as an em dash. */
+  name: string | null;
+  person_id: string;
+  action: 'created' | 'updated' | 'skipped' | 'unchanged';
+  diff: BulkDiff | null;
+}
+
+export interface WorkerBulkCommitResult {
+  created: number;
+  updated: number;
+  skipped: number;
+  unchanged: number;
+  rows: WorkerBulkAppliedRow[];
+}
+
+export async function previewWorkerBulk(
+  file: File | Blob, filename: string,
+): Promise<WorkerBulkPreview> {
+  const fd = new FormData();
+  fd.append('file', file, filename);
+  const resp = await apiFetch('/workers/bulk-import/preview', { method: 'POST', body: fd });
   if (!resp.ok) throw await errorFrom(resp);
-  const blob = await resp.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `sites-export.${format}`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  return resp.json();
+}
+
+export async function commitWorkerBulk(
+  rows: Record<string, unknown>[], approved: string[], source: string,
+): Promise<WorkerBulkCommitResult> {
+  const resp = await apiFetch('/workers/bulk-import/commit', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rows, approved_updates: approved, source }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export function downloadWorkerTemplate(format: 'csv' | 'xlsx'): Promise<void> {
+  return downloadAttachment(`/workers/bulk-import/template?format=${format}`, `workers-template.${format}`);
+}
+
+export function downloadWorkerExport(format: 'csv' | 'xlsx'): Promise<void> {
+  return downloadAttachment(`/workers/bulk-import/export?format=${format}`, `workers-export.${format}`);
 }
 
 export async function listSiteTypes(): Promise<SiteLookup[]> {

@@ -9,13 +9,14 @@ re-enables the account (noted in the UI).
 import uuid
 from datetime import UTC, date, datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.resolver import can_touch_rank
 from serversherpa.access.scope import scope_conditions
+from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank, rows_from_request
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     CertCreateIn,
@@ -45,6 +46,7 @@ from serversherpa.db.models import (
     WorkerLevel,
     WorkerProfile,
 )
+from serversherpa.people import bulk_import as bulk
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import presign_get
 from serversherpa.status.labels import (
@@ -149,6 +151,94 @@ async def list_workers(
 
 
 _VOCAB_FALLBACK = "#51606f"     # mirrors initiatives.py's unmapped-key color
+
+
+# ── bulk import ────────────────────────────────────────────────────
+# Declared ABOVE get_worker: /workers/bulk-import/* must never be swallowed
+# by GET /workers/{person_id} (which would 422 on the non-UUID segment).
+
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _attachment(filename: str) -> dict[str, str]:
+    return {"Content-Disposition": f'attachment; filename="{filename}"'}
+
+
+@router.get("/bulk-import/template")
+async def bulk_import_template(
+    db: DbSession,
+    format: str = "csv",
+    actor: AuthContext = require_permission("workers", "add"),
+):
+    require_bulk_rank(actor)
+    if format == "csv":
+        return Response(bulk.build_template_csv(), media_type="text/csv",
+                        headers=_attachment("workers-template.csv"))
+    if format == "xlsx":
+        levels, statuses, partners = await bulk.reference_lists(db)
+        return Response(bulk.build_template_xlsx(levels, statuses, partners),
+                        media_type=_XLSX, headers=_attachment("workers-template.xlsx"))
+    raise _err(422, "unknown_format")
+
+
+@router.get("/bulk-import/export")
+async def bulk_import_export(
+    db: DbSession,
+    format: str = "xlsx",
+    actor: AuthContext = require_permission("workers", "add"),
+):
+    """The current workers in the template's layout — fill in, re-upload."""
+    require_bulk_rank(actor)
+    if format not in ("csv", "xlsx"):
+        raise _err(422, "unknown_format")
+    rows = await bulk.export_rows(db)
+    if format == "csv":
+        return Response(bulk.build_rows_csv(rows), media_type="text/csv",
+                        headers=_attachment("workers-export.csv"))
+    levels, statuses, partners = await bulk.reference_lists(db)
+    return Response(bulk.build_rows_xlsx(rows, levels, statuses, partners),
+                    media_type=_XLSX, headers=_attachment("workers-export.xlsx"))
+
+
+@router.post("/bulk-import/preview")
+async def bulk_import_preview(
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = require_permission("workers", "add"),
+) -> dict:
+    require_bulk_rank(actor)
+    numbered = await rows_from_request(
+        request, parse_upload=bulk.parse_upload, number_json_rows=bulk.number_json_rows)
+    return await bulk.preview_rows(db, numbered, actor_id=actor.person.id,
+                                   actor_rank=actor.access.max_rank)
+
+
+@router.post("/bulk-import/commit")
+async def bulk_import_commit(
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = require_permission("workers", "add"),
+) -> dict:
+    require_bulk_rank(actor)
+    # the commit edits existing people as well as creating them, so it must
+    # express the authority it exercises — `change`, not `add` alone
+    if not actor.access.can("workers", "change"):
+        raise _err(403, "forbidden")
+    try:
+        body = await request.json()
+    except ValueError:
+        raise _err(422, "invalid_json") from None
+    try:
+        numbered = bulk.number_json_rows(body.get("rows"))
+    except bulk.BulkImportError as exc:
+        raise bulk_http_error(exc) from None
+    approved = {str(s) for s in body.get("approved_updates") or []}
+    try:
+        return await bulk.commit_rows(
+            db, numbered, actor_id=actor.person.id, actor_rank=actor.access.max_rank,
+            approved_updates=approved, source_label=str(body.get("source") or "upload"))
+    except bulk.BulkImportError as exc:
+        raise bulk_http_error(exc) from None
 
 
 @router.get("/{person_id}", response_model=WorkerDetailOut)

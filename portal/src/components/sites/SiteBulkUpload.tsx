@@ -16,7 +16,7 @@ import {
   type BulkRowResult,
 } from '../../lib/api';
 import { SITE_BULK_ERRORS } from '../../lib/siteBulk';
-import BulkApplySummary from './BulkApplySummary';
+import BulkApplySummary from '../bulk/BulkApplySummary';
 import DataTable from '../DataTable';
 
 interface Props {
@@ -169,7 +169,16 @@ export default function SiteBulkUpload({ onDone }: Props) {
 
       {error && <p className="pf-error">{error}</p>}
 
-      {result && <BulkApplySummary result={result} />}
+      {result && (
+        <BulkApplySummary
+          result={result}
+          entityLabel="Site"
+          linkFor={(r) => `/sites?open=${r.site_id}`}
+          filename="sites-bulk-summary"
+          openTo="/sites"
+          openLabel="Open Sites"
+        />
+      )}
 
       {preview && (
         <>
