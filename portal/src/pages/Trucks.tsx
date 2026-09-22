@@ -15,6 +15,7 @@ import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import StatusHover from '../components/StatusHover';
 import TruckEditModal from '../components/trucks/TruckEditModal';
 import TrucksMap from '../components/trucks/TrucksMap';
+import { ADMIN_RANK } from '../lib/access';
 import {
   ApiError, archiveTruck, getTrucksMap, listTrucks,
   type TruckItem, type TruckMapPoint,
@@ -99,9 +100,10 @@ function truckStatusChip(t: TruckItem) {
 }
 
 export default function Trucks() {
-  const { can, godMode } = useAuth();
+  const { can, godMode, maxRank } = useAuth();
   const canAdd = can('trucks', 'add');
   const canChange = can('trucks', 'change');
+  const canBulk = canAdd && maxRank >= ADMIN_RANK;   // mirrors the API's bulk gate
   const navigate = useNavigate();
 
   const [trucks, setTrucks] = useState<TruckItem[] | null>(null);
@@ -307,6 +309,11 @@ export default function Trucks() {
           {canAdd && (
             <button className="btn-solid" onClick={() => setCreating(true)}>
               + New truck
+            </button>
+          )}
+          {canBulk && (
+            <button className="mini-btn accent" onClick={() => navigate('/bulk/trucks')}>
+              Bulk import…
             </button>
           )}
         </div>
