@@ -136,6 +136,12 @@ async def test_org_anchored_roles_are_never_copied_or_revoked(client, db, seeded
     assert resp.json()["targets"][0]["roles"] == {"from": ["client_admin", "worker"],
                                                   "to": ["client_admin", "staff"]}
     assert await _roles(db, tgt.id) == {"staff", "client_admin"}
+    # the audit row carries the same truthful diff — not the revocable-only
+    # slice, which would read as if client_admin had been taken away
+    log = await db.scalar(select(AuditLog).where(
+        AuditLog.action == "access.copy", AuditLog.entity_id == str(tgt.id)))
+    assert log.changes["roles"] == {"from": ["client_admin", "worker"],
+                                    "to": ["client_admin", "staff"]}
 
 
 async def test_skip_reasons(client, db, seeded_user):
@@ -194,3 +200,22 @@ async def test_validation_and_source_guards(client, db, seeded_user):
     r = await client.post("/access/copy", headers=hdrs,
                           json={**base, "source_id": str(seeded_user.id)})
     assert r.status_code == 200, r.text
+    r = await client.post("/access/copy", headers=hdrs, json={
+        **base, "target_ids": [str(uuid.uuid4()) for _ in range(201)]})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "too_many_targets"
+
+
+async def test_unknown_target_is_reported_not_dropped(client, db, seeded_user):
+    hdrs, src, tgt, *_ = await _setup(client, db, seeded_user)
+    ghost = uuid.uuid4()
+    resp = await client.post("/access/copy", headers=hdrs, json={
+        "source_id": str(src.id), "target_ids": [str(ghost), str(tgt.id)],
+        "parts": ["roles"], "mode": "replace", "dry_run": False})
+    assert resp.status_code == 200, resp.text
+    by_id = {r["person_id"]: r for r in resp.json()["targets"]}
+    assert set(by_id) == {str(ghost), str(tgt.id)}
+    row = by_id[str(ghost)]
+    assert row["status"] == "skipped" and row["reason"] == "person_not_found"
+    assert row["display_name"] == "Unknown person" and row["avatar_url"] is None
+    assert by_id[str(tgt.id)]["status"] == "ok"
+    assert await _roles(db, tgt.id) == {"staff"}

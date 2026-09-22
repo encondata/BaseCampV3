@@ -198,6 +198,41 @@ async def put_matrix(
     return {"role": name, "grants": len(desired)}
 
 
+async def _access_signatures(
+    db: DbSession, person_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, tuple]:
+    """Everything `effective_cells` reads per person — active role grants
+    (with their client/partner anchor), access groups and overrides — as one
+    hashable value per person. Two people with the same signature resolve to
+    the same effective access, so the preview can resolve them once."""
+    sigs: dict[uuid.UUID, tuple] = {}
+    if not person_ids:
+        return sigs
+    roles: dict[uuid.UUID, set] = {}
+    groups: dict[uuid.UUID, set] = {}
+    overrides: dict[uuid.UUID, set] = {}
+    for pid, role, client_id, partner_id in (await db.execute(
+        select(PersonRole.person_id, PersonRole.role, PersonRole.client_id,
+               PersonRole.partner_id)
+        .where(PersonRole.person_id.in_(person_ids),
+               PersonRole.revoked_at.is_(None)))).all():
+        roles.setdefault(pid, set()).add((role, client_id, partner_id))
+    for pid, gid in (await db.execute(
+        select(AccessGroupMember.person_id, AccessGroupMember.group_id)
+        .where(AccessGroupMember.person_id.in_(person_ids)))).all():
+        groups.setdefault(pid, set()).add(gid)
+    for pid, res, action, allow in (await db.execute(
+        select(PermissionOverride.person_id, PermissionOverride.resource,
+               PermissionOverride.action, PermissionOverride.allow)
+        .where(PermissionOverride.person_id.in_(person_ids)))).all():
+        overrides.setdefault(pid, set()).add((res, action, allow))
+    for pid in person_ids:
+        sigs[pid] = (frozenset(roles.get(pid, ())),
+                     frozenset(groups.get(pid, ())),
+                     frozenset(overrides.get(pid, ())))
+    return sigs
+
+
 @router.post("/roles/{name}/matrix/preview")
 async def preview_matrix(
     name: str,
@@ -206,22 +241,40 @@ async def preview_matrix(
     actor: AuthContext = require_permission("access", "change"),
 ) -> dict:
     """Who a matrix change would affect: every member's effective cells are
-    re-resolved with this role's grants swapped for the draft. Writes nothing."""
+    re-resolved with this role's grants swapped for the draft. Writes nothing.
+
+    Members of one role overwhelmingly share the same access, so the two
+    resolves run once per distinct access signature (roles + groups +
+    overrides), not once per member."""
     _, before, desired = await _validated_matrix_edit(db, actor, name, body)
-    changed = (desired - before) | (before - desired)
+    # A stale role_permissions row can name a resource or action the registry
+    # no longer knows; such a cell has no effective value to compare, so it is
+    # left out of the diff entirely rather than raising a KeyError below.
+    known = {(res, a) for res in REGISTRY for a in ACTIONS}
+    granted_cells = (desired - before) & known
+    revoked_cells = (before - desired) & known
+    changed = granted_cells | revoked_cells
     members = (await db.execute(
         select(Person)
         .join(PersonRole, PersonRole.person_id == Person.id)
         .where(PersonRole.role == name, PersonRole.revoked_at.is_(None))
         .distinct().order_by(Person.last_name, Person.first_name))).scalars().all()
+    signatures = await _access_signatures(db, [p.id for p in members])
+    cache: dict[tuple, tuple] = {}
     out = []
     affected = 0
     for person in members:
-        current = await effective_cells(db, person.id)
-        draft = await effective_cells(db, person.id,
-                                      role_grants_override={name: desired})
+        sig = signatures[person.id]
+        if sig not in cache:
+            cache[sig] = (
+                await effective_cells(db, person.id),
+                await effective_cells(db, person.id,
+                                      role_grants_override={name: desired}))
+        current, draft = cache[sig]
         flips, masked = [], []
         for res, action in sorted(changed):
+            if action not in current.cells.get(res, {}):
+                continue
             was = current.cells[res][action]["value"]
             now = draft.cells[res][action]
             if was != now["value"]:
@@ -237,8 +290,8 @@ async def preview_matrix(
                     "flips": flips, "masked": masked})
     out.sort(key=lambda m: (-len(m["flips"]), m["display_name"]))
     return {"role": name,
-            "granted": sorted(f"{r}:{a}" for r, a in desired - before),
-            "revoked": sorted(f"{r}:{a}" for r, a in before - desired),
+            "granted": sorted(f"{r}:{a}" for r, a in granted_cells),
+            "revoked": sorted(f"{r}:{a}" for r, a in revoked_cells),
             "member_count": len(members), "affected_count": affected,
             "members": out}
 
@@ -475,6 +528,11 @@ async def put_overrides(
     return {"person_id": str(person_id), "overrides": len(desired)}
 
 
+# One copy plans and applies per target; the cap keeps a single request
+# from turning into an unbounded write batch.
+MAX_COPY_TARGETS = 200
+
+
 class CopyIn(BaseModel):
     source_id: uuid.UUID
     target_ids: list[uuid.UUID]
@@ -496,6 +554,8 @@ async def copy_access(
     targets = list(dict.fromkeys(body.target_ids))
     if not targets:
         raise _err(422, "no_targets")
+    if len(targets) > MAX_COPY_TARGETS:
+        raise _err(422, "too_many_targets")
     parts = set(body.parts)
     if not parts:
         raise _err(422, "no_parts")

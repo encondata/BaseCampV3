@@ -70,18 +70,18 @@ Request:
  "dry_run": true | false}
 ```
 
-`target_ids` non-empty and distinct, `parts` non-empty. Errors: 404
-`person_not_found` (source), 422 `no_targets` / `no_parts` / `unknown_part`
-/ `unknown_mode`, 403 `cannot_target_self` when the source is the actor
-(copying **from** yourself is allowed; copying **to** yourself is a per-target
-skip).
+`target_ids` non-empty, distinct and at most 200, `parts` non-empty.
+Errors: 404 `person_not_found` (source), 422 `no_targets` / `no_parts` /
+`too_many_targets` / `unknown_part` / `unknown_mode`. Copying **from**
+yourself is allowed; a target that is the actor is a per-target skip
+(`cannot_target_self`), never a request-level error.
 
 Response: `{"mode", "parts", "targets": [PlanRow...], "applied": bool}` where
 
 ```json
 PlanRow = {"person_id", "display_name", "avatar_url", "status": "ok"|"skipped",
            "reason": null | "cannot_target_self" | "rank_too_low" | "no_account"
-                    | "role_rank_too_low",
+                    | "role_rank_too_low" | "person_not_found",
            "roles": {"from": [..], "to": [..]} | null,
            "groups": {"from": [names], "to": [names]} | null,
            "overrides": {"added": n, "removed": n, "changed": n} | null}
@@ -89,9 +89,10 @@ PlanRow = {"person_id", "display_name", "avatar_url", "status": "ok"|"skipped",
 
 Rules:
 
-- **What "roles" means:** only global-anchored roles. Client- and
-  partner-anchored grants are never copied and never revoked (the same rule
-  `PUT /users/{id}/roles` already applies).
+- **What "roles" means:** only roles not anchored to a client or partner
+  (global- and self-anchored). Client- and partner-anchored grants are never
+  copied and never revoked (the same rule `PUT /users/{id}/roles` already
+  applies).
 - **Replace:** target's global roles := source's global roles; groups :=
   source's groups; overrides := source's overrides (rows the source lacks are
   deleted).
@@ -101,7 +102,9 @@ Rules:
   `cannot_target_self`; target has no `user_accounts` row → `no_account`;
   `can_touch_rank(actor.max_rank, target.max_rank)` false → `rank_too_low`;
   any role the plan would newly grant has rank the actor cannot touch →
-  `role_rank_too_low`. A skipped target is reported and untouched; the
+  `role_rank_too_low`. A target id with no `people` row is reported as a
+  skipped row (`person_not_found`, display name "Unknown person") rather
+  than silently dropped. A skipped target is reported and untouched; the
   request still succeeds for the others.
 - **Dry run** computes the same plan and writes nothing (no audit).
 - **Real run** applies every `ok` target, then commits once. One audit row

@@ -24,14 +24,15 @@ MODES = ("replace", "add")
 
 @dataclass
 class Snapshot:
-    roles: set[str] = field(default_factory=set)          # global-anchored only
+    # roles not anchored to a client or partner (global- and self-anchored)
+    roles: set[str] = field(default_factory=set)
     groups: set[uuid.UUID] = field(default_factory=set)
     overrides: dict[tuple[str, str], bool] = field(default_factory=dict)
 
 
 @dataclass
 class PlanRow:
-    person: Person
+    person: Person | None
     max_rank: int
     status: str = "ok"
     reason: str | None = None
@@ -39,8 +40,21 @@ class PlanRow:
     groups: dict | None = None       # {"from": [names], "to": [names]}
     overrides: dict | None = None    # {"added", "removed", "changed"}
     desired: Snapshot = field(default_factory=Snapshot)
+    # set instead of `person` for a target id with no people row
+    missing_id: uuid.UUID | None = None
+
+    @classmethod
+    def not_found(cls, target_id: uuid.UUID) -> "PlanRow":
+        """A target id with no people row: reported, never silently dropped."""
+        return cls(person=None, max_rank=0, status="skipped",
+                   reason="person_not_found", missing_id=target_id)
 
     def out(self) -> dict:
+        if self.person is None:
+            return {"person_id": str(self.missing_id),
+                    "display_name": "Unknown person", "avatar_url": None,
+                    "status": self.status, "reason": self.reason,
+                    "roles": None, "groups": None, "overrides": None}
         return {"person_id": str(self.person.id),
                 "display_name": self.person.display_name,
                 "avatar_url": presign_get(self.person.avatar_key),
@@ -88,6 +102,7 @@ async def plan_copy(
     for tid in target_ids:
         person = await db.get(Person, tid)
         if person is None:
+            rows.append(PlanRow.not_found(tid))
             continue
         held = await current_roles(db, tid)
         max_rank = max((role_rows[r].rank for r in held if r in role_rows), default=0)
@@ -129,14 +144,17 @@ async def apply_copy(
     changed) for the caller to audit. No commit."""
     changes: dict[uuid.UUID, dict] = {}
     for row in rows:
-        if row.status != "ok":
+        if row.status != "ok" or row.person is None:
             continue
         out: dict = {}
         if "roles" in parts and row.roles is not None:
             diff = await apply_global_roles(db, actor_id=actor_id, person_id=row.person.id,
                                             desired=row.desired.roles, role_rows=role_rows)
             if diff is not None:
-                out["roles"] = diff
+                # the helper's diff drops the target's client/partner-anchored
+                # roles from "to" (it only manages the revocable ones), which
+                # would read as a revocation. `row.roles` is the truthful diff.
+                out["roles"] = row.roles
         if "groups" in parts and row.groups is not None:
             diff = await apply_groups(db, actor_id=actor_id, person_id=row.person.id,
                                       desired=row.desired.groups)

@@ -1,6 +1,7 @@
 """POST /access/roles/{name}/matrix/preview — who a matrix change affects."""
 from sqlalchemy import select, text
 
+from serversherpa.api.routes import access as access_routes
 from serversherpa.db.models import (
     AccessGroup, AccessGroupMember, PermissionOverride, Person, PersonRole,
     ResourceGroupGate, RolePermission,
@@ -90,3 +91,58 @@ async def test_preview_empty_role_and_guards(client, db, seeded_user):
                              json={"matrix": m})
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "access_view_locked"
+
+
+async def test_resolves_once_per_access_signature(client, db, seeded_user, monkeypatch):
+    hdrs = await login_admin(client, db, seeded_user)
+    for i in range(4):
+        await _staffer(db, f"Same{i}")
+    odd = await _staffer(db, "Odd")
+    db.add(PermissionOverride(person_id=odd.id, resource="workers",
+                              action="delete", allow=True))
+    await db.commit()
+
+    real = access_routes.effective_cells
+    calls = []
+
+    async def counting(*args, **kwargs):
+        calls.append((args[1], kwargs.get("role_grants_override") is not None))
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(access_routes, "effective_cells", counting)
+
+    matrix = full_matrix(workers_delete=False)
+    resp = await client.post("/access/roles/staff/matrix/preview", headers=hdrs,
+                             json={"matrix": matrix})
+    assert resp.status_code == 200, resp.text
+    # two signatures (the four identical staffers, and the overridden one)
+    # x current + draft
+    assert len(calls) == 4, calls
+    body = resp.json()
+    assert body["member_count"] == 5 and len(body["members"]) == 5
+    by_name = {m["display_name"]: m for m in body["members"]}
+    for i in range(4):
+        row = by_name[f"Same{i} Staff"]
+        assert [(f["resource"], f["action"], f["to"]) for f in row["flips"]] == [
+            ("workers", "delete", False)]
+        assert row["masked"] == []
+    assert by_name["Odd Staff"]["flips"] == []
+    assert by_name["Odd Staff"]["masked"] == [
+        {"resource": "workers", "action": "delete", "by": "override"}]
+    assert body["affected_count"] == 4
+
+
+async def test_stale_role_permission_row_does_not_500(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    await _staffer(db, "Plain")
+    db.add(RolePermission(role="staff", resource="retired_thing", action="view"))
+    await db.commit()
+
+    resp = await client.post("/access/roles/staff/matrix/preview", headers=hdrs,
+                             json={"matrix": full_matrix()})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["granted"] == [] and body["revoked"] == []
+    assert all("retired_thing" not in (f["resource"] for f in m["flips"])
+               and "retired_thing" not in (k["resource"] for k in m["masked"])
+               for m in body["members"])
