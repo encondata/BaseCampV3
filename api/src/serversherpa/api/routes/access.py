@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from serversherpa.access.apply import apply_overrides
+from serversherpa.access.copy import MODES, PARTS, apply_copy, plan_copy
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.effective import effective_cells
 from serversherpa.access.resolver import can_touch_rank
@@ -418,3 +419,52 @@ async def put_overrides(
           entity_id=str(person_id), action="override.set", changes=changes)
     await db.commit()
     return {"person_id": str(person_id), "overrides": len(desired)}
+
+
+class CopyIn(BaseModel):
+    source_id: uuid.UUID
+    target_ids: list[uuid.UUID]
+    parts: list[str]
+    mode: str = "replace"
+    dry_run: bool = False
+
+
+@router.post("/copy")
+async def copy_access(
+    body: CopyIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("access", "change"),
+) -> dict:
+    """Copy one person's global roles / groups / overrides to others.
+    Skips (self, no account, rank) are reported per target, never fatal."""
+    if not actor.access.is_global:
+        raise _err(403, "global_only")
+    targets = list(dict.fromkeys(body.target_ids))
+    if not targets:
+        raise _err(422, "no_targets")
+    parts = set(body.parts)
+    if not parts:
+        raise _err(422, "no_parts")
+    if parts - set(PARTS):
+        raise _err(422, "unknown_part")
+    if body.mode not in MODES:
+        raise _err(422, "unknown_mode")
+    source = await db.get(Person, body.source_id)
+    if source is None:
+        raise _err(404, "person_not_found")
+
+    _, rows, role_rows = await plan_copy(
+        db, actor_id=actor.person.id, actor_rank=actor.access.max_rank,
+        source_id=body.source_id, target_ids=targets, parts=parts, mode=body.mode)
+    if not body.dry_run:
+        changed = await apply_copy(db, actor_id=actor.person.id, rows=rows,
+                                   parts=parts, role_rows=role_rows)
+        for pid, diff in changed.items():
+            audit(db, actor_id=actor.person.id, entity_type="person",
+                  entity_id=str(pid), action="access.copy",
+                  changes={"source_id": str(source.id),
+                           "source_name": source.display_name,
+                           "mode": body.mode, "parts": sorted(parts), **diff})
+        await db.commit()
+    return {"mode": body.mode, "parts": sorted(parts),
+            "targets": [r.out() for r in rows], "applied": not body.dry_run}
