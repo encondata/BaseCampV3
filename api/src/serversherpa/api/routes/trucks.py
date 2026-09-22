@@ -4,9 +4,10 @@ resource; all actors are globally anchored (mirrors containers.py)."""
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import delete, func, select
 
+from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank, rows_from_request
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     TruckContainerOut, TruckCreateIn, TruckDetail, TruckItem,
@@ -18,6 +19,7 @@ from serversherpa.db.models import (
     TruckContainer, TruckUpdate,
 )
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.trucks import bulk_import as bulk
 from serversherpa.trucks.location import LocationError, format_location, parse_location
 
 router = APIRouter(prefix="/trucks", tags=["trucks"])
@@ -204,6 +206,92 @@ async def trucks_map(
                                         approximate_address=addr),
             trail=trail))
     return out
+
+
+# ── bulk import ────────────────────────────────────────────────────
+# Declared ABOVE get_truck, like /map: /trucks/bulk-import/* must never be
+# swallowed by GET /trucks/{truck_id}.
+
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _attachment(filename: str) -> dict[str, str]:
+    return {"Content-Disposition": f'attachment; filename="{filename}"'}
+
+
+@router.get("/bulk-import/template")
+async def bulk_import_template(
+    db: DbSession,
+    format: str = "csv",
+    actor: AuthContext = require_permission("trucks", "add"),
+):
+    require_bulk_rank(actor)
+    if format == "csv":
+        return Response(bulk.build_template_csv(), media_type="text/csv",
+                        headers=_attachment("trucks-template.csv"))
+    if format == "xlsx":
+        statuses, initiatives, sites = await bulk.reference_lists(db)
+        return Response(bulk.build_template_xlsx(statuses, initiatives, sites),
+                        media_type=_XLSX, headers=_attachment("trucks-template.xlsx"))
+    raise _err(422, "unknown_format")
+
+
+@router.get("/bulk-import/export")
+async def bulk_import_export(
+    db: DbSession,
+    format: str = "xlsx",
+    actor: AuthContext = require_permission("trucks", "add"),
+):
+    """The current trucks in the template's layout — fill in, re-upload."""
+    require_bulk_rank(actor)
+    if format not in ("csv", "xlsx"):
+        raise _err(422, "unknown_format")
+    rows = await bulk.export_rows(db)
+    if format == "csv":
+        return Response(bulk.build_rows_csv(rows), media_type="text/csv",
+                        headers=_attachment("trucks-export.csv"))
+    statuses, initiatives, sites = await bulk.reference_lists(db)
+    return Response(bulk.build_rows_xlsx(rows, statuses, initiatives, sites),
+                    media_type=_XLSX, headers=_attachment("trucks-export.xlsx"))
+
+
+@router.post("/bulk-import/preview")
+async def bulk_import_preview(
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = require_permission("trucks", "add"),
+) -> dict:
+    require_bulk_rank(actor)
+    numbered = await rows_from_request(
+        request, parse_upload=bulk.parse_upload, number_json_rows=bulk.number_json_rows)
+    return await bulk.preview_rows(db, numbered)
+
+
+@router.post("/bulk-import/commit")
+async def bulk_import_commit(
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = require_permission("trucks", "add"),
+) -> dict:
+    require_bulk_rank(actor)
+    # updates go through here too, so the change permission is required as well
+    if not actor.access.can("trucks", "change"):
+        raise _err(403, "forbidden")
+    try:
+        body = await request.json()
+    except ValueError:
+        raise _err(422, "invalid_json") from None
+    try:
+        numbered = bulk.number_json_rows(body.get("rows"))
+    except bulk.BulkImportError as exc:
+        raise bulk_http_error(exc) from None
+    approved = {str(s) for s in body.get("approved_updates") or []}
+    try:
+        return await bulk.commit_rows(
+            db, actor.person.id, numbered, approved_updates=approved,
+            source_label=str(body.get("source") or "upload"))
+    except bulk.BulkImportError as exc:
+        raise bulk_http_error(exc) from None
 
 
 @router.get("/{truck_id}", response_model=TruckDetail)
