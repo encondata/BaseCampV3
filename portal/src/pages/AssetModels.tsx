@@ -9,6 +9,8 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import { useAuth } from '../auth/AuthContext';
 import ModelEditModal from '../components/assets/ModelEditModal';
+import ModelMergeModal from '../components/assets/ModelMergeModal';
+import ModelReviewPanel from '../components/assets/ModelReviewPanel';
 import GodDeleteButton from '../components/GodDeleteButton';
 import {
   ApiError,
@@ -17,6 +19,7 @@ import {
   updateAssetModel,
   type AssetCategoryOut,
   type AssetModelItem,
+  type MergePlanOut,
 } from '../lib/api';
 import {
   MODEL_ERRORS, MODEL_GOD_FIELDS, formatDims, formFactorLabel, modelCellText, modelSearchText,
@@ -28,6 +31,7 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { useToast } from '../lib/notificationsContext';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
@@ -159,6 +163,10 @@ export default function AssetModels() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [view, setView] = useState<'all' | 'review'>('all');
+  const [merging, setMerging] = useState<{ source: AssetModelItem; presetTargetId: string | null } | null>(null);
+  const [reviewKey, setReviewKey] = useState(0);
+  const toast = useToast();
 
   const load = async () => {
     try {
@@ -313,6 +321,12 @@ export default function AssetModels() {
       </div>
 
       <div className="dir-toolbar">
+        <div className="segmented" role="tablist">
+          <button role="tab" aria-selected={view === 'all'} className={view === 'all' ? 'on' : ''}
+                  onClick={() => setView('all')}>All</button>
+          <button role="tab" aria-selected={view === 'review'} className={view === 'review' ? 'on' : ''}
+                  onClick={() => setView('review')}>Review</button>
+        </div>
         <div className="toolbar-right">
           <div className="dir-search" style={{ marginLeft: 0 }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -336,7 +350,7 @@ export default function AssetModels() {
 
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load catalog</b>{error}</div>}
 
-      {!error && (
+      {!error && view === 'all' && (
         <div className="dir-list">
           <div className="list-head" style={grid}>
             <span className="col-head">
@@ -411,6 +425,7 @@ export default function AssetModels() {
                           model={m}
                           canEdit={canChange}
                           onEdit={() => setEditingId(m.id)}
+                          onMerge={() => setMerging({ source: m, presetTargetId: null })}
                           godVisible={godMode}
                           pending={pd.pendingIds.has(m.id)}
                           onMark={() => pd.mark('asset_model', m.id, `${m.make} ${m.model}`)}
@@ -426,13 +441,19 @@ export default function AssetModels() {
         </div>
       )}
 
+      {!error && view === 'review' && (
+        <ModelReviewPanel canChange={canChange} reloadKey={reviewKey}
+                          onMerge={(source, presetTargetId) => setMerging({ source, presetTargetId })}
+                          onEdit={(id) => setEditingId(id)} />
+      )}
+
       {editingId !== null && (
         <ModelEditModal
           model={models?.find((m) => m.id === editingId) ?? null}
           categories={categories}
           canChange={canChange}
           onClose={() => setEditingId(null)}
-          onSaved={() => load()}
+          onSaved={() => { void load(); setReviewKey((k) => k + 1); }}
         />
       )}
       {creating && (
@@ -441,8 +462,19 @@ export default function AssetModels() {
           categories={categories}
           canChange={canChange}
           onClose={() => setCreating(false)}
-          onSaved={() => load()}
+          onSaved={() => { void load(); setReviewKey((k) => k + 1); }}
         />
+      )}
+      {merging && models && (
+        <ModelMergeModal source={merging.source} models={models} presetTargetId={merging.presetTargetId}
+                         onClose={() => setMerging(null)}
+                         onMerged={(plan: MergePlanOut) => {
+                           setMerging(null);
+                           toast(`Merged ${plan.source.make} ${plan.source.model} into ${plan.target.make} ${plan.target.model}: ${plan.moves.assets} asset${plan.moves.assets === 1 ? '' : 's'} moved`);
+                           void load();
+                           setReviewKey((k) => k + 1);
+                           setOpenId(plan.target.id);
+                         }} />
       )}
     </div>
   );
@@ -452,9 +484,9 @@ export default function AssetModels() {
  * Edit button. ─────────────────────────────────────────────────────── */
 
 function ModelRowDetail({
-  model, canEdit, onEdit, godVisible, pending, onMark, onUnmark,
+  model, canEdit, onEdit, onMerge, godVisible, pending, onMark, onUnmark,
 }: {
-  model: AssetModelItem; canEdit: boolean; onEdit: () => void;
+  model: AssetModelItem; canEdit: boolean; onEdit: () => void; onMerge: () => void;
   godVisible: boolean; pending: boolean;
   onMark: () => Promise<void>; onUnmark: () => Promise<void>;
 }) {
@@ -491,7 +523,10 @@ function ModelRowDetail({
       {(canEdit || godVisible) && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
           {canEdit && (
-            <button className="btn-solid" onClick={onEdit}>Edit</button>
+            <>
+              <button className="btn-solid" onClick={onEdit}>Edit</button>
+              <button className="mini-btn accent" onClick={onMerge}>Merge into…</button>
+            </>
           )}
           <GodDeleteButton visible={godVisible} entityType="asset_model" entityId={model.id}
                            label={`${model.make} ${model.model}`} pending={pending}
