@@ -79,6 +79,9 @@ def test_parse_upload_error_codes():
         bulk.parse_upload("x.xlsx", b"not a workbook", COLS, "S")
     assert exc.value.code == "invalid_xlsx"
     with pytest.raises(bulk.BulkImportError) as exc:
+        bulk.parse_upload("x.csv", b"\xff\xfe\x00bad", COLS, "S")   # not utf-8
+    assert exc.value.code == "invalid_csv"
+    with pytest.raises(bulk.BulkImportError) as exc:
         bulk.parse_upload("big.csv", b"x" * (bulk.MAX_BYTES + 1), COLS, "S")
     assert exc.value.code == "file_too_large"
 

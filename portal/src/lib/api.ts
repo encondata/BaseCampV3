@@ -13,6 +13,7 @@
  *   app, which redirects to login gracefully, preserving location.
  */
 
+import type { BulkDiff } from '../components/bulk/BulkApplySummary';
 import type { TagKey } from '../labels/tagTypes';
 import type { Action, PermMap, ScopeInfo } from './access';
 import type { OrgItem } from './orgs';
@@ -1190,7 +1191,7 @@ export interface WorkerBulkRowResult {
   matched_by: string | null;
   matched_name: string | null;
   errors: string[];
-  diff: BulkRowResult['diff'];
+  diff: BulkDiff | null;
   person_id: string | null;
   /** The uploaded cells, no defaults — what the commit replays. */
   cells: Record<string, string>;
@@ -1204,10 +1205,11 @@ export interface WorkerBulkPreview {
 
 export interface WorkerBulkAppliedRow {
   row: number;
-  name: string;
+  /** null when the row carried no name at all — rendered as an em dash. */
+  name: string | null;
   person_id: string;
   action: 'created' | 'updated' | 'skipped' | 'unchanged';
-  diff: BulkRowResult['diff'];
+  diff: BulkDiff | null;
 }
 
 export interface WorkerBulkCommitResult {

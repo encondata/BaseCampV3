@@ -7,7 +7,7 @@ the original cell blankness is tracked out-of-band (`_blank`) because the
 normalized `data` dict has already had defaults applied by diff time.
 
 Each preview row therefore also carries `cells`: the uploaded cells exactly as
-`_cell()` normalized them, before any default was filled in. The commit replays
+`core.cell()` normalized them, before any default was filled in. The commit replays
 those cells, never `data` — replaying `data` would turn a blank status/country
 into an explicit write.
 """

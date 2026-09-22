@@ -16,6 +16,11 @@ from serversherpa.people import bulk_import as bi
 ADMIN_RANK = 60
 
 
+def _person_snapshot(person: Person) -> dict:
+    """Every stored column, so "untouched" means untouched."""
+    return {c.name: getattr(person, c.name) for c in Person.__table__.columns}
+
+
 @pytest.fixture
 async def admin(db):
     person = Person(first_name="Ada", last_name="Admin", email="ada@test.example.com")
@@ -227,7 +232,8 @@ async def test_match_by_each_key_alone(db, admin):
     ]
     for row, key, action in cases:
         out = await one(db, admin, row)
-        assert (out["matched_by"], out["action"], out["matched_name"]) == (key, action, "Bob Smith"), row
+        assert (out["matched_by"], out["action"], out["matched_name"]) == (
+            key, action, "Bob Smith"), row
     bob = await one(db, admin, cases[3][0])
     assert bob["diff"]["first_name"] == {"old": "Robert", "new": "Bob"}
 
@@ -293,12 +299,14 @@ async def test_two_rows_on_one_person_and_archived_never_match(db, admin):
 async def test_rfid_tag_collisions(db, admin):
     holder = await mk_worker(db, "Tag", "Holder", email="tag@test.example.com", rfid="ABC123")
     await mk_worker(db, "Gone", "Tag", rfid="OLD1", archived=True)
-    other = await one(db, admin, {"first_name": "Other", "last_name": "Person", "rfid_tag": "abc123"})
+    other = await one(db, admin, {"first_name": "Other", "last_name": "Person",
+                                  "rfid_tag": "abc123"})
     assert other["errors"] == ["rfid_tag 'abc123' belongs to Tag Holder"]
     own = await one(db, admin, {"first_name": "Tag", "last_name": "Holder",
                                 "email": "tag@test.example.com", "rfid_tag": "ABC123"})
     assert own["action"] == "unchanged" and own["person_id"] == str(holder.id)
-    stale = await one(db, admin, {"first_name": "Third", "last_name": "Person", "rfid_tag": "old1"})
+    stale = await one(db, admin, {"first_name": "Third", "last_name": "Person",
+                                  "rfid_tag": "old1"})
     assert stale["errors"] == ["rfid_tag 'old1' belongs to an archived person"]
 
 
@@ -400,6 +408,7 @@ async def test_commit_updates_approved_skips_unapproved_counts_unchanged(db, adm
     a = await mk_worker(db, "Robert", "Smith", email="a@test.example.com")
     b = await mk_worker(db, "Sara", "Jones", email="b@test.example.com")
     await mk_worker(db, "Same", "Person", email="s@test.example.com")
+    before_b = _person_snapshot(b)
     out = await commit(db, admin, [
         {"first_name": "Robert", "last_name": "Smith", "city": "Reno"},
         {"first_name": "Sara", "last_name": "Jones", "city": "Austin"},
@@ -416,7 +425,11 @@ async def test_commit_updates_approved_skips_unapproved_counts_unchanged(db, adm
     assert by_name["Brand New"]["action"] == "created"
     await db.refresh(a)
     await db.refresh(b)
-    assert a.city == "Reno" and b.city is None            # skipped row untouched
+    assert a.city == "Reno"
+    # the skipped row wrote NOTHING: every person column as it was, and still
+    # no worker_profiles row
+    assert _person_snapshot(b) == before_b
+    assert await db.get(WorkerProfile, b.id) is None
     bulk_row = await db.scalar(select(AuditLog).where(AuditLog.action == "bulk_import"))
     assert bulk_row.changes == {"created": 1, "updated": 1, "skipped": 1,
                                 "unchanged": 1, "source": "test.csv"}

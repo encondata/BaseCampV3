@@ -16,7 +16,8 @@ export type BulkDiff = Record<
 
 export interface BulkSummaryRow {
   row: number;
-  name: string;
+  /** null when the imported row carried no name — rendered as an em dash. */
+  name: string | null;
   action: 'created' | 'updated' | 'skipped' | 'unchanged';
   diff: BulkDiff | null;
 }
@@ -66,7 +67,7 @@ export default function BulkApplySummary<R extends BulkSummaryRow>({
 }: Props<R>) {
   const download = () => exportCsv<R>(filename, [
     ['Row', (r) => String(r.row)],
-    [entityLabel, (r) => r.name],
+    [entityLabel, (r) => r.name ?? '—'],
     ['Result', (r) => RESULT_LABEL[r.action]],
     ['Changes', (r) => changesText(r.diff)],
   ], result.rows);
@@ -99,7 +100,7 @@ export default function BulkApplySummary<R extends BulkSummaryRow>({
           className: `bulk-row-${ROW_CLASS[r.action]}`,
           cells: [
             r.row,
-            <Link key="name" to={linkFor(r)}>{r.name}</Link>,
+            <Link key="name" to={linkFor(r)}>{r.name ?? '—'}</Link>,
             RESULT_LABEL[r.action],
             changesText(r.diff) || '—',
           ],

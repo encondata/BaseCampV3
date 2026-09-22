@@ -17,6 +17,7 @@ import CertsPanel from '../components/workers/CertsPanel';
 import LevelBadge from '../components/workers/LevelBadge';
 import ProfileForm from '../components/workers/ProfileForm';
 import { apiFetch, listWorkerStatuses, updateWorkerProfile, type StatusValue } from '../lib/api';
+import { ADMIN_RANK } from '../lib/access';
 import { initialOpenId } from '../lib/auditFormat';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
@@ -239,7 +240,7 @@ export default function Workers() {
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const canManage = can('workers', 'change');
-  const canBulk = can('workers', 'add') && maxRank >= 60;   // mirrors the API's GATE_BYPASS_RANK bar
+  const canBulk = can('workers', 'add') && maxRank >= ADMIN_RANK;  // mirrors the API's GATE_BYPASS_RANK bar
 
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);

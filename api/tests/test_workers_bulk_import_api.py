@@ -45,7 +45,8 @@ async def test_template_formats(client, db, seeded_user, admin_hdrs):
 
     xlsx_resp = await client.get("/workers/bulk-import/template?format=xlsx", headers=admin_hdrs)
     assert xlsx_resp.status_code == 200
-    assert xlsx_resp.headers["content-disposition"] == 'attachment; filename="workers-template.xlsx"'
+    assert xlsx_resp.headers["content-disposition"] == (
+        'attachment; filename="workers-template.xlsx"')
     wb = openpyxl.load_workbook(io.BytesIO(xlsx_resp.content))
     assert wb.sheetnames == ["Workers", "Reference"]
     ref_cells = [row[0].value for row in wb["Reference"].iter_rows()]

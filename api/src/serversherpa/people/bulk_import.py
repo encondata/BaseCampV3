@@ -197,6 +197,8 @@ async def _reference_data(db: AsyncSession) -> dict:
             by_phone.setdefault(phone_key, []).append(p)
         for key in name_keys(p.first_name, p.last_name, p.preferred_name or ""):
             by_name.setdefault(key, []).append(p)
+        # rfid keys compare case-insensitively on purpose — stricter than the
+        # case-sensitive people_rfid_uniq index, so a near-miss errs safe.
         if p.rfid_tag:
             by_rfid[p.rfid_tag.lower()] = p
 
@@ -330,7 +332,7 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
                     for p in ref["by_name"].get(k, []):
                         seen[p.id] = p
                 hits["name"] = list(seen.values())
-            shown = {"email": email_key, "phone": row["phone"],
+            shown = {"email": row["email"], "phone": row["phone"],
                      "name": _row_display_name(row)}
             # a name shared by two people is not fatal when the row carries a
             # stronger key that lands on exactly one person: that key decides
@@ -559,15 +561,20 @@ async def _apply_update(db: AsyncSession, actor_id: uuid.UUID, r: dict,
             setattr(person, PERSON_ATTR[col], change["new"])
         elif col == "partner":
             partner = _resolve_partner(ref, change["new"])
-            profile.partner_id = partner.id if partner else profile.partner_id
+            if partner is None:
+                # auditing a change we did not apply would be a lie — roll back
+                raise ValueError(
+                    f"partner '{change['new']}' vanished between preview and commit")
+            profile.partner_id = partner.id
         elif col == "worker_role":
             db.add(PersonRole(person_id=person.id, role="worker", granted_by=actor_id))
         else:
             setattr(profile, col, change["new"])
         changes[col] = {"from": change["old"], "to": change["new"]}
+    # No status_note re-assignment here: the diff loop above already applied
+    # any status_note change (the equivalent line in PUT /workers/{id}/profile
+    # is a no-op for the same reason).
     new_status = profile.status or "active"
-    if profile.status != "blacklist" and "status" in changes:
-        profile.status_note = (r["diff"].get("status_note") or {}).get("new", profile.status_note)
 
     # blacklist ⇄ login access coupling, exactly as PUT /workers/{id}/profile
     account = await db.get(UserAccount, person.id)
