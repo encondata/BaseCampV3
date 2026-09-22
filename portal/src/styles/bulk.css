@@ -1,0 +1,4 @@
+/* Bulk Actions launcher — a grid of tool cards. */
+.bulk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; margin-top: 16px; }
+.bulk-card { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 12px; background: var(--surface); border: 1px solid var(--c-slate-bd, rgba(81, 96, 111, 0.25)); }
+.bulk-card .btn-solid { align-self: flex-start; }

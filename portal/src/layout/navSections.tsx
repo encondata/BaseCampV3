@@ -11,6 +11,8 @@
 
 import { type ReactNode } from 'react';
 
+import { ADMIN_RANK } from '../lib/access';
+
 export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean; end?: boolean }
 export interface NavSection { label: string; icon: ReactNode; items: NavItem[] }
 
@@ -491,6 +493,33 @@ export const NAV_SECTIONS: NavSection[] = [
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7">
             <rect x="3" y="13" width="18" height="6" rx="2" />
             <path d="M7 13V9m0 0c2.8-2 7.2-2 10 0M17 16h.01M14 16h.01" strokeLinecap="round" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
+    label: 'Bulk Actions',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <path d="m12 3 8 4.5-8 4.5-8-4.5L12 3Z" />
+        <path d="m4 12 8 4.5 8-4.5" />
+        <path d="m4 16.5 8 4.5 8-4.5" />
+      </svg>
+    ),
+    items: [
+      {
+        to: '/bulk',
+        label: 'Bulk Actions',
+        resource: 'dashboard',
+        minRank: ADMIN_RANK,
+        end: true,
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="4" width="18" height="6" rx="1.5" />
+            <rect x="3" y="14" width="18" height="6" rx="1.5" />
           </svg>
         ),
       },

@@ -2,6 +2,7 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'rea
 
 import { AuthProvider } from './auth/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
+import { ADMIN_RANK } from './lib/access';
 import AppShell from './layout/AppShell';
 import { NotificationsProvider } from './lib/notificationsContext';
 import { SystemStatusProvider } from './lib/systemStatusContext';
@@ -10,6 +11,7 @@ import Assets from './pages/Assets';
 import AssetDetail from './pages/AssetDetail';
 import AssetModels from './pages/AssetModels';
 import Audit from './pages/Audit';
+import BulkActions from './pages/BulkActions';
 import Clients from './pages/Clients';
 import ClientDashboard from './pages/ClientDashboard';
 import Containers from './pages/Containers';
@@ -194,6 +196,9 @@ export default function App() {
                 } />
                 <Route path="/system/processes" element={
                   <ProtectedRoute minRank={80}><SystemProcesses /></ProtectedRoute>
+                } />
+                <Route path="/bulk" element={
+                  <ProtectedRoute minRank={ADMIN_RANK}><BulkActions /></ProtectedRoute>
                 } />
                 <Route path="/system/processes/:name/logs" element={
                   <ProtectedRoute resource="devtools"><ProcessLogs /></ProtectedRoute>
