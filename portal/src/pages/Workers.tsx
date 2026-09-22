@@ -116,7 +116,7 @@ const CSV_COLUMNS: [string, (w: WorkerItem) => string][] = [
 ];
 
 export default function Workers() {
-  const { can, godMode } = useAuth();
+  const { can, godMode, maxRank } = useAuth();
   const navigate = useNavigate();
   const god = useGodEdit();
   const pd = usePendingDeletes(godMode);
@@ -239,6 +239,7 @@ export default function Workers() {
     sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const canManage = can('workers', 'change');
+  const canBulk = can('workers', 'add') && maxRank >= 60;   // mirrors the API's GATE_BYPASS_RANK bar
 
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
@@ -319,6 +320,11 @@ export default function Workers() {
             <button className="btn-solid"
                     onClick={() => navigate('/people/users', { state: { openAdd: true } })}>
               + Add worker
+            </button>
+          )}
+          {canBulk && (
+            <button className="mini-btn accent" onClick={() => navigate('/bulk/workers')}>
+              Bulk import…
             </button>
           )}
         </div>

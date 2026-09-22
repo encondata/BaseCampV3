@@ -29,6 +29,11 @@ export const BULK_TOOLS: BulkTool[] = [
     description: 'Download a template or the current list, fill it in, upload it, and review adds and updates before applying.',
     resource: 'sites', action: 'add', to: '/bulk/sites', button: 'Open',
   },
+  {
+    key: 'workers', title: 'Add or update workers in bulk',
+    description: 'Load a crew list from a spreadsheet. Existing people match by email, phone, or name; update or skip each one.',
+    resource: 'workers', action: 'add', to: '/bulk/workers', button: 'Open',
+  },
 ];
 
 export default function BulkActions() {
