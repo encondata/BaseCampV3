@@ -134,10 +134,13 @@ export default function RolesTab({ summary, canEdit, maxRank, onChanged }: Props
     setErr('');
     try {
       await putRoleMatrix(role.name, draft);
+      // Close the review before the refetch: left mounted, its effect would
+      // re-run against the refreshed role and preview the matrix that was
+      // just saved (a preview of no change at all).
+      setReviewOpen(false);
       // Await the refetch: `saving` must stay true (matrix locked) until
       // the fresh role object has landed and the resync has adopted it.
       await onChanged();
-      setReviewOpen(false);
     } catch (e) {
       setErr(msgFor(e));
       throw e;

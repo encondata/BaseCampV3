@@ -772,7 +772,8 @@ export interface CopyAccessIn {
 export interface CopyPlanRow {
   person_id: string; display_name: string; avatar_url: string | null;
   status: 'ok' | 'skipped';
-  reason: 'cannot_target_self' | 'rank_too_low' | 'no_account' | 'role_rank_too_low' | null;
+  reason: 'cannot_target_self' | 'rank_too_low' | 'no_account'
+    | 'role_rank_too_low' | 'person_not_found' | null;
   roles: { from: string[]; to: string[] } | null;
   groups: { from: string[]; to: string[] } | null;
   overrides: { added: number; removed: number; changed: number } | null;

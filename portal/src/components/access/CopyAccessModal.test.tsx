@@ -56,3 +56,36 @@ it('shows skipped targets with a reason and keeps Apply disabled until a preview
   expect(await screen.findByText('Skipped — their rank is at or above yours')).toBeTruthy();
   expect(screen.getByText('0 will change, 1 skipped')).toBeTruthy();
 });
+
+it('drops a target that is then picked as the source', async () => {
+  api.copyAccess.mockResolvedValue(plan);
+  render(<CopyAccessModal members={members} sourceId={null} onClose={() => {}} onApplied={() => {}} />);
+  fireEvent.focus(screen.getByPlaceholderText('Add person…'));
+  fireEvent.mouseDown(screen.getByText('Bob Two'));
+  expect(screen.getByText('Bob Two').closest('.chip')).toBeTruthy();
+
+  fireEvent.focus(screen.getByPlaceholderText('Copy from…'));
+  const option = screen.getAllByText('Bob Two').find((el) => el.classList.contains('kbar-item'));
+  fireEvent.mouseDown(option!);
+  expect(screen.queryAllByText('Bob Two').filter((el) => el.closest('.chip'))).toHaveLength(0);
+
+  fireEvent.focus(screen.getByPlaceholderText('Add person…'));
+  fireEvent.mouseDown(screen.getByText('Ann One'));
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  await waitFor(() => expect(api.copyAccess).toHaveBeenCalledWith(
+    expect.objectContaining({ source_id: 'p2', target_ids: ['p1'] })));
+});
+
+it('clears the plan when any input changes', async () => {
+  api.copyAccess.mockResolvedValue(plan);
+  render(<CopyAccessModal members={members} sourceId="p1" onClose={() => {}} onApplied={() => {}} />);
+  fireEvent.focus(screen.getByPlaceholderText('Add person…'));
+  fireEvent.mouseDown(screen.getByText('Bob Two'));
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  expect(await screen.findByText('Role: worker → staff')).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(false);
+
+  fireEvent.click(screen.getByLabelText('Access groups'));
+  expect(screen.queryByText('Role: worker → staff')).toBeNull();
+  expect((screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement).disabled).toBe(true);
+});

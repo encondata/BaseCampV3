@@ -25,11 +25,13 @@ const SKIP_REASONS: Record<NonNullable<CopyPlanRow['reason']>, string> = {
   rank_too_low: 'their rank is at or above yours',
   no_account: 'they have no login account',
   role_rank_too_low: "the source holds a role you can't grant",
+  person_not_found: 'they no longer exist',
 };
 const ERRORS: Record<string, string> = {
   person_not_found: 'The source person no longer exists — refresh and try again.',
   global_only: 'Only staff with global access can copy access.',
   no_targets: 'Add at least one person to copy to.',
+  too_many_targets: 'Copy to 200 people or fewer at a time.',
   no_parts: 'Pick at least one thing to copy.',
 };
 
@@ -69,7 +71,9 @@ export default function CopyAccessModal({ members, sourceId, onClose, onApplied 
   const [parts, setParts] = useState<Set<CopyPart>>(new Set(['roles', 'groups', 'overrides']));
   const [mode, setMode] = useState<CopyMode>('replace');
   const [plan, setPlan] = useState<CopyAccessOut | null>(null);
-  const [busy, setBusy] = useState(false);
+  // which request is in flight, so the two buttons never borrow each
+  // other's label ("Applying…" on Preview once a plan exists)
+  const [busy, setBusy] = useState<'preview' | 'apply' | null>(null);
   const [error, setError] = useState('');
 
   const options = members.map((m) => ({
@@ -80,8 +84,16 @@ export default function CopyAccessModal({ members, sourceId, onClose, onApplied 
 
   const reset = <T,>(setter: (v: T) => void) => (v: T) => { setter(v); setPlan(null); setError(''); };
 
+  // Picking someone who is already a target as the source drops them from
+  // the target list — otherwise their chip survives as a bare UUID (the
+  // ComboBox options no longer carry them) and the request targets the source.
+  const pickSource = (v: string) => {
+    reset(setSource)(v);
+    if (targets.includes(v)) setTargets(targets.filter((t) => t !== v));
+  };
+
   const run = async (dryRun: boolean) => {
-    setBusy(true);
+    setBusy(dryRun ? 'preview' : 'apply');
     setError('');
     try {
       const result = await copyAccess({
@@ -92,7 +104,7 @@ export default function CopyAccessModal({ members, sourceId, onClose, onApplied 
     } catch (e) {
       setError(msgFor(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
@@ -109,7 +121,7 @@ export default function CopyAccessModal({ members, sourceId, onClose, onApplied 
             <h3>Copy access</h3>
             <p className="page-hint">Use one person's setup as the starting point for others. Preview first; nothing changes until you apply.</p>
           </div>
-          <button type="button" className="modal-close" aria-label="Close" onClick={onClose} disabled={busy}>
+          <button type="button" className="modal-close" aria-label="Close" onClick={onClose} disabled={!!busy}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
                  strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
           </button>
@@ -117,17 +129,17 @@ export default function CopyAccessModal({ members, sourceId, onClose, onApplied 
         <div className="modal-body">
           <div className="pf-form">
             <div className="full"><label>Source</label>
-              <ComboBox options={options} value={source} placeholder="Copy from…" disabled={busy}
-                        onChange={reset(setSource)} /></div>
+              <ComboBox options={options} value={source} placeholder="Copy from…" disabled={!!busy}
+                        onChange={pickSource} /></div>
             <div className="full"><label>Copy to</label>
               <PersonChipPicker options={options.filter((o) => o.value !== source)}
-                                selected={targets} disabled={busy}
+                                selected={targets} disabled={!!busy}
                                 onChange={reset(setTargets)} placeholder="Add person…" /></div>
             <div><label>Copy</label>
               <div className="copy-parts">
                 {(Object.keys(PART_LABELS) as CopyPart[]).map((p) => (
                   <label key={p} className="init-check">
-                    <input type="checkbox" checked={parts.has(p)} disabled={busy}
+                    <input type="checkbox" checked={parts.has(p)} disabled={!!busy}
                            onChange={() => reset(setParts)(new Set(
                              parts.has(p) ? [...parts].filter((x) => x !== p) : [...parts, p]))} />
                     {PART_LABELS[p]}
@@ -136,9 +148,9 @@ export default function CopyAccessModal({ members, sourceId, onClose, onApplied 
               </div></div>
             <div><label>Mode</label>
               <div className="segmented" role="group" aria-label="Copy mode">
-                <button type="button" className={mode === 'replace' ? 'on' : ''} disabled={busy}
+                <button type="button" className={mode === 'replace' ? 'on' : ''} disabled={!!busy}
                         aria-pressed={mode === 'replace'} onClick={() => reset(setMode)('replace')}>Replace</button>
-                <button type="button" className={mode === 'add' ? 'on' : ''} disabled={busy}
+                <button type="button" className={mode === 'add' ? 'on' : ''} disabled={!!busy}
                         aria-pressed={mode === 'add'} onClick={() => reset(setMode)('add')}>Add only</button>
               </div>
               <p className="set-note">{MODE_HINT[mode]}</p></div>
@@ -150,7 +162,9 @@ export default function CopyAccessModal({ members, sourceId, onClose, onApplied 
                 <div key={t.person_id} className={`copy-plan-row ${t.status}`}>
                   <b>{t.display_name}</b>
                   {t.status === 'skipped' ? (
-                    <span className="copy-skip">Skipped — {SKIP_REASONS[t.reason ?? 'rank_too_low']}</span>
+                    <span className="copy-skip">
+                      {t.reason ? `Skipped — ${SKIP_REASONS[t.reason]}` : 'Skipped'}
+                    </span>
                   ) : (
                     <ul>{partList.map((p) => <li key={p}>{planLine(t, p)}</li>)}</ul>
                   )}
@@ -161,14 +175,14 @@ export default function CopyAccessModal({ members, sourceId, onClose, onApplied 
           )}
         </div>
         <div className="modal-foot">
-          <button className="btn-solid" disabled={!plan || willChange === 0 || busy}
+          <button className="btn-solid" disabled={!plan || willChange === 0 || !!busy}
                   onClick={() => void run(false)}>
-            {busy && plan ? 'Applying…' : 'Apply'}
+            {busy === 'apply' ? 'Applying…' : 'Apply'}
           </button>
           <button className="mini-btn accent" disabled={!ready} onClick={() => void run(true)}>
-            {busy && !plan ? 'Previewing…' : 'Preview'}
+            {busy === 'preview' ? 'Previewing…' : 'Preview'}
           </button>
-          <button className="mini-btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="mini-btn" onClick={onClose} disabled={!!busy}>Cancel</button>
           {error && <span className="pf-error">{error}</span>}
         </div>
       </div>

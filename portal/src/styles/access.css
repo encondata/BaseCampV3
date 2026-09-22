@@ -440,7 +440,7 @@
 .chip-picker .chip { display: inline-flex; align-items: center; gap: 6px; }
 /* font: inherit (not font-size/line-height) keeps this off the list-typography
    guardrail's radar — it pulls the same values from .chip's own font-size token. */
-.chip-x { border: 0; background: transparent; cursor: pointer; font: inherit; color: inherit; padding: 0 2px; }
+.chip-x { border: 0; background: transparent; cursor: pointer; font: inherit; color: inherit; padding: 3px 5px; }
 .copy-parts { display: flex; flex-wrap: wrap; gap: 12px; padding-top: 6px; }
 /* font-size lives on .copy-plan (not list-ish) and cascades to .copy-plan-row's
    children — putting it directly on -row would trip the list-typography guardrail. */

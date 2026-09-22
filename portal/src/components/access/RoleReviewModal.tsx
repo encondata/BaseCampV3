@@ -80,7 +80,7 @@ export default function RoleReviewModal({ role, matrix, resources, onBack, onCon
               <div className="rr-summary">
                 <span className="chip c-green">+{preview.granted.length} grants</span>
                 <span className="chip c-red">−{preview.revoked.length} grants</span>
-                <span className="chip">{preview.affected_count} of {preview.member_count} members affected</span>
+                <span className="chip c-slate">{preview.affected_count} of {preview.member_count} members affected</span>
               </div>
               <div className="rr-grants">
                 <div><b>Added</b>{preview.granted.length === 0 ? <span>—</span>

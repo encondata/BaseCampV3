@@ -21,7 +21,7 @@ export default function PersonChipPicker({ options, selected, onChange, disabled
       {selected.length > 0 && (
         <div className="chip-picker-list">
           {selected.map((id) => (
-            <span key={id} className="chip">
+            <span key={id} className="chip c-slate">
               {byId.get(id)?.label ?? id}
               <button type="button" className="chip-x" disabled={disabled}
                       aria-label={`Remove ${byId.get(id)?.label ?? id}`}
