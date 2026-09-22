@@ -73,6 +73,23 @@ async def test_template_formats(client, db, seeded_user, admin_hdrs):
     assert bad.status_code == 422
 
 
+async def test_export_formats(client, db, seeded_user, admin_hdrs):
+    db.add(Site(name="Exported", country="US", status="active"))
+    await db.commit()
+    csv_resp = await client.get("/sites/bulk-import/export?format=csv", headers=admin_hdrs)
+    assert csv_resp.status_code == 200
+    assert csv_resp.headers["content-disposition"].endswith('filename="sites-export.csv"')
+    assert "Exported" in csv_resp.text
+    xlsx_resp = await client.get("/sites/bulk-import/export?format=xlsx", headers=admin_hdrs)
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_resp.content))
+    assert wb.sheetnames == ["Sites", "Reference"]
+    assert [c.value for c in next(wb["Sites"].iter_rows(max_row=1))] == bi.COLUMNS
+    assert (await client.get("/sites/bulk-import/export?format=csv",
+                             headers=await login(client))).status_code == 403
+    assert (await client.get("/sites/bulk-import/export?format=pdf",
+                             headers=admin_hdrs)).status_code == 422
+
+
 async def test_preview_json_and_file_paths(client, seeded_user, admin_hdrs):
     rows = [{"name": "Alpha DC", "city": "Reno"}]
     via_json = await client.post("/sites/bulk-import/preview",

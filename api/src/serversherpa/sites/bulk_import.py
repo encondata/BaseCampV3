@@ -134,23 +134,24 @@ def parse_upload(filename: str, content: bytes) -> list[tuple[int, dict]]:
     raise BulkImportError("unsupported_file")
 
 
-# ── templates ───────────────────────────────────────────────────────
+# ── templates / export ──────────────────────────────────────────────
 
-def build_template_csv() -> str:
+def build_rows_csv(rows: list[dict]) -> str:
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=COLUMNS, lineterminator="\n")
     writer.writeheader()
-    writer.writerows(SAMPLE_ROWS)
+    writer.writerows(rows)
     return buf.getvalue()
 
 
-def build_template_xlsx(type_keys: list[str], status_keys: list[str]) -> bytes:
+def build_rows_xlsx(rows: list[dict], type_keys: list[str],
+                    status_keys: list[str]) -> bytes:
     import openpyxl
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Sites"
     ws.append(COLUMNS)
-    for row in SAMPLE_ROWS:
+    for row in rows:
         ws.append([row[c] for c in COLUMNS])
     ref = wb.create_sheet("Reference")
     ref.append(["Valid type keys"])
@@ -163,6 +164,45 @@ def build_template_xlsx(type_keys: list[str], status_keys: list[str]) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def build_template_csv() -> str:
+    return build_rows_csv(SAMPLE_ROWS)
+
+
+def build_template_xlsx(type_keys: list[str], status_keys: list[str]) -> bytes:
+    return build_rows_xlsx(SAMPLE_ROWS, type_keys, status_keys)
+
+
+def _coord_text(value) -> str:
+    return "" if value is None else format(value, "f").rstrip("0").rstrip(".")
+
+
+async def export_rows(db: AsyncSession) -> list[dict]:
+    """Every live site in template shape, so an export re-uploads clean."""
+    sites = list(await db.scalars(
+        select(Site).where(Site.archived_at.is_(None)).order_by(Site.name)))
+    partner_names = dict((await db.execute(select(Partner.id, Partner.name))).all())
+    clients: dict[uuid.UUID, list[str]] = {}
+    for site_id, cname in (await db.execute(
+        select(SiteClient.site_id, Client.name)
+        .join(Client, Client.id == SiteClient.client_id)
+        .order_by(Client.name))).all():
+        clients.setdefault(site_id, []).append(cname)
+    out = []
+    for s in sites:
+        out.append({
+            "name": s.name, "code": s.code or "", "type": s.site_type or "",
+            "status": s.status, "address_line1": s.address_line1 or "",
+            "address_line2": s.address_line2 or "", "city": s.city or "",
+            "region": s.region or "", "postal_code": s.postal_code or "",
+            "country": s.country or "", "latitude": _coord_text(s.latitude),
+            "longitude": _coord_text(s.longitude), "timezone": s.timezone or "",
+            "dc_provider": s.dc_provider or "",
+            "partner": partner_names.get(s.partner_id, "") if s.partner_id else "",
+            "clients": "; ".join(clients.get(s.id, [])), "notes": s.notes or "",
+        })
+    return out
 
 
 # ── validation + preview ────────────────────────────────────────────

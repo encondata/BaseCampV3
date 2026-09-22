@@ -388,3 +388,33 @@ async def test_commit_update_links_clients(db, seeded_user):
     linked = set(await db.scalars(select(SiteClient.client_id).where(
         SiteClient.site_id == site.id)))
     assert linked == {new_co.id}
+
+
+async def test_export_rows_round_trip_as_unchanged(db, seeded_user):
+    from serversherpa.db.models import Client, Partner, Site, SiteClient
+    p = Partner(name="ColoCo")
+    c = Client(name="Acme")
+    db.add_all([p, c])
+    await db.flush()
+    s = Site(name="Export Me", code="EXP", site_type="datacenter", status="active",
+             address_line1="1 Export Way", city="Reno", region="NV", postal_code="89501",
+             country="US", latitude=39.5296, longitude=-119.8138,
+             timezone="America/Los_Angeles", dc_provider="Switch", partner_id=p.id,
+             notes="hi")
+    db.add(s)
+    await db.flush()
+    db.add(SiteClient(site_id=s.id, client_id=c.id))
+    await db.commit()
+    rows = await bi.export_rows(db)
+    mine = next(r for r in rows if r["name"] == "Export Me")
+    assert list(mine) == bi.COLUMNS
+    assert mine["type"] == "datacenter" and mine["partner"] == "ColoCo"
+    assert mine["clients"] == "Acme" and mine["latitude"] == "39.5296"
+    assert mine["address_line2"] == ""
+    # export -> upload previews as unchanged
+    out = await bi.preview_rows(db, bi.number_json_rows(rows))
+    assert {r["action"] for r in out["rows"]} == {"unchanged"}
+    # the csv/xlsx writers accept the same rows
+    assert bi.build_rows_csv(rows).splitlines()[0] == ",".join(bi.COLUMNS)
+    parsed = bi.parse_upload("e.xlsx", bi.build_rows_xlsx(rows, ["datacenter"], ["active"]))
+    assert [r for _, r in parsed][0]["name"] == rows[0]["name"]
