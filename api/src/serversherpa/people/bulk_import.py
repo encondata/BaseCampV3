@@ -441,3 +441,132 @@ def _diff_row(person: Person, profile: WorkerProfile | None, is_worker: bool,
     if not is_worker:
         out["worker_role"] = {"old": None, "new": "granted"}
     return out
+
+
+# ── commit ──────────────────────────────────────────────────────────
+
+async def commit_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
+                      actor_id: uuid.UUID, actor_rank: int,
+                      approved_updates: set[str], source_label: str) -> dict:
+    """All-or-nothing: re-validates everything, then writes creates plus
+    APPROVED updates in one transaction; unapproved updates are skipped.
+    Raises rows_invalid (carrying the full preview payload) if any row
+    errors — nothing is written.
+
+    `numbered` must be the ORIGINAL uploaded cells (the preview's `cells`),
+    never its normalized `data`."""
+    preview = await preview_rows(db, numbered, actor_id=actor_id, actor_rank=actor_rank)
+    if not preview["rows"] or any(r["action"] == "error" for r in preview["rows"]):
+        raise BulkImportError("rows_invalid", rows=preview["rows"])
+
+    ref = await _reference_data(db)
+    counts = {"created": 0, "updated": 0, "skipped": 0, "unchanged": 0}
+    applied: list[dict] = []
+    for r in preview["rows"]:
+        if r["action"] == "unchanged":
+            action = "unchanged"
+        elif r["action"] == "create":
+            person = await _create_worker(db, actor_id, r["data"], ref, source_label)
+            r["person_id"] = str(person.id)
+            action = "created"
+        elif r["person_id"] in approved_updates:
+            await _apply_update(db, actor_id, r, ref)
+            action = "updated"
+        else:
+            action = "skipped"
+        counts[action] += 1
+        applied.append({"row": r["row"], "name": r["name"],
+                        "person_id": r["person_id"], "action": action,
+                        "diff": r["diff"] if action in ("updated", "skipped") else None})
+    audit(db, actor_id=actor_id, entity_type="worker", entity_id=None,
+          action="bulk_import", changes={**counts, "source": source_label})
+    await db.commit()
+    return {**counts, "rows": applied}
+
+
+def _resolve_partner(ref: dict, name: str) -> Partner | None:
+    matches = ref["partners"].get(name.lower(), []) if name else []
+    return matches[0] if len(matches) == 1 else None
+
+
+def _audit_value(value: Any) -> Any:
+    return str(value) if isinstance(value, uuid.UUID) else value
+
+
+async def _create_worker(db: AsyncSession, actor_id: uuid.UUID, data: dict,
+                         ref: dict, source_label: str) -> Person:
+    fields = {attr: data[col] for col, attr in PERSON_ATTR.items()
+              if data[col] not in ("", None)}
+    person = Person(**fields, source="import", source_ref=source_label,
+                    created_by=actor_id)
+    db.add(person)
+    await db.flush()
+    partner = _resolve_partner(ref, data["partner"])
+    profile = WorkerProfile(
+        person_id=person.id, created_by=actor_id,
+        partner_id=partner.id if partner else None,
+        trade=data["trade"] or None, level=data["level"] or None,
+        status=data["status"], status_note=data["status_note"] or None)
+    db.add(profile)
+    db.add(PersonRole(person_id=person.id, role="worker", granted_by=actor_id))
+    changes = {key: {"from": None, "to": _audit_value(value)}
+               for key, value in fields.items()}
+    for col in PROFILE_COLUMNS:
+        if data[col]:
+            changes[col] = {"from": None, "to": data[col]}
+    if partner is not None:
+        changes["partner"] = {"from": None, "to": partner.name}
+    changes["worker_role"] = {"from": None, "to": "granted"}
+    audit(db, actor_id=actor_id, entity_type="worker",
+          entity_id=str(person.id), action="create", changes=changes)
+    return person
+
+
+async def _apply_update(db: AsyncSession, actor_id: uuid.UUID, r: dict,
+                        ref: dict) -> None:
+    person = await db.get(Person, uuid.UUID(r["person_id"]))
+    profile = await db.get(WorkerProfile, person.id)
+    had_profile = profile is not None
+    if profile is None:
+        # the kiosk sync keys "is a worker" off the profile row, so every
+        # matched worker leaves the import with one
+        profile = WorkerProfile(person_id=person.id, created_by=actor_id)
+        db.add(profile)
+    now = datetime.now(UTC)
+    old_status = profile.status if had_profile else "active"
+    changes: dict = {}
+    for col, change in (r["diff"] or {}).items():
+        if col in PERSON_ATTR:
+            setattr(person, PERSON_ATTR[col], change["new"])
+        elif col == "partner":
+            partner = _resolve_partner(ref, change["new"])
+            profile.partner_id = partner.id if partner else profile.partner_id
+        elif col == "worker_role":
+            db.add(PersonRole(person_id=person.id, role="worker", granted_by=actor_id))
+        else:
+            setattr(profile, col, change["new"])
+        changes[col] = {"from": change["old"], "to": change["new"]}
+    new_status = profile.status or "active"
+    if profile.status != "blacklist" and "status" in changes:
+        profile.status_note = (r["diff"].get("status_note") or {}).get("new", profile.status_note)
+
+    # blacklist ⇄ login access coupling, exactly as PUT /workers/{id}/profile
+    account = await db.get(UserAccount, person.id)
+    if account is not None:
+        if new_status == "blacklist" and old_status != "blacklist":
+            account.disabled_at = now
+            account.updated_at = now
+            await db.execute(
+                update(AuthSession)
+                .where(AuthSession.person_id == person.id,
+                       AuthSession.revoked_at.is_(None))
+                .values(revoked_at=now, revoke_reason="account_disabled"))
+        elif old_status == "blacklist" and new_status != "blacklist":
+            account.disabled_at = None
+            account.failed_login_count = 0
+            account.locked_until = None
+            account.updated_at = now
+    person.updated_at = now
+    profile.updated_at = now
+    audit(db, actor_id=actor_id, entity_type="worker",
+          entity_id=str(person.id), action="update", changes=changes)

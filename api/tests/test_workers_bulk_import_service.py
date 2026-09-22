@@ -6,7 +6,7 @@ import uuid
 
 import openpyxl
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from serversherpa.db.models import (
     AuditLog, Partner, Person, PersonRole, UserAccount, WorkerProfile,
@@ -313,3 +313,116 @@ async def test_status_change_guards_rank_and_self(db, admin):
     rows = out["rows"]
     assert rows[0]["errors"] == ["rank too low to change status"]
     assert rows[1]["errors"] == ["cannot change your own status"]
+
+
+# ── commit ──────────────────────────────────────────────────────────
+
+async def test_commit_creates_person_role_and_profile(db, admin):
+    pt = Partner(name="Haul It")
+    db.add(pt)
+    await db.commit()
+    out = await commit(db, admin, [{
+        "first_name": "Maria", "last_name": "Lopez", "phone": "(555) 987-6543",
+        "employee_number": "E7", "rfid_tag": "RF1", "partner": "haul it",
+        "trade": "Cable", "level": "L2", "status": "standby", "city": "Reno"}],
+        source="crew.xlsx")
+    assert out["created"] == 1 and out["updated"] == out["skipped"] == out["unchanged"] == 0
+    row = out["rows"][0]
+    assert row["action"] == "created" and row["name"] == "Maria Lopez" and row["diff"] is None
+    person = await db.get(Person, uuid.UUID(row["person_id"]))
+    assert person.phone == "(555) 987-6543" and person.external_id == "E7"
+    assert person.rfid_tag == "RF1" and person.country == "US"
+    assert person.source == "import" and person.source_ref == "crew.xlsx"
+    assert person.created_by == admin.id
+    profile = await db.get(WorkerProfile, person.id)
+    assert profile.partner_id == pt.id and profile.trade == "Cable"
+    assert profile.level == "L2" and profile.status == "standby"
+    assert await db.scalar(select(PersonRole.id).where(
+        PersonRole.person_id == person.id, PersonRole.role == "worker",
+        PersonRole.revoked_at.is_(None))) is not None
+    actions = list(await db.scalars(select(AuditLog.action).where(
+        AuditLog.entity_type == "worker")))
+    assert sorted(actions) == ["bulk_import", "create"]
+
+
+async def test_commit_updates_approved_skips_unapproved_counts_unchanged(db, admin):
+    a = await mk_worker(db, "Robert", "Smith", email="a@test.example.com")
+    b = await mk_worker(db, "Sara", "Jones", email="b@test.example.com")
+    await mk_worker(db, "Same", "Person", email="s@test.example.com")
+    out = await commit(db, admin, [
+        {"first_name": "Robert", "last_name": "Smith", "city": "Reno"},
+        {"first_name": "Sara", "last_name": "Jones", "city": "Austin"},
+        {"first_name": "Same", "last_name": "Person"},
+        {"first_name": "Brand", "last_name": "New"},
+    ], approved=[str(a.id)])
+    assert (out["created"], out["updated"], out["skipped"], out["unchanged"]) == (1, 1, 1, 1)
+    by_name = {r["name"]: r for r in out["rows"]}
+    assert by_name["Robert Smith"]["action"] == "updated"
+    assert by_name["Robert Smith"]["diff"] == {"city": {"old": None, "new": "Reno"}}
+    assert by_name["Sara Jones"]["action"] == "skipped"
+    assert by_name["Sara Jones"]["diff"] == {"city": {"old": None, "new": "Austin"}}
+    assert by_name["Same Person"]["action"] == "unchanged"
+    assert by_name["Brand New"]["action"] == "created"
+    await db.refresh(a)
+    await db.refresh(b)
+    assert a.city == "Reno" and b.city is None            # skipped row untouched
+    bulk_row = await db.scalar(select(AuditLog).where(AuditLog.action == "bulk_import"))
+    assert bulk_row.changes == {"created": 1, "updated": 1, "skipped": 1,
+                                "unchanged": 1, "source": "test.csv"}
+
+
+async def test_commit_grants_role_and_creates_profile_on_matched_non_worker(db, admin):
+    user = await mk_worker(db, "Office", "User", email="ou@test.example.com", role=False)
+    out = await commit(db, admin, [
+        {"first_name": "Office", "last_name": "User", "trade": "Cable"}],
+        approved=[str(user.id)])
+    assert out["updated"] == 1
+    assert await db.scalar(select(PersonRole.id).where(
+        PersonRole.person_id == user.id, PersonRole.role == "worker",
+        PersonRole.revoked_at.is_(None))) is not None
+    profile = await db.get(WorkerProfile, user.id)
+    assert profile.trade == "Cable" and profile.status == "active"
+
+
+async def test_commit_blank_status_country_never_written_on_update(db, admin):
+    w = await mk_worker(db, "Keep", "Country", email="k@test.example.com",
+                        profile={"status": "standby"})
+    w.country = "CH"
+    await db.commit()
+    out = await commit(db, admin, [
+        {"first_name": "Keep", "last_name": "Country", "status": "", "country": "",
+         "city": "Zurich"}], approved=[str(w.id)])
+    assert out["updated"] == 1
+    await db.refresh(w)
+    assert w.country == "CH" and w.city == "Zurich"
+    assert (await db.get(WorkerProfile, w.id)).status == "standby"
+
+
+async def test_commit_blacklist_disables_account_and_unblacklist_restores(db, admin):
+    w = await mk_worker(db, "Bad", "Actor", email="bad@test.example.com", account=True)
+    out = await commit(db, admin, [
+        {"first_name": "Bad", "last_name": "Actor", "status": "blacklist",
+         "status_note": "no-show x3"}], approved=[str(w.id)])
+    assert out["updated"] == 1
+    account = await db.get(UserAccount, w.id)
+    assert account.disabled_at is not None
+    out = await commit(db, admin, [
+        {"first_name": "Bad", "last_name": "Actor", "status": "active"}],
+        approved=[str(w.id)])
+    assert out["updated"] == 1
+    await db.refresh(account)
+    assert account.disabled_at is None
+
+
+async def test_commit_is_all_or_nothing(db, admin):
+    with pytest.raises(bi.BulkImportError) as exc:
+        await commit(db, admin, [
+            {"first_name": "Good", "last_name": "Row"},
+            {"first_name": "", "last_name": "Bad"},
+        ])
+    assert exc.value.code == "rows_invalid"
+    assert [r["action"] for r in exc.value.extra["rows"]] == ["create", "error"]
+    assert await db.scalar(select(func.count()).select_from(Person).where(
+        Person.last_name == "Row")) == 0
+    with pytest.raises(bi.BulkImportError):
+        await commit(db, admin, [])
