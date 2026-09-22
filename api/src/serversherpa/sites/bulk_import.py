@@ -12,9 +12,6 @@ those cells, never `data` — replaying `data` would turn a blank status/country
 into an explicit write.
 """
 
-import csv
-import io
-import json
 import re
 import uuid
 from typing import Any
@@ -25,18 +22,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import (
     Client, Partner, Site, SiteClient, SiteType, StatusValue,
 )
+from serversherpa.imports import bulk as core
+from serversherpa.imports.bulk import (      # re-exported for the container
+    MAX_BYTES, MAX_ROWS, BulkImportError,    # importer and the route tests
+)
 
 COLUMNS = [
     "name", "code", "type", "status", "address_line1", "address_line2",
     "city", "region", "postal_code", "country", "latitude", "longitude",
     "timezone", "dc_provider", "partner", "clients", "notes",
 ]
+SHEET = "Sites"
 # template column → Site attribute (identity except type; partner/clients are
 # relations, handled separately)
 SITE_ATTR = {c: ("site_type" if c == "type" else c) for c in COLUMNS
              if c not in ("partner", "clients")}
-MAX_ROWS = 1000
-MAX_BYTES = 5 * 1024 * 1024
 
 SAMPLE_ROWS: list[dict] = [
     {"name": "Example DC West", "code": "DCW", "type": "datacenter",
@@ -52,148 +52,27 @@ SAMPLE_ROWS: list[dict] = [
      "clients": "", "notes": ""},
 ]
 
-
-class BulkImportError(Exception):
-    """Whole-payload failure (not a per-row error)."""
-
-    def __init__(self, code: str, **extra: Any) -> None:
-        super().__init__(code)
-        self.code = code
-        self.extra = extra
+__all__ = ["BulkImportError", "MAX_BYTES", "MAX_ROWS"]
 
 
-# ── parsing ─────────────────────────────────────────────────────────
-
-FORMULA_LEAD = ("=", "+", "-", "@")
-_NUMERIC = re.compile(r"^[+-]?\d+(\.\d+)?$")
-
-
-def _cell(value: Any) -> str:
-    """Spreadsheet cells arrive as str/float/int/bool/None — normalize to
-    trimmed text. Integral floats (openpyxl's 89501.0) drop the .0 so
-    numeric-looking text columns round-trip. One leading apostrophe in front
-    of a formula lead character is dropped, so our own guarded CSV export
-    (see `_guard_cell`) re-uploads as the value it started as."""
-    if value is None:
-        return ""
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    text = str(value).strip()
-    if text[:1] == "'" and text[1:2] in FORMULA_LEAD:
-        text = text[1:]
-    return text
-
-
-def _guard_cell(text: str) -> str:
-    """OWASP CSV-injection guard, mirroring the portal's `csvCell`: a cell
-    that opens with = + - @ gets a leading apostrophe so Excel/Sheets read it
-    as text — unless the whole cell is a number, so -119.8138 stays a
-    coordinate."""
-    if text[:1] in FORMULA_LEAD and not _NUMERIC.match(text):
-        return f"'{text}"
-    return text
-
-
-def _check_columns(keys: list[str]) -> None:
-    unknown = sorted({k for k in keys if k not in COLUMNS})
-    if unknown:
-        raise BulkImportError("unknown_columns", columns=unknown)
-
-
-def _numbered(rows: list[dict], first_row: int) -> list[tuple[int, dict]]:
-    if len(rows) > MAX_ROWS:
-        raise BulkImportError("too_many_rows", limit=MAX_ROWS)
-    out: list[tuple[int, dict]] = []
-    for i, raw in enumerate(rows):
-        _check_columns(list(raw.keys()))
-        row = {col: _cell(raw.get(col)) for col in COLUMNS}
-        if any(v != "" for v in row.values()):        # skip fully blank lines
-            out.append((first_row + i, row))
-    return out
-
+# ── parsing / templates (thin wrappers over the shared core) ────────
 
 def number_json_rows(rows: Any) -> list[tuple[int, dict]]:
-    if isinstance(rows, dict):
-        rows = [rows]          # a single bare object is a one-row import
-    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
-        raise BulkImportError("invalid_json")
-    return _numbered(rows, first_row=1)
+    return core.number_json_rows(rows, COLUMNS)
 
 
 def parse_upload(filename: str, content: bytes) -> list[tuple[int, dict]]:
-    if len(content) > MAX_BYTES:
-        raise BulkImportError("file_too_large", limit=MAX_BYTES)
-    name = filename.lower()
-    if name.endswith(".json"):
-        try:
-            return number_json_rows(json.loads(content.decode("utf-8-sig")))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise BulkImportError("invalid_json") from None
-    if name.endswith(".csv"):
-        try:
-            reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
-        except UnicodeDecodeError:
-            raise BulkImportError("invalid_csv") from None
-        if reader.fieldnames is None:
-            raise BulkImportError("invalid_csv")
-        _check_columns([f.strip() for f in reader.fieldnames if f])
-        rows = [{(k or "").strip(): v for k, v in r.items() if k}
-                for r in reader]
-        return _numbered(rows, first_row=2)
-    if name.endswith(".xlsx"):
-        import openpyxl
-        try:
-            wb = openpyxl.load_workbook(io.BytesIO(content),
-                                        read_only=True, data_only=True)
-        except Exception:
-            raise BulkImportError("invalid_xlsx") from None
-        ws = wb["Sites"] if "Sites" in wb.sheetnames else wb.worksheets[0]
-        lines = ws.iter_rows(values_only=True)
-        header = [_cell(h) for h in (next(lines, None) or tuple())]
-        if not any(header):
-            raise BulkImportError("invalid_xlsx")
-        _check_columns([h for h in header if h])
-        rows = [{h: v for h, v in zip(header, line) if h} for line in lines]
-        return _numbered(rows, first_row=2)
-    raise BulkImportError("unsupported_file")
+    return core.parse_upload(filename, content, COLUMNS, SHEET)
 
-
-# ── templates / export ──────────────────────────────────────────────
 
 def build_rows_csv(rows: list[dict]) -> str:
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=COLUMNS, lineterminator="\n")
-    writer.writeheader()
-    writer.writerows({c: _guard_cell(str(row[c])) for c in COLUMNS}
-                     for row in rows)
-    return buf.getvalue()
+    return core.build_rows_csv(rows, COLUMNS)
 
 
 def build_rows_xlsx(rows: list[dict], type_keys: list[str],
                     status_keys: list[str]) -> bytes:
-    import openpyxl
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Sites"
-    ws.append(COLUMNS)
-    for row in rows:
-        ws.append([row[c] for c in COLUMNS])
-        # a cell openpyxl would otherwise store as a formula is pinned to
-        # text, so a site named "=HYPERLINK(…)" can never execute on open
-        for cell in ws[ws.max_row]:
-            if isinstance(cell.value, str) and cell.value[:1] in FORMULA_LEAD:
-                cell.data_type = "s"
-    ref = wb.create_sheet("Reference")
-    ref.append(["Valid type keys"])
-    for key in type_keys:
-        ref.append([key])
-    ref.append([])
-    ref.append(["Valid status keys"])
-    for key in status_keys:
-        ref.append([key])
-    buf = io.BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
+    return core.build_rows_xlsx(rows, COLUMNS, SHEET, [
+        ("Valid type keys", type_keys), ("Valid status keys", status_keys)])
 
 
 def build_template_csv() -> str:
