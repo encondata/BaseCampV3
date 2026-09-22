@@ -55,6 +55,9 @@ export default function BulkSites() {
           <button className="mini-btn accent" disabled={!!busy} onClick={() => void download('e-csv', () => downloadSiteExport('csv'))}>Current sites (.csv)</button>
           {error && <span className="pf-error">{error}</span>}
         </div>
+        <p className="set-note">
+          Uploads are limited to 1,000 rows and 5 MB. Larger exports need to be split before re-uploading.
+        </p>
       </section>
 
       <section className="bulk-section">

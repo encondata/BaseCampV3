@@ -71,20 +71,8 @@
 
 /* ── bulk import pane ─────────────────────────────────────────── */
 
-.modal-mode-toggle {
-  display: flex;
-  gap: 6px;
-  padding: 0 22px 4px;
-}
-.modal-mode-toggle .mini-btn.active {
-  border-color: var(--amber);
-  color: var(--text-dark);
-  font-weight: 600;
-}
-
 .bulk-import { display: flex; flex-direction: column; gap: 12px; }
 
-.bulk-templates,
 .bulk-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
 .bulk-file-row { display: flex; flex-direction: column; gap: 4px; }

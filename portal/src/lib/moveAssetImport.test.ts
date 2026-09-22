@@ -72,8 +72,8 @@ describe('speed + eta', () => {
 describe('importErrorMessage', () => {
   it('maps known codes', () => {
     // ApiError's real constructor is (status, code, detail) — api.ts:141 —
-    // not (status, { code }) as a nested body; mirrors SiteBulkImport's
-    // mapError, which reads err.code directly (SiteBulkImport.tsx:112).
+    // not (status, { code }) as a nested body; mirrors SiteBulkUpload's
+    // mapError, which reads err.code directly.
     const err = new ApiError(422, 'not_a_move');
     expect(importErrorMessage(err)).toMatch(/move/i);
   });

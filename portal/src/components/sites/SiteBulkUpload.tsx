@@ -35,21 +35,6 @@ const MATCH_LABEL: Record<'name' | 'address', string> = {
   address: 'address',
 };
 
-/** Preview `data` back to template-shaped cells for the commit replay:
- * arrays re-join with semicolons, numbers stringify, blanks drop. */
-function toTemplateRow(data: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(data)) {
-    if (value === null || value === undefined || value === '') continue;
-    if (Array.isArray(value)) {
-      if (value.length > 0) out[key] = value.join('; ');
-      continue;
-    }
-    out[key] = typeof value === 'number' ? String(value) : value;
-  }
-  return out;
-}
-
 function describeDiff(
   diff: NonNullable<BulkRowResult['diff']>,
 ): { field: string; from: string; to: string }[] {
@@ -109,9 +94,11 @@ export default function SiteBulkUpload({ onDone }: Props) {
     setBusy(true);
     setError('');
     try {
+      // the ORIGINAL cells, never the preview's normalized `data` — replaying
+      // `data` would write its create-only status/country defaults
       const rows = preview.rows
-        .filter((r) => r.data !== null)
-        .map((r) => toTemplateRow(r.data as Record<string, unknown>));
+        .filter((r) => r.action !== 'error')
+        .map((r) => r.cells);
       const counts = await commitSiteBulk(rows, [...approved], file.name);
       setPreview(null);
       setFile(null);
@@ -146,6 +133,7 @@ export default function SiteBulkUpload({ onDone }: Props) {
             setFile(e.target.files?.[0] ?? null);
             setPreview(null);
             setResult(null);
+            setError('');       // the new file gets a clean slate
           }}
         />
       </div>

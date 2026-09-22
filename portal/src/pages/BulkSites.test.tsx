@@ -27,4 +27,8 @@ it('shows the column guide and the four downloads', async () => {
   await waitFor(() => expect(api.downloadSiteExport).toHaveBeenCalledWith('xlsx'));
   fireEvent.click(screen.getByRole('button', { name: 'Template (.csv)' }));
   await waitFor(() => expect(api.downloadSiteTemplate).toHaveBeenCalledWith('csv'));
+  // an export can be bigger than an upload may be — say so next to the buttons
+  expect(screen.getByText(
+    'Uploads are limited to 1,000 rows and 5 MB. Larger exports need to be split before re-uploading.',
+  )).toBeTruthy();
 });

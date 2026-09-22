@@ -87,7 +87,9 @@ bulk", resource `sites`, action `add`, button "Open"). Page sections:
    and the example from the template. Source: `SITE_COLUMN_GUIDE` in
    `portal/src/lib/siteBulk.ts`, pinned by a test to the 17 template keys.
 2. **Download** — Template (.xlsx), Template (.csv), Current sites (.xlsx),
-   Current sites (.csv).
+   Current sites (.csv), plus a note under the buttons: "Uploads are limited
+   to 1,000 rows and 5 MB. Larger exports need to be split before
+   re-uploading." (The export is unbounded; the upload cap stays as it is.)
 3. **Upload** — one file input (.csv, .xlsx) and a Preview button. The
    pasted-JSON input is dropped.
 4. **Preview** — table: Row, Name, Matched by (name / address / new site),

@@ -11,15 +11,21 @@ const listTools = vi.hoisted(() => ({ exportCsv: vi.fn() }));
 vi.mock('../../lib/listTools', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/listTools')>()), ...listTools,
 }));
+const { ApiError } = await import('../../lib/api');
 const { default: SiteBulkUpload } = await import('./SiteBulkUpload');
 
 function renderUpload(onDone: (result: unknown) => void = () => {}) {
   return render(<MemoryRouter><SiteBulkUpload onDone={onDone} /></MemoryRouter>);
 }
 
+// `cells` is the uploaded row (no defaults); `data` carries the server's
+// create-only status default — only `cells` may reach the commit.
 const row = (over: Record<string, unknown>) => ({
   row: 2, name: 'Site', action: 'create', matched_by: null, matched_name: null,
-  errors: [], diff: null, site_id: null, data: { name: (over.name as string) ?? 'Site' }, ...over,
+  errors: [], diff: null, site_id: null,
+  cells: { name: (over.name as string) ?? 'Site' },
+  data: { name: (over.name as string) ?? 'Site', status: 'active', country: 'US' },
+  ...over,
 });
 
 beforeEach(() => {
@@ -61,7 +67,9 @@ const commitResult = {
 it('gates Apply on approving every update, shows matched-by, commits approved ids, renders the summary', async () => {
   api.previewSiteBulk.mockResolvedValue({ can_commit: true, rows: [
     row({ row: 2, name: 'New Name', action: 'update', matched_by: 'address', matched_name: 'Old Name',
-          site_id: 's1', diff: { name: { old: 'Old Name', new: 'New Name' } }, data: { name: 'New Name' } }),
+          site_id: 's1', diff: { name: { old: 'Old Name', new: 'New Name' } },
+          cells: { name: 'New Name' },
+          data: { name: 'New Name', status: 'active', country: 'US' } }),
     row({ row: 3, name: 'Fresh' }),
   ] });
   api.commitSiteBulk.mockResolvedValue(commitResult);
@@ -75,6 +83,7 @@ it('gates Apply on approving every update, shows matched-by, commits approved id
   fireEvent.click(screen.getByLabelText('Approve update to New Name'));
   expect(apply.disabled).toBe(false);
   fireEvent.click(apply);
+  // the uploaded cells, not the normalized data (no status/country defaults)
   await waitFor(() => expect(api.commitSiteBulk).toHaveBeenCalledWith(
     [{ name: 'New Name' }, { name: 'Fresh' }], ['s1'], 'sites.csv'));
   await waitFor(() => expect(onDone).toHaveBeenCalledWith(commitResult));
@@ -110,4 +119,48 @@ it('clears the summary when a new file is chosen', async () => {
 
   pickFile();
   expect(screen.queryByText('Applied: 1 added · 1 updated · 0 unchanged')).toBeNull();
+});
+
+it('posts every non-error row\'s cells verbatim, blanks included', async () => {
+  api.previewSiteBulk.mockResolvedValue({ can_commit: true, rows: [
+    row({ row: 2, name: 'Fresh',
+          cells: { name: 'Fresh', status: '', country: '', city: 'Reno' },
+          data: { name: 'Fresh', status: 'active', country: 'US', city: 'Reno' } }),
+    row({ row: 3, name: 'Static', action: 'unchanged', matched_by: 'name',
+          matched_name: 'Static', site_id: 's9',
+          cells: { name: 'Static', status: '', country: '' },
+          data: { name: 'Static', status: 'active', country: 'US' } }),
+  ] });
+  api.commitSiteBulk.mockResolvedValue(commitResult);
+  renderUpload();
+  pickFile();
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  await screen.findByText('new site');
+  fireEvent.click(screen.getByRole('button', { name: /Add 1 site/ }));
+  // blank status/country stay blank — the server's defaults never round-trip
+  await waitFor(() => expect(api.commitSiteBulk).toHaveBeenCalledWith(
+    [{ name: 'Fresh', status: '', country: '', city: 'Reno' },
+     { name: 'Static', status: '', country: '' }], [], 'sites.csv'));
+});
+
+it('shows the mapped error and clears the preview when the commit fails', async () => {
+  api.previewSiteBulk.mockResolvedValue({ can_commit: true, rows: [
+    row({ row: 2, name: 'Fresh' }),
+  ] });
+  api.commitSiteBulk.mockRejectedValue(new ApiError(422, 'rows_invalid'));
+  renderUpload();
+  pickFile();
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  await screen.findByText('new site');
+  fireEvent.click(screen.getByRole('button', { name: /Add 1 site/ }));
+
+  expect(await screen.findByText(
+    'Some rows have problems — fix them and preview again.')).toBeTruthy();
+  expect(screen.queryByText('new site')).toBeNull();      // preview is stale
+
+  // a new file clears preview, error and summary together
+  pickFile();
+  expect(screen.queryByText(
+    'Some rows have problems — fix them and preview again.')).toBeNull();
+  expect(screen.queryByText('new site')).toBeNull();
 });

@@ -1104,6 +1104,10 @@ export interface BulkRowResult {
     { old?: unknown; new?: unknown; add?: string[]; remove?: string[] }
   > | null;
   site_id: string | null;
+  /** The uploaded cells, normalized but with no defaults filled in — what
+   *  the commit replays. `data` is the display shape and must never be
+   *  posted back: its status/country defaults would become real writes. */
+  cells: Record<string, string>;
   data: Record<string, unknown> | null;
 }
 
