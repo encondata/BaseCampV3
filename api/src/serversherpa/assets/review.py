@@ -29,7 +29,8 @@ def duplicate_groups(
 ) -> list[tuple[str, list[AssetModel]]]:
     """Groups of two or more models sharing a normalized key. Each group is
     (key, members) with members ordered by asset count desc then name and
-    groups by their first member's name."""
+    groups by their first member's name. `key` is the normalized key most
+    of the members share (ties alphabetical)."""
     parent: dict[uuid.UUID, uuid.UUID] = {m.id: m.id for m in models}
 
     def find(x: uuid.UUID) -> uuid.UUID:
@@ -44,12 +45,10 @@ def duplicate_groups(
             parent[rb] = ra
 
     owner_by_key: dict[str, uuid.UUID] = {}
-    key_of_group: dict[uuid.UUID, str] = {}
     for m in models:
         for key in model_keys(m, aliases_by_model.get(m.id, [])):
             if key in owner_by_key:
                 union(owner_by_key[key], m.id)
-                key_of_group[find(m.id)] = key
             else:
                 owner_by_key[key] = m.id
 
@@ -65,9 +64,12 @@ def duplicate_groups(
         if len(ms) < 2:
             continue
         ms.sort(key=lambda m: (-counts.get(m.id, (0, 0))[0], name(m)))
-        # the key the first two members actually share, for display
-        shared = set.intersection(*(model_keys(m, aliases_by_model.get(m.id, [])) for m in ms[:2]))
-        key = next(iter(sorted(shared)), key_of_group.get(find(root), ""))
+        # the key most members share, ties broken alphabetically, for display
+        key_counts: dict[str, int] = {}
+        for m in ms:
+            for k in model_keys(m, aliases_by_model.get(m.id, [])):
+                key_counts[k] = key_counts.get(k, 0) + 1
+        key = min(key_counts, key=lambda k: (-key_counts[k], k))
         groups.append((key, ms))
     groups.sort(key=lambda g: name(g[1][0]))
     return groups

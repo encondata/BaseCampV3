@@ -4,7 +4,7 @@ import uuid
 from sqlalchemy import select
 
 from serversherpa.db.models import (
-    Asset, AssetModel, AssetModelAlias, AuditLog, Site, StockLine,
+    Asset, AssetModel, AssetModelAlias, AuditLog,
 )
 from tests.test_assets_api import login
 
@@ -76,6 +76,24 @@ async def test_dismissed_model_leaves_its_duplicate_group(client, db, seeded_use
     body = (await client.get("/asset-models/review", headers=hdrs)).json()
     assert body["duplicates"] == []       # a group of one is not a group
     assert str(a.id) not in {m["id"] for g in body["duplicates"] for m in g}
+
+
+async def test_transitive_group_reports_the_most_shared_key(client, db, seeded_user):
+    hdrs = await login(client)
+    # A and B join by name key ("dell r740"); B and C join by an alias key
+    # ("dell r-740"), a transitive chain where the first two sorted members
+    # (C, A) share no key at all. Two keys tie at 2 members each; the
+    # alphabetically-first one ("dell r-740") wins.
+    c = await _model(db, "HPE", "Thing", aliases=("Dell R-740",), assets=5)
+    a = await _model(db, "Dell", "R740", assets=2)
+    b = await _model(db, "Dell", "R-740", aliases=("Dell R740",), assets=0)
+    resp = await client.get("/asset-models/review", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body["duplicates"]) == 1
+    group = body["duplicates"][0]
+    assert [m["id"] for m in group] == [str(c.id), str(a.id), str(b.id)]
+    assert all(m["group_key"] == "dell r-740" for m in group)
 
 
 async def test_review_guards(client, db, seeded_user):
