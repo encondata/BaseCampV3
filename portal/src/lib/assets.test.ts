@@ -6,8 +6,8 @@ import { applyColumnOrder } from './listTools';
 import {
   ASSET_ERRORS, ASSET_GOD_FIELDS, IDENTITY_KEYS, MODEL_ERRORS, MODEL_GOD_FIELDS,
   assetCellText, assetSearchText, assetPayload, duplicateSerials, formFromAsset, formFromModel,
-  formatDims, formFactorLabel, identityFirst, migrateIdentityColumns, modelCellText, modelPayload,
-  modelSearchText, needsModelCreate, parseDims, partnerFor,
+  formatDims, formFactorLabel, identityFirst, mergeFieldRows, migrateIdentityColumns, modelCellText,
+  modelPayload, modelSearchText, needsModelCreate, parseDims, partnerFor,
 } from './assets';
 
 const asset = (over: Partial<AssetItem> = {}): AssetItem => ({
@@ -25,7 +25,7 @@ const assetModel = (over: Partial<AssetModelItem> = {}): AssetModelItem => ({
   weight_lbs: 50, weight_kg: 22.68, length_in: 32, width_in: 17,
   height_in: 3.4, length_cm: 81.28, width_cm: 43.18, height_cm: 8.64,
   mount_type: 'rails', rail_type: 'B7', form_factor: null, knowledge: 'Careful with rails.',
-  aliases: ['R740'], created_at: '', updated_at: '',
+  aliases: ['R740'], review_dismissed_at: null, created_at: '', updated_at: '',
   ...over,
 });
 
@@ -100,7 +100,7 @@ describe('model form payload', () => {
     weight_lbs: 50, weight_kg: 22.68, length_in: 32, width_in: 17,
     height_in: 3.4, length_cm: 81.28, width_cm: 43.18, height_cm: 8.64,
     mount_type: 'rails', rail_type: 'B7', form_factor: 'chassis', knowledge: '', aliases: [],
-    created_at: '', updated_at: '',
+    review_dismissed_at: null, created_at: '', updated_at: '',
   };
   it('sends only the CHANGED unit side so the API recomputes the partner', () => {
     const f = formFromModel(model);
@@ -555,6 +555,40 @@ describe('identity columns (Serial / Name, Serial, Name)', () => {
         sortKey: 'primary', sortDir: -1 as const, filters: { model: { text: 'dell' } },
       };
       expect(migrateIdentityColumns(stored)).toEqual({ ...stored, visible: ['model', 'primary'] });
+    });
+  });
+});
+
+describe('mergeFieldRows', () => {
+  it('shows the duplicate value as the result only where the plan fills', () => {
+    const target = assetModel({ ru_size: null, rail_type: 'A1', weight_lbs: null, weight_kg: null });
+    const source = assetModel({ ru_size: 2, rail_type: 'B7', weight_lbs: 50, weight_kg: 22.68 });
+    const rows = mergeFieldRows(target, source, { ru_size: 2, weight_lbs: 50, weight_kg: 22.68 });
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
+    expect(byKey.ru_size).toMatchObject({ keep: '—', dup: '2', result: '2' });
+    expect(byKey.rail_type).toMatchObject({ keep: 'A1', dup: 'B7', result: 'A1' });
+    expect(byKey.weight.result).toBe('50 lb / 22.68 kg');
+  });
+
+  it('shows the metric side of a group the source only has in metric', () => {
+    const target = assetModel({
+      weight_lbs: null, weight_kg: null,
+      length_in: null, width_in: null, height_in: null,
+      length_cm: null, width_cm: null, height_cm: null,
+    });
+    const source = assetModel({
+      weight_lbs: null, weight_kg: 22.68,
+      length_in: null, width_in: null, height_in: null,
+      length_cm: 81.28, width_cm: 43.18, height_cm: 8.64,
+    });
+    // a kg-only source only puts its own columns in `fills`
+    const rows = mergeFieldRows(target, source, {
+      weight_kg: 22.68, length_cm: 81.28, width_cm: 43.18, height_cm: 8.64,
+    });
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
+    expect(byKey.weight).toMatchObject({ keep: '—', dup: '22.68 kg', result: '22.68 kg' });
+    expect(byKey.dims).toMatchObject({
+      keep: '—', dup: '81.28 × 43.18 × 8.64 cm', result: '81.28 × 43.18 × 8.64 cm',
     });
   });
 });

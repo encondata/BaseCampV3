@@ -577,6 +577,7 @@ class AssetModel(Base):
     rail_type: Mapped[str | None]
     form_factor: Mapped[str | None]      # standalone | chassis | node | null (0068)
     knowledge: Mapped[str] = mapped_column(server_default="")
+    review_dismissed_at: Mapped[datetime | None]
     legacy_id: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

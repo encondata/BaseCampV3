@@ -27,7 +27,8 @@ const MODEL: AssetModelItem = {
   weight_lbs: null, weight_kg: null, length_in: null, width_in: null, height_in: null,
   length_cm: null, width_cm: null, height_cm: null, mount_type: null, rail_type: null,
   form_factor: null,
-  knowledge: '', aliases: [], created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:00Z',
+  knowledge: '', aliases: [], review_dismissed_at: null,
+  created_at: '2026-08-01T00:00:00Z', updated_at: '2026-08-01T00:00:00Z',
 };
 
 const CONTAINERS: WarehouseContainer[] = [];

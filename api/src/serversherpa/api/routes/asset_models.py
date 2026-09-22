@@ -6,16 +6,23 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     AssetCategoryCreateIn, AssetCategoryOut, AssetCategoryUpdateIn,
     AssetModelAliasesIn, AssetModelCreateIn, AssetModelItem,
-    AssetModelUpdateIn,
+    AssetModelUpdateIn, MergeIn, MergePlanOut, ModelSummary,
+    ReviewDismissIn, ReviewItem, ReviewOut,
 )
+from serversherpa.assets.merge import apply_plan, build_plan
+from serversherpa.assets.review import duplicate_groups, is_imported
 from serversherpa.assets.units import apply_unit_pairs
-from serversherpa.db.models import AssetCategory, AssetModel, AssetModelAlias
+from serversherpa.db.models import (
+    Asset, AssetCategory, AssetModel, AssetModelAlias, StockLine,
+)
 from serversherpa.services.audit import audit, diff, snapshot
 
 router = APIRouter(prefix="/asset-models", tags=["assets"])
@@ -75,7 +82,8 @@ def _item(m: AssetModel, cats: dict, aliases: dict) -> dict:
         "width_cm": f(m.width_cm), "height_cm": f(m.height_cm),
         "mount_type": m.mount_type, "rail_type": m.rail_type,
         "form_factor": m.form_factor,
-        "knowledge": m.knowledge, "aliases": aliases.get(m.id, []),
+        "knowledge": m.knowledge, "review_dismissed_at": m.review_dismissed_at,
+        "aliases": aliases.get(m.id, []),
         "created_at": m.created_at, "updated_at": m.updated_at,
     }
 
@@ -108,6 +116,22 @@ async def _check_duplicate(db: DbSession, make: str, model: str,
         raise _err(409, "duplicate_model")
 
 
+async def _counts(db: DbSession, model_ids: list[uuid.UUID]) -> dict[uuid.UUID, tuple[int, int]]:
+    """(assets, stock lines) referencing each model."""
+    if not model_ids:
+        return {}
+    out = {mid: [0, 0] for mid in model_ids}
+    for mid, n in (await db.execute(
+        select(Asset.model_id, func.count()).where(Asset.model_id.in_(model_ids))
+        .group_by(Asset.model_id))).all():
+        out[mid][0] = n
+    for mid, n in (await db.execute(
+        select(StockLine.model_id, func.count()).where(StockLine.model_id.in_(model_ids))
+        .group_by(StockLine.model_id))).all():
+        out[mid][1] = n
+    return {k: (v[0], v[1]) for k, v in out.items()}
+
+
 @router.get("", response_model=list[AssetModelItem])
 async def list_asset_models(
     db: DbSession,
@@ -118,6 +142,54 @@ async def list_asset_models(
     cats = await _cats(db)
     aliases = await _aliases_by_model(db, [m.id for m in models])
     return [AssetModelItem(**_item(m, cats, aliases)) for m in models]
+
+
+@router.get("/review", response_model=ReviewOut)
+async def review_asset_models(
+    db: DbSession,
+    include_dismissed: bool = False,
+    _actor: AuthContext = require_permission("asset_models", "view"),
+) -> ReviewOut:
+    all_models = (await db.scalars(
+        select(AssetModel).order_by(AssetModel.make, AssetModel.model))).all()
+    dismissed_count = sum(1 for m in all_models if m.review_dismissed_at is not None)
+    models = [m for m in all_models
+              if include_dismissed or m.review_dismissed_at is None]
+    cats = await _cats(db)
+    aliases = await _aliases_by_model(db, [m.id for m in models])
+    counts = await _counts(db, [m.id for m in models])
+
+    def item(m: AssetModel, reason: str, key: str | None) -> ReviewItem:
+        a, s = counts.get(m.id, (0, 0))
+        return ReviewItem(**_item(m, cats, aliases), asset_count=a,
+                          stock_line_count=s, reason=reason, group_key=key)
+
+    imported = [item(m, "imported", None) for m in models if is_imported(m)]
+    groups = [[item(m, "duplicate", key) for m in ms]
+              for key, ms in duplicate_groups(models, aliases, counts)]
+    return ReviewOut(imported=imported, duplicates=groups,
+                     dismissed_count=dismissed_count)
+
+
+@router.post("/{model_id}/review", response_model=AssetModelItem)
+async def dismiss_asset_model_review(
+    model_id: uuid.UUID,
+    body: ReviewDismissIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("asset_models", "change"),
+) -> AssetModelItem:
+    _require_global(actor)
+    m = await db.get(AssetModel, model_id)
+    if m is None:
+        raise _err(404, "asset_model_not_found")
+    currently = m.review_dismissed_at is not None
+    if body.dismissed != currently:
+        m.review_dismissed_at = datetime.now(UTC) if body.dismissed else None
+        audit(db, actor_id=actor.person.id, entity_type="asset_model",
+              entity_id=str(model_id),
+              action="review.dismiss" if body.dismissed else "review.restore")
+        await db.commit()
+    return await _detail(db, m)
 
 
 @router.get("/{model_id}", response_model=AssetModelItem)
@@ -229,6 +301,81 @@ async def set_asset_model_aliases(
               changes={"added": sorted(added), "removed": sorted(removed)})
     await db.commit()
     return await _detail(db, m)
+
+
+@router.post("/{target_id}/merge", response_model=MergePlanOut)
+async def merge_asset_model(
+    target_id: uuid.UUID,
+    body: MergeIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("asset_models", "change"),
+) -> MergePlanOut:
+    """Fold `source_id` into this model. Dry run returns the plan only."""
+    _require_global(actor)
+    if body.source_id == target_id:
+        raise _err(409, "cannot_merge_self")
+    target = await db.get(AssetModel, target_id)
+    source = await db.get(AssetModel, body.source_id)
+    if target is None or source is None:
+        raise _err(404, "asset_model_not_found")
+    now = datetime.now(UTC)
+    plan = await build_plan(db, target, source, now)
+
+    cats = await _cats(db)
+    aliases = await _aliases_by_model(db, [target.id, source.id])
+    counts = await _counts(db, [target.id, source.id])
+
+    def summary(m: AssetModel, aliases: dict, counts: dict) -> ModelSummary:
+        a, s = counts.get(m.id, (0, 0))
+        return ModelSummary(**_item(m, cats, aliases), asset_count=a, stock_line_count=s)
+
+    out = MergePlanOut(target=summary(target, aliases, counts),
+                       source=summary(source, aliases, counts),
+                       moves=plan.moves, fills=plan.fills,
+                       alias_added=plan.alias_added, aliases_after=plan.aliases_after,
+                       conflicts=plan.conflicts, can_merge=plan.can_merge,
+                       applied=False)
+    if body.dry_run:
+        return out
+    if not plan.can_merge:
+        raise _err(409, "alias_conflict", conflicts=plan.conflicts)
+    source_name = f"{source.make} {source.model}"
+    source_id = str(source.id)
+    # The plan was built from rows read a moment ago; another request can
+    # delete or re-alias either model in between. Anything the write path
+    # raises over that race is a conflict the caller fixes by refreshing —
+    # never a 500.
+    try:
+        await apply_plan(db, target, source, plan, now)
+        audit(db, actor_id=actor.person.id, entity_type="asset_model",
+              entity_id=str(target.id), action="merge",
+              changes={"source_id": source_id, "source_make_model": source_name,
+                       "moves": plan.moves, "fills": plan.fills,
+                       "alias_added": plan.alias_added,
+                       "aliases_moved": plan.aliases_moved})
+        # The source row is gone, so the audit viewer can never resolve its
+        # name from the database. auditFormat's targetLabel() falls back to
+        # changes["name"]["to"], so writing the merged-away name there is
+        # what keeps this row findable by what it happened to.
+        audit(db, actor_id=actor.person.id, entity_type="asset_model",
+              entity_id=source_id, action="merged_into",
+              changes={"target_id": str(target.id),
+                       "target_make_model": f"{target.make} {target.model}",
+                       "name": {"to": source_name}})
+        # `source` is the summary from before the merge (the model no longer
+        # exists); `target` is re-read so the response carries what the merge
+        # actually produced — new asset/stock counts and the added alias.
+        # Read inside the guard so a target deleted underneath us is a 409
+        # like every other race, not a 500 after the commit.
+        await db.refresh(target)
+        out.target = summary(target, await _aliases_by_model(db, [target.id]),
+                             await _counts(db, [target.id]))
+        await db.commit()
+    except (IntegrityError, StaleDataError, ObjectDeletedError):
+        await db.rollback()
+        raise _err(409, "merge_conflict") from None
+    out.applied = True
+    return out
 
 
 @categories_router.get("/asset-categories", response_model=list[AssetCategoryOut])

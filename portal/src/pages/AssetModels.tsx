@@ -9,14 +9,19 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 
 import { useAuth } from '../auth/AuthContext';
 import ModelEditModal from '../components/assets/ModelEditModal';
+import ModelMergeModal from '../components/assets/ModelMergeModal';
+import ModelReviewPanel from '../components/assets/ModelReviewPanel';
 import GodDeleteButton from '../components/GodDeleteButton';
 import {
   ApiError,
   listAssetCategories,
   listAssetModels,
+  reviewAssetModels,
   updateAssetModel,
   type AssetCategoryOut,
   type AssetModelItem,
+  type MergePlanOut,
+  type ReviewOut,
 } from '../lib/api';
 import {
   MODEL_ERRORS, MODEL_GOD_FIELDS, formatDims, formFactorLabel, modelCellText, modelSearchText,
@@ -28,6 +33,7 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
+import { useToast } from '../lib/notificationsContext';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
@@ -159,6 +165,15 @@ export default function AssetModels() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [view, setView] = useState<'all' | 'review'>('all');
+  const [merging, setMerging] = useState<{ source: AssetModelItem; presetTargetId: string | null } | null>(null);
+  const [reviewKey, setReviewKey] = useState(0);
+  // The review payload lives here, not in ModelReviewPanel: the Review tab's
+  // count badge needs it even while the All view is showing.
+  const [reviewData, setReviewData] = useState<ReviewOut | null>(null);
+  const [reviewError, setReviewError] = useState('');
+  const [showDismissed, setShowDismissed] = useState(false);
+  const toast = useToast();
 
   const load = async () => {
     try {
@@ -175,6 +190,35 @@ export default function AssetModels() {
     void listAssetCategories().then(setCategories).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    let live = true;
+    reviewAssetModels(showDismissed)
+      .then((d) => { if (live) { setReviewData(d); setReviewError(''); } })
+      .catch((err) => {
+        if (live) {
+          setReviewError(err instanceof ApiError && err.status === 403
+            ? 'You do not have permission to view the catalog.'
+            : 'Failed to load the review list.');
+        }
+      });
+    return () => { live = false; };
+  }, [showDismissed, reviewKey]);
+
+  // What still wants a human decision: every model the review returned, once
+  // each (a model can be both import-created and part of a duplicate group).
+  // Counted only from a fetch that excluded dismissed rows: with "Show
+  // dismissed" on, the server groups over the wider list, so a kept model can
+  // rejoin a group with its dismissed twin — that must not move the badge.
+  const [reviewCount, setReviewCount] = useState<number | null>(null);
+  useEffect(() => {
+    if (!reviewData || showDismissed) return;
+    const ids = new Set<string>();
+    for (const m of [...reviewData.imported, ...reviewData.duplicates.flat()]) {
+      if (m.review_dismissed_at === null) ids.add(m.id);
+    }
+    setReviewCount(ids.size);
+  }, [reviewData, showDismissed]);
 
   const godFields = useMemo(() => MODEL_GOD_FIELDS({
     categories: () => categories.map((c) => ({ value: c.key, label: c.label })),
@@ -231,6 +275,9 @@ export default function AssetModels() {
     'x', { ignoreFrom: '.pop-menu' },
   );
   const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
+
+  const editingModel = editingId === null
+    ? null : (models?.find((m) => m.id === editingId) ?? null);
 
   const cellFor = (m: AssetModelItem, key: string) => {
     if (god.editing) {
@@ -313,6 +360,16 @@ export default function AssetModels() {
       </div>
 
       <div className="dir-toolbar">
+        <div className="segmented" role="tablist" aria-label="Catalog view">
+          <button role="tab" aria-selected={view === 'all'} className={view === 'all' ? 'on' : ''}
+                  onClick={() => setView('all')}>All</button>
+          <button role="tab" aria-selected={view === 'review'} className={view === 'review' ? 'on' : ''}
+                  onClick={() => setView('review')}>
+            {/* the space is load-bearing: without it the tab's accessible
+                name is "Review3" */}
+            Review{reviewCount !== null && <>{' '}<span className="badge-count">{reviewCount}</span></>}
+          </button>
+        </div>
         <div className="toolbar-right">
           <div className="dir-search" style={{ marginLeft: 0 }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -336,7 +393,7 @@ export default function AssetModels() {
 
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load catalog</b>{error}</div>}
 
-      {!error && (
+      {!error && view === 'all' && (
         <div className="dir-list">
           <div className="list-head" style={grid}>
             <span className="col-head">
@@ -411,6 +468,7 @@ export default function AssetModels() {
                           model={m}
                           canEdit={canChange}
                           onEdit={() => setEditingId(m.id)}
+                          onMerge={() => setMerging({ source: m, presetTargetId: null })}
                           godVisible={godMode}
                           pending={pd.pendingIds.has(m.id)}
                           onMark={() => pd.mark('asset_model', m.id, `${m.make} ${m.model}`)}
@@ -426,13 +484,23 @@ export default function AssetModels() {
         </div>
       )}
 
-      {editingId !== null && (
+      {!error && view === 'review' && (
+        <ModelReviewPanel canChange={canChange} data={reviewData} loadError={reviewError}
+                          showDismissed={showDismissed} onToggleDismissed={setShowDismissed}
+                          onChanged={() => setReviewKey((k) => k + 1)}
+                          onMerge={(source, presetTargetId) => setMerging({ source, presetTargetId })}
+                          onEdit={(id) => setEditingId(id)} />
+      )}
+
+      {/* editingModel, never `?? null`: an id the catalog doesn't have would
+          otherwise open ModelEditModal in CREATE mode. */}
+      {editingModel && (
         <ModelEditModal
-          model={models?.find((m) => m.id === editingId) ?? null}
+          model={editingModel}
           categories={categories}
           canChange={canChange}
           onClose={() => setEditingId(null)}
-          onSaved={() => load()}
+          onSaved={() => { void load(); setReviewKey((k) => k + 1); }}
         />
       )}
       {creating && (
@@ -441,8 +509,20 @@ export default function AssetModels() {
           categories={categories}
           canChange={canChange}
           onClose={() => setCreating(false)}
-          onSaved={() => load()}
+          onSaved={() => { void load(); setReviewKey((k) => k + 1); }}
         />
+      )}
+      {merging && models && (
+        <ModelMergeModal source={merging.source} models={models} presetTargetId={merging.presetTargetId}
+                         onClose={() => setMerging(null)}
+                         onMerged={(plan: MergePlanOut) => {
+                           setMerging(null);
+                           toast(`Merged ${plan.source.make} ${plan.source.model} into ${plan.target.make} ${plan.target.model}: ${plan.moves.assets} asset${plan.moves.assets === 1 ? '' : 's'} moved`);
+                           void load();
+                           setReviewKey((k) => k + 1);
+                           // opening a row only means anything on the All view
+                           if (view === 'all') setOpenId(plan.target.id);
+                         }} />
       )}
     </div>
   );
@@ -452,9 +532,9 @@ export default function AssetModels() {
  * Edit button. ─────────────────────────────────────────────────────── */
 
 function ModelRowDetail({
-  model, canEdit, onEdit, godVisible, pending, onMark, onUnmark,
+  model, canEdit, onEdit, onMerge, godVisible, pending, onMark, onUnmark,
 }: {
-  model: AssetModelItem; canEdit: boolean; onEdit: () => void;
+  model: AssetModelItem; canEdit: boolean; onEdit: () => void; onMerge: () => void;
   godVisible: boolean; pending: boolean;
   onMark: () => Promise<void>; onUnmark: () => Promise<void>;
 }) {
@@ -491,7 +571,10 @@ function ModelRowDetail({
       {(canEdit || godVisible) && (
         <div className="detail-actions" style={{ gridColumn: '1 / -1' }}>
           {canEdit && (
-            <button className="btn-solid" onClick={onEdit}>Edit</button>
+            <>
+              <button className="btn-solid" onClick={onEdit}>Edit</button>
+              <button className="mini-btn accent" onClick={onMerge}>Merge into…</button>
+            </>
           )}
           <GodDeleteButton visible={godVisible} entityType="asset_model" entityId={model.id}
                            label={`${model.make} ${model.model}`} pending={pending}

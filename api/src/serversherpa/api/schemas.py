@@ -1140,6 +1140,7 @@ class AssetModelItem(BaseModel):
     rail_type: str | None = None
     form_factor: str | None = None
     knowledge: str
+    review_dismissed_at: datetime | None = None
     aliases: list[str] = []
     created_at: datetime
     updated_at: datetime
@@ -1188,6 +1189,55 @@ class AssetModelUpdateIn(BaseModel):
 class AssetModelAliasesIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     aliases: list[str]
+
+
+class ModelSummary(AssetModelItem):
+    asset_count: int = 0
+    stock_line_count: int = 0
+
+
+class ReviewItem(ModelSummary):
+    reason: Literal["imported", "duplicate"]
+    group_key: str | None = None
+
+
+class ReviewOut(BaseModel):
+    imported: list[ReviewItem]
+    duplicates: list[list[ReviewItem]]
+    dismissed_count: int
+
+
+class ReviewDismissIn(BaseModel):
+    dismissed: bool
+    model_config = ConfigDict(extra="forbid")
+
+
+class MergeIn(BaseModel):
+    source_id: uuid.UUID
+    dry_run: bool = False
+    model_config = ConfigDict(extra="forbid")
+
+
+class MergeConflict(BaseModel):
+    alias: str
+    model_id: uuid.UUID
+    make: str
+    model: str
+
+
+class MergePlanOut(BaseModel):
+    # On an applied merge `target` is re-read afterwards (post-merge counts
+    # and aliases); `source` is always the duplicate as it was BEFORE the
+    # merge — the row itself is gone by the time the response is built.
+    target: ModelSummary
+    source: ModelSummary
+    moves: dict[str, int]
+    fills: dict[str, float | int | str | None]
+    alias_added: str | None
+    aliases_after: list[str]
+    conflicts: list[MergeConflict]
+    can_merge: bool
+    applied: bool
 
 
 class AssetItem(BaseModel):

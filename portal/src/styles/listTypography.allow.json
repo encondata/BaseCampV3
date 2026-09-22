@@ -50,6 +50,11 @@
     "reason": "not list content: eyebrow label (out of scope per spec)"
   },
   {
+    "file": "styles/assets.css",
+    "selector": ".rv-panel .eyebrow-sm",
+    "reason": "not list content: eyebrow label (out of scope per spec) \u2014 same mirror of directory.css's .detail-block .eyebrow-sm as the initiatives.css entry above"
+  },
+  {
     "file": "styles/initiatives.css",
     "selector": ".idet-header-actions .mini-btn",
     "reason": "not list content: header action button override (comment notes it is scoped to this header row only, not a list row)"

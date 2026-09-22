@@ -76,3 +76,32 @@
   border-radius: 999px;
   background: var(--surface, #fff);
 }
+
+/* ── merge dialog ─────────────────────────────────────────── */
+.modal-card.reports-modal-card.rgm-card.model-merge-card { width: min(820px, 96vw); max-width: 96vw; overflow: visible; max-height: none; }
+.mm-source { padding: 8px 0; }
+.mm-plan { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.mm-table td, .mm-table th { padding: 6px 10px; text-align: left; vertical-align: top; }
+.mm-table tr.filled td:last-child { color: var(--c-green); }
+.mm-conflicts { margin: 0; padding-left: 18px; color: var(--c-red); }
+
+/* ── catalog review view ──────────────────────────────────── */
+.rv-panel { display: flex; flex-direction: column; gap: 16px; }
+/* directory.css scopes .eyebrow-sm to .detail-block — mirror it here */
+.rv-panel .eyebrow-sm {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  margin: 0 0 14px;
+}
+.rv-toggle { align-self: flex-end; }
+.rv-section { display: flex; flex-direction: column; gap: 8px; }
+.rv-group { border: 1px solid var(--c-amber-bd, rgba(255, 161, 46, 0.38)); border-radius: 12px; padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+.rv-group-key { color: var(--text-mute); padding-bottom: 4px; }
+.rv-row { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; padding: 8px 12px; border-radius: 10px; background: var(--surface); }
+.rv-row.dismissed { opacity: .6; }
+.rv-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rv-meta, .rv-note { color: var(--text-mute); }
+.rv-actions { display: flex; gap: 6px; }
