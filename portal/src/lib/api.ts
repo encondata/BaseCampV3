@@ -668,6 +668,26 @@ export async function putRoleMatrix(
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+export interface MatrixPreviewMember {
+  person_id: string; display_name: string; avatar_url: string | null; max_rank: number;
+  flips: { resource: string; action: Action; from: boolean; to: boolean }[];
+  masked: { resource: string; action: Action; by: 'override' | 'gate' | 'hard_gate' | 'floor' | 'role' }[];
+}
+export interface MatrixPreviewOut {
+  role: string; granted: string[]; revoked: string[];
+  member_count: number; affected_count: number; members: MatrixPreviewMember[];
+}
+
+export async function previewRoleMatrix(
+  name: string, matrix: Record<string, Record<Action, boolean>>,
+): Promise<MatrixPreviewOut> {
+  const resp = await apiFetch(`/access/roles/${name}/matrix/preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ matrix }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 export async function cloneRole(
   body: { source: string; name: string; label: string; rank: number },
 ): Promise<void> {
@@ -740,6 +760,30 @@ export async function putOverrides(
 
 export async function getEffective(personId: string): Promise<EffectiveOut> {
   const resp = await apiFetch(`/access/effective/${personId}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export type CopyPart = 'roles' | 'groups' | 'overrides';
+export type CopyMode = 'replace' | 'add';
+export interface CopyAccessIn {
+  source_id: string; target_ids: string[]; parts: CopyPart[]; mode: CopyMode; dry_run: boolean;
+}
+export interface CopyPlanRow {
+  person_id: string; display_name: string; avatar_url: string | null;
+  status: 'ok' | 'skipped';
+  reason: 'cannot_target_self' | 'rank_too_low' | 'no_account'
+    | 'role_rank_too_low' | 'person_not_found' | null;
+  roles: { from: string[]; to: string[] } | null;
+  groups: { from: string[]; to: string[] } | null;
+  overrides: { added: number; removed: number; changed: number } | null;
+}
+export interface CopyAccessOut { mode: CopyMode; parts: CopyPart[]; targets: CopyPlanRow[]; applied: boolean }
+
+export async function copyAccess(body: CopyAccessIn): Promise<CopyAccessOut> {
+  const resp = await apiFetch('/access/copy', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

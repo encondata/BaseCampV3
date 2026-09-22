@@ -2,12 +2,13 @@
 global-anchor role — anti-lockout); writes need access:change + rank rules."""
 
 import uuid
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
+from serversherpa.access.apply import apply_overrides
+from serversherpa.access.copy import MODES, PARTS, apply_copy, plan_copy
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.effective import effective_cells
 from serversherpa.access.resolver import can_touch_rank
@@ -142,13 +143,12 @@ async def _load_role_for_edit(
     return role
 
 
-@router.put("/roles/{name}/matrix")
-async def put_matrix(
-    name: str,
-    body: MatrixIn,
-    db: DbSession,
-    actor: AuthContext = require_permission("access", "change"),
-) -> dict:
+async def _validated_matrix_edit(
+    db: DbSession, actor: AuthContext, name: str, body: MatrixIn,
+) -> tuple[Role, set[tuple[str, str]], set[tuple[str, str]]]:
+    """Guards shared by the matrix PUT and its preview: role editable at the
+    actor's rank, not a role the actor holds, known cells, developer-only
+    and access:view locks. Returns (role, before, desired)."""
     role = await _load_role_for_edit(db, actor, name)
     if role.name in actor.roles:
         # rank alone doesn't catch this: an actor can outrank a role they
@@ -167,11 +167,21 @@ async def put_matrix(
                 raise _err(422, "developer_only_resource")
     if not body.matrix.get("access", {}).get("view", False):
         raise _err(422, "access_view_locked")
-
     before = {(rp.resource, rp.action) for rp in await db.scalars(
         select(RolePermission).where(RolePermission.role == name))}
     desired = {(res, a) for res, actions in body.matrix.items()
                for a, on in actions.items() if on}
+    return role, before, desired
+
+
+@router.put("/roles/{name}/matrix")
+async def put_matrix(
+    name: str,
+    body: MatrixIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("access", "change"),
+) -> dict:
+    role, before, desired = await _validated_matrix_edit(db, actor, name, body)
     for res, a in before - desired:
         await db.execute(
             RolePermission.__table__.delete().where(
@@ -186,6 +196,104 @@ async def put_matrix(
                    "revoked": sorted(f"{r}:{a}" for r, a in before - desired)})
     await db.commit()
     return {"role": name, "grants": len(desired)}
+
+
+async def _access_signatures(
+    db: DbSession, person_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, tuple]:
+    """Everything `effective_cells` reads per person — active role grants
+    (with their client/partner anchor), access groups and overrides — as one
+    hashable value per person. Two people with the same signature resolve to
+    the same effective access, so the preview can resolve them once."""
+    sigs: dict[uuid.UUID, tuple] = {}
+    if not person_ids:
+        return sigs
+    roles: dict[uuid.UUID, set] = {}
+    groups: dict[uuid.UUID, set] = {}
+    overrides: dict[uuid.UUID, set] = {}
+    for pid, role, client_id, partner_id in (await db.execute(
+        select(PersonRole.person_id, PersonRole.role, PersonRole.client_id,
+               PersonRole.partner_id)
+        .where(PersonRole.person_id.in_(person_ids),
+               PersonRole.revoked_at.is_(None)))).all():
+        roles.setdefault(pid, set()).add((role, client_id, partner_id))
+    for pid, gid in (await db.execute(
+        select(AccessGroupMember.person_id, AccessGroupMember.group_id)
+        .where(AccessGroupMember.person_id.in_(person_ids)))).all():
+        groups.setdefault(pid, set()).add(gid)
+    for pid, res, action, allow in (await db.execute(
+        select(PermissionOverride.person_id, PermissionOverride.resource,
+               PermissionOverride.action, PermissionOverride.allow)
+        .where(PermissionOverride.person_id.in_(person_ids)))).all():
+        overrides.setdefault(pid, set()).add((res, action, allow))
+    for pid in person_ids:
+        sigs[pid] = (frozenset(roles.get(pid, ())),
+                     frozenset(groups.get(pid, ())),
+                     frozenset(overrides.get(pid, ())))
+    return sigs
+
+
+@router.post("/roles/{name}/matrix/preview")
+async def preview_matrix(
+    name: str,
+    body: MatrixIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("access", "change"),
+) -> dict:
+    """Who a matrix change would affect: every member's effective cells are
+    re-resolved with this role's grants swapped for the draft. Writes nothing.
+
+    Members of one role overwhelmingly share the same access, so the two
+    resolves run once per distinct access signature (roles + groups +
+    overrides), not once per member."""
+    _, before, desired = await _validated_matrix_edit(db, actor, name, body)
+    # A stale role_permissions row can name a resource or action the registry
+    # no longer knows; such a cell has no effective value to compare, so it is
+    # left out of the diff entirely rather than raising a KeyError below.
+    known = {(res, a) for res in REGISTRY for a in ACTIONS}
+    granted_cells = (desired - before) & known
+    revoked_cells = (before - desired) & known
+    changed = granted_cells | revoked_cells
+    members = (await db.execute(
+        select(Person)
+        .join(PersonRole, PersonRole.person_id == Person.id)
+        .where(PersonRole.role == name, PersonRole.revoked_at.is_(None))
+        .distinct().order_by(Person.last_name, Person.first_name))).scalars().all()
+    signatures = await _access_signatures(db, [p.id for p in members])
+    cache: dict[tuple, tuple] = {}
+    out = []
+    affected = 0
+    for person in members:
+        sig = signatures[person.id]
+        if sig not in cache:
+            cache[sig] = (
+                await effective_cells(db, person.id),
+                await effective_cells(db, person.id,
+                                      role_grants_override={name: desired}))
+        current, draft = cache[sig]
+        flips, masked = [], []
+        for res, action in sorted(changed):
+            if action not in current.cells.get(res, {}):
+                continue
+            was = current.cells[res][action]["value"]
+            now = draft.cells[res][action]
+            if was != now["value"]:
+                flips.append({"resource": res, "action": action,
+                              "from": was, "to": now["value"]})
+            else:
+                masked.append({"resource": res, "action": action, "by": now["source"]})
+        if flips:
+            affected += 1
+        out.append({"person_id": str(person.id), "display_name": person.display_name,
+                    "avatar_url": presign_get(person.avatar_key),
+                    "max_rank": current.access.max_rank,
+                    "flips": flips, "masked": masked})
+    out.sort(key=lambda m: (-len(m["flips"]), m["display_name"]))
+    return {"role": name,
+            "granted": sorted(f"{r}:{a}" for r, a in granted_cells),
+            "revoked": sorted(f"{r}:{a}" for r, a in revoked_cells),
+            "member_count": len(members), "affected_count": affected,
+            "members": out}
 
 
 @router.post("/roles", status_code=201)
@@ -410,28 +518,67 @@ async def put_overrides(
             if a not in ACTIONS:
                 raise _err(422, "unknown_action")
 
-    current = {(o.resource, o.action): o for o in await db.scalars(
-        select(PermissionOverride).where(
-            PermissionOverride.person_id == person_id))}
     desired = {(res, a): v for res, actions in body.overrides.items()
                for a, v in actions.items() if v is not None}
-    changes: dict = {}
-    for key, row in current.items():
-        if key not in desired:
-            changes[f"{key[0]}:{key[1]}"] = {"from": row.allow, "to": None}
-            await db.delete(row)
-        elif row.allow != desired[key]:
-            changes[f"{key[0]}:{key[1]}"] = {"from": row.allow, "to": desired[key]}
-            row.allow = desired[key]
-            row.set_by = actor.person.id
-            row.set_at = datetime.now(UTC)
-    for key, value in desired.items():
-        if key not in current:
-            changes[f"{key[0]}:{key[1]}"] = {"from": None, "to": value}
-            db.add(PermissionOverride(person_id=person_id, resource=key[0],
-                                      action=key[1], allow=value,
-                                      set_by=actor.person.id))
+    changes = await apply_overrides(db, actor_id=actor.person.id,
+                                    person_id=person_id, desired=desired)
     audit(db, actor_id=actor.person.id, entity_type="person",
           entity_id=str(person_id), action="override.set", changes=changes)
     await db.commit()
     return {"person_id": str(person_id), "overrides": len(desired)}
+
+
+# One copy plans and applies per target; the cap keeps a single request
+# from turning into an unbounded write batch.
+MAX_COPY_TARGETS = 200
+
+
+class CopyIn(BaseModel):
+    source_id: uuid.UUID
+    target_ids: list[uuid.UUID]
+    parts: list[str]
+    mode: str = "replace"
+    dry_run: bool = False
+
+
+@router.post("/copy")
+async def copy_access(
+    body: CopyIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("access", "change"),
+) -> dict:
+    """Copy one person's global roles / groups / overrides to others.
+    Skips (self, no account, rank) are reported per target, never fatal."""
+    if not actor.access.is_global:
+        raise _err(403, "global_only")
+    targets = list(dict.fromkeys(body.target_ids))
+    if not targets:
+        raise _err(422, "no_targets")
+    if len(targets) > MAX_COPY_TARGETS:
+        raise _err(422, "too_many_targets")
+    parts = set(body.parts)
+    if not parts:
+        raise _err(422, "no_parts")
+    if parts - set(PARTS):
+        raise _err(422, "unknown_part")
+    if body.mode not in MODES:
+        raise _err(422, "unknown_mode")
+    source = await db.get(Person, body.source_id)
+    if source is None:
+        raise _err(404, "person_not_found")
+
+    _, rows, role_rows = await plan_copy(
+        db, actor_id=actor.person.id, actor_rank=actor.access.max_rank,
+        source_id=body.source_id, target_ids=targets, parts=parts, mode=body.mode)
+    if not body.dry_run:
+        changed = await apply_copy(db, actor_id=actor.person.id, rows=rows,
+                                   parts=parts, role_rows=role_rows)
+        for pid, diff in changed.items():
+            audit(db, actor_id=actor.person.id, entity_type="person",
+                  entity_id=str(pid), action="access.copy",
+                  changes={"source_id": str(source.id),
+                           "source_name": source.display_name,
+                           "mode": body.mode, "parts": sorted(parts), **diff})
+        await db.commit()
+    return {"mode": body.mode, "parts": sorted(parts),
+            "targets": [r.out() for r in rows], "applied": not body.dry_run}

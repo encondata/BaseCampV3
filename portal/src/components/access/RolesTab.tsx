@@ -15,6 +15,7 @@ import {
 } from '../../lib/api';
 import ComboBox, { type ComboOption } from '../ComboBox';
 import MatrixTable from './MatrixTable';
+import RoleReviewModal from './RoleReviewModal';
 
 type Matrix = Record<string, Record<Action, boolean>>;
 
@@ -75,6 +76,7 @@ export default function RolesTab({ summary, canEdit, maxRank, onChanged }: Props
   const [err, setErr] = useState('');
   const [cloneOpen, setCloneOpen] = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   // Re-sync the working copy whenever the selection or server truth
   // changes. Layout effect (not useEffect): it must run BEFORE paint so
@@ -132,11 +134,16 @@ export default function RolesTab({ summary, canEdit, maxRank, onChanged }: Props
     setErr('');
     try {
       await putRoleMatrix(role.name, draft);
+      // Close the review before the refetch: left mounted, its effect would
+      // re-run against the refreshed role and preview the matrix that was
+      // just saved (a preview of no change at all).
+      setReviewOpen(false);
       // Await the refetch: `saving` must stay true (matrix locked) until
       // the fresh role object has landed and the resync has adopted it.
       await onChanged();
     } catch (e) {
       setErr(msgFor(e));
+      throw e;
     } finally {
       setSaving(false);
     }
@@ -226,8 +233,8 @@ export default function RolesTab({ summary, canEdit, maxRank, onChanged }: Props
       {dirty && (
         <div className="save-bar">
           <span>Unsaved changes to <b>{role.label}</b></span>
-          <button className="btn-solid" disabled={saving} onClick={() => void save()}>
-            {saving ? 'Saving…' : 'Save changes'}
+          <button className="btn-solid" disabled={saving} onClick={() => setReviewOpen(true)}>
+            Save changes
           </button>
           <button className="mini-btn" disabled={saving}
                   onClick={() => { setDraft(copyMatrix(role.matrix)); setErr(''); }}>
@@ -240,6 +247,11 @@ export default function RolesTab({ summary, canEdit, maxRank, onChanged }: Props
         <CloneRoleModal source={role} maxRank={maxRank}
                         onClose={() => setCloneOpen(false)}
                         onDone={() => { setCloneOpen(false); void onChanged(); }} />
+      )}
+
+      {reviewOpen && (
+        <RoleReviewModal role={role} matrix={draft} resources={summary.resources}
+                         onBack={() => setReviewOpen(false)} onConfirm={save} />
       )}
     </div>
   );

@@ -11,11 +11,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.access.defaults import GATE_BYPASS_RANK
-from serversherpa.access.resolver import AccessInfo, resolve_access
+from serversherpa.access.resolver import AccessInfo, resolve_access, role_grants
 from serversherpa.access.resources import ACTIONS, REGISTRY
 from serversherpa.db.models import (
     AccessGroup, AccessGroupMember, PermissionOverride, ResourceGroupGate,
-    RolePermission,
 )
 
 
@@ -34,8 +33,10 @@ class EffectiveAccess:
         }
 
 
-async def effective_cells(db: AsyncSession, person_id: uuid.UUID) -> EffectiveAccess:
-    access = await resolve_access(db, person_id)
+async def effective_cells(db: AsyncSession, person_id: uuid.UUID, *,
+                          role_grants_override=None) -> EffectiveAccess:
+    access = await resolve_access(db, person_id,
+                                  role_grants_override=role_grants_override)
     overrides = {(o.resource, o.action): o.allow for o in await db.scalars(
         select(PermissionOverride).where(
             PermissionOverride.person_id == person_id))}
@@ -53,12 +54,7 @@ async def effective_cells(db: AsyncSession, person_id: uuid.UUID) -> EffectiveAc
             if gid in gids}
 
     role_set = set(access.role_names)
-    granted: dict[str, set[str]] = {}
-    if role_set:
-        for res, action in (await db.execute(
-            select(RolePermission.resource, RolePermission.action)
-            .where(RolePermission.role.in_(role_set)))).all():
-            granted.setdefault(res, set()).add(action)
+    granted = await role_grants(db, role_set, role_grants_override)
 
     cells: dict = {}
     for res_id, res in REGISTRY.items():
