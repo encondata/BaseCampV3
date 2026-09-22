@@ -13,13 +13,16 @@ import {
 import { WORKER_BULK_ERRORS } from '../../lib/workerBulk';
 import BulkUpload, { type BulkUploadConfig } from '../bulk/BulkUpload';
 
+// Wrap preview/commit in closures instead of referencing the imports directly:
+// tests that stub lib/api with a partial mock still import App, so the api
+// functions must not be dereferenced at module load.
 const CONFIG: BulkUploadConfig<WorkerBulkRowResult, WorkerBulkAppliedRow> = {
   idPrefix: 'worker',
   noun: 'worker',
   newLabel: 'new worker',
   errors: WORKER_BULK_ERRORS,
-  preview: previewWorkerBulk,
-  commit: commitWorkerBulk,
+  preview: (file, name) => previewWorkerBulk(file, name),
+  commit: (rows, approved, source) => commitWorkerBulk(rows, approved, source),
   idOf: (r) => r.person_id,
   summary: {
     entityLabel: 'Worker',
