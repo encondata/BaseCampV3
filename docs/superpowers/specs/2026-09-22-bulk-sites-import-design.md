@@ -84,8 +84,16 @@ bulk", resource `sites`, action `add`, button "Open"). Page sections:
    with an Approve checkbox on updates), plus "Approve all updates" and a
    count line "N to add · M to update · K unchanged · E errors".
 5. **Apply** — button "Add N sites and update M sites" (disabled until the
-   preview is clean and every update is approved); success shows the counts
-   and a link to Sites.
+   preview is clean and every update is approved). On success the preview is
+   replaced by a **review summary** (Jimmy, 2026-09-22: "as with any import or
+   bulk action I would like a summary of what was done for review"): the
+   commit returns one result per processed row (`row`, `name`, `site_id`,
+   `action` created/updated/unchanged, `diff` as applied); the page shows the
+   counts line, a table Row / Site (linked to `/sites?open=<id>`) / Result
+   (Added / Updated / No change) / Changes (field: old → new), a "Download
+   summary (.csv)" button (client-side CSV, columns Row, Site, Result,
+   Changes), and an "Open Sites" link. The summary stays until a new file is
+   chosen.
 
 `SiteBulkImport.tsx` becomes `SiteBulkUpload.tsx` (the upload + preview +
 apply block, used by the page). The New Site dialog loses its Bulk tab and the

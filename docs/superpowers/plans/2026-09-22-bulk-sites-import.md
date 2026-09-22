@@ -798,6 +798,148 @@ git commit -m "feat(portal): /bulk/sites page with column guide, downloads and u
 
 ---
 
+### Task 6: Review summary after Apply
+
+**Files:**
+- Modify: `api/src/serversherpa/sites/bulk_import.py` (`_create_site` returns the site; `commit_rows` returns `rows`)
+- Modify: `api/src/serversherpa/api/schemas.py` only if a response model exists for commit (it does not today — the route returns a dict; keep it a dict)
+- Modify: `portal/src/lib/api.ts` (`commitSiteBulk` return type)
+- Create: `portal/src/components/sites/BulkApplySummary.tsx`
+- Modify: `portal/src/components/sites/SiteBulkUpload.tsx` (keep the result, render the summary, `onDone(result)`)
+- Modify: `portal/src/pages/BulkSites.tsx` (drop its own "Applied:" line; the summary carries the Open Sites link)
+- Test: `api/tests/test_sites_bulk_import_service.py`, `api/tests/test_sites_bulk_import_api.py`, `portal/src/components/sites/SiteBulkUpload.test.tsx`, `portal/src/pages/BulkSites.test.tsx`
+
+**Interfaces:**
+- Produces: `commit_rows` → `{"created", "updated", "unchanged", "rows": [{"row": n, "name": str, "site_id": str, "action": "created"|"updated"|"unchanged", "diff": dict|None}]}` in upload order; `BulkCommitResult` / `BulkAppliedRow` types; `BulkApplySummary` props `{ result: BulkCommitResult }`; `SiteBulkUpload.onDone(result: BulkCommitResult)`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Service — in `test_commit_creates_sites_links_and_audit` (and any other test asserting the exact commit return value) change the equality on counts to also expect `rows`; add:
+
+```python
+async def test_commit_returns_per_row_results(db, seeded_user):
+    from serversherpa.db.models import Site
+    db.add(Site(name="Keep Me", city="Old", country="US", status="active"))
+    await db.commit()
+    rows = bi.number_json_rows([{"name": "Keep Me", "city": "New"},
+                                {"name": "Fresh One"},
+                                {"name": "Keep Me 2"}])
+    keep = (await bi.preview_rows(db, rows))["rows"][0]["site_id"]
+    out = await bi.commit_rows(db, seeded_user.id, rows, approved_updates={keep},
+                               source_label="t.csv")
+    assert (out["created"], out["updated"], out["unchanged"]) == (2, 1, 0)
+    assert [r["action"] for r in out["rows"]] == ["updated", "created", "created"]
+    assert out["rows"][0] == {"row": 1, "name": "Keep Me", "site_id": keep,
+                              "action": "updated", "diff": {"city": {"old": "Old", "new": "New"}}}
+    assert all(r["site_id"] for r in out["rows"])
+    assert out["rows"][1]["diff"] is None
+```
+
+API — in `test_commit_end_to_end` change the exact-equality assertion to check the three counts and `len(body["rows"]) == 2` with actions `["created", "created"]` and non-null `site_id`s.
+
+Portal — `SiteBulkUpload.test.tsx`: in the approval test, make `commitSiteBulk` resolve `{ created: 1, updated: 1, unchanged: 0, rows: [ { row: 2, name: 'New Name', site_id: 's1', action: 'updated', diff: { name: { old: 'Old Name', new: 'New Name' } } }, { row: 3, name: 'Fresh', site_id: 's2', action: 'created', diff: null } ] }`, assert `onDone` receives that object, and add assertions that the summary renders: `screen.getByText('Applied: 1 added · 1 updated · 0 unchanged')`, a link with text `New Name` whose `href` ends with `/sites?open=s1`, the text `name: Old Name → New Name`, the row text `Added` for Fresh, and a button `Download summary (.csv)`. Mock `exportCsv` from `../../lib/listTools` (hoisted) and assert it is called with `'sites-bulk-summary'`, four columns, and the two rows when the button is clicked. Add a test that choosing a new file clears the summary. `BulkSites.test.tsx`: remove any assertion about the page's own "Applied:" text if present.
+
+- [ ] **Step 2: Run to verify failures** (API: the two bulk test files on `serversherpa_test_bulksites`; portal: the two files) → FAIL.
+
+- [ ] **Step 3: API** — in `bulk_import.py`: `_create_site` ends with `return site`. In `commit_rows`, build `applied: list[dict] = []`; for each preview row append `{"row": r["row"], "name": r["name"], "site_id": <str(site.id) for created / r["site_id"] otherwise>, "action": "unchanged"|"created"|"updated", "diff": r["diff"] if updated else None}`; return `{"created": ..., "updated": ..., "unchanged": ..., "rows": applied}`. Include `"rows": len(applied)` nowhere in the audit (keep the audit changes as they are).
+
+- [ ] **Step 4: Portal types** — in `lib/api.ts`:
+
+```ts
+export interface BulkAppliedRow {
+  row: number; name: string; site_id: string;
+  action: 'created' | 'updated' | 'unchanged';
+  diff: BulkRowResult['diff'];
+}
+export interface BulkCommitResult { created: number; updated: number; unchanged: number; rows: BulkAppliedRow[] }
+```
+
+and `commitSiteBulk(...): Promise<BulkCommitResult>`.
+
+- [ ] **Step 5: `BulkApplySummary.tsx`**
+
+```tsx
+/**
+ * BulkApplySummary — what a bulk apply actually did, one row per site, with
+ * a CSV download so the run can be attached to a ticket. Server truth: it
+ * renders the commit response, never the pre-apply preview.
+ */
+import { Link } from 'react-router-dom';
+
+import type { BulkCommitResult } from '../../lib/api';
+import { exportCsv } from '../../lib/listTools';
+import DataTable from '../DataTable';
+
+const RESULT_LABEL = { created: 'Added', updated: 'Updated', unchanged: 'No change' } as const;
+
+export function changesText(diff: BulkCommitResult['rows'][number]['diff']): string {
+  if (!diff) return '';
+  return Object.entries(diff).map(([field, change]) => {
+    if (field === 'clients') {
+      const add = (change.add ?? []).map((n) => `+${n}`);
+      const remove = (change.remove ?? []).map((n) => `−${n}`);
+      return `clients: ${[...add, ...remove].join(', ')}`;
+    }
+    const from = change.old === null || change.old === undefined ? '—' : String(change.old);
+    return `${field}: ${from} → ${String(change.new)}`;
+  }).join('; ');
+}
+
+export default function BulkApplySummary({ result }: { result: BulkCommitResult }) {
+  const download = () => exportCsv('sites-bulk-summary', [
+    ['Row', (r) => String(r.row)],
+    ['Site', (r) => r.name],
+    ['Result', (r) => RESULT_LABEL[r.action]],
+    ['Changes', (r) => changesText(r.diff)],
+  ], result.rows);
+
+  return (
+    <div className="bulk-summary">
+      <div className="bulk-actions">
+        <b>Applied: {result.created} added · {result.updated} updated · {result.unchanged} unchanged</b>
+        <button className="mini-btn" type="button" onClick={download}>Download summary (.csv)</button>
+        <Link className="mini-btn" to="/sites">Open Sites</Link>
+      </div>
+      <DataTable
+        ariaLabel="Apply summary"
+        className="bulk-preview"
+        columns={[
+          { key: 'row', label: 'Row', width: '64px', mono: true },
+          { key: 'site', label: 'Site' },
+          { key: 'result', label: 'Result' },
+          { key: 'changes', label: 'Changes' },
+        ]}
+        rows={result.rows.map((r) => ({
+          key: String(r.row),
+          className: `bulk-row-${r.action === 'created' ? 'create' : r.action === 'updated' ? 'update' : 'unchanged'}`,
+          cells: [
+            r.row,
+            <Link key="site" to={`/sites?open=${r.site_id}`}>{r.name}</Link>,
+            RESULT_LABEL[r.action],
+            changesText(r.diff) || '—',
+          ],
+        }))}
+      />
+    </div>
+  );
+}
+```
+
+Check `DataTable` cell typing accepts a `ReactNode` (it did for the preview's Details cell). The Result column is the 3rd `td` here; add `.bulk-summary .bulk-row-update td:nth-child(3)` / `create` color rules in `sites.css` mirroring the preview's, or (simpler) give the summary table its own class `bulk-summary-table` and rules keyed on it. No typography properties.
+
+- [ ] **Step 6: Wire `SiteBulkUpload`** — state `const [result, setResult] = useState<BulkCommitResult | null>(null)`; `runImport` sets `setResult(counts)` and calls `onDone(counts)`; choosing a file sets `setResult(null)`; render `{result && <BulkApplySummary result={result} />}` below the actions and above where the preview would be. `BulkSites.tsx`: `onDone` no longer needs to store counts; delete the `result` state and the "Applied:" paragraph (the summary component has the Open Sites link).
+
+- [ ] **Step 7: Run** the API files (`SS_TEST_DB=serversherpa_test_bulksites …`), the whole portal suite and `tsc` → all PASS.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add api/src/serversherpa/sites/bulk_import.py api/tests/test_sites_bulk_import_service.py api/tests/test_sites_bulk_import_api.py portal/src
+git commit -m "feat(sites): bulk apply returns per-row results; review summary with CSV download after Apply"
+```
+
+---
+
 ### Task 5: Full suites
 
 - [ ] `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib SS_TEST_DB=serversherpa_test_bulksites PYTHONPATH=api/src api/.venv/bin/python -m pytest api/tests -q` → all PASS.
