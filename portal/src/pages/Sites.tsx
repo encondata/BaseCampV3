@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import GodDeleteButton from '../components/GodDeleteButton';
@@ -138,6 +138,7 @@ function surveySummary(rows: SiteSurveyRow[]): string {
 }
 
 export default function Sites({ initialView = 'list' }: { initialView?: 'list' | 'map' } = {}) {
+  const navigate = useNavigate();
   const { can, godMode, maxRank } = useAuth();
   const canAdd = can('sites', 'add');
   const canChange = can('sites', 'change');
@@ -425,6 +426,11 @@ export default function Sites({ initialView = 'list' }: { initialView?: 'list' |
               + New site
             </button>
           )}
+          {canBulk && (
+            <button className="mini-btn accent" onClick={() => navigate('/bulk/sites')}>
+              Bulk import…
+            </button>
+          )}
         </div>
       </div>
 
@@ -592,7 +598,6 @@ export default function Sites({ initialView = 'list' }: { initialView?: 'list' |
           clients={clients}
           partners={partners}
           canChange={canChange}
-          canBulk={canBulk}
           onClose={() => setCreating(false)}
           onSaved={() => load()}
         />

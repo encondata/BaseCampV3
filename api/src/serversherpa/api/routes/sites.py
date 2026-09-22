@@ -174,6 +174,31 @@ async def bulk_import_template(
     raise _err(422, "unknown_format")
 
 
+@router.get("/bulk-import/export")
+async def bulk_import_export(
+    db: DbSession,
+    format: str = "xlsx",
+    actor: AuthContext = require_permission("sites", "add"),
+):
+    """The current sites in the template's layout — fill in, re-upload."""
+    _require_bulk_rank(actor)
+    if format not in ("csv", "xlsx"):
+        raise _err(422, "unknown_format")
+    rows = await bulk.export_rows(db)
+    if format == "csv":
+        return Response(bulk.build_rows_csv(rows), media_type="text/csv",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="sites-export.csv"'})
+    types = [t.key for t in await db.scalars(select(SiteType).order_by(SiteType.sort_order))]
+    statuses = list(await db.scalars(
+        select(StatusValue.key).where(StatusValue.record_type == "site")
+        .order_by(StatusValue.sort_order)))
+    return Response(
+        bulk.build_rows_xlsx(rows, types, statuses),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="sites-export.xlsx"'})
+
+
 async def _rows_from_request(request: Request) -> list[tuple[int, dict]]:
     ctype = request.headers.get("content-type", "")
     try:
@@ -199,8 +224,7 @@ async def bulk_import_preview(
 ) -> dict:
     _require_bulk_rank(actor)
     numbered = await _rows_from_request(request)
-    return await bulk.preview_rows(
-        db, numbered, allow_updates=actor.access.can("devtools", "change"))
+    return await bulk.preview_rows(db, numbered)
 
 
 @router.post("/bulk-import/commit")
@@ -219,14 +243,10 @@ async def bulk_import_commit(
     except bulk.BulkImportError as exc:
         raise _bulk_err(exc) from None
     approved = {str(s) for s in body.get("approved_updates") or []}
-    allow = actor.access.can("devtools", "change")
-    if approved and not allow:
-        raise _err(422, "updates_not_allowed")
     try:
         return await bulk.commit_rows(
-            db, actor.person.id, numbered, allow_updates=allow,
-            approved_updates=approved,
-            source_label=str(body.get("source") or "paste"))
+            db, actor.person.id, numbered, approved_updates=approved,
+            source_label=str(body.get("source") or "upload"))
     except bulk.BulkImportError as exc:
         raise _bulk_err(exc) from None
 

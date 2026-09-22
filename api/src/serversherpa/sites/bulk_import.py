@@ -5,11 +5,17 @@ Blank-cell rule: on create rows, blank status/country take the defaults
 (active/US); on update rows a blank cell means "no change", never a clear —
 the original cell blankness is tracked out-of-band (`_blank`) because the
 normalized `data` dict has already had defaults applied by diff time.
+
+Each preview row therefore also carries `cells`: the uploaded cells exactly as
+`_cell()` normalized them, before any default was filled in. The commit replays
+those cells, never `data` — replaying `data` would turn a blank status/country
+into an explicit write.
 """
 
 import csv
 import io
 import json
+import re
 import uuid
 from typing import Any
 
@@ -58,15 +64,34 @@ class BulkImportError(Exception):
 
 # ── parsing ─────────────────────────────────────────────────────────
 
+FORMULA_LEAD = ("=", "+", "-", "@")
+_NUMERIC = re.compile(r"^[+-]?\d+(\.\d+)?$")
+
+
 def _cell(value: Any) -> str:
     """Spreadsheet cells arrive as str/float/int/bool/None — normalize to
     trimmed text. Integral floats (openpyxl's 89501.0) drop the .0 so
-    numeric-looking text columns round-trip."""
+    numeric-looking text columns round-trip. One leading apostrophe in front
+    of a formula lead character is dropped, so our own guarded CSV export
+    (see `_guard_cell`) re-uploads as the value it started as."""
     if value is None:
         return ""
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
-    return str(value).strip()
+    text = str(value).strip()
+    if text[:1] == "'" and text[1:2] in FORMULA_LEAD:
+        text = text[1:]
+    return text
+
+
+def _guard_cell(text: str) -> str:
+    """OWASP CSV-injection guard, mirroring the portal's `csvCell`: a cell
+    that opens with = + - @ gets a leading apostrophe so Excel/Sheets read it
+    as text — unless the whole cell is a number, so -119.8138 stays a
+    coordinate."""
+    if text[:1] in FORMULA_LEAD and not _NUMERIC.match(text):
+        return f"'{text}"
+    return text
 
 
 def _check_columns(keys: list[str]) -> None:
@@ -133,24 +158,31 @@ def parse_upload(filename: str, content: bytes) -> list[tuple[int, dict]]:
     raise BulkImportError("unsupported_file")
 
 
-# ── templates ───────────────────────────────────────────────────────
+# ── templates / export ──────────────────────────────────────────────
 
-def build_template_csv() -> str:
+def build_rows_csv(rows: list[dict]) -> str:
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=COLUMNS, lineterminator="\n")
     writer.writeheader()
-    writer.writerows(SAMPLE_ROWS)
+    writer.writerows({c: _guard_cell(str(row[c])) for c in COLUMNS}
+                     for row in rows)
     return buf.getvalue()
 
 
-def build_template_xlsx(type_keys: list[str], status_keys: list[str]) -> bytes:
+def build_rows_xlsx(rows: list[dict], type_keys: list[str],
+                    status_keys: list[str]) -> bytes:
     import openpyxl
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Sites"
     ws.append(COLUMNS)
-    for row in SAMPLE_ROWS:
+    for row in rows:
         ws.append([row[c] for c in COLUMNS])
+        # a cell openpyxl would otherwise store as a formula is pinned to
+        # text, so a site named "=HYPERLINK(…)" can never execute on open
+        for cell in ws[ws.max_row]:
+            if isinstance(cell.value, str) and cell.value[:1] in FORMULA_LEAD:
+                cell.data_type = "s"
     ref = wb.create_sheet("Reference")
     ref.append(["Valid type keys"])
     for key in type_keys:
@@ -162,6 +194,50 @@ def build_template_xlsx(type_keys: list[str], status_keys: list[str]) -> bytes:
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def build_template_csv() -> str:
+    return build_rows_csv(SAMPLE_ROWS)
+
+
+def build_template_xlsx(type_keys: list[str], status_keys: list[str]) -> bytes:
+    return build_rows_xlsx(SAMPLE_ROWS, type_keys, status_keys)
+
+
+def _coord_text(value) -> str:
+    """Plain decimal text. Only a fractional part may lose trailing zeros —
+    a whole-degree 40 must not come back as '4'."""
+    if value is None:
+        return ""
+    text = format(value, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+async def export_rows(db: AsyncSession) -> list[dict]:
+    """Every live site in template shape, so an export re-uploads clean."""
+    sites = list(await db.scalars(
+        select(Site).where(Site.archived_at.is_(None)).order_by(Site.name)))
+    partner_names = dict((await db.execute(select(Partner.id, Partner.name))).all())
+    clients: dict[uuid.UUID, list[str]] = {}
+    for site_id, cname in (await db.execute(
+        select(SiteClient.site_id, Client.name)
+        .join(Client, Client.id == SiteClient.client_id)
+        .order_by(Client.name))).all():
+        clients.setdefault(site_id, []).append(cname)
+    out = []
+    for s in sites:
+        out.append({
+            "name": s.name, "code": s.code or "", "type": s.site_type or "",
+            "status": s.status, "address_line1": s.address_line1 or "",
+            "address_line2": s.address_line2 or "", "city": s.city or "",
+            "region": s.region or "", "postal_code": s.postal_code or "",
+            "country": s.country or "", "latitude": _coord_text(s.latitude),
+            "longitude": _coord_text(s.longitude), "timezone": s.timezone or "",
+            "dc_provider": s.dc_provider or "",
+            "partner": partner_names.get(s.partner_id, "") if s.partner_id else "",
+            "clients": "; ".join(clients.get(s.id, [])), "notes": s.notes or "",
+        })
+    return out
 
 
 # ── validation + preview ────────────────────────────────────────────
@@ -184,6 +260,15 @@ def _split_clients(cell: str) -> list[str]:
     return [part.strip() for part in cell.split(";") if part.strip()]
 
 
+_NON_ALNUM = re.compile(r"[^0-9a-z]+")
+
+
+def normalize_address(text: str) -> str:
+    """Match key for address_line1: case, punctuation and spacing noise
+    removed so '607 14th St. NW' and '607 14th st nw' meet."""
+    return " ".join(_NON_ALNUM.sub(" ", (text or "").lower()).split())
+
+
 def _coord(value: str, lo: float, hi: float,
            errors: list[str], label: str) -> float | None:
     if value == "":
@@ -199,21 +284,26 @@ def _coord(value: str, lo: float, hi: float,
     return num
 
 
-async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]],
-                       *, allow_updates: bool) -> dict:
+async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]]) -> dict:
     ref = await _reference_data(db)
     names_seen: dict[str, list[int]] = {}
+    addrs_seen: dict[str, list[int]] = {}
     for n, row in numbered:
         if row["name"]:
             names_seen.setdefault(row["name"].lower(), []).append(n)
+        key = normalize_address(row["address_line1"])
+        if key:
+            addrs_seen.setdefault(key, []).append(n)
 
-    existing: dict[str, list[Site]] = {}
-    wanted = [row["name"] for _, row in numbered if row["name"]]
-    if wanted:
-        for site in await db.scalars(select(Site).where(Site.name.in_(wanted))):
-            existing.setdefault(site.name.lower(), []).append(site)
+    by_name: dict[str, list[Site]] = {}
+    by_addr: dict[str, list[Site]] = {}
+    for site in await db.scalars(select(Site).where(Site.archived_at.is_(None))):
+        by_name.setdefault(site.name.lower(), []).append(site)
+        key = normalize_address(site.address_line1 or "")
+        if key:
+            by_addr.setdefault(key, []).append(site)
 
-    dup_sites = [s for sites in existing.values() for s in sites]
+    dup_sites = [s for sites in by_name.values() for s in sites]
     current_clients: dict[uuid.UUID, dict[uuid.UUID, str]] = {}
     partner_names: dict[uuid.UUID, str] = {}
     if dup_sites:
@@ -229,7 +319,7 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]],
                 select(Partner.id, Partner.name).where(Partner.id.in_(pids))
             )).all())
 
-    results = []
+    pending: list[dict] = []
     for n, row in numbered:
         errors: list[str] = []
         name = row["name"]
@@ -237,6 +327,10 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]],
             errors.append("name is required")
         elif len(names_seen[name.lower()]) > 1:
             errors.append(f"duplicate name '{name}' within the import")
+
+        addr_key = normalize_address(row["address_line1"])
+        if addr_key and len(addrs_seen[addr_key]) > 1:
+            errors.append("duplicate address within the import")
 
         if row["type"] and row["type"] not in ref["types"]:
             errors.append(f"unknown type '{row['type']}'")
@@ -277,33 +371,67 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]],
         if blank["country"]:
             data["country"] = "US"
 
-        dupes = existing.get(name.lower(), []) if name else []
+        name_hits = by_name.get(name.lower(), []) if name else []
+        addr_hits = by_addr.get(addr_key, []) if addr_key else []
+        target: Site | None = None
+        matched_by: str | None = None
+        if not errors:
+            if len(name_hits) > 1:
+                errors.append(f"multiple existing sites named '{name}'")
+            elif name_hits:
+                target, matched_by = name_hits[0], "name"
+                other = sorted(s.name for s in addr_hits if s.id != target.id)
+                if len(other) == len(addr_hits) and other:
+                    errors.append(f"name matches '{target.name}' but address "
+                                  f"matches '{other[0]}'")
+            elif len(addr_hits) > 1:
+                names = ", ".join(sorted(s.name for s in addr_hits))
+                errors.append(f"multiple existing sites at that address: {names}")
+            elif addr_hits:
+                target, matched_by = addr_hits[0], "address"
+
+        pending.append({"row": n, "cells": dict(row), "name": name,
+                        "errors": errors, "data": data, "blank": blank,
+                        "target": target, "matched_by": matched_by,
+                        "partner_obj": partner_obj, "client_objs": client_objs})
+
+    # two upload rows resolving to the same existing site would apply twice,
+    # last write winning silently — both rows are errors instead
+    same_target: dict[uuid.UUID, list[dict]] = {}
+    for p in pending:
+        if not p["errors"] and p["target"] is not None:
+            same_target.setdefault(p["target"].id, []).append(p)
+    for group in same_target.values():
+        if len(group) > 1:
+            for p in group:
+                p["errors"].append("two rows match the same existing site "
+                                   f"'{p['target'].name}'")
+
+    results = []
+    for p in pending:
+        errors, target = p["errors"], p["target"]
         action, diff_out, site_id = "create", None, None
         if errors:
             action = "error"
-        elif dupes:
-            if len(dupes) > 1:
-                action = "error"
-                errors.append(f"multiple existing sites named '{name}'")
-            elif not allow_updates:
-                action = "error"
-                errors.append(f"site '{name}' already exists")
-            else:
-                site = dupes[0]
-                site_id = str(site.id)
-                changes = _diff_row(
-                    site, data, blank, partner_obj, client_objs,
-                    current_clients.get(site.id, {}), partner_names)
-                action = "update" if changes else "unchanged"
-                diff_out = changes or None
+        elif target is not None:
+            site_id = str(target.id)
+            changes = _diff_row(
+                target, p["data"], p["blank"], p["partner_obj"],
+                p["client_objs"], current_clients.get(target.id, {}),
+                partner_names)
+            action = "update" if changes else "unchanged"
+            diff_out = changes or None
 
-        results.append({"row": n, "name": name or None, "action": action,
+        results.append({"row": p["row"], "name": p["name"] or None,
+                        "action": action,
+                        "matched_by": p["matched_by"] if action != "error" else None,
+                        "matched_name": target.name if target is not None and action != "error" else None,
                         "errors": errors, "diff": diff_out, "site_id": site_id,
-                        "data": data if action != "error" else None})
+                        "cells": p["cells"],
+                        "data": p["data"] if action != "error" else None})
 
     can_commit = bool(results) and all(r["action"] != "error" for r in results)
-    return {"rows": results, "can_commit": can_commit,
-            "update_allowed": allow_updates}
+    return {"rows": results, "can_commit": can_commit}
 
 
 def _diff_row(site: Site, data: dict, blank: dict,
@@ -346,14 +474,18 @@ def _diff_row(site: Site, data: dict, blank: dict,
 # ── commit ──────────────────────────────────────────────────────────
 
 async def commit_rows(db: AsyncSession, actor_person_id: uuid.UUID,
-                      numbered: list[tuple[int, dict]], *, allow_updates: bool,
+                      numbered: list[tuple[int, dict]], *,
                       approved_updates: set[str], source_label: str) -> dict:
     """All-or-nothing: re-validates everything, then commits creates plus
     APPROVED updates in one transaction. Raises rows_invalid (carrying the
-    full preview payload) if anything blocks — nothing is written."""
+    full preview payload) if anything blocks — nothing is written.
+
+    `numbered` must be the ORIGINAL uploaded cells (the preview's `cells`),
+    not its normalized `data`: re-previewing `data` would read a filled-in
+    status/country default as an explicit edit."""
     from serversherpa.services.audit import audit
 
-    preview = await preview_rows(db, numbered, allow_updates=allow_updates)
+    preview = await preview_rows(db, numbered)
     blocked = [r for r in preview["rows"] if r["action"] == "error"]
     unapproved = [r for r in preview["rows"]
                   if r["action"] == "update" and r["site_id"] not in approved_updates]
@@ -365,22 +497,33 @@ async def commit_rows(db: AsyncSession, actor_person_id: uuid.UUID,
 
     ref = await _reference_data(db)
     created = updated = unchanged = 0
+    applied: list[dict] = []
     for r in preview["rows"]:
         data = r["data"]
         if r["action"] == "unchanged":
             unchanged += 1
+            applied.append({"row": r["row"], "name": r["name"],
+                            "site_id": r["site_id"], "action": "unchanged",
+                            "diff": None})
         elif r["action"] == "create":
-            await _create_site(db, actor_person_id, data, ref)
+            site = await _create_site(db, actor_person_id, data, ref)
             created += 1
+            applied.append({"row": r["row"], "name": r["name"],
+                            "site_id": str(site.id), "action": "created",
+                            "diff": None})
         else:
             await _apply_update(db, actor_person_id, r, ref)
             updated += 1
+            applied.append({"row": r["row"], "name": r["name"],
+                            "site_id": r["site_id"], "action": "updated",
+                            "diff": r["diff"]})
     audit(db, actor_id=actor_person_id, entity_type="site_bulk_import",
           entity_id=None, action="bulk_import",
           changes={"created": created, "updated": updated,
                    "unchanged": unchanged, "source": source_label})
     await db.commit()
-    return {"created": created, "updated": updated, "unchanged": unchanged}
+    return {"created": created, "updated": updated, "unchanged": unchanged,
+            "rows": applied}
 
 
 def _resolve_partner(ref: dict, name: str) -> Partner | None:
@@ -389,7 +532,7 @@ def _resolve_partner(ref: dict, name: str) -> Partner | None:
 
 
 async def _create_site(db: AsyncSession, actor_person_id: uuid.UUID,
-                       data: dict, ref: dict) -> None:
+                       data: dict, ref: dict) -> Site:
     from serversherpa.services.audit import audit
 
     fields = {attr: data[col] for col, attr in SITE_ATTR.items()
@@ -410,6 +553,7 @@ async def _create_site(db: AsyncSession, actor_person_id: uuid.UUID,
         changes["clients"] = {"from": [], "to": sorted(data["clients"])}
     audit(db, actor_id=actor_person_id, entity_type="site",
           entity_id=str(site.id), action="create", changes=changes)
+    return site
 
 
 def _audit_value(value: Any) -> Any:

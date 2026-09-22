@@ -2,9 +2,9 @@
  * ContainerBulkImport — Import-button modal on the Containers list.
  * CSV/XLSX file → preview (per-row create/error) → commit. Create-only;
  * commit stays locked until every row previews as `create`.
- * Mirrors SiteBulkImport.tsx's flow and ContainerEditModal's modal chrome
+ * Mirrors SiteBulkUpload.tsx's flow and ContainerEditModal's modal chrome
  * (this component owns its own modal-scrim/modal-card, unlike
- * SiteBulkImport which is a tab embedded in SiteEditModal).
+ * SiteBulkUpload which is the /bulk/sites page's upload pane).
  */
 
 import { useRef, useState } from 'react';

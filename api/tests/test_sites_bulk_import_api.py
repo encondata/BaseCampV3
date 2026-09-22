@@ -1,8 +1,7 @@
 """Bulk-import endpoints: rank gating, template formats, preview/commit flow.
 
 seeded_user (role staff, rank 40) has sites:add but must be BELOW the bulk
-rank bar; admin (60) clears it; developer (100) additionally holds devtools
-and gets the update path.
+rank bar; admin (60) clears it and may approve updates.
 """
 import io
 
@@ -10,7 +9,7 @@ import openpyxl
 import pytest
 from sqlalchemy import func, select
 
-from serversherpa.db.models import Person, PersonRole, Site
+from serversherpa.db.models import AuditLog, Person, PersonRole, Site
 from serversherpa.sites import bulk_import as bi
 from tests.test_sites_api import login, make_login
 
@@ -74,13 +73,29 @@ async def test_template_formats(client, db, seeded_user, admin_hdrs):
     assert bad.status_code == 422
 
 
+async def test_export_formats(client, db, seeded_user, admin_hdrs):
+    db.add(Site(name="Exported", country="US", status="active"))
+    await db.commit()
+    csv_resp = await client.get("/sites/bulk-import/export?format=csv", headers=admin_hdrs)
+    assert csv_resp.status_code == 200
+    assert csv_resp.headers["content-disposition"].endswith('filename="sites-export.csv"')
+    assert "Exported" in csv_resp.text
+    xlsx_resp = await client.get("/sites/bulk-import/export?format=xlsx", headers=admin_hdrs)
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_resp.content))
+    assert wb.sheetnames == ["Sites", "Reference"]
+    assert [c.value for c in next(wb["Sites"].iter_rows(max_row=1))] == bi.COLUMNS
+    assert (await client.get("/sites/bulk-import/export?format=csv",
+                             headers=await login(client))).status_code == 403
+    assert (await client.get("/sites/bulk-import/export?format=pdf",
+                             headers=admin_hdrs)).status_code == 422
+
+
 async def test_preview_json_and_file_paths(client, seeded_user, admin_hdrs):
     rows = [{"name": "Alpha DC", "city": "Reno"}]
     via_json = await client.post("/sites/bulk-import/preview",
                                  headers=admin_hdrs, json={"rows": rows})
     assert via_json.status_code == 200, via_json.text
     assert via_json.json()["rows"][0]["action"] == "create"
-    assert via_json.json()["update_allowed"] is False
 
     csv_bytes = b"name,city\nAlpha DC,Reno\n"
     via_file = await client.post(
@@ -89,6 +104,10 @@ async def test_preview_json_and_file_paths(client, seeded_user, admin_hdrs):
     assert via_file.status_code == 200, via_file.text
     a, b = via_json.json()["rows"][0], via_file.json()["rows"][0]
     assert a["data"] == b["data"]
+    # `cells` is what the portal replays on commit: the uploaded cells, with
+    # no create-only defaults filled in
+    assert a["cells"] == b["cells"]
+    assert a["cells"]["status"] == "" and a["data"]["status"] == "active"
 
     bad = await client.post(
         "/sites/bulk-import/preview", headers=admin_hdrs,
@@ -97,22 +116,21 @@ async def test_preview_json_and_file_paths(client, seeded_user, admin_hdrs):
     assert bad.json()["detail"]["code"] == "unknown_columns"
 
 
-async def test_preview_admin_error_developer_update(client, db, seeded_user,
-                                                    admin_hdrs, dev_hdrs):
-    db.add(Site(name="Already Here", city="Old", country="US", status="active"))
+async def test_admin_previews_and_commits_updates(client, db, seeded_user, admin_hdrs):
+    site = Site(name="Already Here", city="Old", country="US", status="active")
+    db.add(site)
     await db.commit()
     rows = {"rows": [{"name": "Already Here", "city": "New"}]}
-
-    admin = await client.post("/sites/bulk-import/preview",
-                              headers=admin_hdrs, json=rows)
-    assert admin.json()["rows"][0]["action"] == "error"
-
-    dev = await client.post("/sites/bulk-import/preview",
-                            headers=dev_hdrs, json=rows)
-    body = dev.json()
-    assert body["update_allowed"] is True
+    body = (await client.post("/sites/bulk-import/preview",
+                              headers=admin_hdrs, json=rows)).json()
+    assert "update_allowed" not in body
     assert body["rows"][0]["action"] == "update"
+    assert body["rows"][0]["matched_by"] == "name"
     assert body["rows"][0]["diff"]["city"] == {"old": "Old", "new": "New"}
+    ok = await client.post("/sites/bulk-import/commit", headers=admin_hdrs,
+                           json={**rows, "approved_updates": [str(site.id)]})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["updated"] == 1
 
 
 async def test_commit_end_to_end(client, db, seeded_user, admin_hdrs):
@@ -121,7 +139,11 @@ async def test_commit_end_to_end(client, db, seeded_user, admin_hdrs):
                                             {"name": "Bulk Two"}],
                                    "source": "e2e.csv"})
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"created": 2, "updated": 0, "unchanged": 0}
+    body = resp.json()
+    assert (body["created"], body["updated"], body["unchanged"]) == (2, 0, 0)
+    assert len(body["rows"]) == 2
+    assert [r["action"] for r in body["rows"]] == ["created", "created"]
+    assert all(r["site_id"] for r in body["rows"])
     count = await db.scalar(select(func.count()).select_from(Site).where(
         Site.name.in_(["Bulk One", "Bulk Two"])))
     assert count == 2
@@ -158,16 +180,29 @@ async def test_commit_approval_flow(client, db, seeded_user, dev_hdrs):
     assert site.city == "New"
 
 
-async def test_admin_cannot_smuggle_approved_updates(client, db, seeded_user,
-                                                     admin_hdrs):
-    site = Site(name="Locked", city="Old", country="US", status="active")
+async def test_commit_replays_uploaded_cells_and_defaults_the_source(
+        client, db, seeded_user, admin_hdrs):
+    """The portal posts the preview's `cells`; a blank status/country in them
+    must stay blank on an existing site, and an unlabeled run reads as an
+    upload in the audit trail."""
+    site = Site(name="Replayed", city="Old", country="CH", status="planned")
     db.add(site)
     await db.commit()
-    resp = await client.post(
-        "/sites/bulk-import/commit", headers=admin_hdrs,
-        json={"rows": [{"name": "Locked", "city": "New"}],
-              "approved_updates": [str(site.id)]})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "updates_not_allowed"
+    body = (await client.post(
+        "/sites/bulk-import/preview", headers=admin_hdrs,
+        json={"rows": [{"name": "Replayed", "city": "New"}]})).json()
+    cells = body["rows"][0]["cells"]
+
+    ok = await client.post("/sites/bulk-import/commit", headers=admin_hdrs,
+                           json={"rows": [cells],
+                                 "approved_updates": [str(site.id)]})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["updated"] == 1
     await db.refresh(site)
-    assert site.city == "Old"
+    assert site.city == "New"
+    assert site.status == "planned" and site.country == "CH"
+
+    summary = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "site_bulk_import").order_by(
+        AuditLog.at.desc()))
+    assert summary.changes["source"] == "upload"

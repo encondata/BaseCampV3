@@ -1,5 +1,10 @@
 [
   {
+    "file": "styles/bulk.css",
+    "selector": ".bulk-section .eyebrow-sm",
+    "reason": "not list content: eyebrow label (out of scope per spec)"
+  },
+  {
     "file": "styles/directory.css",
     "selector": ".mini-btn",
     "reason": "not list content: detail-panel action button (regex matches the 'mini-' substring it shares with the .mini-row/.mini-list list primitives, not a coincidence to migrate)"
@@ -338,11 +343,6 @@
     "file": "styles/settings.css",
     "selector": ".set-inline input",
     "reason": "not list content: settings inline form input"
-  },
-  {
-    "file": "styles/sites.css",
-    "selector": ".bulk-import textarea",
-    "reason": "not list content: bulk-import paste textarea (form input, not table content)"
   },
   {
     "file": "styles/system.css",

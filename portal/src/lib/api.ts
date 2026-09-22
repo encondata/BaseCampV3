@@ -1096,29 +1096,41 @@ export interface BulkRowResult {
   row: number;
   name: string | null;
   action: 'create' | 'update' | 'unchanged' | 'error';
+  matched_by: 'name' | 'address' | null;
+  matched_name: string | null;
   errors: string[];
   diff: Record<
     string,
     { old?: unknown; new?: unknown; add?: string[]; remove?: string[] }
   > | null;
   site_id: string | null;
+  /** The uploaded cells, normalized but with no defaults filled in — what
+   *  the commit replays. `data` is the display shape and must never be
+   *  posted back: its status/country defaults would become real writes. */
+  cells: Record<string, string>;
   data: Record<string, unknown> | null;
 }
 
 export interface BulkPreview {
   rows: BulkRowResult[];
   can_commit: boolean;
-  update_allowed: boolean;
 }
 
-export async function getSiteBulkSample(): Promise<Record<string, string>[]> {
-  const resp = await apiFetch('/sites/bulk-import/template?format=json');
-  if (!resp.ok) throw await errorFrom(resp);
-  return resp.json();
+export interface BulkAppliedRow {
+  row: number;
+  name: string;
+  site_id: string;
+  action: 'created' | 'updated' | 'unchanged';
+  diff: BulkRowResult['diff'];
 }
 
-/** Pasted JSON rides the same multipart path as a real file: the caller
- * wraps it in a Blob named paste.json, so the API has one parsing entry. */
+export interface BulkCommitResult {
+  created: number;
+  updated: number;
+  unchanged: number;
+  rows: BulkAppliedRow[];
+}
+
 export async function previewSiteBulk(
   file: File | Blob, filename: string,
 ): Promise<BulkPreview> {
@@ -1135,7 +1147,7 @@ export async function previewSiteBulk(
 
 export async function commitSiteBulk(
   rows: Record<string, unknown>[], approved: string[], source: string,
-): Promise<{ created: number; updated: number; unchanged: number }> {
+): Promise<BulkCommitResult> {
   const resp = await apiFetch('/sites/bulk-import/commit', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1153,6 +1165,20 @@ export async function downloadSiteTemplate(format: 'csv' | 'xlsx'): Promise<void
   const a = document.createElement('a');
   a.href = url;
   a.download = `sites-template.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+export async function downloadSiteExport(format: 'csv' | 'xlsx'): Promise<void> {
+  const resp = await apiFetch(`/sites/bulk-import/export?format=${format}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  const blob = await resp.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `sites-export.${format}`;
   document.body.appendChild(a);
   a.click();
   a.remove();

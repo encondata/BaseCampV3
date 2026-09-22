@@ -68,8 +68,8 @@ export const IMPORT_ERRORS: Record<string, string> = {
 
 // ApiError stores the FastAPI detail code directly on `.code` (api.ts:141,
 // `constructor(public status: number, public code: string, ...)`), not
-// nested under a `.body`/`.detail` object — same field SiteBulkImport's
-// mapError reads (SiteBulkImport.tsx:112: `BULK_ERRORS[err.code]`).
+// nested under a `.body`/`.detail` object — same field SiteBulkUpload's
+// mapError reads (`SITE_BULK_ERRORS[err.code]` in SiteBulkUpload.tsx).
 export function importErrorMessage(e: unknown): string {
   if (e instanceof ApiError) {
     return IMPORT_ERRORS[e.code] ?? 'Something went wrong — try again.';

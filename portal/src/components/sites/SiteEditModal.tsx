@@ -38,7 +38,6 @@ import {
   surveySaveOps,
   type SiteFormState,
 } from '../../lib/sites';
-import SiteBulkImport from './SiteBulkImport';
 import SurveyForm from './SurveyForm';
 
 interface OrgRef { id: string; name: string; archived_at?: string | null }
@@ -50,7 +49,6 @@ interface Props {
   clients: OrgRef[];
   partners: OrgRef[];
   canChange: boolean;
-  canBulk?: boolean;              // admin-rank gate for the Bulk tab (create mode)
   onClose: () => void;
   onSaved: () => Promise<void> | void;   // parent refetches
 }
@@ -60,11 +58,10 @@ function mapError(err: unknown, fallback: string): string {
 }
 
 export default function SiteEditModal({
-  site, types, statuses, clients, partners, canChange, canBulk = false,
+  site, types, statuses, clients, partners, canChange,
   onClose, onSaved,
 }: Props) {
   const isCreateMode = site === null;
-  const [mode, setMode] = useState<'single' | 'bulk'>('single');
 
   const [createdId, setCreatedId] = useState<string | null>(null);
   const editingId = site?.id ?? createdId; // non-null once a record exists to edit
@@ -201,31 +198,12 @@ export default function SiteEditModal({
     }}>
       <div className="modal-card">
         <div className="modal-head">
-          <h3>{mode === 'bulk' ? 'Bulk import sites' : title}</h3>
+          <h3>{title}</h3>
           <button className="modal-close" aria-label="Close" onClick={onClose} disabled={saving}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
                  strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
           </button>
         </div>
-        {isCreateMode && canBulk && createdId === null && (
-          <div className="modal-mode-toggle" role="tablist" aria-label="Create mode">
-            <button type="button" role="tab" aria-selected={mode === 'single'}
-                    className={`mini-btn ${mode === 'single' ? 'active' : ''}`}
-                    onClick={() => setMode('single')}>
-              Single site
-            </button>
-            <button type="button" role="tab" aria-selected={mode === 'bulk'}
-                    className={`mini-btn ${mode === 'bulk' ? 'active' : ''}`}
-                    onClick={() => setMode('bulk')}>
-              Bulk import
-            </button>
-          </div>
-        )}
-        {mode === 'bulk' ? (
-          <div className="modal-body">
-            <SiteBulkImport onDone={async () => { await onSaved(); }} />
-          </div>
-        ) : (
         <form onSubmit={(e) => void submit(e)}>
           <div className="modal-body">
             {notice && (
@@ -389,7 +367,6 @@ export default function SiteEditModal({
             {error && <span className="pf-error">{error}</span>}
           </div>
         </form>
-        )}
       </div>
     </div>
   );
