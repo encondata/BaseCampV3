@@ -39,18 +39,20 @@ export default function RegenerateCodesModal({ onClose, onRegenerated }: {
   };
 
   return (
-    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !codes) onClose(); }}>
-      <div className="modal-card reports-modal-card rgm-card totp-modal-card">
+    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy && !codes) onClose(); }}>
+      <div className="modal-card reports-modal-card rgm-card totp-modal-card" role="dialog" aria-label="Regenerate backup codes">
         <div className="modal-head">
           <div className="rgm-head-text">
             <div className="eyebrow">Security</div>
             <h3>Regenerate backup codes</h3>
             <p className="page-hint">{codes ? 'Your old codes no longer work.' : 'Confirm with a code from your authenticator app first.'}</p>
           </div>
-          <button type="button" className="modal-close" aria-label="Close" onClick={onClose}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
-                 strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
-          </button>
+          {!codes && (
+            <button type="button" className="modal-close" aria-label="Close" onClick={onClose}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+                   strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
+            </button>
+          )}
         </div>
         <div className="modal-body inline-card totp-modal-body">
           {codes ? (

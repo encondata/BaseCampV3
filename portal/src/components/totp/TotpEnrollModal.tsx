@@ -16,19 +16,24 @@ export default function TotpEnrollModal({ email, onClose, onEnrolled }: {
   onEnrolled: (backupCodesRemaining: number) => void;
 }) {
   const [count, setCount] = useState(0);
+  // Once codes are on screen, the only way out is the "Done" acknowledge
+  // button — closing here would lose backup codes the user hasn't saved.
+  const [codesShown, setCodesShown] = useState(false);
   return (
-    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal-card reports-modal-card rgm-card totp-modal-card">
+    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !codesShown) onClose(); }}>
+      <div className="modal-card reports-modal-card rgm-card totp-modal-card" role="dialog" aria-label="Set up two-factor authentication">
         <div className="modal-head">
           <div className="rgm-head-text">
             <div className="eyebrow">Security</div>
             <h3>Set up two-factor authentication</h3>
             <p className="page-hint">Scan the code with an authenticator app, confirm a code, then save your backup codes.</p>
           </div>
-          <button type="button" className="modal-close" aria-label="Close" onClick={onClose}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
-                 strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
-          </button>
+          {!codesShown && (
+            <button type="button" className="modal-close" aria-label="Close" onClick={onClose}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+                   strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
+            </button>
+          )}
         </div>
         <div className="modal-body inline-card totp-modal-body">
           <EnrollFlow
@@ -37,6 +42,7 @@ export default function TotpEnrollModal({ email, onClose, onEnrolled }: {
             confirm={async (code) => {
               const r = await totpEnrollConfirm(code, {});
               setCount(r.backup_codes.length);
+              setCodesShown(true);
               return r;
             }}
             onDone={() => onEnrolled(count)}
