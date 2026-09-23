@@ -204,7 +204,10 @@ export default function Login() {
             <div className="field" data-reveal="">
               <label htmlFor="login-password">
                 Password
-                <button type="button" className="link" onClick={() => setForgotPasswordOpen(true)}>Forgot?</button>
+                {/* out of the Tab order so email → password → Sign in is
+                    uninterrupted; keyboard users reach the same card via
+                    "Contact support" below the form */}
+                <button type="button" className="link" tabIndex={-1} onClick={() => setForgotPasswordOpen(true)}>Forgot?</button>
               </label>
               <div className="control">
                 <input
@@ -224,6 +227,7 @@ export default function Login() {
                 />
                 <button
                   type="button"
+                  tabIndex={-1}
                   className={`peek ${showPassword ? 'on' : ''}`}
                   aria-label={showPassword ? 'Hide password' : 'Show password'}
                   onClick={() => setShowPassword(!showPassword)}
@@ -239,7 +243,7 @@ export default function Login() {
 
             <div className="row-between" data-reveal="">
               <label className="remember">
-                <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+                <input type="checkbox" tabIndex={-1} checked={remember} onChange={(e) => setRemember(e.target.checked)} />
                 <span className="box">
                   <svg viewBox="0 0 12 12" fill="none" stroke="#0c1117" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M2 6.5 4.8 9.5 10 2.8" /></svg>
                 </span>
