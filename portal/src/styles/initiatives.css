@@ -353,10 +353,7 @@
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
-  max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  max-width: 100%; /* truncation itself comes from .cell-line (directory.css) */
 }
 .idet-rack-cell-btn:hover { color: var(--accent-soft); }
 

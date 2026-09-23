@@ -93,7 +93,7 @@ const ASSET: InitiativeAssetRow = {
   id: 'ia1', asset_id: 'a1',
   priority_wave: null, disposition: null, owner: null,
   source_pod: null, destination_pod: null,
-  source_rack: null, source_ru: null,
+  source_rack: 'rack-a1', source_ru: null,
   source_verified: null, source_position: null,
   destination_rack: null, destination_ru: null,
   destination_verified: null, destination_position: null,
@@ -315,6 +315,10 @@ it('assets list: single-line values truncate with the full text on hover', async
   const name = within(row).getByText('switch-01');
   expect(name.classList.contains('cell-line')).toBe(true);
   expect(name.getAttribute('title')).toBe('switch-01');
+
+  const rackBtn = within(row).getByRole('button', { name: 'rack-a1' });
+  expect(rackBtn.classList.contains('cell-line')).toBe(true);
+  expect(rackBtn.getAttribute('title')).toBe('rack-a1');
 });
 
 it('assets list: the header renders through ColHead (long label, hidden short-label measure for wordy columns)', async () => {

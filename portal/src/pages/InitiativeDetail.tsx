@@ -634,7 +634,7 @@ export default function InitiativeDetail() {
       const rackName = side === 'source' ? a.source_rack : a.destination_rack;
       if (rackName) {
         return (
-          <button type="button" className="idet-rack-cell-btn" title={rackName}
+          <button type="button" className="idet-rack-cell-btn cell-line" title={rackName}
                   onClick={(e) => { e.stopPropagation(); setRackView({ rackName, side }); }}>
             {rackName}
           </button>
