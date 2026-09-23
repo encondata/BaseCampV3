@@ -238,6 +238,56 @@ describe('ColumnMenu', () => {
     await user.click(screen.getByRole('button', { name: 'Site column menu' }));
     expect(spy).toHaveBeenCalled();
   });
+
+  it('renders the open menu through a portal under document.body, and a mousedown inside it does not close it', async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <ColumnMenu colKey="name" label="Name" allRows={rows} filters={{}} text={text}
+                  filter={undefined} onFilter={vi.fn()} sortDir={null} onSort={vi.fn()} />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Name column menu' }));
+
+    const menu = document.querySelector('.colmenu-menu') as HTMLElement;
+    expect(menu).not.toBeNull();
+    expect(container.contains(menu)).toBe(false);
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu.classList.contains('colmenu-portaled')).toBe(true);
+
+    fireEvent.mouseDown(screen.getByPlaceholderText('Filter Name'));
+    expect(document.querySelector('.colmenu-menu')).not.toBeNull();
+
+    fireEvent.mouseDown(document.body);
+    expect(document.querySelector('.colmenu-menu')).toBeNull();
+  });
+
+  it('closes when its header scrolls out of the list card', async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <div className="dir-list list-scroll">
+        <ColumnMenu colKey="name" label="Name" allRows={rows} filters={{}} text={text}
+                    filter={undefined} onFilter={vi.fn()} sortDir={null} onSort={vi.fn()} />
+      </div>,
+    );
+    const card = container.querySelector('.dir-list') as HTMLElement;
+    const wrap = container.querySelector('.colmenu') as HTMLElement;
+    const rect = (left: number, right: number) =>
+      ({ left, right, top: 0, bottom: 20, width: right - left, height: 20, x: left, y: 0, toJSON() {} }) as DOMRect;
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue(rect(100, 600));
+    const wrapRect = vi.spyOn(wrap, 'getBoundingClientRect').mockReturnValue(rect(200, 260));
+
+    await user.click(screen.getByRole('button', { name: 'Name column menu' }));
+    expect(document.querySelector('.colmenu-menu')).not.toBeNull();
+
+    // Still inside the card after a scroll: stays open, re-placed.
+    wrapRect.mockReturnValue(rect(500, 560));
+    act(() => { window.dispatchEvent(new Event('scroll')); });
+    expect(document.querySelector('.colmenu-menu')).not.toBeNull();
+
+    // Scrolled past the card's right edge: closes.
+    wrapRect.mockReturnValue(rect(700, 760));
+    act(() => { window.dispatchEvent(new Event('scroll')); });
+    expect(document.querySelector('.colmenu-menu')).toBeNull();
+  });
 });
 
 /* ── usePersistentListState ───────────────────────────────────────── */

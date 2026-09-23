@@ -56,6 +56,10 @@
 }
 
 .colmenu-menu { min-width: 220px; }
+/* Portaled under document.body (lib/columnMenu.tsx): fixed coordinates
+ * come inline from the trigger's rect; z-index sits with RowActionsMenu's
+ * portaled menu, above the list card and the sticky topbar. */
+.pop-menu.colmenu-portaled { position: fixed; z-index: 1200; }
 
 .colmenu-sort {
   display: flex;
