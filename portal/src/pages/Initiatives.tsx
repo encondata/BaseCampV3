@@ -57,7 +57,9 @@ import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   applyColumnOrder,
-  ColumnsButton, ExportButton, exportCsv, moveKey, useReorderDrag, useSearchHaystacks,
+  ColHead,
+  ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale, moveKey, useReorderDrag,
+  useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
@@ -69,27 +71,40 @@ import '../styles/profile.css';
 import '../styles/settings.css';
 import '../styles/assets.css';
 
+// The always-shown Name cell — a fixed leading track outside the column
+// registry (same shape as the header markup below), so it needs its own
+// ColumnDef for listGridStyle/ColHead (recipe R1).
+const PRIMARY_COL: ColumnDef = {
+  key: 'primary', label: 'Name', width: '2fr', default: true, min: 180,
+};
+
+// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
+// window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'type', label: 'Type', width: '0.9fr', default: true },
   { key: 'sub_type', label: 'Sub-type', width: '1fr', default: true },
   { key: 'status', label: 'Status', width: '1.1fr', default: true },
   { key: 'client', label: 'Client', width: '1.2fr', default: true },
   { key: 'site', label: 'Site', width: '1.2fr', default: true },
-  { key: 'start', label: 'Start', width: '0.9fr', default: true },
-  { key: 'end', label: 'End', width: '0.9fr', default: false },
+  { key: 'start', label: 'Start', width: '0.9fr', default: true, min: 96 },
+  { key: 'end', label: 'End', width: '0.9fr', default: false, min: 96 },
   { key: 'location', label: 'Location', width: '1.2fr', default: false },
   { key: 'origin', label: 'Origin', width: '1.2fr', default: false },
   { key: 'destination', label: 'Destination', width: '1.2fr', default: false },
   { key: 'shipping', label: 'Shipping', width: '1fr', default: false },
   { key: 'people', label: 'People', width: '0.6fr', default: false },
   { key: 'links', label: 'Links', width: '0.6fr', default: false },
-  { key: 'created', label: 'Created', width: '0.9fr', default: false },
+  { key: 'created', label: 'Created', width: '0.9fr', default: false, min: 96 },
 ];
 
 const ALL_COLUMN_KEYS = new Set<string>(
   [...COLUMNS.map((c) => c.key), 'primary', 'archived']);
 const DEFAULT_VISIBLE = new Set<string>(
   COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 function sortValueFor(i: InitiativeItem, key: string): string {
   switch (key) {
@@ -143,7 +158,8 @@ const TYPE_PILLS = [
 ];
 
 export default function Initiatives() {
-  const { can, godMode, maxRank } = useAuth();
+  const { can, godMode, maxRank, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('initiatives', 'add');
   const canChange = can('initiatives', 'change');
   const canViewSites = can('sites', 'view');
@@ -366,18 +382,17 @@ export default function Initiatives() {
     }
   }, [rows]);
 
-  const caret = (key: string) =>
-    sortKey === key
-      ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns:
-    `2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
+  const rowStyle = {
+    gridTemplateColumns: grid.gridTemplateColumns,
+    minWidth: god.editing ? undefined : grid.minWidth,
+  };
 
   const cellFor = (i: InitiativeItem, key: string) => {
     if (god.editing) {
@@ -393,7 +408,7 @@ export default function Initiatives() {
       case 'type': return chip(i.type_label, i.type_color);
       case 'sub_type':
         return chip(i.sub_type_label, i.sub_type_color)
-          ?? <span className="cell-top">—</span>;
+          ?? <span className="cell-top cell-line">—</span>;
       case 'status':
         return (
           <div className="chips">
@@ -404,23 +419,44 @@ export default function Initiatives() {
             {pd.pendingIds.has(i.id) && <span className="chip tag">Pending delete</span>}
           </div>
         );
-      case 'client': return <span className="cell-top">{i.client_name ?? '—'}</span>;
-      case 'site': return <span className="cell-top">{i.site_name ?? '—'}</span>;
-      case 'location': return <span className="cell-top">{i.location || '—'}</span>;
-      case 'start':
-        return <span className="mono">{cellText(i, 'start')}</span>;
-      case 'end':
-        return <span className="mono">{cellText(i, 'end')}</span>;
-      case 'origin':
-        return <span className="cell-top">{i.origin_site_name ?? '—'}</span>;
-      case 'destination':
-        return <span className="cell-top">{i.destination_site_name ?? '—'}</span>;
-      case 'shipping':
-        return <span className="cell-top">{cellText(i, 'shipping')}</span>;
+      case 'client': {
+        const text = i.client_name ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'site': {
+        const text = i.site_name ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'location': {
+        const text = i.location || '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'start': {
+        const text = cellText(i, 'start');
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'end': {
+        const text = cellText(i, 'end');
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'origin': {
+        const text = i.origin_site_name ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'destination': {
+        const text = i.destination_site_name ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'shipping': {
+        const text = cellText(i, 'shipping');
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'people': return <span className="mono">{i.people_count}</span>;
       case 'links': return <span className="mono">{i.links_count}</span>;
-      case 'created':
-        return <span className="mono">{cellText(i, 'created')}</span>;
+      case 'created': {
+        const text = cellText(i, 'created');
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default: return null;
     }
   };
@@ -481,32 +517,29 @@ export default function Initiatives() {
       )}
 
       {!error && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
-            <span className="col-head">
-              <button className="sortable" onClick={() => toggleSort('primary')}>
-                Name {caret('primary')}
-              </button>
+        <div className={`dir-list list-scroll${god.editing ? ' editing' : ''}`}>
+          <div className="list-head" style={rowStyle}>
+            <ColHead col={PRIMARY_COL} sortDir={sortKey === 'primary' ? sortDir : null}
+                     onToggleSort={() => toggleSort('primary')}>
               <ColumnMenu colKey="primary" label="Name"
                           allRows={initiatives ?? []} filters={filters}
                           text={cellText}
                           filter={filters.primary} onFilter={setFilter}
                           sortDir={sortKey === 'primary' ? sortDir : null}
                           onSort={(dir) => setSort('primary', dir)} />
-            </span>
+            </ColHead>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)}
+                       className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={initiatives ?? []} filters={filters}
                             text={cellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
             <ColumnMenu colKey="archived" label="Archived"
                         allRows={initiatives ?? []} filters={filters}
@@ -535,8 +568,9 @@ export default function Initiatives() {
               <div key={i.id}
                    className={`dir-row ${open ? 'open' : ''} ${i.archived_at ? 'archived' : ''} ${row.isContext ? 'context' : ''}`}
                    {...vp}
-                   style={{ ...vp?.style, '--depth': row.depth } as CSSProperties}>
-                <div className="row-main" style={grid}
+                   style={{ ...vp?.style, '--depth': row.depth,
+                            minWidth: rowStyle.minWidth } as CSSProperties}>
+                <div className="row-main" style={rowStyle}
                      onClick={row.isContext ? undefined : () => {
                        deepLinkTarget.current = null;
                        setOpenId(open ? null : i.id);

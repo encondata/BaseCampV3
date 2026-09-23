@@ -16,8 +16,8 @@ import {
   usePersistentListState, type CellText,
 } from '../lib/columnMenu';
 import {
-  ColumnsButton, applyColumnOrder, moveKey, useReorderDrag, useSearchHaystacks,
-  visibleColumnsFor, type ColumnDef,
+  ColHead, ColumnsButton, applyColumnOrder, listGridStyle, listScale, moveKey, useReorderDrag,
+  useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../lib/listTools';
 import { useToast } from '../lib/notificationsContext';
 import { sectionCount } from '../lib/reports';
@@ -33,16 +33,22 @@ import '../styles/assets.css';    /* .nf-list/.nf-item/.nf-body/.nf-meta (Edit m
 import '../styles/dashboard.css'; /* .dash-kpis (Move Scan History Generate options' preview card) */
 import '../styles/reports.css';
 
+// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
+// window, nav expanded).
 const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: '1.6fr', default: true },
+  { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 140 },
   { key: 'report_type', label: 'Type', width: '1fr', default: true },
   { key: 'description', label: 'Description', width: '2fr', default: true },
   { key: 'sections', label: 'Sections', width: '0.8fr', default: true },
-  { key: 'updated_at', label: 'Updated', width: '1fr', default: true },
+  { key: 'updated_at', label: 'Updated', width: '1fr', default: true, min: 96 },
   { key: 'is_system', label: 'Kind', width: '0.7fr', default: true },
 ];
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
+
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
 const TYPE_LABELS: Record<string, string> = {
   move_report: 'Move Report', site_move_survey: 'Site & Move Survey',
 };
@@ -54,7 +60,8 @@ const msgFor = (err: unknown): string =>
 type Tab = 'available' | 'history';
 
 export default function Reports() {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [params, setParams] = useSearchParams();
   const tab: Tab = params.get('tab') === 'history' ? 'history' : 'available';
   const setTab = (t: Tab) => {
@@ -124,15 +131,14 @@ export default function Reports() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defs, filters, query, sortKey, sortDir, haystack]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 100px` };
+  const grid = listGridStyle(shownCols, ['100px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const clone = async (d: ReportDefinition) => {
     setError('');
@@ -146,11 +152,20 @@ export default function Reports() {
 
   const cellFor = (d: ReportDefinition, key: string) => {
     switch (key) {
-      case 'name': return <b className="cell-primary cell-top">{d.name}</b>;
+      case 'name':
+        return (
+          <b className="cell-primary cell-top cell-line" title={titleFor(d.name)}>{d.name}</b>
+        );
       case 'report_type': return <span className="chip tag">{cellText(d, key)}</span>;
-      case 'description': return <span className="cell-sub">{d.description || '—'}</span>;
+      case 'description': {
+        const text = d.description || '—';
+        return <span className="cell-sub cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'sections': return <span className="mono">{cellText(d, key)}</span>;
-      case 'updated_at': return <span className="mono">{new Date(d.updated_at).toLocaleDateString()}</span>;
+      case 'updated_at': {
+        const text = new Date(d.updated_at).toLocaleDateString();
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'is_system': return d.is_system
         ? <span className="chip c-slate">System</span>
         : <span className="cell-sub">—</span>;
@@ -204,17 +219,18 @@ export default function Reports() {
                              onReorder={setColOrder} />
             </div>
           </div>
-          <div className="dir-list">
-            <div className="list-head" style={grid}>
+          <div className="dir-list list-scroll">
+            <div className="list-head" style={rowStyle}>
               {shownCols.map((c) => (
-                <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                      {...headerDrag.dragProps(c.key)}>
-                  <button className="sortable" onClick={() => toggleSort(c.key)}>{c.label} {caret(c.key)}</button>
+                <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                         onToggleSort={() => toggleSort(c.key)}
+                         className={headerDrag.dropClass(c.key)}
+                         dragProps={headerDrag.dragProps(c.key)}>
                   <ColumnMenu colKey={c.key} label={c.label} allRows={defs} filters={filters}
                               text={cellText} filter={filters[c.key]} onFilter={setFilter}
                               sortDir={sortKey === c.key ? sortDir : null}
                               onSort={(dir) => setSort(c.key, dir)} />
-                </span>
+                </ColHead>
               ))}
               <span />
             </div>
@@ -225,8 +241,9 @@ export default function Reports() {
               </div>
             )}
             <VirtualRows rows={visible} renderRow={(d, vp) => (
-              <div key={d.id} className="dir-row" {...vp} style={vp?.style}>
-                <div className="row-main" style={grid}>
+              <div key={d.id} className="dir-row" {...vp}
+                   style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}>
                   {shownCols.map((c) => <div className="cell" key={c.key}>{cellFor(d, c.key)}</div>)}
                   <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
                     <RowActionsMenu actions={[
