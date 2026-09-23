@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
@@ -15,7 +15,7 @@ from serversherpa.access.resolver import can_touch_rank
 from serversherpa.access.resources import REGISTRY
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import (
-    AuthContext, DbSession, require_password_length, require_permission,
+    AuthContext, DbSession, client_ip, require_password_length, require_permission,
 )
 from serversherpa.api.routes.notifications import effective_settings
 from serversherpa.api.schemas import (
@@ -30,6 +30,7 @@ from serversherpa.api.schemas import (
     ProfileUpdateIn,
     ResetPasswordIn,
     RolesUpdateIn,
+    TotpRequiredIn,
     UserAccessBlock,
     UserAccessGroupRow,
     UserCreateIn,
@@ -50,6 +51,7 @@ from serversherpa.db.models import (
     ResourceGroupGate, Role, UserAccount, WorkerLevel, WorkerProfile,
 )
 from serversherpa.security.passwords import hash_password
+from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import person_activity
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.sessions import live_session_rows
@@ -274,13 +276,18 @@ async def get_user_detail(
 
     person_out = UserDetailPerson.model_validate(person)
     person_out.avatar_url = presign_get(person.avatar_key)
+    policy = await totp_service.policy_for(db, account)
     return UserDetailOut(
         person=person_out,
         account=UserDetailAccount(
             login_email=account.email, status=_status(account, now),
             must_change_password=account.must_change_password,
             last_login_at=account.last_login_at, created_at=account.created_at,
-            password_updated_at=account.password_updated_at),
+            password_updated_at=account.password_updated_at,
+            totp_enrolled=account.totp_confirmed_at is not None,
+            totp_enrolled_at=account.totp_confirmed_at,
+            totp_required=account.totp_required,
+            totp_effective_required=policy.required),
         roles=[UserRoleGrant(
             role=role.name, label=role.label or role.name, rank=role.rank,
             scope_anchor=role.scope_anchor,
@@ -587,6 +594,37 @@ async def unlock_account(
     await db.commit()
 
 
+@router.post("/{person_id}/totp/reset", status_code=204)
+async def reset_totp(
+    person_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "change"),
+) -> None:
+    """Forget their authenticator, backup codes and trusted browsers; they
+    enroll again at their next sign-in if policy requires it."""
+    _, account, _ = await _load_target(db, actor, person_id)
+    await totp_service.reset(db, account, actor_id=actor.person.id, ip=client_ip(request))
+    await db.commit()
+
+
+@router.put("/{person_id}/totp-required", status_code=204)
+async def set_totp_required(
+    person_id: uuid.UUID,
+    body: TotpRequiredIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "change"),
+) -> None:
+    _, account, _ = await _load_target(db, actor, person_id)
+    if account.totp_required != body.required:
+        audit(db, actor_id=actor.person.id, entity_type="user_account",
+              entity_id=str(person_id), action="totp.required_set",
+              changes={"totp_required": {"from": account.totp_required, "to": body.required}})
+        account.totp_required = body.required
+        account.updated_at = datetime.now(UTC)
+    await db.commit()
+
+
 @router.put("/{person_id}/roles", response_model=list[str])
 async def set_roles(
     person_id: uuid.UUID,
@@ -661,6 +699,7 @@ async def revoke_all_user_sessions(
     """Sign the person out everywhere without disabling them."""
     await _load_target(db, actor, person_id)
     await _revoke_all_sessions(db, person_id, reason="admin")
+    await totp_service.revoke_trust(db, person_id)
     audit(db, actor_id=actor.person.id, entity_type="auth",
           entity_id=str(person_id), action="session.revoke_all", changes={})
     await db.commit()

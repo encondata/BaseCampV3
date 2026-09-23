@@ -731,6 +731,14 @@ class UserDetailAccount(BaseModel):
     last_login_at: datetime | None
     created_at: datetime
     password_updated_at: datetime | None
+    totp_enrolled: bool
+    totp_enrolled_at: datetime | None
+    totp_required: bool                  # the per-user flag only
+    totp_effective_required: bool        # user flag OR group OR role OR site policy
+
+
+class TotpRequiredIn(BaseModel):
+    required: bool
 
 
 class UserRoleGrant(BaseModel):
