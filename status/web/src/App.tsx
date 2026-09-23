@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import ServiceCard from './components/ServiceCard';
 import StatusBanner from './components/StatusBanner';
-import { fetchSummary, formatClock, POLL_MS, type Summary } from './lib/summary';
+import { fetchSummary, footerCopy, formatClock, POLL_MS, type Summary } from './lib/summary';
 
 export default function App() {
   const [data, setData] = useState<Summary | null>(null);
@@ -70,7 +70,7 @@ export default function App() {
         )}
 
         <footer className="ss-footer">
-          Checks run every minute. A service shows down after two failed checks in a row.
+          {data ? footerCopy(data.interval_seconds, data.failure_threshold) : null}
         </footer>
       </main>
     </div>

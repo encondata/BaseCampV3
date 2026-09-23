@@ -34,7 +34,7 @@ export default function UptimeStrip({ days }: { days: DayBar[] }) {
           style={{ left: `${((active + 0.5) / days.length) * 100}%` }}
           aria-hidden="true"
         >
-          <div className="ss-tip-day">{formatDay(bar.day)}</div>
+          <div className="ss-tip-day">{formatDay(bar.day)} UTC</div>
           <div className="ss-tip-pct">{dayUptime(bar)}</div>
           {bar.total ? <div className="ss-tip-count">{bar.ok} of {bar.total} checks passed</div> : null}
         </div>
@@ -42,7 +42,7 @@ export default function UptimeStrip({ days }: { days: DayBar[] }) {
       <div className="ss-axis">
         <span className="ss-axis-long">{days.length} days ago</span>
         <span className="ss-axis-short">{PHONE_DAYS} days ago</span>
-        <span>Today</span>
+        <span>Today (UTC)</span>
       </div>
     </div>
   );

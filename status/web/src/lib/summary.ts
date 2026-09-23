@@ -13,7 +13,13 @@ export interface ServiceSummary {
   days: DayBar[];
 }
 
-export interface Summary { generated_at: string; overall: Overall; services: ServiceSummary[] }
+export interface Summary {
+  generated_at: string;
+  overall: Overall;
+  interval_seconds: number;
+  failure_threshold: number;
+  services: ServiceSummary[];
+}
 
 export const POLL_MS = 30_000;
 
@@ -50,4 +56,21 @@ export function formatDay(day: string): string {
 
 export function formatClock(at: string | Date): string {
   return CLOCK_FMT.format(typeof at === 'string' ? new Date(at) : at);
+}
+
+/** The footer's "how this page works" line, driven by the configured
+ * interval/threshold rather than hardcoded — so it never drifts from
+ * what the checker is actually doing. */
+export function footerCopy(intervalSeconds: number, failureThreshold: number): string {
+  let cadence: string;
+  if (intervalSeconds === 60) {
+    cadence = 'every minute';
+  } else if (intervalSeconds > 60 && intervalSeconds % 60 === 0) {
+    const minutes = intervalSeconds / 60;
+    cadence = `every ${minutes} minute${minutes === 1 ? '' : 's'}`;
+  } else {
+    cadence = `every ${intervalSeconds} second${intervalSeconds === 1 ? '' : 's'}`;
+  }
+  const checks = failureThreshold === 1 ? '1 failed check' : `${failureThreshold} failed checks`;
+  return `Checks run ${cadence}. A service shows down after ${checks} in a row.`;
 }

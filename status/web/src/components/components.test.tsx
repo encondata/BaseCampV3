@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import type { DayBar, ServiceSummary } from '../lib/summary';
@@ -68,5 +68,18 @@ describe('UptimeStrip', () => {
   it('bars are labeled for assistive tech', () => {
     render(<UptimeStrip days={days(() => 10)} />);
     expect(screen.getAllByRole('img')[89].getAttribute('aria-label')).toMatch(/100%/);
+  });
+  it('axis marks today as UTC, since daily bars are UTC calendar days', () => {
+    render(<UptimeStrip days={days(() => 10)} />);
+    expect(screen.getByText('Today (UTC)')).toBeTruthy();
+  });
+  it('tooltip date line is suffixed UTC', () => {
+    const allDays = days(() => 10);
+    render(<UptimeStrip days={allDays} />);
+    const lastBar = screen.getAllByRole('img')[89];
+    fireEvent.focus(lastBar);
+    // The tooltip's day line renders formatDay(day) + ' UTC'.
+    const tipDay = document.querySelector('.ss-tip-day');
+    expect(tipDay?.textContent?.endsWith(' UTC')).toBe(true);
   });
 });

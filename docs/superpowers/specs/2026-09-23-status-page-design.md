@@ -97,6 +97,8 @@ entrypoint precedent).
 {
   "generated_at": "2026-09-23T15:04:05Z",
   "overall": "operational" | "degraded" | "unknown",
+  "interval_seconds": 60,
+  "failure_threshold": 2,
   "services": [
     {
       "key": "api", "name": "API",
@@ -110,11 +112,20 @@ entrypoint precedent).
 ```
 
 `overall` = `degraded` when any service is down, `operational` when all are up, otherwise
-`unknown` (some service not yet established). The response **never** contains service URLs or
-probe error detail (`detail` stays in SQLite for operators). `Cache-Control: no-store`.
+`unknown` (some service not yet established, or a service's last check has gone stale — see
+below). The response **never** contains service URLs or probe error detail (`detail` stays in
+SQLite for operators). `interval_seconds`/`failure_threshold` mirror the checker's own config
+and drive the page footer's copy, so it can never drift from what the checker actually does.
+The response is cached server-side for `SUMMARY_TTL_SECONDS` (5s) so unauthenticated traffic
+can't hammer SQLite; `Cache-Control: no-store` still applies (the cache is server-side, not a
+promise to the client). A service whose `last_checked_at` is older than
+`3 * interval_seconds + timeout_seconds` reports `state: "unknown"` rather than trusting a
+check that may never run again.
 
-`GET /healthz` → `{"status":"ok"}` (Docker HEALTHCHECK). All other paths are the built
-page's static files (unknown paths 404). Security headers mirror the kiosk Caddyfile: `X-Frame-Options DENY`,
+`GET /healthz` → `{"status":"ok"}` (Docker HEALTHCHECK), or `503 {"status":"stale"}` when no
+checker cycle has completed within that same staleness window, or `503 {"status":"store_error"}`
+when the last cycle's store writes failed. All other paths are the built page's static files
+(unknown paths 404). Security headers mirror the kiosk Caddyfile: `X-Frame-Options DENY`,
 `X-Content-Type-Options nosniff`, `Referrer-Policy same-origin`. Only GET/HEAD are routed.
 
 ## Checker resilience

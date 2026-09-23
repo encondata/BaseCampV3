@@ -7,6 +7,8 @@ import type { Summary } from './lib/summary';
 const summary: Summary = {
   generated_at: '2026-09-23T12:00:00Z',
   overall: 'operational',
+  interval_seconds: 60,
+  failure_threshold: 2,
   services: ['API', 'Portal', 'Kiosk'].map((name) => ({
     key: name.toLowerCase(), name, state: 'up', last_checked_at: '2026-09-23T12:00:00Z',
     latency_ms: 10, uptime_90d: 100,
@@ -28,6 +30,9 @@ describe('App', () => {
     expect(await screen.findByText('All systems operational')).toBeTruthy();
     expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual(['API', 'Portal', 'Kiosk']);
     expect(fetchMock).toHaveBeenCalledWith('/api/summary', expect.objectContaining({ cache: 'no-store' }));
+    expect(await screen.findByText(
+      'Checks run every minute. A service shows down after 2 failed checks in a row.',
+    )).toBeTruthy();
   });
 
   it('keeps last data and warns when a refresh fails — never fakes green', async () => {
