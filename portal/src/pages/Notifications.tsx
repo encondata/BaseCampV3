@@ -29,9 +29,9 @@ import {
 } from '../lib/columnMenu';
 import { relativeTime } from '../lib/format';
 import {
-  ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
-  moveKey, passesFacets, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
-  type ColumnDef, type FacetGroup, type FacetState,
+  ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
+  listGridStyle, listScale, moveKey, passesFacets, useReorderDrag, useSearchHaystacks,
+  visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { GROUP_ERRORS } from '../lib/notificationGroups';
 import {
@@ -54,23 +54,37 @@ const REQUEST_ERRORS: Record<string, string> = {
 const requestErrorMsg = (err: unknown): string =>
   err instanceof ApiError ? (REQUEST_ERRORS[err.code] ?? `Request failed (${err.code}).`) : 'Network error — try again.';
 
-/* Most widths are minmax(<px>, <fr>) — the px floor keeps the header
+/* Most tracks carry an explicit `min` — the px floor keeps the header
  * label and the column's real content (chips, the nowrap quiet-hours
  * string, the status chip) from colliding with its neighbor at narrow
- * viewports (~1024px), the fr keeps the original relative growth once
- * there's slack; see notif-polish1-brief.md fix 6. Members/Days/Status/
- * Created carry short, low-variance content (a count, a day summary, a
- * two-word chip, a locale date) that gains nothing from growing, so
- * those four are plain fixed px instead — this is what keeps the 8
- * floors + gaps fitting a ~1000px content area without a scrollbar
- * (polish pass 2, fix 3); Description is clamped to 2 lines and shrinks
- * furthest, Quiet hours stays a nowrap ellipsis at its ~150px floor. */
+ * viewports (~1024px), the plain `fr` width keeps the original relative
+ * growth once there's slack; see notif-polish1-brief.md fix 6.
+ * listGridStyle (lib/listTools.tsx, spec 2026-09-23-list-column-floors)
+ * now owns turning `min` into the track's `minmax(floor, fr)` — these
+ * used to be literal `minmax()` strings in `width` itself; the numbers
+ * are unchanged, just moved onto `min`. Members/Days/Status/Created carry
+ * short, low-variance content (a count, a day summary, a two-word chip, a
+ * locale date) that gains nothing from growing, so those four stay plain
+ * fixed px instead — this is what keeps the 8 floors + gaps fitting a
+ * ~1000px content area without a scrollbar (polish pass 2, fix 3);
+ * Description is clamped to 2 lines and shrinks furthest, Quiet hours
+ * stays a nowrap ellipsis at its ~150px floor.
+ *
+ * Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
+ * window, nav expanded). */
 const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: 'minmax(110px, 1.3fr)', default: true },
-  { key: 'description', label: 'Description', width: 'minmax(75px, 2fr)', default: true },
+  { key: 'name', label: 'Name', width: '1.3fr', default: true, min: 110 },
+  // 'Desc' isn't wordy enough on its own to need a short label (11 chars,
+  // under the ~12 rule of thumb) — it's here so the *derived* floor for
+  // the full "Description" label (~112px) doesn't outgrow the deliberately
+  // tight 75px tuned floor above; see columnFloor (lib/listTools.tsx).
+  {
+    key: 'description', label: 'Description', short: 'Desc',
+    width: '2fr', default: true, min: 75,
+  },
   { key: 'members', label: 'Members', width: '60px', default: true },
-  { key: 'channels', label: 'Channels', width: 'minmax(128px, 1.6fr)', default: true },
-  { key: 'quiet_hours', label: 'Quiet hours', width: 'minmax(144px, 1.2fr)', default: true },
+  { key: 'channels', label: 'Channels', width: '1.6fr', default: true, min: 128 },
+  { key: 'quiet_hours', label: 'Quiet hours', width: '1.2fr', default: true, min: 144 },
   { key: 'days', label: 'Days', width: '70px', default: true },
   { key: 'status', label: 'Status', width: '90px', default: true },
   { key: 'created', label: 'Created', width: '85px', default: true },
@@ -152,8 +166,13 @@ const msgFor = (err: unknown): string =>
     ? (ERRORS[err.code] ?? `Request failed (${err.code}).`)
     : 'Network error — nothing was saved.';
 
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
+
 export default function Notifications() {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('notifications', 'add');
   const canChange = can('notifications', 'change');
   const navigate = useNavigate();
@@ -261,25 +280,23 @@ export default function Notifications() {
     return rows.sort((a, b) => naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
   }, [groups, facets, filters, query, sortKey, sortDir, haystack]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle(shownCols, ['30px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (g: NotificationGroup, key: string) => {
     switch (key) {
       case 'name':
-        return <span className="cell-top"><b>{g.name}</b></span>;
+        return <span className="cell-top cell-line" title={titleFor(g.name)}><b>{g.name}</b></span>;
       case 'description':
         return <span className="cell-sub cell-clamp2">{g.description || '—'}</span>;
       case 'members':
-        return <span className="mono" style={{ display: 'block', textAlign: 'right' }}>{g.member_count}</span>;
+        return <span className="mono cell-line" style={{ display: 'block', textAlign: 'right' }}>{g.member_count}</span>;
       case 'channels':
         return (
           <div className="chips">
@@ -288,18 +305,24 @@ export default function Notifications() {
               : <span className="chip tag">—</span>}
           </div>
         );
-      case 'quiet_hours':
-        return <span className="mono cell-nowrap">{formatQuietHours(g.quiet_start, g.quiet_end, g.timezone)}</span>;
-      case 'days':
-        return <span className="cell-top">{formatDays(g.active_days)}</span>;
+      case 'quiet_hours': {
+        const text = formatQuietHours(g.quiet_start, g.quiet_end, g.timezone);
+        return <span className="mono cell-nowrap cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'days': {
+        const text = formatDays(g.active_days);
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'status':
         return (
           <span className={`chip ${g.enabled ? 'c-green' : 'tag'}`}>
             {g.enabled ? 'Enabled' : 'Paused'}
           </span>
         );
-      case 'created':
-        return <span className="mono">{formatCreated(g.created_at)}</span>;
+      case 'created': {
+        const text = formatCreated(g.created_at);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default:
         return null;
     }
@@ -403,21 +426,20 @@ export default function Notifications() {
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load notification groups</b>{error}</div>}
 
       {!error && (
-        <div className="dir-list ngd-notif-grid">
-          <div className="list-head" style={grid}>
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)}
+                       className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={groups ?? []} filters={filters}
                             text={groupCellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
             <span />
           </div>
@@ -439,8 +461,9 @@ export default function Notifications() {
 
           <VirtualRows rows={visible}
             renderRow={(g, vp) => (
-              <div key={g.id} className="dir-row" {...vp} style={vp?.style}>
-                <div className="row-main" style={grid} onClick={() => navigate(`/system/notifications/${g.id}`)}>
+              <div key={g.id} className="dir-row" {...vp}
+                   style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle} onClick={() => navigate(`/system/notifications/${g.id}`)}>
                   {shownCols.map((c) => (
                     <div className="cell" key={c.key}>{cellFor(g, c.key)}</div>
                   ))}

@@ -18,25 +18,24 @@ import {
   type UserSummary,
 } from '../lib/api';
 import {
-  actionLabel, changeRows, entityHref, entityLabel, recordTooltip, targetLabel,
+  actionLabel, AUDIT_COLUMNS, AUDIT_PRIMARY_COL, changeRows, entityHref, entityLabel,
+  recordTooltip, targetLabel,
 } from '../lib/auditFormat';
 import { relativeTime } from '../lib/format';
 import {
-  ColumnsButton, ExportButton, exportCsv, type ColumnDef,
+  ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle,
 } from '../lib/listTools';
 import { naturalCompare } from '../lib/sites';
 import '../styles/directory.css';
 import '../styles/profile.css';
 
 const PAGE = 100;
+const COLUMNS = AUDIT_COLUMNS;
+const PRIMARY_COL = AUDIT_PRIMARY_COL;
 
-const COLUMNS: ColumnDef[] = [
-  { key: 'actor', label: 'Actor', width: '1fr', default: true },
-  { key: 'action', label: 'Action', width: '1.4fr', default: true },
-  { key: 'target', label: 'Target', width: '1.3fr', default: true },
-  { key: 'entity_id', label: 'Record id', width: '1fr', default: false },
-  { key: 'ip', label: 'IP', width: '120px', default: true },
-];
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 type SortKey = 'at' | 'actor' | 'action' | 'target' | 'entity_id' | 'ip';
 
@@ -124,21 +123,38 @@ export default function Audit() {
     if (key === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
     else { setSortKey(key); setSortDir(key === 'at' ? -1 : 1); }
   };
-  const caret = (key: SortKey) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const shownCols = COLUMNS.filter((c) => visibleCols.has(c.key));
-  const grid = { gridTemplateColumns:
-    `150px ${shownCols.map((c) => c.width).join(' ')} 30px` };
+  // Audit.tsx has no useAuth() call today (no other reason to touch
+  // AuthContext) — scale is omitted rather than adding that dependency
+  // just for list_size; listGridStyle defaults to scale 1.
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px']);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (r: AuditLogItem, key: string): ReactElement => {
     switch (key) {
-      case 'actor': return <span className="cell-top">{r.actor_name ?? 'System'}</span>;
-      case 'action': return <span className="cell-top">{actionLabel(r)}</span>;
-      case 'target': return <span className="cell-top">{targetLabel(r)}</span>;
-      case 'entity_id': return <span className="mono">{r.entity_id ?? '—'}</span>;
-      case 'ip': return <span className="mono">{r.ip ?? '—'}</span>;
-      default: return <span className="cell-top">—</span>;
+      case 'actor': {
+        const text = r.actor_name ?? 'System';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'action': {
+        const text = actionLabel(r);
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'target':
+        // No title here — the wrapping .cell div below already carries
+        // recordTooltip(r)'s richer type+name+id tooltip for this column;
+        // an inner title would shadow it on hover.
+        return <span className="cell-top cell-line">{targetLabel(r)}</span>;
+      case 'entity_id': {
+        const text = r.entity_id ?? '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'ip': {
+        const text = r.ip ?? '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      default: return <span className="cell-top cell-line">—</span>;
     }
   };
 
@@ -202,16 +218,13 @@ export default function Audit() {
 
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>{error}</b></div>}
 
-      <div className="dir-list">
-        <div className="list-head" style={grid}>
-          <button className="sortable" onClick={() => toggleSort('at')}>
-            When {caret('at')}
-          </button>
+      <div className="dir-list list-scroll">
+        <div className="list-head" style={rowStyle}>
+          <ColHead col={PRIMARY_COL} sortDir={sortKey === 'at' ? sortDir : null}
+                   onToggleSort={() => toggleSort('at')} />
           {shownCols.map((c) => (
-            <button key={c.key} className="sortable"
-                    onClick={() => toggleSort(c.key as SortKey)}>
-              {c.label} {caret(c.key as SortKey)}
-            </button>
+            <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                     onToggleSort={() => toggleSort(c.key as SortKey)} />
           ))}
           <span />
         </div>
@@ -226,11 +239,12 @@ export default function Audit() {
           const open = openId === r.id;
           const details = changeRows(r.changes);
           return (
-            <div key={r.id} className={`dir-row ${open ? 'open' : ''}`}>
-              <div className="row-main" style={grid}
+            <div key={r.id} className={`dir-row ${open ? 'open' : ''}`}
+                 style={{ minWidth: rowStyle.minWidth }}>
+              <div className="row-main" style={rowStyle}
                    onClick={() => setOpenId(open ? null : r.id)}>
                 <div className="cell" title={new Date(r.at).toLocaleString()}>
-                  <span className="mono">{relativeTime(r.at)}</span>
+                  <span className="mono cell-line">{relativeTime(r.at)}</span>
                 </div>
                 {shownCols.map((c) => (
                   <div className="cell" key={c.key}

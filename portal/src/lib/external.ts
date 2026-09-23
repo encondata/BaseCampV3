@@ -7,6 +7,29 @@
 
 import type { ContactUpdatePatch, ExternalLinkItem, ExternalPersonItem, OrgKind, PersonDetail } from './api';
 import type { GodField } from './godEdit';
+import type { ColumnDef } from './listTools';
+
+// The always-shown avatar+name+contact cell — a fixed leading track
+// outside the column registry (same shape as the page's header markup),
+// so it needs its own ColumnDef for listGridStyle/ColHead. Lives here
+// (not External.tsx) so the columns test doesn't drag in the page's
+// AvatarUpload/ComboBox/TagInput/TierSelect imports — same pattern as
+// lib/sites.ts's PRIMARY_COL.
+export const PRIMARY_COL: ColumnDef = {
+  key: 'primary', label: 'Member', width: '2.2fr', default: true, min: 180,
+};
+
+// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
+// window, nav expanded).
+export const COLUMNS: ColumnDef[] = [
+  { key: 'orgs', label: 'Orgs', width: '1.8fr', default: true },
+  { key: 'type', label: 'Type', width: '0.9fr', default: true },
+  { key: 'title', label: 'Title', width: '1.3fr', default: false },
+  { key: 'functions', label: 'Functions', width: '1.6fr', default: true },
+  { key: 'email', label: 'Email', width: '1.6fr', default: true },
+  { key: 'phone', label: 'Phone', width: '1.1fr', default: false },
+  { key: 'login', label: 'Login', width: '1fr', default: true },
+];
 
 export function typeLabel(links: ExternalLinkItem[]): string {
   const kinds = new Set(links.map((l) => l.kind));

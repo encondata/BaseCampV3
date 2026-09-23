@@ -25,8 +25,8 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import {
-  applyColumnOrder, ColumnsButton, ExportButton, exportCsv, moveKey,
-  useReorderDrag, useSearchHaystacks, visibleColumnsFor,
+  applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale,
+  moveKey, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
 import { naturalCompare } from '../lib/sites';
@@ -45,13 +45,22 @@ const REFRESH_OPTIONS: { label: string; seconds: number }[] = [
   { label: '15 min', seconds: 900 },
 ];
 
+// The always-shown truck name+load cell — a fixed leading track outside
+// the column registry (same shape as the header markup below), so it
+// needs its own ColumnDef for listGridStyle/ColHead.
+const PRIMARY_COL: ColumnDef = {
+  key: 'primary', label: 'Truck', width: '2fr', default: true, min: 180,
+};
+
+// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
+// window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'status', label: 'Status', width: '1fr', default: true },
   { key: 'drivers', label: 'Driver(s)', width: '1.3fr', default: true },
-  { key: 'seal', label: 'Seal', width: '0.8fr', default: true },
+  { key: 'seal', label: 'Seal', width: '0.8fr', default: true, min: 100 },
   { key: 'move', label: 'Move', width: '1.2fr', default: true },
   { key: 'route', label: 'From → To', width: '1.4fr', default: true },
-  { key: 'last_update', label: 'Last update', width: '1fr', default: true },
+  { key: 'last_update', label: 'Last update', width: '1fr', default: true, min: 96 },
   { key: 'containers', label: 'Containers', width: '0.8fr', default: true },
 ];
 
@@ -99,8 +108,13 @@ function truckStatusChip(t: TruckItem) {
   );
 }
 
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
+
 export default function Trucks() {
-  const { can, godMode, maxRank } = useAuth();
+  const { can, godMode, maxRank, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('trucks', 'add');
   const canChange = can('trucks', 'change');
   const canBulk = canAdd && maxRank >= ADMIN_RANK;   // mirrors the API's bulk gate
@@ -191,16 +205,14 @@ export default function Trucks() {
     [mapPoints, visibleIds],
   );
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (t: TruckItem, key: string) => {
     switch (key) {
@@ -211,31 +223,45 @@ export default function Trucks() {
             {t.archived_at && <span className="chip tag">Archived</span>}
           </div>
         );
-      case 'drivers':
-        return <span className="cell-top">{driversText(t) || '—'}</span>;
-      case 'seal':
-        return <span className="mono">{t.seal_id ?? '—'}</span>;
-      case 'move':
-        return t.initiative_id
-          ? <Link to={`/initiatives/${t.initiative_id}`} className="cell-top">{t.initiative_name}</Link>
-          : <span className="cell-top">—</span>;
-      case 'route':
-        if (!t.start_site_name && !t.end_site_name) return <span className="cell-top">—</span>;
+      case 'drivers': {
+        const text = driversText(t) || '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'seal': {
+        const text = t.seal_id ?? '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'move': {
+        if (!t.initiative_id) return <span className="cell-top cell-line">—</span>;
+        const text = t.initiative_name ?? '';
+        return (
+          <Link to={`/initiatives/${t.initiative_id}`} className="cell-top cell-line" title={titleFor(text)}>
+            {t.initiative_name}
+          </Link>
+        );
+      }
+      case 'route': {
+        if (!t.start_site_name && !t.end_site_name) return <span className="cell-top cell-line">—</span>;
+        const from = t.start_site_name ?? '—';
+        const to = `→ ${t.end_site_name ?? '—'}`;
         return (
           <>
-            <div className="cell-top">{t.start_site_name ?? '—'}</div>
-            <div className="cell-sub">→ {t.end_site_name ?? '—'}</div>
+            <div className="cell-top cell-line" title={titleFor(from)}>{from}</div>
+            <div className="cell-sub cell-line" title={titleFor(to)}>{to}</div>
           </>
         );
-      case 'last_update':
+      }
+      case 'last_update': {
+        const text = updateAge(t.last_update?.recorded_at ?? null);
         return (
-          <span className="mono" title={t.last_update?.recorded_at
+          <span className="mono cell-line" title={t.last_update?.recorded_at
             ? new Date(t.last_update.recorded_at).toLocaleString() : undefined}>
-            {updateAge(t.last_update?.recorded_at ?? null)}
+            {text}
           </span>
         );
+      }
       case 'containers':
-        return <span className="mono">{t.container_count}</span>;
+        return <span className="mono cell-line">{t.container_count}</span>;
       default:
         return null;
     }
@@ -322,32 +348,29 @@ export default function Trucks() {
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load trucks</b>{error}</div>}
 
       {!error && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
-            <span className="col-head">
-              <button className="sortable" onClick={() => toggleSort('primary')}>
-                Truck {caret('primary')}
-              </button>
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
+            <ColHead col={PRIMARY_COL} sortDir={sortKey === 'primary' ? sortDir : null}
+                     onToggleSort={() => toggleSort('primary')}>
               <ColumnMenu colKey="primary" label="Truck"
                           allRows={trucks ?? []} filters={filters}
                           text={truckCellText}
                           filter={filters.primary} onFilter={setFilter}
                           sortDir={sortKey === 'primary' ? sortDir : null}
                           onSort={(dir) => setSort('primary', dir)} />
-            </span>
+            </ColHead>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)}
+                       className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={trucks ?? []} filters={filters}
                             text={truckCellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
             <ColumnMenu colKey="archived" label="Archived"
                         allRows={trucks ?? []} filters={filters}
@@ -369,8 +392,8 @@ export default function Trucks() {
             const open = openId === t.id;
             return (
               <div key={t.id} className={`dir-row ${open ? 'open' : ''} ${t.archived_at ? 'archived' : ''}`}
-                   {...vp} style={vp?.style}>
-                <div className="row-main" style={grid}
+                   {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}
                      onClick={() => setOpenId(open ? null : t.id)}>
                   <div className="cell cell-primary">
                     <div className="pn"><b>{t.name}</b>
