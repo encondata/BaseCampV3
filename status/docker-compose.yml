@@ -1,0 +1,31 @@
+# ServerSherpa public status page — one container behind the reverse proxy
+# (status.serversherpa.com → this port).
+#
+#   cp status/.env.example status/.env   # then edit the three URLs
+#   docker compose -f status/docker-compose.yml --env-file status/.env up -d --build
+#
+# The CONTAINER makes the checks, so the URLs must be reachable from inside
+# it: public URLs work anywhere; internal hostnames work when this joins the
+# same Docker network as the services.
+name: serversherpa-status
+
+services:
+  status:
+    build:
+      context: ..
+      dockerfile: status/Dockerfile
+    ports:
+      - "${STATUS_PORT:-8095}:8080"
+    environment:
+      STATUS_API_URL: ${STATUS_API_URL:?set STATUS_API_URL in status/.env}
+      STATUS_PORTAL_URL: ${STATUS_PORTAL_URL:?set STATUS_PORTAL_URL in status/.env}
+      STATUS_KIOSK_URL: ${STATUS_KIOSK_URL:?set STATUS_KIOSK_URL in status/.env}
+      STATUS_INTERVAL_SECONDS: ${STATUS_INTERVAL_SECONDS:-60}
+      STATUS_TIMEOUT_SECONDS: ${STATUS_TIMEOUT_SECONDS:-10}
+      STATUS_FAILURE_THRESHOLD: ${STATUS_FAILURE_THRESHOLD:-2}
+    volumes:
+      - status-data:/data
+    restart: unless-stopped
+
+volumes:
+  status-data:
