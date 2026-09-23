@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   applyColumnOrder, ColumnsButton, csvCell, moveKey, useReorderDrag, useSearchHaystacks,
+  columnFloor, listGridStyle,
   type ColumnDef,
 } from './listTools';
 
@@ -62,6 +63,57 @@ describe('moveKey', () => {
     expect(moveKey(['a', 'b'], 'a', 'a', true)).toEqual(['a', 'b']);
     expect(moveKey(['a', 'b'], 'zzz', 'b', true)).toEqual(['a', 'b']);
     expect(moveKey(['a', 'b'], 'a', 'zzz', true)).toEqual(['a', 'b']);
+  });
+});
+
+describe('columnFloor / listGridStyle', () => {
+  const c = (over: Partial<ColumnDef>): ColumnDef =>
+    ({ key: 'k', label: 'Label', width: '1fr', default: true, ...over });
+
+  it('derives a floor from the label: ceil(chars * 7.4) + 30, never below 72', () => {
+    expect(columnFloor(c({ label: 'Serial' }))).toBe(75);   // 6 chars → 45 + 30
+    expect(columnFloor(c({ label: 'ID' }))).toBe(72);       // 2 chars → 45 → floor 72
+  });
+
+  it('derives the floor from the short label when one is present', () => {
+    expect(columnFloor(c({ label: 'Destination Rack', short: 'Dest Rack' }))).toBe(97); // 9 chars → 67 + 30
+  });
+
+  it('an explicit min wins when larger; the derived floor wins when the explicit one is smaller', () => {
+    expect(columnFloor(c({ label: 'Serial', min: 120 }))).toBe(120);
+    expect(columnFloor(c({ label: 'Serial', min: 50 }))).toBe(75);
+  });
+
+  it('wraps fr columns in minmax() with their floor and passes fixed tracks through untouched', () => {
+    const s = listGridStyle(
+      [c({ key: 'a', label: 'Serial', width: '1.1fr' }), c({ key: 'b', label: 'X', width: '88px' })],
+      ['30px'],
+    );
+    expect(s.gridTemplateColumns).toBe('minmax(75px, 1.1fr) 88px 30px');
+  });
+
+  it('minWidth sums floors, fixed px tracks, one gap between each pair of tracks, and 40px of padding', () => {
+    const s = listGridStyle(
+      [c({ key: 'a', label: 'Serial', width: '1.1fr' }), c({ key: 'b', label: 'X', width: '88px' })],
+      ['30px'],
+    );
+    // 75 + 88 + 30 + 2 gaps × 12 + 40
+    expect(s.minWidth).toBe(257);
+  });
+
+  it('honors a custom gap', () => {
+    const s = listGridStyle([c({ key: 'a', label: 'Serial' }), c({ key: 'b', label: 'Serial' })], [], 16);
+    expect(s.minWidth).toBe(75 + 75 + 16 + 40);
+  });
+
+  it('an unrecognized width passes through and still contributes its floor to minWidth', () => {
+    const s = listGridStyle([c({ label: 'Serial', width: 'auto' })]);
+    expect(s.gridTemplateColumns).toBe('auto');
+    expect(s.minWidth).toBe(75 + 40);
+  });
+
+  it('an empty column set is just the padding', () => {
+    expect(listGridStyle([])).toEqual({ gridTemplateColumns: '', minWidth: 40 });
   });
 });
 

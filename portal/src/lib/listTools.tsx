@@ -44,6 +44,14 @@ export interface ColumnDef {
   width: string;   // grid-template fraction/px for this column
   default: boolean;
   godOnly?: boolean; // only offered/shown once god mode is active
+  /** Header label shown when the long `label` would overflow its track
+   *  (see ColHead / useFitLabel). Also the label the derived floor is
+   *  sized from, since the floor only has to fit the short form. */
+  short?: string;
+  /** px floor for the track (see listGridStyle). Derived from the label
+   *  when absent; an explicit value below the derived floor is raised
+   *  to it so the short label can never overflow. */
+  min?: number;
 }
 
 /** Columns to actually render: visible, and — for godOnly columns — only
@@ -54,6 +62,76 @@ export function visibleColumnsFor(
   columns: ColumnDef[], visible: Set<string>, godMode: boolean,
 ): ColumnDef[] {
   return columns.filter((c) => visible.has(c.key) && (!c.godOnly || godMode));
+}
+
+/* ── column floors + sideways scroll (spec: 2026-09-23-list-column-floors) ──
+ * `fr` tracks shrink to zero when a window is narrow, and any content
+ * that cannot wrap then paints across its neighbor. Every column
+ * therefore carries a px floor, the grid becomes `minmax(floor, fr)`,
+ * and the header + rows carry the summed minimum so the card
+ * (`.dir-list.list-scroll`, directory.css) scrolls sideways below it
+ * instead of colliding. Above the sum nothing changes. */
+
+/** 10px mono header glyph (directory.css --list-fs-head) plus 0.14em
+ *  tracking, at list scale 1. */
+const FLOOR_PX_PER_CHAR = 7.4;
+/** Sort caret + the column-menu funnel button beside the label. */
+const FLOOR_CHROME_PX = 30;
+/** Nothing narrower than this reads as a column. */
+const FLOOR_MIN_PX = 72;
+/** .list-head / .row-main horizontal padding, 20px a side. */
+const LIST_PAD_X = 40;
+/** .dir-list.list-scroll track gap. */
+const LIST_SCROLL_GAP = 12;
+
+/** The px floor for one column: the larger of its explicit `min` and the
+ *  floor derived from the label that has to fit (short when present). */
+export function columnFloor(col: ColumnDef): number {
+  const label = col.short ?? col.label;
+  const derived = Math.max(
+    FLOOR_MIN_PX, Math.ceil(label.length * FLOOR_PX_PER_CHAR) + FLOOR_CHROME_PX,
+  );
+  return Math.max(col.min ?? 0, derived);
+}
+
+export interface ListGridStyle {
+  gridTemplateColumns: string;
+  /** px: floors + fixed tracks + gaps + padding. Numbers render as px. */
+  minWidth: number;
+}
+
+const FR_RE = /^\d*\.?\d+fr$/;
+const PX_RE = /^(\d*\.?\d+)px$/;
+
+/** Grid template + row minimum width for a shown column set. `trailing`
+ *  are the fixed tracks a page appends after its columns (an actions
+ *  track, a chevron track); only px trailing tracks count toward the
+ *  minimum. Spread the result onto `.list-head`, and put `minWidth` on
+ *  each `.dir-row` too so hover paint and borders span the scrolled
+ *  width (see InitiativeDetail.tsx for the reference wiring). */
+export function listGridStyle(
+  cols: ColumnDef[], trailing: string[] = [], gap: number = LIST_SCROLL_GAP,
+): ListGridStyle {
+  const tracks: string[] = [];
+  let min = 0;
+  for (const c of cols) {
+    const floor = columnFloor(c);
+    if (FR_RE.test(c.width)) {
+      tracks.push(`minmax(${floor}px, ${c.width})`);
+      min += floor;
+    } else {
+      tracks.push(c.width);
+      const px = PX_RE.exec(c.width);
+      min += px ? Number(px[1]) : floor;
+    }
+  }
+  for (const t of trailing) {
+    tracks.push(t);
+    const px = PX_RE.exec(t);
+    min += px ? Number(px[1]) : 0;
+  }
+  const gaps = Math.max(0, tracks.length - 1) * gap;
+  return { gridTemplateColumns: tracks.join(' '), minWidth: min + gaps + LIST_PAD_X };
 }
 
 /** Reorder `columns` by a persisted key order. Keys in `order` come first,
