@@ -115,11 +115,19 @@ async def login(
         if policy.enabled:
             if account.totp_confirmed_at is not None:
                 if not await totp_service.check_trust(db, account, trust_token):
+                    audit(db, actor_id=account.person_id, entity_type="auth",
+                          entity_id=str(account.person_id), action="login_challenged",
+                          changes={"purpose": "verify"}, ip=ip)
+                    await db.commit()
                     return LoginChallenge(
                         purpose="verify", account=account,
                         backup_codes_remaining=await totp_service.backup_codes_remaining(
                             db, account.person_id))
             elif policy.required:
+                audit(db, actor_id=account.person_id, entity_type="auth",
+                      entity_id=str(account.person_id), action="login_challenged",
+                      changes={"purpose": "enroll"}, ip=ip)
+                await db.commit()
                 return LoginChallenge(purpose="enroll", account=account,
                                       backup_codes_remaining=None)
 

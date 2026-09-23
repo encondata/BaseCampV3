@@ -6,7 +6,13 @@ from datetime import UTC, datetime, timedelta
 import pyotp
 from sqlalchemy import select
 
-from serversherpa.db.models import AuthSession, SystemConfig, TrustedDevice, UserAccount
+from serversherpa.db.models import (
+    AuditLog,
+    AuthSession,
+    SystemConfig,
+    TrustedDevice,
+    UserAccount,
+)
 from serversherpa.services import totp as totp_service
 
 EMAIL = "alice@test.example.com"
@@ -63,6 +69,19 @@ async def test_enrolled_user_gets_verify_challenge_no_session(client, db, seeded
     assert "ss_refresh" not in resp.cookies and "access_token" not in body
     assert (await db.scalar(select(AuthSession).where(
         AuthSession.person_id == seeded_user.id))) is None
+
+
+async def test_verify_challenge_audits_login_challenged(client, db, seeded_user):
+    await _security(db, two_factor_enabled=True)
+    await _enroll_direct(db, seeded_user.id)
+    resp = await _login(client)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "totp_verify"
+    audits = (await db.scalars(select(AuditLog).where(
+        AuditLog.entity_type == "auth", AuditLog.entity_id == str(seeded_user.id),
+        AuditLog.action == "login_challenged"))).all()
+    assert len(audits) == 1
+    assert audits[0].changes == {"purpose": "verify"}
 
 
 async def test_required_unenrolled_user_gets_enroll_challenge(client, db, seeded_user):
@@ -145,11 +164,26 @@ async def test_remember_sets_trust_cookie_and_next_login_skips_code(client, db, 
                              json={"code": _next_code(secret), "remember": True})
     assert resp.status_code == 200 and "ss_trust" in resp.cookies
     trust = resp.cookies["ss_trust"]
+
+    # the cookie itself: HttpOnly, SameSite=lax, scoped to /auth, and good
+    # for totp_trust_days (7 under tests) — no Secure assertion, since
+    # tests run with env=development and Secure is omitted there.
+    set_cookie = next(v for v in resp.headers.get_list("set-cookie")
+                      if v.startswith("ss_trust="))
+    assert "HttpOnly" in set_cookie
+    assert "SameSite=lax" in set_cookie
+    assert "Path=/auth" in set_cookie
+    assert "Max-Age=604800" in set_cookie
+
     # a fresh login on the same browser (the client jar now holds ss_trust): no challenge
     again = await client.post("/auth/login", json={"email": EMAIL, "password": PW})
     assert again.json()["status"] == "ok"
-    # and without the cookie: challenged
-    client.cookies.clear()
+    # logging out must not clear the trust cookie — only the session
+    logout = await client.post("/auth/logout")
+    assert logout.status_code == 204
+    assert client.cookies.get("ss_trust") == trust
+    # but wipe it by hand, and the next login is challenged again
+    client.cookies.delete("ss_trust")
     bare = await client.post("/auth/login", json={"email": EMAIL, "password": PW})
     assert bare.json()["status"] == "totp_verify"
     # an expired trust row no longer helps
@@ -249,18 +283,18 @@ async def test_regenerate_needs_a_current_code(client, db, seeded_user):
     bad = await client.post("/auth/totp/backup-codes/regenerate", headers=hdrs,
                             json={"code": "000000"})
     assert bad.status_code == 401
-    # Enrollment consumed the "now" counter and the login verify above
-    # consumed "now + 1 step" (both within the server's +/-1 step drift
-    # window at the moment each call landed). No third counter is reachable
-    # within that window without ~30s of real wall-clock time passing, so
-    # reset the replay guard the same way a real 30s wait would — this
-    # models "some time has passed and the app shows a fresh code," not a
-    # literal stale/wrong code.
-    account = await db.get(UserAccount, seeded_user.id)
-    await db.refresh(account)
-    account.totp_last_counter = None
-    await db.commit()
+
+    # verify_code accepts a backup code too, and the schema field is now
+    # wide enough (16 chars) to hold a formatted one ("XXXXX-XXXXX" = 11) —
+    # an unused backup code works as the "current code" for regeneration.
     good = await client.post("/auth/totp/backup-codes/regenerate", headers=hdrs,
-                             json={"code": pyotp.TOTP(secret).now()})
-    assert good.status_code == 200 and len(good.json()["backup_codes"]) == 8
+                             json={"code": codes[1]})
+    assert good.status_code == 200, good.text
+    assert len(good.json()["backup_codes"]) == 8
     assert not set(good.json()["backup_codes"]) & set(codes)
+
+    # regenerating retires the old codes: a second regenerate with another
+    # stale code from the original batch now fails.
+    stale = await client.post("/auth/totp/backup-codes/regenerate", headers=hdrs,
+                              json={"code": codes[2]})
+    assert stale.status_code == 401

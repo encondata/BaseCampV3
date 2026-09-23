@@ -181,7 +181,9 @@ class TotpEnrollConfirmOut(BackupCodesOut):
 
 
 class TotpRegenerateIn(BaseModel):
-    code: str = Field(min_length=6, max_length=8)
+    # A formatted backup code is 11 chars ("XXXXX-XXXXX"); verify_code
+    # accepts backup codes here too, so the field must fit one.
+    code: str = Field(min_length=6, max_length=16)
 
 
 class ErrorOut(BaseModel):

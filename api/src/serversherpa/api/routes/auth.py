@@ -7,7 +7,9 @@ from typing import Annotated
 from fastapi import APIRouter, Cookie, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.api.deps import CurrentUser, DbSession, TotpChallengeOrUser, client_ip
+from serversherpa.api.deps import (
+    CurrentUser, DbSession, TotpActor, TotpChallengeOrUser, client_ip,
+)
 from serversherpa.api.schemas import (
     BackupCodesOut, LoginChallengeOut, LoginIn, MeOut, PersonOut, ScopeOut, SessionOut,
     TotpEnrollConfirmIn, TotpEnrollConfirmOut, TotpEnrollStartOut, TotpRegenerateIn,
@@ -189,7 +191,8 @@ async def save_preferences(
 # ── two-factor ──────────────────────────────────────────────────────
 
 async def _finish_challenge(
-    db: AsyncSession, actor, request: Request, response: Response, *, remember: bool,
+    db: AsyncSession, actor: TotpActor, request: Request, response: Response, *,
+    remember: bool,
 ) -> SessionOut:
     """The second factor passed on a challenge: mint the real session and,
     when asked, remember this browser."""
@@ -216,10 +219,10 @@ async def totp_verify(
     return await _finish_challenge(db, actor, request, response, remember=body.remember)
 
 
-async def _enrollment_allowed(db: AsyncSession, actor) -> None:
+async def _enrollment_allowed(db: AsyncSession, actor: TotpActor) -> None:
     if actor.purpose == "verify":
         raise HTTPException(status_code=401, detail={"code": "invalid_challenge"})
-    if actor.purpose is None and not (await totp_service.policy_for(db, actor.account)).enabled:
+    if not (await totp_service.policy_for(db, actor.account)).enabled:
         raise HTTPException(status_code=409, detail={"code": "totp_disabled"})
 
 

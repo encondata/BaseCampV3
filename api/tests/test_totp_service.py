@@ -1,6 +1,8 @@
 """services/totp: secrets at rest, policy resolver, code verification with
 replay guard, backup codes, trusted browsers, challenge tokens."""
 
+import asyncio
+import threading
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -9,6 +11,8 @@ import pyotp
 import pytest
 from pydantic import SecretStr
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
@@ -21,7 +25,6 @@ from serversherpa.db.models import (
     TrustedDevice,
     UserAccount,
 )
-from serversherpa.security.passwords import verify_password
 from serversherpa.security.tokens import TokenError
 from serversherpa.services import totp
 from serversherpa.services.auth import AuthError
@@ -238,29 +241,72 @@ async def test_backup_code_single_use_and_regenerate(db, seeded_user):
     assert await totp.verify_code(db, account, fresh[0], ip=None) == "backup"
 
 
-async def test_backup_code_consumption_is_conditional_on_still_being_unused(db, seeded_user):
+async def test_backup_code_consumption_is_conditional_on_still_being_unused(
+        db, seeded_user, monkeypatch):
     """Deterministic proxy for the concurrent-request race: verify_code's
-    UPDATE is conditioned on used_at still being NULL, so a row another
-    request already consumed is rejected rather than accepted twice."""
+    UPDATE is conditioned on used_at still being NULL. The row is still
+    unused when verify_code's SELECT finds it; a "concurrent" request marks
+    it used, from a second session, between that SELECT and verify_code's
+    own UPDATE — so verify_code's UPDATE affects zero rows and it falls
+    through to the failure path instead of double-accepting it.
+
+    The concurrent write has to land while verify_code is still holding the
+    match, and it has to be a real commit visible to verify_code's own
+    session — a plain `await` from here can't interleave with code that
+    isn't awaited at the call site, so it runs on a second AsyncSession
+    from a background thread with its own event loop. That session uses a
+    dedicated, NullPool engine rather than the app's cached one
+    (get_sessionmaker()'s): asyncpg connections are bound to the loop that
+    created them, and handing the background loop a connection out of the
+    main loop's pool blows up with "attached to a different loop"."""
     account = await _account(db, seeded_user)
     _secret, codes = await _enroll(db, account)
-    wanted = totp._normalize_backup(codes[0])
-    pepper = get_settings().password_pepper.get_secret_value()
-    row = None
-    for candidate in await db.scalars(select(TotpBackupCode).where(
-            TotpBackupCode.person_id == account.person_id, TotpBackupCode.used_at.is_(None))):
-        if verify_password(candidate.code_hash, wanted, pepper=pepper):
-            row = candidate
-            break
-    assert row is not None
+    before = await totp.backup_codes_remaining(db, account.person_id)
 
-    # simulate a concurrent request that already won the race
-    await db.execute(update(TotpBackupCode).where(TotpBackupCode.id == row.id)
-                     .values(used_at=datetime.now(UTC)))
-    await db.commit()
+    real_verify_password = totp.verify_password
+    fired = False
 
-    with pytest.raises(AuthError):
+    def _race_then_verify(code_hash, candidate, *, pepper):
+        nonlocal fired
+        ok = real_verify_password(code_hash, candidate, pepper=pepper)
+        if ok and not fired:
+            fired = True
+
+            async def _consume_concurrently():
+                engine = create_async_engine(
+                    get_settings().database_url.get_secret_value(), poolclass=NullPool)
+                try:
+                    async with async_sessionmaker(engine)() as other:
+                        row = await other.scalar(select(TotpBackupCode).where(
+                            TotpBackupCode.person_id == account.person_id,
+                            TotpBackupCode.used_at.is_(None)))
+                        assert row is not None
+                        row.used_at = datetime.now(UTC)
+                        await other.commit()
+                finally:
+                    await engine.dispose()
+
+            outcome: dict = {}
+
+            def _runner():
+                try:
+                    asyncio.run(_consume_concurrently())
+                except Exception as exc:  # pragma: no cover - surfaced below
+                    outcome["error"] = exc
+
+            thread = threading.Thread(target=_runner)
+            thread.start()
+            thread.join()
+            if "error" in outcome:
+                raise outcome["error"]
+        return ok
+
+    monkeypatch.setattr(totp, "verify_password", _race_then_verify)
+
+    with pytest.raises(AuthError) as exc:
         await totp.verify_code(db, account, codes[0], ip=None)
+    assert exc.value.code == "totp_invalid"
+    assert await totp.backup_codes_remaining(db, account.person_id) == before - 1
 
 
 async def test_failed_codes_lock_the_account(db, seeded_user, monkeypatch):

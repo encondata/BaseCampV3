@@ -244,7 +244,9 @@ async def verify_code(
     account = await db.scalar(
         select(UserAccount).options(joinedload(UserAccount.person, innerjoin=True))
         .where(UserAccount.person_id == account.person_id)
-        .with_for_update().execution_options(populate_existing=True))
+        .with_for_update(of=UserAccount).execution_options(populate_existing=True))
+    if account is None:
+        raise AuthError("totp_not_enrolled")
     now = datetime.now(UTC)
     if account.locked_until is not None and account.locked_until > now:
         raise AuthError("account_locked")
