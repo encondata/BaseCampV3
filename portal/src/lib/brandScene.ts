@@ -157,18 +157,17 @@ export function buildBrandScene(
   route.setAttribute('class', 'route-path');
   routeGroup.appendChild(route);
 
-  /* Would these labels, set right of the node, end inside the panel? Measured
-     with the real text classes; measured before the web font loads, the
-     fallback monospace is at least as wide, so the answer errs toward 'no'. */
-  function fitsRightOf(pt: Pt, lines: string[]): boolean {
-    const classes = ['map-node-label', 'map-node-sub'];
-    let widest = 0;
-    lines.forEach((line, i) => {
-      const probe = svgText(0, 0, classes[i] ?? 'map-node-sub', line);
-      routeGroup.appendChild(probe);
-      widest = Math.max(widest, probe.getBBox().width);
-      probe.remove();
-    });
+  /* Would these labels, set right of the node, end inside the panel?
+     Estimated from character counts, NOT measured: the scene is built once,
+     often before the web font arrives, and the fallback monospace can be
+     narrower than Fragment Mono — a measured "fits" then overflows when the
+     font swaps in. 0.7em per character over-counts Fragment Mono's 0.6em
+     advance. Font sizes and letter-spacing mirror .map-node-label/-sub in
+     auth-theme.css. */
+  function fitsRightOf(pt: Pt, label: string, sub: string): boolean {
+    const est = (text: string, px: number, trackEm: number) =>
+      [...text].length * px * (0.7 + trackEm);
+    const widest = Math.max(est(label, 13.5, 0.08), est(sub, 11.5, 0.04));
     // 32px of air: a label that merely fits still reads as clipped against
     // the panel's dashed divider
     return pt.x + 36 + widest <= W - 32;
@@ -235,12 +234,15 @@ export function buildBrandScene(
     : makeNode(A, 'ORIGIN · DAL-7', 'Las Vegas, NV — HALL B', 'middle');
   const nodeB = map
     ? makeMapNode(B, 'DESTINATION · LAS-9', 'Las Vegas, NV · HALL D', '36.086° N / 115.139° W',
-        'ELEV 2,030′', narrow || !fitsRightOf(B, ['DESTINATION · LAS-9', 'Las Vegas, NV · HALL D']) ? 'left' : 'right')
+        'ELEV 2,030′', narrow || !fitsRightOf(B, 'DESTINATION · LAS-9', 'Las Vegas, NV · HALL D') ? 'left' : 'right')
     : makeNode(B, 'DEST · ZRH-3', 'ZÜRICH, CH — HALL A', 'end');
 
   // state names are decoration: step any that collide with node text down
-  // until clear (the flipped destination's coordinates land near NEVADA)
-  if (map) {
+  // until clear (the flipped destination's coordinates land near NEVADA).
+  // Text boxes change when the web font swaps in, so settle again then.
+  let disposed = false;
+  const settleStateNames = () => {
+    if (disposed) return;
     const boxes = [...routeGroup.querySelectorAll('text')].map((t) => t.getBBox());
     const hit = (a: DOMRect, b: DOMRect) => a.x < b.x + b.width && b.x < a.x + a.width
       && a.y < b.y + b.height && b.y < a.y + a.height;
@@ -249,6 +251,10 @@ export function buildBrandScene(
         s.setAttribute('y', String(Number(s.getAttribute('y')) + 26));
       }
     });
+  };
+  if (map) {
+    settleStateNames();
+    document.fonts?.ready.then(settleStateNames);
   }
 
   // map layout: a glowing mid-route waypoint and the route's status callout
@@ -470,6 +476,7 @@ export function buildBrandScene(
   }, 3000);
 
   return () => {
+    disposed = true;
     clearInterval(elevTicker);
     if (mouseHandler) brandPanel.removeEventListener('mousemove', mouseHandler);
     ctx.revert();
