@@ -3,6 +3,7 @@
  * Account kv panels, then Memberships (worker profile, org affiliations,
  * notification groups) and Active sessions (admin view).
  */
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import DataTable from '../DataTable';
@@ -10,6 +11,7 @@ import type { UserDetailOut } from '../../lib/api';
 import { statusChip } from '../../lib/chips';
 import { describeUserAgent, longDate, relativeTime } from '../../lib/format';
 import { STATUS_META, type DetailMode } from '../../lib/users';
+import { Switch } from '../Switch';
 
 const SOURCE_LABEL: Record<string, string> = {
   manual: 'Added manually',
@@ -21,7 +23,7 @@ const SOURCE_LABEL: Record<string, string> = {
 // same DetailMode they compute for the rest of the page; this component
 // only needs canManageUsers to gate its own buttons.
 export default function UserProfileTab({
-  detail, canManageUsers, onEdit, onReset, onSignOutAll,
+  detail, canManageUsers, onEdit, onReset, onSignOutAll, onResetTotp, onToggleTotpRequired,
 }: {
   detail: UserDetailOut;
   mode: DetailMode;
@@ -29,10 +31,13 @@ export default function UserProfileTab({
   onEdit: () => void;
   onReset: () => void;
   onSignOutAll: () => void;
+  onResetTotp: () => void;
+  onToggleTotpRequired: (v: boolean) => Promise<void>;
 }) {
   const { person, account, roles, worker, notification_groups: groups, sessions } = detail;
   const status = STATUS_META[account.status] ?? { label: account.status, cls: 'tag' };
   const canManage = canManageUsers;
+  const [toggling, setToggling] = useState(false);
   const address = [person.address_line1, person.address_line2,
     [person.city, person.region, person.postal_code].filter(Boolean).join(', '),
     person.country]
@@ -85,6 +90,26 @@ export default function UserProfileTab({
                   : account.password_updated_at
                     ? `Last reset ${longDate(account.password_updated_at)}`
                     : 'set'}</dd>
+                <dt>Two-factor</dt>
+                <dd className="totp-line">
+                  {account.totp_enrolled
+                    ? <span className="chip c-green"><span className="dot" />Enrolled{account.totp_enrolled_at ? ` ${longDate(account.totp_enrolled_at)}` : ''}</span>
+                    : <span className="chip tag">Not enrolled</span>}
+                  {account.totp_effective_required && !account.totp_required && (
+                    <span className="set-note">Required by policy</span>
+                  )}
+                  {canManage && (
+                    <label className="totp-require">
+                      <Switch label="Require 2FA" checked={account.totp_required || account.totp_effective_required}
+                              disabled={account.totp_effective_required && !account.totp_required || toggling}
+                              onChange={(v) => { setToggling(true); void onToggleTotpRequired(v).finally(() => setToggling(false)); }} />
+                      <span>Require 2FA</span>
+                    </label>
+                  )}
+                  {canManage && account.totp_enrolled && (
+                    <button className="mini-btn danger" onClick={onResetTotp}>Reset 2FA</button>
+                  )}
+                </dd>
                 <dt>Last sign-in</dt>
                 <dd className="mono" title={account.last_login_at ? new Date(account.last_login_at).toLocaleString() : undefined}>
                   {relativeTime(account.last_login_at)}

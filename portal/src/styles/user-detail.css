@@ -14,3 +14,5 @@
 .ud-group-pick.on { border-color: var(--accent, #d38b1d); box-shadow: inset 0 0 0 1px var(--accent, #d38b1d); }
 .ud-group-pick:disabled { opacity: 0.45; cursor: not-allowed; }
 .ud-group-pick .ud-group-meta { color: var(--text-mute); }
+.kv .totp-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.totp-require { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }

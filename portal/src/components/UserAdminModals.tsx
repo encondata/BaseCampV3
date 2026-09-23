@@ -11,6 +11,7 @@ import { canTouchRank } from '../lib/access';
 import {
   adminAccountStateRequest,
   adminResetPasswordRequest,
+  adminResetTotp,
   adminSetRolesRequest,
   adminUpdateProfileRequest,
   ApiError,
@@ -406,6 +407,43 @@ export function AccountStateModal({ user, action, onClose, onDone }: {
         <button className={action === 'disable' ? 'btn-solid btn-danger' : 'btn-solid'}
                 onClick={() => void run()} disabled={saving}>
           {saving ? 'Working…' : copy.confirm}
+        </button>
+        <button className="mini-btn" onClick={onClose} disabled={saving}>Cancel</button>
+        {error && <span className="pf-error">{error}</span>}
+      </div>
+    </Modal>
+  );
+}
+
+/* ── reset two-factor ───────────────────────────────────────────── */
+
+export function ResetTotpModal({ user, onClose, onDone }: {
+  user: ManagedUser;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const run = async () => {
+    setSaving(true); setError('');
+    try {
+      await adminResetTotp(user.person_id);
+      onDone();
+    } catch (err) {
+      setError(errText(err));
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal title={`Reset two-factor — ${user.display_name}`} onClose={onClose}>
+      <div className="modal-body">
+        <p className="set-note" style={{ padding: 0, margin: 0 }}>
+          Their authenticator, backup codes and remembered browsers are forgotten. If policy requires two-factor they set it up again at their next sign-in.
+        </p>
+      </div>
+      <div className="modal-foot">
+        <button className="btn-solid btn-danger" onClick={() => void run()} disabled={saving}>
+          {saving ? 'Working…' : 'Reset two-factor'}
         </button>
         <button className="mini-btn" onClick={onClose} disabled={saving}>Cancel</button>
         {error && <span className="pf-error">{error}</span>}

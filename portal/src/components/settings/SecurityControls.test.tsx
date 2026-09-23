@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   ApiError: class ApiError extends Error { code = ''; },
 }));
 vi.mock('../../lib/api', () => api);
+vi.mock('../../lib/systemStatus', () => ({ getSystemStatus: async () => ({ totp_trust_days: 7 }) }));
 
 const { default: SecurityControls } = await import('./SecurityControls');
 
@@ -39,6 +40,12 @@ it('End all sessions confirms, calls the API, and reports the count', async () =
   fireEvent.click(screen.getByRole('button', { name: 'End all sessions' }));
   await waitFor(() => expect(api.revokeAllSessions).toHaveBeenCalledTimes(1));
   await waitFor(() => expect(screen.getByText(/Signed out 4 sessions across 3 people/)).toBeTruthy());
+});
+
+it('explains the policy and shows the trust window', async () => {
+  render(<SecurityControls />);
+  expect(await screen.findByText(/skip the code for 7 days/i)).toBeTruthy();
+  expect(screen.getByText(/challenges enrolled users at sign-in/i)).toBeTruthy();
 });
 
 it('does nothing when the confirm is declined, and disables everything when change is not allowed', async () => {
