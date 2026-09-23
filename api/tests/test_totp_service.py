@@ -4,19 +4,24 @@ replay guard, backup codes, trusted browsers, challenge tokens."""
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import jwt
 import pyotp
 import pytest
+from pydantic import SecretStr
 from sqlalchemy import select, update
 
+from serversherpa.config import get_settings
 from serversherpa.db.models import (
     AccessGroup,
     AccessGroupMember,
     PersonRole,
     Role,
     SystemConfig,
+    TotpBackupCode,
     TrustedDevice,
     UserAccount,
 )
+from serversherpa.security.passwords import verify_password
 from serversherpa.security.tokens import TokenError
 from serversherpa.services import totp
 from serversherpa.services.auth import AuthError
@@ -48,12 +53,72 @@ def test_secret_round_trip():
     assert totp.decrypt_secret(blob) == "JBSWY3DPEHPK3PXP"
 
 
-def test_challenge_token_round_trip_and_purpose():
+def test_challenge_token_round_trip_rejects_tampering():
     pid = uuid.uuid4()
     tok = totp.make_challenge_token(pid, "verify")
     assert totp.decode_challenge_token(tok) == (pid, "verify")
     with pytest.raises(TokenError):
         totp.decode_challenge_token(tok + "x")
+
+
+def test_challenge_token_enroll_purpose():
+    pid = uuid.uuid4()
+    tok = totp.make_challenge_token(pid, "enroll")
+    assert totp.decode_challenge_token(tok) == (pid, "enroll")
+
+
+def _mint_raw_token(**claim_overrides):
+    now = datetime.now(UTC)
+    claims = {
+        "iss": totp.JWT_ISSUER, "sub": str(uuid.uuid4()), "purpose": "verify",
+        "iat": now, "exp": now + timedelta(seconds=60), "typ": "totp",
+    }
+    claims.update(claim_overrides)
+    return jwt.encode(claims, get_settings().jwt_secret.get_secret_value(), algorithm="HS256")
+
+
+def test_decode_challenge_token_rejects_wrong_typ():
+    tok = _mint_raw_token(typ="access")
+    with pytest.raises(TokenError):
+        totp.decode_challenge_token(tok)
+
+
+def test_decode_challenge_token_rejects_bogus_purpose():
+    tok = _mint_raw_token(purpose="bogus")
+    with pytest.raises(TokenError):
+        totp.decode_challenge_token(tok)
+
+
+def test_decode_challenge_token_rejects_non_uuid_sub():
+    tok = _mint_raw_token(sub="not-a-uuid")
+    with pytest.raises(TokenError):
+        totp.decode_challenge_token(tok)
+
+
+def test_decode_challenge_token_rejects_expired(monkeypatch):
+    monkeypatch.setattr(totp, "CHALLENGE_TTL_SECONDS", -60)
+    tok = totp.make_challenge_token(uuid.uuid4(), "verify")
+    with pytest.raises(TokenError):
+        totp.decode_challenge_token(tok)
+
+
+def test_encrypt_secret_rejects_invalid_fernet_key(monkeypatch):
+    bad = get_settings().model_copy(update={"totp_encryption_key": SecretStr("not-a-key")})
+    monkeypatch.setattr(totp, "get_settings", lambda: bad)
+    with pytest.raises(RuntimeError) as exc:
+        totp.encrypt_secret("JBSWY3DPEHPK3PXP")
+    assert str(exc.value) == "SS_TOTP_ENCRYPTION_KEY is not a valid Fernet key"
+
+
+def test_decrypt_secret_rejects_blob_from_a_different_key(monkeypatch):
+    from cryptography.fernet import Fernet
+
+    blob = totp.encrypt_secret("JBSWY3DPEHPK3PXP")
+    other = get_settings().model_copy(
+        update={"totp_encryption_key": SecretStr(Fernet.generate_key().decode())})
+    monkeypatch.setattr(totp, "get_settings", lambda: other)
+    with pytest.raises(RuntimeError):
+        totp.decrypt_secret(blob)
 
 
 def test_format_backup_code():
@@ -120,18 +185,34 @@ async def test_enroll_confirm_and_verify(db, seeded_user):
     assert exc.value.code == "totp_invalid"
     assert account.totp_confirmed_at is None
 
+    # Capture the code (and the timestamp it belongs to) once: confirm
+    # runs 8 Argon2 hashes to build the backup codes, slow enough that a
+    # second pyotp.TOTP(secret).now() call afterward can land in the next
+    # 30s step and flake.
+    ts = datetime.now(UTC)
+    code = pyotp.TOTP(secret).at(ts)
     codes = await totp.confirm_enrollment(
-        db, account, pyotp.TOTP(secret).now(), actor_id=account.person_id, ip=None)
+        db, account, code, actor_id=account.person_id, ip=None)
     assert len(codes) == 8 and all(len(c) == 11 and c[5] == "-" for c in codes)
     assert account.totp_confirmed_at is not None
     assert await totp.backup_codes_remaining(db, account.person_id) == 8
 
     # the confirm code itself is now a replay
     with pytest.raises(AuthError):
-        await totp.verify_code(db, account, pyotp.TOTP(secret).now(), ip=None)
+        await totp.verify_code(db, account, code, ip=None)
     # a code from the next step verifies (drift window)
-    nxt = pyotp.TOTP(secret).at(datetime.now(UTC) + timedelta(seconds=30))
+    nxt = pyotp.TOTP(secret).at(ts + timedelta(seconds=30))
     assert await totp.verify_code(db, account, nxt, ip=None) == "totp"
+
+
+async def test_verify_code_accepts_code_with_internal_space(db, seeded_user):
+    """A code split as an authenticator app renders it ("123 456") is still
+    routed to the TOTP branch, not misread as a backup code."""
+    account = await _account(db, seeded_user)
+    secret, _codes = await _enroll(db, account)
+    nxt = pyotp.TOTP(secret).at(datetime.now(UTC) + timedelta(seconds=30))
+    spaced = f"{nxt[:3]} {nxt[3:]}"
+    assert await totp.verify_code(db, account, spaced, ip=None) == "totp"
 
 
 async def test_begin_enrollment_refuses_confirmed_account(db, seeded_user):
@@ -157,9 +238,32 @@ async def test_backup_code_single_use_and_regenerate(db, seeded_user):
     assert await totp.verify_code(db, account, fresh[0], ip=None) == "backup"
 
 
-async def test_failed_codes_lock_the_account(db, seeded_user, monkeypatch):
-    from serversherpa.config import get_settings
+async def test_backup_code_consumption_is_conditional_on_still_being_unused(db, seeded_user):
+    """Deterministic proxy for the concurrent-request race: verify_code's
+    UPDATE is conditioned on used_at still being NULL, so a row another
+    request already consumed is rejected rather than accepted twice."""
+    account = await _account(db, seeded_user)
+    _secret, codes = await _enroll(db, account)
+    wanted = totp._normalize_backup(codes[0])
+    pepper = get_settings().password_pepper.get_secret_value()
+    row = None
+    for candidate in await db.scalars(select(TotpBackupCode).where(
+            TotpBackupCode.person_id == account.person_id, TotpBackupCode.used_at.is_(None))):
+        if verify_password(candidate.code_hash, wanted, pepper=pepper):
+            row = candidate
+            break
+    assert row is not None
 
+    # simulate a concurrent request that already won the race
+    await db.execute(update(TotpBackupCode).where(TotpBackupCode.id == row.id)
+                     .values(used_at=datetime.now(UTC)))
+    await db.commit()
+
+    with pytest.raises(AuthError):
+        await totp.verify_code(db, account, codes[0], ip=None)
+
+
+async def test_failed_codes_lock_the_account(db, seeded_user, monkeypatch):
     # Settings is frozen; model_copy(update=…) is the supported way to vary it
     tight = get_settings().model_copy(update={"max_failed_logins": 2})
     monkeypatch.setattr(totp, "get_settings", lambda: tight)
@@ -178,10 +282,15 @@ async def test_failed_codes_lock_the_account(db, seeded_user, monkeypatch):
 async def test_trust_issue_check_revoke(db, seeded_user):
     account = await _account(db, seeded_user)
     token = await totp.issue_trust(db, account, user_agent="UA", ip=None)
-    assert await totp.check_trust(db, account, token) is True
-    assert await totp.check_trust(db, account, token + "x") is False
     row = await db.scalar(select(TrustedDevice).where(TrustedDevice.person_id == account.person_id))
-    assert row.last_used_at is not None and row.user_agent == "UA"
+    assert row.user_agent == "UA"
+    issued_last_used_at = row.last_used_at
+    assert issued_last_used_at is not None
+
+    assert await totp.check_trust(db, account, token) is True
+    await db.refresh(row)
+    assert row.last_used_at is not None and row.last_used_at > issued_last_used_at
+    assert await totp.check_trust(db, account, token + "x") is False
     row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
     await db.commit()
     assert await totp.check_trust(db, account, token) is False

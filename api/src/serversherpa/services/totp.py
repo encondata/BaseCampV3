@@ -19,8 +19,9 @@ from typing import Literal
 import jwt
 import pyotp
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
@@ -120,11 +121,14 @@ def decode_challenge_token(token: str) -> tuple[uuid.UUID, str]:
             token, get_settings().jwt_secret.get_secret_value(), algorithms=["HS256"],
             issuer=JWT_ISSUER, options={"require": ["exp", "iat", "sub", "purpose"]},
             leeway=10)
+        if claims.get("typ") != "totp" or claims["purpose"] not in ("verify", "enroll"):
+            raise TokenError("wrong token type")
+        person_id = uuid.UUID(claims["sub"])
     except jwt.InvalidTokenError as exc:
         raise TokenError(str(exc)) from exc
-    if claims.get("typ") != "totp" or claims["purpose"] not in ("verify", "enroll"):
-        raise TokenError("wrong token type")
-    return uuid.UUID(claims["sub"]), claims["purpose"]
+    except ValueError as exc:
+        raise TokenError("invalid subject") from exc
+    return person_id, claims["purpose"]
 
 
 # ── enrollment ──────────────────────────────────────────────────────
@@ -223,15 +227,36 @@ async def verify_code(
     code. Raises AuthError("account_locked") while locked out and
     AuthError("totp_invalid") otherwise; a failure counts toward lockout.
     Commits."""
+    # Lock the account row for the rest of this transaction so two
+    # concurrent requests with the same code can't both read the
+    # pre-update state and both succeed (replay guard / single-use). A
+    # bare select, not db.refresh(with_for_update=True): refresh() replays
+    # whatever loader options originally populated this instance, and
+    # callers commonly load the account with joinedload(UserAccount.person)
+    # — Postgres refuses to combine FOR UPDATE with an outer join. Kept
+    # here as an inner join (person_id is UserAccount's non-nullable PK/FK,
+    # so it's always exactly one row) rather than dropped: dropping it
+    # would leave populate_existing's refresh expiring the relationship,
+    # so a caller's later `account.person` access — e.g.
+    # services/auth.start_session — becomes a lazy load outside of any
+    # awaited context and blows up. populate_existing keeps this the same
+    # identity-mapped instance the caller holds, with fresh values.
+    account = await db.scalar(
+        select(UserAccount).options(joinedload(UserAccount.person, innerjoin=True))
+        .where(UserAccount.person_id == account.person_id)
+        .with_for_update().execution_options(populate_existing=True))
     now = datetime.now(UTC)
     if account.locked_until is not None and account.locked_until > now:
         raise AuthError("account_locked")
     if account.totp_confirmed_at is None or account.totp_secret_enc is None:
         raise AuthError("totp_not_enrolled")
 
-    digits = _digits(code)
-    if len(digits) == 6 and digits == code.strip():
-        counter = _match_counter(decrypt_secret(account.totp_secret_enc), digits,
+    # Authenticator apps commonly render a 6-digit code with a middle
+    # space ("123 456"); strip all whitespace before deciding which
+    # branch it belongs to.
+    compact = "".join(code.split())
+    if compact.isdigit() and len(compact) == 6:
+        counter = _match_counter(decrypt_secret(account.totp_secret_enc), compact,
                                  account.totp_last_counter)
         if counter is not None:
             account.totp_last_counter = counter
@@ -248,7 +273,16 @@ async def verify_code(
                 TotpBackupCode.used_at.is_(None))))
             for row in rows:
                 if verify_password(row.code_hash, wanted, pepper=pepper):
-                    row.used_at = now
+                    # Conditional on used_at still being NULL: if another
+                    # request already consumed this row between our SELECT
+                    # and here, this affects zero rows and we fall through
+                    # to the failure path instead of double-accepting it.
+                    result = await db.execute(update(TotpBackupCode).where(
+                        TotpBackupCode.id == row.id,
+                        TotpBackupCode.used_at.is_(None),
+                    ).values(used_at=now))
+                    if result.rowcount == 0:
+                        continue
                     account.failed_login_count = 0
                     account.updated_at = now
                     audit(db, actor_id=account.person_id, entity_type="user_account",
@@ -269,13 +303,16 @@ def _new_backup_code() -> str:
     return "".join(secrets.choice(BACKUP_ALPHABET) for _ in range(BACKUP_CODE_LENGTH))
 
 
+async def _delete_backup_codes(db: AsyncSession, person_id: uuid.UUID) -> None:
+    """Remove every backup code (used or not). Does not commit."""
+    await db.execute(delete(TotpBackupCode).where(TotpBackupCode.person_id == person_id))
+
+
 async def _replace_backup_codes(db: AsyncSession, person_id: uuid.UUID) -> list[str]:
     """Delete every existing code (used or not) and store a fresh set;
     returns the plaintext codes formatted for display. Does not commit."""
     pepper = get_settings().password_pepper.get_secret_value()
-    for row in list(await db.scalars(select(TotpBackupCode).where(
-            TotpBackupCode.person_id == person_id))):
-        await db.delete(row)
+    await _delete_backup_codes(db, person_id)
     codes = [_new_backup_code() for _ in range(BACKUP_CODE_COUNT)]
     for code in codes:
         db.add(TotpBackupCode(person_id=person_id, code_hash=hash_password(code, pepper=pepper)))
@@ -283,9 +320,8 @@ async def _replace_backup_codes(db: AsyncSession, person_id: uuid.UUID) -> list[
 
 
 async def backup_codes_remaining(db: AsyncSession, person_id: uuid.UUID) -> int:
-    rows = list(await db.scalars(select(TotpBackupCode.id).where(
-        TotpBackupCode.person_id == person_id, TotpBackupCode.used_at.is_(None))))
-    return len(rows)
+    return await db.scalar(select(func.count(TotpBackupCode.id)).where(
+        TotpBackupCode.person_id == person_id, TotpBackupCode.used_at.is_(None)))
 
 
 async def regenerate_backup_codes(
@@ -312,9 +348,7 @@ async def reset(
     account.totp_confirmed_at = None
     account.totp_last_counter = None
     account.updated_at = datetime.now(UTC)
-    for row in list(await db.scalars(select(TotpBackupCode).where(
-            TotpBackupCode.person_id == account.person_id))):
-        await db.delete(row)
+    await _delete_backup_codes(db, account.person_id)
     await revoke_trust(db, account.person_id)
     audit(db, actor_id=actor_id, entity_type="user_account",
           entity_id=str(account.person_id), action="totp.reset", ip=ip)
