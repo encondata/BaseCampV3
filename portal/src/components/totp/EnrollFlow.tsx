@@ -49,7 +49,10 @@ export default function EnrollFlow({ email, start, confirm, remember = null, onD
   const [otpAttempt, setOtpAttempt] = useState(0);
 
   const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  useEffect(() => {
+    mountedRef.current = true; // StrictMode re-runs effects: the cleanup must not stick
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const loadSecret = useCallback(async () => {
     setError('');
