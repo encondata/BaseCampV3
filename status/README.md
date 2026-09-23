@@ -34,19 +34,16 @@ always matches the configured cadence rather than a hardcoded guess.
 
 ## Deploy
 
-On a Docker host (needs git, Docker, and the compose plugin, plus read access to the
-private repo), `install.sh` fetches only `status/` and `portal/src/styles` with a sparse
+On a Docker host (needs git, Docker, and the compose plugin), `install.sh` fetches only `status/` and `portal/src/styles` with a sparse
 checkout, pulls the base images, and builds and starts the container. The first run
 creates `status/.env` and stops so you can fill in the URLs. Run it again to deploy, and
 re-run it any time to update (status history in the `status-data` volume is kept).
 
-    curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
-      https://raw.githubusercontent.com/encondata/BaseCampV3/status-page/status/install.sh -o install.sh
+    curl -fsSL -o install.sh https://raw.githubusercontent.com/encondata/BaseCampV3/status-page/status/install.sh
     bash install.sh
 
 Settings: `STATUS_DIR` (default `/opt/serversherpa-status`), `STATUS_BRANCH` (default
-`status-page`), `REPO_URL` (default the HTTPS GitHub URL; use
-`git@github.com:encondata/BaseCampV3.git` with a deploy key).
+`status-page`), `REPO_URL` (default `https://github.com/encondata/BaseCampV3.git`).
 
 Or by hand from a full checkout:
 

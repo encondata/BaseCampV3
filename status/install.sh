@@ -13,9 +13,6 @@
 #   STATUS_DIR     checkout location        (default /opt/serversherpa-status)
 #   STATUS_BRANCH  branch to deploy         (default status-page)
 #   REPO_URL       repository               (default https://github.com/encondata/BaseCampV3.git)
-#
-# The repo is private: the host needs read access (an SSH deploy key with
-# REPO_URL=git@github.com:encondata/BaseCampV3.git, or HTTPS with a token).
 set -euo pipefail
 
 STATUS_DIR="${STATUS_DIR:-/opt/serversherpa-status}"
