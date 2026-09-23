@@ -34,6 +34,22 @@ always matches the configured cadence rather than a hardcoded guess.
 
 ## Deploy
 
+On a Docker host (needs git, Docker, and the compose plugin, plus read access to the
+private repo), `install.sh` fetches only `status/` and `portal/src/styles` with a sparse
+checkout, pulls the base images, and builds and starts the container. The first run
+creates `status/.env` and stops so you can fill in the URLs. Run it again to deploy, and
+re-run it any time to update (status history in the `status-data` volume is kept).
+
+    curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
+      https://raw.githubusercontent.com/encondata/BaseCampV3/status-page/status/install.sh -o install.sh
+    bash install.sh
+
+Settings: `STATUS_DIR` (default `/opt/serversherpa-status`), `STATUS_BRANCH` (default
+`status-page`), `REPO_URL` (default the HTTPS GitHub URL; use
+`git@github.com:encondata/BaseCampV3.git` with a deploy key).
+
+Or by hand from a full checkout:
+
     cp status/.env.example status/.env
     docker compose -f status/docker-compose.yml --env-file status/.env up -d --build
 
