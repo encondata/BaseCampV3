@@ -5,6 +5,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 vi.mock('../../lib/qr', () => ({ qrDataUrl: (t: string) => `data:qr,${encodeURIComponent(t)}` }));
 
+// The module is NOT mocked wholesale here — EnrollFlow.tsx reads
+// `err instanceof ApiError`, so tests throw the real class too, same as
+// Login.test.tsx.
+import { ApiError } from '../../lib/api';
 import EnrollFlow from './EnrollFlow';
 
 afterEach(cleanup);
@@ -37,11 +41,31 @@ it('walks Scan → Confirm → Save codes and acknowledges', async () => {
 
 it('a wrong confirm code shows the error and keeps the QR step reachable', async () => {
   const user = userEvent.setup();
-  const err = Object.assign(new Error('x'), { code: 'totp_invalid' });
+  const err = new ApiError(401, 'totp_invalid');
   const start = vi.fn(async () => ({ secret: 'S', otpauth_uri: 'otpauth://totp/x' }));
   const confirm = vi.fn(async () => { throw err; });
   render(<EnrollFlow email="a@x" start={start} confirm={confirm} onDone={() => {}} />);
   await waitFor(() => expect(start).toHaveBeenCalled());
-  await user.type(screen.getAllByRole('textbox')[0], '000000');
+  const boxes = screen.getAllByRole('textbox');
+  await user.type(boxes[0], '000000');
   expect(await screen.findByText(/didn.t match/i)).toBeTruthy();
+  // refocuses box 1 after the wrong code, same as the login page's card
+  await waitFor(() => expect(document.activeElement).toBe(screen.getAllByRole('textbox')[0]));
+});
+
+it('start() failing shows a Try again button that re-runs it', async () => {
+  const user = userEvent.setup();
+  const start = vi.fn()
+    .mockRejectedValueOnce(new ApiError(500, 'unknown_error'))
+    .mockResolvedValueOnce({ secret: 'JBSWY3DPEHPK3PXP', otpauth_uri: 'otpauth://totp/x' });
+  const confirm = vi.fn();
+  render(<EnrollFlow email="a@x" start={start} confirm={confirm} onDone={() => {}} />);
+  await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+  const retry = await screen.findByRole('button', { name: /try again/i });
+  expect(screen.queryByAltText(/scan this/i)).toBeNull();
+
+  await user.click(retry);
+  await waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+  expect(await screen.findByAltText(/scan this/i)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /try again/i })).toBeNull();
 });

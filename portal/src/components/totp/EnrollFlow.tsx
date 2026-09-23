@@ -3,7 +3,7 @@
  * injected so the login page (challenge token) and the My Profile modal
  * (signed-in session) share one flow.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ApiError } from '../../lib/api';
 import { qrDataUrl } from '../../lib/qr';
@@ -18,15 +18,10 @@ const CONFIRM_ERRORS: Record<string, string> = {
   invalid_challenge: 'This sign-in expired. Go back and sign in again.',
 };
 
-// `err instanceof ApiError` covers the real client; a duck-typed `.code`
-// fallback covers callers (and tests) that throw an error-shaped object
-// without going through the ApiError class.
+// Same rule as Login.tsx: `err instanceof ApiError` reads the real client's
+// error code. No duck-typed fallback — tests throw a real ApiError too.
 function errorCode(err: unknown): string {
-  if (err instanceof ApiError) return err.code;
-  if (err && typeof err === 'object' && typeof (err as { code?: unknown }).code === 'string') {
-    return (err as { code: string }).code;
-  }
-  return 'network';
+  return err instanceof ApiError ? err.code : 'network';
 }
 
 export function groupSecret(secret: string): string {
@@ -49,22 +44,38 @@ export default function EnrollFlow({ email, start, confirm, remember = null, onD
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [codes, setCodes] = useState<string[]>([]);
+  // Bumped on a wrong-code error so <OtpInput> remounts with autoFocus,
+  // putting the caret back in box 1 (mirrors Login.tsx's verify card).
+  const [otpAttempt, setOtpAttempt] = useState(0);
 
-  useEffect(() => {
-    let cancelled = false;
-    start().then((r) => {
-      if (cancelled) return;
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
+  const loadSecret = useCallback(async () => {
+    setError('');
+    try {
+      const r = await start();
+      if (!mountedRef.current) return;
       setSecret(r.secret);
       setQr(qrDataUrl(r.otpauth_uri));
-    }).catch((err) => {
+    } catch (err) {
+      if (!mountedRef.current) return;
       const c = errorCode(err);
       setError(CONFIRM_ERRORS[c] ?? 'Could not start enrollment. Try again.');
       onError?.(c);
-    });
-    return () => { cancelled = true; };
+    }
   // start is stable for the life of the flow
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    void loadSecret();
+  }, [loadSecret]);
+
+  // The "2 · Confirm" step becomes active once the secret has loaded and
+  // the user has started typing a code; "1 · Scan" reads done from then on.
+  const indicatorStep: 'scan' | 'confirm' | 'codes' =
+    step === 'codes' ? 'codes' : secret && code.length > 0 ? 'confirm' : 'scan';
 
   const submit = async (value: string) => {
     if (busy) return;
@@ -78,6 +89,7 @@ export default function EnrollFlow({ email, start, confirm, remember = null, onD
       const c = errorCode(err);
       setError(CONFIRM_ERRORS[c] ?? 'Something went wrong. Try again.');
       setCode('');
+      setOtpAttempt((n) => n + 1);
       onError?.(c);
     } finally {
       setBusy(false);
@@ -87,12 +99,20 @@ export default function EnrollFlow({ email, start, confirm, remember = null, onD
   return (
     <>
       <div className="steps" aria-hidden="true">
-        <span className={`step ${step === 'scan' ? 'active' : 'done'}`}>1 · Scan</span>
-        <span className={`step ${step === 'scan' ? 'active' : 'done'}`}>2 · Confirm</span>
-        <span className={`step ${step === 'codes' ? 'active' : ''}`}>3 · Save codes</span>
+        <span className={`step ${indicatorStep === 'scan' ? 'active' : 'done'}`}>1 · Scan</span>
+        <span className={`step ${indicatorStep === 'confirm' ? 'active' : indicatorStep === 'codes' ? 'done' : ''}`}>2 · Confirm</span>
+        <span className={`step ${indicatorStep === 'codes' ? 'active' : ''}`}>3 · Save codes</span>
       </div>
 
-      {step === 'scan' && (
+      {step === 'scan' && !secret && error ? (
+        <>
+          <p className="otp-text">We couldn't start two-factor setup.</p>
+          <p className="otp-error show" role="alert">{error}</p>
+          <button type="button" className="btn otp-verify" onClick={() => void loadSecret()}>
+            <span>Try again</span>
+          </button>
+        </>
+      ) : step === 'scan' && (
         <>
           <p className="otp-text">Open your authenticator app (Google Authenticator, Apple Passwords, 1Password…) and scan this code for <b>{email}</b>.</p>
           <div className="qr-frame">
@@ -105,8 +125,8 @@ export default function EnrollFlow({ email, start, confirm, remember = null, onD
             </>
           )}
           <p className="otp-info">Then enter the 6-digit code the app shows.</p>
-          <OtpInput value={code} onChange={setCode} onComplete={(v) => void submit(v)}
-                    disabled={busy || !secret} invalid={!!error} idPrefix="enroll-otp" />
+          <OtpInput key={otpAttempt} value={code} onChange={setCode} onComplete={(v) => void submit(v)}
+                    disabled={busy || !secret} invalid={!!error} autoFocus idPrefix="enroll-otp" />
           <p className={`otp-error ${error ? 'show' : ''}`} role={error ? 'alert' : undefined}>{error}</p>
           {remember && (
             <div className="otp-row">

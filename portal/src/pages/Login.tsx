@@ -77,6 +77,9 @@ export default function Login() {
   const [codeError, setCodeError] = useState('');
   const [verifying, setVerifying] = useState(false);
   const [trustDays, setTrustDays] = useState(7);
+  // Bumped on a wrong-code error so <OtpInput> remounts with autoFocus,
+  // putting the caret back in box 1 instead of leaving it in the last box.
+  const [otpAttempt, setOtpAttempt] = useState(0);
 
   useEffect(() => {
     getSystemStatus().then((s) => setTrustDays(s.totp_trust_days)).catch(() => {});
@@ -144,10 +147,19 @@ export default function Login() {
       finish();
     } catch (err) {
       const c = err instanceof ApiError ? err.code : 'network';
-      setCodeError(CODE_ERRORS[c] ?? 'Could not verify the code. Try again.');
+      const message = CODE_ERRORS[c] ?? 'Could not verify the code. Try again.';
       setCode('');
       shakeForm();
-      if (c === 'invalid_challenge' || c === 'account_locked') setChallenge(null);
+      if (c === 'invalid_challenge' || c === 'account_locked') {
+        // The card is about to unmount — carry the message back to the
+        // password form instead of losing it along with codeError.
+        setChallenge(null);
+        setCodeError('');
+        setError(message);
+      } else {
+        setCodeError(message);
+        setOtpAttempt((n) => n + 1);
+      }
     } finally {
       setVerifying(false);
     }
@@ -330,7 +342,7 @@ export default function Login() {
                   </div>
                 </form>
               ) : (
-                <OtpInput value={code} onChange={(v) => { setCode(v); setCodeError(''); }}
+                <OtpInput key={otpAttempt} value={code} onChange={(v) => { setCode(v); setCodeError(''); }}
                           onComplete={(v) => void submitCode(v)} disabled={verifying}
                           invalid={!!codeError} autoFocus idPrefix="login-otp" />
               )}
@@ -345,7 +357,7 @@ export default function Login() {
                 </label>
               </div>
               <button className={`btn otp-verify ${verifying ? 'loading' : ''}`} type="button"
-                      disabled={verifying || (backupMode ? code.trim().length < 10 : code.length < 6)}
+                      disabled={verifying || (backupMode ? code.replace(/[^a-z0-9]/gi, '').length < 10 : code.length < 6)}
                       onClick={() => void submitCode(code)}>
                 <span>{verifying ? 'Verifying…' : 'Verify'}</span>
                 <span className="spinner"></span>
@@ -375,7 +387,15 @@ export default function Login() {
                 }}
                 remember={{ checked: rememberBrowser, onChange: setRememberBrowser, days: trustDays }}
                 onDone={finish}
-                onError={(c) => { shakeForm(); if (c === 'invalid_challenge') setChallenge(null); }}
+                onError={(c) => {
+                  shakeForm();
+                  if (c === 'invalid_challenge' || c === 'account_locked') {
+                    // Same drop-back as the verify card: don't strand the
+                    // user on a blank form with no explanation.
+                    setChallenge(null);
+                    setError(CODE_ERRORS[c] ?? 'Something went wrong. Try again.');
+                  }
+                }}
               />
               <p className="otp-foot">
                 <button type="button" className="link" tabIndex={-1} onClick={backToSignIn}>Back to sign in</button>

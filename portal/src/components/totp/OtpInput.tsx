@@ -63,7 +63,7 @@ export default function OtpInput({
   };
 
   return (
-    <div className={`otp-inputs ${invalid ? 'bad' : ''}`} aria-label="Verification code">
+    <div className={`otp-inputs ${invalid ? 'bad' : ''}`} role="group" aria-label="Verification code">
       {Array.from({ length: LENGTH }, (_, i) => (
         <input
           key={i}

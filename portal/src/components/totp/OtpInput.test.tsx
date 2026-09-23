@@ -40,3 +40,10 @@ it('Backspace on an empty box moves back', async () => {
   await user.keyboard('{Backspace}{Backspace}');
   expect(document.activeElement).toBe(boxes[0]);
 });
+
+it('the six boxes are grouped with an accessible label', () => {
+  render(<Harness onComplete={() => {}} />);
+  const group = screen.getByRole('group', { name: 'Verification code' });
+  expect(screen.getAllByLabelText(/^Digit \d$/)).toHaveLength(6);
+  expect(group.querySelectorAll('input')).toHaveLength(6);
+});
