@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -108,6 +109,60 @@ async def test_run_forever_survives_a_crashing_cycle(settings, store, monkeypatc
         with pytest.raises(asyncio.CancelledError):
             await c.run_forever()
     assert calls == 3
+
+
+@respx.mock
+async def test_tracker_updates_even_when_store_write_fails(settings, store, monkeypatch):
+    routes()
+
+    def boom(*a, **kw):
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(store, "record", boom)
+    tracker = StateTracker([s.key for s in settings.services], 2)
+    async with httpx.AsyncClient() as client:
+        c = Checker(settings, store, tracker, client, clock=Clock())
+        await c.run_cycle()
+    assert tracker.snapshot("api").state == "up"
+    assert c.store_ok is False
+
+
+@respx.mock
+async def test_store_ok_true_after_a_clean_cycle(settings, store):
+    routes()
+    tracker = StateTracker([s.key for s in settings.services], 2)
+    async with httpx.AsyncClient() as client:
+        c = Checker(settings, store, tracker, client, clock=Clock())
+        await c.run_cycle()
+    assert c.store_ok is True
+
+
+@respx.mock
+async def test_last_cycle_at_set_after_run_cycle(settings, store):
+    routes()
+    tracker = StateTracker([s.key for s in settings.services], 2)
+    clock = Clock()
+    async with httpx.AsyncClient() as client:
+        c = Checker(settings, store, tracker, client, clock=clock)
+        assert c.last_cycle_at is None
+        await c.run_cycle()
+    assert c.last_cycle_at == clock.now
+
+
+@respx.mock
+async def test_prune_failure_does_not_stop_state_updates(settings, store, monkeypatch):
+    routes()
+
+    def boom(now):
+        raise sqlite3.OperationalError("disk full")
+
+    monkeypatch.setattr(store, "prune", boom)
+    tracker = StateTracker([s.key for s in settings.services], 2)
+    async with httpx.AsyncClient() as client:
+        c = Checker(settings, store, tracker, client, clock=Clock())
+        await c.run_cycle()
+    assert tracker.snapshot("api").state == "up"
+    assert c.store_ok is False
 
 
 def test_seed_tracker_replays_recent_checks(settings, store):

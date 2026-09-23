@@ -1,6 +1,6 @@
 import pytest
 
-from serversherpa_status.config import ConfigError, load_settings
+from serversherpa_status.config import ConfigError, load_settings, stale_after_seconds
 
 BASE = {
     "STATUS_API_URL": "https://api.example.com/",
@@ -63,3 +63,8 @@ def test_overrides():
 def test_bad_numbers_rejected(var, value):
     with pytest.raises(ConfigError, match=var):
         load_settings({**BASE, var: value})
+
+
+def test_stale_after_seconds_is_three_intervals_plus_timeout():
+    s = load_settings({**BASE, "STATUS_INTERVAL_SECONDS": "20", "STATUS_TIMEOUT_SECONDS": "5"})
+    assert stale_after_seconds(s) == 65

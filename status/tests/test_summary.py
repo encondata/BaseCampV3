@@ -76,3 +76,28 @@ def test_never_leaks_urls_or_detail(ctx):
     assert "secret-api" not in blob
     assert "internal" not in blob
     assert "http" not in blob
+
+
+def test_summary_includes_interval_and_threshold(ctx):
+    settings, store, tracker = ctx
+    out = build_summary(settings, store, tracker, NOW)
+    assert out["interval_seconds"] == settings.interval_seconds
+    assert out["failure_threshold"] == settings.failure_threshold
+
+
+def test_stale_last_checked_reports_unknown(ctx):
+    settings, store, tracker = ctx
+    tracker.record("api", True, 5, NOW)
+    # default interval is 60s, timeout 10s -> stale_after = 190s
+    later = NOW + timedelta(seconds=200)
+    out = build_summary(settings, store, tracker, later)
+    assert out["services"][0]["state"] == "unknown"
+    assert out["overall"] == "unknown"
+
+
+def test_fresh_last_checked_not_stale(ctx):
+    settings, store, tracker = ctx
+    tracker.record("api", True, 5, NOW)
+    later = NOW + timedelta(seconds=100)
+    out = build_summary(settings, store, tracker, later)
+    assert out["services"][0]["state"] == "up"

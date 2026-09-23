@@ -79,3 +79,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         db_path=env.get("STATUS_DB_PATH", "").strip() or "/data/status.db",
         static_dir=env.get("STATUS_STATIC_DIR", "").strip() or DEFAULT_STATIC_DIR,
     )
+
+
+def stale_after_seconds(settings: Settings) -> float:
+    """A service (or the checker itself) is stale once this long has passed
+    without a fresh check — three missed intervals plus one probe timeout,
+    so a single slow cycle never flips things to 'unknown' on its own."""
+    return 3 * settings.interval_seconds + settings.timeout_seconds

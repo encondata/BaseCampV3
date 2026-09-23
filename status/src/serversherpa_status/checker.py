@@ -44,6 +44,8 @@ class Checker:
         self._client = client
         self._clock = clock
         self._last_prune: datetime | None = None
+        self.last_cycle_at: datetime | None = None
+        self.store_ok: bool = True
 
     async def run_cycle(self) -> None:
         services = self._settings.services
@@ -51,14 +53,27 @@ class Checker:
             *(probe(self._client, s, self._settings.timeout_seconds) for s in services)
         )
         now = self._clock()
+        store_ok = True
         for service, result in zip(services, results):
-            self._store.record(service.key, now, result.ok, result.latency_ms, result.detail)
+            # Tracker is updated first: displayed state must reflect this
+            # probe even if the store write below fails.
             self._tracker.record(service.key, result.ok, result.latency_ms, now)
             if not result.ok:
                 log.warning("%s check failed: %s", service.key, result.detail)
+            try:
+                self._store.record(service.key, now, result.ok, result.latency_ms, result.detail)
+            except Exception:
+                store_ok = False
+                log.exception("failed to record %s check", service.key)
         if self._last_prune is None or now - self._last_prune >= PRUNE_EVERY:
-            self._store.prune(now)
-            self._last_prune = now
+            try:
+                self._store.prune(now)
+                self._last_prune = now
+            except Exception:
+                store_ok = False
+                log.exception("failed to prune store")
+        self.last_cycle_at = now
+        self.store_ok = store_ok
 
     async def run_forever(self) -> None:
         while True:
