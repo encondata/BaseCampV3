@@ -204,6 +204,29 @@
  * class; .dir-list's default clipping is unchanged everywhere else. */
 .dir-list.ngd-notif-grid { overflow-x: auto; }
 
+/* Sideways scroll (spec 2026-09-23-list-column-floors): a list whose
+ * columns carry px floors (lib/listTools.tsx listGridStyle) opts in
+ * here. Above the floor sum nothing changes; below it the card scrolls
+ * sideways as one unit — header and rows are siblings inside the card
+ * and carry the same inline min-width, so the header background, row
+ * borders, and hover paint span the full scrolled width. overflow-y is
+ * pinned to hidden so an opening row detail never grows a vertical
+ * scrollbar inside the card. The 12px gap (vs the 16px default above)
+ * is what lets nine default columns fit a 14-inch MacBook Pro window
+ * with the nav expanded; listGridStyle's default gap mirrors it.
+ *
+ * `.editing`: god-mode inline editors (GodCell → ComboBox) drop their
+ * menu absolutely inside the cell, and a scroll container would clip it.
+ * While a list is in edit mode the card goes back to visible overflow;
+ * the header then paints its own top corners. Portaling ComboBox's menu
+ * would remove this exception. */
+.dir-list.list-scroll { overflow-x: auto; overflow-y: hidden; }
+.dir-list.list-scroll .list-head,
+.dir-list.list-scroll .row-main { gap: 12px; }
+.dir-list.list-scroll.editing { overflow: visible; }
+.dir-list.list-scroll.editing .list-head { border-radius: 15px 15px 0 0; }
+.mini-list.list-scroll { overflow-x: auto; overflow-y: hidden; }
+
 .list-head {
   display: grid;
   align-items: center;
@@ -348,11 +371,14 @@
   font-size: var(--list-fs-cell);
 }
 
-/* Single-line value that shouldn't break mid-string at narrow column
- * widths (e.g. Notifications.tsx's Quiet hours cell, "9:00 PM – 7:00 AM
- * CT") — a plain modifier, not folded into .cell-top/.cell-sub since
- * most cells using those still want to wrap. */
-.cell .cell-nowrap {
+/* Single-line value: full while the column has room, an ellipsis once it
+ * does not — pair it with a `title` carrying the full text. `.cell-line`
+ * is the name the list-column-floors spec uses; `.cell-nowrap` (the
+ * Notifications page's Quiet hours cell) is the same rule and stays. Not
+ * folded into .cell-top/.cell-sub since most cells using those still
+ * want to wrap. */
+.cell .cell-nowrap,
+.cell .cell-line {
   display: block;
   white-space: nowrap;
   overflow: hidden;
@@ -722,6 +748,10 @@
   .row-main > .cell:not(.chevron-cell) { grid-column: auto !important; }
   .chevron-cell { position: absolute; top: 13px; right: 8px; }
   .row-main > * { min-width: 0; }
+  /* Phones stack rows into cards; the inline row minimum from
+     listGridStyle must not force a sideways scroll there. */
+  .list-head, .dir-row, .row-main { min-width: 0 !important; }
+  .dir-list.list-scroll { overflow-x: hidden; }
   .detail-grid { grid-template-columns: 1fr; }
   .dir-search { margin-left: 0; width: 100%; }
   .dir-search input { width: 100%; }

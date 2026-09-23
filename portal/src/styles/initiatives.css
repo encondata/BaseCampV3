@@ -185,26 +185,14 @@
    treatment the other converted lists give their action cell). */
 .idet-people-actions { display: flex; justify-content: flex-end; }
 
-/* .dir-list clips overflow for its 16px corner radius (directory.css), but
-   that also clips the per-column filter popover (.pop-menu, chrome.css),
-   which is a common case here since the People list is often only a few
-   rows tall. Let it overflow — but .list-head (the first child) paints its
-   own opaque background, so without the clip it now squares off the card's
-   top corners; round it back to match. The bottom-corner rule below is a
-   no-op today (.row-main has no visible background to round) but is kept
-   for parity in case that changes. */
-.idet-people-list { overflow: visible; }
-.idet-people-list .list-head { border-radius: 15px 15px 0 0; }
-.idet-people-list .dir-row:last-child .row-main { border-radius: 0 0 15px 15px; }
+/* The People and Assets cards use .dir-list.list-scroll (directory.css);
+   the column menu is portaled, so no overflow override is needed here. */
 
 /* Assets section (moves only) — same toolbar/list treatment as People
    above; a plain progress bar sits above the toolbar. */
 .idet-assets-toolbar { margin: 0 0 12px; }
 .idet-assets-list .row-main { cursor: default; }
 .idet-assets-list .row-main:hover { background: none; }
-.idet-assets-list { overflow: visible; }
-.idet-assets-list .list-head { border-radius: 15px 15px 0 0; }
-.idet-assets-list .dir-row:last-child .row-main { border-radius: 0 0 15px 15px; }
 
 .idet-assets-progress { margin: 0 0 14px; }
 .idet-assets-progress-label {
@@ -920,5 +908,6 @@
 .idet-time-row {
   grid-template-columns: minmax(140px, 1.6fr) minmax(80px, 0.9fr) minmax(80px, 0.9fr)
     minmax(60px, 0.7fr) minmax(90px, 1fr);
+  min-width: 498px; /* floors + 4 × 12px gaps; the .mini-list.list-scroll card scrolls below it */
 }
 .scan-history .scan-when { white-space: nowrap; }
