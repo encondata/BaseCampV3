@@ -5,7 +5,8 @@
  */
 
 import {
-  useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode,
+  useEffect, useLayoutEffect, useMemo, useRef, useState,
+  type DragEvent, type ReactNode, type RefObject,
 } from 'react';
 
 /* ── CSV export ─────────────────────────────────────────────────── */
@@ -132,6 +133,79 @@ export function listGridStyle(
   }
   const gaps = Math.max(0, tracks.length - 1) * gap;
   return { gridTemplateColumns: tracks.join(' '), minWidth: min + gaps + LIST_PAD_X };
+}
+
+/* ── adaptive header label ──────────────────────────────────────────
+ * A header cell renders its long label while the track has room and its
+ * `short` label once the long one would overflow. The cell is a grid
+ * item, so its width is the track's — independent of which label is
+ * showing — and the floor guarantees the short label fits, so the swap
+ * can never oscillate. A hidden clone of the long label (plus caret) is
+ * what gets measured; observing it too means a late font load re-checks. */
+
+/** column-menu.css `.list-head .col-head { gap: 2px }`. */
+const COL_HEAD_GAP = 2;
+
+export function useFitLabel(long: string, short?: string): {
+  cellRef: RefObject<HTMLSpanElement>;
+  measureRef: RefObject<HTMLSpanElement>;
+  label: string;
+} {
+  const cellRef = useRef<HTMLSpanElement>(null);
+  const measureRef = useRef<HTMLSpanElement>(null);
+  const [fits, setFits] = useState(true);
+
+  useLayoutEffect(() => {
+    if (!short || typeof ResizeObserver === 'undefined') return;
+    const cell = cellRef.current;
+    const measure = measureRef.current;
+    if (!cell || !measure) return;
+    const check = () => {
+      const trigger = cell.querySelector<HTMLElement>('.colmenu-trigger');
+      const available = cell.clientWidth - (trigger ? trigger.offsetWidth + COL_HEAD_GAP : 0);
+      setFits(measure.offsetWidth <= available);
+    };
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(cell);
+    ro.observe(measure);
+    return () => ro.disconnect();
+  }, [long, short]);
+
+  return { cellRef, measureRef, label: short && !fits ? short : long };
+}
+
+export type HeaderDragProps = ReturnType<ReturnType<typeof useReorderDrag>['dragProps']>;
+
+/** One list header cell: sortable label (long/short per useFitLabel),
+ *  sort caret, and the page's ColumnMenu as `children`. Same markup every
+ *  page already renders inline (`span.col-head > button.sortable`), so
+ *  existing header CSS applies unchanged. */
+export function ColHead({ col, sortDir, onToggleSort, className, dragProps, children }: {
+  col: ColumnDef;
+  sortDir: 1 | -1 | null;
+  onToggleSort: () => void;
+  className?: string;
+  dragProps?: HeaderDragProps;
+  children?: ReactNode;
+}): JSX.Element {
+  const { cellRef, measureRef, label } = useFitLabel(col.label, col.short);
+  const caret = sortDir
+    ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
+  return (
+    <span ref={cellRef} className={`col-head${className ? ` ${className}` : ''}`} {...dragProps}>
+      <button type="button" className="sortable" onClick={onToggleSort}
+              title={label === col.label ? undefined : col.label}>
+        {label} {caret}
+      </button>
+      {col.short && (
+        <span ref={measureRef} className="col-head-measure" aria-hidden="true">
+          {col.label} {caret}
+        </span>
+      )}
+      {children}
+    </span>
+  );
 }
 
 /** Reorder `columns` by a persisted key order. Keys in `order` come first,

@@ -5,13 +5,13 @@
  * csvCell (exportCsv's field encoder incl. the OWASP formula-injection guard).
  */
 
-import { cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  applyColumnOrder, ColumnsButton, csvCell, moveKey, useReorderDrag, useSearchHaystacks,
+  applyColumnOrder, ColHead, ColumnsButton, csvCell, moveKey, useReorderDrag, useSearchHaystacks,
   columnFloor, listGridStyle,
-  type ColumnDef,
+  type ColumnDef, type HeaderDragProps,
 } from './listTools';
 
 // The pinned jsdom here has no DragEvent constructor, so @testing-library/dom's
@@ -287,5 +287,88 @@ describe('csvCell formula-injection guard', () => {
     expect(csvCell('-5')).toBe('-5');
     expect(csvCell('-5.25')).toBe('-5.25');
     expect(csvCell('+12')).toBe('+12');
+  });
+});
+
+describe('ColHead / useFitLabel', () => {
+  let resizeCallbacks: (() => void)[] = [];
+  beforeEach(() => {
+    resizeCallbacks = [];
+    class ResizeObserverStub {
+      constructor(cb: () => void) { resizeCallbacks.push(cb); }
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const setSize = (el: Element | null, prop: 'clientWidth' | 'offsetWidth', value: number) =>
+    Object.defineProperty(el, prop, { configurable: true, get: () => value });
+  const fire = () => act(() => { resizeCallbacks.forEach((cb) => cb()); });
+  const wide: ColumnDef = {
+    key: 'dr', label: 'Destination Rack', short: 'Dest Rack', width: '1fr', default: true,
+  };
+
+  it('shows the short label when the long one would overflow, and the long one again when room returns', () => {
+    const { container } = render(<ColHead col={wide} sortDir={null} onToggleSort={() => {}} />);
+    const cell = container.querySelector('.col-head');
+    const measure = container.querySelector('.col-head-measure');
+    const button = () => screen.getByRole('button');
+    expect(button().textContent?.trim()).toBe('Destination Rack');
+
+    setSize(measure, 'offsetWidth', 120);
+    setSize(cell, 'clientWidth', 90);
+    fire();
+    expect(button().textContent?.trim()).toBe('Dest Rack');
+    expect(button().getAttribute('title')).toBe('Destination Rack');
+
+    setSize(cell, 'clientWidth', 200);
+    fire();
+    expect(button().textContent?.trim()).toBe('Destination Rack');
+    expect(button().getAttribute('title')).toBeNull();
+  });
+
+  it('subtracts the column-menu trigger from the available width', () => {
+    const { container } = render(
+      <ColHead col={wide} sortDir={null} onToggleSort={() => {}}>
+        <button type="button" className="colmenu-trigger" aria-label="menu" />
+      </ColHead>,
+    );
+    setSize(container.querySelector('.col-head-measure'), 'offsetWidth', 100);
+    setSize(container.querySelector('.colmenu-trigger'), 'offsetWidth', 20);
+    setSize(container.querySelector('.col-head'), 'clientWidth', 110); // 110 - 20 - 2 = 88 < 100
+    fire();
+    expect(screen.getByRole('button', { name: /Dest Rack/ })).not.toBeNull();
+  });
+
+  it('a column without a short label renders no measuring span and never swaps', () => {
+    const col: ColumnDef = { key: 's', label: 'Serial', width: '1fr', default: true };
+    const { container } = render(<ColHead col={col} sortDir={1} onToggleSort={() => {}} />);
+    expect(container.querySelector('.col-head-measure')).toBeNull();
+    expect(resizeCallbacks).toHaveLength(0);
+    expect(screen.getByRole('button').textContent).toContain('Serial');
+    expect(screen.getByRole('button').textContent).toContain('▲');
+  });
+
+  it('without ResizeObserver (jsdom default) the long label renders and nothing throws', () => {
+    vi.unstubAllGlobals();
+    render(<ColHead col={wide} sortDir={-1} onToggleSort={() => {}} />);
+    expect(screen.getByRole('button').textContent).toContain('Destination Rack');
+    expect(screen.getByRole('button').textContent).toContain('▼');
+  });
+
+  it('forwards className, drag props, and the sort toggle', () => {
+    const onToggleSort = vi.fn();
+    const onDragStart = vi.fn();
+    const { container } = render(
+      <ColHead col={wide} sortDir={null} onToggleSort={onToggleSort} className="drop-before"
+               dragProps={{ draggable: true, onDragStart } as unknown as HeaderDragProps} />,
+    );
+    const cell = container.querySelector('.col-head') as HTMLElement;
+    expect(cell.className).toBe('col-head drop-before');
+    expect(cell.getAttribute('draggable')).toBe('true');
+    fireEvent.click(screen.getByRole('button'));
+    expect(onToggleSort).toHaveBeenCalledTimes(1);
   });
 });

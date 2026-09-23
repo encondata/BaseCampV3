@@ -13,12 +13,27 @@
  * side by side in one grid cell of .list-head (directory.css) without
  * the menu icon eating into the label's click target. */
 .list-head .col-head {
+  position: relative;      /* anchors .col-head-measure */
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 2px;                /* listTools.tsx COL_HEAD_GAP mirrors this */
   min-width: 0;
 }
-.list-head .col-head .sortable { min-width: 0; }
+.list-head .col-head .sortable { min-width: 0; white-space: nowrap; }
+/* Hidden clone of the long label (+ caret) that useFitLabel measures.
+ * Inherits the header's font from .list-head; carries no typography of
+ * its own (listTypography guardrail). */
+.list-head .col-head-measure {
+  position: absolute;
+  left: 0;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;                /* matches .list-head .sortable's gap */
+}
 
 .colmenu-trigger {
   display: inline-flex;
