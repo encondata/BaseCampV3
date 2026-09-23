@@ -26,9 +26,9 @@ import {
   connectionLabel, deviceCellText, deviceSearchText, deviceSortValue,
 } from '../lib/devices';
 import {
-  ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
-  moveKey, passesFacets, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
-  type ColumnDef, type FacetGroup, type FacetState,
+  ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
+  listGridStyle, listScale, moveKey, passesFacets, useReorderDrag, useSearchHaystacks,
+  visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import '../styles/directory.css';
@@ -36,18 +36,23 @@ import '../styles/profile.css';
 import '../styles/settings.css';  /* .set-note */
 import '../styles/hardware.css';
 
+// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
+// window, nav expanded). model/uptime/tags_24h/antennas are fixed at their
+// derived floor (short numeric/duration values, never need to grow);
+// connection carries a short label so its fixed track can sit at the 72px
+// absolute floor instead of its ~104px derived-from-"Connection" one.
 const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: 'minmax(160px, 1.3fr)', default: true },
-  { key: 'model', label: 'Model', width: '100px', default: true },
-  { key: 'mac', label: 'MAC', width: 'minmax(150px, 1fr)', default: true },
-  { key: 'ip', label: 'IP', width: 'minmax(120px, 1fr)', default: true },
-  { key: 'uptime', label: 'Uptime', width: '100px', default: true },
-  { key: 'tags_24h', label: 'Tags (24h)', width: '100px', default: true },
-  { key: 'antennas', label: 'Antennas', width: '95px', default: true },
-  { key: 'connection', label: 'Connection', width: '110px', default: true },
-  { key: 'scan_status', label: 'Scan Type', width: 'minmax(150px, 1fr)', default: true },
-  { key: 'site', label: 'Site', width: 'minmax(120px, 1fr)', default: true },
-  { key: 'last_seen', label: 'Last seen', width: 'minmax(150px, 1fr)', default: false },
+  { key: 'name', label: 'Name', width: '1.3fr', default: true, min: 140 },
+  { key: 'model', label: 'Model', width: '72px', default: true },
+  { key: 'mac', label: 'MAC', width: '1fr', default: true, min: 100 },
+  { key: 'ip', label: 'IP', width: '1fr', default: true, min: 100 },
+  { key: 'uptime', label: 'Uptime', width: '75px', default: true },
+  { key: 'tags_24h', label: 'Tags (24h)', width: '104px', default: true },
+  { key: 'antennas', label: 'Antennas', width: '90px', default: true },
+  { key: 'connection', label: 'Connection', short: 'Conn', width: '72px', default: true },
+  { key: 'scan_status', label: 'Scan Type', width: '1fr', default: true },
+  { key: 'site', label: 'Site', width: '1fr', default: true },
+  { key: 'last_seen', label: 'Last seen', width: '1fr', default: false, min: 96 },
 ];
 
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
@@ -73,9 +78,14 @@ const CSV_COLUMNS: [string, (d: DeviceItem) => string][] = [
 const msgFor = (err: unknown): string =>
   err instanceof ApiError ? `Request failed (${err.code}).` : "Couldn't delete the reader.";
 
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
+
 export default function FixedReaders() {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
   const canDelete = can('scanning_hardware', 'delete');
+  const listGridScale = listScale(preferences?.list_size);
 
   const [devices, setDevices] = useState<DeviceItem[] | null>(null);
   const [error, setError] = useState('');
@@ -151,16 +161,14 @@ export default function FixedReaders() {
     });
   }, [devices, facets, filters, query, sortKey, sortDir, haystack]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 90px` };
+  const grid = listGridStyle(shownCols, ['90px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const remove = async (d: DeviceItem) => {
     if (!window.confirm(`Delete "${d.name}"? This cannot be undone.`)) return;
@@ -175,8 +183,10 @@ export default function FixedReaders() {
 
   const cellFor = (d: DeviceItem, key: string) => {
     switch (key) {
-      case 'mac':
-        return <span className="mono">{deviceCellText(d, key)}</span>;
+      case 'mac': {
+        const text = deviceCellText(d, key);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'connection':
         return d.connection_type == null
           ? <span>—</span>
@@ -190,8 +200,10 @@ export default function FixedReaders() {
               <span className="dot" />{deviceCellText(d, 'scan_status')}
             </span>
           );
-      default:
-        return <span>{deviceCellText(d, key)}</span>;
+      default: {
+        const text = deviceCellText(d, key);
+        return <span className="cell-line" title={titleFor(text)}>{text}</span>;
+      }
     }
   };
 
@@ -236,21 +248,19 @@ export default function FixedReaders() {
       )}
 
       {devices && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)} className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={devices ?? []} filters={filters}
                             text={deviceCellTextTyped}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
             <span />
           </div>
@@ -271,8 +281,8 @@ export default function FixedReaders() {
 
           <VirtualRows rows={visible}
             renderRow={(d, vp) => (
-              <div key={d.id} className="dir-row" {...vp} style={vp?.style}>
-                <div className="row-main" style={grid}>
+              <div key={d.id} className="dir-row" {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}>
                   {shownCols.map((c) => (
                     <div className="cell" key={c.key}>{cellFor(d, c.key)}</div>
                   ))}

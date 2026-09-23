@@ -99,6 +99,19 @@ afterEach(cleanup);
 
 const { default: LabelTemplates } = await import('./LabelTemplates');
 
+it('label templates list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  render(<MemoryRouter><LabelTemplates /></MemoryRouter>);
+  const row = (await screen.findByText('Front tag')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+});
+
 it('lists templates with vocab labels and kind chips', async () => {
   render(<MemoryRouter><LabelTemplates /></MemoryRouter>);
   await waitFor(() => expect(screen.queryByText('Front tag')).not.toBeNull());

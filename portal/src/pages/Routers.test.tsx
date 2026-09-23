@@ -94,6 +94,19 @@ afterEach(cleanup);
 
 const { default: Routers } = await import('./Routers');
 
+it('routers list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  render(<Routers />);
+  const row = (await screen.findByText('dock-router-1')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+});
+
 it('renders seeded rows sorted by name asc with WAN/LAN IPs, MAC, serial, and humanized uptime', async () => {
   render(<Routers />);
 

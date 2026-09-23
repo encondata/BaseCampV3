@@ -44,11 +44,16 @@ import {
   type PendingDeleteReconcileOut,
 } from '../lib/api';
 import { longDate, relativeTime } from '../lib/format';
+import { ColHead, listGridStyle, type ColumnDef } from '../lib/listTools';
 import { canForceDelete } from '../lib/pendingDeletes';
 import '../styles/directory.css';
 import '../styles/profile.css'; /* .btn-solid */
 import '../styles/initiatives.css'; /* .init-panel, .mini-btn.sm */
 import '../styles/system.css'; /* .sysconf-tabbar */
+
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 // Server-side failure codes -> plain-English explanation. Anything not
 // listed here still renders (falls back to the raw code) rather than
@@ -72,7 +77,21 @@ function typeLabel(entityType: string): string {
  *  Warehouse.tsx:330 and InitiativeDetail.tsx's ACTIONS_TRACK. */
 const ACTIONS_TRACK = '88px';
 
-const GRID = { gridTemplateColumns: `2fr 1fr 1fr 1.3fr ${ACTIONS_TRACK}` };
+/** No column registry pre-migration (hand-written header spans) — this
+ *  local COLUMNS mirrors them (recipe R1). The leading column's header text
+ *  is the group's own "<Type> (<count>)" label, not a fixed "Name", so it's
+ *  rebuilt per group in the render loop below rather than kept as a single
+ *  module-level array; `min: 160` (primary-column floor) still guards it
+ *  regardless of what that group text says. Fit is nowhere near the
+ *  1176px page-level target — this list sits well under it either way. */
+function reconcileColumns(entityType: string, count: number): ColumnDef[] {
+  return [
+    { key: 'entity_label', label: `${typeLabel(entityType)} (${count})`, width: '2fr', default: true, min: 160 },
+    { key: 'entity_type', label: 'Type', width: '1fr', default: true },
+    { key: 'marked_at', label: 'Marked', width: '1fr', default: true, min: 96 },
+    { key: 'marked_by', label: 'Marked by', width: '1.3fr', default: true },
+  ];
+}
 
 /** Reconcile tab body — unchanged from the pre-tab page other than the
  *  outer `.portal-page`/`.dir-head` wrapper, which the shell (below) now
@@ -293,53 +312,61 @@ function ReconcileTab() {
         <div className="dir-empty"><b>Nothing pending delete.</b></div>
       )}
 
-      {!error && groups.map(([entityType, rows]) => (
-        <div key={entityType} className="dir-list" style={{ marginBottom: 20 }}>
-          <div className="list-head" style={GRID}>
-            <span>{typeLabel(entityType)} ({rows.length})</span>
-            <span>Type</span>
-            <span>Marked</span>
-            <span>Marked by</span>
-            <span />
-          </div>
-          {rows.map((item) => (
-            <div key={item.id} className="dir-row">
-              <div className="row-main" style={GRID}>
-                <div className="cell"><span className="cell-top">{item.entity_label || '—'}</span></div>
-                <div className="cell"><span className="chip tag">{typeLabel(item.entity_type)}</span></div>
-                <div className="cell">
-                  <span className="mono" title={longDate(item.marked_at)}>
-                    {relativeTime(item.marked_at)}
-                  </span>
-                </div>
-                <div className="cell">
-                  <span className="cell-top">{item.marked_by_name ?? 'Unknown'}</span>
-                </div>
-                {/* The row itself isn't clickable, so no stopPropagation
-                    wrapper is needed here. Both items stay present while the
-                    row is in flight — disabled, not dropped. */}
-                <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <RowActionsMenu actions={[
-                    {
-                      key: 'undo',
-                      label: 'Undo',
-                      onSelect: () => void handleUndo(item),
-                      disabled: busyId === item.id,
-                    },
-                    {
-                      key: 'delete',
-                      label: 'Delete',
-                      destructive: true,
-                      onSelect: () => void handleDeleteOne(item),
-                      disabled: busyId === item.id,
-                    },
-                  ]} />
+      {!error && groups.map(([entityType, rows]) => {
+        const cols = reconcileColumns(entityType, rows.length);
+        const grid = listGridStyle(cols, [ACTIONS_TRACK]);
+        const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
+        return (
+          <div key={entityType} className="dir-list list-scroll" style={{ marginBottom: 20 }}>
+            <div className="list-head" style={rowStyle}>
+              {cols.map((c) => <ColHead key={c.key} col={c} />)}
+              <span />
+            </div>
+            {rows.map((item) => (
+              <div key={item.id} className="dir-row" style={{ minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}>
+                  <div className="cell">
+                    <span className="cell-top cell-line" title={titleFor(item.entity_label || '—')}>
+                      {item.entity_label || '—'}
+                    </span>
+                  </div>
+                  <div className="cell"><span className="chip tag">{typeLabel(item.entity_type)}</span></div>
+                  <div className="cell">
+                    <span className="mono cell-line" title={longDate(item.marked_at)}>
+                      {relativeTime(item.marked_at)}
+                    </span>
+                  </div>
+                  <div className="cell">
+                    <span className="cell-top cell-line" title={titleFor(item.marked_by_name ?? 'Unknown')}>
+                      {item.marked_by_name ?? 'Unknown'}
+                    </span>
+                  </div>
+                  {/* The row itself isn't clickable, so no stopPropagation
+                      wrapper is needed here. Both items stay present while the
+                      row is in flight — disabled, not dropped. */}
+                  <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <RowActionsMenu actions={[
+                      {
+                        key: 'undo',
+                        label: 'Undo',
+                        onSelect: () => void handleUndo(item),
+                        disabled: busyId === item.id,
+                      },
+                      {
+                        key: 'delete',
+                        label: 'Delete',
+                        destructive: true,
+                        onSelect: () => void handleDeleteOne(item),
+                        disabled: busyId === item.id,
+                      },
+                    ]} />
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
-        </div>
-      ))}
+            ))}
+          </div>
+        );
+      })}
 
       {cascadeFor && cascadeMarkerId && (
         <CascadeDeleteModal
@@ -372,7 +399,14 @@ function ReconcileTab() {
 
 // ── backups ──────────────────────────────────────────────────────────
 
-const BACKUP_GRID = { gridTemplateColumns: `2fr 1.2fr 1fr 1.3fr ${ACTIONS_TRACK}` };
+/** No column registry pre-migration (hand-written header spans) — this
+ *  local COLUMNS mirrors them (recipe R1). */
+const BACKUP_COLUMNS: ColumnDef[] = [
+  { key: 'filename', label: 'Filename', width: '2fr', default: true, min: 160 },
+  { key: 'created_at', label: 'Created', width: '1.2fr', default: true, min: 96 },
+  { key: 'size_bytes', label: 'Size', width: '1fr', default: true },
+  { key: 'created_by', label: 'Creator', width: '1.3fr', default: true },
+];
 
 const DECRYPT_HINT =
   'openssl enc -d -aes-256-cbc -pbkdf2 -md sha256 -in <file> -out backup.sql';
@@ -415,6 +449,13 @@ function createErrorMessage(err: unknown): string {
 function BackupsTab() {
   const { can } = useAuth();
   const canChange = can('devtools', 'change');
+  // Neither DevDatabase tab reads UiPreferences today (ReconcileTab has no
+  // useAuth() call at all) — scale is omitted rather than adding that
+  // dependency just for list_size; listGridStyle defaults to scale 1.
+  const backupGrid = listGridStyle(BACKUP_COLUMNS, [ACTIONS_TRACK]);
+  const backupRowStyle = {
+    gridTemplateColumns: backupGrid.gridTemplateColumns, minWidth: backupGrid.minWidth,
+  };
 
   const [backups, setBackups] = useState<DbBackupItem[] | null>(null);
   const [listError, setListError] = useState('');
@@ -544,22 +585,19 @@ function BackupsTab() {
 
       {listError && <p className="pf-error">{listError}</p>}
 
-      <div className="dir-list">
-        <div className="list-head" style={BACKUP_GRID}>
-          <span>Filename</span>
-          <span>Created</span>
-          <span>Size</span>
-          <span>Creator</span>
+      <div className="dir-list list-scroll">
+        <div className="list-head" style={backupRowStyle}>
+          {BACKUP_COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
           <span />
         </div>
         {backups && backups.length === 0 && (
           <div className="dir-empty"><b>No backups yet.</b></div>
         )}
         {(backups ?? []).map((b) => (
-          <div key={b.id} className="dir-row">
-            <div className="row-main" style={BACKUP_GRID}>
+          <div key={b.id} className="dir-row" style={{ minWidth: backupRowStyle.minWidth }}>
+            <div className="row-main" style={backupRowStyle}>
               <div className="cell">
-                <span className="cell-top">
+                <span className="cell-top cell-line" title={titleFor(b.filename)}>
                   {b.filename}
                   {!b.encrypted && (
                     <span className="chip tag" style={{ marginLeft: 8 }}>plain</span>
@@ -570,13 +608,15 @@ function BackupsTab() {
                 </span>
               </div>
               <div className="cell">
-                <span className="mono" title={relativeTime(b.created_at)}>
+                <span className="mono cell-line" title={relativeTime(b.created_at)}>
                   {longDate(b.created_at)}
                 </span>
               </div>
-              <div className="cell"><span className="mono">{formatBytes(b.size_bytes)}</span></div>
+              <div className="cell"><span className="mono cell-line">{formatBytes(b.size_bytes)}</span></div>
               <div className="cell">
-                <span className="cell-top">{b.created_by_name ?? 'Unknown'}</span>
+                <span className="cell-top cell-line" title={titleFor(b.created_by_name ?? 'Unknown')}>
+                  {b.created_by_name ?? 'Unknown'}
+                </span>
               </div>
               {/* Download stays visible while it's in flight (disabled, not
                   dropped) — dropping it would take the whole trigger away

@@ -39,9 +39,9 @@ import {
   subTypeLabel, tokenExpiryState,
 } from '../lib/devices';
 import {
-  ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
-  moveKey, passesFacets, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
-  type ColumnDef, type FacetGroup, type FacetState,
+  ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
+  listGridStyle, listScale, moveKey, passesFacets, useReorderDrag, useSearchHaystacks,
+  visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import ClearOfflineKiosksModal from '../components/hardware/ClearOfflineKiosksModal';
@@ -53,20 +53,25 @@ import '../styles/profile.css';
 import '../styles/settings.css';  /* .set-note */
 import '../styles/hardware.css';
 
+// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
+// window, nav expanded). Eleven default columns is dense, so most of the
+// non-primary/identifier ones carry a short label that collapses their
+// fixed/derived floor to the 72px absolute minimum — the long label still
+// shows whenever the column actually has the room.
 const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: 'minmax(150px, 1.2fr)', default: true },
-  { key: 'sub_type', label: 'Type', width: '90px', default: true },
-  { key: 'ip', label: 'IP', width: 'minmax(110px, 1fr)', default: true },
-  { key: 'mac', label: 'MAC', width: 'minmax(150px, 1fr)', default: true },
-  { key: 'version', label: 'Version', width: '90px', default: true },
-  { key: 'registration', label: 'Registration', width: '120px', default: true },
-  { key: 'signed_in', label: 'Signed in', width: 'minmax(140px, 1fr)', default: true },
-  { key: 'login_method', label: 'Login', width: '110px', default: true },
-  { key: 'current_move', label: 'Current Move', width: 'minmax(160px, 1.2fr)', default: true },
-  { key: 'scan_status', label: 'Scan Type', width: 'minmax(140px, 1fr)', default: true },
-  { key: 'site', label: 'Site', width: 'minmax(120px, 1fr)', default: true },
-  { key: 'expires', label: 'Expires', width: 'minmax(110px, 1fr)', default: false },
-  { key: 'last_seen', label: 'Last seen', width: 'minmax(150px, 1fr)', default: false },
+  { key: 'name', label: 'Name', width: '1.2fr', default: true, min: 140 },
+  { key: 'sub_type', label: 'Type', width: '72px', default: true },
+  { key: 'ip', label: 'IP', width: '1fr', default: true, min: 100 },
+  { key: 'mac', label: 'MAC', width: '1fr', default: true, min: 100 },
+  { key: 'version', label: 'Version', short: 'Ver', width: '72px', default: true },
+  { key: 'registration', label: 'Registration', short: 'Reg.', width: '72px', default: true },
+  { key: 'signed_in', label: 'Signed in', short: 'In', width: '1fr', default: true },
+  { key: 'login_method', label: 'Login', width: '72px', default: true },
+  { key: 'current_move', label: 'Current Move', short: 'Move', width: '1.2fr', default: true },
+  { key: 'scan_status', label: 'Scan Type', short: 'Scan', width: '1fr', default: true },
+  { key: 'site', label: 'Site', width: '1fr', default: true },
+  { key: 'expires', label: 'Expires', width: '1fr', default: false, min: 96 },
+  { key: 'last_seen', label: 'Last seen', width: '1fr', default: false, min: 96 },
 ];
 
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
@@ -135,8 +140,13 @@ interface ClearOfflinePreview {
   total: number;
 }
 
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
+
 export default function KioskDevices() {
-  const { can, maxRank } = useAuth();
+  const { can, maxRank, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('scanning_hardware', 'add');
   const canChange = can('scanning_hardware', 'change');
   const canDelete = can('scanning_hardware', 'delete');
@@ -235,16 +245,14 @@ export default function KioskDevices() {
     });
   }, [devices, facets, filters, query, sortKey, sortDir, haystack]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 110px` };
+  const grid = listGridStyle(shownCols, ['88px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const remove = async (d: DeviceItem) => {
     if (!window.confirm(`Delete "${d.name}"? This cannot be undone.`)) return;
@@ -329,8 +337,10 @@ export default function KioskDevices() {
 
   const cellFor = (d: DeviceItem, key: string) => {
     switch (key) {
-      case 'mac':
-        return <span className="mono">{deviceCellText(d, key)}</span>;
+      case 'mac': {
+        const text = deviceCellText(d, key);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'sub_type':
         return d.sub_type == null
           ? <span>—</span>
@@ -359,14 +369,16 @@ export default function KioskDevices() {
       case 'signed_in':
         return d.session_person_name
           ? (
-            <span title={d.session_started_at
+            <span className="cell-line" title={d.session_started_at
               ? `Signed in ${new Date(d.session_started_at).toLocaleString()}` : undefined}>
               {deviceCellText(d, 'signed_in')}
             </span>
           )
           : <span>—</span>;
-      default:
-        return <span>{deviceCellText(d, key)}</span>;
+      default: {
+        const text = deviceCellText(d, key);
+        return <span className="cell-line" title={titleFor(text)}>{text}</span>;
+      }
     }
   };
 
@@ -424,21 +436,19 @@ export default function KioskDevices() {
       )}
 
       {devices && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)} className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={devices ?? []} filters={filters}
                             text={deviceCellTextTyped}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
             <span />
           </div>
@@ -461,8 +471,8 @@ export default function KioskDevices() {
             renderRow={(d, vp) => {
               const state = tokenExpiryState(d.token_expires_at);
               return (
-                <div key={d.id} className="dir-row" {...vp} style={vp?.style}>
-                  <div className="row-main" style={grid}>
+                <div key={d.id} className="dir-row" {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                  <div className="row-main" style={rowStyle}>
                     {shownCols.map((c) => (
                       <div className="cell" key={c.key}>{cellFor(d, c.key)}</div>
                     ))}

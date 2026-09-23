@@ -7,12 +7,17 @@
  * symmetrical; only the columns and the row actions differ by `kind`.
  */
 
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useMemo, useState } from 'react';
 
 import { RowActionsMenu, type RowAction } from '../../components/hardware/RowActionsMenu';
 import type { MyNotificationGroup } from '../../lib/api';
+import { ColHead, listGridStyle, type ColumnDef } from '../../lib/listTools';
 import { CHANNEL_LABELS, type Channel } from '../../lib/notifications';
 import { daysText, hasOverrides, quietHoursText } from '../../lib/notificationGroups';
+
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 const CHANNEL_CHIP: Record<string, string> = {
   email: 'c-blue', web: 'c-green', sms: 'c-amber', text: 'c-amber', push: 'c-violet',
@@ -49,13 +54,22 @@ function StatusChip({ group }: { group: MyNotificationGroup }) {
 
 export type GroupsListKind = 'member' | 'joinable';
 
-// ONE grid for both lists so the stacked sections align column-for-column;
-// the last column sizes to the "Actions ▾" trigger.
-const GRID: CSSProperties = {
-  gridTemplateColumns:
-    'minmax(220px, 2fr) minmax(200px, 1.3fr) minmax(200px, 1.2fr) minmax(90px, 0.7fr) '
-    + 'minmax(90px, 0.6fr) minmax(130px, 0.9fr) max-content',
-};
+// No column registry pre-migration (hand-written header spans) — this
+// local COLUMNS mirrors them (recipe R1). ONE grid for both lists so the
+// stacked sections align column-for-column; the trailing "max-content"
+// track sizes to the "Actions ▾" trigger, same as before.
+// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
+// window, nav expanded — GroupsList sits directly in .portal-page under
+// /me/notifications).
+const COLUMNS: ColumnDef[] = [
+  { key: 'group', label: 'Group', width: '2fr', default: true, min: 200 },
+  { key: 'channels', label: 'Channels', width: '1.3fr', default: true },
+  { key: 'quiet_hours', label: 'Quiet hours', width: '1.2fr', default: true },
+  { key: 'days', label: 'Days', width: '0.7fr', default: true },
+  { key: 'members', label: 'Members', width: '0.6fr', default: true },
+  { key: 'status', label: 'Status', width: '0.9fr', default: true },
+];
+const TRAILING = ['max-content'];
 
 export default function GroupsList({
   kind, title, hint, groups, loaded, busyRequestIds, onEditOverrides, onRequest, onCancel,
@@ -102,7 +116,11 @@ export default function GroupsList({
   const emptyCopy = kind === 'member'
     ? "You're not in any notification groups yet."
     : 'No other groups to join.';
-  const grid = GRID;
+  // GroupsList has no useAuth() call today (no other reason to touch
+  // AuthContext) — scale is omitted rather than adding that dependency
+  // just for list_size; listGridStyle defaults to scale 1.
+  const grid = listGridStyle(COLUMNS, TRAILING);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   return (
     <section className="me-groups" aria-label={title}>
@@ -127,14 +145,9 @@ export default function GroupsList({
         </div>
       </div>
 
-      <div className="dir-list">
-        <div className="list-head" style={grid}>
-          <span className="col-head">Group</span>
-          <span className="col-head">Channels</span>
-          <span className="col-head">Quiet hours</span>
-          <span className="col-head">Days</span>
-          <span className="col-head">Members</span>
-          <span className="col-head">Status</span>
+      <div className="dir-list list-scroll">
+        <div className="list-head" style={rowStyle}>
+          {COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
           <span className="col-head" style={{ justifySelf: 'end' }}>Actions</span>
         </div>
 
@@ -142,23 +155,27 @@ export default function GroupsList({
           <div className="dir-empty">{query ? 'No groups match that filter.' : emptyCopy}</div>
         )}
 
-        {visible.map((g) => (
-          <div className="dir-row" key={g.id}>
-            <div className="row-main" style={grid}>
-              <div className="cell cell-primary">
-                <div className="pn"><b>{g.name}</b><span>{g.description || '—'}</span></div>
-              </div>
-              <div className="cell"><ChannelChips channels={g.channels} /></div>
-              <div className="cell mono">{quietHoursText(g)}</div>
-              <div className="cell cell-top">{daysText(g.active_days)}</div>
-              <div className="cell mono">{g.member_count}</div>
-              <div className="cell"><StatusChip group={g} /></div>
-              <div className="cell row-actions-cell" style={{ justifySelf: 'end' }} onClick={(e) => e.stopPropagation()}>
-                <RowActionsMenu actions={actionsFor(g)} />
+        {visible.map((g) => {
+          const quietHours = quietHoursText(g);
+          const days = daysText(g.active_days);
+          return (
+            <div className="dir-row" key={g.id} style={{ minWidth: rowStyle.minWidth }}>
+              <div className="row-main" style={rowStyle}>
+                <div className="cell cell-primary">
+                  <div className="pn"><b>{g.name}</b><span>{g.description || '—'}</span></div>
+                </div>
+                <div className="cell"><ChannelChips channels={g.channels} /></div>
+                <div className="cell mono cell-line" title={titleFor(quietHours)}>{quietHours}</div>
+                <div className="cell cell-top cell-line" title={titleFor(days)}>{days}</div>
+                <div className="cell mono cell-line">{g.member_count}</div>
+                <div className="cell"><StatusChip group={g} /></div>
+                <div className="cell row-actions-cell" style={{ justifySelf: 'end' }} onClick={(e) => e.stopPropagation()}>
+                  <RowActionsMenu actions={actionsFor(g)} />
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
