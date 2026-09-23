@@ -196,10 +196,11 @@ export type HeaderDragProps = ReturnType<ReturnType<typeof useReorderDrag>['drag
  *  sort caret, and the page's ColumnMenu as `children`. Same markup every
  *  page already renders inline (`span.col-head > button.sortable`), so
  *  existing header CSS applies unchanged. */
-export function ColHead({ col, sortDir, onToggleSort, className, dragProps, children }: {
+export function ColHead({ col, sortDir = null, onToggleSort, className, dragProps, children }: {
   col: ColumnDef;
-  sortDir: 1 | -1 | null;
-  onToggleSort: () => void;
+  sortDir?: 1 | -1 | null;
+  /** Absent for a header that does not sort: the label renders as a plain span. */
+  onToggleSort?: () => void;
   className?: string;
   dragProps?: HeaderDragProps;
   children?: ReactNode;
@@ -207,12 +208,16 @@ export function ColHead({ col, sortDir, onToggleSort, className, dragProps, chil
   const { cellRef, measureRef, label } = useFitLabel(col.label, col.short);
   const caret = sortDir
     ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
+  const title = label === col.label ? undefined : col.label;
   return (
     <span ref={cellRef} className={`col-head${className ? ` ${className}` : ''}`} {...dragProps}>
-      <button type="button" className="sortable" onClick={onToggleSort}
-              title={label === col.label ? undefined : col.label}>
-        {label} {caret}
-      </button>
+      {onToggleSort ? (
+        <button type="button" className="sortable" onClick={onToggleSort} title={title}>
+          {label} {caret}
+        </button>
+      ) : (
+        <span className="col-label" title={title}>{label} {caret}</span>
+      )}
       {col.short && (
         <span ref={measureRef} className="col-head-measure" aria-hidden="true">
           {col.label} {caret}

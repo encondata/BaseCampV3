@@ -388,4 +388,12 @@ describe('ColHead / useFitLabel', () => {
     fireEvent.click(screen.getByRole('button'));
     expect(onToggleSort).toHaveBeenCalledTimes(1);
   });
+
+  it('renders a plain label (no button) when the header is not sortable', () => {
+    const col: ColumnDef = { key: 'n', label: 'Name', width: '1fr', default: true };
+    const { container } = render(<ColHead col={col} />);
+    expect(container.querySelector('button')).toBeNull();
+    const label = container.querySelector('.col-head .col-label') as HTMLElement;
+    expect(label.textContent?.trim()).toBe('Name');
+  });
 });

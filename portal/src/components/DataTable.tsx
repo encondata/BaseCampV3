@@ -36,22 +36,24 @@ export default function DataTable({ columns, rows, className, emptyText, ariaLab
 }) {
   const cls = (c: DataTableColumn) => [c.align ?? 'left', c.mono ? 'mono' : ''].join(' ').trim();
   return (
-    <table className={`data-table ${className ?? ''}`.trim()} aria-label={ariaLabel}>
-      <colgroup>
-        {columns.map((c) => <col key={c.key} style={c.width ? { width: c.width } : undefined} />)}
-      </colgroup>
-      <thead>
-        <tr>{columns.map((c) => <th key={c.key} scope="col" className={c.align ?? 'left'}>{c.label}</th>)}</tr>
-      </thead>
-      <tbody>
-        {rows.length === 0 ? (
-          <tr><td className="data-table-empty" colSpan={columns.length}>{emptyText ?? 'Nothing here yet.'}</td></tr>
-        ) : rows.map((r) => (
-          <tr key={r.key} className={r.className}>
-            {r.cells.map((cell, i) => <td key={columns[i]?.key ?? i} className={columns[i] ? cls(columns[i]) : ''}>{cell}</td>)}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <div className="data-table-scroll">
+      <table className={`data-table ${className ?? ''}`.trim()} aria-label={ariaLabel}>
+        <colgroup>
+          {columns.map((c) => <col key={c.key} style={c.width ? { width: c.width } : undefined} />)}
+        </colgroup>
+        <thead>
+          <tr>{columns.map((c) => <th key={c.key} scope="col" className={c.align ?? 'left'}>{c.label}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 ? (
+            <tr><td className="data-table-empty" colSpan={columns.length}>{emptyText ?? 'Nothing here yet.'}</td></tr>
+          ) : rows.map((r) => (
+            <tr key={r.key} className={r.className}>
+              {r.cells.map((cell, i) => <td key={columns[i]?.key ?? i} className={columns[i] ? cls(columns[i]) : ''}>{cell}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }

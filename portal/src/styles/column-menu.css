@@ -20,10 +20,12 @@
   min-width: 0;
 }
 .list-head .col-head .sortable { min-width: 0; }
+.list-head .col-head .col-label { min-width: 0; }
 /* Only a list with column floors (.dir-list.list-scroll) keeps labels on
  * one line — its floors guarantee the (short) label fits. Un-migrated
  * lists keep wrapping until the rollout gives them floors. */
-.dir-list.list-scroll .list-head .col-head .sortable { white-space: nowrap; }
+.dir-list.list-scroll .list-head .col-head .sortable,
+.dir-list.list-scroll .list-head .col-head .col-label { white-space: nowrap; }
 /* Hidden clone of the long label (+ caret) that useFitLabel measures.
  * Inherits the header's font from .list-head; carries no typography of
  * its own (listTypography guardrail). */
