@@ -244,8 +244,10 @@ export function buildBrandScene(
   const settleStateNames = () => {
     if (disposed) return;
     const boxes = [...routeGroup.querySelectorAll('text')].map((t) => t.getBBox());
-    const hit = (a: DOMRect, b: DOMRect) => a.x < b.x + b.width && b.x < a.x + a.width
-      && a.y < b.y + b.height && b.y < a.y + a.height;
+    // 10px of padding: merely not overlapping still reads as one stacked block
+    const P = 10;
+    const hit = (a: DOMRect, b: DOMRect) => a.x < b.x + b.width + P && b.x < a.x + a.width + P
+      && a.y < b.y + b.height + P && b.y < a.y + a.height + P;
     mapGroup.querySelectorAll<SVGTextElement>('.map-state').forEach((s) => {
       for (let tries = 0; tries < 5 && boxes.some((b) => hit(s.getBBox(), b)); tries++) {
         s.setAttribute('y', String(Number(s.getAttribute('y')) + 26));
