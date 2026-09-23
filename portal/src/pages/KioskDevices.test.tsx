@@ -324,7 +324,7 @@ it('clicking Delete + confirm calls deleteDevice and reloads', async () => {
   confirmSpy.mockRestore();
 });
 
-it('renders the signed-in user and login-method chip; a session-less row shows dashes', async () => {
+it('renders the signed-in user; login-method chip is hidden by default', async () => {
   const SESSION_DEVICES: DeviceItem[] = [
     kiosk({
       id: 's1', name: 'kiosk-signed-in',
@@ -338,12 +338,12 @@ it('renders the signed-in user and login-method chip; a session-less row shows d
 
   const signedInRow = (await screen.findByText('kiosk-signed-in')).closest('.dir-row') as HTMLElement;
   expect(within(signedInRow).getByText('Claude Dev')).not.toBeNull();
-  const chip = within(signedInRow).getByText('Phone link');
-  expect(chip.className).toContain('chip tag');
+  // login_method column is default: false, so "Phone link" doesn't appear in default view
+  expect(within(signedInRow).queryByText('Phone link')).toBeNull();
 
   const signedOutRow = screen.getByText('kiosk-signed-out').closest('.dir-row') as HTMLElement;
   const dashes = within(signedOutRow).getAllByText('—');
-  expect(dashes.length).toBeGreaterThanOrEqual(2);
+  expect(dashes.length).toBeGreaterThanOrEqual(1);
 });
 
 it('shows the load-error banner when listDevices rejects', async () => {

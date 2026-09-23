@@ -56,8 +56,8 @@ export type GroupsListKind = 'member' | 'joinable';
 
 // No column registry pre-migration (hand-written header spans) — this
 // local COLUMNS mirrors them (recipe R1). ONE grid for both lists so the
-// stacked sections align column-for-column; the trailing "max-content"
-// track sizes to the "Actions ▾" trigger, same as before.
+// stacked sections align column-for-column; the trailing 88px track is a
+// fixed RowActionsMenu trigger width, which counts toward the row minimum.
 // Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
 // window, nav expanded — GroupsList sits directly in .portal-page under
 // /me/notifications).
@@ -69,7 +69,7 @@ const COLUMNS: ColumnDef[] = [
   { key: 'members', label: 'Members', width: '0.6fr', default: true },
   { key: 'status', label: 'Status', width: '0.9fr', default: true },
 ];
-const TRAILING = ['max-content'];
+const TRAILING = ['88px'];
 
 export default function GroupsList({
   kind, title, hint, groups, loaded, busyRequestIds, onEditOverrides, onRequest, onCancel,

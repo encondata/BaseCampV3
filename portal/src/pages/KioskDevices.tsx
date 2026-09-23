@@ -54,7 +54,7 @@ import '../styles/settings.css';  /* .set-note */
 import '../styles/hardware.css';
 
 // Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded). Eleven default columns is dense, so most of the
+// window, nav expanded). Ten default columns is dense, so most of the
 // non-primary/identifier ones carry a short label that collapses their
 // fixed/derived floor to the 72px absolute minimum — the long label still
 // shows whenever the column actually has the room.
@@ -65,8 +65,8 @@ const COLUMNS: ColumnDef[] = [
   { key: 'mac', label: 'MAC', width: '1fr', default: true, min: 100 },
   { key: 'version', label: 'Version', short: 'Ver', width: '72px', default: true },
   { key: 'registration', label: 'Registration', short: 'Reg.', width: '72px', default: true },
-  { key: 'signed_in', label: 'Signed in', short: 'In', width: '1fr', default: true },
-  { key: 'login_method', label: 'Login', width: '72px', default: true },
+  { key: 'signed_in', label: 'Signed in', short: 'Sign-in', width: '1fr', default: true },
+  { key: 'login_method', label: 'Login', width: '72px', default: false },
   { key: 'current_move', label: 'Current Move', short: 'Move', width: '1.2fr', default: true },
   { key: 'scan_status', label: 'Scan Type', short: 'Scan', width: '1fr', default: true },
   { key: 'site', label: 'Site', width: '1fr', default: true },
