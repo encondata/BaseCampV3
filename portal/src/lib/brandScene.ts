@@ -13,6 +13,40 @@ gsap.registerPlugin(MotionPathPlugin);
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
+export interface BrandSceneOptions {
+  /** 'classic' (default): the original right-half climb, used by the kiosk.
+   *  'map': the portal's Dallas → Las Vegas route across a faint state map,
+   *  with a mid-route waypoint and a route callout. */
+  layout?: 'classic' | 'map';
+}
+
+type Pt = { x: number; y: number };
+
+/* Catmull-Rom through the points, emitted as cubic Béziers, so a route can be
+   described by where it passes rather than by hand-tuned control points. */
+function smoothPath(pts: Pt[]): string {
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] ?? pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] ?? p2;
+    d += ` C ${p1.x + (p2.x - p0.x) / 6} ${p1.y + (p2.y - p0.y) / 6},`
+      + ` ${p2.x - (p3.x - p1.x) / 6} ${p2.y - (p3.y - p1.y) / 6}, ${p2.x} ${p2.y}`;
+  }
+  return d;
+}
+
+function svgText(x: number, y: number, cls: string, text: string, anchor = 'start') {
+  const t = document.createElementNS(SVG_NS, 'text');
+  t.setAttribute('x', String(x));
+  t.setAttribute('y', String(y));
+  t.setAttribute('text-anchor', anchor);
+  t.setAttribute('class', cls);
+  t.textContent = text;
+  return t;
+}
+
 /* Builds the brand panel scene (ridgelines, migration route, traveler) inside
    the svg element and animates it. Returns a cleanup function. Ported from the
    approved design (fable-serversherpa-login.html). */
@@ -20,7 +54,11 @@ export function buildBrandScene(
   brandPanel: HTMLElement,
   svg: SVGSVGElement,
   reduceMotion: boolean,
+  options: BrandSceneOptions = {},
 ): () => void {
+  const map = options.layout === 'map';
+  // below this width a right-hand label on the destination would run off the panel
+  const narrow = brandPanel.clientWidth < 600;
   svg.innerHTML = '';
 
   const W = Math.max(brandPanel.clientWidth, 320);
@@ -68,21 +106,85 @@ export function buildBrandScene(
     ridgePaths.push(path);
   }
 
-  /* migration route: origin → destination, climbing the right half */
+  const mapGroup = document.createElementNS(SVG_NS, 'g');
+  if (map) {
+    // faint state names place the route on a map without drawing borders
+    const states: [string, number, number][] = [
+      ['NEVADA', 0.638, 0.14], ['CALIFORNIA', 0.145, 0.351],
+      ['ARIZONA', 0.84, 0.456], ['TEXAS', 0.124, 0.596],
+    ];
+    for (const [name, fx, fy] of states) {
+      mapGroup.appendChild(svgText(fx * W, fy * H, 'map-state', name, 'middle'));
+    }
+    svg.appendChild(mapGroup);
+  }
+
+  /* migration route: origin → destination. classic climbs the right half;
+     map crosses the panel from Dallas (lower left) to Las Vegas (top). */
   const routeGroup = document.createElementNS(SVG_NS, 'g');
   svg.appendChild(routeGroup);
 
-  const A = { x: W * 0.63, y: H * 0.78 };
-  const B = { x: W * 0.86, y: Math.max(H * 0.24, 112) };
-  const m1 = { x: A.x + 0.05 * W, y: A.y - 0.3 * H };
-  const routeD = `M ${A.x} ${A.y}
-    C ${A.x + 0.16 * W} ${A.y - 0.06 * H}, ${A.x - 0.06 * W} ${A.y - 0.22 * H}, ${m1.x} ${m1.y}
-    C ${m1.x + 0.11 * W} ${m1.y - 0.08 * H}, ${B.x - 0.16 * W} ${B.y + 0.1 * H}, ${B.x} ${B.y}`;
+  let A: Pt, B: Pt, routeD: string;
+  let waypointAt = 0;
+  if (map) {
+    const at = (fx: number, fy: number): Pt => ({ x: fx * W, y: fy * H });
+    A = at(0.304, 0.531);
+    // phones: keep the top of the route clear of the logo block
+    B = at(0.734, Math.max(0.085, (narrow ? 128 : 80) / H));
+    // interior points: x as a panel fraction, height as progress from the
+    // origin (0) up to the destination (1) — so a short phone panel squashes
+    // the climb instead of overshooting the destination
+    const via = (fx: number, u: number): Pt => ({ x: fx * W, y: A.y + (B.y - A.y) * u });
+    routeD = smoothPath(narrow
+      // short phone panel: climb out of the origin first so the path clears
+      // the origin's label (right of the node), and arrive from below the
+      // destination's label (stacked above-left of its node)
+      ? [A, via(0.33, 0.45), via(0.42, 0.62), via(0.55, 0.7), via(0.66, 0.8), B]
+      : [A, via(0.37, 0.1), via(0.45, 0.137), via(0.5, 0.25), via(0.575, 0.34),
+         via(0.625, 0.45), via(0.646, 0.6), via(0.69, 0.765), via(0.72, 0.9), B]);
+    waypointAt = 0.6;
+  } else {
+    A = { x: W * 0.63, y: H * 0.78 };
+    B = { x: W * 0.86, y: Math.max(H * 0.24, 112) };
+    const m1 = { x: A.x + 0.05 * W, y: A.y - 0.3 * H };
+    routeD = `M ${A.x} ${A.y}
+      C ${A.x + 0.16 * W} ${A.y - 0.06 * H}, ${A.x - 0.06 * W} ${A.y - 0.22 * H}, ${m1.x} ${m1.y}
+      C ${m1.x + 0.11 * W} ${m1.y - 0.08 * H}, ${B.x - 0.16 * W} ${B.y + 0.1 * H}, ${B.x} ${B.y}`;
+  }
 
   const route = document.createElementNS(SVG_NS, 'path');
   route.setAttribute('d', routeD);
   route.setAttribute('class', 'route-path');
   routeGroup.appendChild(route);
+
+  function makeMapNode(pt: Pt, label: string, sub: string, coords: string, elev: string,
+                       side: 'right' | 'left' = 'right') {
+    const g = document.createElementNS(SVG_NS, 'g');
+    const pulse = document.createElementNS(SVG_NS, 'circle');
+    pulse.setAttribute('cx', String(pt.x)); pulse.setAttribute('cy', String(pt.y));
+    pulse.setAttribute('r', '8'); pulse.setAttribute('class', 'node-pulse');
+    const ring = document.createElementNS(SVG_NS, 'circle');
+    ring.setAttribute('cx', String(pt.x)); ring.setAttribute('cy', String(pt.y));
+    ring.setAttribute('r', '14'); ring.setAttribute('class', 'node-ring');
+    const inner = document.createElementNS(SVG_NS, 'circle');
+    inner.setAttribute('cx', String(pt.x)); inner.setAttribute('cy', String(pt.y));
+    inner.setAttribute('r', '8'); inner.setAttribute('class', 'node-ring');
+    const core = document.createElementNS(SVG_NS, 'circle');
+    core.setAttribute('cx', String(pt.x)); core.setAttribute('cy', String(pt.y));
+    core.setAttribute('r', '3.5'); core.setAttribute('class', 'node-core');
+    // 'left' stacks the text above-left of the node so the route can arrive
+    // underneath it
+    const x = side === 'right' ? pt.x + 36 : pt.x - 22;
+    const anchor = side === 'right' ? 'start' : 'end';
+    const dy = side === 'right' ? 0 : -30;
+    g.append(pulse, ring, inner, core,
+      svgText(x, pt.y - 7 + dy, 'map-node-label', label, anchor),
+      svgText(x, pt.y + 13 + dy, 'map-node-sub', sub, anchor),
+      svgText(x, pt.y + 38, 'map-node-coord', coords, anchor),
+      svgText(x, pt.y + 53, 'map-node-coord', elev, anchor));
+    routeGroup.appendChild(g);
+    return { g, pulse };
+  }
 
   function makeNode(pt: { x: number; y: number }, label: string, sub: string, anchor: string) {
     const g = document.createElementNS(SVG_NS, 'g');
@@ -108,8 +210,48 @@ export function buildBrandScene(
     return { g, pulse };
   }
 
-  const nodeA = makeNode(A, 'ORIGIN · DAL-7', 'Las Vegas, NV — HALL B', 'middle');
-  const nodeB = makeNode(B, 'DEST · ZRH-3', 'ZÜRICH, CH — HALL A', 'end');
+  const nodeA = map
+    ? makeMapNode(A, 'ORIGIN · DAL-7', 'Dallas, TX · HALL B', '32.776° N / 96.797° W', 'ELEV 430′')
+    : makeNode(A, 'ORIGIN · DAL-7', 'Las Vegas, NV — HALL B', 'middle');
+  const nodeB = map
+    ? makeMapNode(B, 'DESTINATION · LAS-9', 'Las Vegas, NV · HALL D', '36.086° N / 115.139° W',
+        'ELEV 2,030′', narrow ? 'left' : 'right')
+    : makeNode(B, 'DEST · ZRH-3', 'ZÜRICH, CH — HALL A', 'end');
+
+  // map layout: a glowing mid-route waypoint and the route's status callout
+  const mapExtras: SVGGElement[] = [];
+  if (map) {
+    const len = route.getTotalLength();
+    const wp = route.getPointAtLength(len * waypointAt);
+    const wpg = document.createElementNS(SVG_NS, 'g');
+    const halo = document.createElementNS(SVG_NS, 'circle');
+    halo.setAttribute('cx', String(wp.x)); halo.setAttribute('cy', String(wp.y));
+    halo.setAttribute('r', '13'); halo.setAttribute('class', 'waypoint-halo');
+    const dot = document.createElementNS(SVG_NS, 'circle');
+    dot.setAttribute('cx', String(wp.x)); dot.setAttribute('cy', String(wp.y));
+    dot.setAttribute('r', '6.5'); dot.setAttribute('class', 'waypoint-dot');
+    wpg.append(halo, dot);
+    routeGroup.appendChild(wpg);
+
+    // callout box sits left of the route, its tail pointing at the path
+    const cw = 168, ch = 78;
+    const cx = 0.425 * W, cy = 0.272 * H;
+    const call = document.createElementNS(SVG_NS, 'g');
+    call.setAttribute('class', 'route-callout');
+    const box = document.createElementNS(SVG_NS, 'path');
+    const tx = cx + cw - 34;
+    box.setAttribute('d', `M ${cx + 6} ${cy} H ${cx + cw - 6} Q ${cx + cw} ${cy} ${cx + cw} ${cy + 6}
+      V ${cy + ch - 6} Q ${cx + cw} ${cy + ch} ${cx + cw - 6} ${cy + ch}
+      H ${tx + 8} L ${tx} ${cy + ch + 10} L ${tx - 8} ${cy + ch}
+      H ${cx + 6} Q ${cx} ${cy + ch} ${cx} ${cy + ch - 6} V ${cy + 6} Q ${cx} ${cy} ${cx + 6} ${cy} Z`);
+    box.setAttribute('class', 'callout-box');
+    call.append(box,
+      svgText(cx + 14, cy + 25, 'callout-title', 'ROUTE 07'),
+      svgText(cx + 14, cy + 46, 'callout-line', '1,284 ASSETS'),
+      svgText(cx + 14, cy + 64, 'callout-line', 'WAVE 03 · ETA 2H 14M'));
+    routeGroup.appendChild(call);
+    mapExtras.push(wpg, call);
+  }
 
   // the traveler rides the route as one group holding two figures that swap:
   // a mini sherpa (rack on his back, trekking pole) and a box truck for the
@@ -175,20 +317,36 @@ export function buildBrandScene(
         stagger: { each: 0.05, from: 'end' },
         ease: 'power2.out',
       })
-      .from('.logo', { y: -18, opacity: 0, duration: 0.7 }, '-=1.0')
-      .from('.coords', { y: -14, opacity: 0, duration: 0.7 }, '-=0.55')
-      .from('.headline .line > span', {
+      .from('.logo', { y: -18, opacity: 0, duration: 0.7 }, '-=1.0');
+    // only animate what this page renders (gsap warns on missing targets)
+    const has = (sel: string) => brandPanel.querySelector(sel) !== null;
+    if (has('.coords')) tl.from('.coords', { y: -14, opacity: 0, duration: 0.7 }, '-=0.55');
+    if (map) {
+      tl.from(mapGroup, { opacity: 0, duration: 1.2, ease: 'power1.out' }, '-=0.6');
+      if (has('.brand-mountains')) {
+        tl.from('.brand-mountains', { opacity: 0, y: 24, duration: 1.4, ease: 'power2.out' }, '<');
+      }
+    }
+    tl.from('.headline .line > span', {
         yPercent: 110, duration: 0.9, stagger: 0.12, ease: 'power4.out',
       }, '-=0.5')
-      .from('.sub', { opacity: 0, y: 14, duration: 0.7 }, '-=0.45')
-      .from('.brand-bottom', { opacity: 0, duration: 0.8 }, '-=0.4')
+      .from('.sub', { opacity: 0, y: 14, duration: 0.7 }, '-=0.45');
+    if (has('.features')) {
+      tl.from('.features > li', { opacity: 0, y: 12, duration: 0.55, stagger: 0.08 }, '-=0.35');
+    }
+    if (has('.brand-aside')) tl.from('.brand-aside', { opacity: 0, duration: 0.9 }, '-=0.4');
+    tl.from('.brand-bottom', { opacity: 0, duration: 0.8 }, '-=0.4')
       .to(route, {
         strokeDashoffset: 0,
         duration: 1.6,
         ease: 'power2.inOut',
         onComplete() { route.style.strokeDasharray = '7 7'; },
       }, '-=0.9')
-      .from([nodeA.g, nodeB.g], { opacity: 0, scale: 0.5, transformOrigin: 'center', duration: 0.5, stagger: 0.25 }, '<+0.1')
+      .from([nodeA.g, nodeB.g], { opacity: 0, scale: 0.5, transformOrigin: 'center', duration: 0.5, stagger: 0.25 }, '<+0.1');
+    if (mapExtras.length) {
+      tl.from(mapExtras, { opacity: 0, y: 8, duration: 0.6, stagger: 0.2 }, '>-0.2');
+    }
+    tl
       .from('[data-reveal]', {
         opacity: 0, y: 22, duration: 0.65, stagger: 0.075, ease: 'power3.out',
       }, 0.45);
@@ -239,17 +397,24 @@ export function buildBrandScene(
         { attr: { r: 9 }, opacity: 0.8 },
         { attr: { r: 26 }, opacity: 0, duration: 2.2, repeat: -1, delay: i * 1.1, ease: 'power1.out' });
     });
+    const halo = routeGroup.querySelector('.waypoint-halo');
+    if (halo) {
+      gsap.to(halo, { attr: { r: 18 }, opacity: 0.35, duration: 1.4, yoyo: true, repeat: -1, ease: 'sine.inOut' });
+    }
 
     // gentle ridge drift + mouse parallax
     gsap.to(ridgeGroup, { y: -10, duration: 6, yoyo: true, repeat: -1, ease: 'sine.inOut' });
 
     const qx = gsap.quickTo(ridgeGroup, 'x', { duration: 1.2, ease: 'power3.out' });
     const rx = gsap.quickTo(routeGroup, 'x', { duration: 1.6, ease: 'power3.out' });
+    // state names sit on the same map plane as the route, so they drift together
+    const sx = map ? gsap.quickTo(mapGroup, 'x', { duration: 1.6, ease: 'power3.out' }) : null;
     mouseHandler = (e: MouseEvent) => {
       const r = brandPanel.getBoundingClientRect();
       const nx = (e.clientX - r.left) / r.width - 0.5;
       qx(nx * -18);
       rx(nx * -30);
+      sx?.(nx * -30);
     };
     brandPanel.addEventListener('mousemove', mouseHandler);
   }, brandPanel.parentElement ?? undefined);

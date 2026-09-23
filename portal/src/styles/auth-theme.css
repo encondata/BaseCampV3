@@ -164,6 +164,48 @@
   .login-shell .pane:before { inset:0 0 auto;width:auto;height:1px;background:repeating-linear-gradient(90deg,var(--amber) 0 14px,transparent 14px 28px) }
   .login-shell .ticker { font-size:10px }
 }
+/* ============================================================
+   Portal map layout (.brand-map) — Dallas → Las Vegas route over a faint
+   state map, mountain range, feature row, and side captions. Scoped so the
+   kiosk login, which shares this sheet, keeps the classic scene.
+   ============================================================ */
+.login-shell .brand-map .map-state { font-family:var(--font-mono);font-size:11.5px;letter-spacing:.24em;fill:#4f5b6e }
+.login-shell .brand-map .map-node-label { font-family:var(--font-mono);font-size:13.5px;letter-spacing:.08em;fill:var(--amber-soft) }
+.login-shell .brand-map .map-node-sub { font-family:var(--font-mono);font-size:11.5px;letter-spacing:.04em;fill:#c3ccd8 }
+.login-shell .brand-map .map-node-coord { font-family:var(--font-mono);font-size:9.5px;letter-spacing:.06em;fill:#76839a }
+.login-shell .brand-map .waypoint-dot { fill:#ffe0b3;stroke:var(--amber);stroke-width:2.5;filter:drop-shadow(0 0 8px rgba(255,161,46,.9)) }
+.login-shell .brand-map .waypoint-halo { fill:#ffa12e38;stroke:none }
+.login-shell .brand-map .callout-box { fill:#0c1117d9;stroke:#3a4757;stroke-width:1 }
+.login-shell .brand-map .callout-title { font-family:var(--font-mono);font-size:13px;letter-spacing:.08em;fill:var(--amber-soft) }
+.login-shell .brand-map .callout-line { font-family:var(--font-mono);font-size:10.5px;letter-spacing:.08em;fill:#c3ccd8 }
+/* raster range (from the approved mockup) feathered into the panel on every
+   edge so it reads as part of the scene, not a pasted rectangle */
+.login-shell .brand-map .brand-mountains { position:absolute;z-index:1;right:0;bottom:9.7%;width:34.4%;height:auto;pointer-events:none;
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 22%,#000 72%,transparent 100%),linear-gradient(to right,transparent 0,#000 18%);
+  -webkit-mask-composite:source-in;
+  mask-image:linear-gradient(to bottom,transparent 0,#000 22%,#000 72%,transparent 100%),linear-gradient(to right,transparent 0,#000 18%);
+  mask-composite:intersect }
+.login-shell .brand-map .brand-mid { max-width:40rem }
+.login-shell .brand-map .headline { font-size:clamp(26px,2.4vw,40px);font-weight:700 }
+.login-shell .brand-map .headline .accent { font-weight:800 }
+.login-shell .brand-map .sub { max-width:32rem;font-weight:300;color:#d4dbe5 }
+.login-shell .brand-map .features { list-style:none;margin:30px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:14px 34px }
+.login-shell .brand-map .features li { display:flex;align-items:center;gap:11px;font-family:var(--font-mono);font-size:11.5px;letter-spacing:.1em;line-height:1.45;text-transform:uppercase;color:#c3ccd8;max-width:9.5em }
+.login-shell .brand-map .features svg { width:27px;height:27px;flex:none;color:var(--amber) }
+.login-shell .brand-map .brand-aside { position:absolute;z-index:2;font-family:var(--font-mono);text-transform:uppercase;pointer-events:none }
+.login-shell .brand-map .brand-aside:after { content:"";display:block;width:42px;height:2px;margin-top:12px;background:var(--amber) }
+.login-shell .brand-map .aside-values { left:87%;top:57%;font-size:12px;letter-spacing:.2em;line-height:1.55;color:#aeb9c9 }
+.login-shell .brand-map .aside-motto { left:79.3%;bottom:3.6%;display:flex;flex-direction:column;gap:5px }
+.login-shell .brand-map .aside-motto span:first-child { font-size:10.5px;letter-spacing:.18em;color:#aeb9c9 }
+.login-shell .brand-map .aside-motto span:last-child { font-size:9px;letter-spacing:.16em;color:#76839a }
+/* faint topographic contours on the paper side */
+.login-shell .pane-topo { background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='600' viewBox='0 0 600 600'%3E%3Cg fill='none' stroke='%23c9bfa6' stroke-width='1' opacity='.35'%3E%3Cpath d='M-20 120 C 120 60 220 180 360 110 S 560 60 640 130'/%3E%3Cpath d='M-20 170 C 110 120 230 230 370 160 S 560 110 640 180'/%3E%3Cpath d='M-20 330 C 90 270 250 380 390 300 S 560 260 640 330'/%3E%3Cpath d='M-20 380 C 100 330 240 430 380 350 S 560 310 640 380'/%3E%3Cpath d='M-20 520 C 130 470 230 580 370 510 S 560 470 640 540'/%3E%3C/g%3E%3C/svg%3E") center/600px 600px repeat,linear-gradient(180deg,var(--paper) 0%,var(--paper-2) 100%) }
+@media(max-width:1180px) {
+  .login-shell .brand-map .brand-aside { display:none }
+}
+@media(max-width:860px) {
+  .login-shell .brand-map .map-state,.login-shell .brand-map .route-callout,.login-shell .brand-map .map-node-coord,.login-shell .brand-map .features,.login-shell .brand-map .brand-mountains { display:none }
+}
 @media(prefers-reduced-motion:reduce) {
   .login-shell *,.login-shell *:before,.login-shell *:after,.auth-scrim *,.auth-scrim *:before,.auth-scrim *:after { animation:none!important;transition:none!important }
 }

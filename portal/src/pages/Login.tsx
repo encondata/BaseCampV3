@@ -25,6 +25,21 @@ const ERROR_MESSAGES: Record<string, string> = {
   totp_required: 'This account requires a verification code. 2FA sign-in is coming soon — contact support.',
 };
 
+const FEATURES = [
+  { label: 'Track assets', icon: (
+    <><path d="M12 3 20 7.5v9L12 21 4 16.5v-9Z" /><path d="M4 7.5 12 12l8-4.5M12 12v9" /></>
+  ) },
+  { label: 'Monitor progress', icon: (
+    <><path d="M4 20h16" /><path d="M7 20v-7M12 20V6M17 20v-10" /></>
+  ) },
+  { label: 'Verify work', icon: (
+    <><path d="M12 3 19 6v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6Z" /><path d="m8.8 12 2.3 2.3L15.5 9.8" /></>
+  ) },
+  { label: 'Complete on time', icon: (
+    <><circle cx="12" cy="12" r="8.5" /><circle cx="12" cy="12" r="4" /><circle cx="12" cy="12" r=".6" fill="currentColor" /></>
+  ) },
+];
+
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -57,7 +72,7 @@ export default function Login() {
   useEffect(() => {
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (!brandRef.current || !terrainSvgRef.current) return;
-    return buildBrandScene(brandRef.current, terrainSvgRef.current, reduceMotion);
+    return buildBrandScene(brandRef.current, terrainSvgRef.current, reduceMotion, { layout: 'map' });
   }, []);
 
   const shakeForm = () => {
@@ -100,7 +115,7 @@ export default function Login() {
     <div className="login-shell">
 
       {/* ============ BRAND PANEL ============ */}
-      <section className="brand" ref={brandRef}>
+      <section className="brand brand-map" ref={brandRef}>
         <div className="terrain" aria-hidden="true">
           <svg ref={terrainSvgRef} preserveAspectRatio="xMidYMax slice"></svg>
         </div>
@@ -118,23 +133,35 @@ export default function Login() {
               <div className="logo-tag">Datacenter Relocation Tools</div>
             </div>
           </div>
-          <div className="coords">
-            LAS VEGAS <b>HQ</b><br />
-            36.06° N / 115.19° W<br />
-            ELEV <b className="elev">313M</b> · UTC−8
-          </div>
         </header>
 
         <div className="brand-mid">
           <h1 className="headline">
-            <span className="line"><span>{/*Customer Uncomment to add text back above Portal Word*/}</span></span>
-            <span className="line"><span><span className="accent">Portal</span></span></span>
+            <span className="line"><span>Migration Control.</span></span>
+            <span className="line"><span><span className="accent">From First Scan to Final Rack.</span></span></span>
           </h1>
           <p className="sub">
-            Track migration status, review manifests, and access
-            migration records for your active and completed
-            relocations.
+            Track relocation progress, review manifests, verify assets,
+            and access complete migration records.
           </p>
+          <ul className="features">
+            {FEATURES.map(({ label, icon }) => (
+              <li key={label}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{icon}</svg>
+                <span>{label}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <img className="brand-mountains" src="/images/login-mountains.png" alt="" aria-hidden="true" />
+
+        <div className="brand-aside aside-values" aria-hidden="true">
+          People<br />Process<br />Technology<br />Smoother<br />moves.
+        </div>
+        <div className="brand-aside aside-motto" aria-hidden="true">
+          <span>Higher standards</span>
+          <span>For a more connected world.</span>
         </div>
 
         <footer className="brand-bottom">
@@ -144,7 +171,7 @@ export default function Login() {
       </section>
 
       {/* ============ LOGIN PANEL ============ */}
-      <section className="pane">
+      <section className="pane pane-topo">
         <div className="form-wrap" ref={formWrapRef}>
           <div className="eyebrow" data-reveal="">ServerSherpa Portal</div>
           <div className="login-banners"><SystemBanners /></div>

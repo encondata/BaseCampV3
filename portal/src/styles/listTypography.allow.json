@@ -31,6 +31,16 @@
   },
   {
     "file": "styles/auth-theme.css",
+    "selector": ".login-shell .brand-map .headline",
+    "reason": "not list content: portal login map-layout headline size (kiosk keeps the base rule)"
+  },
+  {
+    "file": "styles/auth-theme.css",
+    "selector": ".login-shell .brand-map .headline .accent",
+    "reason": "not list content: portal login map-layout headline accent span"
+  },
+  {
+    "file": "styles/auth-theme.css",
     "selector": ".login-shell .eyebrow,.auth-scrim .eyebrow",
     "reason": "not list content: login page eyebrow (out of scope per spec)"
   },
