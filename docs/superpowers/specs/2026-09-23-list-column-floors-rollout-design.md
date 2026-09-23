@@ -31,7 +31,7 @@ been reported colliding; they can adopt `.mini-list.list-scroll` individually if
    unambiguous next to their neighbors.
 4. **Fit target.** The list's **default** column set plus its trailing tracks must have a row
    minimum no wider than the list's container at a 1512px viewport with the nav expanded:
-   **1176px** for a list directly inside `.portal-page`; subtract the horizontal padding of
+   **1176px** for a list directly inside `.portal-page` (measured 1174px in the browser at 1512px; use **1172px** as the ceiling for a list that lands within a few px); subtract the horizontal padding of
    every card/panel/tab body between the page and the card (an `.init-panel` costs 36 → 1140;
    `.detail-block`/tab bodies similar — read their CSS). Each list records its target in a
    comment on its column array and asserts it in a test.

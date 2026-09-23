@@ -53,8 +53,8 @@ import '../styles/profile.css';
 import '../styles/settings.css';  /* .set-note */
 import '../styles/hardware.css';
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded). Ten default columns is dense, so most of the
+// Fit: default columns + trailing ≤ 1172px (page-level ceiling, measured
+// 1174 at 1512px). Ten default columns is dense, so most of the
 // non-primary/identifier ones carry a short label that collapses their
 // fixed/derived floor to the 72px absolute minimum — the long label still
 // shows whenever the column actually has the room.

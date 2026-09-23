@@ -35,13 +35,13 @@ import '../styles/profile.css';
 import '../styles/settings.css';  /* .set-note */
 import '../styles/hardware.css';
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing compute to 1171px. Page-level ceiling
+// is 1172px (measured 1174px in the browser at 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: '1.4fr', default: true, min: 140 },
   { key: 'wan_ip', label: 'WAN IP', width: '1fr', default: true, min: 100 },
   { key: 'lan_ip', label: 'LAN IP', width: '1fr', default: true, min: 100 },
-  { key: 'mac', label: 'MAC', width: '1fr', default: true, min: 120 },
+  { key: 'mac', label: 'MAC', width: '1fr', default: true, min: 116 },
   { key: 'serial', label: 'Serial', width: '1fr', default: true, min: 110 },
   { key: 'vpn', label: 'VPN', width: '72px', default: true },
   { key: 'connected', label: 'Devices', width: '82px', default: true },

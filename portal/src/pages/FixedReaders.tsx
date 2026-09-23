@@ -36,8 +36,8 @@ import '../styles/profile.css';
 import '../styles/settings.css';  /* .set-note */
 import '../styles/hardware.css';
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded). model/uptime/tags_24h/antennas are fixed at their
+// Fit: default columns + trailing ≤ 1172px (page-level ceiling, measured
+// 1174 at 1512px). model/uptime/tags_24h/antennas are fixed at their
 // derived floor (short numeric/duration values, never need to grow);
 // connection carries a short label so its fixed track can sit at the 72px
 // absolute floor instead of its ~104px derived-from-"Connection" one.
