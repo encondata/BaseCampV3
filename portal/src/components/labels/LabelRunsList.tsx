@@ -5,8 +5,9 @@
  * customization here — like `HistoryTab`, this is an embedded list on
  * one page, not its own route.
  */
+import { useAuth } from '../../auth/AuthContext';
 import type { LabelRun } from '../../lib/api';
-import { ColHead, listGridStyle, type ColumnDef } from '../../lib/listTools';
+import { ColHead, listGridStyle, listScale, titleFor, type ColumnDef } from '../../lib/listTools';
 import { RowActionsMenu } from '../hardware/RowActionsMenu';
 
 const STATUS_LABEL: Record<LabelRun['status'], string> = {
@@ -16,20 +17,13 @@ const STATUS_CHIP: Record<LabelRun['status'], string> = {
   queued: 'c-slate', running: 'c-violet', completed: 'c-green', failed: 'c-red', canceled: 'c-slate',
 };
 
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
-
 // No column registry pre-migration (hand-written header spans) — this
-// local COLUMNS mirrors them (recipe R1). LabelRunsList has no useAuth()
-// call today (no other reason to touch AuthContext) — scale is omitted
-// rather than adding that dependency just for list_size; listGridStyle
-// defaults to scale 1.
+// local COLUMNS mirrors them (recipe R1).
 //
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded — GenerateLabels.tsx mounts this list directly
-// under .portal-page's .glabels-section, which adds no horizontal
-// padding of its own).
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — .portal-page at a
+// 1512px window, nav expanded — GenerateLabels.tsx mounts this list directly
+// under .portal-page's .glabels-section, which adds no horizontal padding of
+// its own).
 const COLUMNS: ColumnDef[] = [
   { key: 'started', label: 'Started', width: '1.3fr', default: true, min: 96 },
   { key: 'initiative', label: 'Initiative', width: '1.6fr', default: true },
@@ -49,13 +43,15 @@ export default function LabelRunsList({ runs, highlightRunId, typeLabel, onViewE
   typeLabel: (key: string) => string;
   onViewErrors: (run: LabelRun) => void;
 }) {
-  const grid = listGridStyle(COLUMNS, TRAILING);
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
+  const grid = listGridStyle(COLUMNS, TRAILING, undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
   return (
     <div className="dir-list list-scroll">
       <div className="list-head" style={rowStyle}>
         {COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
-        <span />
+        <span className="col-head" aria-hidden="true" />
       </div>
       {runs === null && <div className="dir-empty">Loading…</div>}
       {runs !== null && runs.length === 0 && <div className="dir-empty">No runs yet.</div>}

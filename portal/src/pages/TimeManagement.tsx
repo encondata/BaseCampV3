@@ -40,7 +40,7 @@ import {
 } from '../lib/columnMenu';
 import {
   applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale,
-  moveKey, useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
+  moveKey, titleFor, useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../lib/listTools';
 import { naturalCompare } from '../lib/sites';
 import { elapsedSince, formatMinutes } from '../lib/timeFormat';
@@ -51,8 +51,8 @@ import '../styles/time.css';
 
 const MISSED_PUNCH_MINUTES = 720; // 12h
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const TIMESHEET_COLUMNS: ColumnDef[] = [
   { key: 'person', label: 'Person', width: '1.2fr', default: true, min: 140 },
   { key: 'date', label: 'Date', width: '0.9fr', default: true, min: 96 },
@@ -119,10 +119,6 @@ function statusChip(label: string, color: string) {
     </span>
   );
 }
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function TimeManagement() {
   const { can, preferences } = useAuth();
@@ -576,7 +572,7 @@ export default function TimeManagement() {
                                 onSort={(dir) => setSort(c.key, dir)} />
                   </ColHead>
                 ))}
-                {canChange && <span className="col-head" />}
+                {canChange && <span className="col-head" aria-hidden="true" />}
               </div>
 
               {timesheet && visibleEntries.length === 0 && (

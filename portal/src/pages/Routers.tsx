@@ -25,7 +25,7 @@ import {
 } from '../lib/devices';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
-  listGridStyle, listScale, moveKey, passesFacets, useReorderDrag, useSearchHaystacks,
+  listGridStyle, listScale, moveKey, passesFacets, titleFor, useReorderDrag, useSearchHaystacks,
   visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
@@ -35,8 +35,8 @@ import '../styles/profile.css';
 import '../styles/settings.css';  /* .set-note */
 import '../styles/hardware.css';
 
-// Fit: default columns + trailing compute to 1171px. Page-level ceiling
-// is 1172px (measured 1174px in the browser at 1512px window, nav expanded).
+// Fit: default columns + trailing compute to 1171px, under LIST_FIT.page
+// (1172px — measured 1174px in the browser at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: '1.4fr', default: true, min: 140 },
   { key: 'wan_ip', label: 'WAN IP', width: '1fr', default: true, min: 100 },
@@ -76,10 +76,6 @@ const CSV_COLUMNS: [string, (d: DeviceItem) => string][] = [
 
 const msgFor = (err: unknown): string =>
   err instanceof ApiError ? `Request failed (${err.code}).` : "Couldn't delete the router.";
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function Routers() {
   const { can, preferences } = useAuth();
@@ -260,8 +256,8 @@ export default function Routers() {
                             onSort={(dir) => setSort(c.key, dir)} />
               </ColHead>
             ))}
-            <span />
-            <span />
+            <span className="col-head" aria-hidden="true" />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {visible.length === 0 && (

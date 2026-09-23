@@ -720,6 +720,10 @@
   font-weight: 300;
 }
 .dir-empty b { display: block; font-size: 15px; font-weight: 600; color: var(--text-dark); margin-bottom: 4px; }
+/* In a sideways-scrolling card the empty state has to span the SCROLLED
+   width, not just the visible one, or its centered text and background
+   stop at the viewport edge once the rows are scrolled. */
+.dir-list.list-scroll .dir-empty { width: max-content; min-width: 100%; }
 
 /* ── density: compact ─────────────────────────────────────── */
 /* Row-height/avatar-size overrides now live in the token block at the

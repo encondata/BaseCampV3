@@ -282,10 +282,11 @@ const BLANK = '—';
  *  remaining per-move + asset fields, offered via the Columns picker.
  *  `min` floors on the nine defaults are sized so that, with the 88px
  *  actions track, the 30px chevron track, ten 12px gaps, and 40px of
- *  padding, the row minimum is 1134px — under the 1136px the initiative
- *  detail page's panel gives a list in a 14-inch MacBook Pro window with
- *  the nav expanded (1512px viewport, 248px nav, 44px page padding, 18px
- *  panel padding each side; spec 2026-09-23-list-column-floors). `short`
+ *  padding, the row minimum is 1134px — exactly LIST_FIT.initPanel, what
+ *  the initiative detail page's .init-panel gives a list in a 14-inch
+ *  MacBook Pro window with the nav expanded (1512px viewport, 248px nav,
+ *  44px page padding, 18px panel padding and a 1px panel border each
+ *  side; spec 2026-09-23-list-column-floors). `short`
  *  is the header shown once the long label would overflow its track.
  *  Optional columns take the derived floor. */
 export const MOVE_ASSET_COLUMNS: ColumnDef[] = [

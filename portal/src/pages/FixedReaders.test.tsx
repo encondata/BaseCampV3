@@ -14,6 +14,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { DeviceItem, UiPreferences } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => {
   const state: { can: (resource: string, action: string) => boolean } = {
@@ -188,5 +189,5 @@ it('fixed readers list: column floors, shared template + minimum, sideways-scrol
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1172);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });

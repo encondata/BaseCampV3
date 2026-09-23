@@ -13,6 +13,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { TruckItem, TruckMapPoint, UiPreferences } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 vi.mock('react-leaflet', () => ({
   MapContainer: ({ children }: any) => <div data-testid="map">{children}</div>,
@@ -145,7 +146,7 @@ it('trucks list: column floors, shared template + minimum, sideways-scroll card'
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
 
 it('changing the refresh option re-fetches on that cadence', async () => {

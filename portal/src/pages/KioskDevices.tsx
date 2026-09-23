@@ -40,7 +40,7 @@ import {
 } from '../lib/devices';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
-  listGridStyle, listScale, moveKey, passesFacets, useReorderDrag, useSearchHaystacks,
+  listGridStyle, listScale, moveKey, passesFacets, titleFor, useReorderDrag, useSearchHaystacks,
   visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
@@ -53,8 +53,8 @@ import '../styles/profile.css';
 import '../styles/settings.css';  /* .set-note */
 import '../styles/hardware.css';
 
-// Fit: default columns + trailing ≤ 1172px (page-level ceiling, measured
-// 1174 at 1512px). Ten default columns is dense, so most of the
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — the page-level
+// ceiling, measured 1174 at 1512px). Ten default columns is dense, so most of the
 // non-primary/identifier ones carry a short label that collapses their
 // fixed/derived floor to the 72px absolute minimum — the long label still
 // shows whenever the column actually has the room.
@@ -139,10 +139,6 @@ interface ClearOfflinePreview {
   matches: ClearOfflineKioskItem[];
   total: number;
 }
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function KioskDevices() {
   const { can, maxRank, preferences } = useAuth();
@@ -450,7 +446,7 @@ export default function KioskDevices() {
                             onSort={(dir) => setSort(c.key, dir)} />
               </ColHead>
             ))}
-            <span />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {visible.length === 0 && (

@@ -16,6 +16,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { ApiError, type DbTestingSession, type DbTestingStatusOut } from '../../lib/api';
 import DbTestingTab from './DbTestingTab';
+import { LIST_FIT } from '../../lib/listTools';
 
 const auth = vi.hoisted(() => ({ godMode: true }));
 
@@ -267,9 +268,9 @@ it('recent sessions: column floors, shared template + minimum, sideways-scroll c
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  // Fit: default columns ≤ 1176px (.portal-page at a 1512px window, nav
-  // expanded).
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  // Fit: default columns ≤ LIST_FIT.page (1172px — .portal-page at a
+  // 1512px window, nav expanded).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
 
 it('polls status again after 5 seconds while a session is active', async () => {

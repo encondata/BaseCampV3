@@ -29,7 +29,7 @@ import {
 import {
   ColHead,
   ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
-  listGridStyle, listScale, moveKey, passesFacets, useReorderDrag, useSearchHaystacks,
+  listGridStyle, listScale, moveKey, passesFacets, titleFor, useReorderDrag, useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef, type FacetGroup, type FacetState,
 } from '../../lib/listTools';
@@ -43,8 +43,8 @@ import RuleEditorModal from './RuleEditorModal';
 // Name | Trigger status | Match type | Priority | Conditions | Actions |
 // Runs | Updated (hidden by default) | Enabled — trailing Edit/Duplicate/
 // Delete cell stays outside COLUMNS, like Notifications' chevron column.
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded — RulesTab sits directly in .portal-page under
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — .portal-page at a
+// 1512px window, nav expanded — RulesTab sits directly in .portal-page under
 // StatusRules' tab bar, with no extra card).
 const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 180 },
@@ -60,10 +60,6 @@ const COLUMNS: ColumnDef[] = [
 
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 function statusOption(schema: StatusRuleSchema, value: string) {
   return schema.trigger_statuses.find((o) => o.value === value);
@@ -340,7 +336,7 @@ export default function RulesTab({ onCount }: {
                             onSort={(dir) => setSort(c.key, dir)} />
               </ColHead>
             ))}
-            {anyRowAction && <span className="col-head" />}
+            {anyRowAction && <span className="col-head" aria-hidden="true" />}
           </div>
 
           {visible.length === 0 && (

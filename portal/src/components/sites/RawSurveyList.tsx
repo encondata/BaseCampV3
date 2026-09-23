@@ -9,6 +9,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 
+import { useAuth } from '../../auth/AuthContext';
 import { ApiError, listSiteSurveyRaw, type RawSurveyRow } from '../../lib/api';
 import { rawSurveyCellText, rawSurveySearchText } from '../../lib/siteSurvey';
 import {
@@ -17,33 +18,14 @@ import {
 } from '../../lib/columnMenu';
 import { naturalCompare } from '../../lib/sites';
 import {
-  applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, moveKey,
-  useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
+  applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale, moveKey,
+  titleFor, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
 } from '../../lib/listTools';
 import { VirtualRows } from '../../lib/virtualRows';
+import {
+  RAW_SURVEY_COLUMNS as COLUMNS, RAW_SURVEY_PRIMARY_COL as PRIMARY_COL,
+} from '../../lib/surveyColumns';
 
-// The always-shown field-key cell — a fixed leading track outside the
-// column registry (same shape as the header markup below), so it needs
-// its own ColumnDef for listGridStyle/ColHead (recipe R1).
-export const PRIMARY_COL: ColumnDef = {
-  key: 'primary', label: 'Field', width: '2fr', default: true, min: 150,
-};
-
-// Fit: default columns + trailing ≤ 1140px (1176 - 36 — this list sits
-// inside an .init-panel, initiatives.css: padding 16px 18px, 18px each
-// side, nested in a CollapsePanel that adds no horizontal padding of its
-// own). RawSurveyList has no useAuth() call today (no other reason to
-// touch AuthContext) — scale is omitted rather than adding that
-// dependency just for list_size; listGridStyle defaults to scale 1.
-export const COLUMNS: ColumnDef[] = [
-  { key: 'value', label: 'Value', width: '1.4fr', default: true },
-  { key: 'registered', label: 'Registered', width: '0.8fr', default: true },
-  { key: 'source', label: 'Source', width: '0.8fr', default: true },
-  { key: 'submitted_by', label: 'Submitted by', width: '1fr', default: true },
-  { key: 'device', label: 'Device', width: '1fr', default: false },
-  { key: 'captured', label: 'Captured', width: '1.1fr', default: true, min: 96 },
-  { key: 'ingested', label: 'Ingested', width: '1fr', default: false },
-];
 const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'field']);
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
@@ -61,10 +43,6 @@ function sortValueFor(r: RawSurveyRow, key: string): string {
   }
 }
 
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
-
 const CSV_COLUMNS: [string, (r: RawSurveyRow) => string][] = [
   ['Field key', (r) => r.field_key],
   ['Value', (r) => rawSurveyCellText(r, 'value')],
@@ -81,6 +59,8 @@ export default function RawSurveyList({ siteId, refreshKey, onCount }: {
   refreshKey?: number;
   onCount?: (n: number | null) => void;
 }) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [rows, setRows] = useState<RawSurveyRow[] | null>(null);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
@@ -133,7 +113,7 @@ export default function RawSurveyList({ siteId, refreshKey, onCount }: {
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = listGridStyle([PRIMARY_COL, ...shownCols]);
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], [], undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (row: RawSurveyRow, key: string) => {

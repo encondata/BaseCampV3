@@ -50,6 +50,7 @@ import {
   listGridStyle,
   listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
@@ -63,8 +64,8 @@ import '../styles/settings.css';
 import '../styles/assets.css';
 import { displayRfid } from '../lib/format';
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   // The identity trio: the combined serial+name cell stays the default,
   // with its two halves offered as separate columns for anyone who wants
@@ -143,10 +144,6 @@ const CSV_COLUMNS: [string, (a: AssetItem) => string][] = [
   ['Last seen', (a) => a.last_seen_at ?? ''],
   ['Created', (a) => a.created_at],
 ];
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function Assets() {
   const navigate = useNavigate();

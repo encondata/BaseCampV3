@@ -15,8 +15,8 @@ export const PRIMARY_COL: ColumnDef = {
   key: 'primary', label: 'Name', width: '2.2fr', default: true, min: 180,
 };
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 export const SITE_COLUMNS: ColumnDef[] = [
   { key: 'type', label: 'Type', width: '1.1fr', default: true },
   { key: 'status', label: 'Status', width: '1.1fr', default: true },

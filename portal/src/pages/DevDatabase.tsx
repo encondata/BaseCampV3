@@ -44,16 +44,14 @@ import {
   type PendingDeleteReconcileOut,
 } from '../lib/api';
 import { longDate, relativeTime } from '../lib/format';
-import { ColHead, listGridStyle, type ColumnDef } from '../lib/listTools';
+import {
+  ACTIONS_TRACK, ColHead, listGridStyle, listScale, titleFor, type ColumnDef,
+} from '../lib/listTools';
 import { canForceDelete } from '../lib/pendingDeletes';
 import '../styles/directory.css';
 import '../styles/profile.css'; /* .btn-solid */
 import '../styles/initiatives.css'; /* .init-panel, .mini-btn.sm */
 import '../styles/system.css'; /* .sysconf-tabbar */
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 // Server-side failure codes -> plain-English explanation. Anything not
 // listed here still renders (falls back to the raw code) rather than
@@ -71,19 +69,13 @@ function typeLabel(entityType: string): string {
   return entityType.replace(/_/g, ' ');
 }
 
-/** Trailing track for a row's RowActionsMenu — the "Actions ▾" trigger
- *  measures 85px, so 88px holds it without clipping and hands the rest of
- *  the old button-strip width back to the flexible columns. Same value as
- *  Warehouse.tsx:330 and InitiativeDetail.tsx's ACTIONS_TRACK. */
-const ACTIONS_TRACK = '88px';
-
 /** No column registry pre-migration (hand-written header spans) — this
  *  local COLUMNS mirrors them (recipe R1). The leading column's header text
  *  is the group's own "<Type> (<count>)" label, not a fixed "Name", so it's
  *  rebuilt per group in the render loop below rather than kept as a single
  *  module-level array; `min: 160` (primary-column floor) still guards it
- *  regardless of what that group text says. Fit is nowhere near the
- *  1176px page-level target — this list sits well under it either way. */
+ *  regardless of what that group text says. Fit is nowhere near
+ *  LIST_FIT.page — this list sits well under it either way. */
 function reconcileColumns(entityType: string, count: number): ColumnDef[] {
   return [
     { key: 'entity_label', label: `${typeLabel(entityType)} (${count})`, width: '2fr', default: true, min: 160 },
@@ -98,6 +90,8 @@ function reconcileColumns(entityType: string, count: number): ColumnDef[] {
  *  owns so the page has one eyebrow/title regardless of which tab is
  *  active; this tab's own explanatory copy stays as its lead paragraph. */
 function ReconcileTab() {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [items, setItems] = useState<PendingDeleteItem[] | null>(null);
   const [error, setError] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -314,13 +308,13 @@ function ReconcileTab() {
 
       {!error && groups.map(([entityType, rows]) => {
         const cols = reconcileColumns(entityType, rows.length);
-        const grid = listGridStyle(cols, [ACTIONS_TRACK]);
+        const grid = listGridStyle(cols, [ACTIONS_TRACK], undefined, listGridScale);
         const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
         return (
           <div key={entityType} className="dir-list list-scroll" style={{ marginBottom: 20 }}>
             <div className="list-head" style={rowStyle}>
               {cols.map((c) => <ColHead key={c.key} col={c} />)}
-              <span />
+              <span className="col-head" aria-hidden="true" />
             </div>
             {rows.map((item) => (
               <div key={item.id} className="dir-row" style={{ minWidth: rowStyle.minWidth }}>
@@ -447,12 +441,10 @@ function createErrorMessage(err: unknown): string {
 }
 
 function BackupsTab() {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
   const canChange = can('devtools', 'change');
-  // Neither DevDatabase tab reads UiPreferences today (ReconcileTab has no
-  // useAuth() call at all) — scale is omitted rather than adding that
-  // dependency just for list_size; listGridStyle defaults to scale 1.
-  const backupGrid = listGridStyle(BACKUP_COLUMNS, [ACTIONS_TRACK]);
+  const listGridScale = listScale(preferences?.list_size);
+  const backupGrid = listGridStyle(BACKUP_COLUMNS, [ACTIONS_TRACK], undefined, listGridScale);
   const backupRowStyle = {
     gridTemplateColumns: backupGrid.gridTemplateColumns, minWidth: backupGrid.minWidth,
   };
@@ -588,7 +580,7 @@ function BackupsTab() {
       <div className="dir-list list-scroll">
         <div className="list-head" style={backupRowStyle}>
           {BACKUP_COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
-          <span />
+          <span className="col-head" aria-hidden="true" />
         </div>
         {backups && backups.length === 0 && (
           <div className="dir-empty"><b>No backups yet.</b></div>

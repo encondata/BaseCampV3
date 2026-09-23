@@ -16,7 +16,8 @@ import {
   usePersistentListState, type CellText,
 } from '../lib/columnMenu';
 import {
-  ColHead, ColumnsButton, applyColumnOrder, listGridStyle, listScale, moveKey, useReorderDrag,
+  ColHead, ColumnsButton, applyColumnOrder, listGridStyle, listScale, moveKey, titleFor,
+  useReorderDrag,
   useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../lib/listTools';
 import { useToast } from '../lib/notificationsContext';
@@ -33,8 +34,8 @@ import '../styles/assets.css';    /* .nf-list/.nf-item/.nf-body/.nf-meta (Edit m
 import '../styles/dashboard.css'; /* .dash-kpis (Move Scan History Generate options' preview card) */
 import '../styles/reports.css';
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 140 },
   { key: 'report_type', label: 'Type', width: '1fr', default: true },
@@ -46,9 +47,6 @@ const COLUMNS: ColumnDef[] = [
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 const TYPE_LABELS: Record<string, string> = {
   move_report: 'Move Report', site_move_survey: 'Site & Move Survey',
 };
@@ -232,7 +230,7 @@ export default function Reports() {
                               onSort={(dir) => setSort(c.key, dir)} />
                 </ColHead>
               ))}
-              <span />
+              <span className="col-head" aria-hidden="true" />
             </div>
             {visible.length === 0 && (
               <div className="dir-empty">

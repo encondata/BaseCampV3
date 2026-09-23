@@ -14,6 +14,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { AssetItem, UiPreferences } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => {
   const state: { listPrefs: Record<string, unknown> } = { listPrefs: {} };
@@ -222,5 +223,5 @@ it('Assets list: column floors, shared template + minimum, sideways-scroll card'
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });

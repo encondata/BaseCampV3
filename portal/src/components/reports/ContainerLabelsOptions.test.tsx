@@ -5,6 +5,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { ContainerItem, InitiativeItem, ReportDefinition } from '../../lib/api';
 
+/** ContainerPickList reads `preferences.list_size` for the shared column floors
+ *  (listScale, lib/listTools); nothing else in this tree touches auth. */
+vi.mock('../../auth/AuthContext', () => ({
+  useAuth: () => ({ preferences: { list_size: 'default' } }),
+}));
+
 const api = vi.hoisted(() => ({ listContainers: vi.fn(), updateContainer: vi.fn() }));
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()), ...api,

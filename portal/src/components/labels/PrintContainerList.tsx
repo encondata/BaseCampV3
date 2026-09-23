@@ -30,7 +30,8 @@ import {
   type CellText,
 } from '../../lib/columnMenu';
 import {
-  ColHead, ColumnsButton, applyColumnOrder, listGridStyle, listScale, moveKey, useReorderDrag,
+  ColHead, ColumnsButton, applyColumnOrder, listGridStyle, listScale, moveKey, titleFor,
+  useReorderDrag,
   useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../../lib/listTools';
 import { LABEL_TAG_OPTIONS } from '../../lib/labelTags';
@@ -49,8 +50,9 @@ export type LabelFilter = 'all' | 'ready' | 'missing';
 // the header cell below still renders the raw checkbox input.
 const CHECKBOX_COL: ColumnDef = { key: 'select', label: '', width: '32px', default: true };
 
-// Fit: default columns + trailing ≤ 1132px (1176 - 44 — .plabels-card,
-// labels.css: padding 18px 22px, 22px each side). Plenty of slack here
+// Fit: default columns + trailing ≤ 1126px (1174 - 44 - 2 - 2 safety —
+// .plabels-card, labels.css: padding 18px 22px plus a 1px border,
+// 23px each side). Plenty of slack here
 // (7 columns vs the asset list's 9) — no short labels needed.
 export const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Container', width: '1.6fr', default: true, min: 160 },
@@ -88,10 +90,6 @@ export function containerCellText(row: ContainerItem, status: LabelStatus | null
     default: return '';
   }
 }
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 /** Plain natural-compare sort on the chosen column — `assets` compares
  *  numerically. No secondary sort: the asset list's rack/RU tie-break is a

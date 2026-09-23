@@ -2,6 +2,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { LIST_FIT } from '../../lib/listTools';
 
 const auth = vi.hoisted(() => ({ can: (() => true) as (r: string, a: string) => boolean }));
 vi.mock('../../auth/AuthContext', () => ({
@@ -66,9 +67,9 @@ it('vocab pane: column floors, shared template + minimum, sideways-scroll card',
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  // Fit: default columns + trailing (the 30px chevron) ≤ 1176px
-  // (.access-tab-panel at a 1512px window, nav expanded).
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  // Fit: default columns + trailing (the 30px chevron) ≤ LIST_FIT.page
+  // (1172px — the Variables page's tab body at a 1512px window, nav expanded).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
 
 it('placeholder pane: column floors, shared template + minimum, sideways-scroll card', async () => {
@@ -84,7 +85,7 @@ it('placeholder pane: column floors, shared template + minimum, sideways-scroll 
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  // Fit: default columns + trailing (the 30px chevron) ≤ 1176px
-  // (.access-tab-panel at a 1512px window, nav expanded).
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  // Fit: default columns + trailing (the 30px chevron) ≤ LIST_FIT.page
+  // (1172px — the Variables page's tab body at a 1512px window, nav expanded).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });

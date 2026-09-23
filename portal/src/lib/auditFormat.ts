@@ -17,8 +17,8 @@ export const AUDIT_PRIMARY_COL: ColumnDef = {
   key: 'primary', label: 'When', width: '150px', default: true,
 };
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 export const AUDIT_COLUMNS: ColumnDef[] = [
   { key: 'actor', label: 'Actor', width: '1fr', default: true },
   { key: 'action', label: 'Action', width: '1.4fr', default: true },

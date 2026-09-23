@@ -67,6 +67,7 @@ import {
   listGridStyle,
   listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
@@ -145,10 +146,6 @@ const GRANT_ERRORS: Record<string, string> = {
   rank_too_low: 'Their rank is at or above yours.',
   person_not_found: 'That person no longer exists.',
 };
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function External() {
   const { can, godMode, preferences } = useAuth();
@@ -452,7 +449,7 @@ export default function External() {
                           onSort={(dir) => setSort(c.key, dir)} />
             </ColHead>
           ))}
-          <span />
+          <span className="col-head" aria-hidden="true" />
         </div>
 
         {error && <div className="dir-empty"><b>Cannot load</b>{error}</div>}

@@ -825,12 +825,14 @@
   color: var(--text-dark);
 }
 .imp-report-chips { margin-bottom: 16px; }
-.imp-report-list { overflow: visible; margin-bottom: 4px; }
-.imp-report-list .list-head { border-radius: 15px 15px 0 0; }
-.imp-report-list .dir-row:last-child .row-main { border-radius: 0 0 15px 15px; }
+/* The card is .dir-list.list-scroll now (directory.css): it owns the clip
+   and the corner radii, the column menu is portaled, and the grid template
+   is inline (REPORT_COLUMNS through listGridStyle in ImportMoveAssets.tsx),
+   so the overflow-visible hack, its corner re-rounding companions, and the
+   .imp-report-grid template are all gone. */
+.imp-report-list { margin-bottom: 4px; }
 .imp-report-list .row-main { cursor: default; padding: 10px 20px; }
 .imp-report-list .row-main:hover { background: none; }
-.imp-report-grid { grid-template-columns: 70px 160px 130px 1fr; }
 
 .imp-pagination {
   display: flex;

@@ -42,7 +42,7 @@ import {
   type DbTestingStatusOut,
 } from '../../lib/api';
 import { longDate } from '../../lib/format';
-import { ColHead, listGridStyle, listScale, type ColumnDef } from '../../lib/listTools';
+import { ColHead, listGridStyle, listScale, titleFor, type ColumnDef } from '../../lib/listTools';
 import { useSystemStatus } from '../../lib/systemStatusContext';
 import '../../styles/directory.css'; /* .dir-list, .dir-row, .dir-empty */
 import '../../styles/profile.css'; /* .pf-form, .pf-error, .pf-notice, .btn-solid */
@@ -61,8 +61,8 @@ const LIVE_STATUSES: DbTestingSessionStatus[] = ['snapshotting', 'active', 'reve
 // local COLUMNS mirrors them (recipe R1). Read-only, unsortable list —
 // headers render as plain ColHead spans (no onToggleSort). No trailing
 // track — every column is a data column, no chevron/actions cell.
-// Fit: default columns ≤ 1176px (.portal-page at a 1512px window, nav
-// expanded — DbTestingTab sits directly in .portal-page under
+// Fit: default columns ≤ LIST_FIT.page (1172px — .portal-page at a 1512px
+// window, nav expanded — DbTestingTab sits directly in .portal-page under
 // DevDatabase's tab bar, with no extra card).
 const RECENT_COLUMNS: ColumnDef[] = [
   { key: 'started', label: 'Started', width: '1.3fr', default: true, min: 96 },
@@ -72,10 +72,6 @@ const RECENT_COLUMNS: ColumnDef[] = [
   { key: 'snapshot', label: 'Snapshot', width: '1.6fr', default: true, min: 120 },
   { key: 'changes', label: 'Changes', width: '1fr', default: true },
 ];
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 const ERROR_COPY: Record<string, string> = {
   invalid_testing_password: 'That is not the testing password.',

@@ -32,7 +32,7 @@ import {
 } from '../lib/users';
 import { avatarGradient, initials, longDate, relativeTime } from '../lib/format';
 import {
-  applyColumnOrder, ColHead, listGridStyle, listScale, moveKey, useReorderDrag,
+  applyColumnOrder, ColHead, listGridStyle, listScale, moveKey, titleFor, useReorderDrag,
   useSearchHaystacks, visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
@@ -58,8 +58,8 @@ export const PRIMARY_COL: ColumnDef = {
   key: 'primary', label: 'Name', width: '2.2fr', default: true, min: 180,
 };
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 export const COLUMNS: ColumnDef[] = [
   { key: 'roles', label: 'Roles', width: '1.4fr', default: true },
   { key: 'status', label: 'Status', width: '1fr', default: true },
@@ -131,10 +131,6 @@ function exportCsv(rows: UserItem[]): void {
   a.click();
   URL.revokeObjectURL(a.href);
 }
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 type ManageAction =
   | { kind: 'edit' | 'reset' | 'roles'; user: UserItem }

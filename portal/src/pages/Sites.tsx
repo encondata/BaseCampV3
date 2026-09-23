@@ -50,6 +50,7 @@ import {
   listGridStyle,
   listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
@@ -123,10 +124,6 @@ function surveySummary(rows: SiteSurveyRow[]): string {
   const { filled, total } = filledCount(rows);
   return `${filled}/${total} fields filled`;
 }
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function Sites({ initialView = 'list' }: { initialView?: 'list' | 'map' } = {}) {
   const navigate = useNavigate();
@@ -476,7 +473,7 @@ export default function Sites({ initialView = 'list' }: { initialView?: 'list' |
                             onSort={(dir) => setSort(c.key, dir)} />
               </ColHead>
             ))}
-            <span />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {sites && visible.length === 0 && (

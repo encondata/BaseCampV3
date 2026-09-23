@@ -19,6 +19,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { DbBackupItem, PendingDeleteItem, PendingDeleteReference } from '../lib/api';
 import DevDatabase from './DevDatabase';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => ({ godMode: true, canChange: true }));
 
@@ -241,7 +242,7 @@ it('reconcile list: column floors, shared template + minimum, sideways-scroll ca
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
 
 // ── Backups tab: row actions ──────────────────────────────────────────
@@ -316,7 +317,7 @@ it('backups list: column floors, shared template + minimum, sideways-scroll card
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
 
 // ── Reconcile tab: cascade delete override ─────────────────────────

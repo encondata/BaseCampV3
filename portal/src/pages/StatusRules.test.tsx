@@ -15,6 +15,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type {
   StatusRule, StatusRuleExecStat, StatusRuleExecution, StatusRuleSchema, UiPreferences,
 } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }));
 
@@ -311,6 +312,13 @@ it('rule row: each item keeps its own permission gate', async () => {
   expect(screen.queryByRole('menuitem', { name: 'Duplicate' })).toBeNull();
 });
 
+/** Tracks in a grid-template-columns string: a `minmax(floor, fr)` counts
+ *  once (its inner px is part of the track, not a track of its own), and so
+ *  does a bare `<n>px` fixed track. */
+function trackCount(template: string): number {
+  return (template.match(/minmax\([^)]*\)|[\d.]+px/g) ?? []).length;
+}
+
 it('rule row: no trigger and no action track when no permission applies', async () => {
   auth.can = () => false;
   render(<StatusRules />);
@@ -318,8 +326,14 @@ it('rule row: no trigger and no action track when no permission applies', async 
 
   const row = screen.getByText('High priority').closest('.dir-row') as HTMLElement;
   expect(within(row).queryByRole('button', { name: /Actions/ })).toBeNull();
+  const card = row.closest('.dir-list') as HTMLElement;
+  const head = card.querySelector('.list-head') as HTMLElement;
   const main = row.querySelector('.row-main') as HTMLElement;
-  expect(main.style.gridTemplateColumns.includes('200px')).toBe(false);
+  // One track per shown column and nothing after them: no Actions track, and
+  // no leftover fixed button strip either (the old assertion pinned that
+  // strip's literal 200px, which no longer appears in any template).
+  const shownCols = head.querySelectorAll('.col-head').length;
+  expect(trackCount(main.style.gridTemplateColumns)).toBe(shownCols);
   expect(main.style.gridTemplateColumns.endsWith('88px')).toBe(false);
 });
 
@@ -328,7 +342,13 @@ it('rule list: the action track is trigger-sized', async () => {
   await screen.findByText('High priority');
 
   const row = screen.getByText('High priority').closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  const head = card.querySelector('.list-head') as HTMLElement;
   const main = row.querySelector('.row-main') as HTMLElement;
+  // One track per shown column plus the single trailing Actions track; the
+  // header renders its own spacer cell for that track, so the counts match.
+  const shownCols = head.querySelectorAll('.col-head').length;
+  expect(trackCount(main.style.gridTemplateColumns)).toBe(shownCols);
   expect(main.style.gridTemplateColumns.endsWith('88px')).toBe(true);
 });
 
@@ -344,9 +364,9 @@ it('rules list: column floors, shared template + minimum, sideways-scroll card',
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  // Fit: default columns + trailing (the 88px Actions track) ≤ 1176px
-  // (.portal-page at a 1512px window, nav expanded).
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  // Fit: default columns + trailing (the 88px Actions track) ≤ LIST_FIT.page
+  // (1172px — .portal-page at a 1512px window, nav expanded).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
 
 it('executions list: column floors, shared template + minimum, sideways-scroll card', async () => {
@@ -363,7 +383,7 @@ it('executions list: column floors, shared template + minimum, sideways-scroll c
   expect(head.style.gridTemplateColumns).toMatch(/^160px/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  // Fit: default columns ≤ 1176px (.portal-page at a 1512px window, nav
-  // expanded — ExecutionsTab has no trailing track).
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  // Fit: default columns ≤ LIST_FIT.page (1172px — .portal-page at a 1512px
+  // window, nav expanded; ExecutionsTab has no trailing track).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });

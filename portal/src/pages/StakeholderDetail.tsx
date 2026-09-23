@@ -48,6 +48,7 @@ import {
   listGridStyle,
   listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
@@ -67,10 +68,6 @@ import '../styles/initiatives.css';
    slicing the ISO string (rather than toLocaleDateString) avoids the
    day-west-of-UTC shift documented on lib/initiatives.ts's dateOnly. */
 const dateOnly = (iso: string | null) => (iso ? iso.slice(0, 10) : '—');
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 const TIER_META: Record<string, string> = {
   standard: 'tag', preferred: 'c-blue', strategic: 'c-amber',
@@ -98,7 +95,9 @@ function roleFor(i: InitiativeItem, orgId: string): string {
 
 // This list, and the two below, sit inside an .init-panel (initiatives.css:
 // padding 16px 18px, 18px each side = 36px beyond .portal-page's own).
-// Fit: default columns + trailing ≤ 1140px (1176 - 36).
+// Fit: default columns + trailing ≤ LIST_FIT.initPanel (1134px —
+// .init-panel's 18px padding and 1px border each side off the measured
+// 1174px page width).
 const INIT_COLUMNS: (ColumnDef & { partnerOnly?: boolean })[] = [
   { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 140 },
   { key: 'type', label: 'Type', width: '1fr', default: true },
@@ -126,7 +125,7 @@ function initRowCellText(i: InitiativeItem, key: string, orgId: string): string 
 
 /* ── People (org contacts) — standard list ──────────────────────────── */
 
-// Fit: default columns + trailing ≤ 1140px (.init-panel, see INIT_COLUMNS).
+// Fit: default columns + trailing ≤ LIST_FIT.initPanel (.init-panel, see INIT_COLUMNS).
 const CONTACT_COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: '1.4fr', default: true, min: 140 },
   { key: 'tier', label: 'Contact tier', short: 'Tier', width: '0.9fr', default: true },
@@ -153,7 +152,7 @@ const CONTACT_CSV_COLUMNS: [string, (c: ContactItem) => string][] =
 
 /* ── Workers (partners only) — standard list ────────────────────────── */
 
-// Fit: default columns + trailing ≤ 1140px (.init-panel, see INIT_COLUMNS).
+// Fit: default columns + trailing ≤ LIST_FIT.initPanel (.init-panel, see INIT_COLUMNS).
 const WORKER_COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: '1.4fr', default: true, min: 140 },
   { key: 'trade', label: 'Trade', width: '1fr', default: true },
@@ -794,7 +793,7 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
                                   onSort={(dir) => setWorkerSort(c.key, dir)} />
                     </ColHead>
                   ))}
-                  <span className="col-head" />
+                  <span className="col-head" aria-hidden="true" />
                 </div>
 
                 {visibleWorkers.length === 0 && (

@@ -5,6 +5,13 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import type { LabelRun } from '../../lib/api';
 import LabelRunsList from './LabelRunsList';
+import { LIST_FIT } from '../../lib/listTools';
+
+/** LabelRunsList reads `preferences.list_size` for the shared column floors
+ *  (listScale, lib/listTools); nothing else in this tree touches auth. */
+vi.mock('../../auth/AuthContext', () => ({
+  useAuth: () => ({ preferences: { list_size: 'default' } }),
+}));
 
 afterEach(cleanup);
 
@@ -60,6 +67,6 @@ it('column floors, shared template + minimum, sideways-scroll card', () => {
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  // Fit: default columns + trailing ≤ 1176px (.portal-page).
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  // Fit: default columns + trailing ≤ LIST_FIT.page (1172px, .portal-page).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });

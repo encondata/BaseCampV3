@@ -36,11 +36,14 @@ import {
   listGridStyle,
   listScale,
   passesFacets,
-  type ColumnDef,
+  titleFor,
   type FacetGroup,
   type FacetState,
 } from '../lib/listTools';
-import { recordTypeOptions, statusSearchText } from '../lib/variables';
+import {
+  CATEGORY_COLUMNS, recordTypeOptions, SITE_TYPE_COLUMNS, STATUS_COLUMNS,
+  statusSearchText, WORKER_LEVEL_COLUMNS,
+} from '../lib/variables';
 import '../styles/access.css';   /* .subs-tabs / .access-tab-panel — page-local tab strip */
 import '../styles/directory.css';
 import '../styles/profile.css';
@@ -67,10 +70,6 @@ type Tab = 'statuses' | 'site-types' | 'worker-levels' | 'asset-categories' | 'l
 // type carries a colour after migration 0013, so this is defensive only —
 // SiteLookup.color is still typed nullable (api.ts:676).
 const UNKNOWN_COLOR = '#51606f';
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'statuses', label: 'Statuses' },
@@ -118,20 +117,6 @@ export default function Variables() {
 }
 
 /* ══════════════════════════════ Statuses ═══════════════════════════════ */
-
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded — this tab body carries no extra padding of its
-// own beyond .portal-page's).
-export const STATUS_COLUMNS: ColumnDef[] = [
-  { key: 'record_type', label: 'Type', width: '0.8fr', default: true },
-  { key: 'key', label: 'Key', width: '1fr', default: true },
-  { key: 'label', label: 'Label', width: '1.2fr', default: true },
-  { key: 'description', label: 'Description', width: '2fr', default: true },
-  { key: 'color', label: 'Color', width: '0.8fr', default: true },
-  { key: 'sort_order', label: 'Order', width: '0.6fr', default: true },
-  { key: 'is_active', label: 'Active', width: '0.6fr', default: true },
-  { key: 'usage_count', label: 'In use', width: '0.7fr', default: true },
-];
 
 const STATUS_CSV_COLUMNS: [string, (v: StatusValue) => string][] = [
   ['Record type', (v) => v.record_type],
@@ -267,7 +252,7 @@ function StatusesTab() {
         <div className="dir-list list-scroll">
           <div className="list-head" style={rowStyle}>
             {shownCols.map((c) => <ColHead key={c.key} col={c} />)}
-            <span />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {values && visible.length === 0 && (
@@ -353,17 +338,6 @@ function StatusRowDetail({ value, canEdit, onEdit }: {
 }
 
 /* ═══════════════════════════════ Site types ═════════════════════════════ */
-
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
-export const SITE_TYPE_COLUMNS: ColumnDef[] = [
-  { key: 'key', label: 'Key', width: '1fr', default: true },
-  { key: 'label', label: 'Label', width: '1.2fr', default: true },
-  { key: 'description', label: 'Description', width: '2.4fr', default: true },
-  { key: 'color', label: 'Color', width: '0.8fr', default: true },
-  { key: 'sort_order', label: 'Order', width: '0.6fr', default: true },
-  { key: 'icon', label: 'Icon', width: '0.8fr', default: true },
-];
 
 const SITE_TYPE_CSV_COLUMNS: [string, (t: SiteLookup) => string][] = [
   ['Key', (t) => t.key],
@@ -466,7 +440,7 @@ function SiteTypesTab() {
         <div className="dir-list list-scroll">
           <div className="list-head" style={rowStyle}>
             {shownCols.map((c) => <ColHead key={c.key} col={c} />)}
-            <span />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {types && visible.length === 0 && (
@@ -554,20 +528,6 @@ function SiteTypeRowDetail({ value, canEdit, onEdit }: {
 }
 
 /* ══════════════════════════════ Worker levels ═══════════════════════════ */
-
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
-export const WORKER_LEVEL_COLUMNS: ColumnDef[] = [
-  { key: 'level', label: 'Level', width: '0.8fr', default: true },
-  { key: 'rank', label: 'Rank', width: '0.6fr', default: true },
-  { key: 'title', label: 'Title', width: '1.2fr', default: true },
-  { key: 'description', label: 'Description', width: '2fr', default: true },
-  { key: 'color', label: 'Color', width: '0.8fr', default: true },
-  {
-    key: 'expected_skills', label: 'Expected skills', short: 'Skills',
-    width: '2fr', default: true,
-  },
-];
 
 const WORKER_LEVEL_CSV_COLUMNS: [string, (w: WorkerLevel) => string][] = [
   ['Level', (w) => w.level],
@@ -686,7 +646,7 @@ function WorkerLevelsTab() {
         <div className="dir-list list-scroll">
           <div className="list-head" style={rowStyle}>
             {shownCols.map((c) => <ColHead key={c.key} col={c} />)}
-            <span />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {levels && visible.length === 0 && (
@@ -778,16 +738,6 @@ function WorkerLevelRowDetail({ value, canEdit, onEdit }: {
 }
 
 /* ════════════════════════════ Asset categories ══════════════════════════ */
-
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
-export const CATEGORY_COLUMNS: ColumnDef[] = [
-  { key: 'key', label: 'Key', width: '1fr', default: true },
-  { key: 'label', label: 'Label', width: '1.2fr', default: true },
-  { key: 'description', label: 'Description', width: '2.4fr', default: true },
-  { key: 'color', label: 'Color', width: '0.8fr', default: true },
-  { key: 'sort_order', label: 'Order', width: '0.6fr', default: true },
-];
 
 const CATEGORY_CSV_COLUMNS: [string, (c: AssetCategoryOut) => string][] = [
   ['Key', (c) => c.key],
@@ -886,7 +836,7 @@ function AssetCategoriesTab() {
         <div className="dir-list list-scroll">
           <div className="list-head" style={rowStyle}>
             {shownCols.map((c) => <ColHead key={c.key} col={c} />)}
-            <span />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {categories && visible.length === 0 && (

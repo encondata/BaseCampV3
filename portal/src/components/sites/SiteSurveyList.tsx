@@ -35,27 +35,13 @@ import { GodCell, type GodField } from '../../lib/godEdit';
 import { naturalCompare } from '../../lib/sites';
 import {
   applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale,
-  moveKey, useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
+  moveKey, titleFor, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
 } from '../../lib/listTools';
 import { VirtualRows } from '../../lib/virtualRows';
+import {
+  SITE_SURVEY_COLUMNS as COLUMNS, SITE_SURVEY_PRIMARY_COL as PRIMARY_COL,
+} from '../../lib/surveyColumns';
 
-// The always-shown field cell — a fixed leading track outside the column
-// registry (same shape as the header markup below), so it needs its own
-// ColumnDef for listGridStyle/ColHead (recipe R1).
-export const PRIMARY_COL: ColumnDef = {
-  key: 'primary', label: 'Field', width: '2fr', default: true, min: 160,
-};
-
-// Fit: default columns + trailing ≤ 1140px (1176 - 36 — this list sits
-// inside an .init-panel, initiatives.css: padding 16px 18px, 18px each
-// side, nested in a CollapsePanel that adds no horizontal padding of its
-// own).
-export const COLUMNS: ColumnDef[] = [
-  { key: 'group', label: 'Group', width: '1fr', default: true },
-  { key: 'value', label: 'Value', width: '1.4fr', default: true },
-  { key: 'updated_by', label: 'Updated by', width: '1fr', default: true },
-  { key: 'updated', label: 'Updated', width: '1fr', default: false, min: 96 },
-];
 const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'field']);
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
@@ -108,10 +94,6 @@ function sortValueFor(row: SiteSurveyRow, key: string, fieldOrder: Map<string, n
     default: return '';
   }
 }
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 const CSV_COLUMNS: [string, (r: SiteSurveyRow) => string][] = [
   ['Field key', (r) => r.field_key],

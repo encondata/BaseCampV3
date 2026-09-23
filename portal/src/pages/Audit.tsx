@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
 import { Link } from 'react-router-dom';
 
+import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
 import DataTable from '../components/DataTable';
 import {
@@ -23,7 +24,7 @@ import {
 } from '../lib/auditFormat';
 import { relativeTime } from '../lib/format';
 import {
-  ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle,
+  ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale, titleFor,
 } from '../lib/listTools';
 import { naturalCompare } from '../lib/sites';
 import '../styles/directory.css';
@@ -32,10 +33,6 @@ import '../styles/profile.css';
 const PAGE = 100;
 const COLUMNS = AUDIT_COLUMNS;
 const PRIMARY_COL = AUDIT_PRIMARY_COL;
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 type SortKey = 'at' | 'actor' | 'action' | 'target' | 'entity_id' | 'ip';
 
@@ -52,6 +49,8 @@ const NO_FILTERS: Filters = {
 };
 
 export default function Audit() {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [rows, setRows] = useState<AuditLogItem[]>([]);
   const [exhausted, setExhausted] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -125,10 +124,7 @@ export default function Audit() {
   };
 
   const shownCols = COLUMNS.filter((c) => visibleCols.has(c.key));
-  // Audit.tsx has no useAuth() call today (no other reason to touch
-  // AuthContext) — scale is omitted rather than adding that dependency
-  // just for list_size; listGridStyle defaults to scale 1.
-  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px']);
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (r: AuditLogItem, key: string): ReactElement => {
@@ -226,7 +222,7 @@ export default function Audit() {
             <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
                      onToggleSort={() => toggleSort(c.key as SortKey)} />
           ))}
-          <span />
+          <span className="col-head" aria-hidden="true" />
         </div>
 
         {!loading && visible.length === 0 && !error && (

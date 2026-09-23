@@ -11,6 +11,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { MembershipRequest, NotificationGroup, UiPreferences } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 const navigate = vi.hoisted(() => vi.fn());
 vi.mock('react-router-dom', () => ({ useNavigate: () => navigate }));
@@ -102,7 +103,7 @@ it('notification groups: column floors, shared template + minimum, sideways-scro
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
 
 it('filters rows via the search box', async () => {

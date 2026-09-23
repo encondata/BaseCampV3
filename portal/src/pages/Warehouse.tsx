@@ -38,7 +38,7 @@ import {
 } from '../lib/columnMenu';
 import {
   applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale,
-  moveKey, useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
+  moveKey, titleFor, useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import '../styles/directory.css';
@@ -64,8 +64,8 @@ const PRIMARY_COL: ColumnDef = {
   key: 'primary', label: 'Item', width: '2fr', default: true, min: 180,
 };
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'kind', label: 'Kind', width: '0.8fr', default: true },
   { key: 'model', label: 'Model', width: '1.3fr', default: true },
@@ -81,9 +81,10 @@ const COLUMNS: ColumnDef[] = [
 // (.detail-inner: 20px each side) plus .wh-mini-indent's 16px left
 // indent, so its available width is narrower than the page-level lists
 // above.
-// Fit: default columns + trailing ≤ 1120px (1176 minus .detail-inner's
-// 40px horizontal padding and .wh-mini-indent's 16px left indent —
-// directory.css + warehouse.css).
+// Fit: default columns + trailing ≤ 1116px (the measured 1174px page
+// width minus .detail-inner's 40px horizontal padding — it has only a
+// border-top, so no side borders to subtract — minus .wh-mini-indent's
+// 16px left indent, minus 2px safety; directory.css + warehouse.css).
 const MINI_COLUMNS: ColumnDef[] = [
   { key: 'item', label: 'Item', width: '2fr', default: true, min: 140 },
   { key: 'model', label: 'Model', width: '1.3fr', default: true },
@@ -134,10 +135,6 @@ function toContainerItem(c: WarehouseContainer, siteId: string, siteName: string
     archived_at: null, created_at: c.updated_at,
   };
 }
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function Warehouse() {
   const { can, preferences } = useAuth();
@@ -512,8 +509,8 @@ export default function Warehouse() {
                                   onSort={(dir) => setSort(c.key, dir)} />
                     </ColHead>
                   ))}
-                  <span className="col-head" />
-                  <span className="col-head" />
+                  <span className="col-head" aria-hidden="true" />
+                  <span className="col-head" aria-hidden="true" />
                 </div>
 
                 {inventory && visible.length === 0 && (
@@ -660,7 +657,7 @@ function ContainerMiniList({
     <div className="mini-list wh-mini-indent list-scroll">
       <div className="mini-list-head" style={rowStyle}>
         <ColHead col={MINI_COLUMNS[0]} /><ColHead col={MINI_COLUMNS[1]} />
-        <ColHead col={MINI_COLUMNS[2]} /><ColHead col={MINI_COLUMNS[3]} /><span />
+        <ColHead col={MINI_COLUMNS[2]} /><ColHead col={MINI_COLUMNS[3]} /><span className="col-head" aria-hidden="true" />
       </div>
       {container.assets.map((a: AssetRef) => {
         const item = a.serial_number ?? a.name ?? '—';

@@ -3,6 +3,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
+import { LIST_FIT } from '../lib/listTools';
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
@@ -58,6 +59,6 @@ it('members: column floors, shared template + minimum, sideways-scroll card', as
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   // Fit: default columns + trailing (the 170px Overrides/Copy track) ≤
-  // 1176px (.access-tab-panel at a 1512px window, nav expanded).
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  // LIST_FIT.page (1172px — .access-tab-panel at a 1512px window, nav expanded).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });

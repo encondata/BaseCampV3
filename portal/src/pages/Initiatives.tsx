@@ -58,7 +58,8 @@ import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   applyColumnOrder,
   ColHead,
-  ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale, moveKey, useReorderDrag,
+  ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale, moveKey, titleFor,
+  useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef,
@@ -78,8 +79,8 @@ const PRIMARY_COL: ColumnDef = {
   key: 'primary', label: 'Name', width: '2fr', default: true, min: 180,
 };
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'type', label: 'Type', width: '0.9fr', default: true },
   { key: 'sub_type', label: 'Sub-type', width: '1fr', default: true },
@@ -101,10 +102,6 @@ const ALL_COLUMN_KEYS = new Set<string>(
   [...COLUMNS.map((c) => c.key), 'primary', 'archived']);
 const DEFAULT_VISIBLE = new Set<string>(
   COLUMNS.filter((c) => c.default).map((c) => c.key));
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 function sortValueFor(i: InitiativeItem, key: string): string {
   switch (key) {

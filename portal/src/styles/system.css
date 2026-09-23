@@ -1,5 +1,7 @@
 /* System pages: processes list + log viewer */
-.sys-proc-grid { grid-template-columns: 170px 1.2fr 110px 1fr 80px 110px 140px; }
+/* The processes grid template is inline now: SYSTEM_PROCESS_COLUMNS through
+   listGridStyle (lib/system.ts + lib/listTools.tsx), so the header and rows
+   share one template and the card scrolls sideways below its minimum. */
 /* rows are the shared .row-main/.dir-row directory-list primitive (see
    directory.css); the god-mode rows are an <a> (react-router Link), so this
    file only resets its link chrome and restores the hover directory.css's
@@ -155,21 +157,17 @@
 /* Reuses .dir-toolbar/.dir-search/.result-count/.dir-list/.list-head/
    .col-head from directory.css (see Sites.tsx) — this file only adds the
    env-specific bits: the value/description inputs, the Status chip cell,
-   the changed-row amber rail, and section-header rows. .envtab-grid's own
-   grid-template-columns is a static fallback; the component always sets
-   the live one inline from the shown columns' ColumnDef widths (same
-   pattern as Sites' `grid`), and applies that SAME style object to
-   .list-head, every .list-row, AND the section-header row so the four
-   columns (Key / Value / Status / Description) actually line up —
-   nothing here should reintroduce a second, disagreeing column layout. */
-.envtab-grid {
-  grid-template-columns:
-    minmax(200px, 240px) minmax(240px, 1.4fr) 90px minmax(220px, 1.6fr);
-}
+   the changed-row amber rail, and section-header rows. The column template
+   lives only in the component now — COLUMNS through listGridStyle (EnvTab.tsx
+   + lib/listTools.tsx) — and that SAME style object goes on .list-head, every
+   .list-row, AND the section-header row, so the four columns (Key / Value /
+   Status / Description) line up and the card scrolls sideways below the row
+   minimum. Nothing here should reintroduce a second, disagreeing column
+   layout. The card is .dir-list.list-scroll now, so directory.css's own
+   12px scroll gap applies to .list-head — the rows below match it by
+   dropping their old 16px override, and listGridStyle sums the same 12px
+   into the row minimum. */
 .envtab-list .list-row {
-  /* .list-head/.envtab-section-row both use a 16px gap — match it here too
-     (.mini-row's own default is 12px) so the four columns stay aligned. */
-  gap: 16px;
   padding-left: 17px;
   padding-right: 20px;
   border-left: 3px solid transparent;
@@ -184,12 +182,11 @@
    column), but its label spans every column via grid-column: 1 / -1 so
    the header still reads as one full-width band. Co-classes
    `.mini-list-head` (guardrail check "coclass" — see the allowlist
-   entry below for why gap/padding/border-bottom are restated here);
+   entry below for why padding/border-bottom are restated here);
    `display: grid` is deliberately NOT restated — `.mini-list-head`
    already owns it and this rule would only be repeating it. */
 .envtab-section-row {
   align-items: center;
-  gap: 16px;
   padding: 8px 20px 8px 17px;
   background: var(--surface-2);
   border-bottom: 1px solid var(--paper-line);

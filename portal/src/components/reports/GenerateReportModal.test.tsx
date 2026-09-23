@@ -5,6 +5,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { ContainerItem, InitiativeItem, ReportDefinition, ReportRun } from '../../lib/api';
 
+/** ContainerPickList (inside ContainerLabelsOptions) reads `preferences.list_size` for the shared column floors
+ *  (listScale, lib/listTools); nothing else in this tree touches auth. */
+vi.mock('../../auth/AuthContext', () => ({
+  useAuth: () => ({ preferences: { list_size: 'default' } }),
+}));
+
 const status = vi.hoisted(() => ({ workers_paused: false }));
 vi.mock('../../lib/systemStatusContext', () => ({
   useSystemStatus: () => ({ status: { read_only: false, read_only_message: '', workers_paused: status.workers_paused, banner: null }, refresh: vi.fn() }),

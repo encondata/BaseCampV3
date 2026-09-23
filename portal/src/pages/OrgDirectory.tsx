@@ -42,6 +42,7 @@ import {
   listGridStyle,
   listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
@@ -129,8 +130,8 @@ const PRIMARY_COL: ColumnDef = {
 /* column registry (Name is fixed-first, chevron fixed-last). `type` and
    `service_region` are partner-only, `tier` is client-only — all three
    are filtered out for the other kind at render time.
-   Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-   window, nav expanded) for either kind's default set. */
+   Fit: default columns + trailing ≤ LIST_FIT.page (1172px — .portal-page
+   at a 1512px window, nav expanded) for either kind's default set. */
 const ALL_COLUMNS: (ColumnDef & { partnerOnly?: boolean; clientOnly?: boolean })[] = [
   { key: 'type', label: 'Type', width: '1.1fr', default: true, partnerOnly: true },
   { key: 'tier', label: 'Tier', width: '1fr', default: true, clientOnly: true },
@@ -237,10 +238,6 @@ function csvColumns(hasType: boolean): [string, (o: OrgItem) => string][] {
   );
   return cols;
 }
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
   const { can, godMode, preferences } = useAuth();
@@ -589,7 +586,7 @@ export default function OrgDirectory({ cfg }: { cfg: OrgConfig }) {
                           onSort={(dir) => setSort(c.key, dir)} />
             </ColHead>
           ))}
-          <span />
+          <span className="col-head" aria-hidden="true" />
         </div>
 
         {error && <div className="dir-empty"><b>Cannot load</b>{error}</div>}

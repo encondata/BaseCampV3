@@ -18,6 +18,7 @@ import type {
   AssetItem, AssetRef, SiteItem, StockLine, UiPreferences, WarehouseContainer, WarehouseInventory,
   WarehouseSite,
 } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => ({ can: (_r: string, _a?: string): boolean => true }));
 vi.mock('../auth/AuthContext', () => ({
@@ -317,7 +318,7 @@ it('Warehouse inventory list: column floors, shared template + minimum, sideways
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
 
 it('Warehouse container contents mini-list: column floors, shared template + minimum, sideways-scroll card', async () => {
@@ -333,5 +334,8 @@ it('Warehouse container contents mini-list: column floors, shared template + min
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(miniRow.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(miniRow.style.minWidth).toBe(head.style.minWidth);
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1120);
+  // Fit: 1116px — the measured 1174px page width less .detail-inner's 40px
+  // horizontal padding (border-top only, so no side borders) and
+  // .wh-mini-indent's 16px left indent, less 2px safety.
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1116);
 });

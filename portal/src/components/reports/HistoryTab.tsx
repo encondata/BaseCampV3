@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { useAuth } from '../../auth/AuthContext';
 import { ApiError, getReportRun, getReportRunDownloadUrl, listReportRuns } from '../../lib/api';
 import type { ReportRun } from '../../lib/api';
-import { ColHead, listGridStyle, type ColumnDef } from '../../lib/listTools';
+import { ColHead, listGridStyle, listScale, titleFor, type ColumnDef } from '../../lib/listTools';
 import { formatBytes, openPresigned } from '../../lib/reports';
 import { RowActionsMenu } from '../hardware/RowActionsMenu';
 
@@ -17,9 +18,9 @@ export const HISTORY_PAGE_SIZE = 100;
 // headers render as plain ColHead spans (no onToggleSort). The trailing
 // 100px track holds an unlabeled RowActionsMenu trigger (Download / View
 // error), kept at its original width.
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded — HistoryTab sits directly in .portal-page under
-// the History tab).
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — .portal-page at a
+// 1512px window, nav expanded — HistoryTab sits directly in .portal-page
+// under the History tab).
 const COLUMNS: ColumnDef[] = [
   { key: 'report', label: 'Report', width: '1.4fr', default: true, min: 140 },
   { key: 'initiative', label: 'Initiative', width: '1.4fr', default: true },
@@ -29,10 +30,6 @@ const COLUMNS: ColumnDef[] = [
   { key: 'size', label: 'Size', width: '0.8fr', default: true },
 ];
 const TRAILING = ['100px'];
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 const STATUS_LABEL: Record<ReportRun['status'], string> = {
   queued: 'Queued', running: 'Generating', completed: 'Completed', failed: 'Failed',
@@ -51,6 +48,8 @@ export default function HistoryTab({ highlightRunId, onCount }: {
   highlightRunId: string | null;
   onCount: (n: number) => void;
 }) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [runs, setRuns] = useState<ReportRun[] | null>(null);
   const [pinned, setPinned] = useState<ReportRun | null>(null);
   const [more, setMore] = useState(false);
@@ -129,17 +128,14 @@ export default function HistoryTab({ highlightRunId, onCount }: {
     }
   };
 
-  // HistoryTab has no useAuth() call (no other reason to touch
-  // AuthContext) — scale is omitted rather than adding that dependency
-  // just for list_size; listGridStyle defaults to scale 1.
-  const grid = listGridStyle(COLUMNS, TRAILING);
+  const grid = listGridStyle(COLUMNS, TRAILING, undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
   return (
     <div className="dir-list list-scroll">
       {error && <div className="dir-empty"><b>Couldn&apos;t load history</b>{error}</div>}
       <div className="list-head" style={rowStyle}>
         {COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
-        <span className="col-head" />
+        <span className="col-head" aria-hidden="true" />
       </div>
       {runs && rows.length === 0 && <div className="dir-empty">No reports generated yet.</div>}
       {rows.map((r) => {

@@ -19,7 +19,8 @@ import {
   type CellText,
 } from '../../lib/columnMenu';
 import {
-  ColHead, ColumnsButton, applyColumnOrder, listGridStyle, listScale, moveKey, useReorderDrag,
+  ColHead, ColumnsButton, applyColumnOrder, listGridStyle, listScale, moveKey, titleFor,
+  useReorderDrag,
   useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../../lib/listTools';
 import type { LabelStatus } from '../../lib/printLabels';
@@ -37,11 +38,15 @@ export type LabelFilter = 'all' | 'ready' | 'missing';
 // the header cell below still renders the raw checkbox input.
 const CHECKBOX_COL: ColumnDef = { key: 'select', label: '', width: '32px', default: true };
 
-// Fit: default columns + trailing ≤ 1132px (1176 - 44 — .plabels-card,
-// labels.css: padding 18px 22px, 22px each side).
+// Fit: default columns + trailing ≤ 1126px (1174 - 44 - 2 - 2 safety —
+// .plabels-card, labels.css: padding 18px 22px plus a 1px border,
+// 23px each side). `name` sits at 152 rather than the 158 it had while
+// the ceiling was 1132: the nine defaults now total exactly 1126, and
+// `name` is the widest floor and the most flexible track, so it is the
+// one place 6px comes off without squeezing a short identifier column.
 export const COLUMNS: ColumnDef[] = [
   { key: 'asset_id', label: 'Asset ID', width: '90px', default: true },
-  { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 158 },
+  { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 152 },
   { key: 'serial', label: 'Serial', width: '1fr', default: true, min: 120 },
   { key: 'make', label: 'Make', width: '0.8fr', default: true, min: 90 },
   { key: 'model', label: 'Model', width: '1fr', default: true, min: 110 },
@@ -79,10 +84,6 @@ export function assetCellText(row: InitiativeAssetRow, status: LabelStatus | nul
     default: return '';
   }
 }
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 /** Sort with V2's rack rule: rack compare is numeric-aware and, within the
  *  same rack, RU descends regardless of direction (V2's secondaryCompare). */

@@ -11,6 +11,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import type { InitiativeAssetRow, InitiativeItem, UiPreferences } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => ({
   can: (_resource: string, _action?: string) => true,
@@ -143,7 +144,7 @@ it('asset roster: column floors, shared template + minimum, sideways-scroll card
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  // .dash-panel (dashboard.css: 18px 20px 20px) subtracts 40px off the
-  // 1176px .portal-page baseline.
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1136);
+  // LIST_FIT.dashPanel: .dash-panel (dashboard.css: 18px 20px 20px padding,
+  // 1px border) takes 42px off the measured 1174px page width.
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.dashPanel);
 });

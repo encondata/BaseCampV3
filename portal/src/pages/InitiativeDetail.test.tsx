@@ -25,6 +25,7 @@ import type {
   InitiativeAssetRow, InitiativeDetail as InitiativeDetailOut, InitiativePersonRow,
   UiPreferences,
 } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => {
   const state: { can: (resource: string, action: string) => boolean; maxRank: number } = {
@@ -307,8 +308,9 @@ it('assets list: columns carry px floors, header and rows share one template and
   expect(head.style.minWidth).toMatch(/^\d+px$/);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   // Nine default columns + actions + chevron must fit a 14-inch window
-  // with the nav expanded (spec: ≤ 1136px — the panel's 18px padding comes off the 1176px page width).
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1136);
+  // with the nav expanded (spec: ≤ LIST_FIT.initPanel — 1134px, the .init-panel's
+  // 18px padding and 1px border either side off the measured 1174px page width).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.initPanel);
 });
 
 it('assets list: edit mode drops the row minimum since the card is no longer a scroll container', async () => {

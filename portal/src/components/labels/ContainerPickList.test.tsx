@@ -6,6 +6,12 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { ContainerItem } from '../../lib/api';
 import ContainerPickList from './ContainerPickList';
 
+/** ContainerPickList reads `preferences.list_size` for the shared column floors
+ *  (listScale, lib/listTools); nothing else in this tree touches auth. */
+vi.mock('../../auth/AuthContext', () => ({
+  useAuth: () => ({ preferences: { list_size: 'default' } }),
+}));
+
 afterEach(cleanup);
 
 function container(over: Partial<ContainerItem> = {}): ContainerItem {
@@ -170,7 +176,7 @@ it('column floors, shared template + minimum, sideways-scroll card', () => {
   expect(head.style.gridTemplateColumns).toMatch(/^32px /);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  // Fit: default columns + trailing ≤ 578px (the narrowest of this
+  // Fit: default columns + trailing ≤ 574px (the narrowest of this
   // component's two mount points — see ContainerPickList.tsx's own note).
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(578);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(574);
 });

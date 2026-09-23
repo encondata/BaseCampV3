@@ -53,6 +53,7 @@ import {
   listGridStyle,
   listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
@@ -88,8 +89,8 @@ const PRIMARY_COL: ColumnDef = {
   key: 'primary', label: 'Name', width: '2fr', default: true, min: 180,
 };
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'type', label: 'Type', width: '1fr', default: true },
   { key: 'rfid', label: 'RFID', width: '1fr', default: true },
@@ -157,10 +158,6 @@ const CSV_COLUMNS: [string, (c: ContainerItem) => string][] = [
   ['Location', (c) => c.location_detail],
   ['Created', (c) => c.created_at],
 ];
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function Containers() {
   const { can, godMode, preferences } = useAuth();

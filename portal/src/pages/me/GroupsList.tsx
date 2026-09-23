@@ -9,15 +9,12 @@
 
 import { useMemo, useState } from 'react';
 
+import { useAuth } from '../../auth/AuthContext';
 import { RowActionsMenu, type RowAction } from '../../components/hardware/RowActionsMenu';
 import type { MyNotificationGroup } from '../../lib/api';
-import { ColHead, listGridStyle, type ColumnDef } from '../../lib/listTools';
+import { ColHead, listGridStyle, listScale, titleFor, type ColumnDef } from '../../lib/listTools';
 import { CHANNEL_LABELS, type Channel } from '../../lib/notifications';
 import { daysText, hasOverrides, quietHoursText } from '../../lib/notificationGroups';
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 const CHANNEL_CHIP: Record<string, string> = {
   email: 'c-blue', web: 'c-green', sms: 'c-amber', text: 'c-amber', push: 'c-violet',
@@ -58,9 +55,9 @@ export type GroupsListKind = 'member' | 'joinable';
 // local COLUMNS mirrors them (recipe R1). ONE grid for both lists so the
 // stacked sections align column-for-column; the trailing 88px track is a
 // fixed RowActionsMenu trigger width, which counts toward the row minimum.
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded — GroupsList sits directly in .portal-page under
-// /me/notifications).
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — .portal-page at a
+// 1512px window, nav expanded — GroupsList sits directly in .portal-page
+// under /me/notifications).
 const COLUMNS: ColumnDef[] = [
   { key: 'group', label: 'Group', width: '2fr', default: true, min: 200 },
   { key: 'channels', label: 'Channels', width: '1.3fr', default: true },
@@ -84,6 +81,8 @@ export default function GroupsList({
   onRequest: (g: MyNotificationGroup, action: 'join' | 'leave') => void;
   onCancel: (requestId: string) => void;
 }) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [query, setQuery] = useState('');
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -116,10 +115,7 @@ export default function GroupsList({
   const emptyCopy = kind === 'member'
     ? "You're not in any notification groups yet."
     : 'No other groups to join.';
-  // GroupsList has no useAuth() call today (no other reason to touch
-  // AuthContext) — scale is omitted rather than adding that dependency
-  // just for list_size; listGridStyle defaults to scale 1.
-  const grid = listGridStyle(COLUMNS, TRAILING);
+  const grid = listGridStyle(COLUMNS, TRAILING, undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   return (

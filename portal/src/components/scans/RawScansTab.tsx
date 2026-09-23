@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
+import { useAuth } from '../../auth/AuthContext';
 import {
   ApiError, listRawScans, type RawScanRow,
 } from '../../lib/api';
@@ -25,40 +26,19 @@ import {
   ExportButton,
   exportCsv,
   listGridStyle,
+  listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
-  type ColumnDef,
 } from '../../lib/listTools';
 import { VirtualRows } from '../../lib/virtualRows';
+import {
+  RAW_SCAN_COLUMNS as COLUMNS, RAW_SCAN_PRIMARY_COL as PRIMARY_COL,
+} from '../../lib/scanColumns';
 import { displayScanValue } from '../../lib/format';
 
-// The always-shown scanned-value cell — a fixed leading track outside the
-// column registry (same shape as the header markup below), so it needs
-// its own ColumnDef for listGridStyle/ColHead (recipe R1).
-export const PRIMARY_COL: ColumnDef = {
-  key: 'primary', label: 'Value', width: '2fr', default: true, min: 160,
-};
-
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded — Scans.tsx mounts this tab directly under
-// .portal-page, no wrapping card).
-//
-// RawScansTab has no useAuth() call today (no other reason to touch
-// AuthContext) — scale is omitted rather than adding that dependency
-// just for list_size; listGridStyle defaults to scale 1.
-export const COLUMNS: ColumnDef[] = [
-  { key: 'status', label: 'Scan status', width: '1.1fr', default: true },
-  { key: 'scan_type', label: 'Method', width: '0.9fr', default: true },
-  { key: 'scanned', label: 'Scanned', width: '1.1fr', default: true, min: 96 },
-  { key: 'device', label: 'Device', width: '1fr', default: true, min: 100 },
-  { key: 'operator', label: 'Operator', width: '1fr', default: true },
-  { key: 'site', label: 'Site', width: '1fr', default: true },
-  { key: 'location', label: 'Location', width: '1.2fr', default: false },
-  { key: 'source', label: 'Source', width: '0.7fr', default: false },
-  { key: 'ingested', label: 'Ingested', width: '1.1fr', default: false },
-];
 const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'primary']);
 
 const DEFAULT_VISIBLE = new Set<string>(
@@ -80,10 +60,6 @@ function sortValueFor(r: RawScanRow, key: string): string {
   }
 }
 
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
-
 const CSV_COLUMNS: [string, (r: RawScanRow) => string][] = [
   ['Scanned at', (r) => r.scanned_at],
   ['Value', (r) => r.scanned_value],
@@ -100,6 +76,8 @@ const CSV_COLUMNS: [string, (r: RawScanRow) => string][] = [
 export default function RawScansTab({ onCount }: {
   onCount: (n: number | null) => void;
 }) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [scans, setScans] = useState<RawScanRow[] | null>(null);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
@@ -153,7 +131,7 @@ export default function RawScansTab({ onCount }: {
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px']);
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (r: RawScanRow, key: string) => {
@@ -243,7 +221,7 @@ export default function RawScansTab({ onCount }: {
                             onSort={(dir) => setSort(c.key, dir)} />
               </ColHead>
             ))}
-            <span />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {scans && visible.length === 0 && (

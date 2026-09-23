@@ -14,6 +14,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import type { ContactItem, InitiativeItem, UiPreferences } from '../lib/api';
 import type { OrgItem } from '../lib/orgs';
 import type { WorkerItem } from '../lib/workers';
+import { LIST_FIT } from '../lib/listTools';
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
@@ -180,9 +181,9 @@ it('previous initiatives: column floors, shared template + minimum, sideways-scr
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  // .init-panel (initiatives.css: 16px 18px) subtracts 36px off the
-  // 1176px .portal-page baseline.
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1140);
+  // LIST_FIT.initPanel: .init-panel (initiatives.css: 16px 18px padding,
+  // 1px border) takes 38px off the measured 1174px page width.
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.initPanel);
 });
 
 it('people (contacts): column floors, shared template + minimum, sideways-scroll card', async () => {
@@ -201,7 +202,7 @@ it('people (contacts): column floors, shared template + minimum, sideways-scroll
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1140);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.initPanel);
 });
 
 it('workers (partner only): column floors, shared template + minimum, sideways-scroll card', async () => {
@@ -221,5 +222,5 @@ it('workers (partner only): column floors, shared template + minimum, sideways-s
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1140);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.initPanel);
 });

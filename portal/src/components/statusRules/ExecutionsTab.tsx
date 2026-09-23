@@ -6,19 +6,20 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+import { useAuth } from '../../auth/AuthContext';
 import {
   ApiError, listStatusRuleExecutions, listStatusRules,
   type StatusRule, type StatusRuleExecution,
 } from '../../lib/api';
-import { ColHead, listGridStyle, type ColumnDef } from '../../lib/listTools';
+import { ColHead, listGridStyle, listScale, titleFor, type ColumnDef } from '../../lib/listTools';
 
 const PAGE = 100;
 
 // No column registry pre-migration (hand-written header spans) — this
 // local COLUMNS mirrors them (recipe R1). Read-only, unsortable list —
 // headers render as plain ColHead spans (no onToggleSort).
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded — ExecutionsTab sits directly in .portal-page,
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — .portal-page at a
+// 1512px window, nav expanded — ExecutionsTab sits directly in .portal-page,
 // under the tab bar, with no extra card).
 const COLUMNS: ColumnDef[] = [
   { key: 'time', label: 'Time', width: '160px', default: true },
@@ -28,10 +29,6 @@ const COLUMNS: ColumnDef[] = [
   { key: 'actions', label: 'Actions', width: '1fr', default: true },
   { key: 'duration', label: 'Duration', width: '90px', default: true },
 ];
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 const msgFor = (err: unknown): string =>
   (err instanceof ApiError ? `Request failed (${err.code}).` : "Couldn't load executions.");
@@ -51,6 +48,8 @@ function actionsSummary(applied: StatusRuleExecution['actions_applied']): string
 export default function ExecutionsTab({ onCount }: {
   onCount: (n: number | null) => void;
 }) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [rules, setRules] = useState<StatusRule[] | null>(null);
   const [rows, setRows] = useState<StatusRuleExecution[]>([]);
   const [filter, setFilter] = useState('');
@@ -101,10 +100,7 @@ export default function ExecutionsTab({ onCount }: {
     }
   };
 
-  // ExecutionsTab has no useAuth() call (no other reason to touch
-  // AuthContext) — scale is omitted rather than adding that dependency
-  // just for list_size; listGridStyle defaults to scale 1.
-  const grid = listGridStyle(COLUMNS);
+  const grid = listGridStyle(COLUMNS, [], undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const loadMore = async () => {

@@ -16,13 +16,9 @@ import {
   VOCAB_KIND_LABELS, metaSummary, placeholderSearchText, vocabSearchText,
   type VocabKind,
 } from '../../lib/labels';
-import { ColHead, listGridStyle, listScale, type ColumnDef } from '../../lib/listTools';
+import { ColHead, listGridStyle, listScale, titleFor, type ColumnDef } from '../../lib/listTools';
 import LabelPlaceholderEditModal from './LabelPlaceholderEditModal';
 import LabelVocabEditModal from './LabelVocabEditModal';
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 type Pane = VocabKind | 'placeholders';
 
@@ -104,9 +100,10 @@ const VOCAB_SINGULAR: Record<VocabKind, string> = {
 // local COLUMNS mirrors them (recipe R1). Read-only, unsortable list —
 // headers render as plain ColHead spans (no onToggleSort). Trailing 30px
 // track is the row's expansion chevron.
-// Fit: default columns + trailing ≤ 1176px (.access-tab-panel carries no
-// padding of its own beyond .portal-page's, at a 1512px window, nav
-// expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — this list sits
+// in the Variables page's tab body, the .access-tab-panel div Variables.tsx
+// borrows from access.css, which carries no padding of its own beyond
+// .portal-page's; at a 1512px window, nav expanded).
 const VOCAB_COLUMNS: ColumnDef[] = [
   { key: 'key', label: 'Key', width: '1fr', default: true, min: 100 },
   { key: 'label', label: 'Label', width: '1.2fr', default: true, min: 140 },
@@ -165,7 +162,7 @@ function VocabPane({ kind, rows, onSaved }: {
       <div className="dir-list list-scroll">
         <div className="list-head" style={rowStyle}>
           {VOCAB_COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
-          <span className="col-head" />
+          <span className="col-head" aria-hidden="true" />
         </div>
 
         {visible.length === 0 && (
@@ -270,9 +267,10 @@ function VocabRowDetail({ value, canEdit, onEdit }: {
 // local COLUMNS mirrors them (recipe R1). Read-only, unsortable list —
 // headers render as plain ColHead spans (no onToggleSort). Trailing 30px
 // track is the row's expansion chevron.
-// Fit: default columns + trailing ≤ 1176px (.access-tab-panel carries no
-// padding of its own beyond .portal-page's, at a 1512px window, nav
-// expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — this list sits
+// in the Variables page's tab body, the .access-tab-panel div Variables.tsx
+// borrows from access.css, which carries no padding of its own beyond
+// .portal-page's; at a 1512px window, nav expanded).
 const PLACEHOLDER_COLUMNS: ColumnDef[] = [
   { key: 'key', label: 'Key', width: '1fr', default: true, min: 100 },
   { key: 'label', label: 'Label', width: '1.2fr', default: true, min: 140 },
@@ -329,7 +327,7 @@ function PlaceholderPane({ rows, typeOptions, onSaved }: {
       <div className="dir-list list-scroll">
         <div className="list-head" style={rowStyle}>
           {PLACEHOLDER_COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
-          <span className="col-head" />
+          <span className="col-head" aria-hidden="true" />
         </div>
 
         {visible.length === 0 && (

@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { ReportDefinition, ReportRun, UiPreferences } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => ({ can: (_r: string, _a?: string): boolean => true }));
 vi.mock('../auth/AuthContext', () => ({
@@ -74,7 +75,7 @@ it('definitions: column floors, shared template + minimum, sideways-scroll card'
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
 
 it('row actions: Generate always; Edit/Clone/Delete by permission; Delete hidden on system rows', async () => {
@@ -197,9 +198,9 @@ it('History: column floors, shared template + minimum, sideways-scroll card', as
   expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
-  // Fit: default columns + trailing (the 100px Actions track) ≤ 1176px
-  // (.portal-page at a 1512px window, nav expanded).
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  // Fit: default columns + trailing (the 100px Actions track) ≤ LIST_FIT.page
+  // (1172px — .portal-page at a 1512px window, nav expanded).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
 
 it('History polls while a run is active and stops when idle', async () => {

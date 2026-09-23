@@ -24,7 +24,7 @@ import {
 } from '../lib/columnMenu';
 import {
   applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale,
-  moveKey, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
+  moveKey, titleFor, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
@@ -52,15 +52,13 @@ const nf = new Intl.NumberFormat();
       (read-only: no edit-table, no row actions), sharing the same column
       defs and cell-text helpers so the two lists never drift. ───────── */
 
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
-
 // MOVE_ASSET_COLUMNS (lib/initiatives.ts) already carries its floors/short
 // labels from the InitiativeDetail pilot — reused here unchanged (recipe
 // R1/R2 already done). This list sits in a .dash-panel (dashboard.css:
 // padding 18px 20px 20px, 20px each side = 40px beyond .portal-page's own).
-// Fit: default columns + trailing ≤ 1136px (1176 - 40).
+// Fit: default columns + trailing ≤ LIST_FIT.dashPanel (1130px —
+// .dash-panel's 20px padding and 1px border each side off the measured
+// 1174px page width).
 const MOVE_ASSET_ALL_COLUMN_KEYS = new Set<string>(MOVE_ASSET_COLUMNS.map((c) => c.key));
 // The dashboard also shows Updated by default (hidden on the detail page):
 // with the newest-update sort it's the column that explains the order.

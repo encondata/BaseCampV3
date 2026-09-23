@@ -16,7 +16,7 @@ import { avatarGradient, initials } from '../../lib/format';
 import {
   ColHead,
   ColumnsButton, ExportButton, FilterButton, exportCsv, listGridStyle, listScale, passesFacets,
-  type ColumnDef, type FacetGroup, type FacetState,
+  titleFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../../lib/listTools';
 import { useToast } from '../../lib/notificationsContext';
 import CopyAccessModal from './CopyAccessModal';
@@ -44,20 +44,18 @@ const msgFor = (err: unknown): string =>
 const rankLabel = (rank: number): string =>
   RANK_LABELS.find(([r]) => rank >= r)?.[1] ?? 'Custom';
 
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
-
 // The grid's leading track ("Member": avatar + name + login email) sits
 // outside the toggleable column registry, like InitiativeDetail.tsx's
 // PRIMARY_COL. The Role select column also sits outside the registry
 // (never hidden via the Columns picker), between the toggleable columns
 // and the trailing 170px Overrides/Copy actions track.
-// Fit: default columns + trailing ≤ 1176px (.access-tab-panel carries no
-// padding of its own beyond .portal-page's, at a 1512px window, nav
-// expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px —
+// .access-tab-panel carries no padding of its own beyond .portal-page's,
+// at a 1512px window, nav expanded).
 const PRIMARY_COL: ColumnDef = { key: 'primary', label: 'Member', width: '2.2fr', default: true, min: 180 };
-const ROLE_COL: ColumnDef = { key: 'role_select', label: 'Role', width: '1.2fr', default: true };
+// `role_select` renders a <select> whose options run to "Administrator",
+// so its floor is sized to that value, not to the four-letter header.
+const ROLE_COL: ColumnDef = { key: 'role_select', label: 'Role', width: '1.2fr', default: true, min: 120 };
 const TRAILING = ['170px'];
 
 const COLUMNS: ColumnDef[] = [
@@ -262,7 +260,7 @@ export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Pro
                      onToggleSort={() => toggleSort(c.key as SortKey)} />
           ))}
           <ColHead col={ROLE_COL} />
-          <span className="col-head" />
+          <span className="col-head" aria-hidden="true" />
         </div>
 
         {error && <div className="dir-empty"><b>Cannot load members</b>{error}</div>}

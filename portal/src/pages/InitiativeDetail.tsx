@@ -73,9 +73,10 @@ import {
   GodCell, GodEditToggle, numberToPatch, useGodEdit, type GodField,
 } from '../lib/godEdit';
 import {
-  applyColumnOrder,
+  ACTIONS_TRACK, applyColumnOrder,
   ColHead,
-  ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale, moveKey, useReorderDrag,
+  ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale, moveKey,
+  titleFor, useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef,
@@ -93,18 +94,6 @@ import '../styles/profile.css';
  *  — slicing the ISO string (rather than toLocaleDateString) avoids the
  *  day-west-of-UTC shift documented on lib/initiatives.ts's dateOnly. */
 const dateOnly = (iso: string | null) => (iso ? iso.slice(0, 10) : null);
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
-
-/** Grid track reserved for a row's Actions menu. Sized to the .mini-btn
- *  trigger reading "Actions ▾" — 12.5px Geologica-500 plus 13px of
- *  padding and a 1px border either side — and matched to Warehouse.tsx,
- *  the converted list with the same shape (trigger cell + a separate
- *  30px chevron track). Replaces the 132px the two inline buttons
- *  needed, handing 44px per list back to the flexible columns. */
-const ACTIONS_TRACK = '88px';
 
 /* ── People section — standard list machinery (mirrors Initiatives.tsx's
       COLUMNS/sortValueFor pattern; see lib/columnMenu.tsx + lib/listTools.tsx
@@ -840,8 +829,8 @@ export default function InitiativeDetail() {
                                   onSort={(dir) => setAssetsSort(c.key, dir)} />
                     </ColHead>
                   ))}
-                  {canChange && <span className="col-head" />}
-                  <span className="col-head" />
+                  {canChange && <span className="col-head" aria-hidden="true" />}
+                  <span className="col-head" aria-hidden="true" />
                 </div>
 
                 {visibleAssets.length === 0 && (
@@ -1041,7 +1030,7 @@ export default function InitiativeDetail() {
                                     onSort={(dir) => setPeopleSort(c.key, dir)} />
                       </ColHead>
                     ))}
-                    {canChange && <span className="col-head" />}
+                    {canChange && <span className="col-head" aria-hidden="true" />}
                   </div>
 
                   {visiblePeople.length === 0 && (

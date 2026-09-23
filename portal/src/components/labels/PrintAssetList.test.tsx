@@ -178,7 +178,8 @@ describe('PrintAssetList', () => {
     expect(head.style.gridTemplateColumns).toMatch(/^32px /);
     expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
     expect(row.style.minWidth).toBe(head.style.minWidth);
-    // Fit: default columns + trailing ≤ 1132px (.plabels-card).
-    expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1132);
+    // Fit: default columns + trailing ≤ 1126px (.plabels-card: 1174 less
+    // its 22px padding and 1px border each side, less 2px safety).
+    expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1126);
   });
 });

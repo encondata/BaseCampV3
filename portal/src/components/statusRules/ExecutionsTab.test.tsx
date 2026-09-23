@@ -14,6 +14,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { StatusRule, StatusRuleExecution } from '../../lib/api';
 
+/** ExecutionsTab reads `preferences.list_size` for the shared column floors
+ *  (listScale, lib/listTools); nothing else in this tree touches auth. */
+vi.mock('../../auth/AuthContext', () => ({
+  useAuth: () => ({ preferences: { list_size: 'default' } }),
+}));
+
 const api = vi.hoisted(() => ({
   listStatusRules: vi.fn(),
   listStatusRuleExecutions: vi.fn(),

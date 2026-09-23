@@ -15,12 +15,13 @@
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
+import { useAuth } from '../../auth/AuthContext';
 import type { ContainerItem } from '../../lib/api';
 import {
   applyBulkTag, containerDisplayName, filterContainers, selectAllFiltered, TAG_CHOICES, toggleSelection,
 } from '../../lib/containerLabels';
 import { TAG_TYPES, type TagKey } from '../../labels/tagTypes';
-import { ColHead, listGridStyle, type ColumnDef } from '../../lib/listTools';
+import { ColHead, listGridStyle, listScale, type ColumnDef } from '../../lib/listTools';
 import ContainerTagPicker from './ContainerTagPicker';
 import '../../styles/directory.css';
 
@@ -31,25 +32,27 @@ import '../../styles/directory.css';
 const CHECKBOX_COL: ColumnDef = { key: 'select', label: '', width: '32px', default: true };
 
 // No column registry pre-migration (hand-written header spans) — this
-// local COLUMNS mirrors them (recipe R1). ContainerPickList has no
-// useAuth() call today (no other reason to touch AuthContext) — scale is
-// omitted rather than adding that dependency just for list_size;
-// listGridStyle defaults to scale 1.
+// local COLUMNS mirrors them (recipe R1).
 //
-// Fit: default columns + trailing ≤ 578px — the narrowest of this
+// Fit: default columns + trailing ≤ 574px — the narrowest of this
 // component's two mount points (recipe: "use the narrowest container").
 // The standalone /labels/containers page's .cl-step-body gives ~860px,
 // but ContainerLabelsOptions (Reports' Generate modal) is tighter:
-// .rgm-card is min(980px, 96vw) = 980px at a 1512px window, minus
-// .modal-body's 20px-a-side padding (40px) = 940px, minus .rgm-grid's
-// fixed 340px preview column and 22px gap = 578px for the options column
-// this list renders in.
+// .rgm-card is min(980px, 96vw) = 980px at a 1512px window, minus its own
+// 1px border each side (border-box, portal-theme.css) = 978px, minus
+// .modal-body's 20px-a-side padding (40px) = 938px, minus .rgm-grid's
+// fixed 340px preview column and 22px gap = 576px for the options column
+// this list renders in, minus 2px safety.
+// `tag` holds a ContainerTagPicker, so it carries a 120px floor; `name`
+// pays for it (140 -> 100) since it is the only column here with slack
+// above its derived floor and the 2fr track grows well past 100px
+// whenever the card is not scrolling.
 const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: '2fr', default: true, min: 140 },
+  { key: 'name', label: 'Name', width: '2fr', default: true, min: 100 },
   { key: 'type', label: 'Type', width: '1fr', default: true },
   { key: 'assets', label: 'Assets', width: '0.7fr', default: true },
   { key: 'status', label: 'Status', width: '1.1fr', default: true },
-  { key: 'tag', label: 'Tag', width: '1.3fr', default: true },
+  { key: 'tag', label: 'Tag', width: '1.3fr', default: true, min: 120 },
 ];
 
 export default function ContainerPickList({
@@ -67,9 +70,11 @@ export default function ContainerPickList({
   onFilteredChange?: (filteredIds: string[]) => void;
   disabled?: boolean;
 }) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [term, setTerm] = useState('');
   const headerRef = useRef<HTMLInputElement>(null);
-  const grid = listGridStyle([CHECKBOX_COL, ...COLUMNS]);
+  const grid = listGridStyle([CHECKBOX_COL, ...COLUMNS], [], undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const filtered = useMemo(() => filterContainers(containers, term), [containers, term]);

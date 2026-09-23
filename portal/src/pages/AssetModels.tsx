@@ -46,6 +46,7 @@ import {
   listGridStyle,
   listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
@@ -64,8 +65,8 @@ const PRIMARY_COL: ColumnDef = {
   key: 'primary', label: 'Make / Model', short: 'Make/Model', width: '2.2fr', default: true, min: 180,
 };
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'category', label: 'Category', width: '1fr', default: true },
   { key: 'ru', label: 'RU', width: '0.5fr', default: true },
@@ -141,10 +142,6 @@ const CSV_COLUMNS: [string, (m: AssetModelItem) => string][] = [
   ['Knowledge', (m) => m.knowledge],
   ['Created', (m) => m.created_at],
 ];
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function AssetModels() {
   const { can, godMode, preferences } = useAuth();
@@ -464,7 +461,7 @@ export default function AssetModels() {
                             onSort={(dir) => setSort(c.key, dir)} />
               </ColHead>
             ))}
-            <span />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {models && visible.length === 0 && (

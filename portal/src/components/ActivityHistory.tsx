@@ -8,6 +8,7 @@ import { useMemo, useState, type ReactElement } from 'react';
 import { Link } from 'react-router-dom';
 
 import DataTable from './DataTable';
+import { useAuth } from '../auth/AuthContext';
 import { type MyActivityItem } from '../lib/api';
 import {
   actionLabel, changeRows, entityHref, entityLabel, recordTooltip,
@@ -21,7 +22,9 @@ import {
   FilterButton,
   exportCsv,
   listGridStyle,
+  listScale,
   passesFacets,
+  titleFor,
   type ColumnDef,
   type FacetGroup,
   type FacetState,
@@ -37,16 +40,12 @@ function whoLabel(row: MyActivityItem, subject: string): string {
   return row.by_me ? subject : (row.actor_name ?? 'System');
 }
 
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
-
 // The grid's leading track ("When") sits outside the toggleable column
 // registry, like InitiativeDetail.tsx's PRIMARY_COL — it is always shown
 // and never appears in the Columns picker. Trailing 30px track is the
 // row's expansion chevron.
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded — ActivityHistory's own .panel card carries no
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — .portal-page at a
+// 1512px window, nav expanded — ActivityHistory's own .panel card carries no
 // horizontal padding beyond .portal-page's; see pages/Profile.tsx and
 // pages/UserDetail.tsx, both of which mount it as a direct .portal-page
 // child).
@@ -65,6 +64,8 @@ type SortKey = 'at' | 'who' | 'action' | 'target' | 'ip';
 export default function ActivityHistory(
   { rows, subjectName }: { rows: MyActivityItem[]; subjectName?: string },
 ) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const subject = subjectName ?? 'You';
   const [facets, setFacets] = useState<FacetState>({});
   const [sortKey, setSortKey] = useState<SortKey>('at');
@@ -126,10 +127,7 @@ export default function ActivityHistory(
   };
 
   const shownCols = COLUMNS.filter((c) => visibleCols.has(c.key));
-  // ActivityHistory has no useAuth() call (no other reason to touch
-  // AuthContext) — scale is omitted rather than adding that dependency
-  // just for list_size; listGridStyle defaults to scale 1.
-  const grid = listGridStyle([WHEN_COL, ...shownCols], TRAILING);
+  const grid = listGridStyle([WHEN_COL, ...shownCols], TRAILING, undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (r: MyActivityItem, key: string): ReactElement => {
@@ -183,7 +181,7 @@ export default function ActivityHistory(
                      sortDir={sortKey === c.key ? sortDir : null}
                      onToggleSort={() => toggleSort(c.key as SortKey)} />
           ))}
-          <span className="col-head" />
+          <span className="col-head" aria-hidden="true" />
         </div>
 
         {visible.length === 0 && (

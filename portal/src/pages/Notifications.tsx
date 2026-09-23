@@ -30,7 +30,7 @@ import {
 import { relativeTime } from '../lib/format';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
-  listGridStyle, listScale, moveKey, passesFacets, useReorderDrag, useSearchHaystacks,
+  listGridStyle, listScale, moveKey, passesFacets, titleFor, useReorderDrag, useSearchHaystacks,
   visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { GROUP_ERRORS } from '../lib/notificationGroups';
@@ -70,8 +70,8 @@ const requestErrorMsg = (err: unknown): string =>
  * Description is clamped to 2 lines and shrinks furthest, Quiet hours
  * stays a nowrap ellipsis at its ~150px floor.
  *
- * Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
- * window, nav expanded). */
+ * Fit: default columns + trailing ≤ LIST_FIT.page
+ * (1172px — .portal-page at a 1512px window, nav expanded). */
 const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: '1.3fr', default: true, min: 110 },
   // 'Desc' isn't wordy enough on its own to need a short label (11 chars,
@@ -165,10 +165,6 @@ const msgFor = (err: unknown): string =>
   err instanceof ApiError
     ? (ERRORS[err.code] ?? `Request failed (${err.code}).`)
     : 'Network error — nothing was saved.';
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function Notifications() {
   const { can, preferences } = useAuth();
@@ -441,7 +437,7 @@ export default function Notifications() {
                             onSort={(dir) => setSort(c.key, dir)} />
               </ColHead>
             ))}
-            <span />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {groups && visible.length === 0 && (

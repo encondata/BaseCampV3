@@ -594,13 +594,13 @@
   {
     "file": "styles/system.css",
     "selector": ".envtab-list .list-row",
-    "reason": "genuine exception (finding #6): must match the sibling .list-head/.envtab-section-row's own 16px gap (not derivable from a --list- token) so the four columns stay aligned",
+    "reason": "genuine exception (finding #6): the ENV rows carry the changed-row amber rail, so they restate padding plus a transparent border-left of the same width — the rail must not shift the columns when it lights up",
     "check": "coclass"
   },
   {
     "file": "styles/system.css",
     "selector": ".envtab-section-row",
-    "reason": "genuine exception (finding #6): a bordered/backed section-header band (not the primitive's own list-head look), so gap must match the sibling .envtab-list .list-row's 16px column alignment and padding/border-bottom are the band's own chrome; display: grid is NOT restated here since .mini-list-head already owns it",
+    "reason": "genuine exception (finding #6): a bordered/backed section-header band (not the primitive's own list-head look), so padding/border-bottom are the band's own chrome and its padding has to line its left edge up with the rows' 17px rail inset; display: grid is NOT restated here since .mini-list-head already owns it",
     "check": "coclass"
   },
   {

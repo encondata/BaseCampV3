@@ -30,7 +30,7 @@ import {
 import { siteNames, sitesCellText, templateSearchText, vocabLabel, vocabOfKind } from '../lib/labels';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
-  listGridStyle, listScale, moveKey, passesFacets, useOutsideClose, useReorderDrag,
+  listGridStyle, listScale, moveKey, passesFacets, titleFor, useOutsideClose, useReorderDrag,
   useSearchHaystacks, visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
@@ -38,8 +38,8 @@ import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import '../styles/directory.css';
 import '../styles/labels.css';
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 140 },
   { key: 'label_type', label: 'Type', width: '1fr', default: true },
@@ -87,10 +87,6 @@ function NewTemplateMenu({ onPick }: { onPick: (kind: 'design' | 'code') => void
     </div>
   );
 }
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function LabelTemplates() {
   const { can, preferences } = useAuth();
@@ -358,7 +354,7 @@ export default function LabelTemplates() {
                             onSort={(dir) => setSort(c.key, dir)} />
               </ColHead>
             ))}
-            <span />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {visible.length === 0 && (

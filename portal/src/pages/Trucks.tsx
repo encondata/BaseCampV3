@@ -26,7 +26,7 @@ import {
 } from '../lib/columnMenu';
 import {
   applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale,
-  moveKey, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
+  moveKey, titleFor, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
 import { naturalCompare } from '../lib/sites';
@@ -52,8 +52,8 @@ const PRIMARY_COL: ColumnDef = {
   key: 'primary', label: 'Truck', width: '2fr', default: true, min: 180,
 };
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'status', label: 'Status', width: '1fr', default: true },
   { key: 'drivers', label: 'Driver(s)', width: '1.3fr', default: true },
@@ -107,10 +107,6 @@ function truckStatusChip(t: TruckItem) {
     </StatusHover>
   );
 }
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function Trucks() {
   const { can, godMode, maxRank, preferences } = useAuth();

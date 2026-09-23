@@ -1,14 +1,17 @@
 /** RawSurveyList has no test file (and SiteDetail.tsx, the page that
  *  mounts it, has none either) to carry a rendered column-floors
- *  assertion — see recipe R7. This asserts the pure computation instead. */
+ *  assertion — see recipe R7. This asserts the pure computation instead,
+ *  against the registry's home in lib/ so the test needs no DOM. */
 import { describe, expect, it } from 'vitest';
 
-import { listGridStyle } from '../../lib/listTools';
-import { COLUMNS, PRIMARY_COL } from './RawSurveyList';
+import { LIST_FIT, listGridStyle } from '../../lib/listTools';
+import {
+  RAW_SURVEY_COLUMNS as COLUMNS, RAW_SURVEY_PRIMARY_COL as PRIMARY_COL,
+} from '../../lib/surveyColumns';
 
 describe('RawSurveyList columns', () => {
-  it('default columns fit .init-panel (1176 - 36 = 1140px) at a 1512px window, nav expanded', () => {
+  it('default columns fit .init-panel (LIST_FIT.initPanel) at 1512px, nav expanded', () => {
     const defaults = [PRIMARY_COL, ...COLUMNS.filter((c) => c.default)];
-    expect(listGridStyle(defaults).minWidth).toBeLessThanOrEqual(1140);
+    expect(listGridStyle(defaults).minWidth).toBeLessThanOrEqual(LIST_FIT.initPanel);
   });
 });

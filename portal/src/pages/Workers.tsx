@@ -36,6 +36,7 @@ import {
   listGridStyle,
   listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
@@ -53,7 +54,6 @@ import '../styles/settings.css';
 
 type LevelDef = WorkerLevelDef;
 
-
 // Worker statuses are editable data (status_values, record_type='worker'), so
 // this page must not hold a copy of the vocabulary. Chips read the label/colour
 // the server denormalises onto each row; the facet and the edit select read
@@ -69,10 +69,6 @@ type LevelDef = WorkerLevelDef;
 // needs it — and the CHECK would still name this literal.
 const BLACKLIST = WORKER_BLACKLIST;
 
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
-
 // The always-shown avatar+name+contact cell — a fixed leading track
 // outside the column registry (same shape as the header markup below),
 // so it needs its own ColumnDef for listGridStyle/ColHead.
@@ -80,8 +76,8 @@ export const PRIMARY_COL: ColumnDef = {
   key: 'primary', label: 'Name', width: '2.2fr', default: true, min: 180,
 };
 
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded).
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 export const COLUMNS: ColumnDef[] = [
   { key: 'trade', label: 'Trade', width: '1.3fr', default: true },
   { key: 'level', label: 'Level', width: '1.2fr', default: true },
@@ -379,7 +375,7 @@ export default function Workers() {
                           onSort={(dir) => setSort(c.key, dir)} />
             </ColHead>
           ))}
-          <span />
+          <span className="col-head" aria-hidden="true" />
         </div>
 
         {error && <div className="dir-empty"><b>Cannot load workers</b>{error}</div>}

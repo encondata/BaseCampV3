@@ -5,6 +5,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { ReportRun } from '../../lib/api';
 
+/** HistoryTab reads `preferences.list_size` for the shared column floors
+ *  (listScale, lib/listTools); nothing else in this tree touches auth. */
+vi.mock('../../auth/AuthContext', () => ({
+  useAuth: () => ({ preferences: { list_size: 'default' } }),
+}));
+
 const api = vi.hoisted(() => ({
   listReportRuns: vi.fn(), getReportRun: vi.fn(), getReportRunDownloadUrl: vi.fn(),
 }));

@@ -98,6 +98,23 @@ export function listScale(listSize: string | undefined): number {
   }
 }
 
+/** Fit ceilings (px) for a list's default columns at a 1512px viewport with the nav
+ *  expanded — measured in the browser 2026-09-23, minus 2px safety. Container math
+ *  subtracts padding AND borders. */
+export const LIST_FIT = {
+  page: 1172,        // directly inside .portal-page (measured 1174)
+  initPanel: 1134,   // inside .init-panel: 1174 − 18×2 padding − 1×2 border
+  dashPanel: 1130,   // inside .dash-panel: 1174 − 20×2 − 1×2
+} as const;
+
+/** Hover title for a single-line value: the text, or nothing for the '—' blank. */
+export const titleFor = (text: string): string | undefined => (text === '—' ? undefined : text);
+
+/** Fixed track for a RowActionsMenu trigger cell. The "Actions ▾" trigger
+ *  measures 85px (12.5px Geologica-500 plus 13px of padding and a 1px
+ *  border either side), so 88px holds it without clipping. */
+export const ACTIONS_TRACK = '88px';
+
 /** The px floor for one column: the larger of its explicit `min` and the
  *  floor derived from the label that has to fit (short when present). */
 export function columnFloor(col: ColumnDef): number {

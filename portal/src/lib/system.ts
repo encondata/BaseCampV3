@@ -1,5 +1,25 @@
 /** Pure helpers for the System pages (processes list + log viewer). */
 
+import type { ColumnDef } from './listTools';
+
+/** System → Processes has no column picker: the seven tracks below are the
+ *  list's whole registry, mirroring the header labels SystemProcesses.tsx
+ *  renders, with the widths the `.sys-proc-grid` CSS template used to carry
+ *  (system.css, deleted in favour of the inline template). Lives here, not
+ *  in the page, so the fit test can import it without dragging the router,
+ *  AuthContext, and the page's stylesheets into a unit test (recipe R7).
+ *  Fit: default columns ≤ LIST_FIT.page (1172px — the list sits directly
+ *  in .portal-page at a 1512px window, nav expanded). */
+export const SYSTEM_PROCESS_COLUMNS: ColumnDef[] = [
+  { key: 'status', label: 'Status', width: '170px', default: true },
+  { key: 'name', label: 'Process', width: '1.2fr', default: true, min: 140 },
+  { key: 'kind', label: 'Kind', width: '110px', default: true },
+  { key: 'hostname', label: 'Host', width: '1fr', default: true, min: 110 },
+  { key: 'pid', label: 'PID', width: '80px', default: true },
+  { key: 'uptime', label: 'Uptime', width: '110px', default: true },
+  { key: 'heartbeat', label: 'Last heartbeat', short: 'Heartbeat', width: '140px', default: true },
+];
+
 export function statusMeta(status: string): { label: string; className: string } {
   switch (status) {
     case 'running': return { label: 'Running', className: 'sys-dot-running' };

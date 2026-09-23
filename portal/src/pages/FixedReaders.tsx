@@ -27,7 +27,7 @@ import {
 } from '../lib/devices';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
-  listGridStyle, listScale, moveKey, passesFacets, useReorderDrag, useSearchHaystacks,
+  listGridStyle, listScale, moveKey, passesFacets, titleFor, useReorderDrag, useSearchHaystacks,
   visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
@@ -36,8 +36,8 @@ import '../styles/profile.css';
 import '../styles/settings.css';  /* .set-note */
 import '../styles/hardware.css';
 
-// Fit: default columns + trailing ≤ 1172px (page-level ceiling, measured
-// 1174 at 1512px). model/uptime/tags_24h/antennas are fixed at their
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — the page-level
+// ceiling, measured 1174 at 1512px). model/uptime/tags_24h/antennas are fixed at their
 // derived floor (short numeric/duration values, never need to grow);
 // connection carries a short label so its fixed track can sit at the 72px
 // absolute floor instead of its ~104px derived-from-"Connection" one.
@@ -77,10 +77,6 @@ const CSV_COLUMNS: [string, (d: DeviceItem) => string][] = [
 
 const msgFor = (err: unknown): string =>
   err instanceof ApiError ? `Request failed (${err.code}).` : "Couldn't delete the reader.";
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 export default function FixedReaders() {
   const { can, preferences } = useAuth();
@@ -262,7 +258,7 @@ export default function FixedReaders() {
                             onSort={(dir) => setSort(c.key, dir)} />
               </ColHead>
             ))}
-            <span />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {visible.length === 0 && (

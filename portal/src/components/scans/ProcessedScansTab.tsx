@@ -43,37 +43,16 @@ import {
   listGridStyle,
   listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
-  type ColumnDef,
 } from '../../lib/listTools';
 import { VirtualRows } from '../../lib/virtualRows';
+import {
+  PROCESSED_SCAN_COLUMNS as COLUMNS, PROCESSED_SCAN_PRIMARY_COL as PRIMARY_COL,
+} from '../../lib/scanColumns';
 import { displayScanValue } from '../../lib/format';
-
-// The always-shown scanned-value cell — a fixed leading track outside the
-// column registry (same shape as the header markup below), so it needs
-// its own ColumnDef for listGridStyle/ColHead (recipe R1).
-export const PRIMARY_COL: ColumnDef = {
-  key: 'primary', label: 'Value', width: '2fr', default: true, min: 160,
-};
-
-// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
-// window, nav expanded — Scans.tsx mounts this tab directly under
-// .portal-page, no wrapping card).
-export const COLUMNS: ColumnDef[] = [
-  { key: 'match', label: 'Match', width: '1fr', default: true },
-  { key: 'status', label: 'Scan status', width: '1.1fr', default: true },
-  { key: 'matched', label: 'Matched record', short: 'Matched', width: '1.3fr', default: true },
-  { key: 'scanned', label: 'Scanned', width: '1.1fr', default: true, min: 96 },
-  { key: 'processed', label: 'Processed', width: '1.1fr', default: false },
-  { key: 'scan_type', label: 'Method', width: '0.9fr', default: true },
-  { key: 'device', label: 'Device', width: '1fr', default: true, min: 100 },
-  { key: 'operator', label: 'Operator', width: '1fr', default: false },
-  { key: 'site', label: 'Site', width: '1fr', default: true },
-  { key: 'location', label: 'Location', width: '1.2fr', default: false },
-  { key: 'source', label: 'Source', width: '0.7fr', default: false },
-];
 
 const ALL_COLUMN_KEYS = new Set<string>(
   [...COLUMNS.map((c) => c.key), 'primary', 'archived']);
@@ -98,10 +77,6 @@ function sortValueFor(s: ProcessedScanRow, key: string): string {
     default: return '';
   }
 }
-
-/** No tooltip for a blank cell — "—" repeated as a title on hover reads
- *  as noise, not information. */
-const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 const CSV_COLUMNS: [string, (s: ProcessedScanRow) => string][] = [
   ['ID', (s) => s.id],

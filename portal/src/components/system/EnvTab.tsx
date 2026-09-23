@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import { useAuth } from '../../auth/AuthContext';
 import {
   getEnvEntries, putEnvConfig, restartProcesses, type EnvEntry,
 } from '../../lib/api';
@@ -14,18 +15,30 @@ import {
   changedDescriptions, changedValues, describeEntry, filterEntries,
 } from '../../lib/envConfig';
 import { GodEditToggle } from '../../lib/godEdit';
-import { ColumnsButton, visibleColumnsFor, type ColumnDef } from '../../lib/listTools';
+import {
+  ColHead, ColumnsButton, listGridStyle, listScale, visibleColumnsFor, type ColumnDef,
+} from '../../lib/listTools';
 import '../../styles/directory.css';
 
+// The widths below are the `.envtab-grid` CSS template this list used to
+// carry (system.css, now deleted): the two flexible tracks keep their fr
+// share and their old minmax minimum as an explicit `min`, and `key` —
+// minmax(200px, 240px) before — becomes the fixed 240px it always resolved
+// to, since the card now scrolls sideways rather than squeezing its tracks.
+// Fit: default columns ≤ LIST_FIT.page (1172px — .sysconf-tab-body.sysconf-wide
+// sits directly in .portal-page with no padding or border of its own, at a
+// 1512px window with the nav expanded).
 const COLUMNS: ColumnDef[] = [
-  { key: 'key', label: 'Key', width: 'minmax(200px, 240px)', default: true },
-  { key: 'value', label: 'Value', width: 'minmax(240px, 1.4fr)', default: true },
+  { key: 'key', label: 'Key', width: '240px', default: true },
+  { key: 'value', label: 'Value', width: '1.4fr', default: true, min: 240 },
   { key: 'status', label: 'Status', width: '90px', default: true },
-  { key: 'description', label: 'Description', width: 'minmax(220px, 1.6fr)', default: true },
+  { key: 'description', label: 'Description', width: '1.6fr', default: true, min: 220 },
 ];
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
 export default function EnvTab() {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [entries, setEntries] = useState<EnvEntry[] | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [descEdits, setDescEdits] = useState<Record<string, string>>({});
@@ -133,7 +146,11 @@ export default function EnvTab() {
 
   const visibleEntries = filterEntries(entries, q);
   const shownCols = visibleColumnsFor(COLUMNS, visible, false);
-  const grid = { gridTemplateColumns: shownCols.map((c) => c.width).join(' ') };
+  const grid = listGridStyle(shownCols, [], undefined, listGridScale);
+  const rowStyle = {
+    gridTemplateColumns: grid.gridTemplateColumns,
+    minWidth: editing ? undefined : grid.minWidth,
+  };
 
   const cellFor = (entry: EnvEntry, key: string) => {
     switch (key) {
@@ -213,7 +230,8 @@ export default function EnvTab() {
       lastRenderedSection = entry.section;
       rows.push({
         node: (
-          <div key={`section-${entry.key}`} className="mini-list-head envtab-section-row" style={grid}>
+          <div key={`section-${entry.key}`} className="mini-list-head envtab-section-row"
+               style={rowStyle}>
             <b className="envtab-section-label">{entry.section}</b>
           </div>
         ),
@@ -223,7 +241,8 @@ export default function EnvTab() {
       && (entry.key in pendingValues || entry.key in pendingDescriptions);
     rows.push({
       node: (
-        <div key={entry.key} className={`list-row mini-row envtab-grid${changed ? ' changed' : ''}`} style={grid}>
+        <div key={entry.key} className={`list-row mini-row${changed ? ' changed' : ''}`}
+             style={rowStyle}>
           {shownCols.map((c) => (
             <span key={c.key} className={`cell${c.key === 'status' ? ' envtab-col-center' : ''}`}>
               {cellFor(entry, c.key)}
@@ -257,11 +276,9 @@ export default function EnvTab() {
         </div>
       </div>
 
-      <div className="dir-list envtab-list">
-        <div className="list-head envtab-grid" style={grid}>
-          {shownCols.map((c) => (
-            <span key={c.key} className="col-head">{c.label}</span>
-          ))}
+      <div className={`dir-list envtab-list list-scroll${editing ? ' editing' : ''}`}>
+        <div className="list-head" style={rowStyle}>
+          {shownCols.map((c) => <ColHead key={c.key} col={c} />)}
         </div>
         {rows.map((r) => r.node)}
         {visibleEntries.length === 0 && (
