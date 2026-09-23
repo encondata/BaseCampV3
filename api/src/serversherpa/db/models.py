@@ -73,6 +73,8 @@ class UserAccount(Base):
     password_updated_at: Mapped[datetime | None]
     totp_secret_enc: Mapped[bytes | None] = mapped_column(BYTEA)
     totp_confirmed_at: Mapped[datetime | None]
+    totp_required: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    totp_last_counter: Mapped[int | None] = mapped_column(BigInteger)
     failed_login_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     locked_until: Mapped[datetime | None]
     last_login_at: Mapped[datetime | None]
@@ -153,6 +155,7 @@ class Role(Base):
     is_system: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     label: Mapped[str | None]
     color: Mapped[str | None]
+    totp_required: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
@@ -215,6 +218,39 @@ class AuthSession(Base):
     ip_address: Mapped[str | None] = mapped_column(INET)
     user_agent: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class TotpBackupCode(Base):
+    """One-time recovery codes; only the Argon2 hash is stored."""
+
+    __tablename__ = "totp_backup_codes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("user_accounts.person_id", ondelete="CASCADE"))
+    code_hash: Mapped[str]
+    used_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class TrustedDevice(Base):
+    """A browser that checked "Remember this browser" at 2FA time. The
+    cookie token is stored as SHA-256 (pure randomness, like refresh
+    tokens)."""
+
+    __tablename__ = "trusted_devices"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("user_accounts.person_id", ondelete="CASCADE"))
+    token_hash: Mapped[str]
+    user_agent: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    last_used_at: Mapped[datetime | None]
+    expires_at: Mapped[datetime]
+    revoked_at: Mapped[datetime | None]
 
 
 class KioskPairRequest(Base):
@@ -317,6 +353,7 @@ class AccessGroup(Base):
     name: Mapped[str]
     description: Mapped[str] = mapped_column(server_default="")
     icon: Mapped[str] = mapped_column(server_default="users")
+    totp_required: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

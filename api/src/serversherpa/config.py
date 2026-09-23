@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     # window but every rotation inherits the original login's deadline.
     session_ttl_seconds: int = 86_400
     totp_encryption_key: SecretStr
+    # "Remember this browser" at the 2FA step skips the code for this long.
+    totp_trust_days: int = 7
     password_pepper: SecretStr
     # one bar for every password the API accepts (self-change, admin reset,
     # temp passwords); SS_PASSWORD_MIN_LENGTH overrides
