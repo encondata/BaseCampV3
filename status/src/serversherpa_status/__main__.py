@@ -21,8 +21,7 @@ def main() -> None:
         create_app(settings),
         host="0.0.0.0",
         port=int(os.environ.get("PORT", "8080")),
-        proxy_headers=True,
-        forwarded_allow_ips="*",
+        proxy_headers=False,
         access_log=False,
     )
 
