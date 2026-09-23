@@ -2,6 +2,7 @@
 global-anchor role — anti-lockout); writes need access:change + rank rules."""
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -431,6 +432,7 @@ async def patch_group(
               entity_id=str(group_id), action="group.update",
               changes={"totp_required": {"from": group.totp_required, "to": body.totp_required}})
         group.totp_required = body.totp_required
+        group.updated_at = datetime.now(UTC)
     await db.commit()
     return {"id": str(group.id), "name": group.name, "totp_required": group.totp_required}
 

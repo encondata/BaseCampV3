@@ -325,6 +325,21 @@ async def test_failed_codes_lock_the_account(db, seeded_user, monkeypatch):
     assert exc.value.code == "account_locked"
 
 
+async def test_verify_code_unreadable_seed_raises_auth_error(db, seeded_user, monkeypatch):
+    """decrypt_secret raising RuntimeError (key rotated/lost) must not
+    propagate as a 500 — verify_code converts it to a typed AuthError."""
+    account = await _account(db, seeded_user)
+    await _enroll(db, account)
+
+    def _boom(_blob):
+        raise RuntimeError("stored TOTP seed does not decrypt with SS_TOTP_ENCRYPTION_KEY")
+
+    monkeypatch.setattr(totp, "decrypt_secret", _boom)
+    with pytest.raises(AuthError) as exc:
+        await totp.verify_code(db, account, "123456", ip=None)
+    assert exc.value.code == "totp_seed_unreadable"
+
+
 async def test_trust_issue_check_revoke(db, seeded_user):
     account = await _account(db, seeded_user)
     token = await totp.issue_trust(db, account, user_agent="UA", ip=None)

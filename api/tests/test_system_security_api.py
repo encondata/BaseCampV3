@@ -1,8 +1,10 @@
 """System › Security: 2FA policy flags + revoke-all-sessions."""
 
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy import select
 
-from serversherpa.db.models import AuditLog, AuthSession
+from serversherpa.db.models import AuditLog, AuthSession, TrustedDevice
 
 from tests.test_status_values_write import _make
 from tests.test_sites_api import login
@@ -37,6 +39,12 @@ async def test_required_implies_enabled_and_disable_clears_required(client, db, 
 async def test_revoke_all_keeps_the_callers_session(client, db, seeded_user):
     admin = await _admin(db, client)
     other = await login(client)                      # alice, a second live family
+    trusted = TrustedDevice(
+        person_id=seeded_user.id, token_hash="x" * 64, user_agent="UA",
+        last_used_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC) + timedelta(days=7))
+    db.add(trusted)
+    await db.commit()
     resp = await client.post("/system/sessions/revoke-all", headers=admin)
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -46,6 +54,10 @@ async def test_revoke_all_keeps_the_callers_session(client, db, seeded_user):
     assert (await client.get("/auth/me/profile", headers=other)).status_code == 401
     live = list(await db.scalars(select(AuthSession).where(AuthSession.revoked_at.is_(None))))
     assert len(live) == 1
+    # trusted browsers are forgotten too — a revoked-out device can't skip
+    # the 2FA challenge on its next sign-in
+    await db.refresh(trusted)
+    assert trusted.revoked_at is not None
     worker = await _make(db, client, "worker", "sec-worker2@test.example.com")
     assert (await client.post("/system/sessions/revoke-all", headers=worker)).status_code == 403
 

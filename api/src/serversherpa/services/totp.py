@@ -180,7 +180,11 @@ async def confirm_enrollment(
         raise AuthError("totp_already_enrolled")
     if account.totp_secret_enc is None:
         raise AuthError("totp_not_started")
-    counter = _match_counter(decrypt_secret(account.totp_secret_enc), _digits(code), None)
+    try:
+        seed = decrypt_secret(account.totp_secret_enc)
+    except RuntimeError:
+        raise AuthError("totp_seed_unreadable") from None
+    counter = _match_counter(seed, _digits(code), None)
     if counter is None:
         await _record_failure(db, account, ip=ip)
         raise AuthError("totp_invalid")
@@ -258,8 +262,11 @@ async def verify_code(
     # branch it belongs to.
     compact = "".join(code.split())
     if compact.isdigit() and len(compact) == 6:
-        counter = _match_counter(decrypt_secret(account.totp_secret_enc), compact,
-                                 account.totp_last_counter)
+        try:
+            seed = decrypt_secret(account.totp_secret_enc)
+        except RuntimeError:
+            raise AuthError("totp_seed_unreadable") from None
+        counter = _match_counter(seed, compact, account.totp_last_counter)
         if counter is not None:
             account.totp_last_counter = counter
             account.failed_login_count = 0

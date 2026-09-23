@@ -612,13 +612,14 @@ async def reset_totp(
 async def set_totp_required(
     person_id: uuid.UUID,
     body: TotpRequiredIn,
+    request: Request,
     db: DbSession,
     actor: AuthContext = require_permission("users", "change"),
 ) -> None:
     _, account, _ = await _load_target(db, actor, person_id)
     if account.totp_required != body.required:
         audit(db, actor_id=actor.person.id, entity_type="user_account",
-              entity_id=str(person_id), action="totp.required_set",
+              entity_id=str(person_id), action="totp.required_set", ip=client_ip(request),
               changes={"totp_required": {"from": account.totp_required, "to": body.required}})
         account.totp_required = body.required
         account.updated_at = datetime.now(UTC)

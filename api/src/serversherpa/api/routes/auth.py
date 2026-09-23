@@ -36,7 +36,8 @@ TRUST_COOKIE = "ss_trust"
 
 # AuthError code -> HTTP status. Everything else is a plain 401.
 _STATUS = {"account_locked": 423, "kiosk_not_allowed": 403,
-           "totp_already_enrolled": 409, "totp_disabled": 409, "totp_not_started": 409}
+           "totp_already_enrolled": 409, "totp_disabled": 409, "totp_not_started": 409,
+           "totp_seed_unreadable": 409}
 
 
 def _set_refresh_cookie(response: Response, result: AuthResult) -> None:

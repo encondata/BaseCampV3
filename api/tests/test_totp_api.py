@@ -195,6 +195,22 @@ async def test_remember_sets_trust_cookie_and_next_login_skips_code(client, db, 
     assert stale.json()["status"] == "totp_verify"
 
 
+async def test_verify_unreadable_seed_is_409_not_500(client, db, seeded_user, monkeypatch):
+    """decrypt_secret raises RuntimeError when the stored blob doesn't
+    decrypt (encryption key rotated/lost) — that must surface as a 409,
+    not bubble up as an unhandled 500."""
+    _secret, _codes, token = await _challenge(client, db, seeded_user)
+
+    def _boom(_blob):
+        raise RuntimeError("stored TOTP seed does not decrypt with SS_TOTP_ENCRYPTION_KEY")
+
+    monkeypatch.setattr(totp_service, "decrypt_secret", _boom)
+    resp = await client.post("/auth/totp/verify", headers={"X-Totp-Challenge": token},
+                             json={"code": "123456"})
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "totp_seed_unreadable"
+
+
 async def test_challenge_token_is_not_an_access_token(client, db, seeded_user):
     _secret, _codes, token = await _challenge(client, db, seeded_user)
     resp = await client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
@@ -264,6 +280,22 @@ async def test_self_service_enrollment_no_new_session(client, db, seeded_user):
     assert me.json()["totp"]["enrolled"] is True
     again = await client.post("/auth/totp/enroll/start", headers=hdrs)
     assert again.status_code == 409 and again.json()["detail"]["code"] == "totp_already_enrolled"
+
+
+async def test_forced_password_change_blocks_self_service_enroll(client, db, seeded_user):
+    """A temp-password session must change its password before it can
+    enroll in 2FA or regenerate backup codes from My Profile — the
+    /auth/totp/* sign-in routes are read-only-exempt but not forced-
+    change-exempt."""
+    await _security(db, two_factor_enabled=True)
+    login = await _login(client)
+    hdrs = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    account = await db.get(UserAccount, seeded_user.id)
+    account.must_change_password = True
+    await db.commit()
+    resp = await client.post("/auth/totp/enroll/start", headers=hdrs)
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "password_change_required"
 
 
 async def test_enrollment_refused_when_switch_off(client, db, seeded_user):

@@ -134,9 +134,20 @@ async def enforce_read_only(db: AsyncSession, request: Request,
 # off, which says nothing about a temp-password admin session. Neither is
 # `/kiosk/printer-events`: read-only exempts it so an already-performed
 # reset still gets recorded, which likewise says nothing about a session
-# that has not finished signing in.
+# that has not finished signing in. Nor are the four `/auth/totp/*` sign-in
+# routes: they're in READ_ONLY_EXEMPT_PATHS for the sign-in lifecycle during
+# a maintenance freeze, but a temp-password session must still change its
+# password before it can enroll in 2FA or regenerate backup codes from My
+# Profile. This subtraction only bites a signed-in session (must_change_
+# password=True); the enroll/verify challenge path is unaffected either
+# way because a challenge holder has no session at all — totp_actor never
+# calls enforce_forced_password_change for it.
 FORCED_CHANGE_EXEMPT_PATHS = (
-    (READ_ONLY_EXEMPT_PATHS - {"/system/admin", "/kiosk/printer-events"})
+    (READ_ONLY_EXEMPT_PATHS - {
+        "/system/admin", "/kiosk/printer-events",
+        "/auth/totp/verify", "/auth/totp/enroll/start",
+        "/auth/totp/enroll/confirm", "/auth/totp/backup-codes/regenerate",
+    })
     | {"/auth/me", "/auth/me/sessions"}
 )
 FORCED_CHANGE_EXEMPT_PREFIXES = READ_ONLY_EXEMPT_PREFIXES

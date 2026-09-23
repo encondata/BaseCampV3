@@ -26,7 +26,7 @@ from serversherpa.api.schemas import (
 from serversherpa.config import get_settings
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
-    AuthSession, LogEntry, SystemConfig, SystemProcess,
+    AuthSession, LogEntry, SystemConfig, SystemProcess, TrustedDevice,
 )
 from serversherpa.services.audit import audit
 from serversherpa.system.admin_config import read_admin_config
@@ -194,19 +194,25 @@ async def revoke_all_sessions(
 ) -> RevokeAllSessionsOut:
     """Sign everyone out everywhere — every live session family except the
     caller's own current one (so the admin pressing the button isn't
-    dumped mid-action; they can sign themselves out from /me)."""
+    dumped mid-action; they can sign themselves out from /me) — and forget
+    every trusted browser too, so a revoked-out device can't skip the 2FA
+    challenge on its next sign-in."""
     live = (await db.execute(
         select(AuthSession.family_id, AuthSession.person_id)
         .where(AuthSession.revoked_at.is_(None),
                AuthSession.family_id != actor.session.family_id))).all()
     families = {f for f, _ in live}
     people = {p for _, p in live}
+    now = datetime.now(UTC)
     if families:
         await db.execute(
             update(AuthSession)
             .where(AuthSession.family_id.in_(families),
                    AuthSession.revoked_at.is_(None))
-            .values(revoked_at=datetime.now(UTC), revoke_reason="admin"))
+            .values(revoked_at=now, revoke_reason="admin"))
+    await db.execute(
+        update(TrustedDevice).where(TrustedDevice.revoked_at.is_(None))
+        .values(revoked_at=now))
     audit(db, actor_id=actor.person.id, entity_type="auth",
           entity_id="all", action="sessions.revoke_all",
           changes={"revoked_sessions": len(live), "revoked_people": len(people)})
