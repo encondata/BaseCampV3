@@ -33,13 +33,14 @@ export function groupSecret(secret: string): string {
   return secret.replace(/(.{4})/g, '$1 ').trim();
 }
 
-export default function EnrollFlow({ email, start, confirm, remember = null, onDone, onError }: {
+export default function EnrollFlow({ email, start, confirm, remember = null, onDone, onError, ackLabel }: {
   email: string;
   start: () => Promise<{ secret: string; otpauth_uri: string }>;
   confirm: (code: string) => Promise<{ backup_codes: string[] }>;
   remember?: { checked: boolean; onChange: (v: boolean) => void; days: number } | null;
   onDone: () => void;
   onError?: (code: string) => void;
+  ackLabel?: string;
 }) {
   const [step, setStep] = useState<Step>('scan');
   const [secret, setSecret] = useState('');
@@ -124,7 +125,7 @@ export default function EnrollFlow({ email, start, confirm, remember = null, onD
       {step === 'codes' && (
         <>
           <p className="otp-info success-note">Two-factor authentication is on.</p>
-          <BackupCodesPanel codes={codes} onAcknowledged={onDone} />
+          <BackupCodesPanel codes={codes} onAcknowledged={onDone} ackLabel={ackLabel} />
         </>
       )}
     </>

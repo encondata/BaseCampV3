@@ -11,6 +11,8 @@ import { useAuth } from '../auth/AuthContext';
 import ActivityHistory from '../components/ActivityHistory';
 import AvatarUpload from '../components/AvatarUpload';
 import ChangePasswordForm from '../components/ChangePasswordForm';
+import RegenerateCodesModal from '../components/totp/RegenerateCodesModal';
+import TotpEnrollModal from '../components/totp/TotpEnrollModal';
 import {
   getMyActivityRequest,
   getProfileRequest,
@@ -51,7 +53,7 @@ function formStateFrom(p: PersonDetail): Record<EditKey, string> {
 }
 
 export default function Profile() {
-  const { roles, applyProfile } = useAuth();
+  const { roles, applyProfile, totp, applyTotp, person } = useAuth();
   const navigate = useNavigate();
   const pathname = useLocation().pathname;
   const tab: 'profile' | 'preferences' | 'notifications' | 'history' = pathname.startsWith('/me/preferences')
@@ -67,6 +69,8 @@ export default function Profile() {
   const [changingPw, setChangingPw] = useState(false);
   const [pwChanged, setPwChanged] = useState(false);
   const [activity, setActivity] = useState<MyActivityItem[]>([]);
+  const [enrollOpen, setEnrollOpen] = useState(false);
+  const [regenOpen, setRegenOpen] = useState(false);
 
   useEffect(() => {
     void getProfileRequest().then(setProfile).catch(() => {});
@@ -272,7 +276,21 @@ export default function Profile() {
                     : profile.password_updated_at
                       ? `Last reset ${longDate(profile.password_updated_at)}`
                       : 'set'}</dd>
-                  <dt>Two-factor auth</dt><dd>TOTP enrollment — coming soon</dd>
+                  <dt>Two-factor auth</dt>
+                  <dd className="totp-line">
+                    {totp?.enrolled ? (
+                      <>
+                        <span className="chip c-green"><span className="dot" />On{totp.enrolled_at ? ` since ${longDate(totp.enrolled_at)}` : ''}</span>
+                        <span className="set-note">{totp.backup_codes_remaining} backup code{totp.backup_codes_remaining === 1 ? '' : 's'} left</span>
+                        <button className="mini-btn" onClick={() => setRegenOpen(true)}>Regenerate backup codes</button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="chip tag">Off{totp?.required ? ' · required by policy' : ''}</span>
+                        <button className="mini-btn accent" onClick={() => setEnrollOpen(true)}>Set up 2FA</button>
+                      </>
+                    )}
+                  </dd>
                 </dl>
               )}
             </div>
@@ -321,6 +339,22 @@ export default function Profile() {
       )}
 
       {tab === 'history' && <ActivityHistory rows={activity} />}
+
+      {enrollOpen && person && (
+        <TotpEnrollModal email={person.email ?? ''} onClose={() => setEnrollOpen(false)}
+          onEnrolled={(n) => {
+            setEnrollOpen(false);
+            applyTotp({ enrolled: true, enrolled_at: new Date().toISOString(),
+                        required: totp?.required ?? false, backup_codes_remaining: n });
+          }} />
+      )}
+      {regenOpen && (
+        <RegenerateCodesModal onClose={() => setRegenOpen(false)}
+          onRegenerated={(n) => {
+            setRegenOpen(false);
+            if (totp) applyTotp({ ...totp, backup_codes_remaining: n });
+          }} />
+      )}
     </div>
   );
 }

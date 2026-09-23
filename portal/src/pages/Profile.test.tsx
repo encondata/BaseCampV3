@@ -10,11 +10,14 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
-import type { PersonDetail, UiPreferences } from '../lib/api';
+import type { PersonDetail, TotpStatus, UiPreferences } from '../lib/api';
 
 const auth = vi.hoisted(() => ({
   updatePreferences: vi.fn(async () => true),
   applyProfile: vi.fn(),
+  applyTotp: vi.fn(),
+  totp: { enrolled: false, enrolled_at: null, required: false, backup_codes_remaining: 0 } as TotpStatus,
+  person: { email: 'ada@test.example.com' },
 }));
 
 const api = vi.hoisted(() => ({
@@ -55,6 +58,9 @@ vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     roles: ['developer'],
     applyProfile: auth.applyProfile,
+    applyTotp: auth.applyTotp,
+    totp: auth.totp,
+    person: auth.person,
     preferences: {
       accent: 'amber',
       theme: 'light',
@@ -80,6 +86,7 @@ afterEach(() => {
   api.getProfileRequest.mockImplementation(async () => PROFILE);
   api.getSessionsRequest.mockImplementation(async () => []);
   api.getMyActivityRequest.mockImplementation(async () => []);
+  auth.totp = { enrolled: false, enrolled_at: null, required: false, backup_codes_remaining: 0 };
 });
 
 const { default: Profile } = await import('./Profile');
@@ -179,4 +186,15 @@ it('/me shows Profile, Security and Active sessions but not User history; /me/hi
   await waitFor(() => expect(screen.getByRole('heading', { name: 'User history', level: 3 })).toBeTruthy());
   expect(screen.queryByRole('heading', { name: 'Profile', level: 3 })).toBeNull();
   expect(screen.getByRole('tab', { name: 'History' }).getAttribute('aria-selected')).toBe('true');
+});
+
+it('Security shows Set up 2FA when not enrolled and the status when enrolled', async () => {
+  renderAt('/me');
+  expect(await screen.findByRole('button', { name: /set up 2fa/i })).toBeTruthy();
+  auth.totp = { enrolled: true, enrolled_at: '2026-09-23T00:00:00Z', required: false, backup_codes_remaining: 3 };
+  cleanup();
+  renderAt('/me');
+  expect(await screen.findByText(/3 backup codes left/i)).toBeTruthy();
+  expect(screen.getByRole('button', { name: /regenerate backup codes/i })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /turn off/i })).toBeNull();
 });

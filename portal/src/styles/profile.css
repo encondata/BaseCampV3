@@ -263,3 +263,11 @@
 
 .record-link { color: var(--text-dark); text-decoration: underline; }
 .record-link:hover { color: rgb(var(--accent-rgb)); }
+
+/* ── 2FA: security row + modals ───────────────────────────── */
+
+.kv .totp-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* 2FA modals: content-sized card, the OTP kit renders inside .inline-card */
+.totp-modal-card { width: min(520px, 96vw); }
+.totp-modal-body { padding: 4px 24px 24px; }
