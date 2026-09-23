@@ -197,9 +197,11 @@ Cookies: `ss_trust` — httpOnly, `secure` outside development, `samesite=lax`,
 `totp.reset`, re-enrollment, and `POST /users/{id}/sessions/revoke-all`
 revoke every `trusted_devices` row for the person.
 
-Rate limiting: `rate_limit_ip` on verify, enroll/confirm and regenerate.
-Failed codes count toward `failed_login_count` and lockout exactly like failed
-passwords (`account_locked` → 423).
+Abuse control: every code endpoint sits behind a correct password (challenge
+token) or a live session, so the account lockout counter is the limiter —
+failed codes count toward `failed_login_count` and lockout exactly like failed
+passwords (`account_locked` → 423). No separate per-IP limiter (the pairing
+one is table-specific and not reusable).
 
 CLI: `serversherpa reset-totp --email …` calls `services.totp.reset` with
 `actor_id=None` and prints a confirmation.
