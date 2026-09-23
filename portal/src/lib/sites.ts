@@ -4,6 +4,42 @@
 import type { ComboOption } from '../components/ComboBox';
 import type { SiteItem, SurveySchema } from './api';
 import { numberToPatch, type GodField } from './godEdit';
+import type { ColumnDef } from './listTools';
+
+// The always-shown name+code cell — a fixed leading track outside the
+// column registry (same shape as the page's header markup), so it needs
+// its own ColumnDef for listGridStyle/ColHead. Lives here rather than in
+// Sites.tsx so the columns test doesn't drag in the page's leaflet-based
+// SitesMap import (see lib/initiatives.ts for the same pattern).
+export const PRIMARY_COL: ColumnDef = {
+  key: 'primary', label: 'Name', width: '2.2fr', default: true, min: 180,
+};
+
+// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
+// window, nav expanded).
+export const SITE_COLUMNS: ColumnDef[] = [
+  { key: 'type', label: 'Type', width: '1.1fr', default: true },
+  { key: 'status', label: 'Status', width: '1.1fr', default: true },
+  { key: 'clients', label: 'Clients', width: '1.7fr', default: true },
+  { key: 'city', label: 'City', width: '1.1fr', default: true },
+  { key: 'country', label: 'Country', width: '0.8fr', default: false },
+  { key: 'dc_provider', label: 'DC provider', width: '1.2fr', default: false },
+  { key: 'coords', label: 'Coords', width: '1.4fr', default: false },
+  {
+    key: 'address_line1', label: 'Address line 1', short: 'Address 1',
+    width: '1.4fr', default: false, godOnly: true,
+  },
+  {
+    key: 'address_line2', label: 'Address line 2', short: 'Address 2',
+    width: '1.4fr', default: false, godOnly: true,
+  },
+  { key: 'region', label: 'Region', width: '1fr', default: false, godOnly: true },
+  { key: 'postal_code', label: 'Postal code', width: '1fr', default: false, godOnly: true },
+  { key: 'timezone', label: 'Timezone', width: '1.2fr', default: false, godOnly: true },
+  { key: 'notes', label: 'Notes', width: '1.6fr', default: false, godOnly: true },
+  { key: 'latitude', label: 'Latitude', width: '0.9fr', default: false, godOnly: true },
+  { key: 'longitude', label: 'Longitude', width: '0.9fr', default: false, godOnly: true },
+];
 
 export const SITE_ERRORS: Record<string, string> = {
   invalid_coordinates: 'Latitude and longitude must both be set, and within range.',

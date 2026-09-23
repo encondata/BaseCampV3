@@ -37,19 +37,22 @@ import { GodCell, GodEditToggle, useGodEdit } from '../lib/godEdit';
 import { usePendingDeletes } from '../lib/pendingDeletes';
 import { filledCount } from '../lib/siteSurvey';
 import {
-  formatCoords, naturalCompare, siteCellText, siteSearchText, SITE_ERRORS, SITE_GOD_FIELDS,
+  formatCoords, naturalCompare, siteCellText, siteSearchText, PRIMARY_COL, SITE_COLUMNS,
+  SITE_ERRORS, SITE_GOD_FIELDS,
 } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   applyColumnOrder,
+  ColHead,
   ColumnsButton,
   ExportButton,
   exportCsv,
+  listGridStyle,
+  listScale,
   moveKey,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
-  type ColumnDef,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import StatusHover from '../components/StatusHover';
@@ -58,23 +61,7 @@ import '../styles/profile.css';
 import '../styles/settings.css';
 import '../styles/sites.css';
 
-const COLUMNS: ColumnDef[] = [
-  { key: 'type', label: 'Type', width: '1.1fr', default: true },
-  { key: 'status', label: 'Status', width: '1.1fr', default: true },
-  { key: 'clients', label: 'Clients', width: '1.7fr', default: true },
-  { key: 'city', label: 'City', width: '1.1fr', default: true },
-  { key: 'country', label: 'Country', width: '0.8fr', default: false },
-  { key: 'dc_provider', label: 'DC provider', width: '1.2fr', default: false },
-  { key: 'coords', label: 'Coords', width: '1.4fr', default: false },
-  { key: 'address_line1', label: 'Address line 1', width: '1.4fr', default: false, godOnly: true },
-  { key: 'address_line2', label: 'Address line 2', width: '1.4fr', default: false, godOnly: true },
-  { key: 'region', label: 'Region', width: '1fr', default: false, godOnly: true },
-  { key: 'postal_code', label: 'Postal code', width: '1fr', default: false, godOnly: true },
-  { key: 'timezone', label: 'Timezone', width: '1.2fr', default: false, godOnly: true },
-  { key: 'notes', label: 'Notes', width: '1.6fr', default: false, godOnly: true },
-  { key: 'latitude', label: 'Latitude', width: '0.9fr', default: false, godOnly: true },
-  { key: 'longitude', label: 'Longitude', width: '0.9fr', default: false, godOnly: true },
-];
+const COLUMNS = SITE_COLUMNS;
 
 // Every column the page can offer (incl. godOnly) plus the 'primary'
 // pseudo-column (the always-shown name+code cell). No 'archived'
@@ -137,9 +124,14 @@ function surveySummary(rows: SiteSurveyRow[]): string {
   return `${filled}/${total} fields filled`;
 }
 
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
+
 export default function Sites({ initialView = 'list' }: { initialView?: 'list' | 'map' } = {}) {
   const navigate = useNavigate();
-  const { can, godMode, maxRank } = useAuth();
+  const { can, godMode, maxRank, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('sites', 'add');
   const canChange = can('sites', 'change');
   const canBulk = canAdd && maxRank >= 60;   // mirrors the API's GATE_BYPASS_RANK bar
@@ -286,16 +278,17 @@ export default function Sites({ initialView = 'list' }: { initialView?: 'list' |
     });
   };
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
+  const rowStyle = {
+    gridTemplateColumns: grid.gridTemplateColumns,
+    minWidth: god.editing ? undefined : grid.minWidth,
+  };
 
   const cellFor = (s: SiteItem, key: string) => {
     if (god.editing) {
@@ -339,30 +332,52 @@ export default function Sites({ initialView = 'list' }: { initialView?: 'list' |
           </div>
         );
       }
-      case 'city':
-        return <span className="cell-top">{s.city ?? '—'}</span>;
+      case 'city': {
+        const text = s.city ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'country':
-        return <span className="cell-top">{s.country}</span>;
-      case 'dc_provider':
-        return <span className="cell-top">{s.dc_provider ?? '—'}</span>;
-      case 'coords':
-        return <span className="mono">{formatCoords(s.latitude, s.longitude)}</span>;
-      case 'address_line1':
-        return <span className="cell-top">{s.address_line1 ?? '—'}</span>;
-      case 'address_line2':
-        return <span className="cell-top">{s.address_line2 ?? '—'}</span>;
-      case 'region':
-        return <span className="cell-top">{s.region ?? '—'}</span>;
-      case 'postal_code':
-        return <span className="cell-top">{s.postal_code ?? '—'}</span>;
-      case 'timezone':
-        return <span className="cell-top">{s.timezone ?? '—'}</span>;
-      case 'notes':
-        return <span className="cell-top">{s.notes || '—'}</span>;
-      case 'latitude':
-        return <span className="mono">{s.latitude ?? '—'}</span>;
-      case 'longitude':
-        return <span className="mono">{s.longitude ?? '—'}</span>;
+        return <span className="cell-top cell-line" title={titleFor(s.country)}>{s.country}</span>;
+      case 'dc_provider': {
+        const text = s.dc_provider ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'coords': {
+        const text = formatCoords(s.latitude, s.longitude);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'address_line1': {
+        const text = s.address_line1 ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'address_line2': {
+        const text = s.address_line2 ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'region': {
+        const text = s.region ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'postal_code': {
+        const text = s.postal_code ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'timezone': {
+        const text = s.timezone ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'notes': {
+        const text = s.notes || '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'latitude': {
+        const text = s.latitude ?? '—';
+        return <span className="mono cell-line" title={titleFor(String(text))}>{text}</span>;
+      }
+      case 'longitude': {
+        const text = s.longitude ?? '—';
+        return <span className="mono cell-line" title={titleFor(String(text))}>{text}</span>;
+      }
       default:
         return null;
     }
@@ -437,32 +452,29 @@ export default function Sites({ initialView = 'list' }: { initialView?: 'list' |
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load sites</b>{error}</div>}
 
       {!error && view === 'list' && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
-            <span className="col-head">
-              <button className="sortable" onClick={() => toggleSort('primary')}>
-                Name {caret('primary')}
-              </button>
+        <div className={`dir-list list-scroll${god.editing ? ' editing' : ''}`}>
+          <div className="list-head" style={rowStyle}>
+            <ColHead col={PRIMARY_COL} sortDir={sortKey === 'primary' ? sortDir : null}
+                     onToggleSort={() => toggleSort('primary')}>
               <ColumnMenu colKey="primary" label="Name"
                           allRows={sites ?? []} filters={filters}
                           text={siteCellText}
                           filter={filters.primary} onFilter={setFilter}
                           sortDir={sortKey === 'primary' ? sortDir : null}
                           onSort={(dir) => setSort('primary', dir)} />
-            </span>
+            </ColHead>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)}
+                       className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={sites ?? []} filters={filters}
                             text={siteCellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
             <span />
           </div>
@@ -479,8 +491,8 @@ export default function Sites({ initialView = 'list' }: { initialView?: 'list' |
             const open = openId === s.id;
             return (
               <div key={s.id} className={`dir-row ${open ? 'open' : ''} ${s.archived_at ? 'archived' : ''}`}
-                   {...vp} style={vp?.style}>
-                <div className="row-main" style={grid}
+                   {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}
                      onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : s.id); }}>
                   <div className="cell cell-primary">
                     {god.editing && godFieldFor('primary') && godFieldFor('primary2') ? (

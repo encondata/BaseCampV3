@@ -29,9 +29,12 @@ import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import { avatarGradient, initials } from '../lib/format';
 import {
   applyColumnOrder,
+  ColHead,
   ColumnsButton,
   ExportButton,
   exportCsv,
+  listGridStyle,
+  listScale,
   moveKey,
   useReorderDrag,
   useSearchHaystacks,
@@ -66,7 +69,20 @@ type LevelDef = WorkerLevelDef;
 // needs it — and the CHECK would still name this literal.
 const BLACKLIST = WORKER_BLACKLIST;
 
-const COLUMNS: ColumnDef[] = [
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
+
+// The always-shown avatar+name+contact cell — a fixed leading track
+// outside the column registry (same shape as the header markup below),
+// so it needs its own ColumnDef for listGridStyle/ColHead.
+export const PRIMARY_COL: ColumnDef = {
+  key: 'primary', label: 'Name', width: '2.2fr', default: true, min: 180,
+};
+
+// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
+// window, nav expanded).
+export const COLUMNS: ColumnDef[] = [
   { key: 'trade', label: 'Trade', width: '1.3fr', default: true },
   { key: 'level', label: 'Level', width: '1.2fr', default: true },
   { key: 'partner', label: 'Partner', width: '1.4fr', default: true },
@@ -117,7 +133,8 @@ const CSV_COLUMNS: [string, (w: WorkerItem) => string][] = [
 ];
 
 export default function Workers() {
-  const { can, godMode, maxRank } = useAuth();
+  const { can, godMode, maxRank, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const navigate = useNavigate();
   const god = useGodEdit();
   const pd = usePendingDeletes(godMode);
@@ -236,9 +253,6 @@ export default function Workers() {
     }
   }, [visible]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const canManage = can('workers', 'change');
   const canBulk = can('workers', 'add') && maxRank >= ADMIN_RANK;  // mirrors the API's GATE_BYPASS_RANK bar
 
@@ -248,8 +262,10 @@ export default function Workers() {
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = {
-    gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px`,
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
+  const rowStyle = {
+    gridTemplateColumns: grid.gridTemplateColumns,
+    minWidth: god.editing ? undefined : grid.minWidth,
   };
 
   const cellFor = (w: WorkerItem, key: string) => {
@@ -264,9 +280,15 @@ export default function Workers() {
       }
     }
     switch (key) {
-      case 'trade': return <span className="cell-top">{w.trade ?? '—'}</span>;
+      case 'trade': {
+        const text = w.trade ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'level': return <LevelBadge level={w.level} levels={levels} />;
-      case 'partner': return <span className="cell-top">{w.partner?.name ?? 'Direct'}</span>;
+      case 'partner': {
+        const text = w.partner?.name ?? 'Direct';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'status':
         return (
           <div className="chips">
@@ -282,8 +304,10 @@ export default function Workers() {
         return w.certs_expired > 0
           ? <span className="chip c-red"><span className="dot" />{w.certs_expired} expired</span>
           : <span className="mono">{w.cert_count}</span>;
-      case 'contact':
-        return <span className="mono">{w.contact_email ?? w.phone ?? '—'}</span>;
+      case 'contact': {
+        const text = w.contact_email ?? w.phone ?? '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default: return null;
     }
   };
@@ -331,32 +355,29 @@ export default function Workers() {
         </div>
       </div>
 
-      <div className="dir-list">
-        <div className="list-head" style={grid}>
-          <span className="col-head">
-            <button className="sortable" onClick={() => toggleSort('primary')}>
-              Name {caret('primary')}
-            </button>
+      <div className={`dir-list list-scroll${god.editing ? ' editing' : ''}`}>
+        <div className="list-head" style={rowStyle}>
+          <ColHead col={PRIMARY_COL} sortDir={sortKey === 'primary' ? sortDir : null}
+                   onToggleSort={() => toggleSort('primary')}>
             <ColumnMenu colKey="primary" label="Name"
                         allRows={workers ?? []} filters={filters}
                         text={cellText}
                         filter={filters.primary} onFilter={setFilter}
                         sortDir={sortKey === 'primary' ? sortDir : null}
                         onSort={(dir) => setSort('primary', dir)} />
-          </span>
+          </ColHead>
           {shownCols.map((c) => (
-            <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                  {...headerDrag.dragProps(c.key)}>
-              <button className="sortable" onClick={() => toggleSort(c.key)}>
-                {c.label} {caret(c.key)}
-              </button>
+            <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                     onToggleSort={() => toggleSort(c.key)}
+                     className={headerDrag.dropClass(c.key)}
+                     dragProps={headerDrag.dragProps(c.key)}>
               <ColumnMenu colKey={c.key} label={c.label}
                           allRows={workers ?? []} filters={filters}
                           text={cellText}
                           filter={filters[c.key]} onFilter={setFilter}
                           sortDir={sortKey === c.key ? sortDir : null}
                           onSort={(dir) => setSort(c.key, dir)} />
-            </span>
+            </ColHead>
           ))}
           <span />
         </div>
@@ -374,8 +395,8 @@ export default function Workers() {
           const open = openId === w.person_id;
           return (
             <div key={w.person_id} className={`dir-row ${open ? 'open' : ''}`}
-                 {...vp} style={vp?.style}>
-              <div className="row-main" style={grid}
+                 {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+              <div className="row-main" style={rowStyle}
                    onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : w.person_id); }}>
                 {/* Primary cell has no god-edit descriptor: display_name comes from
                     the Person record and is edited via PUT /users/{id}/profile — a
