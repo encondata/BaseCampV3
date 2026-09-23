@@ -23,6 +23,11 @@
  *     mini-list-head and nothing else; the box model itself is the
  *     primitive's alone, so a page rule that restates it (in full or by
  *     one side/axis) only wins by import order, not intent.
+ * (h) every .tsx under pages/ or components/ that renders
+ *     className="list-head" imports listGridStyle from lib/listTools,
+ *     contains "list-scroll", and contains no className="sortable" (the
+ *     sortable button is ColHead's alone); lib/listTools.tsx and
+ *     components/DataTable.tsx are exempt.
  * Deliberate exceptions live in listTypography.allow.json with a reason.
  * Violations print a ready-to-paste allowlist snippet — but the fix is
  * almost always to use the tokens/primitives, not to allowlist.
@@ -616,6 +621,23 @@ describe('list typography guardrail', () => {
       .filter((v) => !allowedCoClass(v.file, v.selector))
       .map((v) => ({ file: v.file, selector: v.selector, reason: '' }));
     expect(bad, `mini-row co-class restates the primitive's own box model:\n${snippet(bad)}`).toEqual([]);
+  });
+
+  it('(h) every list-head list uses listGridStyle, list-scroll, and ColHead', () => {
+    const files = [...walk(join(SRC, 'pages'), /\.tsx$/), ...walk(join(SRC, 'components'), /\.tsx$/)]
+      .filter((f) => !/\.test\.tsx$/.test(f) && !/components\/DataTable\.tsx$/.test(f));
+    const failures: string[] = [];
+    for (const f of files) {
+      const src = readFileSync(f, 'utf8');
+      if (!src.includes('className="list-head"')) continue;
+      const missing = [
+        !/\blistGridStyle\b/.test(src) && 'listGridStyle import/use',
+        !src.includes('list-scroll') && 'list-scroll class',
+        src.includes('className="sortable"') && 'raw className="sortable" (use ColHead)',
+      ].filter(Boolean);
+      if (missing.length) failures.push(`${rel(f)}: ${missing.join(', ')}`);
+    }
+    expect(failures, failures.join('\n')).toEqual([]);
   });
 
   it('every allowlist entry carries a reason', () => {
