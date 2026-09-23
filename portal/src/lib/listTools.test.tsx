@@ -5,12 +5,13 @@
  * csvCell (exportCsv's field encoder incl. the OWASP formula-injection guard).
  */
 
-import { cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  applyColumnOrder, ColumnsButton, csvCell, moveKey, useReorderDrag, useSearchHaystacks,
-  type ColumnDef,
+  applyColumnOrder, ColHead, ColumnsButton, csvCell, moveKey, useReorderDrag, useSearchHaystacks,
+  columnFloor, listGridStyle, listScale,
+  type ColumnDef, type HeaderDragProps,
 } from './listTools';
 
 // The pinned jsdom here has no DragEvent constructor, so @testing-library/dom's
@@ -62,6 +63,74 @@ describe('moveKey', () => {
     expect(moveKey(['a', 'b'], 'a', 'a', true)).toEqual(['a', 'b']);
     expect(moveKey(['a', 'b'], 'zzz', 'b', true)).toEqual(['a', 'b']);
     expect(moveKey(['a', 'b'], 'a', 'zzz', true)).toEqual(['a', 'b']);
+  });
+});
+
+describe('columnFloor / listGridStyle', () => {
+  const c = (over: Partial<ColumnDef>): ColumnDef =>
+    ({ key: 'k', label: 'Label', width: '1fr', default: true, ...over });
+
+  it('derives a floor from the label: ceil(chars * 7.4) + 30, never below 72', () => {
+    expect(columnFloor(c({ label: 'Serial' }))).toBe(75);   // 6 chars → 45 + 30
+    expect(columnFloor(c({ label: 'ID' }))).toBe(72);       // 2 chars → 45 → floor 72
+  });
+
+  it('derives the floor from the short label when one is present', () => {
+    expect(columnFloor(c({ label: 'Destination Rack', short: 'Dest Rack' }))).toBe(97); // 9 chars → 67 + 30
+  });
+
+  it('an explicit min wins when larger; the derived floor wins when the explicit one is smaller', () => {
+    expect(columnFloor(c({ label: 'Serial', min: 120 }))).toBe(120);
+    expect(columnFloor(c({ label: 'Serial', min: 50 }))).toBe(75);
+  });
+
+  it('wraps fr columns in minmax() with their floor and passes fixed tracks through untouched', () => {
+    const s = listGridStyle(
+      [c({ key: 'a', label: 'Serial', width: '1.1fr' }), c({ key: 'b', label: 'X', width: '88px' })],
+      ['30px'],
+    );
+    expect(s.gridTemplateColumns).toBe('minmax(75px, 1.1fr) 88px 30px');
+  });
+
+  it('minWidth sums floors, fixed px tracks, one gap between each pair of tracks, and 40px of padding', () => {
+    const s = listGridStyle(
+      [c({ key: 'a', label: 'Serial', width: '1.1fr' }), c({ key: 'b', label: 'X', width: '88px' })],
+      ['30px'],
+    );
+    // 75 + 88 + 30 + 2 gaps × 12 + 40
+    expect(s.minWidth).toBe(257);
+  });
+
+  it('honors a custom gap', () => {
+    const s = listGridStyle([c({ key: 'a', label: 'Serial' }), c({ key: 'b', label: 'Serial' })], [], 16);
+    expect(s.minWidth).toBe(75 + 75 + 16 + 40);
+  });
+
+  it('an unrecognized width passes through and still contributes its floor to minWidth', () => {
+    const s = listGridStyle([c({ label: 'Serial', width: 'auto' })]);
+    expect(s.gridTemplateColumns).toBe('auto');
+    expect(s.minWidth).toBe(75 + 40);
+  });
+
+  it('an empty column set is just the padding', () => {
+    expect(listGridStyle([])).toEqual({ gridTemplateColumns: '', minWidth: 40 });
+  });
+
+  it('listScale maps the list_size preference to directory.css --list-scale', () => {
+    expect(listScale('small')).toBe(0.9);
+    expect(listScale(undefined)).toBe(1);
+    expect(listScale('large')).toBe(1.15);
+    expect(listScale('xlarge')).toBe(1.3);
+  });
+
+  it('scales every derived floor (ceil) while leaving fixed px tracks untouched', () => {
+    const s = listGridStyle(
+      [c({ key: 'a', label: 'Serial', width: '1.1fr' }), c({ key: 'b', label: 'X', width: '88px' })],
+      ['30px'], 12, 1.3,
+    );
+    // 75 * 1.3 = 97.5 → ceil 98
+    expect(s.gridTemplateColumns).toBe('minmax(98px, 1.1fr) 88px 30px');
+    expect(s.minWidth).toBe(98 + 88 + 30 + 24 + 40);
   });
 });
 
@@ -235,5 +304,96 @@ describe('csvCell formula-injection guard', () => {
     expect(csvCell('-5')).toBe('-5');
     expect(csvCell('-5.25')).toBe('-5.25');
     expect(csvCell('+12')).toBe('+12');
+  });
+});
+
+describe('ColHead / useFitLabel', () => {
+  let resizeCallbacks: (() => void)[] = [];
+  beforeEach(() => {
+    resizeCallbacks = [];
+    class ResizeObserverStub {
+      constructor(cb: () => void) { resizeCallbacks.push(cb); }
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const setSize = (el: Element | null, prop: 'clientWidth' | 'offsetWidth', value: number) =>
+    Object.defineProperty(el, prop, { configurable: true, get: () => value });
+  const fire = () => act(() => { resizeCallbacks.forEach((cb) => cb()); });
+  const wide: ColumnDef = {
+    key: 'dr', label: 'Destination Rack', short: 'Dest Rack', width: '1fr', default: true,
+  };
+
+  it('shows the short label when the long one would overflow, and the long one again when room returns', () => {
+    const { container } = render(<ColHead col={wide} sortDir={null} onToggleSort={() => {}} />);
+    const cell = container.querySelector('.col-head');
+    const measure = container.querySelector('.col-head-measure');
+    const button = () => screen.getByRole('button');
+    expect(button().textContent?.trim()).toBe('Destination Rack');
+
+    setSize(measure, 'offsetWidth', 120);
+    setSize(cell, 'clientWidth', 90);
+    fire();
+    expect(button().textContent?.trim()).toBe('Dest Rack');
+    expect(button().getAttribute('title')).toBe('Destination Rack');
+
+    setSize(cell, 'clientWidth', 200);
+    fire();
+    expect(button().textContent?.trim()).toBe('Destination Rack');
+    expect(button().getAttribute('title')).toBeNull();
+  });
+
+  it('subtracts the column-menu trigger from the available width', () => {
+    const { container } = render(
+      <ColHead col={wide} sortDir={null} onToggleSort={() => {}}>
+        <button type="button" className="colmenu-trigger" aria-label="menu" />
+      </ColHead>,
+    );
+    setSize(container.querySelector('.col-head-measure'), 'offsetWidth', 100);
+    setSize(container.querySelector('.colmenu-trigger'), 'offsetWidth', 20);
+    setSize(container.querySelector('.col-head'), 'clientWidth', 110); // 110 - 20 - 2 = 88 < 100
+    fire();
+    expect(screen.getByRole('button', { name: /Dest Rack/ })).not.toBeNull();
+  });
+
+  it('a column without a short label renders no measuring span and never swaps', () => {
+    const col: ColumnDef = { key: 's', label: 'Serial', width: '1fr', default: true };
+    const { container } = render(<ColHead col={col} sortDir={1} onToggleSort={() => {}} />);
+    expect(container.querySelector('.col-head-measure')).toBeNull();
+    expect(resizeCallbacks).toHaveLength(0);
+    expect(screen.getByRole('button').textContent).toContain('Serial');
+    expect(screen.getByRole('button').textContent).toContain('▲');
+  });
+
+  it('without ResizeObserver (jsdom default) the long label renders and nothing throws', () => {
+    vi.unstubAllGlobals();
+    render(<ColHead col={wide} sortDir={-1} onToggleSort={() => {}} />);
+    expect(screen.getByRole('button').textContent).toContain('Destination Rack');
+    expect(screen.getByRole('button').textContent).toContain('▼');
+  });
+
+  it('forwards className, drag props, and the sort toggle', () => {
+    const onToggleSort = vi.fn();
+    const onDragStart = vi.fn();
+    const { container } = render(
+      <ColHead col={wide} sortDir={null} onToggleSort={onToggleSort} className="drop-before"
+               dragProps={{ draggable: true, onDragStart } as unknown as HeaderDragProps} />,
+    );
+    const cell = container.querySelector('.col-head') as HTMLElement;
+    expect(cell.className).toBe('col-head drop-before');
+    expect(cell.getAttribute('draggable')).toBe('true');
+    fireEvent.click(screen.getByRole('button'));
+    expect(onToggleSort).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders a plain label (no button) when the header is not sortable', () => {
+    const col: ColumnDef = { key: 'n', label: 'Name', width: '1fr', default: true };
+    const { container } = render(<ColHead col={col} />);
+    expect(container.querySelector('button')).toBeNull();
+    const label = container.querySelector('.col-head .col-label') as HTMLElement;
+    expect(label.textContent?.trim()).toBe('Name');
   });
 });

@@ -10,7 +10,8 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
-import type { InitiativeItem, UiPreferences } from '../lib/api';
+import type { InitiativeAssetRow, InitiativeItem, UiPreferences } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => ({
   can: (_resource: string, _action?: string) => true,
@@ -72,6 +73,28 @@ const move = (over: Partial<InitiativeItem> = {}): InitiativeItem => ({
   ...over,
 });
 
+const asset = (over: Partial<InitiativeAssetRow> = {}): InitiativeAssetRow => ({
+  id: 'ia1', asset_id: 'a1',
+  priority_wave: null, disposition: null, owner: null,
+  source_pod: null, destination_pod: null,
+  source_rack: 'rack-a1', source_ru: null,
+  source_verified: null, source_position: null,
+  destination_rack: null, destination_ru: null,
+  destination_verified: null, destination_position: null,
+  cable_info: null, vendor_involved: null,
+  status: 'staged', status_label: 'Staged', status_color: '#178a4c',
+  created_at: '2026-09-01T10:00:00Z', updated_at: '2026-09-01T10:00:00Z',
+  asset: {
+    id: 'a1', legacy_id: null, serial_number: 'SN-0001', name: 'switch-01',
+    rfid_tag: null, pod_number: null, model_make: 'Cisco', model_name: 'C9300',
+    ru_size: 1, model_form_factor: null, location_detail: null, client_name: null,
+    model_category: 'network', model_category_label: 'Network',
+    model_category_color: '#3b82f6',
+    status: 'active', status_label: 'Active', status_color: '#178a4c',
+  },
+  ...over,
+});
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
@@ -105,4 +128,23 @@ it('renders a dash for a move with no scheduled dates', async () => {
   api.listAssetStatuses.mockResolvedValue([]);
   render(<MemoryRouter><MoveDashboard /></MemoryRouter>);
   expect(await screen.findByText('— → —')).toBeTruthy();
+});
+
+it('asset roster: column floors, shared template + minimum, sideways-scroll card', async () => {
+  api.listInitiatives.mockResolvedValue([move()]);
+  api.listInitiativeAssets.mockResolvedValue([asset()]);
+  api.listAssetStatuses.mockResolvedValue([]);
+  render(<MemoryRouter><MoveDashboard /></MemoryRouter>);
+
+  const row = (await screen.findByText('switch-01')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // LIST_FIT.dashPanel: .dash-panel (dashboard.css: 18px 20px 20px padding,
+  // 1px border) takes 42px off the measured 1174px page width.
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.dashPanel);
 });

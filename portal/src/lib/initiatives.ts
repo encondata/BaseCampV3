@@ -279,28 +279,37 @@ export function INITIATIVE_GOD_FIELDS(
 const BLANK = '—';
 
 /** Default columns mirror v2's MoveDetail grid; optional columns are the
- *  remaining per-move + asset fields, offered via the Columns picker. */
+ *  remaining per-move + asset fields, offered via the Columns picker.
+ *  `min` floors on the nine defaults are sized so that, with the 88px
+ *  actions track, the 30px chevron track, ten 12px gaps, and 40px of
+ *  padding, the row minimum is 1134px — exactly LIST_FIT.initPanel, what
+ *  the initiative detail page's .init-panel gives a list in a 14-inch
+ *  MacBook Pro window with the nav expanded (1512px viewport, 248px nav,
+ *  44px page padding, 18px panel padding and a 1px panel border each
+ *  side; spec 2026-09-23-list-column-floors). `short`
+ *  is the header shown once the long label would overflow its track.
+ *  Optional columns take the derived floor. */
 export const MOVE_ASSET_COLUMNS: ColumnDef[] = [
-  { key: 'asset_id', label: 'Asset ID', width: '0.8fr', default: true },
-  { key: 'asset_name', label: 'Asset Name', width: '1.3fr', default: true },
-  { key: 'serial', label: 'Serial', width: '1.1fr', default: true },
-  { key: 'make_model', label: 'Make/Model', width: '1.2fr', default: true },
-  { key: 'status', label: 'Status', width: '1.1fr', default: true },
-  { key: 'source_rack', label: 'Source Rack', width: '1fr', default: true },
-  { key: 'source_ru', label: 'Source RU', width: '0.8fr', default: true },
-  { key: 'destination_rack', label: 'Destination Rack', width: '1fr', default: true },
-  { key: 'destination_ru', label: 'Destination RU', width: '0.9fr', default: true },
+  { key: 'asset_id', label: 'Asset ID', width: '0.8fr', default: true, min: 90 },
+  { key: 'asset_name', label: 'Asset Name', width: '1.3fr', default: true, min: 120 },
+  { key: 'serial', label: 'Serial', width: '1.1fr', default: true, min: 100 },
+  { key: 'make_model', label: 'Make/Model', width: '1.2fr', default: true, min: 104 },
+  { key: 'status', label: 'Status', width: '1.1fr', default: true, min: 90 },
+  { key: 'source_rack', label: 'Source Rack', short: 'Src Rack', width: '1fr', default: true, min: 92 },
+  { key: 'source_ru', label: 'Source RU', short: 'Src RU', width: '0.8fr', default: true, min: 76 },
+  { key: 'destination_rack', label: 'Destination Rack', short: 'Dest Rack', width: '1fr', default: true, min: 100 },
+  { key: 'destination_ru', label: 'Destination RU', short: 'Dest RU', width: '0.9fr', default: true, min: 84 },
   { key: 'wave', label: 'Wave', width: '0.8fr', default: false },
   { key: 'disposition', label: 'Disposition', width: '1.1fr', default: false },
   { key: 'owner', label: 'Owner', width: '1fr', default: false },
-  { key: 'source_verified', label: 'Source Verified', width: '0.9fr', default: false },
-  { key: 'source_position', label: 'Source Position', width: '1fr', default: false },
-  { key: 'source_pod', label: 'Source Pod', width: '0.8fr', default: false },
-  { key: 'destination_verified', label: 'Destination Verified', width: '1fr', default: false },
-  { key: 'destination_position', label: 'Destination Position', width: '1.1fr', default: false },
-  { key: 'destination_pod', label: 'Destination Pod', width: '0.9fr', default: false },
+  { key: 'source_verified', label: 'Source Verified', short: 'Src Verified', width: '0.9fr', default: false },
+  { key: 'source_position', label: 'Source Position', short: 'Src Position', width: '1fr', default: false },
+  { key: 'source_pod', label: 'Source Pod', short: 'Src Pod', width: '0.8fr', default: false },
+  { key: 'destination_verified', label: 'Destination Verified', short: 'Dest Verified', width: '1fr', default: false },
+  { key: 'destination_position', label: 'Destination Position', short: 'Dest Position', width: '1.1fr', default: false },
+  { key: 'destination_pod', label: 'Destination Pod', short: 'Dest Pod', width: '0.9fr', default: false },
   { key: 'cable_info', label: 'Cable Info', width: '1.2fr', default: false },
-  { key: 'vendor_involved', label: 'Vendor Involved', width: '1fr', default: false },
+  { key: 'vendor_involved', label: 'Vendor Involved', short: 'Vendor', width: '1fr', default: false },
   { key: 'asset_status', label: 'Asset Status', width: '1.1fr', default: false },
   { key: 'rfid_tag', label: 'RFID Tag', width: '1fr', default: false },
   { key: 'location', label: 'Location', width: '1.1fr', default: false },

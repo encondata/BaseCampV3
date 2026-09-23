@@ -39,6 +39,7 @@ import {
   buildLinkMetaPatch,
   buildNewContactPersonPayload,
   canEditExternalPerson,
+  COLUMNS,
   distinctFunctions,
   distinctTitles,
   externalCellText,
@@ -47,6 +48,7 @@ import {
   LOGIN_META,
   orgKey,
   parseOrgKey,
+  PRIMARY_COL,
   typeLabel,
 } from '../lib/external';
 import { avatarGradient, initials } from '../lib/format';
@@ -58,14 +60,17 @@ import {
 } from '../lib/columnMenu';
 import {
   applyColumnOrder,
+  ColHead,
   ColumnsButton,
   ExportButton,
   exportCsv,
+  listGridStyle,
+  listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
-  type ColumnDef,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
@@ -81,16 +86,6 @@ const PILLS = [
   { key: 'active', label: 'Active login' },
   { key: 'disabled', label: 'Disabled login' },
   { key: 'none', label: 'No login' },
-];
-
-const COLUMNS: ColumnDef[] = [
-  { key: 'orgs', label: 'Orgs', width: '1.8fr', default: true },
-  { key: 'type', label: 'Type', width: '0.9fr', default: true },
-  { key: 'title', label: 'Title', width: '1.3fr', default: false },
-  { key: 'functions', label: 'Functions', width: '1.6fr', default: true },
-  { key: 'email', label: 'Email', width: '1.6fr', default: true },
-  { key: 'phone', label: 'Phone', width: '1.1fr', default: false },
-  { key: 'login', label: 'Login', width: '1fr', default: true },
 ];
 
 // Every column the page can offer plus 'primary' (the always-shown
@@ -153,7 +148,8 @@ const GRANT_ERRORS: Record<string, string> = {
 };
 
 export default function External() {
-  const { can, godMode } = useAuth();
+  const { can, godMode, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const god = useGodEdit();
   const pd = usePendingDeletes(godMode);
   const location = useLocation();
@@ -312,16 +308,17 @@ export default function External() {
     () => (editId ? people.find((p) => p.person_id === editId) ?? null : null),
     [people, editId]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
+  const rowStyle = {
+    gridTemplateColumns: grid.gridTemplateColumns,
+    minWidth: god.editing ? undefined : grid.minWidth,
+  };
 
   const cellFor = (p: ExternalPersonItem, key: string) => {
     if (god.editing) {
@@ -346,10 +343,14 @@ export default function External() {
             ))}
           </div>
         );
-      case 'type':
-        return <span className="cell-top">{typeLabel(p.links)}</span>;
-      case 'title':
-        return <span className="cell-top">{distinctTitles(p.links).join(', ') || '—'}</span>;
+      case 'type': {
+        const text = typeLabel(p.links);
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'title': {
+        const text = distinctTitles(p.links).join(', ') || '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'functions':
         return (
           <div className="chips">
@@ -357,10 +358,14 @@ export default function External() {
             {distinctFunctions(p.links).map((f) => <span key={f} className="chip tag">{f}</span>)}
           </div>
         );
-      case 'email':
-        return <span className="mono">{p.email ?? '—'}</span>;
-      case 'phone':
-        return <span className="mono">{p.phone ?? '—'}</span>;
+      case 'email': {
+        const text = p.email ?? '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'phone': {
+        const text = p.phone ?? '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'login': {
         const m = LOGIN_META[p.login_status];
         return (
@@ -420,34 +425,31 @@ export default function External() {
         </div>
       </div>
 
-      <div className="dir-list">
-        <div className="list-head" style={grid}>
-          <span className="col-head">
-            <button className="sortable" onClick={() => toggleSort('primary')}>
-              Member {caret('primary')}
-            </button>
+      <div className={`dir-list list-scroll${god.editing ? ' editing' : ''}`}>
+        <div className="list-head" style={rowStyle}>
+          <ColHead col={PRIMARY_COL} sortDir={sortKey === 'primary' ? sortDir : null}
+                   onToggleSort={() => toggleSort('primary')}>
             <ColumnMenu colKey="primary" label="Member"
                         allRows={people} filters={filters}
                         text={externalCellText}
                         filter={filters.primary} onFilter={setFilter}
                         sortDir={sortKey === 'primary' ? sortDir : null}
                         onSort={(dir) => setSort('primary', dir)} />
-          </span>
+          </ColHead>
           {shownCols.map((c) => (
-            <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                  {...headerDrag.dragProps(c.key)}>
-              <button className="sortable" onClick={() => toggleSort(c.key)}>
-                {c.label} {caret(c.key)}
-              </button>
+            <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                     onToggleSort={() => toggleSort(c.key)}
+                     className={headerDrag.dropClass(c.key)}
+                     dragProps={headerDrag.dragProps(c.key)}>
               <ColumnMenu colKey={c.key} label={c.label}
                           allRows={people} filters={filters}
                           text={externalCellText}
                           filter={filters[c.key]} onFilter={setFilter}
                           sortDir={sortKey === c.key ? sortDir : null}
                           onSort={(dir) => setSort(c.key, dir)} />
-            </span>
+            </ColHead>
           ))}
-          <span />
+          <span className="col-head" aria-hidden="true" />
         </div>
 
         {error && <div className="dir-empty"><b>Cannot load</b>{error}</div>}
@@ -463,8 +465,8 @@ export default function External() {
           const open = openId === p.person_id;
           return (
             <div key={p.person_id} className={`dir-row ${open ? 'open' : ''}`}
-                 {...vp} style={vp?.style}>
-              <div className="row-main" style={grid}
+                 {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+              <div className="row-main" style={rowStyle}
                    onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : p.person_id); }}>
                 <div className="cell cell-primary">
                   <div className="dir-avatar"

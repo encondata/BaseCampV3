@@ -5,6 +5,13 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import type { LabelRun } from '../../lib/api';
 import LabelRunsList from './LabelRunsList';
+import { LIST_FIT } from '../../lib/listTools';
+
+/** LabelRunsList reads `preferences.list_size` for the shared column floors
+ *  (listScale, lib/listTools); nothing else in this tree touches auth. */
+vi.mock('../../auth/AuthContext', () => ({
+  useAuth: () => ({ preferences: { list_size: 'default' } }),
+}));
 
 afterEach(cleanup);
 
@@ -48,4 +55,18 @@ it('"View errors" row action appears only when the run has errors, and calls onV
   await user.click(triggers[0]);
   await user.click(await screen.findByText('View errors'));
   expect(onViewErrors).toHaveBeenCalledWith(expect.objectContaining({ id: 'r-err' }));
+});
+
+it('column floors, shared template + minimum, sideways-scroll card', () => {
+  render(<LabelRunsList runs={[run({})]} typeLabel={typeLabel} onViewErrors={() => {}} />);
+  const row = screen.getByText('NAP11').closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Fit: default columns + trailing ≤ LIST_FIT.page (1172px, .portal-page).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });

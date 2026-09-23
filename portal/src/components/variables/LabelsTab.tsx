@@ -16,6 +16,7 @@ import {
   VOCAB_KIND_LABELS, metaSummary, placeholderSearchText, vocabSearchText,
   type VocabKind,
 } from '../../lib/labels';
+import { ColHead, listGridStyle, listScale, titleFor, type ColumnDef } from '../../lib/listTools';
 import LabelPlaceholderEditModal from './LabelPlaceholderEditModal';
 import LabelVocabEditModal from './LabelVocabEditModal';
 
@@ -95,12 +96,32 @@ const VOCAB_SINGULAR: Record<VocabKind, string> = {
   type: 'type', size: 'size', dpi: 'DPI', language: 'language',
 };
 
+// No column registry pre-migration (hand-written header spans) — this
+// local COLUMNS mirrors them (recipe R1). Read-only, unsortable list —
+// headers render as plain ColHead spans (no onToggleSort). Trailing 30px
+// track is the row's expansion chevron.
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — this list sits
+// in the Variables page's tab body, the .access-tab-panel div Variables.tsx
+// borrows from access.css, which carries no padding of its own beyond
+// .portal-page's; at a 1512px window, nav expanded).
+const VOCAB_COLUMNS: ColumnDef[] = [
+  { key: 'key', label: 'Key', width: '1fr', default: true, min: 100 },
+  { key: 'label', label: 'Label', width: '1.2fr', default: true, min: 140 },
+  { key: 'description', label: 'Description', width: '2fr', default: true },
+  { key: 'meta', label: 'Meta', width: '1.2fr', default: true },
+  { key: 'order', label: 'Order', width: '0.6fr', default: true },
+  { key: 'active', label: 'Active', width: '0.7fr', default: true },
+  { key: 'in_use', label: 'In use', width: '0.7fr', default: true },
+];
+const VOCAB_TRAILING = ['30px'];
+
 function VocabPane({ kind, rows, onSaved }: {
   kind: VocabKind;
   rows: LabelVocab[];
   onSaved: () => Promise<void> | void;
 }) {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('devtools', 'add');
   const canChange = can('devtools', 'change');
 
@@ -119,7 +140,8 @@ function VocabPane({ kind, rows, onSaved }: {
     if (openKey && !visible.some((v) => v.key === openKey)) setOpenKey(null);
   }, [visible, openKey]);
 
-  const grid = { gridTemplateColumns: '1fr 1.2fr 2fr 1.2fr 0.6fr 0.7fr 0.7fr 30px' };
+  const grid = listGridStyle(VOCAB_COLUMNS, VOCAB_TRAILING, undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   return (
     <>
@@ -137,16 +159,10 @@ function VocabPane({ kind, rows, onSaved }: {
         )}
       </div>
 
-      <div className="dir-list">
-        <div className="list-head" style={grid}>
-          <span>Key</span>
-          <span>Label</span>
-          <span>Description</span>
-          <span>Meta</span>
-          <span>Order</span>
-          <span>Active</span>
-          <span>In use</span>
-          <span />
+      <div className="dir-list list-scroll">
+        <div className="list-head" style={rowStyle}>
+          {VOCAB_COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
+          <span className="col-head" aria-hidden="true" />
         </div>
 
         {visible.length === 0 && (
@@ -155,20 +171,26 @@ function VocabPane({ kind, rows, onSaved }: {
 
         {visible.map((v) => {
           const open = openKey === v.key;
+          const meta = metaSummary(v) || '—';
           return (
-            <div key={v.key} className={`dir-row ${open ? 'open' : ''}`}>
-              <div className="row-main" style={grid} onClick={() => setOpenKey(open ? null : v.key)}>
-                <div className="cell"><span className="mono">{v.key}</span></div>
-                <div className="cell"><span className="cell-top">{v.label}</span></div>
-                <div className="cell"><span className="cell-sub">{v.description || '—'}</span></div>
-                <div className="cell"><span className="mono">{metaSummary(v) || '—'}</span></div>
-                <div className="cell"><span className="mono">{v.sort_order}</span></div>
+            <div key={v.key} className={`dir-row ${open ? 'open' : ''}`}
+                 style={{ minWidth: rowStyle.minWidth }}>
+              <div className="row-main" style={rowStyle} onClick={() => setOpenKey(open ? null : v.key)}>
+                <div className="cell"><span className="mono cell-line" title={titleFor(v.key)}>{v.key}</span></div>
+                <div className="cell"><span className="cell-top cell-line" title={titleFor(v.label)}>{v.label}</span></div>
+                <div className="cell">
+                  <span className="cell-sub cell-line" title={titleFor(v.description || '—')}>
+                    {v.description || '—'}
+                  </span>
+                </div>
+                <div className="cell"><span className="mono cell-line" title={titleFor(meta)}>{meta}</span></div>
+                <div className="cell"><span className="mono cell-line">{v.sort_order}</span></div>
                 <div className="cell">
                   <span className={`chip ${v.is_active ? 'c-green' : 'c-slate'}`}>
                     {v.is_active ? 'Active' : 'Inactive'}
                   </span>
                 </div>
-                <div className="cell"><span className="mono">{v.usage_count ?? 0}</span></div>
+                <div className="cell"><span className="mono cell-line">{v.usage_count ?? 0}</span></div>
                 <div className="cell chevron-cell"><ChevronIcon /></div>
               </div>
               <div className="detail">
@@ -241,12 +263,32 @@ function VocabRowDetail({ value, canEdit, onEdit }: {
 
 /* ═══════════════════════════ Placeholder pane ═══════════════════════════ */
 
+// No column registry pre-migration (hand-written header spans) — this
+// local COLUMNS mirrors them (recipe R1). Read-only, unsortable list —
+// headers render as plain ColHead spans (no onToggleSort). Trailing 30px
+// track is the row's expansion chevron.
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — this list sits
+// in the Variables page's tab body, the .access-tab-panel div Variables.tsx
+// borrows from access.css, which carries no padding of its own beyond
+// .portal-page's; at a 1512px window, nav expanded).
+const PLACEHOLDER_COLUMNS: ColumnDef[] = [
+  { key: 'key', label: 'Key', width: '1fr', default: true, min: 100 },
+  { key: 'label', label: 'Label', width: '1.2fr', default: true, min: 140 },
+  { key: 'sample', label: 'Sample', width: '1fr', default: true },
+  { key: 'applies_to', label: 'Applies to', width: '1.6fr', default: true },
+  { key: 'order', label: 'Order', width: '0.6fr', default: true },
+  { key: 'active', label: 'Active', width: '0.7fr', default: true },
+  { key: 'in_use', label: 'In use', width: '0.7fr', default: true },
+];
+const PLACEHOLDER_TRAILING = ['30px'];
+
 function PlaceholderPane({ rows, typeOptions, onSaved }: {
   rows: LabelPlaceholder[];
   typeOptions: LabelVocab[];
   onSaved: () => Promise<void> | void;
 }) {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('devtools', 'add');
   const canChange = can('devtools', 'change');
 
@@ -265,7 +307,8 @@ function PlaceholderPane({ rows, typeOptions, onSaved }: {
     if (openKey && !visible.some((p) => p.key === openKey)) setOpenKey(null);
   }, [visible, openKey]);
 
-  const grid = { gridTemplateColumns: '1fr 1.2fr 1fr 1.6fr 0.6fr 0.7fr 0.7fr 30px' };
+  const grid = listGridStyle(PLACEHOLDER_COLUMNS, PLACEHOLDER_TRAILING, undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   return (
     <>
@@ -281,16 +324,10 @@ function PlaceholderPane({ rows, typeOptions, onSaved }: {
         )}
       </div>
 
-      <div className="dir-list">
-        <div className="list-head" style={grid}>
-          <span>Key</span>
-          <span>Label</span>
-          <span>Sample</span>
-          <span>Applies to</span>
-          <span>Order</span>
-          <span>Active</span>
-          <span>In use</span>
-          <span />
+      <div className="dir-list list-scroll">
+        <div className="list-head" style={rowStyle}>
+          {PLACEHOLDER_COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
+          <span className="col-head" aria-hidden="true" />
         </div>
 
         {visible.length === 0 && (
@@ -299,25 +336,27 @@ function PlaceholderPane({ rows, typeOptions, onSaved }: {
 
         {visible.map((p) => {
           const open = openKey === p.key;
+          const sample = p.sample_value || '—';
           return (
-            <div key={p.key} className={`dir-row ${open ? 'open' : ''}`}>
-              <div className="row-main" style={grid} onClick={() => setOpenKey(open ? null : p.key)}>
-                <div className="cell"><span className="mono">{p.key}</span></div>
-                <div className="cell"><span className="cell-top">{p.label}</span></div>
-                <div className="cell"><span className="mono">{p.sample_value || '—'}</span></div>
+            <div key={p.key} className={`dir-row ${open ? 'open' : ''}`}
+                 style={{ minWidth: rowStyle.minWidth }}>
+              <div className="row-main" style={rowStyle} onClick={() => setOpenKey(open ? null : p.key)}>
+                <div className="cell"><span className="mono cell-line" title={titleFor(p.key)}>{p.key}</span></div>
+                <div className="cell"><span className="cell-top cell-line" title={titleFor(p.label)}>{p.label}</span></div>
+                <div className="cell"><span className="mono cell-line" title={titleFor(sample)}>{sample}</span></div>
                 <div className="cell">
                   <div className="chips">
                     {p.applies_to.length === 0 && <span className="chip tag">—</span>}
                     {p.applies_to.map((t) => <span key={t} className="chip tag">{t}</span>)}
                   </div>
                 </div>
-                <div className="cell"><span className="mono">{p.sort_order}</span></div>
+                <div className="cell"><span className="mono cell-line">{p.sort_order}</span></div>
                 <div className="cell">
                   <span className={`chip ${p.is_active ? 'c-green' : 'c-slate'}`}>
                     {p.is_active ? 'Active' : 'Inactive'}
                   </span>
                 </div>
-                <div className="cell"><span className="mono">{p.usage_count ?? 0}</span></div>
+                <div className="cell"><span className="mono cell-line">{p.usage_count ?? 0}</span></div>
                 <div className="cell chevron-cell"><ChevronIcon /></div>
               </div>
               <div className="detail">

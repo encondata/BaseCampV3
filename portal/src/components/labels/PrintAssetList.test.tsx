@@ -42,8 +42,12 @@ function setup(over: Partial<Parameters<typeof PrintAssetList>[0]> = {}) {
 describe('PrintAssetList', () => {
   it('renders V2 columns plus Label status chips', () => {
     setup();
+    // Scoped to `.sortable` (the visible header label/button) — a short-label
+    // column (Source rack) also renders a hidden `.col-head-measure` clone of
+    // its full label for the fit check, which would otherwise double-match.
+    const head = document.querySelector('.list-head') as HTMLElement;
     for (const label of ['Asset ID', 'Name', 'Serial', 'Make', 'Model', 'Source rack', 'RU', 'Status', 'Label']) {
-      expect(screen.getByText(label)).toBeTruthy();
+      expect(within(head).getByText(label, { selector: '.sortable' })).toBeTruthy();
     }
     expect(screen.getByText('38001')).toBeTruthy();
     expect(screen.getByText('core-switch')).toBeTruthy();
@@ -162,5 +166,20 @@ describe('PrintAssetList', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     expect(h2.onRefresh).toHaveBeenCalledTimes(1);
     expect(h.onRefresh).not.toHaveBeenCalled();
+  });
+
+  it('column floors, shared template + minimum, sideways-scroll card', () => {
+    setup();
+    const row = screen.getByText('core-switch').closest('.dir-row') as HTMLElement;
+    const card = row.closest('.dir-list') as HTMLElement;
+    expect(card.classList.contains('list-scroll')).toBe(true);
+    const head = card.querySelector('.list-head') as HTMLElement;
+    const main = row.querySelector('.row-main') as HTMLElement;
+    expect(head.style.gridTemplateColumns).toMatch(/^32px /);
+    expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+    expect(row.style.minWidth).toBe(head.style.minWidth);
+    // Fit: default columns + trailing ≤ 1126px (.plabels-card: 1174 less
+    // its 22px padding and 1px border each side, less 2px safety).
+    expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1126);
   });
 });

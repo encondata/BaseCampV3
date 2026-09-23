@@ -41,10 +41,14 @@ import {
 } from '../lib/columnMenu';
 import {
   applyColumnOrder,
+  ColHead,
   ColumnsButton,
   ExportButton,
   exportCsv,
+  listGridStyle,
+  listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
@@ -89,13 +93,18 @@ function roleFor(i: InitiativeItem, orgId: string): string {
 
 /* ── Previous initiatives — standard list ───────────────────────────── */
 
+// This list, and the two below, sit inside an .init-panel (initiatives.css:
+// padding 16px 18px, 18px each side = 36px beyond .portal-page's own).
+// Fit: default columns + trailing ≤ LIST_FIT.initPanel (1134px —
+// .init-panel's 18px padding and 1px border each side off the measured
+// 1174px page width).
 const INIT_COLUMNS: (ColumnDef & { partnerOnly?: boolean })[] = [
-  { key: 'name', label: 'Name', width: '1.6fr', default: true },
+  { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 140 },
   { key: 'type', label: 'Type', width: '1fr', default: true },
   { key: 'sub_type', label: 'Sub-type', width: '1fr', default: false },
   { key: 'status', label: 'Status', width: '1fr', default: true },
-  { key: 'start', label: 'Start', width: '0.9fr', default: true },
-  { key: 'end', label: 'End', width: '0.9fr', default: false },
+  { key: 'start', label: 'Start', width: '0.9fr', default: true, min: 96 },
+  { key: 'end', label: 'End', width: '0.9fr', default: false, min: 96 },
   { key: 'role', label: 'Role', width: '1.1fr', default: true, partnerOnly: true },
 ];
 const INIT_ALL_KEYS = new Set(INIT_COLUMNS.map((c) => c.key));
@@ -116,9 +125,10 @@ function initRowCellText(i: InitiativeItem, key: string, orgId: string): string 
 
 /* ── People (org contacts) — standard list ──────────────────────────── */
 
+// Fit: default columns + trailing ≤ LIST_FIT.initPanel (.init-panel, see INIT_COLUMNS).
 const CONTACT_COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: '1.4fr', default: true },
-  { key: 'tier', label: 'Contact tier', width: '0.9fr', default: true },
+  { key: 'name', label: 'Name', width: '1.4fr', default: true, min: 140 },
+  { key: 'tier', label: 'Contact tier', short: 'Tier', width: '0.9fr', default: true },
   { key: 'email', label: 'Email', width: '1.4fr', default: true },
   { key: 'phone', label: 'Phone', width: '1fr', default: true },
   { key: 'job_title', label: 'Job title', width: '1.1fr', default: true },
@@ -142,8 +152,9 @@ const CONTACT_CSV_COLUMNS: [string, (c: ContactItem) => string][] =
 
 /* ── Workers (partners only) — standard list ────────────────────────── */
 
+// Fit: default columns + trailing ≤ LIST_FIT.initPanel (.init-panel, see INIT_COLUMNS).
 const WORKER_COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: '1.4fr', default: true },
+  { key: 'name', label: 'Name', width: '1.4fr', default: true, min: 140 },
   { key: 'trade', label: 'Trade', width: '1fr', default: true },
   { key: 'level', label: 'Level', width: '0.9fr', default: true },
   { key: 'status', label: 'Status', width: '1fr', default: true },
@@ -169,7 +180,8 @@ const WORKER_CSV_COLUMNS: [string, (w: WorkerItem) => string][] =
 export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner' }) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const resource = kind === 'client' ? 'clients' : 'partners';
   const canChange = can(resource, 'change');
   const listLabel = kind === 'client' ? 'Clients' : 'Partners';
@@ -295,13 +307,15 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
     () => initColumns.map((c) => [c.label, (i: InitiativeItem) => initCellText(i, c.key)]),
     [initColumns, initCellText]);
 
-  const initGrid = { gridTemplateColumns: initShownCols.map((c) => c.width).join(' ') };
-  const initCaret = (key: string) =>
-    initSortKey === key ? <span className="caret">{initSortDir === 1 ? '▲' : '▼'}</span> : null;
+  const initGrid = listGridStyle(initShownCols, [], undefined, listGridScale);
+  const initRowStyle = {
+    gridTemplateColumns: initGrid.gridTemplateColumns, minWidth: initGrid.minWidth,
+  };
 
   const initCellFor = (i: InitiativeItem, key: string) => {
     switch (key) {
-      case 'name': return <span className="cell-top">{i.name}</span>;
+      case 'name':
+        return <span className="cell-top cell-line" title={titleFor(i.name)}>{i.name}</span>;
       case 'type': return chip(i.type_label, i.type_color);
       case 'sub_type': return <span className="chip tag">{i.sub_type_label ?? '—'}</span>;
       case 'status':
@@ -310,9 +324,18 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
             {chip(i.status_label, i.status_color)}
           </StatusHover>
         );
-      case 'start': return <span className="mono">{dateOnly(i.scheduled_start)}</span>;
-      case 'end': return <span className="mono">{dateOnly(i.scheduled_end)}</span>;
-      case 'role': return <span className="cell-top">{roleFor(i, id ?? '') || '—'}</span>;
+      case 'start': {
+        const text = dateOnly(i.scheduled_start);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'end': {
+        const text = dateOnly(i.scheduled_end);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'role': {
+        const text = roleFor(i, id ?? '') || '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default: return null;
     }
   };
@@ -359,18 +382,32 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
     ) * contactSortDir);
   }, [contacts, contactFilters, contactQuery, contactSortKey, contactSortDir, contactHaystack]);
 
-  const contactGrid = { gridTemplateColumns: contactShownCols.map((c) => c.width).join(' ') };
-  const contactCaret = (key: string) =>
-    contactSortKey === key
-      ? <span className="caret">{contactSortDir === 1 ? '▲' : '▼'}</span> : null;
+  const contactGrid = listGridStyle(contactShownCols, [], undefined, listGridScale);
+  const contactRowStyle = {
+    gridTemplateColumns: contactGrid.gridTemplateColumns, minWidth: contactGrid.minWidth,
+  };
 
   const contactCellFor = (c: ContactItem, key: string) => {
     switch (key) {
-      case 'name': return <span className="cell-top">{c.display_name}</span>;
+      case 'name':
+        return (
+          <span className="cell-top cell-line" title={titleFor(c.display_name)}>
+            {c.display_name}
+          </span>
+        );
       case 'tier': return <span className="chip tag">{TIER_LABEL[c.tier]}</span>;
-      case 'email': return <span className="mono">{c.email ?? '—'}</span>;
-      case 'phone': return <span className="mono">{c.phone ?? '—'}</span>;
-      case 'job_title': return <span className="cell-top">{c.job_title ?? '—'}</span>;
+      case 'email': {
+        const text = c.email ?? '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'phone': {
+        const text = c.phone ?? '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'job_title': {
+        const text = c.job_title ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default: return null;
     }
   };
@@ -417,28 +454,37 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
     ) * workerSortDir);
   }, [workers, workerFilters, workerQuery, workerSortKey, workerSortDir, workerHaystack]);
 
-  const workerGrid = { gridTemplateColumns: `${workerShownCols.map((c) => c.width).join(' ')} 120px` };
-  const workerCaret = (key: string) =>
-    workerSortKey === key
-      ? <span className="caret">{workerSortDir === 1 ? '▲' : '▼'}</span> : null;
+  const workerGrid = listGridStyle(workerShownCols, ['120px'], undefined, listGridScale);
+  const workerRowStyle = {
+    gridTemplateColumns: workerGrid.gridTemplateColumns, minWidth: workerGrid.minWidth,
+  };
 
   const workerCellFor = (w: WorkerItem, key: string) => {
     switch (key) {
-      case 'name': return <span className="cell-top">{w.display_name}</span>;
-      case 'trade': return <span className="cell-top">{w.trade ?? '—'}</span>;
-      case 'level': return <span className="cell-top">{w.level ?? '—'}</span>;
+      case 'name':
+        return (
+          <span className="cell-top cell-line" title={titleFor(w.display_name)}>
+            {w.display_name}
+          </span>
+        );
+      case 'trade': {
+        const text = w.trade ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'level': {
+        const text = w.level ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'status':
         return (
           <StatusHover entityType="worker" entityId={w.person_id} status={w.status}>
             {chip(w.status_label, w.status_color)}
           </StatusHover>
         );
-      case 'certs':
-        return (
-          <span className="mono">
-            {w.certs_expired > 0 ? `${w.certs_expired} expired` : w.cert_count}
-          </span>
-        );
+      case 'certs': {
+        const text = w.certs_expired > 0 ? `${w.certs_expired} expired` : String(w.cert_count);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default: return null;
     }
   };
@@ -590,23 +636,20 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
               </div>
             </div>
 
-            <div className="dir-list">
-              <div className="list-head" style={initGrid}>
+            <div className="dir-list list-scroll">
+              <div className="list-head" style={initRowStyle}>
                 {initShownCols.map((c) => (
-                  <span key={c.key}
-                        className={`col-head ${initHeaderDrag.dropClass(c.key)}`}
-                        {...initHeaderDrag.dragProps(c.key)}>
-                    <button type="button" className="sortable"
-                            onClick={() => toggleInitSort(c.key)}>
-                      {c.label} {initCaret(c.key)}
-                    </button>
+                  <ColHead key={c.key} col={c} sortDir={initSortKey === c.key ? initSortDir : null}
+                           onToggleSort={() => toggleInitSort(c.key)}
+                           className={initHeaderDrag.dropClass(c.key)}
+                           dragProps={initHeaderDrag.dragProps(c.key)}>
                     <ColumnMenu colKey={c.key} label={c.label}
                                 allRows={initiatives} filters={initFilters}
                                 text={initCellText}
                                 filter={initFilters[c.key]} onFilter={setInitFilter}
                                 sortDir={initSortKey === c.key ? initSortDir : null}
                                 onSort={(dir) => setInitSort(c.key, dir)} />
-                  </span>
+                  </ColHead>
                 ))}
               </div>
 
@@ -619,8 +662,9 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
 
               <VirtualRows rows={visibleInitiatives}
                 renderRow={(i, vp) => (
-                  <div key={i.id} className="dir-row" {...vp} style={vp?.style}>
-                    <div className="row-main" style={initGrid}
+                  <div key={i.id} className="dir-row" {...vp}
+                       style={{ ...vp?.style, minWidth: initRowStyle.minWidth }}>
+                    <div className="row-main" style={initRowStyle}
                          onClick={() => navigate(`/initiatives/${i.id}`)}>
                       {initShownCols.map((c) => (
                         <div className="cell" key={c.key}>{initCellFor(i, c.key)}</div>
@@ -662,23 +706,21 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
               </div>
             </div>
 
-            <div className="dir-list idet-people-list">
-              <div className="list-head" style={contactGrid}>
+            <div className="dir-list idet-people-list list-scroll">
+              <div className="list-head" style={contactRowStyle}>
                 {contactShownCols.map((c) => (
-                  <span key={c.key}
-                        className={`col-head ${contactHeaderDrag.dropClass(c.key)}`}
-                        {...contactHeaderDrag.dragProps(c.key)}>
-                    <button type="button" className="sortable"
-                            onClick={() => toggleContactSort(c.key)}>
-                      {c.label} {contactCaret(c.key)}
-                    </button>
+                  <ColHead key={c.key} col={c}
+                           sortDir={contactSortKey === c.key ? contactSortDir : null}
+                           onToggleSort={() => toggleContactSort(c.key)}
+                           className={contactHeaderDrag.dropClass(c.key)}
+                           dragProps={contactHeaderDrag.dragProps(c.key)}>
                     <ColumnMenu colKey={c.key} label={c.label}
                                 allRows={contacts} filters={contactFilters}
                                 text={contactRowCellText}
                                 filter={contactFilters[c.key]} onFilter={setContactFilter}
                                 sortDir={contactSortKey === c.key ? contactSortDir : null}
                                 onSort={(dir) => setContactSort(c.key, dir)} />
-                  </span>
+                  </ColHead>
                 ))}
               </div>
 
@@ -691,8 +733,9 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
 
               <VirtualRows rows={visibleContacts}
                 renderRow={(c, vp) => (
-                  <div key={c.person_id} className="dir-row" {...vp} style={vp?.style}>
-                    <div className="row-main" style={contactGrid}>
+                  <div key={c.person_id} className="dir-row" {...vp}
+                       style={{ ...vp?.style, minWidth: contactRowStyle.minWidth }}>
+                    <div className="row-main" style={contactRowStyle}>
                       {contactShownCols.map((col) => (
                         <div className="cell" key={col.key}>{contactCellFor(c, col.key)}</div>
                       ))}
@@ -734,25 +777,23 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
                 </div>
               </div>
 
-              <div className="dir-list idet-people-list">
-                <div className="list-head" style={workerGrid}>
+              <div className="dir-list idet-people-list list-scroll">
+                <div className="list-head" style={workerRowStyle}>
                   {workerShownCols.map((c) => (
-                    <span key={c.key}
-                          className={`col-head ${workerHeaderDrag.dropClass(c.key)}`}
-                          {...workerHeaderDrag.dragProps(c.key)}>
-                      <button type="button" className="sortable"
-                              onClick={() => toggleWorkerSort(c.key)}>
-                        {c.label} {workerCaret(c.key)}
-                      </button>
+                    <ColHead key={c.key} col={c}
+                             sortDir={workerSortKey === c.key ? workerSortDir : null}
+                             onToggleSort={() => toggleWorkerSort(c.key)}
+                             className={workerHeaderDrag.dropClass(c.key)}
+                             dragProps={workerHeaderDrag.dragProps(c.key)}>
                       <ColumnMenu colKey={c.key} label={c.label}
                                   allRows={workers} filters={workerFilters}
                                   text={workerRowCellText}
                                   filter={workerFilters[c.key]} onFilter={setWorkerFilter}
                                   sortDir={workerSortKey === c.key ? workerSortDir : null}
                                   onSort={(dir) => setWorkerSort(c.key, dir)} />
-                    </span>
+                    </ColHead>
                   ))}
-                  <span className="col-head" />
+                  <span className="col-head" aria-hidden="true" />
                 </div>
 
                 {visibleWorkers.length === 0 && (
@@ -764,8 +805,9 @@ export default function StakeholderDetail({ kind }: { kind: 'client' | 'partner'
 
                 <VirtualRows rows={visibleWorkers}
                   renderRow={(w, vp) => (
-                    <div key={w.person_id} className="dir-row" {...vp} style={vp?.style}>
-                      <div className="row-main" style={workerGrid}>
+                    <div key={w.person_id} className="dir-row" {...vp}
+                         style={{ ...vp?.style, minWidth: workerRowStyle.minWidth }}>
+                      <div className="row-main" style={workerRowStyle}>
                         {workerShownCols.map((c) => (
                           <div className="cell" key={c.key}>{workerCellFor(w, c.key)}</div>
                         ))}

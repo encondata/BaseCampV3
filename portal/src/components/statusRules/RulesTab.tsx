@@ -27,8 +27,10 @@ import {
   usePersistentListState, type CellText,
 } from '../../lib/columnMenu';
 import {
+  ColHead,
   ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
-  moveKey, passesFacets, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
+  listGridStyle, listScale, moveKey, passesFacets, titleFor, useReorderDrag, useSearchHaystacks,
+  visibleColumnsFor,
   type ColumnDef, type FacetGroup, type FacetState,
 } from '../../lib/listTools';
 import {
@@ -41,15 +43,18 @@ import RuleEditorModal from './RuleEditorModal';
 // Name | Trigger status | Match type | Priority | Conditions | Actions |
 // Runs | Updated (hidden by default) | Enabled — trailing Edit/Duplicate/
 // Delete cell stays outside COLUMNS, like Notifications' chevron column.
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — .portal-page at a
+// 1512px window, nav expanded — RulesTab sits directly in .portal-page under
+// StatusRules' tab bar, with no extra card).
 const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: 'minmax(220px, 1.6fr)', default: true },
-  { key: 'trigger_status', label: 'Trigger status', width: 'minmax(140px, 1fr)', default: true },
+  { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 180 },
+  { key: 'trigger_status', label: 'Trigger status', short: 'Trigger', width: '1fr', default: true },
   { key: 'match_type', label: 'Match type', width: '110px', default: true },
   { key: 'priority', label: 'Priority', width: '90px', default: true },
   { key: 'conditions', label: 'Conditions', width: '100px', default: true },
   { key: 'actions', label: 'Actions', width: '90px', default: true },
-  { key: 'runs', label: 'Runs', width: 'minmax(140px, 1fr)', default: true },
-  { key: 'updated', label: 'Updated', width: 'minmax(150px, 1fr)', default: false },
+  { key: 'runs', label: 'Runs', width: '1fr', default: true },
+  { key: 'updated', label: 'Updated', width: '1fr', default: false, min: 96 },
   { key: 'enabled', label: 'Enabled', width: '90px', default: true },
 ];
 
@@ -66,7 +71,8 @@ const msgFor = (err: unknown): string =>
 export default function RulesTab({ onCount }: {
   onCount: (n: number | null) => void;
 }) {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('status_rules', 'add');
   const canChange = can('status_rules', 'change');
   const canDelete = can('status_rules', 'delete');
@@ -159,9 +165,6 @@ export default function RulesTab({ onCount }: {
     });
   }, [rules, schema, facets, filters, query, sortKey, sortDir, haystack, cellText, ctx]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
   const headerDrag = useReorderDrag(
@@ -174,10 +177,8 @@ export default function RulesTab({ onCount }: {
   // no permission grants any item, RowActionsMenu renders nothing — so the
   // track goes away with it rather than reserving dead width.
   const anyRowAction = canChange || canAdd || canDelete;
-  const grid = {
-    gridTemplateColumns:
-      `${shownCols.map((c) => c.width).join(' ')}${anyRowAction ? ' 88px' : ''}`,
-  };
+  const grid = listGridStyle(shownCols, anyRowAction ? ['88px'] : [], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const CSV_COLUMNS = useMemo<[string, (r: StatusRule) => string][]>(() => [
     ['ID', (r) => r.id],
@@ -234,8 +235,10 @@ export default function RulesTab({ onCount }: {
       case 'name':
         return (
           <>
-            <span className="cell-top"><b>{rule.name}</b></span>
-            <span className="cell-sub">{rule.description || '—'}</span>
+            <span className="cell-top cell-line" title={titleFor(rule.name)}><b>{rule.name}</b></span>
+            <span className="cell-sub cell-line" title={titleFor(rule.description || '—')}>
+              {rule.description || '—'}
+            </span>
           </>
         );
       case 'trigger_status': {
@@ -251,19 +254,27 @@ export default function RulesTab({ onCount }: {
       case 'match_type':
         return <span className="chip tag">{cellText(rule, 'match_type')}</span>;
       case 'priority':
-        return <span className="mono">{cellText(rule, 'priority')}</span>;
+        return <span className="mono cell-line" title={titleFor(cellText(rule, 'priority'))}>
+          {cellText(rule, 'priority')}
+        </span>;
       case 'conditions':
-        return <span>{cellText(rule, 'conditions')}</span>;
+        return <span className="cell-line" title={titleFor(cellText(rule, 'conditions'))}>
+          {cellText(rule, 'conditions')}
+        </span>;
       case 'actions': {
         const title = schema
           ? (rule.actions.map((a) => summarizeAction(a, schema)).join('\n') || 'No actions')
           : undefined;
-        return <span title={title}>{cellText(rule, 'actions')}</span>;
+        return <span className="cell-line" title={title}>{cellText(rule, 'actions')}</span>;
       }
       case 'runs':
-        return <span className="cell-sub">{cellText(rule, 'runs')}</span>;
+        return <span className="cell-sub cell-line" title={titleFor(cellText(rule, 'runs'))}>
+          {cellText(rule, 'runs')}
+        </span>;
       case 'updated':
-        return <span className="mono">{cellText(rule, 'updated')}</span>;
+        return <span className="mono cell-line" title={titleFor(cellText(rule, 'updated'))}>
+          {cellText(rule, 'updated')}
+        </span>;
       case 'enabled':
         return (
           <label className="switch">
@@ -309,23 +320,23 @@ export default function RulesTab({ onCount }: {
       )}
 
       {schema && rules && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c}
+                       sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)}
+                       className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={rules ?? []} filters={filters}
                             text={cellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
-            {anyRowAction && <span />}
+            {anyRowAction && <span className="col-head" aria-hidden="true" />}
           </div>
 
           {visible.length === 0 && (
@@ -344,8 +355,9 @@ export default function RulesTab({ onCount }: {
 
           <VirtualRows rows={visible}
             renderRow={(rule, vp) => (
-              <div key={rule.id} className="dir-row" {...vp} style={vp?.style}>
-                <div className="row-main" style={grid}>
+              <div key={rule.id} className="dir-row" {...vp}
+                   style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}>
                   {shownCols.map((c) => (
                     <div className="cell" key={c.key}>{cellFor(rule, c.key)}</div>
                   ))}

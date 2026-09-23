@@ -15,15 +15,45 @@
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
+import { useAuth } from '../../auth/AuthContext';
 import type { ContainerItem } from '../../lib/api';
 import {
   applyBulkTag, containerDisplayName, filterContainers, selectAllFiltered, TAG_CHOICES, toggleSelection,
 } from '../../lib/containerLabels';
 import { TAG_TYPES, type TagKey } from '../../labels/tagTypes';
+import { ColHead, listGridStyle, listScale, type ColumnDef } from '../../lib/listTools';
 import ContainerTagPicker from './ContainerTagPicker';
 import '../../styles/directory.css';
 
-const GRID = { gridTemplateColumns: '32px 2fr 1fr 0.7fr 1.1fr 1.3fr' };
+// The leading selection checkbox — a fixed track outside the column
+// registry, folded into a ColumnDef purely so listGridStyle/its minWidth
+// sum accounts for it too (recipe R1); it is never rendered via ColHead,
+// the header cell below still renders the raw checkbox input.
+const CHECKBOX_COL: ColumnDef = { key: 'select', label: '', width: '32px', default: true };
+
+// No column registry pre-migration (hand-written header spans) — this
+// local COLUMNS mirrors them (recipe R1).
+//
+// Fit: default columns + trailing ≤ 574px — the narrowest of this
+// component's two mount points (recipe: "use the narrowest container").
+// The standalone /labels/containers page's .cl-step-body gives ~860px,
+// but ContainerLabelsOptions (Reports' Generate modal) is tighter:
+// .rgm-card is min(980px, 96vw) = 980px at a 1512px window, minus its own
+// 1px border each side (border-box, portal-theme.css) = 978px, minus
+// .modal-body's 20px-a-side padding (40px) = 938px, minus .rgm-grid's
+// fixed 340px preview column and 22px gap = 576px for the options column
+// this list renders in, minus 2px safety.
+// `tag` holds a ContainerTagPicker, so it carries a 120px floor; `name`
+// pays for it (140 -> 100) since it is the only column here with slack
+// above its derived floor and the 2fr track grows well past 100px
+// whenever the card is not scrolling.
+const COLUMNS: ColumnDef[] = [
+  { key: 'name', label: 'Name', width: '2fr', default: true, min: 100 },
+  { key: 'type', label: 'Type', width: '1fr', default: true },
+  { key: 'assets', label: 'Assets', width: '0.7fr', default: true },
+  { key: 'status', label: 'Status', width: '1.1fr', default: true },
+  { key: 'tag', label: 'Tag', width: '1.3fr', default: true, min: 120 },
+];
 
 export default function ContainerPickList({
   containers, selected, tags, onSelectedChange, onTagsChange, onFilteredChange, disabled = false,
@@ -40,8 +70,12 @@ export default function ContainerPickList({
   onFilteredChange?: (filteredIds: string[]) => void;
   disabled?: boolean;
 }) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [term, setTerm] = useState('');
   const headerRef = useRef<HTMLInputElement>(null);
+  const grid = listGridStyle([CHECKBOX_COL, ...COLUMNS], [], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const filtered = useMemo(() => filterContainers(containers, term), [containers, term]);
   const filteredIds = useMemo(() => filtered.map((c) => c.id), [filtered]);
@@ -93,18 +127,14 @@ export default function ContainerPickList({
         </div>
       )}
 
-      <div className="dir-list">
-        <div className="list-head" style={GRID}>
+      <div className="dir-list list-scroll">
+        <div className="list-head" style={rowStyle}>
           <span className="col-head">
             <input type="checkbox" ref={headerRef} disabled={disabled || filteredIds.length === 0}
                    aria-label="Select all filtered containers"
                    checked={allFilteredSelected} onChange={toggleAllFiltered} />
           </span>
-          <span className="col-head">Name</span>
-          <span className="col-head">Type</span>
-          <span className="col-head">Assets</span>
-          <span className="col-head">Status</span>
-          <span className="col-head">Tag</span>
+          {COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
         </div>
 
         {filtered.length === 0 && <div className="dir-empty">No containers match.</div>}
@@ -113,8 +143,8 @@ export default function ContainerPickList({
           const isSelected = selectedSet.has(c.id);
           const name = containerDisplayName(c);
           return (
-            <div key={c.id} className="dir-row">
-              <div className="row-main" style={GRID}
+            <div key={c.id} className="dir-row" style={{ minWidth: rowStyle.minWidth }}>
+              <div className="row-main" style={rowStyle}
                    onClick={() => !disabled && toggleOne(c.id)}>
                 <div className="cell">
                   <input type="checkbox" checked={isSelected} disabled={disabled}
@@ -134,7 +164,7 @@ export default function ContainerPickList({
                     )
                     : <span className="cell-sub">—</span>}
                 </div>
-                <div className="cell"><span className="mono">{c.asset_count}</span></div>
+                <div className="cell"><span className="mono cell-line">{c.asset_count}</span></div>
                 <div className="cell">
                   <span className="chip custom" style={{ '--chip': c.status_color } as CSSProperties}>
                     <span className="dot" />{c.status_label}

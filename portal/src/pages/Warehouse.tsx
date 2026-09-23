@@ -37,8 +37,8 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import {
-  applyColumnOrder, ColumnsButton, ExportButton, exportCsv, moveKey,
-  useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
+  applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale,
+  moveKey, titleFor, useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import '../styles/directory.css';
@@ -57,13 +57,39 @@ const KIND_PILLS: { key: 'all' | InventoryRowKind; label: string }[] = [
   { key: 'stock', label: 'Stock' },
 ];
 
+// The always-shown item cell — a fixed leading track outside the column
+// registry (same shape as the header markup below), so it needs its own
+// ColumnDef for listGridStyle/ColHead.
+const PRIMARY_COL: ColumnDef = {
+  key: 'primary', label: 'Item', width: '2fr', default: true, min: 180,
+};
+
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'kind', label: 'Kind', width: '0.8fr', default: true },
   { key: 'model', label: 'Model', width: '1.3fr', default: true },
   { key: 'qty', label: 'Qty', width: '1fr', default: true },
   { key: 'location', label: 'Location', width: '1.3fr', default: true },
   { key: 'status', label: 'Status', width: '1.1fr', default: true },
-  { key: 'updated', label: 'Updated', width: '1fr', default: false },
+  { key: 'updated', label: 'Updated', width: '1fr', default: false, min: 96 },
+];
+
+// The container-contents mini-list (ContainerMiniList) has no column
+// registry at all today — a fixed MINI_GRID template and hand-written
+// header spans (recipe R1). Nested inside a container row's .detail
+// (.detail-inner: 20px each side) plus .wh-mini-indent's 16px left
+// indent, so its available width is narrower than the page-level lists
+// above.
+// Fit: default columns + trailing ≤ 1116px (the measured 1174px page
+// width minus .detail-inner's 40px horizontal padding — it has only a
+// border-top, so no side borders to subtract — minus .wh-mini-indent's
+// 16px left indent, minus 2px safety; directory.css + warehouse.css).
+const MINI_COLUMNS: ColumnDef[] = [
+  { key: 'item', label: 'Item', width: '2fr', default: true, min: 140 },
+  { key: 'model', label: 'Model', width: '1.3fr', default: true },
+  { key: 'qty', label: 'Qty', width: '0.8fr', default: true },
+  { key: 'status', label: 'Status', width: '1fr', default: true },
 ];
 const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'primary']);
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
@@ -91,8 +117,6 @@ const CSV_COLUMNS: [string, (r: InventoryRow) => string][] = [
   ['Updated', (r) => r.updated ?? ''],
 ];
 
-const MINI_GRID: CSSProperties = { gridTemplateColumns: '2fr 1.3fr 0.8fr 1fr auto' };
-
 // inventoryCellText's colKey is a narrow union (its callers always know
 // the exact key); ColumnMenu/passesColumnFilters want the wider
 // CellText<T> = (row, colKey: string) => string shape — same pattern as
@@ -113,7 +137,8 @@ function toContainerItem(c: WarehouseContainer, siteId: string, siteName: string
 }
 
 export default function Warehouse() {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -318,16 +343,16 @@ export default function Warehouse() {
     return [];
   };
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `2fr ${shownCols.map((c) => c.width).join(' ')} 88px 30px` };
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['88px', '30px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
+  const miniGrid = listGridStyle(MINI_COLUMNS, ['auto'], undefined, listGridScale);
+  const miniRowStyle = { gridTemplateColumns: miniGrid.gridTemplateColumns, minWidth: miniGrid.minWidth };
 
   const cellFor = (r: InventoryRow, key: string) => {
     switch (key) {
@@ -339,16 +364,26 @@ export default function Warehouse() {
             <span className="dot" />Stock
           </span>
         );
-      case 'model':
-        return <span className="cell-sub">{r.model || '—'}</span>;
-      case 'qty':
-        return <span className="mono">{r.qtyText || '—'}</span>;
-      case 'location':
-        return <span className="cell-sub">{r.location || '—'}</span>;
+      case 'model': {
+        const text = r.model || '—';
+        return <span className="cell-sub cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'qty': {
+        const text = r.qtyText || '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'location': {
+        const text = r.location || '—';
+        return <span className="cell-sub cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'status':
-        return r.status ? statusChip(r.status.label, r.status.color) : <span className="cell-top">—</span>;
-      case 'updated':
-        return <span className="mono">{r.updated ? relativeTime(r.updated) : ''}</span>;
+        return r.status
+          ? statusChip(r.status.label, r.status.color)
+          : <span className="cell-top cell-line">—</span>;
+      case 'updated': {
+        const text = r.updated ? relativeTime(r.updated) : '';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default:
         return null;
     }
@@ -450,35 +485,32 @@ export default function Warehouse() {
                 </div>
               </div>
 
-              <div className="dir-list">
-                <div className="list-head" style={grid}>
-                  <span className="col-head">
-                    <button className="sortable" onClick={() => toggleSort('primary')}>
-                      Item {caret('primary')}
-                    </button>
+              <div className="dir-list list-scroll">
+                <div className="list-head" style={rowStyle}>
+                  <ColHead col={PRIMARY_COL} sortDir={sortKey === 'primary' ? sortDir : null}
+                           onToggleSort={() => toggleSort('primary')}>
                     <ColumnMenu colKey="primary" label="Item"
                                 allRows={rows} filters={filters}
                                 text={cellText}
                                 filter={filters.primary} onFilter={setFilter}
                                 sortDir={sortKey === 'primary' ? sortDir : null}
                                 onSort={(dir) => setSort('primary', dir)} />
-                  </span>
+                  </ColHead>
                   {shownCols.map((c) => (
-                    <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                          {...headerDrag.dragProps(c.key)}>
-                      <button className="sortable" onClick={() => toggleSort(c.key)}>
-                        {c.label} {caret(c.key)}
-                      </button>
+                    <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                             onToggleSort={() => toggleSort(c.key)}
+                             className={headerDrag.dropClass(c.key)}
+                             dragProps={headerDrag.dragProps(c.key)}>
                       <ColumnMenu colKey={c.key} label={c.label}
                                   allRows={rows} filters={filters}
                                   text={cellText}
                                   filter={filters[c.key]} onFilter={setFilter}
                                   sortDir={sortKey === c.key ? sortDir : null}
                                   onSort={(dir) => setSort(c.key, dir)} />
-                    </span>
+                    </ColHead>
                   ))}
-                  <span className="col-head" />
-                  <span className="col-head" />
+                  <span className="col-head" aria-hidden="true" />
+                  <span className="col-head" aria-hidden="true" />
                 </div>
 
                 {inventory && visible.length === 0 && (
@@ -492,8 +524,9 @@ export default function Warehouse() {
                   renderRow={(r, vp) => {
                   const open = r.kind === 'container' && openKey === r.key;
                   return (
-                    <div key={r.key} className={`dir-row ${open ? 'open' : ''}`} {...vp} style={vp?.style}>
-                      <div className="row-main" style={grid}
+                    <div key={r.key} className={`dir-row ${open ? 'open' : ''}`} {...vp}
+                         style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                      <div className="row-main" style={rowStyle}
                            onClick={() => {
                              if (r.kind !== 'container') return;
                              setOpenKey(openKey === r.key ? null : r.key);
@@ -523,6 +556,7 @@ export default function Warehouse() {
                               {open && (
                                 <ContainerMiniList
                                   container={r.container}
+                                  rowStyle={miniRowStyle}
                                   canChangeAsset={canChangeAsset}
                                   canChangeStock={canChangeStock}
                                   onEditAsset={openAssetEdit}
@@ -606,9 +640,10 @@ function ComboBoxSiteSelector({ options, value, onChange }: {
  * single Edit mini-btn; a stock row's Edit + Move live in a RowActionsMenu.
  * Read-only otherwise. ──────────────────────────────────────────────── */
 function ContainerMiniList({
-  container, canChangeAsset, canChangeStock, onEditAsset, onEditStock, onMoveStock,
+  container, rowStyle, canChangeAsset, canChangeStock, onEditAsset, onEditStock, onMoveStock,
 }: {
   container: WarehouseContainer;
+  rowStyle: { gridTemplateColumns: string; minWidth: number };
   canChangeAsset: boolean;
   canChangeStock: boolean;
   onEditAsset: (id: string) => void;
@@ -619,43 +654,51 @@ function ContainerMiniList({
     return <p className="page-hint wh-mini-indent">Nothing inside this container.</p>;
   }
   return (
-    <div className="mini-list wh-mini-indent">
-      <div className="mini-list-head" style={MINI_GRID}>
-        <span>Item</span><span>Model</span><span>Qty</span><span>Status</span><span />
+    <div className="mini-list wh-mini-indent list-scroll">
+      <div className="mini-list-head" style={rowStyle}>
+        <ColHead col={MINI_COLUMNS[0]} /><ColHead col={MINI_COLUMNS[1]} />
+        <ColHead col={MINI_COLUMNS[2]} /><ColHead col={MINI_COLUMNS[3]} /><span className="col-head" aria-hidden="true" />
       </div>
-      {container.assets.map((a: AssetRef) => (
-        <div className="mini-row" style={MINI_GRID} key={`a:${a.id}`}>
-          <span className="cell-top">{a.serial_number ?? a.name ?? '—'}</span>
-          <span className="cell-sub">{a.model_name ?? '—'}</span>
-          <span className="mono">1</span>
-          <span className="cell-top">{statusChip(a.status_label, a.status_color) ?? '—'}</span>
-          <span className="mini-row-actions">
-            {canChangeAsset && (
-              <button type="button" className="mini-btn" onClick={() => onEditAsset(a.id)}>Edit</button>
-            )}
-          </span>
-        </div>
-      ))}
-      {container.stock.map((s: StockLine) => (
-        <div className="mini-row" style={MINI_GRID} key={`s:${s.id}`}>
-          <span className="cell-top">{s.description}</span>
-          <span className="cell-sub">
-            {s.model_make && s.model_model ? modelLabel({ make: s.model_make, model: s.model_model }) : '—'}
-          </span>
-          <span className="mono">{s.quantity} {s.unit}</span>
-          <span className="cell-top">—</span>
-          {/* MINI_GRID's trailing track is `auto`, so there's no fixed width
-              to reclaim here — the menu is for consistency with every other
-              converted list. The mini-row isn't clickable (it lives in the
-              row's .detail, not .row-main), so no stopPropagation wrapper. */}
-          <span className="mini-row-actions">
-            <RowActionsMenu actions={canChangeStock ? [
-              { key: 'edit', label: 'Edit', onSelect: () => onEditStock(s) },
-              { key: 'move', label: 'Move', onSelect: () => onMoveStock(s) },
-            ] : []} />
-          </span>
-        </div>
-      ))}
+      {container.assets.map((a: AssetRef) => {
+        const item = a.serial_number ?? a.name ?? '—';
+        const model = a.model_name ?? '—';
+        return (
+          <div className="mini-row" style={rowStyle} key={`a:${a.id}`}>
+            <span className="cell-top cell-line" title={titleFor(item)}>{item}</span>
+            <span className="cell-sub cell-line" title={titleFor(model)}>{model}</span>
+            <span className="mono cell-line">1</span>
+            <span className="cell-top cell-line">{statusChip(a.status_label, a.status_color) ?? '—'}</span>
+            <span className="mini-row-actions">
+              {canChangeAsset && (
+                <button type="button" className="mini-btn" onClick={() => onEditAsset(a.id)}>Edit</button>
+              )}
+            </span>
+          </div>
+        );
+      })}
+      {container.stock.map((s: StockLine) => {
+        const model = s.model_make && s.model_model
+          ? modelLabel({ make: s.model_make, model: s.model_model }) : '—';
+        const qty = `${s.quantity} ${s.unit}`;
+        return (
+          <div className="mini-row" style={rowStyle} key={`s:${s.id}`}>
+            <span className="cell-top cell-line" title={titleFor(s.description)}>{s.description}</span>
+            <span className="cell-sub cell-line" title={titleFor(model)}>{model}</span>
+            <span className="mono cell-line" title={titleFor(qty)}>{qty}</span>
+            <span className="cell-top cell-line">—</span>
+            {/* The trailing track is `auto`, so there's no fixed width to
+                reclaim here — the menu is for consistency with every other
+                converted list. The mini-row isn't clickable (it lives in the
+                row's .detail, not .row-main), so no stopPropagation wrapper. */}
+            <span className="mini-row-actions">
+              <RowActionsMenu actions={canChangeStock ? [
+                { key: 'edit', label: 'Edit', onSelect: () => onEditStock(s) },
+                { key: 'move', label: 'Move', onSelect: () => onMoveStock(s) },
+              ] : []} />
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

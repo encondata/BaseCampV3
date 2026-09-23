@@ -39,8 +39,8 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import {
-  applyColumnOrder, ColumnsButton, ExportButton, exportCsv, moveKey,
-  useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
+  applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale,
+  moveKey, titleFor, useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../lib/listTools';
 import { naturalCompare } from '../lib/sites';
 import { elapsedSince, formatMinutes } from '../lib/timeFormat';
@@ -51,9 +51,11 @@ import '../styles/time.css';
 
 const MISSED_PUNCH_MINUTES = 720; // 12h
 
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const TIMESHEET_COLUMNS: ColumnDef[] = [
-  { key: 'person', label: 'Person', width: '1.2fr', default: true },
-  { key: 'date', label: 'Date', width: '0.9fr', default: true },
+  { key: 'person', label: 'Person', width: '1.2fr', default: true, min: 140 },
+  { key: 'date', label: 'Date', width: '0.9fr', default: true, min: 96 },
   { key: 'clock_in', label: 'Clock in', width: '0.8fr', default: true },
   { key: 'clock_out', label: 'Clock out', width: '0.8fr', default: true },
   { key: 'duration', label: 'Duration', width: '0.7fr', default: true },
@@ -119,7 +121,8 @@ function statusChip(label: string, color: string) {
 }
 
 export default function TimeManagement() {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canView = can('time');
   const canAdd = can('time', 'add');
   const canChange = can('time', 'change');
@@ -283,9 +286,8 @@ export default function TimeManagement() {
   // The trailing track holds one RowActionsMenu trigger instead of the old
   // Approve + Reject + Edit strip; 88px is the width the other converted
   // lists give that trigger (Warehouse.tsx, InitiativeDetail.tsx).
-  const grid = {
-    gridTemplateColumns: shownCols.map((c) => c.width).join(' ') + (canChange ? ' 88px' : ''),
-  };
+  const grid = listGridStyle(shownCols, canChange ? ['88px'] : [], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const haystack = useSearchHaystacks(timesheet, (e: TimeEntryItem) =>
     TIMESHEET_COLUMNS.map((c) => timeEntryCellText(e, c.key)).join(' ').toLowerCase());
@@ -314,9 +316,6 @@ export default function TimeManagement() {
     });
   }, [timesheet, filters, query, statusPill, sortKey, sortDir, haystack]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const doApproveRow = async (id: string) => {
     setRowBusyId(id);
     setActionError('');
@@ -341,21 +340,35 @@ export default function TimeManagement() {
       case 'adjusted':
         return e.adjusted
           ? statusChip('Yes', '#a36207')
-          : <span className="cell-top">No</span>;
-      case 'duration':
-        return <span className="mono">{formatMinutes(e.minutes)}</span>;
-      case 'break':
-        return <span className="mono">{formatMinutes(e.break_minutes)}</span>;
-      case 'clock_in':
-        return <span className="mono">{fmtTime(e.clock_in_at)}</span>;
-      case 'clock_out':
-        return <span className="mono">{fmtTime(e.clock_out_at)}</span>;
-      case 'date':
-        return <span className="mono">{fmtDate(e.clock_in_at)}</span>;
-      case 'source':
-        return <span className="cell-top">{e.source.charAt(0).toUpperCase() + e.source.slice(1)}</span>;
-      default:
-        return <span className="cell-top">{timeEntryCellText(e, key) || '—'}</span>;
+          : <span className="cell-top cell-line">No</span>;
+      case 'duration': {
+        const text = formatMinutes(e.minutes);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'break': {
+        const text = formatMinutes(e.break_minutes);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'clock_in': {
+        const text = fmtTime(e.clock_in_at);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'clock_out': {
+        const text = fmtTime(e.clock_out_at);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'date': {
+        const text = fmtDate(e.clock_in_at);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'source': {
+        const text = e.source.charAt(0).toUpperCase() + e.source.slice(1);
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      default: {
+        const text = timeEntryCellText(e, key) || '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
     }
   };
 
@@ -544,23 +557,22 @@ export default function TimeManagement() {
           )}
 
           {!timesheetError && (
-            <div className="dir-list">
-              <div className="list-head" style={grid}>
+            <div className="dir-list list-scroll">
+              <div className="list-head" style={rowStyle}>
                 {shownCols.map((c) => (
-                  <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                        {...headerDrag.dragProps(c.key)}>
-                    <button type="button" className="sortable" onClick={() => toggleSort(c.key)}>
-                      {c.label} {caret(c.key)}
-                    </button>
+                  <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                           onToggleSort={() => toggleSort(c.key)}
+                           className={headerDrag.dropClass(c.key)}
+                           dragProps={headerDrag.dragProps(c.key)}>
                     <ColumnMenu colKey={c.key} label={c.label}
                                 allRows={timesheet ?? []} filters={filters}
                                 text={timeEntryCellText}
                                 filter={filters[c.key]} onFilter={setFilter}
                                 sortDir={sortKey === c.key ? sortDir : null}
                                 onSort={(dir) => setSort(c.key, dir)} />
-                  </span>
+                  </ColHead>
                 ))}
-                {canChange && <span className="col-head" />}
+                {canChange && <span className="col-head" aria-hidden="true" />}
               </div>
 
               {timesheet && visibleEntries.length === 0 && (
@@ -572,8 +584,9 @@ export default function TimeManagement() {
 
               <VirtualRows rows={visibleEntries}
                 renderRow={(e, vp) => (
-                  <div key={e.id} className="dir-row" {...vp} style={vp?.style}>
-                    <div className="row-main time-row-static" style={grid}>
+                  <div key={e.id} className="dir-row" {...vp}
+                       style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                    <div className="row-main time-row-static" style={rowStyle}>
                       {shownCols.map((c) => (
                         <div className="cell" key={c.key}>{cellFor(e, c.key)}</div>
                       ))}

@@ -16,9 +16,14 @@
  * and writes `preferences.list_prefs[pageKey]`, merging so a save from one
  * page's list state never touches another page's entry or any other
  * preference field.
+ *
+ * The open menu is portaled to `document.body` (fixed position from the
+ * trigger's rect) so a scrolling list card cannot clip it; see
+ * RowActionsMenu for the same pattern.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import { naturalCompare } from './sites';
@@ -89,6 +94,23 @@ const CHECK = (
        strokeLinecap="round" strokeLinejoin="round"><path d="M2 6.5 4.8 9.5 10 2.8" /></svg>
 );
 
+/** Portaled menu placement. Below the trigger, right-aligned to it;
+ *  left-aligned instead when right-alignment would push the menu past
+ *  the viewport's left edge. Flips to open upward, anchored to the
+ *  trigger's top, when there isn't enough space below it. */
+interface MenuPos {
+  top: number | 'auto'; left: number | 'auto'; right: number | 'auto'; bottom: number | 'auto';
+  maxHeight: number;
+}
+const MENU_GAP = 8;
+/** column-menu.css .colmenu-menu min-width — chrome.css's .pop-menu 230
+ *  is overridden by source order, so this is the value that actually
+ *  governs the element. */
+const MENU_MIN_WIDTH = 220;
+/** Worst-case menu height: column-menu.css's 2×8 padding + sort row +
+ *  search + .colmenu-list max-height 220 + separators + actions row. */
+const MENU_MAX_HEIGHT = 380;
+
 export function ColumnMenu<T>({
   colKey, label, allRows, filters, text, filter, onFilter, sortDir, onSort,
 }: {
@@ -117,15 +139,77 @@ export function ColumnMenu<T>({
   const [typed, setTyped] = useState(filter?.text ?? '');
   const [localValues, setLocalValues] = useState(filter?.values);
   const ref = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<MenuPos | null>(null);
 
-  // Close on an outside click, same pattern as listTools' useOutsideClose.
+  // Close on an outside mousedown. The open menu lives in a portal under
+  // document.body (a scrolling .dir-list would otherwise clip it), so a
+  // single containment ref would treat every click on a menu item as
+  // "outside" — both the trigger wrap and the menu count as inside.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (ref.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', onDown, true);
     return () => document.removeEventListener('mousedown', onDown, true);
+  }, [open]);
+
+  // Anchor the portaled menu to the trigger. Re-placed on window resize
+  // and on any scroll (capture phase catches the card's own sideways
+  // scroll and the page scroller) so the menu follows its header; once
+  // the header has scrolled out of its card's visible box (horizontally
+  // or vertically) the menu closes instead of floating over unrelated
+  // columns or content. Opens upward (anchored to the trigger's top
+  // instead of its bottom) when the space below the trigger can't fit
+  // the menu's worst-case height AND there's more room above than below
+  // — a fixed-position portal can't be scrolled into view otherwise, and
+  // either way the menu's own maxHeight then clamps it to whichever
+  // side's actual space allows, with internal scrolling for the rest.
+  useEffect(() => {
+    if (!open) { setPos(null); return; }
+    const place = () => {
+      const el = ref.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const card = el.closest('.dir-list');
+      if (card) {
+        const box = card.getBoundingClientRect();
+        if (rect.right < box.left || rect.left > box.right
+          || rect.bottom < box.top || rect.top > box.bottom) { setOpen(false); return; }
+      }
+      const spaceBelow = window.innerHeight - rect.bottom;
+      const spaceAbove = rect.top;
+      const openUp = spaceBelow < MENU_MAX_HEIGHT + MENU_GAP && spaceAbove > spaceBelow;
+      const vertical = openUp
+        ? {
+          top: 'auto' as const, bottom: window.innerHeight - rect.top + MENU_GAP,
+          maxHeight: Math.max(120, spaceAbove - 2 * MENU_GAP),
+        }
+        : {
+          top: rect.bottom + MENU_GAP, bottom: 'auto' as const,
+          maxHeight: Math.max(120, spaceBelow - 2 * MENU_GAP),
+        };
+      if (rect.right - MENU_MIN_WIDTH < 0) setPos({ ...vertical, left: rect.left, right: 'auto' });
+      else setPos({ ...vertical, left: 'auto', right: window.innerWidth - rect.right });
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [open]);
+
+  // Escape closes the menu, matching RowActionsMenu.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
   }, [open]);
 
   // Re-seed local edit state each time the menu opens, so it reflects the
@@ -202,8 +286,12 @@ export function ColumnMenu<T>({
           <path d="M3 5h18l-7 8.5V19l-4 2v-7.5L3 5z" />
         </svg>
       </button>
-      {open && (
-        <div className="pop-menu colmenu-menu">
+      {open && pos && createPortal(
+        <div className="pop-menu colmenu-menu colmenu-portaled" ref={menuRef}
+             style={{
+               top: pos.top, left: pos.left, right: pos.right, bottom: pos.bottom,
+               maxHeight: pos.maxHeight, overflowY: 'auto',
+             }}>
           <div className="colmenu-sort">
             <button type="button" className={`pop-item ${sortDir === 1 ? 'on' : ''}`}
                     onClick={() => onSort(1)}>
@@ -241,7 +329,8 @@ export function ColumnMenu<T>({
               Clear filter
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

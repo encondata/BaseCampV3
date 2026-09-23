@@ -8,6 +8,7 @@ import { useMemo, useState, type ReactElement } from 'react';
 import { Link } from 'react-router-dom';
 
 import DataTable from './DataTable';
+import { useAuth } from '../auth/AuthContext';
 import { type MyActivityItem } from '../lib/api';
 import {
   actionLabel, changeRows, entityHref, entityLabel, recordTooltip,
@@ -15,11 +16,15 @@ import {
 } from '../lib/auditFormat';
 import { relativeTime } from '../lib/format';
 import {
+  ColHead,
   ColumnsButton,
   ExportButton,
   FilterButton,
   exportCsv,
+  listGridStyle,
+  listScale,
   passesFacets,
+  titleFor,
   type ColumnDef,
   type FacetGroup,
   type FacetState,
@@ -35,6 +40,18 @@ function whoLabel(row: MyActivityItem, subject: string): string {
   return row.by_me ? subject : (row.actor_name ?? 'System');
 }
 
+// The grid's leading track ("When") sits outside the toggleable column
+// registry, like InitiativeDetail.tsx's PRIMARY_COL — it is always shown
+// and never appears in the Columns picker. Trailing 30px track is the
+// row's expansion chevron.
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — .portal-page at a
+// 1512px window, nav expanded — ActivityHistory's own .panel card carries no
+// horizontal padding beyond .portal-page's; see pages/Profile.tsx and
+// pages/UserDetail.tsx, both of which mount it as a direct .portal-page
+// child).
+const WHEN_COL: ColumnDef = { key: 'at', label: 'When', width: '150px', default: true };
+const TRAILING = ['30px'];
+
 const COLUMNS: ColumnDef[] = [
   { key: 'who', label: 'Actor', width: '0.9fr', default: true },
   { key: 'action', label: 'Action', width: '1.5fr', default: true },
@@ -47,6 +64,8 @@ type SortKey = 'at' | 'who' | 'action' | 'target' | 'ip';
 export default function ActivityHistory(
   { rows, subjectName }: { rows: MyActivityItem[]; subjectName?: string },
 ) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const subject = subjectName ?? 'You';
   const [facets, setFacets] = useState<FacetState>({});
   const [sortKey, setSortKey] = useState<SortKey>('at');
@@ -106,19 +125,26 @@ export default function ActivityHistory(
     if (key === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
     else { setSortKey(key); setSortDir(key === 'at' ? -1 : 1); }
   };
-  const caret = (key: SortKey) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const shownCols = COLUMNS.filter((c) => visibleCols.has(c.key));
-  const grid = { gridTemplateColumns:
-    `150px ${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle([WHEN_COL, ...shownCols], TRAILING, undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (r: MyActivityItem, key: string): ReactElement => {
     switch (key) {
-      case 'who': return <span className="cell-top">{whoLabel(r, subject)}</span>;
-      case 'action': return <span className="cell-top">{actionLabel(r)}</span>;
-      case 'target': return <span className="cell-top">{targetLabel(r)}</span>;
-      case 'ip': return <span className="mono">{r.ip ?? '—'}</span>;
+      case 'who': {
+        const who = whoLabel(r, subject);
+        return <span className="cell-top cell-line" title={titleFor(who)}>{who}</span>;
+      }
+      case 'action': {
+        const action = actionLabel(r);
+        return <span className="cell-top cell-line" title={titleFor(action)}>{action}</span>;
+      }
+      case 'target': {
+        const target = targetLabel(r);
+        return <span className="cell-top cell-line" title={titleFor(target)}>{target}</span>;
+      }
+      case 'ip': return <span className="mono cell-line" title={titleFor(r.ip ?? '—')}>{r.ip ?? '—'}</span>;
       default: return <span className="cell-top">—</span>;
     }
   };
@@ -146,18 +172,16 @@ export default function ActivityHistory(
         </div>
       </div>
 
-      <div className="dir-list activity-list">
-        <div className="list-head" style={grid}>
-          <button className="sortable" onClick={() => toggleSort('at')}>
-            When {caret('at')}
-          </button>
+      <div className="dir-list activity-list list-scroll">
+        <div className="list-head" style={rowStyle}>
+          <ColHead col={WHEN_COL} sortDir={sortKey === 'at' ? sortDir : null}
+                   onToggleSort={() => toggleSort('at')} />
           {shownCols.map((c) => (
-            <button key={c.key} className="sortable"
-                    onClick={() => toggleSort(c.key as SortKey)}>
-              {c.label} {caret(c.key as SortKey)}
-            </button>
+            <ColHead key={c.key} col={c}
+                     sortDir={sortKey === c.key ? sortDir : null}
+                     onToggleSort={() => toggleSort(c.key as SortKey)} />
           ))}
-          <span />
+          <span className="col-head" aria-hidden="true" />
         </div>
 
         {visible.length === 0 && (
@@ -170,11 +194,12 @@ export default function ActivityHistory(
           const open = openId === r.id;
           const details = changeRows(r.changes);
           return (
-            <div key={r.id} className={`dir-row ${open ? 'open' : ''}`}>
-              <div className="row-main" style={grid}
+            <div key={r.id} className={`dir-row ${open ? 'open' : ''}`}
+                 style={{ minWidth: rowStyle.minWidth }}>
+              <div className="row-main" style={rowStyle}
                    onClick={() => setOpenId(open ? null : r.id)}>
                 <div className="cell" title={new Date(r.at).toLocaleString()}>
-                  <span className="mono">{relativeTime(r.at)}</span>
+                  <span className="mono cell-line">{relativeTime(r.at)}</span>
                 </div>
                 {shownCols.map((c) => (
                   <div className="cell" key={c.key}

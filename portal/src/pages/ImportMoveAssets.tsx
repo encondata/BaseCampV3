@@ -20,6 +20,9 @@ import {
   type ImportJobOut, type ImportRowDetail, type InitiativeDetail,
 } from '../lib/api';
 import {
+  ColHead, listGridStyle, listScale, titleFor, type ColumnDef,
+} from '../lib/listTools';
+import {
   countDetails, etaSeconds, IMPORT_ERRORS, importErrorMessage, jobIsActive,
   jobProgressPct, missingMakeModels, reviewMakeModel, rowsPerSecond, suggestSplit,
   type SpeedSample,
@@ -30,6 +33,25 @@ import '../styles/profile.css';
 
 const POLL_MS = 2000;
 const PAGE_SIZE = 500;
+
+// No column registry pre-migration (hand-written header spans) — this
+// local REPORT_COLUMNS mirrors them in order (recipe R1), carrying the
+// widths the `.imp-report-grid` CSS template used to hold
+// (initiatives.css, now deleted in favour of the inline template).
+// Fit: default columns ≤ LIST_FIT.initPanel (1134px — the report card is
+// an .init-panel, initiatives.css: 18px padding plus a 1px border each
+// side off the measured 1174px page width, at a 1512px window with the
+// nav expanded).
+const REPORT_COLUMNS: ColumnDef[] = [
+  { key: 'row', label: 'Row', width: '70px', default: true },
+  { key: 'serial', label: 'Serial', width: '160px', default: true },
+  { key: 'status', label: 'Status', width: '130px', default: true },
+  { key: 'message', label: 'Message', width: '1fr', default: true, min: 220 },
+];
+// `message` keeps its wrapping cell-top rather than the single-line
+// cell-line/title treatment: it is prose of unbounded length and it hosts
+// the inline "Fix…" button, which a block-level truncating span would push
+// onto its own line. The 220px floor is what keeps it readable instead.
 
 /** make/model mode descriptions — verbatim intent from the template's
  *  Reference sheet (api/src/serversherpa/imports/parsing.py's
@@ -115,7 +137,12 @@ function ImportStepper({ step }: { step: 1 | 2 | 3 }) {
 
 export default function ImportMoveAssets() {
   const { id } = useParams<{ id: string }>();
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
+  const reportGrid = listGridStyle(REPORT_COLUMNS, [], undefined, listGridScale);
+  const reportRowStyle = {
+    gridTemplateColumns: reportGrid.gridTemplateColumns, minWidth: reportGrid.minWidth,
+  };
   const canAddModels = can('asset_models', 'add');
   const canChangeModels = can('asset_models', 'change');
   const [initiative, setInitiative] = useState<InitiativeDetail | null>(null);
@@ -506,19 +533,24 @@ export default function ImportMoveAssets() {
                       </div>
                     )}
 
-                    <div className="dir-list imp-report-list">
-                      <div className="list-head imp-report-grid">
-                        <span className="col-head">Row</span>
-                        <span className="col-head">Serial</span>
-                        <span className="col-head">Status</span>
-                        <span className="col-head">Message</span>
+                    <div className="dir-list imp-report-list list-scroll">
+                      <div className="list-head" style={reportRowStyle}>
+                        {REPORT_COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
                       </div>
                       {pageRows.map((d) => (
-                        <div key={d.row} className="dir-row">
-                          <div className="row-main imp-report-grid">
-                            <div className="cell"><span className="cell-top">{d.row}</span></div>
+                        <div key={d.row} className="dir-row"
+                             style={{ minWidth: reportRowStyle.minWidth }}>
+                          <div className="row-main" style={reportRowStyle}>
                             <div className="cell">
-                              <span className="cell-top">{d.serial_number || '—'}</span>
+                              <span className="cell-top cell-line" title={titleFor(String(d.row))}>
+                                {d.row}
+                              </span>
+                            </div>
+                            <div className="cell">
+                              <span className="cell-top cell-line"
+                                    title={titleFor(d.serial_number || '—')}>
+                                {d.serial_number || '—'}
+                              </span>
                             </div>
                             <div className="cell">
                               <span className={`chip ${STATUS_CHIP[d.status] ?? 'c-slate'}`}>

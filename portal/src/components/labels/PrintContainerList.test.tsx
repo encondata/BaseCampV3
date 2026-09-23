@@ -175,4 +175,19 @@ describe('PrintContainerList', () => {
     expect(h2.onRefresh).toHaveBeenCalledTimes(1);
     expect(h.onRefresh).not.toHaveBeenCalled();
   });
+
+  it('column floors, shared template + minimum, sideways-scroll card', () => {
+    setup();
+    const row = screen.getByText('crate-blue').closest('.dir-row') as HTMLElement;
+    const card = row.closest('.dir-list') as HTMLElement;
+    expect(card.classList.contains('list-scroll')).toBe(true);
+    const head = card.querySelector('.list-head') as HTMLElement;
+    const main = row.querySelector('.row-main') as HTMLElement;
+    expect(head.style.gridTemplateColumns).toMatch(/^32px /);
+    expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+    expect(row.style.minWidth).toBe(head.style.minWidth);
+    // Fit: default columns + trailing ≤ 1126px (.plabels-card: 1174 less
+    // its 22px padding and 1px border each side, less 2px safety).
+    expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1126);
+  });
 });

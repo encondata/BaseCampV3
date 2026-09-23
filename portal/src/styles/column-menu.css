@@ -13,12 +13,42 @@
  * side by side in one grid cell of .list-head (directory.css) without
  * the menu icon eating into the label's click target. */
 .list-head .col-head {
+  position: relative;      /* anchors .col-head-measure */
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 2px;                /* listTools.tsx COL_HEAD_GAP mirrors this */
   min-width: 0;
 }
 .list-head .col-head .sortable { min-width: 0; }
+.list-head .col-head .col-label { min-width: 0; }
+/* Only a list with column floors (.dir-list.list-scroll) keeps labels on
+ * one line — its floors guarantee the (short) label fits. Un-migrated
+ * lists keep wrapping until the rollout gives them floors. The ellipsis is
+ * a graceful fallback for the cases a floor cannot cover — a fixed px track
+ * narrower than its label, or a larger list_size than the floor was sized
+ * at — so a long header trails off instead of painting over its neighbour.
+ * The hidden measure clone (.col-head-measure below) is untouched, so
+ * useFitLabel still measures the FULL long label. */
+.dir-list.list-scroll .list-head .col-head .sortable,
+.dir-list.list-scroll .list-head .col-head .col-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Hidden clone of the long label (+ caret) that useFitLabel measures.
+ * Inherits the header's font from .list-head; carries no typography of
+ * its own (listTypography guardrail). */
+.list-head .col-head-measure {
+  position: absolute;
+  left: 0;
+  top: 0;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;                /* matches .list-head .sortable's gap */
+}
 
 .colmenu-trigger {
   display: inline-flex;
@@ -41,6 +71,10 @@
 }
 
 .colmenu-menu { min-width: 220px; }
+/* Portaled under document.body (lib/columnMenu.tsx): fixed coordinates
+ * come inline from the trigger's rect; z-index sits with RowActionsMenu's
+ * portaled menu, above the list card and the sticky topbar. */
+.pop-menu.colmenu-portaled { position: fixed; z-index: 1200; }
 
 .colmenu-sort {
   display: flex;

@@ -4,6 +4,29 @@
  * the two surfaces never drift.
  */
 
+import type { ColumnDef } from './listTools';
+
+// The Audit log viewer's fixed leading "When" column — a fixed px track
+// outside the column registry (same shape as the page's header markup),
+// so it needs its own ColumnDef for listGridStyle/ColHead. Lives here
+// (not Audit.tsx) so the columns test doesn't drag in the page's
+// ComboBox/DataTable/api imports — same pattern as lib/sites.ts's
+// PRIMARY_COL. Kept at a fixed px width (not `fr`) as originally
+// written — recipe R1's "fixed px widths kept as written".
+export const AUDIT_PRIMARY_COL: ColumnDef = {
+  key: 'primary', label: 'When', width: '150px', default: true,
+};
+
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
+export const AUDIT_COLUMNS: ColumnDef[] = [
+  { key: 'actor', label: 'Actor', width: '1fr', default: true },
+  { key: 'action', label: 'Action', width: '1.4fr', default: true },
+  { key: 'target', label: 'Target', width: '1.3fr', default: true },
+  { key: 'entity_id', label: 'Record id', width: '1fr', default: false, min: 100 },
+  { key: 'ip', label: 'IP', width: '120px', default: true },
+];
+
 export interface AuditRowLike {
   action: string;
   entity_type: string;

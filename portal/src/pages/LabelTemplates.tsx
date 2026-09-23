@@ -29,17 +29,19 @@ import {
 } from '../lib/columnMenu';
 import { siteNames, sitesCellText, templateSearchText, vocabLabel, vocabOfKind } from '../lib/labels';
 import {
-  ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
-  moveKey, passesFacets, useOutsideClose, useReorderDrag, useSearchHaystacks,
-  visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
+  ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
+  listGridStyle, listScale, moveKey, passesFacets, titleFor, useOutsideClose, useReorderDrag,
+  useSearchHaystacks, visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import '../styles/directory.css';
 import '../styles/labels.css';
 
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: '1.6fr', default: true },
+  { key: 'name', label: 'Name', width: '1.6fr', default: true, min: 140 },
   { key: 'label_type', label: 'Type', width: '1fr', default: true },
   { key: 'size_key', label: 'Size', width: '1fr', default: true },
   { key: 'language_key', label: 'Language', width: '1fr', default: true },
@@ -49,7 +51,7 @@ const COLUMNS: ColumnDef[] = [
   { key: 'is_active', label: 'Active', width: '0.7fr', default: true },
   { key: 'sites', label: 'Sites', width: '1.1fr', default: true },
   { key: 'description', label: 'Description', width: '1.6fr', default: false },
-  { key: 'updated_at', label: 'Updated', width: '1fr', default: false },
+  { key: 'updated_at', label: 'Updated', width: '1fr', default: false, min: 96 },
 ];
 
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
@@ -87,11 +89,12 @@ function NewTemplateMenu({ onPick }: { onPick: (kind: 'design' | 'code') => void
 }
 
 export default function LabelTemplates() {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
   const navigate = useNavigate();
   const canAdd = can('labels', 'add');
   const canChange = can('labels', 'change');
   const canDelete = can('labels', 'delete');
+  const listGridScale = listScale(preferences?.list_size);
 
   const [templates, setTemplates] = useState<LabelTemplate[] | null>(null);
   const [vocab, setVocab] = useState<LabelVocab[]>([]);
@@ -225,16 +228,14 @@ export default function LabelTemplates() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templates, vocab, sites, facets, filters, query, sortKey, sortDir, haystack]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 100px` };
+  const grid = listGridStyle(shownCols, ['100px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const deactivate = async (t: LabelTemplate) => {
     if (!window.confirm(`Deactivate "${t.name}"?`)) return;
@@ -260,14 +261,16 @@ export default function LabelTemplates() {
   const cellFor = (t: LabelTemplate, key: string) => {
     switch (key) {
       case 'name':
-        return <b className="cell-top">{t.name}</b>;
+        return <b className="cell-top cell-line" title={titleFor(t.name)}>{t.name}</b>;
       case 'label_type':
       case 'size_key':
       case 'language_key':
       case 'dpi_key':
         return <span className="chip tag">{cellText(t, key)}</span>;
-      case 'version':
-        return <span className="mono">{cellText(t, key)}</span>;
+      case 'version': {
+        const text = cellText(t, key);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'kind':
         return (
           <span className={`chip ${t.kind === 'design' ? 'c-violet' : 'c-slate'}`}>
@@ -280,14 +283,20 @@ export default function LabelTemplates() {
             {activeLabel(t.is_active)}
           </span>
         );
-      case 'sites':
-        return <span className="cell-sub">{sitesCellText(t.site_ids, sites)}</span>;
+      case 'sites': {
+        const text = sitesCellText(t.site_ids, sites);
+        return <span className="cell-sub cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'description':
         return <span className="cell-sub">{t.description || '—'}</span>;
-      case 'updated_at':
-        return <span className="mono">{new Date(t.updated_at).toLocaleDateString()}</span>;
-      default:
-        return <span>{cellText(t, key)}</span>;
+      case 'updated_at': {
+        const text = new Date(t.updated_at).toLocaleDateString();
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      default: {
+        const text = cellText(t, key);
+        return <span className="cell-line" title={titleFor(text)}>{text}</span>;
+      }
     }
   };
 
@@ -331,23 +340,21 @@ export default function LabelTemplates() {
       )}
 
       {templates && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)} className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={templates ?? []} filters={filters}
                             text={cellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
-            <span />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {visible.length === 0 && (
@@ -366,8 +373,8 @@ export default function LabelTemplates() {
 
           <VirtualRows rows={visible}
             renderRow={(t, vp) => (
-              <div key={t.id} className="dir-row" {...vp} style={vp?.style}>
-                <div className="row-main" style={grid}>
+              <div key={t.id} className="dir-row" {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}>
                   {shownCols.map((c) => (
                     <div className="cell" key={c.key}>{cellFor(t, c.key)}</div>
                   ))}

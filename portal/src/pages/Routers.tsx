@@ -24,9 +24,9 @@ import {
   deviceCellText, deviceSearchText, deviceSortValue, tokenExpiryState, vpnLabel,
 } from '../lib/devices';
 import {
-  ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
-  moveKey, passesFacets, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
-  type ColumnDef, type FacetGroup, type FacetState,
+  ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
+  listGridStyle, listScale, moveKey, passesFacets, titleFor, useReorderDrag, useSearchHaystacks,
+  visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import RouterLeases from '../components/hardware/RouterLeases';
@@ -35,18 +35,23 @@ import '../styles/profile.css';
 import '../styles/settings.css';  /* .set-note */
 import '../styles/hardware.css';
 
+// Fit: default columns + trailing compute to 1171px, under LIST_FIT.page
+// (1172px — measured 1174px in the browser at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: 'minmax(180px, 1.4fr)', default: true },
-  { key: 'wan_ip', label: 'WAN IP', width: 'minmax(120px, 1fr)', default: true },
-  { key: 'lan_ip', label: 'LAN IP', width: 'minmax(120px, 1fr)', default: true },
-  { key: 'mac', label: 'MAC', width: 'minmax(150px, 1fr)', default: true },
-  { key: 'serial', label: 'Serial', width: 'minmax(150px, 1fr)', default: true },
-  { key: 'vpn', label: 'VPN', width: '110px', default: true },
-  { key: 'connected', label: 'Devices', width: '90px', default: true },
-  { key: 'token_expires', label: 'Token expires', width: 'minmax(120px, 1fr)', default: true },
-  { key: 'uptime', label: 'Uptime', width: '110px', default: true },
-  { key: 'last_seen', label: 'Last seen', width: 'minmax(150px, 1fr)', default: false },
-  { key: 'site', label: 'Site', width: 'minmax(130px, 1fr)', default: false },
+  { key: 'name', label: 'Name', width: '1.4fr', default: true, min: 140 },
+  { key: 'wan_ip', label: 'WAN IP', width: '1fr', default: true, min: 100 },
+  { key: 'lan_ip', label: 'LAN IP', width: '1fr', default: true, min: 100 },
+  { key: 'mac', label: 'MAC', width: '1fr', default: true, min: 116 },
+  { key: 'serial', label: 'Serial', width: '1fr', default: true, min: 110 },
+  { key: 'vpn', label: 'VPN', width: '72px', default: true },
+  { key: 'connected', label: 'Devices', width: '82px', default: true },
+  {
+    key: 'token_expires', label: 'Token expires', short: 'Expires',
+    width: '1fr', default: true, min: 96,
+  },
+  { key: 'uptime', label: 'Uptime', width: '75px', default: true },
+  { key: 'last_seen', label: 'Last seen', width: '1fr', default: false, min: 96 },
+  { key: 'site', label: 'Site', width: '1fr', default: false },
 ];
 
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
@@ -73,8 +78,9 @@ const msgFor = (err: unknown): string =>
   err instanceof ApiError ? `Request failed (${err.code}).` : "Couldn't delete the router.";
 
 export default function Routers() {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
   const canDelete = can('scanning_hardware', 'delete');
+  const listGridScale = listScale(preferences?.list_size);
 
   const [devices, setDevices] = useState<DeviceItem[] | null>(null);
   const [error, setError] = useState('');
@@ -145,16 +151,14 @@ export default function Routers() {
     });
   }, [devices, facets, filters, query, sortKey, sortDir, haystack]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 90px 30px` };
+  const grid = listGridStyle(shownCols, ['90px', '30px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const remove = async (d: DeviceItem) => {
     if (!window.confirm(`Delete "${d.name}"? This cannot be undone.`)) return;
@@ -170,8 +174,10 @@ export default function Routers() {
   const cellFor = (d: DeviceItem, key: string) => {
     switch (key) {
       case 'mac':
-      case 'serial':
-        return <span className="mono">{deviceCellText(d, key)}</span>;
+      case 'serial': {
+        const text = deviceCellText(d, key);
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'vpn':
         return d.vpn_status == null
           ? <span>—</span>
@@ -186,10 +192,12 @@ export default function Routers() {
         const text = deviceCellText(d, 'token_expires');
         if (state === 'expired') return <span className="chip c-red">expired</span>;
         if (state === 'soon') return <span className="chip c-amber">{text}</span>;
-        return <span>{text}</span>;
+        return <span className="cell-line" title={titleFor(text)}>{text}</span>;
       }
-      default:
-        return <span>{deviceCellText(d, key)}</span>;
+      default: {
+        const text = deviceCellText(d, key);
+        return <span className="cell-line" title={titleFor(text)}>{text}</span>;
+      }
     }
   };
 
@@ -234,24 +242,22 @@ export default function Routers() {
       )}
 
       {devices && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)} className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={devices ?? []} filters={filters}
                             text={deviceCellTextTyped}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
-            <span />
-            <span />
+            <span className="col-head" aria-hidden="true" />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {visible.length === 0 && (
@@ -272,8 +278,9 @@ export default function Routers() {
             renderRow={(d, vp) => {
               const open = openId === d.id;
               return (
-                <div key={d.id} className={`dir-row ${open ? 'open' : ''}`} {...vp} style={vp?.style}>
-                  <div className="row-main" style={grid}
+                <div key={d.id} className={`dir-row ${open ? 'open' : ''}`} {...vp}
+                     style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                  <div className="row-main" style={rowStyle}
                        onClick={() => setOpenId(open ? null : d.id)}>
                     {shownCols.map((c) => (
                       <div className="cell" key={c.key}>{cellFor(d, c.key)}</div>

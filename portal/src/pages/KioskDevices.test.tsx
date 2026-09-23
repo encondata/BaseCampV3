@@ -22,6 +22,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { DeviceItem, UiPreferences } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => {
   const state: { can: (resource: string, action: string) => boolean; maxRank: number } = {
@@ -130,6 +131,19 @@ beforeEach(() => {
 afterEach(cleanup);
 
 const { default: KioskDevices } = await import('./KioskDevices');
+
+it('kiosk devices list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  render(<KioskDevices />);
+  const row = (await screen.findByText('kiosk-dock-1')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
 
 it('renders seeded rows sorted by name asc, with the type tag, current move, and scan-type chip', async () => {
   render(<KioskDevices />);
@@ -311,7 +325,7 @@ it('clicking Delete + confirm calls deleteDevice and reloads', async () => {
   confirmSpy.mockRestore();
 });
 
-it('renders the signed-in user and login-method chip; a session-less row shows dashes', async () => {
+it('renders the signed-in user; login-method chip is hidden by default', async () => {
   const SESSION_DEVICES: DeviceItem[] = [
     kiosk({
       id: 's1', name: 'kiosk-signed-in',
@@ -325,12 +339,12 @@ it('renders the signed-in user and login-method chip; a session-less row shows d
 
   const signedInRow = (await screen.findByText('kiosk-signed-in')).closest('.dir-row') as HTMLElement;
   expect(within(signedInRow).getByText('Claude Dev')).not.toBeNull();
-  const chip = within(signedInRow).getByText('Phone link');
-  expect(chip.className).toContain('chip tag');
+  // login_method column is default: false, so "Phone link" doesn't appear in default view
+  expect(within(signedInRow).queryByText('Phone link')).toBeNull();
 
   const signedOutRow = screen.getByText('kiosk-signed-out').closest('.dir-row') as HTMLElement;
   const dashes = within(signedOutRow).getAllByText('—');
-  expect(dashes.length).toBeGreaterThanOrEqual(2);
+  expect(dashes.length).toBeGreaterThanOrEqual(1);
 });
 
 it('shows the load-error banner when listDevices rejects', async () => {

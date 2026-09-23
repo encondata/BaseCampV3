@@ -6,15 +6,29 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+import { useAuth } from '../../auth/AuthContext';
 import {
   ApiError, listStatusRuleExecutions, listStatusRules,
   type StatusRule, type StatusRuleExecution,
 } from '../../lib/api';
+import { ColHead, listGridStyle, listScale, titleFor, type ColumnDef } from '../../lib/listTools';
 
 const PAGE = 100;
 
-// Time | Rule | Scan | Result | Actions | Duration
-const GRID = '160px 1.2fr 1.1fr 150px 1fr 90px';
+// No column registry pre-migration (hand-written header spans) — this
+// local COLUMNS mirrors them (recipe R1). Read-only, unsortable list —
+// headers render as plain ColHead spans (no onToggleSort).
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — .portal-page at a
+// 1512px window, nav expanded — ExecutionsTab sits directly in .portal-page,
+// under the tab bar, with no extra card).
+const COLUMNS: ColumnDef[] = [
+  { key: 'time', label: 'Time', width: '160px', default: true },
+  { key: 'rule', label: 'Rule', width: '1.2fr', default: true, min: 140 },
+  { key: 'scan', label: 'Scan', width: '1.1fr', default: true },
+  { key: 'result', label: 'Result', width: '150px', default: true },
+  { key: 'actions', label: 'Actions', width: '1fr', default: true },
+  { key: 'duration', label: 'Duration', width: '90px', default: true },
+];
 
 const msgFor = (err: unknown): string =>
   (err instanceof ApiError ? `Request failed (${err.code}).` : "Couldn't load executions.");
@@ -34,6 +48,8 @@ function actionsSummary(applied: StatusRuleExecution['actions_applied']): string
 export default function ExecutionsTab({ onCount }: {
   onCount: (n: number | null) => void;
 }) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [rules, setRules] = useState<StatusRule[] | null>(null);
   const [rows, setRows] = useState<StatusRuleExecution[]>([]);
   const [filter, setFilter] = useState('');
@@ -84,6 +100,9 @@ export default function ExecutionsTab({ onCount }: {
     }
   };
 
+  const grid = listGridStyle(COLUMNS, [], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
+
   const loadMore = async () => {
     if (loadingMore) return;
     setLoadingMore(true);
@@ -127,14 +146,9 @@ export default function ExecutionsTab({ onCount }: {
       )}
 
       {rules && (
-        <div className="dir-list">
-          <div className="list-head" style={{ gridTemplateColumns: GRID }}>
-            <span className="col-head">Time</span>
-            <span className="col-head">Rule</span>
-            <span className="col-head">Scan</span>
-            <span className="col-head">Result</span>
-            <span className="col-head">Actions</span>
-            <span className="col-head">Duration</span>
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
+            {COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
           </div>
 
           {rows.length === 0 && (
@@ -146,26 +160,31 @@ export default function ExecutionsTab({ onCount }: {
           {rows.map((exec) => {
             const result = resultChip(exec);
             const actionsTitle = JSON.stringify(exec.actions_applied, null, 2);
+            const time = new Date(exec.executed_at).toLocaleString();
+            const scanValue = exec.scanned_value ?? '—';
+            const scanStatus = exec.scan_status ?? '—';
+            const actionsText = actionsSummary(exec.actions_applied);
+            const duration = `${exec.duration_ms}ms`;
             return (
-              <div key={exec.id} className="dir-row">
-                <div className="row-main" style={{ gridTemplateColumns: GRID, cursor: 'default' }}>
-                  <div className="cell mono">{new Date(exec.executed_at).toLocaleString()}</div>
-                  <div className="cell">{exec.rule_name}</div>
+              <div key={exec.id} className="dir-row" style={{ minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={{ ...rowStyle, cursor: 'default' }}>
+                  <div className="cell mono cell-line" title={titleFor(time)}>{time}</div>
+                  <div className="cell cell-line" title={titleFor(exec.rule_name)}>{exec.rule_name}</div>
                   <div className="cell">
                     {exec.error != null ? '—' : (
                       <>
-                        <span className="cell-top mono">{exec.scanned_value ?? '—'}</span>
-                        <span className="cell-sub">{exec.scan_status ?? '—'}</span>
+                        <span className="cell-top mono cell-line" title={titleFor(scanValue)}>{scanValue}</span>
+                        <span className="cell-sub cell-line" title={titleFor(scanStatus)}>{scanStatus}</span>
                       </>
                     )}
                   </div>
                   <div className="cell">
                     <span className={result.cls}>{result.label}</span>
                   </div>
-                  <div className="cell" title={actionsTitle}>
-                    {actionsSummary(exec.actions_applied)}
+                  <div className="cell cell-line" title={actionsTitle}>
+                    {actionsText}
                   </div>
-                  <div className="cell mono">{exec.duration_ms}ms</div>
+                  <div className="cell mono cell-line" title={titleFor(duration)}>{duration}</div>
                 </div>
                 {exec.error != null && (
                   <div className="cell-sub" style={{ padding: '0 20px 10px' }}>{exec.error}</div>

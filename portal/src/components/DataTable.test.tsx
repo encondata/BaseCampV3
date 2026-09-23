@@ -36,4 +36,10 @@ describe('DataTable', () => {
     expect(extra.tagName).toBe('TD');
     expect(extra.className).toBe('');
   });
+  it('wraps the table in a sideways-scroll block', () => {
+    const { container } = render(<DataTable columns={[{ key: 'a', label: 'A' }]} rows={[{ key: '1', cells: ['x'] }]} />);
+    const wrap = container.querySelector('.data-table-scroll') as HTMLElement;
+    expect(wrap).not.toBeNull();
+    expect(wrap.querySelector('table.data-table')).not.toBeNull();
+  });
 });

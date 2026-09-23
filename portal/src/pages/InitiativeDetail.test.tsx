@@ -20,14 +20,17 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
+import { ADMIN_RANK } from '../lib/access';
 import type {
   InitiativeAssetRow, InitiativeDetail as InitiativeDetailOut, InitiativePersonRow,
   UiPreferences,
 } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => {
-  const state: { can: (resource: string, action: string) => boolean } = {
+  const state: { can: (resource: string, action: string) => boolean; maxRank: number } = {
     can: () => true,
+    maxRank: 0,
   };
   return state;
 });
@@ -38,7 +41,7 @@ vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     can: auth.can,
     godMode: false,
-    maxRank: 0,
+    maxRank: auth.maxRank,
     preferences: {
       accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default',
       motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default',
@@ -93,7 +96,7 @@ const ASSET: InitiativeAssetRow = {
   id: 'ia1', asset_id: 'a1',
   priority_wave: null, disposition: null, owner: null,
   source_pod: null, destination_pod: null,
-  source_rack: null, source_ru: null,
+  source_rack: 'rack-a1', source_ru: null,
   source_verified: null, source_position: null,
   destination_rack: null, destination_ru: null,
   destination_verified: null, destination_position: null,
@@ -141,6 +144,7 @@ const INITIATIVE: InitiativeDetailOut = {
 beforeEach(() => {
   vi.clearAllMocks();
   auth.can = () => true;
+  auth.maxRank = 0;
   api.getInitiative.mockResolvedValue(INITIATIVE);
   api.listInitiativeAssets.mockResolvedValue([ASSET]);
   api.listAssetStatuses.mockResolvedValue([]);
@@ -289,6 +293,67 @@ it('assets list: the action track is trigger-sized, and the chevron column survi
      expect(main.style.gridTemplateColumns).not.toContain('132px');
    });
 
+it('assets list: columns carry px floors, header and rows share one template and minimum width, and the card scrolls sideways', async () => {
+  renderPage();
+
+  const row = await assetRow();
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  expect(card.classList.contains('editing')).toBe(false);
+
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(head.style.minWidth).toMatch(/^\d+px$/);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Nine default columns + actions + chevron must fit a 14-inch window
+  // with the nav expanded (spec: ≤ LIST_FIT.initPanel — 1134px, the .init-panel's
+  // 18px padding and 1px border either side off the measured 1174px page width).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.initPanel);
+});
+
+it('assets list: edit mode drops the row minimum since the card is no longer a scroll container', async () => {
+  auth.maxRank = ADMIN_RANK;
+  const user = userEvent.setup();
+  renderPage();
+
+  const row = await assetRow();
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(row.style.minWidth).not.toBe('');
+
+  await user.click(await screen.findByRole('button', { name: 'Edit table' }));
+
+  expect(card.classList.contains('editing')).toBe(true);
+  const editingRow = await assetRow();
+  expect(editingRow.style.minWidth).toBe('');
+});
+
+it('assets list: single-line values truncate with the full text on hover', async () => {
+  renderPage();
+
+  const row = await assetRow();
+  const name = within(row).getByText('switch-01');
+  expect(name.classList.contains('cell-line')).toBe(true);
+  expect(name.getAttribute('title')).toBe('switch-01');
+
+  const rackBtn = within(row).getByRole('button', { name: 'rack-a1' });
+  expect(rackBtn.classList.contains('cell-line')).toBe(true);
+  expect(rackBtn.getAttribute('title')).toBe('rack-a1');
+});
+
+it('assets list: the header renders through ColHead (long label, hidden short-label measure for wordy columns)', async () => {
+  renderPage();
+
+  const row = await assetRow();
+  const head = (row.closest('.dir-list') as HTMLElement).querySelector('.list-head') as HTMLElement;
+  // Exact match: the ColumnMenu trigger's aria-label ("Destination Rack
+  // column menu") also contains this substring, so a loose regex would
+  // match both buttons and make the query ambiguous.
+  expect(within(head).getByRole('button', { name: 'Destination Rack' })).not.toBeNull();
+  expect(head.querySelector('.col-head-measure')).not.toBeNull();
+});
+
 /* ── people list ─────────────────────────────────────────────────── */
 
 it('people row: one Actions trigger replaces the inline Edit/Remove buttons', async () => {
@@ -298,6 +363,20 @@ it('people row: one Actions trigger replaces the inline Edit/Remove buttons', as
   expect(within(row).getByRole('button', { name: /Actions/ })).not.toBeNull();
   expect(within(row).queryByRole('button', { name: 'Edit' })).toBeNull();
   expect(within(row).queryByRole('button', { name: 'Remove' })).toBeNull();
+});
+
+it('people list: floors, shared template + minimum width, and the sideways-scroll card', async () => {
+  renderPage();
+
+  const row = await personRow();
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(main.style.gridTemplateColumns.endsWith('88px')).toBe(true);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(within(row).getByText('Ada Lovelace').classList.contains('cell-line')).toBe(true);
 });
 
 it('people row: Actions → Edit opens the person edit dialog', async () => {

@@ -16,6 +16,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { TimeEntryItem, UiPreferences } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => ({ can: (_r: string, _a?: string): boolean => true }));
 vi.mock('../auth/AuthContext', () => ({
@@ -170,6 +171,19 @@ it('timesheet row: items are disabled, not dropped, while the row is in flight',
     expect((screen.getByRole('menuitem', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('menuitem', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(true);
   });
+});
+
+it('timesheet: column floors, shared template + minimum, sideways-scroll card', async () => {
+  render(<TimeManagement />);
+  const row = (await screen.findByText('Alice Tech')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
 
 it('timesheet: the action track is trigger-sized', async () => {

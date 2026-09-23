@@ -9,6 +9,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 
+import { useAuth } from '../../auth/AuthContext';
 import { ApiError, listSiteSurveyRaw, type RawSurveyRow } from '../../lib/api';
 import { rawSurveyCellText, rawSurveySearchText } from '../../lib/siteSurvey';
 import {
@@ -17,20 +18,14 @@ import {
 } from '../../lib/columnMenu';
 import { naturalCompare } from '../../lib/sites';
 import {
-  applyColumnOrder, ColumnsButton, ExportButton, exportCsv, moveKey,
-  useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
+  applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale, moveKey,
+  titleFor, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
 } from '../../lib/listTools';
 import { VirtualRows } from '../../lib/virtualRows';
+import {
+  RAW_SURVEY_COLUMNS as COLUMNS, RAW_SURVEY_PRIMARY_COL as PRIMARY_COL,
+} from '../../lib/surveyColumns';
 
-const COLUMNS: ColumnDef[] = [
-  { key: 'value', label: 'Value', width: '1.4fr', default: true },
-  { key: 'registered', label: 'Registered', width: '0.8fr', default: true },
-  { key: 'source', label: 'Source', width: '0.8fr', default: true },
-  { key: 'submitted_by', label: 'Submitted by', width: '1fr', default: true },
-  { key: 'device', label: 'Device', width: '1fr', default: false },
-  { key: 'captured', label: 'Captured', width: '1.1fr', default: true },
-  { key: 'ingested', label: 'Ingested', width: '1fr', default: false },
-];
 const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'field']);
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
@@ -64,6 +59,8 @@ export default function RawSurveyList({ siteId, refreshKey, onCount }: {
   refreshKey?: number;
   onCount?: (n: number | null) => void;
 }) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [rows, setRows] = useState<RawSurveyRow[] | null>(null);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
@@ -110,21 +107,23 @@ export default function RawSurveyList({ siteId, refreshKey, onCount }: {
       naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
   }, [rows, filters, query, sortKey, sortDir, haystack]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `2fr ${shownCols.map((c) => c.width).join(' ')}` };
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], [], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (row: RawSurveyRow, key: string) => {
     const text = rawSurveyCellText(row, key);
     const isMono = key === 'device' || key === 'captured' || key === 'ingested';
-    return <span className={isMono ? 'mono' : 'cell-top'}>{text}</span>;
+    return (
+      <span className={`${isMono ? 'mono' : 'cell-top'} cell-line`} title={titleFor(text)}>
+        {text}
+      </span>
+    );
   };
 
   return (
@@ -147,32 +146,29 @@ export default function RawSurveyList({ siteId, refreshKey, onCount }: {
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load submissions</b>{error}</div>}
 
       {!error && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
-            <span className="col-head">
-              <button className="sortable" onClick={() => toggleSort('field')}>
-                Field {caret('field')}
-              </button>
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
+            <ColHead col={PRIMARY_COL} sortDir={sortKey === 'field' ? sortDir : null}
+                     onToggleSort={() => toggleSort('field')}>
               <ColumnMenu colKey="field" label="Field"
                           allRows={rows ?? []} filters={filters}
                           text={rawSurveyCellText}
                           filter={filters.field} onFilter={setFilter}
                           sortDir={sortKey === 'field' ? sortDir : null}
                           onSort={(dir) => setSort('field', dir)} />
-            </span>
+            </ColHead>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)}
+                       className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={rows ?? []} filters={filters}
                             text={rawSurveyCellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
           </div>
 
@@ -191,10 +187,11 @@ export default function RawSurveyList({ siteId, refreshKey, onCount }: {
 
           <VirtualRows rows={visible}
             renderRow={(row, vp) => (
-              <div key={row.id} className="dir-row" {...vp} style={vp?.style}>
-                <div className="row-main" style={grid}>
+              <div key={row.id} className="dir-row" {...vp}
+                   style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}>
                   <div className="cell cell-primary">
-                    <span className="mono">{row.field_key}</span>
+                    <span className="mono cell-line" title={titleFor(row.field_key)}>{row.field_key}</span>
                   </div>
                   {shownCols.map((col) => (
                     <div className="cell" key={col.key}>{cellFor(row, col.key)}</div>

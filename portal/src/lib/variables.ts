@@ -1,6 +1,16 @@
 // Pure helpers for the Variables page. Kept out of the component so they can
 // be tested without a live API — same convention as lib/sites.ts.
 import type { AssetCategoryOut, SiteLookup, StatusValue, WorkerLevel } from './api';
+import type { ColumnDef } from './listTools';
+
+/* ── list column registries ──────────────────────────────────────────
+ * One per tab. They live here, not in Variables.tsx, so the fit test can
+ * import them as a plain node test — the page module drags the router,
+ * AuthContext, and four stylesheets in with it (recipe R7). Each tab's
+ * list renders directly in the Variables page's tab body (the
+ * .access-tab-panel div Variables.tsx borrows from access.css), which
+ * carries no padding of its own beyond .portal-page's. */
+
 
 // The seven the palette was built on. Not a limit any more — a starting point,
 // so the common case stays one click. Values are the light-theme hexes; render
@@ -422,3 +432,47 @@ export function needsAssetCategoryCreate(
 ): boolean {
   return original === null && createdKey === null;
 }
+
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px).
+export const STATUS_COLUMNS: ColumnDef[] = [
+  { key: 'record_type', label: 'Type', width: '0.8fr', default: true },
+  { key: 'key', label: 'Key', width: '1fr', default: true },
+  { key: 'label', label: 'Label', width: '1.2fr', default: true },
+  { key: 'description', label: 'Description', width: '2fr', default: true },
+  { key: 'color', label: 'Color', width: '0.8fr', default: true },
+  { key: 'sort_order', label: 'Order', width: '0.6fr', default: true },
+  { key: 'is_active', label: 'Active', width: '0.6fr', default: true },
+  { key: 'usage_count', label: 'In use', width: '0.7fr', default: true },
+];
+
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px).
+export const SITE_TYPE_COLUMNS: ColumnDef[] = [
+  { key: 'key', label: 'Key', width: '1fr', default: true },
+  { key: 'label', label: 'Label', width: '1.2fr', default: true },
+  { key: 'description', label: 'Description', width: '2.4fr', default: true },
+  { key: 'color', label: 'Color', width: '0.8fr', default: true },
+  { key: 'sort_order', label: 'Order', width: '0.6fr', default: true },
+  { key: 'icon', label: 'Icon', width: '0.8fr', default: true },
+];
+
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px).
+export const WORKER_LEVEL_COLUMNS: ColumnDef[] = [
+  { key: 'level', label: 'Level', width: '0.8fr', default: true },
+  { key: 'rank', label: 'Rank', width: '0.6fr', default: true },
+  { key: 'title', label: 'Title', width: '1.2fr', default: true },
+  { key: 'description', label: 'Description', width: '2fr', default: true },
+  { key: 'color', label: 'Color', width: '0.8fr', default: true },
+  {
+    key: 'expected_skills', label: 'Expected skills', short: 'Skills',
+    width: '2fr', default: true,
+  },
+];
+
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px).
+export const CATEGORY_COLUMNS: ColumnDef[] = [
+  { key: 'key', label: 'Key', width: '1fr', default: true },
+  { key: 'label', label: 'Label', width: '1.2fr', default: true },
+  { key: 'description', label: 'Description', width: '2.4fr', default: true },
+  { key: 'color', label: 'Color', width: '0.8fr', default: true },
+  { key: 'sort_order', label: 'Order', width: '0.6fr', default: true },
+];

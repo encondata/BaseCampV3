@@ -28,16 +28,22 @@ import {
   type WorkerLevel,
 } from '../lib/api';
 import {
+  ColHead,
   ColumnsButton,
   ExportButton,
   FilterButton,
   exportCsv,
+  listGridStyle,
+  listScale,
   passesFacets,
-  type ColumnDef,
+  titleFor,
   type FacetGroup,
   type FacetState,
 } from '../lib/listTools';
-import { recordTypeOptions, statusSearchText } from '../lib/variables';
+import {
+  CATEGORY_COLUMNS, recordTypeOptions, SITE_TYPE_COLUMNS, STATUS_COLUMNS,
+  statusSearchText, WORKER_LEVEL_COLUMNS,
+} from '../lib/variables';
 import '../styles/access.css';   /* .subs-tabs / .access-tab-panel — page-local tab strip */
 import '../styles/directory.css';
 import '../styles/profile.css';
@@ -112,17 +118,6 @@ export default function Variables() {
 
 /* ══════════════════════════════ Statuses ═══════════════════════════════ */
 
-const STATUS_COLUMNS: ColumnDef[] = [
-  { key: 'record_type', label: 'Type', width: '0.8fr', default: true },
-  { key: 'key', label: 'Key', width: '1fr', default: true },
-  { key: 'label', label: 'Label', width: '1.2fr', default: true },
-  { key: 'description', label: 'Description', width: '2fr', default: true },
-  { key: 'color', label: 'Color', width: '0.8fr', default: true },
-  { key: 'sort_order', label: 'Order', width: '0.6fr', default: true },
-  { key: 'is_active', label: 'Active', width: '0.6fr', default: true },
-  { key: 'usage_count', label: 'In use', width: '0.7fr', default: true },
-];
-
 const STATUS_CSV_COLUMNS: [string, (v: StatusValue) => string][] = [
   ['Record type', (v) => v.record_type],
   ['Key', (v) => v.key],
@@ -137,9 +132,10 @@ const STATUS_CSV_COLUMNS: [string, (v: StatusValue) => string][] = [
 const statusRowKey = (v: StatusValue) => `${v.record_type}:${v.key}`;
 
 function StatusesTab() {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
   const canAdd = can('devtools', 'add');
   const canChange = can('devtools', 'change');
+  const listGridScale = listScale(preferences?.list_size);
 
   const [values, setValues] = useState<StatusValue[] | null>(null);
   const [error, setError] = useState('');
@@ -199,22 +195,23 @@ function StatusesTab() {
   }, [values, visible, openKey]);
 
   const shownCols = STATUS_COLUMNS.filter((c) => visibleCols.has(c.key));
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle(shownCols, ['30px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (v: StatusValue, key: string) => {
     switch (key) {
       case 'record_type':
         return <span className="chip tag">{v.record_type}</span>;
       case 'key':
-        return <span className="mono">{v.key}</span>;
+        return <span className="mono cell-line" title={titleFor(v.key)}>{v.key}</span>;
       case 'label':
-        return <span className="cell-top">{v.label}</span>;
+        return <span className="cell-top cell-line" title={titleFor(v.label)}>{v.label}</span>;
       case 'description':
         return <span className="cell-sub">{v.description || '—'}</span>;
       case 'color':
         return <ColorSwatch color={v.color} />;
       case 'sort_order':
-        return <span className="mono">{v.sort_order}</span>;
+        return <span className="mono cell-line">{v.sort_order}</span>;
       case 'is_active':
         return (
           <span className={`chip ${v.is_active ? 'c-green' : 'tag'}`}>
@@ -222,7 +219,7 @@ function StatusesTab() {
           </span>
         );
       case 'usage_count':
-        return <span className="mono">{v.usage_count ?? 0}</span>;
+        return <span className="mono cell-line">{v.usage_count ?? 0}</span>;
       default:
         return null;
     }
@@ -252,10 +249,10 @@ function StatusesTab() {
       )}
 
       {!error && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
-            {shownCols.map((c) => <span key={c.key}>{c.label}</span>)}
-            <span />
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
+            {shownCols.map((c) => <ColHead key={c.key} col={c} />)}
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {values && visible.length === 0 && (
@@ -266,8 +263,8 @@ function StatusesTab() {
             const k = statusRowKey(v);
             const open = openKey === k;
             return (
-              <div key={k} className={`dir-row ${open ? 'open' : ''}`}>
-                <div className="row-main" style={grid} onClick={() => setOpenKey(open ? null : k)}>
+              <div key={k} className={`dir-row ${open ? 'open' : ''}`} style={{ minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle} onClick={() => setOpenKey(open ? null : k)}>
                   {shownCols.map((c) => (
                     <div className="cell" key={c.key}>{cellFor(v, c.key)}</div>
                   ))}
@@ -342,15 +339,6 @@ function StatusRowDetail({ value, canEdit, onEdit }: {
 
 /* ═══════════════════════════════ Site types ═════════════════════════════ */
 
-const SITE_TYPE_COLUMNS: ColumnDef[] = [
-  { key: 'key', label: 'Key', width: '1fr', default: true },
-  { key: 'label', label: 'Label', width: '1.2fr', default: true },
-  { key: 'description', label: 'Description', width: '2.4fr', default: true },
-  { key: 'color', label: 'Color', width: '0.8fr', default: true },
-  { key: 'sort_order', label: 'Order', width: '0.6fr', default: true },
-  { key: 'icon', label: 'Icon', width: '0.8fr', default: true },
-];
-
 const SITE_TYPE_CSV_COLUMNS: [string, (t: SiteLookup) => string][] = [
   ['Key', (t) => t.key],
   ['Label', (t) => t.label],
@@ -361,9 +349,10 @@ const SITE_TYPE_CSV_COLUMNS: [string, (t: SiteLookup) => string][] = [
 ];
 
 function SiteTypesTab() {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
   const canAdd = can('devtools', 'add');
   const canChange = can('devtools', 'change');
+  const listGridScale = listScale(preferences?.list_size);
 
   const [types, setTypes] = useState<SiteLookup[] | null>(null);
   const [error, setError] = useState('');
@@ -401,22 +390,25 @@ function SiteTypesTab() {
   }, [types, visible, openKey]);
 
   const shownCols = SITE_TYPE_COLUMNS.filter((c) => visibleCols.has(c.key));
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle(shownCols, ['30px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (t: SiteLookup, key: string) => {
     switch (key) {
       case 'key':
-        return <span className="mono">{t.key}</span>;
+        return <span className="mono cell-line" title={titleFor(t.key)}>{t.key}</span>;
       case 'label':
-        return <span className="cell-top">{t.label}</span>;
+        return <span className="cell-top cell-line" title={titleFor(t.label)}>{t.label}</span>;
       case 'description':
         return <span className="cell-sub">{t.description || '—'}</span>;
       case 'color':
         return <ColorSwatch color={t.color ?? UNKNOWN_COLOR} />;
       case 'sort_order':
-        return <span className="mono">{t.sort_order}</span>;
-      case 'icon':
-        return <span className="mono">{t.icon || '—'}</span>;
+        return <span className="mono cell-line">{t.sort_order}</span>;
+      case 'icon': {
+        const text = t.icon || '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default:
         return null;
     }
@@ -445,10 +437,10 @@ function SiteTypesTab() {
       )}
 
       {!error && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
-            {shownCols.map((c) => <span key={c.key}>{c.label}</span>)}
-            <span />
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
+            {shownCols.map((c) => <ColHead key={c.key} col={c} />)}
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {types && visible.length === 0 && (
@@ -458,8 +450,8 @@ function SiteTypesTab() {
           {visible.map((t) => {
             const open = openKey === t.key;
             return (
-              <div key={t.key} className={`dir-row ${open ? 'open' : ''}`}>
-                <div className="row-main" style={grid}
+              <div key={t.key} className={`dir-row ${open ? 'open' : ''}`} style={{ minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}
                      onClick={() => setOpenKey(open ? null : t.key)}>
                   {shownCols.map((c) => (
                     <div className="cell" key={c.key}>{cellFor(t, c.key)}</div>
@@ -537,15 +529,6 @@ function SiteTypeRowDetail({ value, canEdit, onEdit }: {
 
 /* ══════════════════════════════ Worker levels ═══════════════════════════ */
 
-const WORKER_LEVEL_COLUMNS: ColumnDef[] = [
-  { key: 'level', label: 'Level', width: '0.8fr', default: true },
-  { key: 'rank', label: 'Rank', width: '0.6fr', default: true },
-  { key: 'title', label: 'Title', width: '1.2fr', default: true },
-  { key: 'description', label: 'Description', width: '2fr', default: true },
-  { key: 'color', label: 'Color', width: '0.8fr', default: true },
-  { key: 'expected_skills', label: 'Expected skills', width: '2fr', default: true },
-];
-
 const WORKER_LEVEL_CSV_COLUMNS: [string, (w: WorkerLevel) => string][] = [
   ['Level', (w) => w.level],
   ['Rank', (w) => String(w.rank)],
@@ -556,9 +539,10 @@ const WORKER_LEVEL_CSV_COLUMNS: [string, (w: WorkerLevel) => string][] = [
 ];
 
 function WorkerLevelsTab() {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
   const canAdd = can('devtools', 'add');
   const canChange = can('devtools', 'change');
+  const listGridScale = listScale(preferences?.list_size);
 
   const [levels, setLevels] = useState<WorkerLevel[] | null>(null);
   const [error, setError] = useState('');
@@ -597,7 +581,8 @@ function WorkerLevelsTab() {
   }, [levels, visible, openKey]);
 
   const shownCols = WORKER_LEVEL_COLUMNS.filter((c) => visibleCols.has(c.key));
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle(shownCols, ['30px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (w: WorkerLevel, key: string) => {
     switch (key) {
@@ -612,9 +597,9 @@ function WorkerLevelsTab() {
           </span>
         );
       case 'rank':
-        return <span className="mono">{w.rank}</span>;
+        return <span className="mono cell-line">{w.rank}</span>;
       case 'title':
-        return <span className="cell-top">{w.title}</span>;
+        return <span className="cell-top cell-line" title={titleFor(w.title)}>{w.title}</span>;
       case 'description':
         return <span className="cell-sub">{w.description || '—'}</span>;
       case 'color':
@@ -658,10 +643,10 @@ function WorkerLevelsTab() {
       )}
 
       {!error && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
-            {shownCols.map((c) => <span key={c.key}>{c.label}</span>)}
-            <span />
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
+            {shownCols.map((c) => <ColHead key={c.key} col={c} />)}
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {levels && visible.length === 0 && (
@@ -671,8 +656,8 @@ function WorkerLevelsTab() {
           {visible.map((w) => {
             const open = openKey === w.level;
             return (
-              <div key={w.level} className={`dir-row ${open ? 'open' : ''}`}>
-                <div className="row-main" style={grid}
+              <div key={w.level} className={`dir-row ${open ? 'open' : ''}`} style={{ minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}
                      onClick={() => setOpenKey(open ? null : w.level)}>
                   {shownCols.map((c) => (
                     <div className="cell" key={c.key}>{cellFor(w, c.key)}</div>
@@ -754,14 +739,6 @@ function WorkerLevelRowDetail({ value, canEdit, onEdit }: {
 
 /* ════════════════════════════ Asset categories ══════════════════════════ */
 
-const CATEGORY_COLUMNS: ColumnDef[] = [
-  { key: 'key', label: 'Key', width: '1fr', default: true },
-  { key: 'label', label: 'Label', width: '1.2fr', default: true },
-  { key: 'description', label: 'Description', width: '2.4fr', default: true },
-  { key: 'color', label: 'Color', width: '0.8fr', default: true },
-  { key: 'sort_order', label: 'Order', width: '0.6fr', default: true },
-];
-
 const CATEGORY_CSV_COLUMNS: [string, (c: AssetCategoryOut) => string][] = [
   ['Key', (c) => c.key],
   ['Label', (c) => c.label],
@@ -771,9 +748,10 @@ const CATEGORY_CSV_COLUMNS: [string, (c: AssetCategoryOut) => string][] = [
 ];
 
 function AssetCategoriesTab() {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
   const canAdd = can('devtools', 'add');
   const canChange = can('devtools', 'change');
+  const listGridScale = listScale(preferences?.list_size);
 
   const [categories, setCategories] = useState<AssetCategoryOut[] | null>(null);
   const [error, setError] = useState('');
@@ -812,20 +790,21 @@ function AssetCategoriesTab() {
   }, [categories, visible, openKey]);
 
   const shownCols = CATEGORY_COLUMNS.filter((c) => visibleCols.has(c.key));
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle(shownCols, ['30px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (c: AssetCategoryOut, key: string) => {
     switch (key) {
       case 'key':
-        return <span className="mono">{c.key}</span>;
+        return <span className="mono cell-line" title={titleFor(c.key)}>{c.key}</span>;
       case 'label':
-        return <span className="cell-top">{c.label}</span>;
+        return <span className="cell-top cell-line" title={titleFor(c.label)}>{c.label}</span>;
       case 'description':
         return <span className="cell-sub">{c.description || '—'}</span>;
       case 'color':
         return <ColorSwatch color={c.color} />;
       case 'sort_order':
-        return <span className="mono">{c.sort_order}</span>;
+        return <span className="mono cell-line">{c.sort_order}</span>;
       default:
         return null;
     }
@@ -854,10 +833,10 @@ function AssetCategoriesTab() {
       )}
 
       {!error && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
-            {shownCols.map((c) => <span key={c.key}>{c.label}</span>)}
-            <span />
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
+            {shownCols.map((c) => <ColHead key={c.key} col={c} />)}
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {categories && visible.length === 0 && (
@@ -867,8 +846,8 @@ function AssetCategoriesTab() {
           {visible.map((c) => {
             const open = openKey === c.key;
             return (
-              <div key={c.key} className={`dir-row ${open ? 'open' : ''}`}>
-                <div className="row-main" style={grid}
+              <div key={c.key} className={`dir-row ${open ? 'open' : ''}`} style={{ minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}
                      onClick={() => setOpenKey(open ? null : c.key)}>
                   {shownCols.map((col) => (
                     <div className="cell" key={col.key}>{cellFor(c, col.key)}</div>

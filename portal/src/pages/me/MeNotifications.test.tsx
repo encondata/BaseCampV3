@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { MyNotificationGroup, UiPreferences } from '../../lib/api';
+import { LIST_FIT } from '../../lib/listTools';
 
 const auth = vi.hoisted(() => ({
   updatePreferences: vi.fn(async (_prefs: UiPreferences) => true),
@@ -150,6 +151,21 @@ it('renders a member group with channel chips, quiet-hours text, days, and a Cus
   expect(screen.getByText('22:00–07:00 (America/New_York)')).toBeTruthy();
   expect(screen.getByText('Mon–Fri')).toBeTruthy();
   expect(screen.getByText('Customized')).toBeTruthy();
+});
+
+it('My groups list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([G1]);
+  render(<MeNotifications />);
+
+  const row = (await screen.findByText('Ops')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
 
 /** Standard-list rows keep their actions behind the "Actions ▾" menu:

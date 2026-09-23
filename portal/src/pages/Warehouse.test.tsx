@@ -18,6 +18,7 @@ import type {
   AssetItem, AssetRef, SiteItem, StockLine, UiPreferences, WarehouseContainer, WarehouseInventory,
   WarehouseSite,
 } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => ({ can: (_r: string, _a?: string): boolean => true }));
 vi.mock('../auth/AuthContext', () => ({
@@ -305,4 +306,36 @@ it('+ New container preselects the currently selected warehouse site', async () 
 
   const modal = (await screen.findByText('New container')).closest('.modal-card') as HTMLElement;
   expect(within(modal).getByDisplayValue('ACC4 Storage')).not.toBeNull();
+});
+
+it('Warehouse inventory list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  renderPage();
+  const row = (await screen.findByText('Pallet A-01')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
+
+it('Warehouse container contents mini-list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('Pallet A-01');
+  await user.click(screen.getByText('Pallet A-01'));
+
+  const miniRow = (await screen.findByText('SN-IN')).closest('.mini-row') as HTMLElement;
+  const card = miniRow.closest('.mini-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.mini-list-head') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(miniRow.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(miniRow.style.minWidth).toBe(head.style.minWidth);
+  // Fit: 1116px — the measured 1174px page width less .detail-inner's 40px
+  // horizontal padding (border-top only, so no side borders) and
+  // .wh-mini-indent's 16px left indent, less 2px safety.
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1116);
 });

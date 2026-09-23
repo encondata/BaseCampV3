@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
+import { useAuth } from '../../auth/AuthContext';
 import {
   ApiError, listRawScans, type RawScanRow,
 } from '../../lib/api';
@@ -20,29 +21,24 @@ import {
 import { naturalCompare } from '../../lib/sites';
 import {
   applyColumnOrder,
+  ColHead,
   ColumnsButton,
   ExportButton,
   exportCsv,
+  listGridStyle,
+  listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
-  type ColumnDef,
 } from '../../lib/listTools';
 import { VirtualRows } from '../../lib/virtualRows';
+import {
+  RAW_SCAN_COLUMNS as COLUMNS, RAW_SCAN_PRIMARY_COL as PRIMARY_COL,
+} from '../../lib/scanColumns';
 import { displayScanValue } from '../../lib/format';
 
-const COLUMNS: ColumnDef[] = [
-  { key: 'status', label: 'Scan status', width: '1.1fr', default: true },
-  { key: 'scan_type', label: 'Method', width: '0.9fr', default: true },
-  { key: 'scanned', label: 'Scanned', width: '1.1fr', default: true },
-  { key: 'device', label: 'Device', width: '1fr', default: true },
-  { key: 'operator', label: 'Operator', width: '1fr', default: true },
-  { key: 'site', label: 'Site', width: '1fr', default: true },
-  { key: 'location', label: 'Location', width: '1.2fr', default: false },
-  { key: 'source', label: 'Source', width: '0.7fr', default: false },
-  { key: 'ingested', label: 'Ingested', width: '1.1fr', default: false },
-];
 const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'primary']);
 
 const DEFAULT_VISIBLE = new Set<string>(
@@ -80,6 +76,8 @@ const CSV_COLUMNS: [string, (r: RawScanRow) => string][] = [
 export default function RawScansTab({ onCount }: {
   onCount: (n: number | null) => void;
 }) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [scans, setScans] = useState<RawScanRow[] | null>(null);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
@@ -127,16 +125,14 @@ export default function RawScansTab({ onCount }: {
       naturalCompare(sortValueFor(a, sortKey), sortValueFor(b, sortKey)) * sortDir);
   }, [scans, filters, query, sortKey, sortDir, haystack]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cellFor = (r: RawScanRow, key: string) => {
     switch (key) {
@@ -148,20 +144,34 @@ export default function RawScansTab({ onCount }: {
             <span className="dot" />{r.scan_type_label}
           </span>
         );
-      case 'scanned':
-        return <span className="mono">{new Date(r.scanned_at).toLocaleString()}</span>;
-      case 'device':
-        return <span className="mono">{r.device_id || '—'}</span>;
-      case 'operator':
-        return <span className="cell-top">{r.operator_name ?? '—'}</span>;
-      case 'site':
-        return <span className="cell-top">{r.site_name ?? '—'}</span>;
-      case 'location':
-        return <span className="cell-top">{r.location_detail || '—'}</span>;
-      case 'source':
-        return <span className="cell-top">{r.source || '—'}</span>;
-      case 'ingested':
-        return <span className="mono">{new Date(r.created_at).toLocaleString()}</span>;
+      case 'scanned': {
+        const text = new Date(r.scanned_at).toLocaleString();
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'device': {
+        const text = r.device_id || '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'operator': {
+        const text = r.operator_name ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'site': {
+        const text = r.site_name ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'location': {
+        const text = r.location_detail || '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'source': {
+        const text = r.source || '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'ingested': {
+        const text = new Date(r.created_at).toLocaleString();
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default:
         return null;
     }
@@ -187,34 +197,31 @@ export default function RawScansTab({ onCount }: {
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load scans</b>{error}</div>}
 
       {!error && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
-            <span className="col-head">
-              <button className="sortable" onClick={() => toggleSort('primary')}>
-                Value {caret('primary')}
-              </button>
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
+            <ColHead col={PRIMARY_COL} sortDir={sortKey === 'primary' ? sortDir : null}
+                     onToggleSort={() => toggleSort('primary')}>
               <ColumnMenu colKey="primary" label="Value"
                           allRows={scans ?? []} filters={filters}
                           text={rawScanCellText}
                           filter={filters.primary} onFilter={setFilter}
                           sortDir={sortKey === 'primary' ? sortDir : null}
                           onSort={(dir) => setSort('primary', dir)} />
-            </span>
+            </ColHead>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)}
+                       className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={scans ?? []} filters={filters}
                             text={rawScanCellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
-            <span />
+            <span className="col-head" aria-hidden="true" />
           </div>
 
           {scans && visible.length === 0 && (
@@ -229,8 +236,8 @@ export default function RawScansTab({ onCount }: {
               const open = openId === r.id;
               return (
                 <div key={r.id} className={`dir-row ${open ? 'open' : ''}`}
-                     {...vp} style={vp?.style}>
-                  <div className="row-main" style={grid}
+                     {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                  <div className="row-main" style={rowStyle}
                        onClick={() => setOpenId(open ? null : r.id)}>
                     <div className="cell cell-primary">
                       <div className="pn"><b className="mono" title={r.scanned_value}>{displayScanValue(r.scanned_value, r.scan_type)}</b>

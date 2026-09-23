@@ -15,6 +15,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { UiPreferences } from '../lib/api';
 import type { OrgItem } from '../lib/orgs';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => ({ global: true }));
 
@@ -125,4 +126,24 @@ it('global staff: Edit modal keeps the Notes field and the PATCH sends notes', a
   fireEvent.click(modal.getByRole('button', { name: 'Save changes' }));
   await waitFor(() => expect(patchCall()).toBeDefined());
   expect(patchBody().notes).toBe('late payer');
+});
+
+it('Clients list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  render(
+    <MemoryRouter>
+      <OrgDirectory cfg={{
+        kind: 'client', apiBase: '/clients', title: 'Clients', blurb: '',
+        addLabel: 'Add client', hasType: false,
+      }} />
+    </MemoryRouter>,
+  );
+  const row = (await screen.findByText('Acme')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });

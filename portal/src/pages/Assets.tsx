@@ -43,10 +43,14 @@ import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   applyColumnOrder,
+  ColHead,
   ColumnsButton,
   ExportButton,
   exportCsv,
+  listGridStyle,
+  listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
@@ -60,15 +64,20 @@ import '../styles/settings.css';
 import '../styles/assets.css';
 import { displayRfid } from '../lib/format';
 
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   // The identity trio: the combined serial+name cell stays the default,
   // with its two halves offered as separate columns for anyone who wants
   // them side by side (or only one of them).
-  { key: 'primary', label: 'Serial / Name', width: '2.2fr', default: true },
-  { key: 'serial', label: 'Serial', width: '1.2fr', default: false },
-  { key: 'name', label: 'Name', width: '1.4fr', default: false },
-  { key: 'asset_id', label: 'Asset ID', width: '0.7fr', default: true },
-  { key: 'model', label: 'Make / Model', width: '1.5fr', default: true },
+  {
+    key: 'primary', label: 'Serial / Name', short: 'Serial/Name',
+    width: '2.2fr', default: true, min: 180,
+  },
+  { key: 'serial', label: 'Serial', width: '1.2fr', default: false, min: 100 },
+  { key: 'name', label: 'Name', width: '1.4fr', default: false, min: 140 },
+  { key: 'asset_id', label: 'Asset ID', width: '0.7fr', default: true, min: 100 },
+  { key: 'model', label: 'Make / Model', short: 'Model', width: '1.5fr', default: true },
   { key: 'category', label: 'Category', width: '1fr', default: true },
   { key: 'client', label: 'Client', width: '1.2fr', default: true },
   { key: 'site', label: 'Site', width: '1.2fr', default: true },
@@ -77,7 +86,7 @@ const COLUMNS: ColumnDef[] = [
   { key: 'location', label: 'Location', width: '1.4fr', default: false },
   { key: 'pod', label: 'Pod #', width: '0.7fr', default: false },
   { key: 'rfid', label: 'RFID', width: '1fr', default: false },
-  { key: 'last_seen', label: 'Last seen', width: '1fr', default: false },
+  { key: 'last_seen', label: 'Last seen', width: '1fr', default: false, min: 96 },
   { key: 'has_rails', label: 'Rails', width: '0.8fr', default: false, godOnly: true },
 ];
 
@@ -138,7 +147,8 @@ const CSV_COLUMNS: [string, (a: AssetItem) => string][] = [
 
 export default function Assets() {
   const navigate = useNavigate();
-  const { can, godMode } = useAuth();
+  const { can, godMode, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('assets', 'add');
   const canChange = can('assets', 'change');
   const canViewSites = can('sites', 'view');
@@ -281,9 +291,6 @@ export default function Assets() {
     }
   }, [visible]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   // Saved layouts predate the identity columns: usePersistentListState's
   // `seen` surfacing turns the (default-visible) combined column on for
   // them, and identityFirst puts identity keys an old order never
@@ -295,7 +302,11 @@ export default function Assets() {
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `${shownCols.map((c) => c.width).join(' ')} 100px 30px` };
+  const grid = listGridStyle(shownCols, ['100px', '30px'], undefined, listGridScale);
+  const rowStyle = {
+    gridTemplateColumns: grid.gridTemplateColumns,
+    minWidth: god.editing ? undefined : grid.minWidth,
+  };
 
   /** The amber chip the serial-bearing cells carry when a serial is shared
    *  by two or more assets. Rendered by whichever identity column is on. */
@@ -337,20 +348,26 @@ export default function Assets() {
             {dupeChip(isDupe)}
           </>
         );
-      case 'serial':
-        return god.editing && godFieldFor('primary')
-          ? (
+      case 'serial': {
+        if (god.editing && godFieldFor('primary')) {
+          return (
             <GodCell row={a} gf={godFieldFor('primary')!} patch={updateAsset}
                      onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
-          )
-          : <><span className="mono">{a.serial_number ?? '—'}</span>{dupeChip(isDupe)}</>;
-      case 'name':
-        return god.editing && godFieldFor('primary2')
-          ? (
+          );
+        }
+        const text = a.serial_number ?? '—';
+        return <><span className="mono cell-line" title={titleFor(text)}>{text}</span>{dupeChip(isDupe)}</>;
+      }
+      case 'name': {
+        if (god.editing && godFieldFor('primary2')) {
+          return (
             <GodCell row={a} gf={godFieldFor('primary2')!} patch={updateAsset}
                      onRowSaved={replaceRow} errorMap={ASSET_ERRORS} disabled={!canChange} />
-          )
-          : <span className="cell-top">{a.name ?? '—'}</span>;
+          );
+        }
+        const text = a.name ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default:
         break;
     }
@@ -364,10 +381,14 @@ export default function Assets() {
       }
     }
     switch (key) {
-      case 'asset_id':
-        return <span className="mono">{a.legacy_id ?? '—'}</span>;
-      case 'model':
-        return <span className="cell-top">{a.model ? `${a.model.make} ${a.model.model}` : '—'}</span>;
+      case 'asset_id': {
+        const text = a.legacy_id != null ? String(a.legacy_id) : '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'model': {
+        const text = a.model ? `${a.model.make} ${a.model.model}` : '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'category':
         return a.model?.category_color
           ? (
@@ -376,10 +397,14 @@ export default function Assets() {
             </span>
           )
           : <span className="chip tag">{a.model?.category_label ?? '—'}</span>;
-      case 'client':
-        return <span className="cell-top">{a.client_name ?? 'House'}</span>;
-      case 'site':
-        return <span className="cell-top">{a.site_name ?? '—'}</span>;
+      case 'client': {
+        const text = a.client_name ?? 'House';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'site': {
+        const text = a.site_name ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'status':
         return (
           <div className="chips">
@@ -392,22 +417,28 @@ export default function Assets() {
             {pd.pendingIds.has(a.id) && <span className="chip tag">Pending delete</span>}
           </div>
         );
-      case 'ru':
-        return <span className="mono">{a.model?.ru_size ?? '—'}</span>;
-      case 'location':
-        return <span className="cell-top">{a.location_detail || '—'}</span>;
+      case 'ru': {
+        const text = a.model?.ru_size != null ? String(a.model.ru_size) : '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'location': {
+        const text = a.location_detail || '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'rfid':
-        return <span className="mono" title={a.rfid_tag ?? undefined}>{displayRfid(a.rfid_tag)}</span>;
-      case 'pod':
-        return <span className="mono">{a.pod_number ?? '—'}</span>;
-      case 'last_seen':
-        return <span className="mono">
-          {a.last_seen_at ? new Date(a.last_seen_at).toLocaleDateString() : '—'}
-        </span>;
-      case 'has_rails':
-        return <span className="cell-top">
-          {a.has_rails === null ? 'Unknown' : a.has_rails ? 'Yes' : 'No'}
-        </span>;
+        return <span className="mono cell-line" title={a.rfid_tag ?? undefined}>{displayRfid(a.rfid_tag)}</span>;
+      case 'pod': {
+        const text = a.pod_number ?? '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'last_seen': {
+        const text = a.last_seen_at ? new Date(a.last_seen_at).toLocaleDateString() : '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'has_rails': {
+        const text = a.has_rails === null ? 'Unknown' : a.has_rails ? 'Yes' : 'No';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default:
         return null;
     }
@@ -453,21 +484,20 @@ export default function Assets() {
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load assets</b>{error}</div>}
 
       {!error && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
+        <div className={`dir-list list-scroll${god.editing ? ' editing' : ''}`}>
+          <div className="list-head" style={rowStyle}>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)}
+                       className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={assets ?? []} filters={filters}
                             text={assetCellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
             <span className="col-head" aria-hidden="true" />
             <ColumnMenu colKey="archived" label="Archived"
@@ -491,8 +521,8 @@ export default function Assets() {
             const isDupe = !!a.serial_number && dupes.has(a.serial_number.toLowerCase());
             return (
               <div key={a.id} className={`dir-row ${open ? 'open' : ''} ${a.archived_at ? 'archived' : ''}`}
-                   {...vp} style={vp?.style}>
-                <div className="row-main" style={grid}
+                   {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}
                      onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : a.id); }}>
                   {shownCols.map((c) => (
                     // `.cell-primary` (two-line layout, and the mobile

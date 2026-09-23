@@ -193,16 +193,28 @@
   box-shadow: 0 1px 2px rgba(27, 33, 41, 0.05);
 }
 
-/* Notifications.tsx's 8-column grid (fix 6, notif-polish1-brief.md): the
- * minmax() floors that keep header labels and cell content (chips, the
- * nowrap quiet-hours string) from colliding can sum past the available
- * width around ~1024px with a realistic sidebar. Left as plain
- * `overflow: hidden`, that width would silently clip the trailing
- * columns entirely rather than just truncate a value — worse than the
- * collision it replaces — so this page's grid scrolls horizontally
- * instead once it doesn't fit. Scoped to this one page via the second
- * class; .dir-list's default clipping is unchanged everywhere else. */
-.dir-list.ngd-notif-grid { overflow-x: auto; }
+/* Sideways scroll (spec 2026-09-23-list-column-floors): a list whose
+ * columns carry px floors (lib/listTools.tsx listGridStyle) opts in
+ * here. Above the floor sum nothing changes; below it the card scrolls
+ * sideways as one unit — header and rows are siblings inside the card
+ * and carry the same inline min-width, so the header background, row
+ * borders, and hover paint span the full scrolled width. overflow-y is
+ * pinned to hidden so an opening row detail never grows a vertical
+ * scrollbar inside the card. The 12px gap (vs the 16px default above)
+ * is what lets nine default columns fit a 14-inch MacBook Pro window
+ * with the nav expanded; listGridStyle's default gap mirrors it.
+ *
+ * `.editing`: god-mode inline editors (GodCell → ComboBox) drop their
+ * menu absolutely inside the cell, and a scroll container would clip it.
+ * While a list is in edit mode the card goes back to visible overflow;
+ * the header then paints its own top corners. Portaling ComboBox's menu
+ * would remove this exception. */
+.dir-list.list-scroll { overflow-x: auto; overflow-y: hidden; }
+.dir-list.list-scroll .list-head,
+.dir-list.list-scroll .row-main { gap: 12px; }
+.dir-list.list-scroll.editing { overflow: visible; }
+.dir-list.list-scroll.editing .list-head { border-radius: 15px 15px 0 0; }
+.mini-list.list-scroll { overflow-x: auto; overflow-y: hidden; }
 
 .list-head {
   display: grid;
@@ -348,16 +360,23 @@
   font-size: var(--list-fs-cell);
 }
 
-/* Single-line value that shouldn't break mid-string at narrow column
- * widths (e.g. Notifications.tsx's Quiet hours cell, "9:00 PM – 7:00 AM
- * CT") — a plain modifier, not folded into .cell-top/.cell-sub since
- * most cells using those still want to wrap. */
-.cell .cell-nowrap {
+/* Single-line value: full while the column has room, an ellipsis once it
+ * does not — pair it with a `title` carrying the full text. `.cell-line`
+ * is the name the list-column-floors spec uses; `.cell-nowrap` (the
+ * Notifications page's Quiet hours cell) is the same rule and stays. Not
+ * folded into .cell-top/.cell-sub since most cells using those still
+ * want to wrap. */
+.cell .cell-nowrap,
+.cell .cell-line {
   display: block;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* A button that truncates keeps its own width — a block button would
+ * widen its click target to the whole cell. */
+.cell button.cell-line { display: inline-block; }
 
 /* Two-line clamp for a value of unbounded length (e.g. Notifications.tsx's
  * Description cell) so row height stays consistent regardless of content
@@ -630,6 +649,9 @@
 }
 
 /* ── data table: the only <table> (components/DataTable.tsx) ───────── */
+/* The table's own min-content sizing is its floor; below it the wrapper
+ * scrolls sideways instead of the table overflowing its card/modal. */
+.data-table-scroll { overflow-x: auto; overflow-y: hidden; max-width: 100%; }
 .data-table { width: 100%; border-collapse: collapse; }
 .data-table th {
   text-align: left;
@@ -698,6 +720,10 @@
   font-weight: 300;
 }
 .dir-empty b { display: block; font-size: 15px; font-weight: 600; color: var(--text-dark); margin-bottom: 4px; }
+/* In a sideways-scrolling card the empty state has to span the SCROLLED
+   width, not just the visible one, or its centered text and background
+   stop at the viewport edge once the rows are scrolled. */
+.dir-list.list-scroll .dir-empty { width: max-content; min-width: 100%; }
 
 /* ── density: compact ─────────────────────────────────────── */
 /* Row-height/avatar-size overrides now live in the token block at the
@@ -722,6 +748,10 @@
   .row-main > .cell:not(.chevron-cell) { grid-column: auto !important; }
   .chevron-cell { position: absolute; top: 13px; right: 8px; }
   .row-main > * { min-width: 0; }
+  /* Phones stack rows into cards; the inline row minimum from
+     listGridStyle must not force a sideways scroll there. */
+  .list-head, .dir-row, .row-main { min-width: 0 !important; }
+  .dir-list.list-scroll { overflow-x: hidden; }
   .detail-grid { grid-template-columns: 1fr; }
   .dir-search { margin-left: 0; width: 100%; }
   .dir-search input { width: 100%; }

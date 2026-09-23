@@ -3,13 +3,33 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { useAuth } from '../../auth/AuthContext';
 import { ApiError, getReportRun, getReportRunDownloadUrl, listReportRuns } from '../../lib/api';
 import type { ReportRun } from '../../lib/api';
+import { ColHead, listGridStyle, listScale, titleFor, type ColumnDef } from '../../lib/listTools';
 import { formatBytes, openPresigned } from '../../lib/reports';
 import { RowActionsMenu } from '../hardware/RowActionsMenu';
 
 export const HISTORY_POLL_MS = 3000;
 export const HISTORY_PAGE_SIZE = 100;
+
+// No column registry pre-migration (hand-written header spans) — this
+// local COLUMNS mirrors them (recipe R1). Read-only, unsortable list —
+// headers render as plain ColHead spans (no onToggleSort). The trailing
+// 100px track holds an unlabeled RowActionsMenu trigger (Download / View
+// error), kept at its original width.
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px — .portal-page at a
+// 1512px window, nav expanded — HistoryTab sits directly in .portal-page
+// under the History tab).
+const COLUMNS: ColumnDef[] = [
+  { key: 'report', label: 'Report', width: '1.4fr', default: true, min: 140 },
+  { key: 'initiative', label: 'Initiative', width: '1.4fr', default: true },
+  { key: 'requested_by', label: 'Requested by', width: '1.2fr', default: true },
+  { key: 'requested_at', label: 'Requested at', short: 'Date', width: '1.2fr', default: true, min: 96 },
+  { key: 'status', label: 'Status', width: '1fr', default: true },
+  { key: 'size', label: 'Size', width: '0.8fr', default: true },
+];
+const TRAILING = ['100px'];
 
 const STATUS_LABEL: Record<ReportRun['status'], string> = {
   queued: 'Queued', running: 'Generating', completed: 'Completed', failed: 'Failed',
@@ -28,6 +48,8 @@ export default function HistoryTab({ highlightRunId, onCount }: {
   highlightRunId: string | null;
   onCount: (n: number) => void;
 }) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [runs, setRuns] = useState<ReportRun[] | null>(null);
   const [pinned, setPinned] = useState<ReportRun | null>(null);
   const [more, setMore] = useState(false);
@@ -106,46 +128,64 @@ export default function HistoryTab({ highlightRunId, onCount }: {
     }
   };
 
-  const grid = { gridTemplateColumns: '1.4fr 1.4fr 1.2fr 1.2fr 1fr 0.8fr 100px' };
+  const grid = listGridStyle(COLUMNS, TRAILING, undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
   return (
-    <div className="dir-list">
+    <div className="dir-list list-scroll">
       {error && <div className="dir-empty"><b>Couldn&apos;t load history</b>{error}</div>}
-      <div className="list-head" style={grid}>
-        <span className="col-head">Report</span><span className="col-head">Initiative</span>
-        <span className="col-head">Requested by</span><span className="col-head">Requested at</span>
-        <span className="col-head">Status</span><span className="col-head">Size</span><span />
+      <div className="list-head" style={rowStyle}>
+        {COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
+        <span className="col-head" aria-hidden="true" />
       </div>
       {runs && rows.length === 0 && <div className="dir-empty">No reports generated yet.</div>}
-      {rows.map((r) => (
-        <div key={r.id} className={`dir-row ${r.id === highlightRunId ? 'row-highlight' : ''}`}>
-          <div className="row-main" style={grid}>
-            <div className="cell">
-              <b className="cell-top">{r.definition_name}</b>
-              {r.id === pinned?.id && <span className="chip c-slate pinned-run">Linked run</span>}
-            </div>
-            <div className="cell">
-              {r.initiative_id
-                ? <Link className="cell-top" to={`/initiatives/${r.initiative_id}`}>{r.initiative_name}</Link>
-                : <span className="cell-top">—</span>}
-            </div>
-            <div className="cell"><span className="cell-top">{r.requested_by_name}</span></div>
-            <div className="cell"><span className="mono">{new Date(r.created_at).toLocaleString()}</span></div>
-            <div className="cell">
-              <span className={`chip ${STATUS_CHIP[r.status]}`}>{STATUS_LABEL[r.status]}</span>
-              {duration(r) && <span className="mono" style={{ marginLeft: 6 }}>{duration(r)}</span>}
-            </div>
-            <div className="cell"><span className="mono">{formatBytes(r.size_bytes)}</span></div>
-            <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <RowActionsMenu actions={[
-                ...(r.status === 'completed'
-                  ? [{ key: 'download', label: 'Download', onSelect: () => void download(r) }] : []),
-                ...(r.status === 'failed'
-                  ? [{ key: 'error', label: 'View error', onSelect: () => setViewing(r) }] : []),
-              ]} />
+      {rows.map((r) => {
+        const requestedAt = new Date(r.created_at).toLocaleString();
+        const size = formatBytes(r.size_bytes);
+        return (
+          <div key={r.id} className={`dir-row ${r.id === highlightRunId ? 'row-highlight' : ''}`}
+               style={{ minWidth: rowStyle.minWidth }}>
+            <div className="row-main" style={rowStyle}>
+              <div className="cell">
+                <b className="cell-top cell-line" title={titleFor(r.definition_name)}>
+                  {r.definition_name}
+                </b>
+                {r.id === pinned?.id && <span className="chip c-slate pinned-run">Linked run</span>}
+              </div>
+              <div className="cell">
+                {r.initiative_id
+                  ? (
+                    <Link className="cell-top cell-line" title={titleFor(r.initiative_name ?? '')}
+                          to={`/initiatives/${r.initiative_id}`}>
+                      {r.initiative_name}
+                    </Link>
+                  )
+                  : <span className="cell-top">—</span>}
+              </div>
+              <div className="cell">
+                <span className="cell-top cell-line" title={titleFor(r.requested_by_name)}>
+                  {r.requested_by_name}
+                </span>
+              </div>
+              <div className="cell">
+                <span className="mono cell-line" title={titleFor(requestedAt)}>{requestedAt}</span>
+              </div>
+              <div className="cell">
+                <span className={`chip ${STATUS_CHIP[r.status]}`}>{STATUS_LABEL[r.status]}</span>
+                {duration(r) && <span className="mono" style={{ marginLeft: 6 }}>{duration(r)}</span>}
+              </div>
+              <div className="cell"><span className="mono cell-line" title={titleFor(size)}>{size}</span></div>
+              <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <RowActionsMenu actions={[
+                  ...(r.status === 'completed'
+                    ? [{ key: 'download', label: 'Download', onSelect: () => void download(r) }] : []),
+                  ...(r.status === 'failed'
+                    ? [{ key: 'error', label: 'View error', onSelect: () => setViewing(r) }] : []),
+                ]} />
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
       {more && (
         <div className="history-more">
           <button type="button" className="btn-ghost" disabled={loadingMore}

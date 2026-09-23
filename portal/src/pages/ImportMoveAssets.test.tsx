@@ -16,6 +16,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import type { ImportJobOut, InitiativeDetail } from '../lib/api';
+import { LIST_FIT } from '../lib/listTools';
 import ImportMoveAssets from './ImportMoveAssets';
 
 const state = vi.hoisted(() => ({ id: 'i1' }));
@@ -161,4 +162,30 @@ it('read-only users see a hint instead of fix actions', async () => {
   expect(screen.queryByText('Create model…')).toBeNull();
   expect(screen.queryByText('Map to existing…')).toBeNull();
   expect(screen.queryByText('Fix…')).toBeNull();
+});
+
+it('report list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  api.getInitiative.mockResolvedValue(INITIATIVE);
+  api.createMoveAssetImportJob.mockResolvedValue(commitJob());
+
+  render(<MemoryRouter><ImportMoveAssets /></MemoryRouter>);
+  await screen.findByText('NAP11 Move');
+
+  const file = new File(['a,b'], 'assets.csv', { type: 'text/csv' });
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  await userEvent.upload(input, file);
+  await userEvent.click(await screen.findByRole('button', { name: /Validate file/ }));
+
+  const row = (await screen.findByText('SN1')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toBe('70px 160px 130px minmax(220px, 1fr)');
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Fit: default columns ≤ LIST_FIT.initPanel (1134px — the report card is an
+  // .init-panel, 18px padding plus a 1px border each side off the measured
+  // 1174px page width).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.initPanel);
 });

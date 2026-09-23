@@ -2,6 +2,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { LIST_FIT } from '../../lib/listTools';
 
 const auth = vi.hoisted(() => ({ can: (() => true) as (r: string, a: string) => boolean }));
 vi.mock('../../auth/AuthContext', () => ({
@@ -52,4 +53,39 @@ it('switches panes via the segmented control', async () => {
   await userEvent.click(screen.getByRole('tab', { name: 'Placeholders' }));
   expect(screen.queryByText('Asset ID')).not.toBeNull();
   expect(screen.queryByText('10482')).not.toBeNull();
+});
+
+// ── Column floors + sideways scroll (Task 8) ────────────────────────
+
+it('vocab pane: column floors, shared template + minimum, sideways-scroll card', async () => {
+  render(<LabelsTab />);
+  const row = (await screen.findByText('Top Label')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Fit: default columns + trailing (the 30px chevron) ≤ LIST_FIT.page
+  // (1172px — the Variables page's tab body at a 1512px window, nav expanded).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
+
+it('placeholder pane: column floors, shared template + minimum, sideways-scroll card', async () => {
+  render(<LabelsTab />);
+  await waitFor(() => expect(screen.queryByText('Top Label')).not.toBeNull());
+  await userEvent.click(screen.getByRole('tab', { name: 'Placeholders' }));
+
+  const row = (await screen.findByText('Asset ID')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Fit: default columns + trailing (the 30px chevron) ≤ LIST_FIT.page
+  // (1172px — the Variables page's tab body at a 1512px window, nav expanded).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });

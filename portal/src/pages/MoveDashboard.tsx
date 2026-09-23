@@ -23,8 +23,8 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import {
-  applyColumnOrder, ColumnsButton, ExportButton, exportCsv, moveKey,
-  useReorderDrag, useSearchHaystacks, visibleColumnsFor,
+  applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale,
+  moveKey, titleFor, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
 import { naturalCompare } from '../lib/sites';
@@ -52,6 +52,13 @@ const nf = new Intl.NumberFormat();
       (read-only: no edit-table, no row actions), sharing the same column
       defs and cell-text helpers so the two lists never drift. ───────── */
 
+// MOVE_ASSET_COLUMNS (lib/initiatives.ts) already carries its floors/short
+// labels from the InitiativeDetail pilot — reused here unchanged (recipe
+// R1/R2 already done). This list sits in a .dash-panel (dashboard.css:
+// padding 18px 20px 20px, 20px each side = 40px beyond .portal-page's own).
+// Fit: default columns + trailing ≤ LIST_FIT.dashPanel (1130px —
+// .dash-panel's 20px padding and 1px border each side off the measured
+// 1174px page width).
 const MOVE_ASSET_ALL_COLUMN_KEYS = new Set<string>(MOVE_ASSET_COLUMNS.map((c) => c.key));
 // The dashboard also shows Updated by default (hidden on the detail page):
 // with the newest-update sort it's the column that explains the order.
@@ -97,7 +104,8 @@ function fmtDate(iso: string | null): string {
 }
 
 export default function MoveDashboard() {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canInitiatives = can('initiatives');
 
   const [moves, setMoves] = useState<InitiativeItem[] | null>(null);
@@ -251,9 +259,10 @@ export default function MoveDashboard() {
     });
   }, [rows, filters, assetsQuery, sortKey, sortDir, haystack]);
 
-  const rosterGrid = { gridTemplateColumns: shownCols.map((c) => c.width).join(' ') };
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
+  const rosterGrid = listGridStyle(shownCols, [], undefined, listGridScale);
+  const rosterRowStyle = {
+    gridTemplateColumns: rosterGrid.gridTemplateColumns, minWidth: rosterGrid.minWidth,
+  };
 
   /** Read-only cell renderer — InitiativeDetail's assetCellFor minus the
    *  edit-table branch and row actions. Rack cells still open the
@@ -296,14 +305,15 @@ export default function MoveDashboard() {
       const rackName = side === 'source' ? a.source_rack : a.destination_rack;
       if (rackName) {
         return (
-          <button type="button" className="idet-rack-cell-btn"
+          <button type="button" className="idet-rack-cell-btn cell-line" title={titleFor(rackName)}
                   onClick={() => setRackView({ rackName, side })}>
             {rackName}
           </button>
         );
       }
     }
-    return <span className="cell-top">{moveAssetCellText(a, key)}</span>;
+    const text = moveAssetCellText(a, key);
+    return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
   };
 
   /* ── render ──────────────────────────────────────────────── */
@@ -529,24 +539,22 @@ export default function MoveDashboard() {
                   </div>
                 </div>
 
-                <div className="dir-list idet-assets-list">
-                  <div className="list-head" style={rosterGrid}>
+                <div className="dir-list idet-assets-list list-scroll">
+                  <div className="list-head" style={rosterRowStyle}>
                     {shownCols.map((c) => (
-                      <span key={c.key}
-                            className={`col-head ${headerDrag.dropClass(c.key)}`
-                              + `${ASSET_CENTERED_COLS.has(c.key) ? ' idet-col-center' : ''}`}
-                            {...headerDrag.dragProps(c.key)}>
-                        <button type="button" className="sortable"
-                                onClick={() => toggleSort(c.key)}>
-                          {c.label} {caret(c.key)}
-                        </button>
+                      <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                               onToggleSort={() => toggleSort(c.key)}
+                               className={[headerDrag.dropClass(c.key),
+                                 ASSET_CENTERED_COLS.has(c.key) ? 'idet-col-center' : '']
+                                 .filter(Boolean).join(' ')}
+                               dragProps={headerDrag.dragProps(c.key)}>
                         <ColumnMenu colKey={c.key} label={c.label}
                                     allRows={rows} filters={filters}
                                     text={moveAssetCellText}
                                     filter={filters[c.key]} onFilter={setFilter}
                                     sortDir={sortKey === c.key ? sortDir : null}
                                     onSort={(dir) => setSort(c.key, dir)} />
-                      </span>
+                      </ColHead>
                     ))}
                   </div>
 
@@ -559,8 +567,9 @@ export default function MoveDashboard() {
 
                   <VirtualRows rows={visibleAssets}
                     renderRow={(a, vp) => (
-                      <div key={a.id} className="dir-row" {...vp} style={vp?.style}>
-                        <div className="row-main mdash-row-static" style={rosterGrid}>
+                      <div key={a.id} className="dir-row" {...vp}
+                           style={{ ...vp?.style, minWidth: rosterRowStyle.minWidth }}>
+                        <div className="row-main mdash-row-static" style={rosterRowStyle}>
                           {shownCols.map((c) => (
                             <div className={`cell${ASSET_CENTERED_COLS.has(c.key)
                               ? ' idet-col-center' : ''}`}

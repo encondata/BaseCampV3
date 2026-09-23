@@ -21,6 +21,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { InitiativeItem, UiPreferences } from '../lib/api';
 import { COLLAPSED_KEY } from '../lib/initiatives';
+import { LIST_FIT } from '../lib/listTools';
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
@@ -272,4 +273,19 @@ it('a filter that turns an open row into context closes its detail', async () =>
     rowFor('Denver DC migration').classList.contains('context')).toBe(true));
   // a full-opacity detail panel under a 0.55-opacity header would be a lie
   expect(document.querySelector('.dir-row.open')).toBeNull();
+});
+
+it('initiatives: column floors, shared template + minimum, sideways-scroll card', async () => {
+  mount();
+  await waitFor(() => expect(rowNames()).toHaveLength(2));
+
+  const row = rowFor('Denver DC migration');
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });

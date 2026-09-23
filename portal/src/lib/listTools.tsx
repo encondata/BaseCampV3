@@ -5,7 +5,8 @@
  */
 
 import {
-  useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode,
+  useEffect, useLayoutEffect, useMemo, useRef, useState,
+  type DragEvent, type ReactNode, type RefObject,
 } from 'react';
 
 /* ── CSV export ─────────────────────────────────────────────────── */
@@ -44,6 +45,14 @@ export interface ColumnDef {
   width: string;   // grid-template fraction/px for this column
   default: boolean;
   godOnly?: boolean; // only offered/shown once god mode is active
+  /** Header label shown when the long `label` would overflow its track
+   *  (see ColHead / useFitLabel). Also the label the derived floor is
+   *  sized from, since the floor only has to fit the short form. */
+  short?: string;
+  /** px floor for the track (see listGridStyle). Derived from the label
+   *  when absent; an explicit value below the derived floor is raised
+   *  to it so the short label can never overflow. */
+  min?: number;
 }
 
 /** Columns to actually render: visible, and — for godOnly columns — only
@@ -54,6 +63,186 @@ export function visibleColumnsFor(
   columns: ColumnDef[], visible: Set<string>, godMode: boolean,
 ): ColumnDef[] {
   return columns.filter((c) => visible.has(c.key) && (!c.godOnly || godMode));
+}
+
+/* ── column floors + sideways scroll (spec: 2026-09-23-list-column-floors) ──
+ * `fr` tracks shrink to zero when a window is narrow, and any content
+ * that cannot wrap then paints across its neighbor. Every column
+ * therefore carries a px floor, the grid becomes `minmax(floor, fr)`,
+ * and the header + rows carry the summed minimum so the card
+ * (`.dir-list.list-scroll`, directory.css) scrolls sideways below it
+ * instead of colliding. Above the sum nothing changes. */
+
+/** 10px mono header glyph (directory.css --list-fs-head) plus 0.14em
+ *  tracking, at list scale 1. */
+const FLOOR_PX_PER_CHAR = 7.4;
+/** Sort caret + the column-menu funnel button beside the label. */
+const FLOOR_CHROME_PX = 30;
+/** Nothing narrower than this reads as a column. */
+const FLOOR_MIN_PX = 72;
+/** .list-head / .row-main horizontal padding, 20px a side. */
+const LIST_PAD_X = 40;
+/** .dir-list.list-scroll track gap. */
+const LIST_SCROLL_GAP = 12;
+
+/** Mirror of directory.css's --list-scale per list_size preference
+ *  (.portal-shell[data-list-size]). Floors are px at scale 1; a list
+ *  passes this to listGridStyle so a larger type size gets wider floors
+ *  and the short label still fits its track. */
+export function listScale(listSize: string | undefined): number {
+  switch (listSize) {
+    case 'small': return 0.9;
+    case 'large': return 1.15;
+    case 'xlarge': return 1.3;
+    default: return 1;
+  }
+}
+
+/** Fit ceilings (px) for a list's default columns at a 1512px viewport with the nav
+ *  expanded — measured in the browser 2026-09-23, minus 2px safety. Container math
+ *  subtracts padding AND borders. */
+export const LIST_FIT = {
+  page: 1172,        // directly inside .portal-page (measured 1174)
+  initPanel: 1134,   // inside .init-panel: 1174 − 18×2 padding − 1×2 border
+  dashPanel: 1130,   // inside .dash-panel: 1174 − 20×2 − 1×2
+} as const;
+
+/** Hover title for a single-line value: the text, or nothing for the '—' blank. */
+export const titleFor = (text: string): string | undefined => (text === '—' ? undefined : text);
+
+/** Fixed track for a RowActionsMenu trigger cell. The "Actions ▾" trigger
+ *  measures 85px (12.5px Geologica-500 plus 13px of padding and a 1px
+ *  border either side), so 88px holds it without clipping. */
+export const ACTIONS_TRACK = '88px';
+
+/** The px floor for one column: the larger of its explicit `min` and the
+ *  floor derived from the label that has to fit (short when present). */
+export function columnFloor(col: ColumnDef): number {
+  const label = col.short ?? col.label;
+  const derived = Math.max(
+    FLOOR_MIN_PX, Math.ceil(label.length * FLOOR_PX_PER_CHAR) + FLOOR_CHROME_PX,
+  );
+  return Math.max(col.min ?? 0, derived);
+}
+
+export interface ListGridStyle {
+  gridTemplateColumns: string;
+  /** px: floors + fixed tracks + gaps + padding. Numbers render as px. */
+  minWidth: number;
+}
+
+const FR_RE = /^\d*\.?\d+fr$/;
+const PX_RE = /^(\d*\.?\d+)px$/;
+
+/** Grid template + row minimum width for a shown column set. `trailing`
+ *  are the fixed tracks a page appends after its columns (an actions
+ *  track, a chevron track); only px trailing tracks count toward the
+ *  minimum. `scale` (from `listScale(list_size)`) widens every derived
+ *  floor for a larger list type size; fixed px tracks are never scaled.
+ *  Spread the result onto `.list-head`, and put `minWidth` on each
+ *  `.dir-row` too so hover paint and borders span the scrolled width
+ *  (see InitiativeDetail.tsx for the reference wiring). */
+export function listGridStyle(
+  cols: ColumnDef[], trailing: string[] = [], gap: number = LIST_SCROLL_GAP, scale: number = 1,
+): ListGridStyle {
+  const tracks: string[] = [];
+  let min = 0;
+  for (const c of cols) {
+    const floor = Math.ceil(columnFloor(c) * scale);
+    if (FR_RE.test(c.width)) {
+      tracks.push(`minmax(${floor}px, ${c.width})`);
+      min += floor;
+    } else {
+      tracks.push(c.width);
+      const px = PX_RE.exec(c.width);
+      min += px ? Number(px[1]) : floor;
+    }
+  }
+  for (const t of trailing) {
+    tracks.push(t);
+    const px = PX_RE.exec(t);
+    min += px ? Number(px[1]) : 0;
+  }
+  const gaps = Math.max(0, tracks.length - 1) * gap;
+  return { gridTemplateColumns: tracks.join(' '), minWidth: min + gaps + LIST_PAD_X };
+}
+
+/* ── adaptive header label ──────────────────────────────────────────
+ * A header cell renders its long label while the track has room and its
+ * `short` label once the long one would overflow. The cell is a grid
+ * item, so its width is the track's — independent of which label is
+ * showing — and the floor guarantees the short label fits, so the swap
+ * can never oscillate. A hidden clone of the long label (plus caret) is
+ * what gets measured; observing it too means a late font load re-checks. */
+
+/** column-menu.css `.list-head .col-head { gap: 2px }`. */
+const COL_HEAD_GAP = 2;
+
+export function useFitLabel(long: string, short?: string): {
+  cellRef: RefObject<HTMLSpanElement>;
+  measureRef: RefObject<HTMLSpanElement>;
+  label: string;
+} {
+  const cellRef = useRef<HTMLSpanElement>(null);
+  const measureRef = useRef<HTMLSpanElement>(null);
+  const [fits, setFits] = useState(true);
+
+  useLayoutEffect(() => {
+    if (!short || typeof ResizeObserver === 'undefined') return;
+    const cell = cellRef.current;
+    const measure = measureRef.current;
+    if (!cell || !measure) return;
+    const check = () => {
+      const trigger = cell.querySelector<HTMLElement>('.colmenu-trigger');
+      const available = cell.clientWidth - (trigger ? trigger.offsetWidth + COL_HEAD_GAP : 0);
+      setFits(measure.offsetWidth <= available);
+    };
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(cell);
+    ro.observe(measure);
+    return () => ro.disconnect();
+  }, [long, short]);
+
+  return { cellRef, measureRef, label: short && !fits ? short : long };
+}
+
+export type HeaderDragProps = ReturnType<ReturnType<typeof useReorderDrag>['dragProps']>;
+
+/** One list header cell: sortable label (long/short per useFitLabel),
+ *  sort caret, and the page's ColumnMenu as `children`. Same markup every
+ *  page already renders inline (`span.col-head > button.sortable`), so
+ *  existing header CSS applies unchanged. */
+export function ColHead({ col, sortDir = null, onToggleSort, className, dragProps, children }: {
+  col: ColumnDef;
+  sortDir?: 1 | -1 | null;
+  /** Absent for a header that does not sort: the label renders as a plain span. */
+  onToggleSort?: () => void;
+  className?: string;
+  dragProps?: HeaderDragProps;
+  children?: ReactNode;
+}): JSX.Element {
+  const { cellRef, measureRef, label } = useFitLabel(col.label, col.short);
+  const caret = sortDir
+    ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
+  const title = label === col.label ? undefined : col.label;
+  return (
+    <span ref={cellRef} className={`col-head${className ? ` ${className}` : ''}`} {...dragProps}>
+      {onToggleSort ? (
+        <button type="button" className="sortable" onClick={onToggleSort} title={title}>
+          {label} {caret}
+        </button>
+      ) : (
+        <span className="col-label" title={title}>{label} {caret}</span>
+      )}
+      {col.short && (
+        <span ref={measureRef} className="col-head-measure" aria-hidden="true">
+          {col.label} {caret}
+        </span>
+      )}
+      {children}
+    </span>
+  );
 }
 
 /** Reorder `columns` by a persisted key order. Keys in `order` come first,

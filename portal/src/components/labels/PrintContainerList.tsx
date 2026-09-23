@@ -23,14 +23,16 @@
  */
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
+import { useAuth } from '../../auth/AuthContext';
 import type { ContainerItem } from '../../lib/api';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters, usePersistentListState,
   type CellText,
 } from '../../lib/columnMenu';
 import {
-  ColumnsButton, applyColumnOrder, moveKey, useReorderDrag, useSearchHaystacks, visibleColumnsFor,
-  type ColumnDef,
+  ColHead, ColumnsButton, applyColumnOrder, listGridStyle, listScale, moveKey, titleFor,
+  useReorderDrag,
+  useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../../lib/listTools';
 import { LABEL_TAG_OPTIONS } from '../../lib/labelTags';
 import type { LabelStatus } from '../../lib/printLabels';
@@ -42,13 +44,23 @@ export const PRINT_CONTAINER_LIST_PAGE_KEY = 'labels-print-containers';
 
 export type LabelFilter = 'all' | 'ready' | 'missing';
 
-const COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Container', width: 'minmax(160px, 1.6fr)', default: true },
-  { key: 'type', label: 'Type', width: 'minmax(110px, 1fr)', default: true },
+// The leading selection checkbox — a fixed track outside the column
+// registry, folded into a ColumnDef purely so listGridStyle/its minWidth
+// sum accounts for it too (recipe R1); it is never rendered via ColHead,
+// the header cell below still renders the raw checkbox input.
+const CHECKBOX_COL: ColumnDef = { key: 'select', label: '', width: '32px', default: true };
+
+// Fit: default columns + trailing ≤ 1126px (1174 - 44 - 2 - 2 safety —
+// .plabels-card, labels.css: padding 18px 22px plus a 1px border,
+// 23px each side). Plenty of slack here
+// (7 columns vs the asset list's 9) — no short labels needed.
+export const COLUMNS: ColumnDef[] = [
+  { key: 'name', label: 'Container', width: '1.6fr', default: true, min: 160 },
+  { key: 'type', label: 'Type', width: '1fr', default: true, min: 110 },
   { key: 'tag', label: 'Label tag', width: '120px', default: true },
-  { key: 'site', label: 'Site', width: 'minmax(110px, 1fr)', default: true },
+  { key: 'site', label: 'Site', width: '1fr', default: true, min: 110 },
   { key: 'assets', label: 'Assets', width: '80px', default: true },
-  { key: 'status', label: 'Status', width: 'minmax(110px, 0.9fr)', default: true },
+  { key: 'status', label: 'Status', width: '0.9fr', default: true, min: 110 },
   { key: 'label', label: 'Label', width: '110px', default: true },
 ];
 const ALL_KEYS = new Set(COLUMNS.map((c) => c.key));
@@ -113,6 +125,8 @@ interface Props {
 export default function PrintContainerList({
   rows, statusOf, selected, onSelectedChange, onDisplayedChange, onRefresh, refreshing, disabled = false, resetKey,
 }: Props) {
+  const { preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const [query, setQuery] = useState('');
   const [labelFilter, setLabelFilter] = useState<LabelFilter>('all');
   const headerRef = useRef<HTMLInputElement>(null);
@@ -185,14 +199,14 @@ export default function PrintContainerList({
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid: CSSProperties = { gridTemplateColumns: `32px ${shownCols.map((c) => c.width).join(' ')}` };
-  const caret = (key: string) => (sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null);
+  const grid = listGridStyle([CHECKBOX_COL, ...shownCols], [], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const cell = (r: ContainerItem, key: string) => {
     const text = cellText(r, key);
     switch (key) {
       case 'name': return <div className="pn"><b>{text || '—'}</b></div>;
-      case 'assets': return <span className="mono">{text}</span>;
+      case 'assets': return <span className="mono cell-line">{text}</span>;
       case 'type':
         return text
           ? <span className="chip custom" style={{ '--chip': r.type_color } as CSSProperties}>{text}</span>
@@ -207,7 +221,10 @@ export default function PrintContainerList({
         const s = status(r);
         return s ? <span className={`chip ${STATUS_CHIP[s]}`}>{STATUS_LABEL[s]}</span> : null;
       }
-      default: return <span className="cell-sub">{text || '—'}</span>;
+      default: {
+        const display = text || '—';
+        return <span className="cell-sub cell-line" title={titleFor(display)}>{display}</span>;
+      }
     }
   };
 
@@ -238,19 +255,20 @@ export default function PrintContainerList({
         <button type="button" className="mini-btn" onClick={onRefresh} disabled={refreshing || disabled}>Refresh</button>
       </div>
 
-      <div className="dir-list" role="list" aria-label="Containers">
-        <div className="list-head" style={grid}>
+      <div className="dir-list list-scroll" role="list" aria-label="Containers">
+        <div className="list-head" style={rowStyle}>
           <span className="col-head">
             <input type="checkbox" ref={headerRef} checked={allSelected} disabled={disabled || displayedIds.length === 0}
                    aria-label="Select all filtered containers" onChange={toggleAll} />
           </span>
           {shownCols.map((c) => (
-            <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`} {...headerDrag.dragProps(c.key)}>
-              <button className="sortable" onClick={() => toggleSort(c.key)}>{c.label} {caret(c.key)}</button>
+            <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                     onToggleSort={() => toggleSort(c.key)}
+                     className={headerDrag.dropClass(c.key)} dragProps={headerDrag.dragProps(c.key)}>
               <ColumnMenu colKey={c.key} label={c.label} allRows={live} filters={filters} text={cellText}
                           filter={filters[c.key]} onFilter={setFilter}
                           sortDir={sortKey === c.key ? sortDir : null} onSort={(dir) => setSort(c.key, dir)} />
-            </span>
+            </ColHead>
           ))}
         </div>
 
@@ -264,8 +282,9 @@ export default function PrintContainerList({
         <VirtualRows rows={displayed} renderRow={(r, vp) => {
           const isSelected = selectedSet.has(r.id);
           return (
-            <div key={r.id} className={`dir-row ${isSelected ? 'open' : ''}`} {...vp} style={vp?.style} role="listitem">
-              <div className="row-main" style={grid} onClick={() => !disabled && toggleOne(r.id)}>
+            <div key={r.id} className={`dir-row ${isSelected ? 'open' : ''}`} {...vp}
+                 style={{ ...vp?.style, minWidth: rowStyle.minWidth }} role="listitem">
+              <div className="row-main" style={rowStyle} onClick={() => !disabled && toggleOne(r.id)}>
                 <div className="cell">
                   <input type="checkbox" checked={isSelected} disabled={disabled}
                          aria-label={`Select ${r.name || r.id}`}

@@ -19,6 +19,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { DbBackupItem, PendingDeleteItem, PendingDeleteReference } from '../lib/api';
 import DevDatabase from './DevDatabase';
+import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => ({ godMode: true, canChange: true }));
 
@@ -230,6 +231,20 @@ it('the pending-delete list reclaims its action track for the trigger', async ()
   expect(head.style.gridTemplateColumns).not.toMatch(/150px/);
 });
 
+it('reconcile list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  api.listPendingDeletes.mockResolvedValue([pendingDelete()]);
+  render(<MemoryRouter><DevDatabase /></MemoryRouter>);
+  const row = (await screen.findByText('SN-0001')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
+
 // ── Backups tab: row actions ──────────────────────────────────────────
 
 it('a backup row offers one Actions menu instead of inline Download/Delete buttons', async () => {
@@ -290,6 +305,19 @@ it('the backups list reclaims its action track for the trigger', async () => {
   const head = document.querySelector('.list-head') as HTMLElement;
   expect(head.style.gridTemplateColumns.endsWith('88px')).toBe(true);
   expect(head.style.gridTemplateColumns).not.toMatch(/170px/);
+});
+
+it('backups list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  await openBackups([backup()]);
+  const row = screen.getByText('backup_20260912.sql').closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
 });
 
 // ── Reconcile tab: cascade delete override ─────────────────────────

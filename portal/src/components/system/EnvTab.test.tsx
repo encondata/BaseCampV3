@@ -12,6 +12,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { EnvEntry } from '../../lib/api';
+import { LIST_FIT } from '../../lib/listTools';
 
 const api = vi.hoisted(() => ({
   getEnvEntries: vi.fn(),
@@ -22,6 +23,13 @@ const api = vi.hoisted(() => ({
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()),
   ...api,
+}));
+
+/** EnvTab reads `preferences.list_size` for the shared column floors
+ *  (listScale, lib/listTools) — mock the context the same way the other
+ *  list tests do rather than wrapping every render in an AuthProvider. */
+vi.mock('../../auth/AuthContext', () => ({
+  useAuth: () => ({ preferences: { list_size: 'default' } }),
 }));
 
 const ENTRIES: EnvEntry[] = [
@@ -113,4 +121,33 @@ it('combines value and description edits into one pending count', async () => {
   await user.type(descInput, 'New description');
 
   expect(await screen.findByRole('button', { name: /Save 2 changes/ })).not.toBeNull();
+});
+
+it('env list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  render(<EnvTab />);
+  const row = (await screen.findByText('SS_ENV')).closest('.list-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  expect(card.classList.contains('editing')).toBe(false);
+
+  const head = card.querySelector('.list-head') as HTMLElement;
+  expect(head.style.gridTemplateColumns)
+    .toBe('240px minmax(240px, 1.4fr) 90px minmax(220px, 1.6fr)');
+  expect(row.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Fit: default columns ≤ LIST_FIT.page (1172px — .sysconf-tab-body.sysconf-wide
+  // adds no padding or border of its own to .portal-page).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
+
+it('env list: edit mode drops the row minimum so the inputs are not squeezed', async () => {
+  const user = userEvent.setup();
+  render(<EnvTab />);
+  await screen.findByText('SS_ENV');
+  await enterEditMode(user);
+
+  const row = screen.getByText('SS_ENV').closest('.list-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('editing')).toBe(true);
+  expect(row.style.minWidth).toBe('');
 });

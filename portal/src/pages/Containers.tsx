@@ -46,10 +46,14 @@ import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   applyColumnOrder,
+  ColHead,
   ColumnsButton,
   ExportButton,
   exportCsv,
+  listGridStyle,
+  listScale,
   moveKey,
+  titleFor,
   useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
@@ -75,9 +79,18 @@ function LabelTagChip({ tag }: { tag: ContainerItem['label_tag'] }) {
         <span className="dot" />{opt.label}
       </span>
     )
-    : <span className="cell-top">—</span>;
+    : <span className="cell-top cell-line">—</span>;
 }
 
+// The always-shown name+type cell — a fixed leading track outside the
+// column registry (same shape as the header markup below), so it needs
+// its own ColumnDef for listGridStyle/ColHead.
+const PRIMARY_COL: ColumnDef = {
+  key: 'primary', label: 'Name', width: '2fr', default: true, min: 180,
+};
+
+// Fit: default columns + trailing ≤ LIST_FIT.page
+// (1172px — .portal-page at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'type', label: 'Type', width: '1fr', default: true },
   { key: 'rfid', label: 'RFID', width: '1fr', default: true },
@@ -87,7 +100,7 @@ const COLUMNS: ColumnDef[] = [
   { key: 'initiative', label: 'Initiative', width: '1.2fr', default: false },
   { key: 'label_tag', label: 'Label tag', width: '1.1fr', default: true },
   { key: 'location', label: 'Location', width: '1.4fr', default: false },
-  { key: 'updated', label: 'Created', width: '1fr', default: false },
+  { key: 'updated', label: 'Created', width: '1fr', default: false, min: 96 },
 ];
 
 const ALL_COLUMN_KEYS = new Set<string>(
@@ -147,7 +160,8 @@ const CSV_COLUMNS: [string, (c: ContainerItem) => string][] = [
 ];
 
 export default function Containers() {
-  const { can, godMode } = useAuth();
+  const { can, godMode, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('containers', 'add');
   const canChange = can('containers', 'change');
   const canViewSites = can('sites', 'view');
@@ -302,16 +316,17 @@ export default function Containers() {
       : visible.map((item): ContainerListRow => ({ kind: 'container', item }))
   ), [viewMode, visible, expandedGroups]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
+  const rowStyle = {
+    gridTemplateColumns: grid.gridTemplateColumns,
+    minWidth: god.editing ? undefined : grid.minWidth,
+  };
 
   const cellFor = (c: ContainerItem, key: string) => {
     if (god.editing) {
@@ -331,11 +346,11 @@ export default function Containers() {
               <span className="dot" />{c.type_label}
             </span>
           )
-          : <span className="cell-top">—</span>;
+          : <span className="cell-top cell-line">—</span>;
       case 'rfid':
-        return <span className="mono" title={c.rfid_tag ?? undefined}>{displayRfid(c.rfid_tag)}</span>;
+        return <span className="mono cell-line" title={c.rfid_tag ?? undefined}>{displayRfid(c.rfid_tag)}</span>;
       case 'assets':
-        return <span className="mono">{c.asset_count}</span>;
+        return <span className="mono cell-line" title={titleFor(String(c.asset_count))}>{c.asset_count}</span>;
       case 'status':
         return (
           <div className="chips">
@@ -348,16 +363,24 @@ export default function Containers() {
             {pd.pendingIds.has(c.id) && <span className="chip tag">Pending delete</span>}
           </div>
         );
-      case 'site':
-        return <span className="cell-top">{c.site_name ?? '—'}</span>;
-      case 'initiative':
-        return <span className="cell-top">{c.initiative_name ?? '—'}</span>;
+      case 'site': {
+        const text = c.site_name ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'initiative': {
+        const text = c.initiative_name ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'label_tag':
         return <LabelTagChip tag={c.label_tag} />;
-      case 'location':
-        return <span className="cell-top">{c.location_detail || '—'}</span>;
-      case 'updated':
-        return <span className="mono">{new Date(c.created_at).toLocaleDateString()}</span>;
+      case 'location': {
+        const text = c.location_detail || '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'updated': {
+        const text = new Date(c.created_at).toLocaleDateString();
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default:
         return null;
     }
@@ -430,32 +453,29 @@ export default function Containers() {
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load containers</b>{error}</div>}
 
       {!error && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
-            <span className="col-head">
-              <button className="sortable" onClick={() => toggleSort('primary')}>
-                Name {caret('primary')}
-              </button>
+        <div className={`dir-list list-scroll${god.editing ? ' editing' : ''}`}>
+          <div className="list-head" style={rowStyle}>
+            <ColHead col={PRIMARY_COL} sortDir={sortKey === 'primary' ? sortDir : null}
+                     onToggleSort={() => toggleSort('primary')}>
               <ColumnMenu colKey="primary" label="Name"
                           allRows={containers ?? []} filters={filters}
                           text={containerCellText}
                           filter={filters.primary} onFilter={setFilter}
                           sortDir={sortKey === 'primary' ? sortDir : null}
                           onSort={(dir) => setSort('primary', dir)} />
-            </span>
+            </ColHead>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)}
+                       className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={containers ?? []} filters={filters}
                             text={containerCellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
             <ColumnMenu colKey="archived" label="Archived"
                         allRows={containers ?? []} filters={filters}
@@ -477,8 +497,8 @@ export default function Containers() {
             if (row.kind === 'group') {
               return (
                 <div key={`g:${row.key}`} className={`dir-row dir-grouprow ${row.expanded ? 'open' : ''}`}
-                     {...vp} style={vp?.style}>
-                  <div role="button" tabIndex={0} className="row-main dir-grouprow-main" style={grid}
+                     {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                  <div role="button" tabIndex={0} className="row-main dir-grouprow-main" style={rowStyle}
                        aria-expanded={row.expanded} onClick={() => toggleGroup(row.key)}
                        onKeyDown={(e) => {
                          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleGroup(row.key); }
@@ -508,8 +528,8 @@ export default function Containers() {
             const open = openId === c.id;
             return (
               <div key={c.id} className={`dir-row ${open ? 'open' : ''} ${c.archived_at ? 'archived' : ''}`}
-                   {...vp} style={vp?.style}>
-                <div className="row-main" style={grid}
+                   {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}
                      onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : c.id); }}>
                   <div className="cell cell-primary">
                     {god.editing && godFieldFor('primary') ? (

@@ -14,8 +14,9 @@ import {
 } from '../../lib/api';
 import { avatarGradient, initials } from '../../lib/format';
 import {
-  ColumnsButton, ExportButton, FilterButton, exportCsv, passesFacets,
-  type ColumnDef, type FacetGroup, type FacetState,
+  ColHead,
+  ColumnsButton, ExportButton, FilterButton, exportCsv, listGridStyle, listScale, passesFacets,
+  titleFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../../lib/listTools';
 import { useToast } from '../../lib/notificationsContext';
 import CopyAccessModal from './CopyAccessModal';
@@ -43,6 +44,20 @@ const msgFor = (err: unknown): string =>
 const rankLabel = (rank: number): string =>
   RANK_LABELS.find(([r]) => rank >= r)?.[1] ?? 'Custom';
 
+// The grid's leading track ("Member": avatar + name + login email) sits
+// outside the toggleable column registry, like InitiativeDetail.tsx's
+// PRIMARY_COL. The Role select column also sits outside the registry
+// (never hidden via the Columns picker), between the toggleable columns
+// and the trailing 170px Overrides/Copy actions track.
+// Fit: default columns + trailing ≤ LIST_FIT.page (1172px —
+// .access-tab-panel carries no padding of its own beyond .portal-page's,
+// at a 1512px window, nav expanded).
+const PRIMARY_COL: ColumnDef = { key: 'primary', label: 'Member', width: '2.2fr', default: true, min: 180 };
+// `role_select` renders a <select> whose options run to "Administrator",
+// so its floor is sized to that value, not to the four-letter header.
+const ROLE_COL: ColumnDef = { key: 'role_select', label: 'Role', width: '1.2fr', default: true, min: 120 };
+const TRAILING = ['170px'];
+
 const COLUMNS: ColumnDef[] = [
   { key: 'roles', label: 'Roles', width: '1.6fr', default: true },
   { key: 'rank', label: 'Rank', width: '1fr', default: true },
@@ -52,7 +67,8 @@ const COLUMNS: ColumnDef[] = [
 type SortKey = 'name' | 'roles' | 'rank' | 'org';
 
 export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Props) {
-  const { person: me } = useAuth();
+  const { person: me, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const selfId = me?.id ?? null;
   const toast = useToast();
 
@@ -152,11 +168,10 @@ export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Pro
     if (key === sortKey) setSortDir((d) => (d === 1 ? -1 : 1));
     else { setSortKey(key); setSortDir(1); }
   };
-  const caret = (key: SortKey) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
 
   const shownCols = COLUMNS.filter((c) => visibleCols.has(c.key));
-  const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 1.2fr 170px` };
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols, ROLE_COL], TRAILING, undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const changeRole = async (member: MemberItem, newRole: string) => {
     setRowBusy((b) => ({ ...b, [member.person_id]: true }));
@@ -190,10 +205,14 @@ export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Pro
             ))}
           </div>
         );
-      case 'rank':
-        return <span className="rank-badge">{m.max_rank} · {rankLabel(m.max_rank)}</span>;
-      case 'org':
-        return <span className="cell-top">{orgFor(m)}</span>;
+      case 'rank': {
+        const rank = `${m.max_rank} · ${rankLabel(m.max_rank)}`;
+        return <span className="rank-badge cell-line" title={titleFor(rank)}>{rank}</span>;
+      }
+      case 'org': {
+        const org = orgFor(m);
+        return <span className="cell-top cell-line" title={titleFor(org)}>{org}</span>;
+      }
       default:
         return null;
     }
@@ -231,17 +250,17 @@ export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Pro
         </div>
       </div>
 
-      <div className="dir-list">
-        <div className="list-head" style={grid}>
-          <button className="sortable" onClick={() => toggleSort('name')}>Member {caret('name')}</button>
+      <div className="dir-list list-scroll">
+        <div className="list-head" style={rowStyle}>
+          <ColHead col={PRIMARY_COL} sortDir={sortKey === 'name' ? sortDir : null}
+                   onToggleSort={() => toggleSort('name')} />
           {shownCols.map((c) => (
-            <button key={c.key} className="sortable"
-                    onClick={() => toggleSort(c.key as SortKey)}>
-              {c.label} {caret(c.key as SortKey)}
-            </button>
+            <ColHead key={c.key} col={c}
+                     sortDir={sortKey === c.key ? sortDir : null}
+                     onToggleSort={() => toggleSort(c.key as SortKey)} />
           ))}
-          <span>Role</span>
-          <span />
+          <ColHead col={ROLE_COL} />
+          <span className="col-head" aria-hidden="true" />
         </div>
 
         {error && <div className="dir-empty"><b>Cannot load members</b>{error}</div>}
@@ -254,8 +273,8 @@ export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Pro
           const disabled = !canEdit || !canTouchRank(maxRank, m.max_rank) || isSelf
             || rowBusy[m.person_id];
           return (
-            <div key={m.person_id} className="dir-row">
-              <div className="row-main" style={grid}>
+            <div key={m.person_id} className="dir-row" style={{ minWidth: rowStyle.minWidth }}>
+              <div className="row-main" style={rowStyle}>
                 <div className="cell cell-primary">
                   <div className="dir-avatar"
                        style={{ background: m.avatar_url ? 'var(--surface-2)' : avatarGradient(m.display_name) }}>
