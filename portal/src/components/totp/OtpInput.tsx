@@ -38,6 +38,21 @@ export default function OtpInput({
     if (ch && i < LENGTH - 1) refs.current[i + 1]?.focus();
   };
 
+  /** A box normally receives one digit, but a one-time-code autofill (or a
+   *  burst of fast keystrokes before focus moves on) can land the whole code
+   *  in one box — treat anything longer than a digit like a paste from that
+   *  position. */
+  const onInput = (i: number, raw: string) => {
+    const typed = raw.replace(/\D/g, '');
+    if (typed.length <= 1) {
+      setAt(i, typed);
+      return;
+    }
+    const next = (digits.slice(0, i) + typed).slice(0, LENGTH);
+    commit(next);
+    refs.current[Math.min(next.length, LENGTH - 1)]?.focus();
+  };
+
   const onKeyDown = (i: number) => (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Backspace') {
       e.preventDefault();
@@ -72,12 +87,11 @@ export default function OtpInput({
           type="text"
           inputMode="numeric"
           autoComplete={i === 0 ? 'one-time-code' : 'off'}
-          maxLength={1}
           aria-label={`Digit ${i + 1}`}
           className={digits[i] ? 'filled' : ''}
           value={digits[i] ?? ''}
           disabled={disabled}
-          onChange={(e) => setAt(i, e.target.value.replace(/\D/g, '').slice(-1))}
+          onChange={(e) => onInput(i, e.target.value)}
           onKeyDown={onKeyDown(i)}
           onPaste={onPaste}
           onFocus={(e) => e.target.select()}

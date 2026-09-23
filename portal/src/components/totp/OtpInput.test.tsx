@@ -47,3 +47,12 @@ it('the six boxes are grouped with an accessible label', () => {
   expect(screen.getAllByLabelText(/^Digit \d$/)).toHaveLength(6);
   expect(group.querySelectorAll('input')).toHaveLength(6);
 });
+
+it('a whole code landing in one box (autofill or a fast burst) fills every box', () => {
+  const done = vi.fn();
+  render(<Harness onComplete={done} />);
+  const boxes = screen.getAllByLabelText(/^Digit \d$/);
+  fireEvent.change(boxes[0], { target: { value: '499622' } });
+  expect(done).toHaveBeenCalledWith('499622');
+  expect((boxes[5] as HTMLInputElement).value).toBe('2');
+});
