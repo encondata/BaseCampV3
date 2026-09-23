@@ -157,6 +157,23 @@ export function buildBrandScene(
   route.setAttribute('class', 'route-path');
   routeGroup.appendChild(route);
 
+  /* Would these labels, set right of the node, end inside the panel? Measured
+     with the real text classes; measured before the web font loads, the
+     fallback monospace is at least as wide, so the answer errs toward 'no'. */
+  function fitsRightOf(pt: Pt, lines: string[]): boolean {
+    const classes = ['map-node-label', 'map-node-sub'];
+    let widest = 0;
+    lines.forEach((line, i) => {
+      const probe = svgText(0, 0, classes[i] ?? 'map-node-sub', line);
+      routeGroup.appendChild(probe);
+      widest = Math.max(widest, probe.getBBox().width);
+      probe.remove();
+    });
+    // 32px of air: a label that merely fits still reads as clipped against
+    // the panel's dashed divider
+    return pt.x + 36 + widest <= W - 32;
+  }
+
   function makeMapNode(pt: Pt, label: string, sub: string, coords: string, elev: string,
                        side: 'right' | 'left' = 'right') {
     const g = document.createElementNS(SVG_NS, 'g');
@@ -177,11 +194,14 @@ export function buildBrandScene(
     const x = side === 'right' ? pt.x + 36 : pt.x - 22;
     const anchor = side === 'right' ? 'start' : 'end';
     const dy = side === 'right' ? 0 : -30;
+    // left side: the route climbs in just below-left of the node, so the
+    // coordinate lines step further out to clear it
+    const cx = side === 'right' ? x : pt.x - 50;
     g.append(pulse, ring, inner, core,
       svgText(x, pt.y - 7 + dy, 'map-node-label', label, anchor),
       svgText(x, pt.y + 13 + dy, 'map-node-sub', sub, anchor),
-      svgText(x, pt.y + 38, 'map-node-coord', coords, anchor),
-      svgText(x, pt.y + 53, 'map-node-coord', elev, anchor));
+      svgText(cx, pt.y + 38, 'map-node-coord', coords, anchor),
+      svgText(cx, pt.y + 53, 'map-node-coord', elev, anchor));
     routeGroup.appendChild(g);
     return { g, pulse };
   }
@@ -215,8 +235,21 @@ export function buildBrandScene(
     : makeNode(A, 'ORIGIN · DAL-7', 'Las Vegas, NV — HALL B', 'middle');
   const nodeB = map
     ? makeMapNode(B, 'DESTINATION · LAS-9', 'Las Vegas, NV · HALL D', '36.086° N / 115.139° W',
-        'ELEV 2,030′', narrow ? 'left' : 'right')
+        'ELEV 2,030′', narrow || !fitsRightOf(B, ['DESTINATION · LAS-9', 'Las Vegas, NV · HALL D']) ? 'left' : 'right')
     : makeNode(B, 'DEST · ZRH-3', 'ZÜRICH, CH — HALL A', 'end');
+
+  // state names are decoration: step any that collide with node text down
+  // until clear (the flipped destination's coordinates land near NEVADA)
+  if (map) {
+    const boxes = [...routeGroup.querySelectorAll('text')].map((t) => t.getBBox());
+    const hit = (a: DOMRect, b: DOMRect) => a.x < b.x + b.width && b.x < a.x + a.width
+      && a.y < b.y + b.height && b.y < a.y + a.height;
+    mapGroup.querySelectorAll<SVGTextElement>('.map-state').forEach((s) => {
+      for (let tries = 0; tries < 5 && boxes.some((b) => hit(s.getBBox(), b)); tries++) {
+        s.setAttribute('y', String(Number(s.getAttribute('y')) + 26));
+      }
+    });
+  }
 
   // map layout: a glowing mid-route waypoint and the route's status callout
   const mapExtras: SVGGElement[] = [];
