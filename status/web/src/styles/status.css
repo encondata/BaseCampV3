@@ -1,0 +1,169 @@
+/* Status page — portal tokens (.portal-shell light palette from
+   portal-theme.css + directory.css), .panel from profile.css. The shell's
+   app-frame layout (nav grid, 100vh, overflow hidden, ink background) is
+   undone here: this is a single scrolling document. */
+
+/* tokens live on .portal-shell, not body — literal = light --paper-2 */
+body { background: #f1f4f7; }
+html, body, #root { height: auto; min-height: 100%; }
+
+.portal-shell.ss-shell {
+  display: block;
+  height: auto;
+  min-height: 100vh;
+  overflow: visible;
+  background: var(--paper-2);
+  color: var(--text-dark);
+}
+
+.ss-page {
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.ss-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 24px;
+}
+.ss-brand { display: flex; align-items: center; gap: 16px; flex: 1 1 auto; min-width: 0; }
+.ss-brand > div { flex: 1; min-width: 0; }
+.ss-logo { width: 44px; height: 44px; object-fit: contain; flex: 0 0 auto; }
+.ss-updated { font-family: var(--font-mono); font-size: 12px; color: var(--text-mute); }
+
+/* dots — same geometry as the portal's .sys-dot */
+.ss-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; display: inline-block; }
+.ss-dot-up { background: var(--c-green); animation: ss-pulse 2s infinite; }
+.ss-dot-down { background: var(--c-red); }
+.ss-dot-unknown { background: var(--c-slate); }
+@keyframes ss-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(23, 138, 76, 0.4); }
+  50% { box-shadow: 0 0 0 5px rgba(23, 138, 76, 0); }
+}
+@media (prefers-reduced-motion: reduce) { .ss-dot-up { animation: none; } }
+
+.ss-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  border-radius: 14px;
+  border: 1px solid;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 20px;
+}
+.ss-banner-up { background: var(--c-green-bg); border-color: var(--c-green-bd); color: var(--c-green); }
+.ss-banner-down { background: var(--c-red-bg); border-color: var(--c-red-bd); color: var(--c-red); }
+.ss-banner-unknown { background: var(--c-slate-bg); border-color: var(--c-slate-bd); color: var(--c-slate); }
+
+.ss-stale, .ss-loading {
+  margin-bottom: 20px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 13.5px;
+}
+.ss-stale { border: 1px solid var(--c-amber-bd); background: var(--c-amber-bg); color: var(--text-dark); }
+.ss-loading { color: var(--text-mute); }
+
+.ss-cards { display: grid; gap: 18px; }
+.ss-cards .panel + .panel { margin-top: 0; }
+.ss-card { overflow: visible; }
+.ss-card .panel-head { border-radius: 16px 16px 0 0; }
+.ss-card-title { display: flex; align-items: center; gap: 10px; }
+.ss-card-title h2 { margin: 0; font-size: 15.5px; font-weight: 600; color: var(--text-dark); }
+
+.ss-chip {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid;
+}
+.ss-chip-up { color: var(--c-green); background: var(--c-green-bg); border-color: var(--c-green-bd); }
+.ss-chip-down { color: var(--c-red); background: var(--c-red-bg); border-color: var(--c-red-bd); }
+.ss-chip-unknown { color: var(--c-slate); background: var(--c-slate-bg); border-color: var(--c-slate-bd); }
+
+.ss-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 18px;
+}
+.ss-stats dt {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.ss-stats dd {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  color: var(--text-dark);
+}
+
+.ss-strip-wrap { position: relative; }
+.ss-strip { display: flex; gap: 2px; height: 34px; }
+.ss-bar {
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 2px;
+  outline: none;
+  transition: opacity 0.12s ease;
+}
+.ss-bar-up { background: var(--c-green); }
+.ss-bar-down { background: var(--c-red); }
+.ss-bar-none { background: var(--paper-line); }
+.ss-strip:hover .ss-bar:not(.is-active) { opacity: 0.55; }
+.ss-bar:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+
+.ss-tip {
+  position: absolute;
+  bottom: calc(100% - 10px);
+  /* anchored inward so edge bars never push the tip outside the card:
+     left-half bars anchor its left edge, right-half bars (.ss-tip-left) its right */
+  transform: translate(-12px, -8px);
+  background: var(--ink);
+  color: var(--snow);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+}
+.ss-tip-left { transform: translate(calc(-100% + 12px), -8px); }
+.ss-tip-day { font-weight: 600; }
+.ss-tip-pct { font-family: var(--font-mono); }
+.ss-tip-count { color: #8a97aa; }
+
+.ss-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+}
+.ss-axis-short { display: none; }
+
+.ss-footer {
+  margin-top: 28px;
+  font-size: 12.5px;
+  color: var(--text-mute);
+}
+
+@media (max-width: 600px) {
+  .portal-page.ss-page { padding: 24px 16px; }
+  .ss-bar-old { display: none; }
+  .ss-axis-long { display: none; }
+  .ss-axis-short { display: inline; }
+  .ss-stats { grid-template-columns: 1fr 1fr; }
+  .ss-stats > div:last-child { grid-column: 1 / -1; }
+  .ss-strip { gap: 3px; }
+}
