@@ -13,7 +13,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type {
-  StatusRule, StatusRuleExecStat, StatusRuleSchema, UiPreferences,
+  StatusRule, StatusRuleExecStat, StatusRuleExecution, StatusRuleSchema, UiPreferences,
 } from '../lib/api';
 
 vi.mock('react-router-dom', () => ({ useNavigate: () => vi.fn() }));
@@ -42,6 +42,7 @@ vi.mock('../auth/AuthContext', () => ({
 
 const api = vi.hoisted(() => ({
   listStatusRules: vi.fn(),
+  listStatusRuleExecutions: vi.fn(),
   getStatusRuleSchema: vi.fn(),
   getStatusRuleExecStats: vi.fn(),
   toggleStatusRule: vi.fn(),
@@ -88,10 +89,21 @@ const STATS: StatusRuleExecStat[] = [
   { rule_id: 'r1', run_count: 3, met_count: 2, last_run_at: '2026-01-05T00:00:00Z', avg_duration_ms: 12 },
 ];
 
+const EXECUTIONS: StatusRuleExecution[] = [
+  {
+    id: 1, rule_id: 'r1', rule_name: 'High priority',
+    processed_scan_id: 'scan-1', conditions_met: true,
+    actions_applied: [{ action_type: 'notify', applied: true }],
+    error: null, executed_at: '2026-01-05T00:00:00Z', duration_ms: 42,
+    scanned_value: 'ABC123', scan_status: 'in_transit',
+  },
+];
+
 beforeEach(() => {
   vi.clearAllMocks();
   auth.can = () => true;
   api.listStatusRules.mockResolvedValue(RULES);
+  api.listStatusRuleExecutions.mockResolvedValue(EXECUTIONS);
   api.getStatusRuleSchema.mockResolvedValue(SCHEMA);
   api.getStatusRuleExecStats.mockResolvedValue(STATS);
   api.toggleStatusRule.mockResolvedValue(RULES[0]);
@@ -318,4 +330,40 @@ it('rule list: the action track is trigger-sized', async () => {
   const row = screen.getByText('High priority').closest('.dir-row') as HTMLElement;
   const main = row.querySelector('.row-main') as HTMLElement;
   expect(main.style.gridTemplateColumns.endsWith('88px')).toBe(true);
+});
+
+// ── Column floors + sideways scroll (Task 8) ────────────────────────
+
+it('rules list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  render(<StatusRules />);
+  const row = (await screen.findByText('High priority')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Fit: default columns + trailing (the 88px Actions track) ≤ 1176px
+  // (.portal-page at a 1512px window, nav expanded).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+});
+
+it('executions list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  const user = userEvent.setup();
+  render(<StatusRules />);
+  await screen.findByText('High priority');
+  await user.click(screen.getByRole('tab', { name: 'Executions' }));
+
+  const row = (await screen.findByText('ABC123')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^160px/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Fit: default columns ≤ 1176px (.portal-page at a 1512px window, nav
+  // expanded — ExecutionsTab has no trailing track).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
 });

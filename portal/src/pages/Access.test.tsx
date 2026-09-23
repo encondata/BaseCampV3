@@ -22,6 +22,11 @@ const api = vi.hoisted(() => ({
     ],
   })),
   listUsers: vi.fn(async () => []),
+  listMembers: vi.fn(async () => ([
+    { person_id: 'p1', display_name: 'Alice Anderson', job_title: null,
+      login_email: 'alice@example.com', status: 'active', roles: [], max_rank: 40,
+      avatar_url: null },
+  ])),
 }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()),
@@ -40,4 +45,19 @@ it('opens the Groups tab with the linked group selected', async () => {
 it('defaults to Roles without params', async () => {
   render(<MemoryRouter initialEntries={['/access']}><Access /></MemoryRouter>);
   expect((await screen.findByRole('tab', { name: 'Roles' })).getAttribute('aria-selected')).toBe('true');
+});
+
+it('members: column floors, shared template + minimum, sideways-scroll card', async () => {
+  render(<MemoryRouter initialEntries={['/access?tab=members']}><Access /></MemoryRouter>);
+  const row = (await screen.findByText('Alice Anderson')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Fit: default columns + trailing (the 170px Overrides/Copy track) ≤
+  // 1176px (.access-tab-panel at a 1512px window, nav expanded).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
 });

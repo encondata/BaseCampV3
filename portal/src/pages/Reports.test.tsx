@@ -186,6 +186,22 @@ it('History lists runs with status, duration, size and a Download action', async
   expect(await screen.findByText('boom')).toBeTruthy();
 });
 
+it('History: column floors, shared template + minimum, sideways-scroll card', async () => {
+  api.listReportRuns.mockResolvedValue([RUN]);
+  renderPage('/reports?tab=history');
+  const row = (await screen.findByText('NAP11', { selector: 'a' })).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Fit: default columns + trailing (the 100px Actions track) ≤ 1176px
+  // (.portal-page at a 1512px window, nav expanded).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+});
+
 it('History polls while a run is active and stops when idle', async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   api.listReportRuns

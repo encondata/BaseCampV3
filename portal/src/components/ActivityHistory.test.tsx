@@ -28,3 +28,18 @@ it('labels by_me rows with subjectName when given', () => {
   expect(screen.queryByText('You')).toBeNull();
   expect(screen.getAllByText('Wan Worker').length).toBeGreaterThan(0);
 });
+
+it('column floors, shared template + minimum, sideways-scroll card', () => {
+  render(<MemoryRouter><ActivityHistory rows={ROWS} /></MemoryRouter>);
+  const row = screen.getByText('Alice Anderson').closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^150px/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Fit: default columns + trailing (the 30px chevron) ≤ 1176px
+  // (.portal-page at a 1512px window, nav expanded).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+});

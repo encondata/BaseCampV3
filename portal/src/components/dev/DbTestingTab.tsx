@@ -42,6 +42,7 @@ import {
   type DbTestingStatusOut,
 } from '../../lib/api';
 import { longDate } from '../../lib/format';
+import { ColHead, listGridStyle, listScale, type ColumnDef } from '../../lib/listTools';
 import { useSystemStatus } from '../../lib/systemStatusContext';
 import '../../styles/directory.css'; /* .dir-list, .dir-row, .dir-empty */
 import '../../styles/profile.css'; /* .pf-form, .pf-error, .pf-notice, .btn-solid */
@@ -56,7 +57,25 @@ const POLL_MS = 5000;
 const IDLE_WORKER_POLL_MS = 15_000;
 const LIVE_STATUSES: DbTestingSessionStatus[] = ['snapshotting', 'active', 'reverting'];
 
-const RECENT_GRID = { gridTemplateColumns: '1.3fr 1.1fr 1.3fr 100px 1.6fr 1fr' };
+// No column registry pre-migration (hand-written header spans) — this
+// local COLUMNS mirrors them (recipe R1). Read-only, unsortable list —
+// headers render as plain ColHead spans (no onToggleSort). No trailing
+// track — every column is a data column, no chevron/actions cell.
+// Fit: default columns ≤ 1176px (.portal-page at a 1512px window, nav
+// expanded — DbTestingTab sits directly in .portal-page under
+// DevDatabase's tab bar, with no extra card).
+const RECENT_COLUMNS: ColumnDef[] = [
+  { key: 'started', label: 'Started', width: '1.3fr', default: true, min: 96 },
+  { key: 'by', label: 'By', width: '1.1fr', default: true },
+  { key: 'ended', label: 'Ended', width: '1.3fr', default: true, min: 96 },
+  { key: 'outcome', label: 'Outcome', width: '100px', default: true },
+  { key: 'snapshot', label: 'Snapshot', width: '1.6fr', default: true, min: 120 },
+  { key: 'changes', label: 'Changes', width: '1fr', default: true },
+];
+
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 const ERROR_COPY: Record<string, string> = {
   invalid_testing_password: 'That is not the testing password.',
@@ -253,7 +272,8 @@ function DbTestingRevertModal({ session, changes, busy, error, onCancel, onConfi
 }
 
 export default function DbTestingTab() {
-  const { godMode } = useAuth();
+  const { godMode, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
 
   const [status, setStatus] = useState<DbTestingStatusOut | null>(null);
   const [loadError, setLoadError] = useState('');
@@ -338,6 +358,10 @@ export default function DbTestingTab() {
   // the API only ever puts an unfinished session in `session` — a `failed`
   // one shows up as the newest row in `recent` instead (see file header).
   const failedSession = !session && recent[0]?.status === 'failed' ? recent[0] : null;
+  const recentGrid = listGridStyle(RECENT_COLUMNS, [], undefined, listGridScale);
+  const recentRowStyle = {
+    gridTemplateColumns: recentGrid.gridTemplateColumns, minWidth: recentGrid.minWidth,
+  };
 
   const handleStart = async () => {
     if (!password) return;
@@ -462,36 +486,34 @@ export default function DbTestingTab() {
       </div>
 
       <div className="eyebrow-sm" style={{ marginBottom: 8 }}>Recent sessions</div>
-      <div className="dir-list">
-        <div className="list-head" style={RECENT_GRID}>
-          <span>Started</span>
-          <span>By</span>
-          <span>Ended</span>
-          <span>Outcome</span>
-          <span>Snapshot</span>
-          <span>Changes</span>
+      <div className="dir-list list-scroll">
+        <div className="list-head" style={recentRowStyle}>
+          {RECENT_COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
         </div>
         {recent.length === 0 && (
           <div className="dir-empty"><b>No sessions yet.</b></div>
         )}
         {recent.map((s) => {
           const chip = outcomeChip(s);
+          const by = s.started_by_name ?? 'Unknown';
+          const ended = s.ended_at ? longDate(s.ended_at) : '—';
+          const snapshot = s.snapshot_filename ?? '—';
           return (
-            <div key={s.id} className="dir-row">
-              <div className="row-main" style={RECENT_GRID}>
+            <div key={s.id} className="dir-row" style={{ minWidth: recentRowStyle.minWidth }}>
+              <div className="row-main" style={recentRowStyle}>
                 <div className="cell">
-                  <span className="mono" title={longDate(s.started_at)}>{longDate(s.started_at)}</span>
+                  <span className="mono cell-line" title={longDate(s.started_at)}>{longDate(s.started_at)}</span>
                 </div>
-                <div className="cell"><span className="cell-top">{s.started_by_name ?? 'Unknown'}</span></div>
+                <div className="cell"><span className="cell-top cell-line" title={titleFor(by)}>{by}</span></div>
                 <div className="cell">
-                  <span className="mono">{s.ended_at ? longDate(s.ended_at) : '—'}</span>
+                  <span className="mono cell-line" title={titleFor(ended)}>{ended}</span>
                 </div>
                 <div className="cell"><span className={chip.cls}>{chip.label}</span></div>
-                <div className="cell"><span className="cell-sub">{s.snapshot_filename ?? '—'}</span></div>
+                <div className="cell"><span className="cell-sub cell-line" title={titleFor(snapshot)}>{snapshot}</span></div>
                 {/* SessionOut doesn't carry a per-session change count — only the
                     live (non-ended) session's `changes` block does — so a historical
                     row has nothing to show here. */}
-                <div className="cell"><span className="mono">—</span></div>
+                <div className="cell"><span className="mono cell-line">—</span></div>
               </div>
             </div>
           );

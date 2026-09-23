@@ -252,6 +252,26 @@ it('renders the recent sessions list', async () => {
   expect(screen.queryByText('testing_snapshot_20260912_1000.sql')).not.toBeNull();
 });
 
+it('recent sessions: column floors, shared template + minimum, sideways-scroll card', async () => {
+  api.getDbTestingStatus.mockResolvedValue(statusOut({
+    recent: [session({
+      id: 'r1', status: 'ended', ended_with: 'reverted', ended_at: '2026-09-12T11:00:00Z',
+    })],
+  }));
+  render(<DbTestingTab />);
+  const row = (await screen.findByText('Jimmy Henderson')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Fit: default columns ≤ 1176px (.portal-page at a 1512px window, nav
+  // expanded).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+});
+
 it('polls status again after 5 seconds while a session is active', async () => {
   vi.useFakeTimers();
   api.getDbTestingStatus.mockResolvedValue(statusOut({ session: session() }));
