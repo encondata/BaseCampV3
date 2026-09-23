@@ -55,7 +55,7 @@ class Store:
     def __init__(self, path: str) -> None:
         self.path = path
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(path, isolation_level=None)
+        self._conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(SCHEMA)
 
