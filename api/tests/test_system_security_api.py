@@ -48,3 +48,9 @@ async def test_revoke_all_keeps_the_callers_session(client, db, seeded_user):
     assert len(live) == 1
     worker = await _make(db, client, "worker", "sec-worker2@test.example.com")
     assert (await client.post("/system/sessions/revoke-all", headers=worker)).status_code == 403
+
+
+async def test_public_status_reports_trust_days(client):
+    resp = await client.get("/system/status")
+    assert resp.status_code == 200
+    assert resp.json()["totp_trust_days"] == 7

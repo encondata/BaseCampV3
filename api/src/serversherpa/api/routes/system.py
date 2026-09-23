@@ -23,6 +23,7 @@ from serversherpa.api.schemas import (
     AdminConfigIn, AdminConfigOut, LogEntryOut, LogPageOut, SystemProcessOut,
     SystemStatusOut,
 )
+from serversherpa.config import get_settings
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     AuthSession, LogEntry, SystemConfig, SystemProcess,
@@ -91,7 +92,8 @@ def _status_from(cfg: dict) -> SystemStatusOut:
         read_only=cfg["read_only"],
         read_only_message=cfg["read_only_message"] if cfg["read_only"] else "",
         workers_paused=bool(cfg["read_only"] and cfg["pause_workers"]),
-        banner=banner or None)
+        banner=banner or None,
+        totp_trust_days=get_settings().totp_trust_days)
 
 
 @router.get("/status", response_model=SystemStatusOut)

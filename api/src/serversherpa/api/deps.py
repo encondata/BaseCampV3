@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -95,6 +95,8 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     "/auth/login", "/auth/refresh", "/auth/logout",
     "/auth/me/preferences", "/auth/me/password", "/system/admin",
     "/kiosk/printer-events",
+    "/auth/totp/verify", "/auth/totp/enroll/start", "/auth/totp/enroll/confirm",
+    "/auth/totp/backup-codes/regenerate",
 })
 READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/kiosk/pair")
 
@@ -227,3 +229,50 @@ def rate_limit_ip(request: Request) -> str:
                     return peer or "unknown"
                 return rightmost
     return peer or "unknown"
+
+
+@dataclass
+class TotpActor:
+    """Who is calling a 2FA endpoint: a half-signed-in challenge holder
+    (purpose "verify"/"enroll", no session) or a signed-in user (purpose
+    None)."""
+
+    account: UserAccount
+    purpose: str | None
+    user: AuthContext | None
+
+
+async def totp_actor(
+    request: Request,
+    db: DbSession,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    x_totp_challenge: Annotated[str | None, Header()] = None,
+) -> TotpActor:
+    if x_totp_challenge:
+        from serversherpa.services.totp import decode_challenge_token
+
+        try:
+            person_id, purpose = decode_challenge_token(x_totp_challenge)
+        except TokenError:
+            raise _unauthorized("invalid_challenge") from None
+        account = await db.scalar(
+            select(UserAccount).options(joinedload(UserAccount.person))
+            .where(UserAccount.person_id == person_id))
+        if (account is None or account.disabled_at is not None
+                or account.person.archived_at is not None):
+            raise _unauthorized("account_disabled")
+        # the token must still describe the account: an enroll token is
+        # spent once enrolled, a verify token is void once reset
+        enrolled = account.totp_confirmed_at is not None
+        if (purpose == "verify") != enrolled:
+            raise _unauthorized("invalid_challenge")
+        return TotpActor(account=account, purpose=purpose, user=None)
+    if credentials is None:
+        raise _unauthorized("missing_token")
+    user = await authenticate_token(db, credentials.credentials)
+    enforce_forced_password_change(request, user)
+    await enforce_read_only(db, request, user)
+    return TotpActor(account=user.account, purpose=None, user=user)
+
+
+TotpChallengeOrUser = Annotated[TotpActor, Depends(totp_actor)]

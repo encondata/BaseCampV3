@@ -111,7 +111,15 @@ class ScopeOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class TotpStatusOut(BaseModel):
+    enrolled: bool
+    enrolled_at: datetime | None
+    required: bool                # by user flag, group, role or site policy
+    backup_codes_remaining: int
+
+
 class SessionOut(BaseModel):
+    status: Literal["ok"] = "ok"
     access_token: str
     token_type: str = "bearer"
     expires_in: int              # access-token TTL, seconds
@@ -124,6 +132,16 @@ class SessionOut(BaseModel):
     max_rank: int
     scope: ScopeOut
     password_min_length: int = 8
+    totp: TotpStatusOut
+
+
+class LoginChallengeOut(BaseModel):
+    """Password accepted; the second factor is still owed. No session or
+    cookie exists yet — only the 2FA endpoints accept the token."""
+
+    status: Literal["totp_verify", "totp_enroll"]
+    challenge_token: str
+    backup_codes_remaining: int | None = None
 
 
 class MeOut(BaseModel):
@@ -136,6 +154,34 @@ class MeOut(BaseModel):
     max_rank: int
     scope: ScopeOut
     password_min_length: int = 8
+    totp: TotpStatusOut
+
+
+class TotpVerifyIn(BaseModel):
+    code: str = Field(min_length=6, max_length=16)
+    remember: bool = False
+
+
+class TotpEnrollStartOut(BaseModel):
+    secret: str
+    otpauth_uri: str
+
+
+class TotpEnrollConfirmIn(BaseModel):
+    code: str = Field(min_length=6, max_length=8)
+    remember: bool = False
+
+
+class BackupCodesOut(BaseModel):
+    backup_codes: list[str]
+
+
+class TotpEnrollConfirmOut(BackupCodesOut):
+    session: SessionOut | None = None   # set only on the forced-at-login path
+
+
+class TotpRegenerateIn(BaseModel):
+    code: str = Field(min_length=6, max_length=8)
 
 
 class ErrorOut(BaseModel):
@@ -2061,6 +2107,7 @@ class SystemStatusOut(BaseModel):
     read_only_message: str
     workers_paused: bool
     banner: str | None
+    totp_trust_days: int
 
 
 class AdminConfigOut(BaseModel):

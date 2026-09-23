@@ -42,6 +42,15 @@ class AuthResult:
     access: AccessInfo
 
 
+@dataclass
+class LoginChallenge:
+    """Password accepted; a second factor is owed before any session exists."""
+
+    purpose: str                        # "verify" | "enroll"
+    account: UserAccount
+    backup_codes_remaining: int | None
+
+
 async def _load_account(db: AsyncSession, email: str) -> UserAccount | None:
     return await db.scalar(
         select(UserAccount)
@@ -58,8 +67,8 @@ def _check_account_usable(account: UserAccount) -> None:
 async def login(
     db: AsyncSession, *, email: str, password: str,
     ip: str | None = None, user_agent: str | None = None,
-    client: str = "portal",
-) -> AuthResult:
+    client: str = "portal", trust_token: str | None = None,
+) -> AuthResult | LoginChallenge:
     settings = get_settings()
     pepper = settings.password_pepper.get_secret_value()
     now = datetime.now(UTC)
@@ -98,10 +107,21 @@ async def login(
         await db.commit()
         raise AuthError("account_locked")
 
-    if account.totp_confirmed_at is not None:
-        # TOTP verification lands with the enrollment feature; no account can
-        # reach this state until then.
-        raise AuthError("totp_required")
+    if client == "portal":
+        # kiosk password logins and phone pairing are never challenged
+        from serversherpa.services import totp as totp_service
+
+        policy = await totp_service.policy_for(db, account)
+        if policy.enabled:
+            if account.totp_confirmed_at is not None:
+                if not await totp_service.check_trust(db, account, trust_token):
+                    return LoginChallenge(
+                        purpose="verify", account=account,
+                        backup_codes_remaining=await totp_service.backup_codes_remaining(
+                            db, account.person_id))
+            elif policy.required:
+                return LoginChallenge(purpose="enroll", account=account,
+                                      backup_codes_remaining=None)
 
     access: AccessInfo | None = None
     if client == "kiosk":

@@ -1,0 +1,266 @@
+"""2FA over HTTP: login branches, challenge tokens, verify, enrollment,
+trusted browsers, kiosk exemption, the totp block on /auth/me."""
+
+from datetime import UTC, datetime, timedelta
+
+import pyotp
+from sqlalchemy import select
+
+from serversherpa.db.models import AuthSession, SystemConfig, TrustedDevice, UserAccount
+from serversherpa.services import totp as totp_service
+
+EMAIL = "alice@test.example.com"
+PW = "CorrectHorse9!"
+
+
+async def _security(db, **flags):
+    row = await db.get(SystemConfig, "security")
+    if row is None:
+        row = SystemConfig(section="security", data={})
+        db.add(row)
+    row.data = {"two_factor_enabled": False, "two_factor_required": False, **flags}
+    await db.commit()
+
+
+async def _login(http_client, email=EMAIL, password=PW, **extra):
+    # Named `http_client` (not `client`) so callers can pass an extra
+    # `client="kiosk"` kwarg — the LoginIn field — without colliding with
+    # the positional httpx client argument.
+    return await http_client.post(
+        "/auth/login", json={"email": email, "password": password, **extra})
+
+
+async def _enroll_direct(db, person_id):
+    account = await db.get(UserAccount, person_id)
+    secret, _ = await totp_service.begin_enrollment(db, account, actor_id=None, ip=None)
+    codes = await totp_service.confirm_enrollment(
+        db, account, pyotp.TOTP(secret).now(), actor_id=None, ip=None)
+    return secret, codes
+
+
+def _next_code(secret, seconds=30):
+    return pyotp.TOTP(secret).at(datetime.now(UTC) + timedelta(seconds=seconds))
+
+
+# ── login branches ──────────────────────────────────────────────────
+
+async def test_switch_off_never_challenges_even_when_enrolled(client, db, seeded_user):
+    await _enroll_direct(db, seeded_user.id)
+    resp = await _login(client)
+    assert resp.status_code == 200 and resp.json()["status"] == "ok"
+    assert resp.json()["totp"]["enrolled"] is True
+    assert "ss_refresh" in resp.cookies
+
+
+async def test_enrolled_user_gets_verify_challenge_no_session(client, db, seeded_user):
+    await _security(db, two_factor_enabled=True)
+    await _enroll_direct(db, seeded_user.id)
+    resp = await _login(client)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "totp_verify" and body["challenge_token"]
+    assert body["backup_codes_remaining"] == 8
+    assert "ss_refresh" not in resp.cookies and "access_token" not in body
+    assert (await db.scalar(select(AuthSession).where(
+        AuthSession.person_id == seeded_user.id))) is None
+
+
+async def test_required_unenrolled_user_gets_enroll_challenge(client, db, seeded_user):
+    await _security(db, two_factor_enabled=True, two_factor_required=True)
+    resp = await _login(client)
+    assert resp.json()["status"] == "totp_enroll"
+
+
+async def test_not_required_unenrolled_user_gets_session(client, db, seeded_user):
+    await _security(db, two_factor_enabled=True)
+    resp = await _login(client)
+    assert resp.json()["status"] == "ok"
+    assert resp.json()["totp"] == {"enrolled": False, "enrolled_at": None,
+                                   "required": False, "backup_codes_remaining": 0}
+
+
+async def test_kiosk_client_is_never_challenged(client, db, seeded_user):
+    from serversherpa.db.models import RolePermission
+
+    has_kiosk = await db.scalar(select(RolePermission).where(
+        RolePermission.role == "staff", RolePermission.resource == "kiosk",
+        RolePermission.action == "view"))
+    if has_kiosk is None:
+        db.add(RolePermission(role="staff", resource="kiosk", action="view"))
+        await db.commit()
+    await _security(db, two_factor_enabled=True, two_factor_required=True)
+    await _enroll_direct(db, seeded_user.id)
+    resp = await _login(client, client="kiosk")
+    assert resp.status_code == 200 and resp.json()["status"] == "ok"
+
+
+async def test_wrong_password_still_401_when_enrolled(client, db, seeded_user):
+    await _security(db, two_factor_enabled=True)
+    await _enroll_direct(db, seeded_user.id)
+    resp = await _login(client, password="nope")
+    assert resp.status_code == 401 and resp.json()["detail"]["code"] == "invalid_credentials"
+
+
+# ── verify ──────────────────────────────────────────────────────────
+
+async def _challenge(client, db, seeded_user):
+    await _security(db, two_factor_enabled=True)
+    secret, codes = await _enroll_direct(db, seeded_user.id)
+    token = (await _login(client)).json()["challenge_token"]
+    return secret, codes, token
+
+
+async def test_verify_right_code_mints_session(client, db, seeded_user):
+    secret, _codes, token = await _challenge(client, db, seeded_user)
+    resp = await client.post("/auth/totp/verify", headers={"X-Totp-Challenge": token},
+                             json={"code": _next_code(secret)})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "ok" and body["access_token"]
+    assert "ss_refresh" in resp.cookies and "ss_trust" not in resp.cookies
+    me = await client.get("/auth/me", headers={"Authorization": f"Bearer {body['access_token']}"})
+    assert me.status_code == 200 and me.json()["totp"]["enrolled"] is True
+
+
+async def test_verify_wrong_code_401_and_counts_toward_lockout(client, db, seeded_user):
+    _secret, _codes, token = await _challenge(client, db, seeded_user)
+    resp = await client.post("/auth/totp/verify", headers={"X-Totp-Challenge": token},
+                             json={"code": "000000"})
+    assert resp.status_code == 401 and resp.json()["detail"]["code"] == "totp_invalid"
+    account = await db.get(UserAccount, seeded_user.id)
+    await db.refresh(account)
+    assert account.failed_login_count == 1
+
+
+async def test_verify_with_backup_code(client, db, seeded_user):
+    _secret, codes, token = await _challenge(client, db, seeded_user)
+    resp = await client.post("/auth/totp/verify", headers={"X-Totp-Challenge": token},
+                             json={"code": codes[3]})
+    assert resp.status_code == 200 and resp.json()["totp"]["backup_codes_remaining"] == 7
+
+
+async def test_remember_sets_trust_cookie_and_next_login_skips_code(client, db, seeded_user):
+    secret, _codes, token = await _challenge(client, db, seeded_user)
+    resp = await client.post("/auth/totp/verify", headers={"X-Totp-Challenge": token},
+                             json={"code": _next_code(secret), "remember": True})
+    assert resp.status_code == 200 and "ss_trust" in resp.cookies
+    trust = resp.cookies["ss_trust"]
+    # a fresh login on the same browser (the client jar now holds ss_trust): no challenge
+    again = await client.post("/auth/login", json={"email": EMAIL, "password": PW})
+    assert again.json()["status"] == "ok"
+    # and without the cookie: challenged
+    client.cookies.clear()
+    bare = await client.post("/auth/login", json={"email": EMAIL, "password": PW})
+    assert bare.json()["status"] == "totp_verify"
+    # an expired trust row no longer helps
+    row = await db.scalar(select(TrustedDevice).where(TrustedDevice.person_id == seeded_user.id))
+    row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await db.commit()
+    client.cookies.set("ss_trust", trust, domain="testserver", path="/auth")
+    stale = await client.post("/auth/login", json={"email": EMAIL, "password": PW})
+    assert stale.json()["status"] == "totp_verify"
+
+
+async def test_challenge_token_is_not_an_access_token(client, db, seeded_user):
+    _secret, _codes, token = await _challenge(client, db, seeded_user)
+    resp = await client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+
+
+async def test_forged_expired_and_wrong_purpose_tokens_401(client, db, seeded_user):
+    secret, _codes, token = await _challenge(client, db, seeded_user)
+    bad = await client.post("/auth/totp/verify", headers={"X-Totp-Challenge": token + "x"},
+                            json={"code": _next_code(secret)})
+    assert bad.status_code == 401 and bad.json()["detail"]["code"] == "invalid_challenge"
+    enroll_tok = totp_service.make_challenge_token(seeded_user.id, "enroll")
+    wrong = await client.post("/auth/totp/verify", headers={"X-Totp-Challenge": enroll_tok},
+                              json={"code": _next_code(secret)})
+    assert wrong.status_code == 401 and wrong.json()["detail"]["code"] == "invalid_challenge"
+    missing = await client.post("/auth/totp/verify", json={"code": "123456"})
+    assert missing.status_code == 401 and missing.json()["detail"]["code"] == "missing_token"
+
+
+# ── enrollment via challenge (forced at login) ──────────────────────
+
+async def test_forced_enrollment_flow_mints_session(client, db, seeded_user):
+    await _security(db, two_factor_enabled=True, two_factor_required=True)
+    token = (await _login(client)).json()["challenge_token"]
+    hdrs = {"X-Totp-Challenge": token}
+    start = await client.post("/auth/totp/enroll/start", headers=hdrs)
+    assert start.status_code == 200, start.text
+    secret = start.json()["secret"]
+    assert start.json()["otpauth_uri"].startswith("otpauth://totp/ServerSherpa:")
+    # a second start replaces the pending seed
+    start2 = await client.post("/auth/totp/enroll/start", headers=hdrs)
+    secret = start2.json()["secret"]
+    bad = await client.post("/auth/totp/enroll/confirm", headers=hdrs, json={"code": "000000"})
+    assert bad.status_code == 401 and bad.json()["detail"]["code"] == "totp_invalid"
+    good = await client.post("/auth/totp/enroll/confirm", headers=hdrs,
+                             json={"code": pyotp.TOTP(secret).now(), "remember": True})
+    assert good.status_code == 200, good.text
+    body = good.json()
+    assert len(body["backup_codes"]) == 8
+    assert body["session"]["status"] == "ok" and body["session"]["totp"]["enrolled"] is True
+    assert "ss_refresh" in good.cookies and "ss_trust" in good.cookies
+    # the challenge token is spent: the account is enrolled now
+    spent = await client.post("/auth/totp/enroll/start", headers=hdrs)
+    assert spent.status_code == 401 and spent.json()["detail"]["code"] == "invalid_challenge"
+
+
+async def test_verify_challenge_cannot_enroll(client, db, seeded_user):
+    _secret, _codes, token = await _challenge(client, db, seeded_user)
+    resp = await client.post("/auth/totp/enroll/start", headers={"X-Totp-Challenge": token})
+    assert resp.status_code == 401 and resp.json()["detail"]["code"] == "invalid_challenge"
+
+
+# ── enrollment via session (My Profile) ─────────────────────────────
+
+async def test_self_service_enrollment_no_new_session(client, db, seeded_user):
+    await _security(db, two_factor_enabled=True)
+    login = await _login(client)
+    hdrs = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    start = await client.post("/auth/totp/enroll/start", headers=hdrs)
+    assert start.status_code == 200, start.text
+    secret = start.json()["secret"]
+    good = await client.post("/auth/totp/enroll/confirm", headers=hdrs,
+                             json={"code": pyotp.TOTP(secret).now()})
+    assert good.status_code == 200 and good.json()["session"] is None
+    assert "ss_refresh" not in good.cookies
+    me = await client.get("/auth/me", headers=hdrs)
+    assert me.json()["totp"]["enrolled"] is True
+    again = await client.post("/auth/totp/enroll/start", headers=hdrs)
+    assert again.status_code == 409 and again.json()["detail"]["code"] == "totp_already_enrolled"
+
+
+async def test_enrollment_refused_when_switch_off(client, db, seeded_user):
+    login = await _login(client)
+    hdrs = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    resp = await client.post("/auth/totp/enroll/start", headers=hdrs)
+    assert resp.status_code == 409 and resp.json()["detail"]["code"] == "totp_disabled"
+
+
+async def test_regenerate_needs_a_current_code(client, db, seeded_user):
+    await _security(db, two_factor_enabled=True)
+    secret, codes = await _enroll_direct(db, seeded_user.id)
+    token = (await _login(client)).json()["challenge_token"]
+    sess = await client.post("/auth/totp/verify", headers={"X-Totp-Challenge": token},
+                             json={"code": _next_code(secret)})
+    hdrs = {"Authorization": f"Bearer {sess.json()['access_token']}"}
+    bad = await client.post("/auth/totp/backup-codes/regenerate", headers=hdrs,
+                            json={"code": "000000"})
+    assert bad.status_code == 401
+    # Enrollment consumed the "now" counter and the login verify above
+    # consumed "now + 1 step" (both within the server's +/-1 step drift
+    # window at the moment each call landed). No third counter is reachable
+    # within that window without ~30s of real wall-clock time passing, so
+    # reset the replay guard the same way a real 30s wait would — this
+    # models "some time has passed and the app shows a fresh code," not a
+    # literal stale/wrong code.
+    account = await db.get(UserAccount, seeded_user.id)
+    await db.refresh(account)
+    account.totp_last_counter = None
+    await db.commit()
+    good = await client.post("/auth/totp/backup-codes/regenerate", headers=hdrs,
+                             json={"code": pyotp.TOTP(secret).now()})
+    assert good.status_code == 200 and len(good.json()["backup_codes"]) == 8
+    assert not set(good.json()["backup_codes"]) & set(codes)
