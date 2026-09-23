@@ -539,7 +539,15 @@ export function buildBrandScene(
       gsap.set(markerBody, { opacity: 0, scale: 0.4, transformOrigin: '50% 50%' });
       const state = { p: 0 };
       let passedWaypoint = false;
-      const loop = gsap.timeline({ id: 'routeTrip', repeat: -1, repeatDelay: 6, delay: 3.2 });
+      // starts when the entrance finishes (route drawn, nodes in), not on a
+      // fixed timer: the entrance runs longer than any guess, and a marker
+      // departing before its route exists looks broken
+      const loop = gsap.timeline({ id: 'routeTrip', repeat: -1, repeatDelay: 6, paused: true });
+      // (the delayed call is created outside this context's recording, so
+      // cleanup can't cancel it — hence the disposed check)
+      tl.eventCallback('onComplete', () => {
+        gsap.delayedCall(0.6, () => { if (!disposed) loop.play(0); });
+      });
       loop
         .call(() => {
           state.p = 0; passedWaypoint = false; place(0);
