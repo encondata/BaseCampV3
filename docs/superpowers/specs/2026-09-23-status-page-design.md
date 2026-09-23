@@ -34,8 +34,11 @@ status/
     probes.py              one probe per service kind → ProbeResult(ok, latency_ms, detail)
     store.py               SQLite: checks + daily rollup, prune, summary queries
     state.py               2-strike rule: per-service consecutive-failure tracking
-    checker.py             asyncio loop: probe all services concurrently every interval
+    checker.py             asyncio loop: probe all services concurrently every interval;
+                           on start, replays the last N checks so a restart keeps its state
+    summary.py             builds the public /api/summary JSON
     app.py                 FastAPI: GET /api/summary, GET /healthz, static files for the page
+    __main__.py            `python -m serversherpa_status`: config check, then uvicorn :8080
   tests/                   pytest (+ respx for HTTP)
   web/                     Vite + React + TS page (index.html, src/, vite config)
 ```
@@ -106,12 +109,12 @@ entrypoint precedent).
 }
 ```
 
-`overall` = `operational` when all services are up, `degraded` when any is down, `unknown`
-when no service has been checked yet. The response **never** contains service URLs or
+`overall` = `degraded` when any service is down, `operational` when all are up, otherwise
+`unknown` (some service not yet established). The response **never** contains service URLs or
 probe error detail (`detail` stays in SQLite for operators). `Cache-Control: no-store`.
 
-`GET /healthz` → `{"status":"ok"}` (Docker HEALTHCHECK). Everything else serves the built
-page. Security headers mirror the kiosk Caddyfile: `X-Frame-Options DENY`,
+`GET /healthz` → `{"status":"ok"}` (Docker HEALTHCHECK). All other paths are the built
+page's static files (unknown paths 404). Security headers mirror the kiosk Caddyfile: `X-Frame-Options DENY`,
 `X-Content-Type-Options nosniff`, `Referrer-Policy same-origin`. Only GET/HEAD are routed.
 
 ## Checker resilience
