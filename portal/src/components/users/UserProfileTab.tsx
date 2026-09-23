@@ -100,9 +100,9 @@ export default function UserProfileTab({
                     <span className="set-note">Required by policy</span>
                   )}
                   {canManage && (
-                    <label className="totp-require">
+                    <span className="totp-require">
                       <Switch label="Require 2FA" checked={account.totp_required || account.totp_effective_required}
-                              disabled={account.totp_effective_required && !account.totp_required || toggling}
+                              disabled={(account.totp_effective_required && !account.totp_required) || toggling}
                               onChange={(v) => {
                                 setToggling(true);
                                 void (async () => {
@@ -119,7 +119,7 @@ export default function UserProfileTab({
                                 })();
                               }} />
                       <span>Require 2FA</span>
-                    </label>
+                    </span>
                   )}
                   {canManage && account.totp_enrolled && (
                     <button className="mini-btn danger" onClick={onResetTotp}>Reset 2FA</button>

@@ -15,4 +15,4 @@
 .ud-group-pick:disabled { opacity: 0.45; cursor: not-allowed; }
 .ud-group-pick .ud-group-meta { color: var(--text-mute); }
 .kv .totp-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.totp-require { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+/* .totp-require lives in access.css — this page always imports it too. */

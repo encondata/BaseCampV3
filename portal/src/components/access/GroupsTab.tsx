@@ -226,11 +226,11 @@ function GroupDetail({ group, canEdit, gates, onChanged, onDeleted }: {
           {group.member_count} member{group.member_count === 1 ? '' : 's'}
           {' · '}gates {gates} page{gates === 1 ? '' : 's'}
         </span>
-        <label className="totp-require">
+        <span className="totp-require">
           <Switch label="Require 2FA" checked={group.totp_required} disabled={!canEdit || busy}
                   onChange={(v) => void setTotp(v)} />
           <span>Require 2FA</span>
-        </label>
+        </span>
         <div className="mtx-actions">
           {error && <span className="pf-error">{error}</span>}
           {canEdit && (

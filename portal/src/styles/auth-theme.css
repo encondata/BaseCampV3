@@ -92,10 +92,10 @@
 .login-shell .btn.success,.auth-scrim .btn.success { background:var(--ok);box-shadow:0 10px 24px -12px #3ecf8e99 }
 .login-shell .btn.success:before,.auth-scrim .btn.success:before { display:none }
 .login-shell .btn.success span,.auth-scrim .btn.success span { color:var(--ink) }
-.login-shell .btn-sso,.auth-scrim .btn-outline { width:100%;border:1.5px solid var(--paper-line);border-radius:12px;background:transparent;color:var(--text-dark);font-family:var(--font-display);font-size:14.5px;font-weight:400;padding:14px 20px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;transition:border-color .2s,background .2s,transform .15s }
-.login-shell .btn-sso:hover,.auth-scrim .btn-outline:hover { border-color:var(--ink);background:#fff9 }
-.login-shell .btn-sso:active,.auth-scrim .btn-outline:active { transform:scale(.985) }
-.login-shell .btn-sso svg { width:17px;height:17px;color:var(--amber);flex:none }
+.login-shell .btn-sso,.inline-card .btn-sso,.auth-scrim .btn-outline { width:100%;border:1.5px solid var(--paper-line);border-radius:12px;background:transparent;color:var(--text-dark);font-family:var(--font-display);font-size:14.5px;font-weight:400;padding:14px 20px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;transition:border-color .2s,background .2s,transform .15s }
+.login-shell .btn-sso:hover,.inline-card .btn-sso:hover,.auth-scrim .btn-outline:hover { border-color:var(--ink);background:#fff9 }
+.login-shell .btn-sso:active,.inline-card .btn-sso:active,.auth-scrim .btn-outline:active { transform:scale(.985) }
+.login-shell .btn-sso svg,.inline-card .btn-sso svg { width:17px;height:17px;color:var(--amber);flex:none }
 .auth-scrim .btn-outline:disabled { cursor:default;opacity:.6 }
 /* V3 tweak: was margin:26px 0 — the Sign-in button's drop shadow visually
    ate the gap, leaving "OR" crowded against the button */

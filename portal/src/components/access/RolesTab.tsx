@@ -200,11 +200,11 @@ export default function RolesTab({ summary, canEdit, maxRank, onChanged }: Props
           <span className="rank-badge">{role.rank} · {rankLabel(role.rank)}</span>
           <span className="chip tag">{role.scope_anchor} scope</span>
           {role.is_system && <span className="chip c-blue">system</span>}
-          <label className="totp-require">
+          <span className="totp-require">
             <Switch label="Require 2FA" checked={role.totp_required} disabled={!editable}
                     onChange={(v) => void setTotp(v)} />
             <span>Require 2FA</span>
-          </label>
+          </span>
           <div className="mtx-actions">
             {err && <span className="pf-error">{err}</span>}
             {canEdit && (

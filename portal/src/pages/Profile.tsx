@@ -282,6 +282,7 @@ export default function Profile() {
                       <>
                         <span className="chip c-green"><span className="dot" />On{totp.enrolled_at ? ` since ${longDate(totp.enrolled_at)}` : ''}</span>
                         <span className="set-note">{totp.backup_codes_remaining} backup code{totp.backup_codes_remaining === 1 ? '' : 's'} left</span>
+                        {totp.required && <span className="set-note">Required by policy</span>}
                         <button className="mini-btn" onClick={() => setRegenOpen(true)}>Regenerate backup codes</button>
                       </>
                     ) : (

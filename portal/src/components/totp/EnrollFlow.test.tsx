@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { StrictMode } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -51,6 +52,40 @@ it('a wrong confirm code shows the error and keeps the QR step reachable', async
   expect(await screen.findByText(/didn.t match/i)).toBeTruthy();
   // refocuses box 1 after the wrong code, same as the login page's card
   await waitFor(() => expect(document.activeElement).toBe(screen.getAllByRole('textbox')[0]));
+});
+
+it('the newest start() call wins even when its response resolves first out of order', async () => {
+  // React.StrictMode double-invokes the mount effect (mount → cleanup →
+  // mount), so loadSecret fires twice before either has resolved — each
+  // call mints a fresh seed server-side, where the last SERVER write
+  // wins, but the two RESPONSES can resolve in either order. Whichever
+  // call fired LAST must win on screen, regardless of which response
+  // arrives first (a plain "still mounted?" guard doesn't distinguish
+  // stale-but-still-mounted from current).
+  let resolveFirst!: (v: { secret: string; otpauth_uri: string }) => void;
+  let resolveSecond!: (v: { secret: string; otpauth_uri: string }) => void;
+  const first = new Promise<{ secret: string; otpauth_uri: string }>((r) => { resolveFirst = r; });
+  const second = new Promise<{ secret: string; otpauth_uri: string }>((r) => { resolveSecond = r; });
+  const start = vi.fn().mockReturnValueOnce(first).mockReturnValueOnce(second);
+  const confirm = vi.fn();
+
+  render(
+    <StrictMode>
+      <EnrollFlow email="a@x" start={start} confirm={confirm} onDone={() => {}} />
+    </StrictMode>,
+  );
+  await waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+
+  // The SECOND (newest) call's response resolves FIRST, out of order.
+  resolveSecond({ secret: 'SECONDSECRET', otpauth_uri: 'otpauth://totp/second' });
+  await screen.findByAltText(/scan this/i);
+  // The stale FIRST call's response resolves after — must be ignored.
+  resolveFirst({ secret: 'FIRSTSECRET', otpauth_uri: 'otpauth://totp/first' });
+
+  await waitFor(() => expect(
+    (screen.getByAltText(/scan this/i) as HTMLImageElement).src,
+  ).toContain('second'));
+  expect(screen.queryByText(/FIRS TSEC RET/)).toBeNull();
 });
 
 it('start() failing shows a Try again button that re-runs it', async () => {

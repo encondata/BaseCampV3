@@ -48,21 +48,28 @@ export default function EnrollFlow({ email, start, confirm, remember = null, onD
   // putting the caret back in box 1 (mirrors Login.tsx's verify card).
   const [otpAttempt, setOtpAttempt] = useState(0);
 
-  const mountedRef = useRef(true);
+  // Every call to loadSecret (StrictMode's double-invoked mount effect, or
+  // the "Try again" button) mints a new seed server-side, and the last
+  // SERVER write wins there. The RESPONSE that resolves last isn't
+  // necessarily the last call, though — so a plain "am I still mounted?"
+  // guard isn't enough; a stale response can still land after a newer one.
+  // A monotonic request counter fixes that: only the response whose
+  // sequence number matches the latest call in flight is applied.
+  const reqSeq = useRef(0);
   useEffect(() => {
-    mountedRef.current = true; // StrictMode re-runs effects: the cleanup must not stick
-    return () => { mountedRef.current = false; };
+    return () => { reqSeq.current += 1; }; // unmount: no in-flight response applies
   }, []);
 
   const loadSecret = useCallback(async () => {
+    const seq = ++reqSeq.current;
     setError('');
     try {
       const r = await start();
-      if (!mountedRef.current) return;
+      if (seq !== reqSeq.current) return;
       setSecret(r.secret);
       setQr(qrDataUrl(r.otpauth_uri));
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (seq !== reqSeq.current) return;
       const c = errorCode(err);
       setError(CONFIRM_ERRORS[c] ?? 'Could not start enrollment. Try again.');
       onError?.(c);
