@@ -20,14 +20,16 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
+import { ADMIN_RANK } from '../lib/access';
 import type {
   InitiativeAssetRow, InitiativeDetail as InitiativeDetailOut, InitiativePersonRow,
   UiPreferences,
 } from '../lib/api';
 
 const auth = vi.hoisted(() => {
-  const state: { can: (resource: string, action: string) => boolean } = {
+  const state: { can: (resource: string, action: string) => boolean; maxRank: number } = {
     can: () => true,
+    maxRank: 0,
   };
   return state;
 });
@@ -38,7 +40,7 @@ vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     can: auth.can,
     godMode: false,
-    maxRank: 0,
+    maxRank: auth.maxRank,
     preferences: {
       accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default',
       motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default',
@@ -141,6 +143,7 @@ const INITIATIVE: InitiativeDetailOut = {
 beforeEach(() => {
   vi.clearAllMocks();
   auth.can = () => true;
+  auth.maxRank = 0;
   api.getInitiative.mockResolvedValue(INITIATIVE);
   api.listInitiativeAssets.mockResolvedValue([ASSET]);
   api.listAssetStatuses.mockResolvedValue([]);
@@ -306,6 +309,22 @@ it('assets list: columns carry px floors, header and rows share one template and
   // Nine default columns + actions + chevron must fit a 14-inch window
   // with the nav expanded (spec: ≤ 1136px — the panel's 18px padding comes off the 1176px page width).
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1136);
+});
+
+it('assets list: edit mode drops the row minimum since the card is no longer a scroll container', async () => {
+  auth.maxRank = ADMIN_RANK;
+  const user = userEvent.setup();
+  renderPage();
+
+  const row = await assetRow();
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(row.style.minWidth).not.toBe('');
+
+  await user.click(await screen.findByRole('button', { name: 'Edit table' }));
+
+  expect(card.classList.contains('editing')).toBe(true);
+  const editingRow = await assetRow();
+  expect(editingRow.style.minWidth).toBe('');
 });
 
 it('assets list: single-line values truncate with the full text on hover', async () => {

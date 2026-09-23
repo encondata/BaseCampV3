@@ -75,7 +75,7 @@ import {
 import {
   applyColumnOrder,
   ColHead,
-  ColumnsButton, ExportButton, exportCsv, listGridStyle, moveKey, useReorderDrag,
+  ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale, moveKey, useReorderDrag,
   useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef,
@@ -93,6 +93,10 @@ import '../styles/profile.css';
  *  — slicing the ISO string (rather than toLocaleDateString) avoids the
  *  day-west-of-UTC shift documented on lib/initiatives.ts's dateOnly. */
 const dateOnly = (iso: string | null) => (iso ? iso.slice(0, 10) : null);
+
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
 
 /** Grid track reserved for a row's Actions menu. Sized to the .mini-btn
  *  trigger reading "Actions ▾" — 12.5px Geologica-500 plus 13px of
@@ -192,7 +196,8 @@ function personRatingValue(row: InitiativePersonRow): number {
 export default function InitiativeDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { can, godMode, maxRank } = useAuth();
+  const { can, godMode, maxRank, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const toast = useToast();
   const canChange = can('initiatives', 'change');
   const canViewSites = can('sites', 'view');
@@ -544,7 +549,15 @@ export default function InitiativeDetail() {
     .filter((i) => !linked.has(i.id) && !i.archived_at)
     .map((i) => ({ value: i.id, label: i.name, sub: i.type_label }));
 
-  const peopleGrid = listGridStyle(peopleShownCols, canChange ? [ACTIONS_TRACK] : []);
+  const peopleGrid = listGridStyle(peopleShownCols, canChange ? [ACTIONS_TRACK] : [], undefined, listGridScale);
+  /** While people are in edit mode the card is not a scroll container (see
+   *  the .editing override in directory.css), so the inline row minimum
+   *  would just force the grid wider than its card for no reason — drop it
+   *  for the duration of the edit. */
+  const peopleRowStyle = {
+    gridTemplateColumns: peopleGrid.gridTemplateColumns,
+    minWidth: god.editing ? undefined : peopleGrid.minWidth,
+  };
 
   const personCellFor = (p: InitiativePersonRow, key: string) => {
     if (god.editing) {
@@ -558,26 +571,33 @@ export default function InitiativeDetail() {
     }
     switch (key) {
       case 'name':
-        return <span className="cell-top cell-line" title={p.person_name}>{p.person_name}</span>;
+        return <span className="cell-top cell-line" title={titleFor(p.person_name)}>{p.person_name}</span>;
       case 'work_type':
         return p.work_type_label
           ? chip(p.work_type_label, p.work_type_color)
           : <span className="cell-top">—</span>;
       case 'site_worked': {
         const site = p.site_worked_name || '—';
-        return <span className="cell-top cell-line" title={site}>{site}</span>;
+        return <span className="cell-top cell-line" title={titleFor(site)}>{site}</span>;
       }
       case 'rating':
         return <span className="cell-top">{p.rating != null ? `★ ${p.rating}` : '—'}</span>;
       case 'added': {
         const added = personCellText(p, 'added');
-        return <span className="mono cell-line" title={added}>{added}</span>;
+        return <span className="mono cell-line" title={titleFor(added)}>{added}</span>;
       }
       default: return null;
     }
   };
 
-  const assetsGrid = listGridStyle(assetsShownCols, canChange ? [ACTIONS_TRACK, '30px'] : ['30px']);
+  const assetsGrid = listGridStyle(
+    assetsShownCols, canChange ? [ACTIONS_TRACK, '30px'] : ['30px'], undefined, listGridScale,
+  );
+  /** Same drop-the-minimum-while-editing treatment as peopleRowStyle. */
+  const assetsRowStyle = {
+    gridTemplateColumns: assetsGrid.gridTemplateColumns,
+    minWidth: assetsEditing ? undefined : assetsGrid.minWidth,
+  };
 
   /** Status/Asset Status render as chips (move-status and the asset's own
    *  status, respectively); every other column reuses moveAssetCellText's
@@ -634,7 +654,7 @@ export default function InitiativeDetail() {
       const rackName = side === 'source' ? a.source_rack : a.destination_rack;
       if (rackName) {
         return (
-          <button type="button" className="idet-rack-cell-btn cell-line" title={rackName}
+          <button type="button" className="idet-rack-cell-btn cell-line" title={titleFor(rackName)}
                   onClick={(e) => { e.stopPropagation(); setRackView({ rackName, side }); }}>
             {rackName}
           </button>
@@ -642,7 +662,7 @@ export default function InitiativeDetail() {
       }
     }
     const text = moveAssetCellText(a, key);
-    return <span className="cell-top cell-line" title={text}>{text}</span>;
+    return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
   };
 
   return (
@@ -803,7 +823,7 @@ export default function InitiativeDetail() {
               </div>
 
               <div className={`dir-list idet-assets-list list-scroll${assetsEditing ? ' editing' : ''}`}>
-                <div className="list-head" style={assetsGrid}>
+                <div className="list-head" style={assetsRowStyle}>
                   {assetsShownCols.map((c) => (
                     <ColHead key={c.key} col={c}
                              sortDir={assetsSortKey === c.key ? assetsSortDir : null}
@@ -836,8 +856,8 @@ export default function InitiativeDetail() {
                     const open = openAssetId === a.id;
                     return (
                       <div key={a.id} className={`dir-row ${open ? 'open' : ''}`} {...vp}
-                           style={{ ...vp?.style, minWidth: assetsGrid.minWidth }}>
-                        <div className="row-main" style={assetsGrid}
+                           style={{ ...vp?.style, minWidth: assetsRowStyle.minWidth }}>
+                        <div className="row-main" style={assetsRowStyle}
                              onClick={() => setOpenAssetId(open ? null : a.id)}>
                           {assetsShownCols.map((c) => (
                             <div className={`cell${ASSET_CENTERED_COLS.has(c.key)
@@ -1006,7 +1026,7 @@ export default function InitiativeDetail() {
                 </div>
 
                 <div className={`dir-list idet-people-list list-scroll${god.editing ? ' editing' : ''}`}>
-                  <div className="list-head" style={peopleGrid}>
+                  <div className="list-head" style={peopleRowStyle}>
                     {peopleShownCols.map((c) => (
                       <ColHead key={c.key} col={c}
                                sortDir={peopleSortKey === c.key ? peopleSortDir : null}
@@ -1034,8 +1054,8 @@ export default function InitiativeDetail() {
                   <VirtualRows rows={visiblePeople}
                     renderRow={(p, vp) => (
                     <div key={p.id} className="dir-row" {...vp}
-                         style={{ ...vp?.style, minWidth: peopleGrid.minWidth }}>
-                      <div className="row-main" style={peopleGrid}>
+                         style={{ ...vp?.style, minWidth: peopleRowStyle.minWidth }}>
+                      <div className="row-main" style={peopleRowStyle}>
                         {peopleShownCols.map((c) => (
                           <div className="cell" key={c.key}>{personCellFor(p, c.key)}</div>
                         ))}

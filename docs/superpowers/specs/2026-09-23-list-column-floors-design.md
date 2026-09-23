@@ -89,8 +89,10 @@ export function listGridStyle(
   its short label, otherwise the short label could itself overflow; the
   helper takes the larger of the two so a too-small explicit value cannot
   break the guarantee. The constants live next to the helper with that
-  explanation. Floors assume list scale 1 (the `list_size` preference);
-  a larger scale simply reaches the short label and the scrollbar sooner.
+  explanation. Floors are px at list scale 1; `listGridStyle` takes a
+  `scale` argument (from `listScale(list_size)`, a TS mirror of
+  `--list-scale`) so a larger type size widens every floor and the short
+  label still fits its track.
 - `minWidth` is the sum of the floors, the fixed trailing tracks, the
   gaps between tracks, and the 40px of horizontal padding. Both
   `.list-head` and every `.row-main` receive it inline alongside
@@ -107,12 +109,12 @@ padding the row minimum is at most 1136px:
 
 | column | short label | min | derived floor |
 | --- | --- | --- | --- |
-| Asset ID | — | 90 | 89 |
+| Asset ID | — | 90 | 90 |
 | Asset Name | — | 120 | 104 |
 | Serial | — | 100 | 74 |
 | Make/Model | — | 104 | 104 |
 | Status | — | 90 | 74 |
-| Source Rack | Src Rack | 92 | 89 |
+| Source Rack | Src Rack | 92 | 90 |
 | Source RU | Src RU | 76 | 74 |
 | Destination Rack | Dest Rack | 100 | 97 |
 | Destination RU | Dest RU | 84 | 82 |

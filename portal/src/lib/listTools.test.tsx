@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   applyColumnOrder, ColHead, ColumnsButton, csvCell, moveKey, useReorderDrag, useSearchHaystacks,
-  columnFloor, listGridStyle,
+  columnFloor, listGridStyle, listScale,
   type ColumnDef, type HeaderDragProps,
 } from './listTools';
 
@@ -114,6 +114,23 @@ describe('columnFloor / listGridStyle', () => {
 
   it('an empty column set is just the padding', () => {
     expect(listGridStyle([])).toEqual({ gridTemplateColumns: '', minWidth: 40 });
+  });
+
+  it('listScale maps the list_size preference to directory.css --list-scale', () => {
+    expect(listScale('small')).toBe(0.9);
+    expect(listScale(undefined)).toBe(1);
+    expect(listScale('large')).toBe(1.15);
+    expect(listScale('xlarge')).toBe(1.3);
+  });
+
+  it('scales every derived floor (ceil) while leaving fixed px tracks untouched', () => {
+    const s = listGridStyle(
+      [c({ key: 'a', label: 'Serial', width: '1.1fr' }), c({ key: 'b', label: 'X', width: '88px' })],
+      ['30px'], 12, 1.3,
+    );
+    // 75 * 1.3 = 97.5 → ceil 98
+    expect(s.gridTemplateColumns).toBe('minmax(98px, 1.1fr) 88px 30px');
+    expect(s.minWidth).toBe(98 + 88 + 30 + 24 + 40);
   });
 });
 

@@ -85,6 +85,19 @@ const LIST_PAD_X = 40;
 /** .dir-list.list-scroll track gap. */
 const LIST_SCROLL_GAP = 12;
 
+/** Mirror of directory.css's --list-scale per list_size preference
+ *  (.portal-shell[data-list-size]). Floors are px at scale 1; a list
+ *  passes this to listGridStyle so a larger type size gets wider floors
+ *  and the short label still fits its track. */
+export function listScale(listSize: string | undefined): number {
+  switch (listSize) {
+    case 'small': return 0.9;
+    case 'large': return 1.15;
+    case 'xlarge': return 1.3;
+    default: return 1;
+  }
+}
+
 /** The px floor for one column: the larger of its explicit `min` and the
  *  floor derived from the label that has to fit (short when present). */
 export function columnFloor(col: ColumnDef): number {
@@ -107,16 +120,18 @@ const PX_RE = /^(\d*\.?\d+)px$/;
 /** Grid template + row minimum width for a shown column set. `trailing`
  *  are the fixed tracks a page appends after its columns (an actions
  *  track, a chevron track); only px trailing tracks count toward the
- *  minimum. Spread the result onto `.list-head`, and put `minWidth` on
- *  each `.dir-row` too so hover paint and borders span the scrolled
- *  width (see InitiativeDetail.tsx for the reference wiring). */
+ *  minimum. `scale` (from `listScale(list_size)`) widens every derived
+ *  floor for a larger list type size; fixed px tracks are never scaled.
+ *  Spread the result onto `.list-head`, and put `minWidth` on each
+ *  `.dir-row` too so hover paint and borders span the scrolled width
+ *  (see InitiativeDetail.tsx for the reference wiring). */
 export function listGridStyle(
-  cols: ColumnDef[], trailing: string[] = [], gap: number = LIST_SCROLL_GAP,
+  cols: ColumnDef[], trailing: string[] = [], gap: number = LIST_SCROLL_GAP, scale: number = 1,
 ): ListGridStyle {
   const tracks: string[] = [];
   let min = 0;
   for (const c of cols) {
-    const floor = columnFloor(c);
+    const floor = Math.ceil(columnFloor(c) * scale);
     if (FR_RE.test(c.width)) {
       tracks.push(`minmax(${floor}px, ${c.width})`);
       min += floor;

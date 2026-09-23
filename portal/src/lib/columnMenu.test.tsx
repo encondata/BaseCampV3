@@ -141,6 +141,11 @@ describe('EmptyClearFilters', () => {
 /* ── ColumnMenu ───────────────────────────────────────────────────── */
 
 describe('ColumnMenu', () => {
+  const originalInnerHeight = window.innerHeight;
+  afterEach(() => {
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+  });
+
   it('the trigger carries the filtered class only when a filter is active', () => {
     const { rerender } = render(
       <ColumnMenu colKey="site" label="Site" allRows={rows} filters={{}} text={text}
@@ -300,12 +305,12 @@ describe('ColumnMenu', () => {
       ({ left, right, top, bottom, width: right - left, height: bottom - top, x: left, y: top, toJSON() {} }) as DOMRect;
     const wrapRect = vi.spyOn(wrap, 'getBoundingClientRect');
 
-    const originalInnerHeight = window.innerHeight;
     Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 });
 
     const trigger = screen.getByRole('button', { name: 'Name column menu' });
 
-    // Near the bottom of the viewport: opens upward.
+    // spaceBelow 900 - 870 = 30 < 388 (MENU_MAX_HEIGHT + MENU_GAP) and
+    // spaceAbove 850 > spaceBelow 30: opens upward.
     wrapRect.mockReturnValue(rect(850, 870, 200, 260));
     await user.click(trigger);
     let menu = document.querySelector('.colmenu-menu') as HTMLElement;
@@ -315,14 +320,48 @@ describe('ColumnMenu', () => {
     await user.click(trigger); // close
     expect(document.querySelector('.colmenu-menu')).toBeNull();
 
-    // Plenty of room below: opens downward.
+    // spaceBelow 900 - 120 = 780 >= 388: opens downward.
     wrapRect.mockReturnValue(rect(100, 120, 200, 260));
     await user.click(trigger);
     menu = document.querySelector('.colmenu-menu') as HTMLElement;
     expect(menu.style.top).toBe('128px'); // 120 + 8
     expect(menu.style.bottom).toBe('auto');
+  });
 
-    Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+  it('caps the menu height to the space on the chosen side', async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <ColumnMenu colKey="name" label="Name" allRows={rows} filters={{}} text={text}
+                  filter={undefined} onFilter={vi.fn()} sortDir={null} onSort={vi.fn()} />,
+    );
+    const wrap = container.querySelector('.colmenu') as HTMLElement;
+    const rect = (top: number, bottom: number, left: number, right: number) =>
+      ({ left, right, top, bottom, width: right - left, height: bottom - top, x: left, y: top, toJSON() {} }) as DOMRect;
+    const wrapRect = vi.spyOn(wrap, 'getBoundingClientRect');
+
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 });
+
+    const trigger = screen.getByRole('button', { name: 'Name column menu' });
+
+    // spaceBelow 900 - 420 = 480 >= 388: opens downward, capped to
+    // 480 - 2*8 = 464.
+    wrapRect.mockReturnValue(rect(400, 420, 200, 260));
+    await user.click(trigger);
+    const menu = document.querySelector('.colmenu-menu') as HTMLElement;
+    expect(menu.style.maxHeight).toBe('464px');
+  });
+
+  it('Escape closes the menu', async () => {
+    const user = userEvent.setup();
+    render(
+      <ColumnMenu colKey="name" label="Name" allRows={rows} filters={{}} text={text}
+                  filter={undefined} onFilter={vi.fn()} sortDir={null} onSort={vi.fn()} />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Name column menu' }));
+    expect(document.querySelector('.colmenu-menu')).not.toBeNull();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(document.querySelector('.colmenu-menu')).toBeNull();
   });
 });
 

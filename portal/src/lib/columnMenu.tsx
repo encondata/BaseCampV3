@@ -98,12 +98,18 @@ const CHECK = (
  *  left-aligned instead when right-alignment would push the menu past
  *  the viewport's left edge. Flips to open upward, anchored to the
  *  trigger's top, when there isn't enough space below it. */
-interface MenuPos { top: number | 'auto'; left: number | 'auto'; right: number | 'auto'; bottom: number | 'auto' }
+interface MenuPos {
+  top: number | 'auto'; left: number | 'auto'; right: number | 'auto'; bottom: number | 'auto';
+  maxHeight: number;
+}
 const MENU_GAP = 8;
-/** chrome.css .pop-menu min-width — the width to keep on screen. */
-const MENU_MIN_WIDTH = 230;
-/** px of viewport below the trigger the menu needs; else it opens upward */
-const OPEN_UPWARD_THRESHOLD = 280;
+/** column-menu.css .colmenu-menu min-width — chrome.css's .pop-menu 230
+ *  is overridden by source order, so this is the value that actually
+ *  governs the element. */
+const MENU_MIN_WIDTH = 220;
+/** Worst-case menu height: column-menu.css's 2×8 padding + sort row +
+ *  search + .colmenu-list max-height 220 + separators + actions row. */
+const MENU_MAX_HEIGHT = 380;
 
 export function ColumnMenu<T>({
   colKey, label, allRows, filters, text, filter, onFilter, sortDir, onSort,
@@ -154,11 +160,14 @@ export function ColumnMenu<T>({
   // Anchor the portaled menu to the trigger. Re-placed on window resize
   // and on any scroll (capture phase catches the card's own sideways
   // scroll and the page scroller) so the menu follows its header; once
-  // the header has scrolled out of its card's visible box the menu
-  // closes instead of floating over unrelated columns. Opens upward
-  // (anchored to the trigger's top instead of its bottom) when there
-  // isn't OPEN_UPWARD_THRESHOLD px of viewport left below the trigger —
-  // a fixed-position portal can't be scrolled into view otherwise.
+  // the header has scrolled out of its card's visible box (horizontally
+  // or vertically) the menu closes instead of floating over unrelated
+  // columns or content. Opens upward (anchored to the trigger's top
+  // instead of its bottom) when the space below the trigger can't fit
+  // the menu's worst-case height AND there's more room above than below
+  // — a fixed-position portal can't be scrolled into view otherwise, and
+  // either way the menu's own maxHeight then clamps it to whichever
+  // side's actual space allows, with internal scrolling for the rest.
   useEffect(() => {
     if (!open) { setPos(null); return; }
     const place = () => {
@@ -168,12 +177,21 @@ export function ColumnMenu<T>({
       const card = el.closest('.dir-list');
       if (card) {
         const box = card.getBoundingClientRect();
-        if (rect.right < box.left || rect.left > box.right) { setOpen(false); return; }
+        if (rect.right < box.left || rect.left > box.right
+          || rect.bottom < box.top || rect.top > box.bottom) { setOpen(false); return; }
       }
       const spaceBelow = window.innerHeight - rect.bottom;
-      const vertical = spaceBelow < OPEN_UPWARD_THRESHOLD
-        ? { top: 'auto' as const, bottom: window.innerHeight - rect.top + MENU_GAP }
-        : { top: rect.bottom + MENU_GAP, bottom: 'auto' as const };
+      const spaceAbove = rect.top;
+      const openUp = spaceBelow < MENU_MAX_HEIGHT + MENU_GAP && spaceAbove > spaceBelow;
+      const vertical = openUp
+        ? {
+          top: 'auto' as const, bottom: window.innerHeight - rect.top + MENU_GAP,
+          maxHeight: Math.max(120, spaceAbove - 2 * MENU_GAP),
+        }
+        : {
+          top: rect.bottom + MENU_GAP, bottom: 'auto' as const,
+          maxHeight: Math.max(120, spaceBelow - 2 * MENU_GAP),
+        };
       if (rect.right - MENU_MIN_WIDTH < 0) setPos({ ...vertical, left: rect.left, right: 'auto' });
       else setPos({ ...vertical, left: 'auto', right: window.innerWidth - rect.right });
     };
@@ -184,6 +202,14 @@ export function ColumnMenu<T>({
       window.removeEventListener('resize', place);
       window.removeEventListener('scroll', place, true);
     };
+  }, [open]);
+
+  // Escape closes the menu, matching RowActionsMenu.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
   }, [open]);
 
   // Re-seed local edit state each time the menu opens, so it reflects the
@@ -262,7 +288,10 @@ export function ColumnMenu<T>({
       </button>
       {open && pos && createPortal(
         <div className="pop-menu colmenu-menu colmenu-portaled" ref={menuRef}
-             style={{ top: pos.top, left: pos.left, right: pos.right, bottom: pos.bottom }}>
+             style={{
+               top: pos.top, left: pos.left, right: pos.right, bottom: pos.bottom,
+               maxHeight: pos.maxHeight, overflowY: 'auto',
+             }}>
           <div className="colmenu-sort">
             <button type="button" className={`pop-item ${sortDir === 1 ? 'on' : ''}`}
                     onClick={() => onSort(1)}>

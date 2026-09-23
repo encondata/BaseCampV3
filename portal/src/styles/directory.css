@@ -385,6 +385,10 @@
   text-overflow: ellipsis;
 }
 
+/* A button that truncates keeps its own width — a block button would
+ * widen its click target to the whole cell. */
+.cell button.cell-line { display: inline-block; }
+
 /* Two-line clamp for a value of unbounded length (e.g. Notifications.tsx's
  * Description cell) so row height stays consistent regardless of content
  * — same pattern as dashboard.css's .dash-board-name-text. Kept separate
