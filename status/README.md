@@ -13,7 +13,10 @@ the API, Portal, and Kiosk every minute and shows green/red plus 90-day uptime.
 
 A service shows **down** after 2 failed checks in a row and **up** again on the first
 success. Every check counts toward uptime. History lives in SQLite at `/data/status.db`
-(raw checks 7 days, daily totals 90 days) — mount a volume there.
+(raw checks 7 days, daily totals 90 days) — mount a volume there. Daily uptime bars are
+**UTC calendar days** (the page's axis and tooltips say so); the footer's "Checks run
+every…" line is generated from `STATUS_INTERVAL_SECONDS`/`STATUS_FAILURE_THRESHOLD`, so it
+always matches the configured cadence rather than a hardcoded guess.
 
 ## Configuration
 
@@ -26,6 +29,8 @@ success. Every check counts toward uptime. History lives in SQLite at `/data/sta
 | `STATUS_TIMEOUT_SECONDS` | 10 | |
 | `STATUS_FAILURE_THRESHOLD` | 2 | |
 | `STATUS_DB_PATH` | `/data/status.db` | |
+| `PORT` | 8080 | container listen port; the Docker `HEALTHCHECK` follows it |
+| `STATUS_STATIC_DIR` | `/app/static` in the image | where the built page is served from |
 
 ## Deploy
 
@@ -33,7 +38,12 @@ success. Every check counts toward uptime. History lives in SQLite at `/data/sta
     docker compose -f status/docker-compose.yml --env-file status/.env up -d --build
 
 Point the reverse proxy's `status.serversherpa.com` host at the container's port
-(default host port 8095 → container 8080). `GET /healthz` is the container health check.
+(default host port 8095 → container 8080). `GET /healthz` is the container health check —
+it returns `200 {"status":"ok"}` when a recent checker cycle has completed cleanly, and a
+`503` otherwise: `{"status":"stale"}` when no cycle has completed within roughly three
+check intervals (the checker loop itself is stuck or dead), or `{"status":"store_error"}`
+when the last cycle ran but its SQLite writes failed (displayed state is still current —
+only history/uptime storage is broken).
 
 ## Develop
 

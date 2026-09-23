@@ -1,6 +1,7 @@
 .venv/
 web/node_modules/
 web/dist/
+web/tsconfig.tsbuildinfo
 *.db
 *.db-wal
 *.db-shm

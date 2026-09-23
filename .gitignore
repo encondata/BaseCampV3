@@ -42,4 +42,3 @@ api/backups/
 
 # Detached dev-server logs (nohup), so the preview manager cannot reap them
 .devlogs/
-tsconfig.tsbuildinfo
