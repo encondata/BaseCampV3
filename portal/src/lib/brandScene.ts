@@ -266,9 +266,18 @@ export function buildBrandScene(
     wpg.append(halo, dot);
     routeGroup.appendChild(wpg);
 
-    // callout box sits left of the route, its tail pointing at the path
+    // callout box hangs just left of and below the waypoint (as in the
+    // mockup), so it tracks the dot at any panel width; the route falls away
+    // down-left from the dot, so slide the box further left until the path
+    // no longer runs through it
     const cw = 168, ch = 78;
-    const cx = 0.425 * W, cy = 0.272 * H;
+    const cy = wp.y + 10;
+    const samples = Array.from({ length: 160 }, (_, i) => route.getPointAtLength(len * i / 159));
+    const crosses = (x: number) => samples.some((p) =>
+      p.x >= x - 6 && p.x <= x + cw + 6 && p.y >= cy - 6 && p.y <= cy + ch + 6);
+    let cx = wp.x - 44 - cw;
+    while (cx > 8 && crosses(cx)) cx -= 8;
+    cx = Math.max(8, cx);
     const call = document.createElementNS(SVG_NS, 'g');
     call.setAttribute('class', 'route-callout');
     const box = document.createElementNS(SVG_NS, 'path');

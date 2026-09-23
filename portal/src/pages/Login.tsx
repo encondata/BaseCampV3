@@ -112,7 +112,7 @@ export default function Login() {
   };
 
   return (
-    <div className="login-shell">
+    <div className="login-shell login-map">
 
       {/* ============ BRAND PANEL ============ */}
       <section className="brand brand-map" ref={brandRef}>

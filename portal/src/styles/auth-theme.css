@@ -178,9 +178,13 @@
 .login-shell .brand-map .callout-box { fill:#0c1117d9;stroke:#3a4757;stroke-width:1 }
 .login-shell .brand-map .callout-title { font-family:var(--font-mono);font-size:13px;letter-spacing:.08em;fill:var(--amber-soft) }
 .login-shell .brand-map .callout-line { font-family:var(--font-mono);font-size:10.5px;letter-spacing:.08em;fill:#c3ccd8 }
+/* the mockup's split: the map panel takes ~58% of the width */
+.login-shell.login-map { grid-template-columns:minmax(0,1.37fr) minmax(0,1fr) }
 /* raster range (from the approved mockup) feathered into the panel on every
-   edge so it reads as part of the scene, not a pasted rectangle */
-.login-shell .brand-map .brand-mountains { position:absolute;z-index:1;right:0;bottom:9.7%;width:34.4%;height:auto;pointer-events:none;
+   edge so it reads as part of the scene, not a pasted rectangle. The width
+   cap keeps its left edge clear of the feature row (~610px from the panel's
+   left) on narrower panels. */
+.login-shell .brand-map .brand-mountains { position:absolute;z-index:1;right:0;bottom:9.7%;width:min(34.4%,calc(100% - 610px));height:auto;pointer-events:none;
   -webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 22%,#000 72%,transparent 100%),linear-gradient(to right,transparent 0,#000 18%);
   -webkit-mask-composite:source-in;
   mask-image:linear-gradient(to bottom,transparent 0,#000 22%,#000 72%,transparent 100%),linear-gradient(to right,transparent 0,#000 18%);
@@ -204,9 +208,12 @@
    600px so the tiles join without seams */
 .login-shell .pane-topo { background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='600' viewBox='0 0 600 600'%3E%3Cg fill='none' stroke='%23c9bfa6' stroke-width='1' opacity='.35'%3E%3Cpath d='M0 110.0 L12 115.5 L24 120.8 L36 125.7 L48 130.1 L60 133.8 L72 136.8 L84 138.9 L96 140.1 L108 140.5 L120 140.0 L132 138.9 L144 137.1 L156 134.8 L168 132.2 L180 129.4 L192 126.6 L204 123.8 L216 121.2 L228 118.8 L240 116.7 L252 114.9 L264 113.4 L276 112.1 L288 111.0 L300 110.0 L312 109.0 L324 107.9 L336 106.6 L348 105.1 L360 103.3 L372 101.2 L384 98.8 L396 96.2 L408 93.4 L420 90.6 L432 87.8 L444 85.2 L456 82.9 L468 81.1 L480 80.0 L492 79.5 L504 79.9 L516 81.1 L528 83.2 L540 86.2 L552 89.9 L564 94.3 L576 99.2 L588 104.5 L600 110.0'/%3E%3Cpath d='M0 182.1 L12 185.5 L24 188.0 L36 189.7 L48 190.4 L60 190.2 L72 189.2 L84 187.4 L96 185.1 L108 182.3 L120 179.2 L132 176.0 L144 172.8 L156 169.8 L168 167.1 L180 164.7 L192 162.7 L204 161.1 L216 159.9 L228 159.0 L240 158.3 L252 157.8 L264 157.3 L276 156.7 L288 156.0 L300 155.0 L312 153.6 L324 151.9 L336 149.9 L348 147.6 L360 145.0 L372 142.3 L384 139.6 L396 137.1 L408 134.9 L420 133.2 L432 132.0 L444 131.6 L456 132.0 L468 133.2 L480 135.4 L492 138.4 L504 142.2 L516 146.6 L528 151.6 L540 157.0 L552 162.5 L564 167.9 L576 173.1 L588 177.9 L600 182.1'/%3E%3Cpath d='M0 345.8 L12 342.5 L24 339.0 L36 335.3 L48 331.8 L60 328.3 L72 325.1 L84 322.2 L96 319.6 L108 317.4 L120 315.5 L132 313.8 L144 312.3 L156 311.0 L168 309.7 L180 308.5 L192 307.1 L204 305.7 L216 304.1 L228 302.4 L240 300.6 L252 298.8 L264 297.0 L276 295.3 L288 293.9 L300 292.8 L312 292.2 L324 292.1 L336 292.7 L348 294.0 L360 296.1 L372 298.9 L384 302.4 L396 306.5 L408 311.2 L420 316.3 L432 321.7 L444 327.1 L456 332.4 L468 337.4 L480 342.1 L492 346.1 L504 349.4 L516 351.8 L528 353.4 L540 354.1 L552 353.9 L564 352.9 L576 351.1 L588 348.7 L600 345.8'/%3E%3Cpath d='M0 379.6 L12 376.1 L24 372.8 L36 370.0 L48 367.5 L60 365.5 L72 363.9 L84 362.7 L96 361.8 L108 361.0 L120 360.4 L132 359.8 L144 359.2 L156 358.4 L168 357.4 L180 356.2 L192 354.9 L204 353.3 L216 351.6 L228 349.9 L240 348.3 L252 346.9 L264 345.9 L276 345.3 L288 345.2 L300 345.9 L312 347.2 L324 349.3 L336 352.2 L348 355.7 L360 359.9 L372 364.5 L384 369.6 L396 374.8 L408 380.0 L420 385.1 L432 389.7 L444 393.9 L456 397.3 L468 400.0 L480 401.8 L492 402.6 L504 402.5 L516 401.6 L528 399.8 L540 397.3 L552 394.3 L564 390.8 L576 387.1 L588 383.4 L600 379.6'/%3E%3Cpath d='M0 507.3 L12 507.2 L24 507.1 L36 506.9 L48 506.5 L60 505.9 L72 505.2 L84 504.4 L96 503.5 L108 502.7 L120 502.1 L132 501.6 L144 501.6 L156 501.9 L168 502.8 L180 504.2 L192 506.2 L204 508.8 L216 512.0 L228 515.6 L240 519.6 L252 523.9 L264 528.3 L276 532.7 L288 536.8 L300 540.6 L312 543.9 L324 546.5 L336 548.4 L348 549.5 L360 549.8 L372 549.2 L384 547.8 L396 545.7 L408 542.9 L420 539.7 L432 536.1 L444 532.3 L456 528.5 L468 524.8 L480 521.2 L492 518.0 L504 515.2 L516 512.9 L528 511.0 L540 509.6 L552 508.6 L564 507.9 L576 507.6 L588 507.4 L600 507.3'/%3E%3C/g%3E%3C/svg%3E") center/600px 600px repeat,linear-gradient(180deg,var(--paper) 0%,var(--paper-2) 100%) }
 @media(max-width:1180px) {
-  .login-shell .brand-map .brand-aside { display:none }
+  /* panel under ~680px: no room beside the feature row for the range */
+  .login-shell .brand-map .brand-aside,.login-shell .brand-map .brand-mountains { display:none }
 }
 @media(max-width:860px) {
+  /* restate the stacked layout: .login-map's two-class rule outranks the base one */
+  .login-shell.login-map { grid-template-columns:minmax(0,1fr) }
   .login-shell .brand-map .map-state,.login-shell .brand-map .route-callout,.login-shell .brand-map .map-node-coord,.login-shell .brand-map .features,.login-shell .brand-map .brand-mountains { display:none }
 }
 @media(prefers-reduced-motion:reduce) {
