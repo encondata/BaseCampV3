@@ -126,22 +126,44 @@ export function buildBrandScene(
 
   let A: Pt, B: Pt, routeD: string;
   let waypointAt = 0;
+  let destSide: 'left' | 'right' = 'right';
+  let steepRouteD = '';
+  const DEST_LABEL = 'DESTINATION · LAS-9';
+  const DEST_SUB = 'Las Vegas, NV · HALL D';
   if (map) {
     const at = (fx: number, fy: number): Pt => ({ x: fx * W, y: fy * H });
     A = at(0.304, 0.531);
     // phones: keep the top of the route clear of the logo block
     B = at(0.734, Math.max(0.085, (narrow ? 128 : 80) / H));
+    destSide = narrow || !fitsRightOf(B, DEST_LABEL, DEST_SUB) ? 'left' : 'right';
+    // a left-side label (stacked above-left of the pin) can run into the logo
+    // block on mid-width panels; drop the pin until the label clears it
+    const logo = brandPanel.querySelector('.logo');
+    if (destSide === 'left' && logo) {
+      const pr = brandPanel.getBoundingClientRect();
+      const lr = logo.getBoundingClientRect();
+      const logoRight = lr.right - pr.left + 16;
+      const logoBottom = lr.bottom - pr.top + 10;
+      const labelLeft = B.x - 22
+        - Math.max(estWidth(DEST_LABEL, 13.5, 0.08), estWidth(DEST_SUB, 11.5, 0.04));
+      if (lr.width > 0 && labelLeft < logoRight) {
+        // label top sits ~49px above the pin (see makeMapNode, dy = -30)
+        B = { x: B.x, y: Math.max(B.y, logoBottom + 49) };
+      }
+    }
     // interior points: x as a panel fraction, height as progress from the
     // origin (0) up to the destination (1) — so a short phone panel squashes
     // the climb instead of overshooting the destination
     const via = (fx: number, u: number): Pt => ({ x: fx * W, y: A.y + (B.y - A.y) * u });
-    routeD = smoothPath(narrow
-      // short phone panel: climb out of the origin first so the path clears
-      // the origin's label (right of the node), and arrive from below the
-      // destination's label (stacked above-left of its node)
-      ? [A, via(0.33, 0.45), via(0.42, 0.62), via(0.55, 0.7), via(0.66, 0.8), B]
-      : [A, via(0.37, 0.1), via(0.45, 0.137), via(0.5, 0.25), via(0.575, 0.34),
-         via(0.625, 0.45), via(0.646, 0.6), via(0.69, 0.765), via(0.72, 0.9), B]);
+    // the mockup's gentle profile, and a steep one that climbs out of the
+    // origin first (so the path clears the origin's label, right of the node)
+    // and arrives from below the destination's label; the gentle profile is
+    // tried first and replaced below if it would cross the origin label
+    const gentle = smoothPath([A, via(0.37, 0.1), via(0.45, 0.137), via(0.5, 0.25),
+      via(0.575, 0.34), via(0.625, 0.45), via(0.646, 0.6), via(0.69, 0.765), via(0.72, 0.9), B]);
+    steepRouteD = smoothPath([A, via(0.33, 0.45), via(0.42, 0.62), via(0.55, 0.7),
+      via(0.66, 0.8), B]);
+    routeD = narrow ? steepRouteD : gentle;
     waypointAt = 0.6;
   } else {
     A = { x: W * 0.63, y: H * 0.78 };
@@ -157,6 +179,24 @@ export function buildBrandScene(
   route.setAttribute('class', 'route-path');
   routeGroup.appendChild(route);
 
+  // a flatter climb (short panel, or a pin lowered to clear the logo) can run
+  // the gentle profile's first leg straight through the origin's label
+  if (map && steepRouteD && routeD !== steepRouteD) {
+    const box = {
+      x0: A.x + 30,
+      x1: A.x + 36 + Math.max(estWidth('ORIGIN · DAL-7', 13.5, 0.08),
+        estWidth('Dallas, TX · HALL B', 11.5, 0.04)),
+      y0: A.y - 24, y1: A.y + 18,
+    };
+    const L = route.getTotalLength();
+    const crosses = Array.from({ length: 120 }, (_, i) => route.getPointAtLength(L * i / 119))
+      .some((p) => p.x >= box.x0 && p.x <= box.x1 && p.y >= box.y0 && p.y <= box.y1);
+    if (crosses) {
+      routeD = steepRouteD;
+      route.setAttribute('d', routeD);
+    }
+  }
+
   /* Would these labels, set right of the node, end inside the panel?
      Estimated from character counts, NOT measured: the scene is built once,
      often before the web font arrives, and the fallback monospace can be
@@ -164,10 +204,11 @@ export function buildBrandScene(
      font swaps in. 0.7em per character over-counts Fragment Mono's 0.6em
      advance. Font sizes and letter-spacing mirror .map-node-label/-sub in
      auth-theme.css. */
+  function estWidth(text: string, px: number, trackEm: number): number {
+    return [...text].length * px * (0.7 + trackEm);
+  }
   function fitsRightOf(pt: Pt, label: string, sub: string): boolean {
-    const est = (text: string, px: number, trackEm: number) =>
-      [...text].length * px * (0.7 + trackEm);
-    const widest = Math.max(est(label, 13.5, 0.08), est(sub, 11.5, 0.04));
+    const widest = Math.max(estWidth(label, 13.5, 0.08), estWidth(sub, 11.5, 0.04));
     // 32px of air: a label that merely fits still reads as clipped against
     // the panel's dashed divider
     return pt.x + 36 + widest <= W - 32;
@@ -193,14 +234,16 @@ export function buildBrandScene(
     const x = side === 'right' ? pt.x + 36 : pt.x - 22;
     const anchor = side === 'right' ? 'start' : 'end';
     const dy = side === 'right' ? 0 : -30;
-    // left side: the route climbs in just below-left of the node, so the
-    // coordinate lines step further out to clear it
-    const cx = side === 'right' ? x : pt.x - 50;
     g.append(pulse, ring, inner, core,
       svgText(x, pt.y - 7 + dy, 'map-node-label', label, anchor),
-      svgText(x, pt.y + 13 + dy, 'map-node-sub', sub, anchor),
-      svgText(cx, pt.y + 38, 'map-node-coord', coords, anchor),
-      svgText(cx, pt.y + 53, 'map-node-coord', elev, anchor));
+      svgText(x, pt.y + 13 + dy, 'map-node-sub', sub, anchor));
+    // coordinates only beside a right-hand label: on the left, the route
+    // arrives from below-left exactly where they would sit
+    if (side === 'right') {
+      g.append(
+        svgText(x, pt.y + 38, 'map-node-coord', coords, anchor),
+        svgText(x, pt.y + 53, 'map-node-coord', elev, anchor));
+    }
     routeGroup.appendChild(g);
     return { g, pulse };
   }
@@ -233,25 +276,40 @@ export function buildBrandScene(
     ? makeMapNode(A, 'ORIGIN · DAL-7', 'Dallas, TX · HALL B', '32.776° N / 96.797° W', 'ELEV 430′')
     : makeNode(A, 'ORIGIN · DAL-7', 'Las Vegas, NV — HALL B', 'middle');
   const nodeB = map
-    ? makeMapNode(B, 'DESTINATION · LAS-9', 'Las Vegas, NV · HALL D', '36.086° N / 115.139° W',
-        'ELEV 2,030′', narrow || !fitsRightOf(B, 'DESTINATION · LAS-9', 'Las Vegas, NV · HALL D') ? 'left' : 'right')
+    ? makeMapNode(B, DEST_LABEL, DEST_SUB, '36.086° N / 115.139° W',
+        'ELEV 2,030′', destSide)
     : makeNode(B, 'DEST · ZRH-3', 'ZÜRICH, CH — HALL A', 'end');
 
   // state names are decoration: step any that collide with node text down
   // until clear (the flipped destination's coordinates land near NEVADA).
   // Text boxes change when the web font swaps in, so settle again then.
   let disposed = false;
+  // The route itself counts too: a name the route runs through is moved to a
+  // nearby clear spot, or hidden if there is none (they are decoration).
   const settleStateNames = () => {
     if (disposed) return;
     const boxes = [...routeGroup.querySelectorAll('text')].map((t) => t.getBBox());
+    const L = route.getTotalLength();
+    const routePts = Array.from({ length: 160 }, (_, i) => route.getPointAtLength(L * i / 159));
     // 10px of padding: merely not overlapping still reads as one stacked block
     const P = 10;
     const hit = (a: DOMRect, b: DOMRect) => a.x < b.x + b.width + P && b.x < a.x + a.width + P
       && a.y < b.y + b.height + P && b.y < a.y + a.height + P;
+    const onRoute = (a: DOMRect) => routePts.some((p) =>
+      p.x >= a.x - 8 && p.x <= a.x + a.width + 8 && p.y >= a.y - 8 && p.y <= a.y + a.height + 8);
+    const offsets = [[0, 0], [0, 26], [-50, 0], [50, 0], [-50, 26], [50, 26], [0, 52], [-100, 0]];
     mapGroup.querySelectorAll<SVGTextElement>('.map-state').forEach((s) => {
-      for (let tries = 0; tries < 5 && boxes.some((b) => hit(s.getBBox(), b)); tries++) {
-        s.setAttribute('y', String(Number(s.getAttribute('y')) + 26));
-      }
+      // re-settles (after the font loads) start again from the home spot
+      s.dataset.hx ??= s.getAttribute('x') ?? '0';
+      s.dataset.hy ??= s.getAttribute('y') ?? '0';
+      s.style.display = '';
+      const clear = offsets.some(([dx, dy]) => {
+        s.setAttribute('x', String(Number(s.dataset.hx) + dx));
+        s.setAttribute('y', String(Number(s.dataset.hy) + dy));
+        const b = s.getBBox();
+        return b.x >= 0 && b.x + b.width <= W && !onRoute(b) && !boxes.some((o) => hit(b, o));
+      });
+      if (!clear) s.style.display = 'none';
     });
   };
   if (map) {
@@ -303,12 +361,69 @@ export function buildBrandScene(
     mapExtras.push(wpg, call);
   }
 
+  const routeLen = route.getTotalLength();
+
+  /* map layout's signature loop: a glowing marker travels the route and the
+     dashes light up behind it. The lit copy of the route is revealed through
+     a mask whose stroke tracks the marker, so its dashes stay aligned with the
+     dim base route underneath. */
+  let trip: { lit: SVGPathElement; revealStroke: SVGPathElement;
+              marker: SVGGElement; markerBody: SVGGElement } | null = null;
+  if (map) {
+    const uid = Math.random().toString(36).slice(2, 8);
+    const defs = document.createElementNS(SVG_NS, 'defs');
+    defs.innerHTML = `
+      <radialGradient id="markerGlow-${uid}">
+        <stop offset="0" stop-color="#ffa12e" stop-opacity=".55"/>
+        <stop offset=".45" stop-color="#ffa12e" stop-opacity=".18"/>
+        <stop offset="1" stop-color="#ffa12e" stop-opacity="0"/>
+      </radialGradient>`;
+    const mask = document.createElementNS(SVG_NS, 'mask');
+    mask.setAttribute('id', `routeReveal-${uid}`);
+    mask.setAttribute('maskUnits', 'userSpaceOnUse');
+    const revealStroke = document.createElementNS(SVG_NS, 'path');
+    revealStroke.setAttribute('d', routeD);
+    revealStroke.setAttribute('fill', 'none');
+    revealStroke.setAttribute('stroke', '#fff');
+    revealStroke.setAttribute('stroke-width', '16');
+    revealStroke.style.strokeDasharray = String(routeLen);
+    revealStroke.style.strokeDashoffset = String(routeLen);
+    mask.appendChild(revealStroke);
+    defs.appendChild(mask);
+    routeGroup.insertBefore(defs, route);
+
+    const lit = document.createElementNS(SVG_NS, 'path');
+    lit.setAttribute('d', routeD);
+    lit.setAttribute('class', 'route-lit');
+    lit.setAttribute('mask', `url(#routeReveal-${uid})`);
+    route.after(lit);
+
+    // outer group carries the position; the inner one scales/fades, so the
+    // two transforms never fight
+    const marker = document.createElementNS(SVG_NS, 'g');
+    marker.setAttribute('class', 'route-marker');
+    const markerBody = document.createElementNS(SVG_NS, 'g');
+    const glow = document.createElementNS(SVG_NS, 'circle');
+    glow.setAttribute('r', '18');
+    glow.setAttribute('fill', `url(#markerGlow-${uid})`);
+    const dot = document.createElementNS(SVG_NS, 'circle');
+    dot.setAttribute('r', '4.2');
+    dot.setAttribute('class', 'marker-dot');
+    markerBody.append(glow, dot);
+    marker.appendChild(markerBody);
+    const start = route.getPointAtLength(0);
+    marker.setAttribute('transform', `translate(${start.x} ${start.y})`);
+    routeGroup.appendChild(marker);
+    trip = { lit, revealStroke, marker, markerBody };
+  }
+
   // the traveler rides the route as one group holding two figures that swap:
   // a mini sherpa (rack on his back, trekking pole) and a box truck for the
   // highway leg. Both share a ground line at local y≈9 so the handoff is seamless.
+  // Classic layout only; the map layout's marker takes its place.
   const traveler = document.createElementNS(SVG_NS, 'g');
   traveler.setAttribute('class', 'walker');
-  traveler.innerHTML = `
+  traveler.innerHTML = map ? '' : `
     <g id="sherpaFig">
       <g id="sherpaBob">
         <path id="legBack"  d="M0 0 L-2.6 8.6" stroke="#b3ad94" stroke-width="2.1" stroke-linecap="round"/>
@@ -341,11 +456,10 @@ export function buildBrandScene(
         <path d="M0 -1.7 V1.7 M-1.7 0 H1.7" stroke="#b3ad94" stroke-width=".9"/>
       </g>
     </g>`;
-  routeGroup.appendChild(traveler);
+  if (!map) routeGroup.appendChild(traveler);
   const sherpaFig = traveler.querySelector('#sherpaFig');
   const truckFig = traveler.querySelector('#truckFig');
 
-  const routeLen = route.getTotalLength();
   route.style.strokeDasharray = String(routeLen);
   route.style.strokeDashoffset = String(routeLen);
 
@@ -356,6 +470,11 @@ export function buildBrandScene(
       route.style.strokeDasharray = '7 7';
       route.style.strokeDashoffset = '0';
       gsap.set(traveler, { opacity: 0 });
+      if (trip) {
+        // the completed trip, still: whole route lit, no marker
+        trip.revealStroke.style.strokeDashoffset = '0';
+        gsap.set(trip.marker, { opacity: 0 });
+      }
       return;
     }
 
@@ -401,52 +520,103 @@ export function buildBrandScene(
         opacity: 0, y: 22, duration: 0.65, stagger: 0.075, ease: 'power3.out',
       }, 0.45);
 
-    // walk cycle: alternating legs pivot at the hip, pole plants, body bobs per step
-    const walk = gsap.timeline({ paused: true });
-    walk
-      .fromTo('#legBack',  { rotation: -24 }, { rotation: 24,  duration: 0.3, repeat: -1, yoyo: true, ease: 'sine.inOut', transformOrigin: '100% 0%' }, 0)
-      .fromTo('#legFront', { rotation: 24 },  { rotation: -24, duration: 0.3, repeat: -1, yoyo: true, ease: 'sine.inOut', transformOrigin: '0% 0%' }, 0)
-      .fromTo('#stick',    { rotation: -14 }, { rotation: 12,  duration: 0.3, repeat: -1, yoyo: true, ease: 'sine.inOut', transformOrigin: '20% 15%' }, 0)
-      .to('#sherpaBob', { y: -1.1, duration: 0.15, repeat: -1, yoyo: true, ease: 'sine.inOut' }, 0);
+    if (trip) {
+      /* origin pulse → marker travels (eased, 5s) lighting the dashes →
+         destination pulse → lit trail fades slowly → 6s pause → repeat */
+      const { lit, revealStroke, marker, markerBody } = trip;
+      const TRAVEL = 5;
+      const wpLen = routeLen * waypointAt;
+      const halo = routeGroup.querySelector('.waypoint-halo');
+      const place = (p: number) => {
+        const pt = route.getPointAtLength(routeLen * p);
+        marker.setAttribute('transform', `translate(${pt.x} ${pt.y})`);
+        revealStroke.style.strokeDashoffset = String(routeLen * (1 - p));
+      };
+      const pulse = (ring: SVGCircleElement, to: number, duration: number) =>
+        gsap.fromTo(ring, { attr: { r: 9 }, opacity: 0.85 },
+          { attr: { r: to }, opacity: 0, duration, ease: 'power2.out' });
 
-    // drive cycle: wheels spin, cargo box rides the suspension
-    const drive = gsap.timeline({ paused: true });
-    drive
-      .to(['#wheelB', '#wheelF'], { rotation: 360, duration: 0.55, repeat: -1, ease: 'none', transformOrigin: '50% 50%' }, 0)
-      .to('#truckBody', { y: -0.7, duration: 0.38, repeat: -1, yoyo: true, ease: 'sine.inOut' }, 0);
+      gsap.set(markerBody, { opacity: 0, scale: 0.4, transformOrigin: '50% 50%' });
+      const state = { p: 0 };
+      let passedWaypoint = false;
+      const loop = gsap.timeline({ id: 'routeTrip', repeat: -1, repeatDelay: 6, delay: 3.2 });
+      loop
+        .call(() => {
+          state.p = 0; passedWaypoint = false; place(0);
+          gsap.set(lit, { opacity: 1 });
+          pulse(nodeA.pulse as SVGCircleElement, 30, 0.95);
+        }, [], 0)
+        .to(markerBody, { opacity: 1, scale: 1, duration: 0.35, ease: 'back.out(2)' }, 0.25)
+        .to(state, {
+          p: 1, duration: TRAVEL, ease: 'power2.inOut',
+          onUpdate() {
+            place(state.p);
+            // brief brightening as the marker crosses the waypoint
+            // (scale on the group: the halo's own opacity/r are busy breathing)
+            if (!passedWaypoint && halo && routeLen * state.p >= wpLen) {
+              passedWaypoint = true;
+              gsap.fromTo(halo.parentNode, { scale: 1.35 },
+                { scale: 1, duration: 0.7, ease: 'power2.out', transformOrigin: '50% 50%' });
+            }
+          },
+        }, 0.35)
+        .to(markerBody, { opacity: 0, scale: 0.4, duration: 0.35, ease: 'power2.in' }, `>-0.1`)
+        .call(() => { pulse(nodeB.pulse as SVGCircleElement, 38, 1.3); }, [], '<')
+        .to(lit, { opacity: 0, duration: 1.8, ease: 'sine.inOut' }, '>+0.5')
+        .call(() => place(0), [], '>');
+    }
 
-    // the trek, in three legs: on foot out of the origin hall, by truck for
-    // the long middle haul, then on foot for the final approach.
-    const WP1 = 0.18, WP2 = 0.85;
-    const mp = (s: number, e: number) => ({
-      path: route, align: route, alignOrigin: [0.5, 0.88] as [number, number],
-      autoRotate: false, start: s, end: e,
-    });
+    if (!map) {
+      // walk cycle: alternating legs pivot at the hip, pole plants, body bobs per step
+      const walk = gsap.timeline({ paused: true });
+      walk
+        .fromTo('#legBack',  { rotation: -24 }, { rotation: 24,  duration: 0.3, repeat: -1, yoyo: true, ease: 'sine.inOut', transformOrigin: '100% 0%' }, 0)
+        .fromTo('#legFront', { rotation: 24 },  { rotation: -24, duration: 0.3, repeat: -1, yoyo: true, ease: 'sine.inOut', transformOrigin: '0% 0%' }, 0)
+        .fromTo('#stick',    { rotation: -14 }, { rotation: 12,  duration: 0.3, repeat: -1, yoyo: true, ease: 'sine.inOut', transformOrigin: '20% 15%' }, 0)
+        .to('#sherpaBob', { y: -1.1, duration: 0.15, repeat: -1, yoyo: true, ease: 'sine.inOut' }, 0);
 
-    gsap.set(traveler, { opacity: 0, scale: 1.3, transformOrigin: '50% 88%' });
-    gsap.set(truckFig, { opacity: 0 });
+      // drive cycle: wheels spin, cargo box rides the suspension
+      const drive = gsap.timeline({ paused: true });
+      drive
+        .to(['#wheelB', '#wheelF'], { rotation: 360, duration: 0.55, repeat: -1, ease: 'none', transformOrigin: '50% 50%' }, 0)
+        .to('#truckBody', { y: -0.7, duration: 0.38, repeat: -1, yoyo: true, ease: 'sine.inOut' }, 0);
 
-    const trek = gsap.timeline({ repeat: -1, repeatDelay: 1.8, delay: 2.8 });
-    trek
-      .set(sherpaFig, { opacity: 1 }, 0)
-      .set(truckFig, { opacity: 0 }, 0)
-      .to(traveler, { opacity: 1, duration: 0.35, ease: 'power1.out' }, 0)
-      .to(traveler, { motionPath: mp(0, WP1), duration: 4.2, ease: 'power1.inOut',
-          onStart() { walk.play(); } }, 0)
-      .to(sherpaFig, { opacity: 0, duration: 0.3, onComplete() { walk.pause(); } }, '>+0.25')
-      .to(truckFig,  { opacity: 1, duration: 0.3 }, '<+0.15')
-      .to(traveler, { motionPath: mp(WP1, WP2), duration: 6.5, ease: 'power2.inOut',
-          onStart() { drive.play(); }, onComplete() { drive.pause(); } }, '>+0.2')
-      .to(truckFig,  { opacity: 0, duration: 0.3 }, '>+0.25')
-      .to(sherpaFig, { opacity: 1, duration: 0.3, onStart() { walk.play(); } }, '<+0.15')
-      .to(traveler, { motionPath: mp(WP2, 1), duration: 3.4, ease: 'power1.inOut' }, '>+0.2')
-      .to(traveler, { opacity: 0, duration: 0.45, ease: 'power1.in', onComplete() { walk.pause(); } }, '>-0.15');
+      // the trek, in three legs: on foot out of the origin hall, by truck for
+      // the long middle haul, then on foot for the final approach.
+      const WP1 = 0.18, WP2 = 0.85;
+      const mp = (s: number, e: number) => ({
+        path: route, align: route, alignOrigin: [0.5, 0.88] as [number, number],
+        autoRotate: false, start: s, end: e,
+      });
 
-    [nodeA.pulse, nodeB.pulse].forEach((p, i) => {
-      gsap.fromTo(p,
-        { attr: { r: 9 }, opacity: 0.8 },
-        { attr: { r: 26 }, opacity: 0, duration: 2.2, repeat: -1, delay: i * 1.1, ease: 'power1.out' });
-    });
+      gsap.set(traveler, { opacity: 0, scale: 1.3, transformOrigin: '50% 88%' });
+      gsap.set(truckFig, { opacity: 0 });
+
+      const trek = gsap.timeline({ repeat: -1, repeatDelay: 1.8, delay: 2.8 });
+      trek
+        .set(sherpaFig, { opacity: 1 }, 0)
+        .set(truckFig, { opacity: 0 }, 0)
+        .to(traveler, { opacity: 1, duration: 0.35, ease: 'power1.out' }, 0)
+        .to(traveler, { motionPath: mp(0, WP1), duration: 4.2, ease: 'power1.inOut',
+            onStart() { walk.play(); } }, 0)
+        .to(sherpaFig, { opacity: 0, duration: 0.3, onComplete() { walk.pause(); } }, '>+0.25')
+        .to(truckFig,  { opacity: 1, duration: 0.3 }, '<+0.15')
+        .to(traveler, { motionPath: mp(WP1, WP2), duration: 6.5, ease: 'power2.inOut',
+            onStart() { drive.play(); }, onComplete() { drive.pause(); } }, '>+0.2')
+        .to(truckFig,  { opacity: 0, duration: 0.3 }, '>+0.25')
+        .to(sherpaFig, { opacity: 1, duration: 0.3, onStart() { walk.play(); } }, '<+0.15')
+        .to(traveler, { motionPath: mp(WP2, 1), duration: 3.4, ease: 'power1.inOut' }, '>+0.2')
+        .to(traveler, { opacity: 0, duration: 0.45, ease: 'power1.in', onComplete() { walk.pause(); } }, '>-0.15');
+    }
+
+    // classic: both nodes pulse continuously; map: the trip fires the pulses
+    if (!map) {
+      [nodeA.pulse, nodeB.pulse].forEach((p, i) => {
+        gsap.fromTo(p,
+          { attr: { r: 9 }, opacity: 0.8 },
+          { attr: { r: 26 }, opacity: 0, duration: 2.2, repeat: -1, delay: i * 1.1, ease: 'power1.out' });
+      });
+    }
     const halo = routeGroup.querySelector('.waypoint-halo');
     if (halo) {
       gsap.to(halo, { attr: { r: 18 }, opacity: 0.35, duration: 1.4, yoyo: true, repeat: -1, ease: 'sine.inOut' });
