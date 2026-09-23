@@ -36,9 +36,12 @@ import { naturalCompare } from '../../lib/sites';
 import { useRecordFocus } from '../../lib/useDeepLinkFilter';
 import {
   applyColumnOrder,
+  ColHead,
   ColumnsButton,
   ExportButton,
   exportCsv,
+  listGridStyle,
+  listScale,
   moveKey,
   useReorderDrag,
   useSearchHaystacks,
@@ -48,14 +51,24 @@ import {
 import { VirtualRows } from '../../lib/virtualRows';
 import { displayScanValue } from '../../lib/format';
 
-const COLUMNS: ColumnDef[] = [
+// The always-shown scanned-value cell — a fixed leading track outside the
+// column registry (same shape as the header markup below), so it needs
+// its own ColumnDef for listGridStyle/ColHead (recipe R1).
+export const PRIMARY_COL: ColumnDef = {
+  key: 'primary', label: 'Value', width: '2fr', default: true, min: 160,
+};
+
+// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
+// window, nav expanded — Scans.tsx mounts this tab directly under
+// .portal-page, no wrapping card).
+export const COLUMNS: ColumnDef[] = [
   { key: 'match', label: 'Match', width: '1fr', default: true },
   { key: 'status', label: 'Scan status', width: '1.1fr', default: true },
-  { key: 'matched', label: 'Matched record', width: '1.3fr', default: true },
-  { key: 'scanned', label: 'Scanned', width: '1.1fr', default: true },
+  { key: 'matched', label: 'Matched record', short: 'Matched', width: '1.3fr', default: true },
+  { key: 'scanned', label: 'Scanned', width: '1.1fr', default: true, min: 96 },
   { key: 'processed', label: 'Processed', width: '1.1fr', default: false },
   { key: 'scan_type', label: 'Method', width: '0.9fr', default: true },
-  { key: 'device', label: 'Device', width: '1fr', default: true },
+  { key: 'device', label: 'Device', width: '1fr', default: true, min: 100 },
   { key: 'operator', label: 'Operator', width: '1fr', default: false },
   { key: 'site', label: 'Site', width: '1fr', default: true },
   { key: 'location', label: 'Location', width: '1.2fr', default: false },
@@ -86,6 +99,10 @@ function sortValueFor(s: ProcessedScanRow, key: string): string {
   }
 }
 
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
+
 const CSV_COLUMNS: [string, (s: ProcessedScanRow) => string][] = [
   ['ID', (s) => s.id],
   ['Value', (s) => s.scanned_value],
@@ -105,7 +122,8 @@ const CSV_COLUMNS: [string, (s: ProcessedScanRow) => string][] = [
 export default function ProcessedScansTab({ onCount }: {
   onCount: (n: number | null) => void;
 }) {
-  const { can, godMode } = useAuth();
+  const { can, godMode, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canChange = can('scans', 'change');
   const canViewSites = can('sites', 'view');
   const canViewUsers = can('users', 'view');
@@ -202,16 +220,14 @@ export default function ProcessedScansTab({ onCount }: {
     }
   }, [visible]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: god.editing ? undefined : grid.minWidth };
 
   const cellFor = (s: ProcessedScanRow, key: string) => {
     if (god.editing) {
@@ -236,34 +252,51 @@ export default function ProcessedScansTab({ onCount }: {
         );
       case 'status':
         return statusChip(s.status_label, s.status_color) ?? <span className="cell-top">—</span>;
-      case 'matched':
+      case 'matched': {
+        const text = s.matched_name ?? s.match_type_label;
         return matchedHref(s)
           ? (
-            <Link className="record-link" to={matchedHref(s)!} onClick={(e) => e.stopPropagation()}>
-              {s.matched_name ?? s.match_type_label} ↗
+            <Link className="record-link cell-line" to={matchedHref(s)!} title={titleFor(text)}
+                  onClick={(e) => e.stopPropagation()}>
+              {text} ↗
             </Link>
           )
-          : <span className="cell-top">{s.matched_name ?? '—'}</span>;
-      case 'scanned':
-        return <span className="mono">{new Date(s.scanned_at).toLocaleString()}</span>;
-      case 'processed':
-        return <span className="mono">{new Date(s.processed_at).toLocaleString()}</span>;
+          : <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'scanned': {
+        const text = new Date(s.scanned_at).toLocaleString();
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'processed': {
+        const text = new Date(s.processed_at).toLocaleString();
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'scan_type':
         return (
           <span className="chip custom" style={{ '--chip': s.scan_type_color } as CSSProperties}>
             <span className="dot" />{s.scan_type_label}
           </span>
         );
-      case 'device':
-        return <span className="mono">{s.device_id || '—'}</span>;
-      case 'operator':
-        return <span className="cell-top">{s.operator_name ?? '—'}</span>;
-      case 'site':
-        return <span className="cell-top">{s.site_name ?? '—'}</span>;
-      case 'location':
-        return <span className="cell-top">{s.location_detail || '—'}</span>;
-      case 'source':
-        return <span className="cell-top">{s.source || '—'}</span>;
+      case 'device': {
+        const text = s.device_id || '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'operator': {
+        const text = s.operator_name ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'site': {
+        const text = s.site_name ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'location': {
+        const text = s.location_detail || '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'source': {
+        const text = s.source || '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default:
         return null;
     }
@@ -290,32 +323,29 @@ export default function ProcessedScansTab({ onCount }: {
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load scans</b>{error}</div>}
 
       {!error && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
-            <span className="col-head">
-              <button className="sortable" onClick={() => toggleSort('primary')}>
-                Value {caret('primary')}
-              </button>
+        <div className={`dir-list list-scroll${god.editing ? ' editing' : ''}`}>
+          <div className="list-head" style={rowStyle}>
+            <ColHead col={PRIMARY_COL} sortDir={sortKey === 'primary' ? sortDir : null}
+                     onToggleSort={() => toggleSort('primary')}>
               <ColumnMenu colKey="primary" label="Value"
                           allRows={scans ?? []} filters={filters}
                           text={processedScanCellText}
                           filter={filters.primary} onFilter={setFilter}
                           sortDir={sortKey === 'primary' ? sortDir : null}
                           onSort={(dir) => setSort('primary', dir)} />
-            </span>
+            </ColHead>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)}
+                       className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={scans ?? []} filters={filters}
                             text={processedScanCellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
             <ColumnMenu colKey="archived" label="Archived"
                         allRows={scans ?? []} filters={filters}
@@ -337,8 +367,8 @@ export default function ProcessedScansTab({ onCount }: {
               const open = openId === s.id;
               return (
                 <div key={s.id} className={`dir-row ${open ? 'open' : ''} ${s.archived_at ? 'archived' : ''}`}
-                     {...vp} style={vp?.style}>
-                  <div className="row-main" style={grid}
+                     {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                  <div className="row-main" style={rowStyle}
                        onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : s.id); }}>
                     <div className="cell cell-primary">
                       <div className="pn"><b className="mono" title={s.scanned_value}>{displayScanValue(s.scanned_value, s.scan_type)}</b>

@@ -49,3 +49,17 @@ it('"View errors" row action appears only when the run has errors, and calls onV
   await user.click(await screen.findByText('View errors'));
   expect(onViewErrors).toHaveBeenCalledWith(expect.objectContaining({ id: 'r-err' }));
 });
+
+it('column floors, shared template + minimum, sideways-scroll card', () => {
+  render(<LabelRunsList runs={[run({})]} typeLabel={typeLabel} onViewErrors={() => {}} />);
+  const row = screen.getByText('NAP11').closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Fit: default columns + trailing ≤ 1176px (.portal-page).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+});

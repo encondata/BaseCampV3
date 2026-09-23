@@ -34,16 +34,27 @@ import {
 import { GodCell, type GodField } from '../../lib/godEdit';
 import { naturalCompare } from '../../lib/sites';
 import {
-  applyColumnOrder, ColumnsButton, ExportButton, exportCsv, moveKey,
-  useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
+  applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale,
+  moveKey, useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../../lib/listTools';
 import { VirtualRows } from '../../lib/virtualRows';
 
-const COLUMNS: ColumnDef[] = [
+// The always-shown field cell — a fixed leading track outside the column
+// registry (same shape as the header markup below), so it needs its own
+// ColumnDef for listGridStyle/ColHead (recipe R1).
+export const PRIMARY_COL: ColumnDef = {
+  key: 'primary', label: 'Field', width: '2fr', default: true, min: 160,
+};
+
+// Fit: default columns + trailing ≤ 1140px (1176 - 36 — this list sits
+// inside an .init-panel, initiatives.css: padding 16px 18px, 18px each
+// side, nested in a CollapsePanel that adds no horizontal padding of its
+// own).
+export const COLUMNS: ColumnDef[] = [
   { key: 'group', label: 'Group', width: '1fr', default: true },
   { key: 'value', label: 'Value', width: '1.4fr', default: true },
   { key: 'updated_by', label: 'Updated by', width: '1fr', default: true },
-  { key: 'updated', label: 'Updated', width: '1fr', default: false },
+  { key: 'updated', label: 'Updated', width: '1fr', default: false, min: 96 },
 ];
 const ALL_COLUMN_KEYS = new Set<string>([...COLUMNS.map((c) => c.key), 'field']);
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
@@ -98,6 +109,10 @@ function sortValueFor(row: SiteSurveyRow, key: string, fieldOrder: Map<string, n
   }
 }
 
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
+
 const CSV_COLUMNS: [string, (r: SiteSurveyRow) => string][] = [
   ['Field key', (r) => r.field_key],
   ['Label', (r) => r.label],
@@ -113,7 +128,8 @@ export default function SiteSurveyList({ siteId, onCount, onSaved, refreshKey }:
   onSaved?: () => void;
   refreshKey?: number;
 }) {
-  const { can } = useAuth();
+  const { can, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canChange = can('sites', 'change');
 
   const [rows, setRows] = useState<SiteSurveyRow[] | null>(null);
@@ -181,16 +197,14 @@ export default function SiteSurveyList({ siteId, onCount, onSaved, refreshKey }:
     ) * sortDir);
   }, [rows, filters, query, sortKey, sortDir, haystack, fieldOrder]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, false);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `2fr ${shownCols.map((c) => c.width).join(' ')}` };
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], [], undefined, listGridScale);
+  const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   // Closes over `row` fresh each render (cellFor is called with the live
   // row from `visible`), so the synthesized cleared-row fallback below
@@ -216,7 +230,8 @@ export default function SiteSurveyList({ siteId, onCount, onSaved, refreshKey }:
       // (e.g. Security details). The Sites edit modal is the only
       // multi-line-safe path for these, so this cell is display-only.
       if (!canChange || row.kind === 'textarea') {
-        return <span className="cell-top">{surveyValueText(row)}</span>;
+        const text = surveyValueText(row);
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
       }
       return (
         <GodCell row={row} gf={godFieldForRow(row)} patch={patchValueFor(row)}
@@ -225,14 +240,16 @@ export default function SiteSurveyList({ siteId, onCount, onSaved, refreshKey }:
       );
     }
     switch (key) {
-      case 'group': return <span className="cell-top">{row.group_label}</span>;
-      case 'updated_by': return <span className="cell-top">{row.updated_by_name ?? '—'}</span>;
-      case 'updated':
-        return (
-          <span className="mono">
-            {row.updated_at ? new Date(row.updated_at).toLocaleString() : '—'}
-          </span>
-        );
+      case 'group':
+        return <span className="cell-top cell-line" title={titleFor(row.group_label)}>{row.group_label}</span>;
+      case 'updated_by': {
+        const text = row.updated_by_name ?? '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'updated': {
+        const text = row.updated_at ? new Date(row.updated_at).toLocaleString() : '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default: return null;
     }
   };
@@ -257,32 +274,29 @@ export default function SiteSurveyList({ siteId, onCount, onSaved, refreshKey }:
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load survey</b>{error}</div>}
 
       {!error && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
-            <span className="col-head">
-              <button className="sortable" onClick={() => toggleSort('field')}>
-                Field {caret('field')}
-              </button>
+        <div className="dir-list list-scroll">
+          <div className="list-head" style={rowStyle}>
+            <ColHead col={PRIMARY_COL} sortDir={sortKey === 'field' ? sortDir : null}
+                     onToggleSort={() => toggleSort('field')}>
               <ColumnMenu colKey="field" label="Field"
                           allRows={rows ?? []} filters={filters}
                           text={surveyCellText}
                           filter={filters.field} onFilter={setFilter}
                           sortDir={sortKey === 'field' ? sortDir : null}
                           onSort={(dir) => setSort('field', dir)} />
-            </span>
+            </ColHead>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)}
+                       className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={rows ?? []} filters={filters}
                             text={surveyCellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
           </div>
 
@@ -295,8 +309,9 @@ export default function SiteSurveyList({ siteId, onCount, onSaved, refreshKey }:
 
           <VirtualRows rows={visible}
             renderRow={(row, vp) => (
-              <div key={row.field_key} className="dir-row" {...vp} style={vp?.style}>
-                <div className="row-main" style={grid}>
+              <div key={row.field_key} className="dir-row" {...vp}
+                   style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}>
                   <div className="cell cell-primary">
                     <div className="pn"><b>{row.label}</b><span>{row.group_label}</span></div>
                   </div>

@@ -158,3 +158,19 @@ it('reports the filtered id list via onFilteredChange as the search term changes
   await user.type(screen.getByPlaceholderText('Search containers…'), 'tote');
   expect(onFilteredChange).toHaveBeenLastCalledWith(['c3']);
 });
+
+it('column floors, shared template + minimum, sideways-scroll card', () => {
+  render(<ContainerPickList containers={ROWS} selected={[]} tags={{}}
+                             onSelectedChange={() => {}} onTagsChange={() => {}} />);
+  const row = screen.getByText('Rack Cart 1').closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^32px /);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  // Fit: default columns + trailing ≤ 578px (the narrowest of this
+  // component's two mount points — see ContainerPickList.tsx's own note).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(578);
+});
