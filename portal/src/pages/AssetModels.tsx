@@ -39,9 +39,12 @@ import { naturalCompare } from '../lib/sites';
 import { useRecordFocus } from '../lib/useDeepLinkFilter';
 import {
   applyColumnOrder,
+  ColHead,
   ColumnsButton,
   ExportButton,
   exportCsv,
+  listGridStyle,
+  listScale,
   moveKey,
   useReorderDrag,
   useSearchHaystacks,
@@ -54,13 +57,22 @@ import '../styles/profile.css';
 import '../styles/settings.css';
 import '../styles/assets.css';
 
+// The always-shown make+model cell — a fixed leading track outside the
+// column registry (same shape as the header markup below), so it needs
+// its own ColumnDef for listGridStyle/ColHead.
+const PRIMARY_COL: ColumnDef = {
+  key: 'primary', label: 'Make / Model', short: 'Make/Model', width: '2.2fr', default: true, min: 180,
+};
+
+// Fit: default columns + trailing ≤ 1176px (.portal-page at a 1512px
+// window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'category', label: 'Category', width: '1fr', default: true },
   { key: 'ru', label: 'RU', width: '0.5fr', default: true },
   { key: 'weight', label: 'Weight', width: '1.2fr', default: true },
   { key: 'dims', label: 'Dimensions', width: '1.6fr', default: true },
   { key: 'mount', label: 'Mount', width: '0.8fr', default: true },
-  { key: 'form', label: 'Form factor', width: '0.8fr', default: true },
+  { key: 'form', label: 'Form factor', short: 'Form', width: '0.8fr', default: true },
   { key: 'rail', label: 'Rail type', width: '0.8fr', default: false },
   { key: 'aliases', label: 'Aliases', width: '0.6fr', default: false },
   { key: 'weight_lbs', label: 'Weight (lb)', width: '0.8fr', default: false, godOnly: true },
@@ -130,8 +142,13 @@ const CSV_COLUMNS: [string, (m: AssetModelItem) => string][] = [
   ['Created', (m) => m.created_at],
 ];
 
+/** No tooltip for a blank cell — "—" repeated as a title on hover reads
+ *  as noise, not information. */
+const titleFor = (text: string) => (text === '—' ? undefined : text);
+
 export default function AssetModels() {
-  const { can, godMode } = useAuth();
+  const { can, godMode, preferences } = useAuth();
+  const listGridScale = listScale(preferences?.list_size);
   const canAdd = can('asset_models', 'add');
   const canChange = can('asset_models', 'change');
   const god = useGodEdit();
@@ -265,16 +282,17 @@ export default function AssetModels() {
     }
   }, [visible]);
 
-  const caret = (key: string) =>
-    sortKey === key ? <span className="caret">{sortDir === 1 ? '▲' : '▼'}</span> : null;
-
   const orderedCols = applyColumnOrder(COLUMNS, colOrder);
   const shownCols = visibleColumnsFor(orderedCols, visibleCols, godMode);
   const headerDrag = useReorderDrag(
     (src, dst, before) => setColOrder(moveKey(orderedCols.map((c) => c.key), src, dst, before)),
     'x', { ignoreFrom: '.pop-menu' },
   );
-  const grid = { gridTemplateColumns: `2.2fr ${shownCols.map((c) => c.width).join(' ')} 30px` };
+  const grid = listGridStyle([PRIMARY_COL, ...shownCols], ['30px'], undefined, listGridScale);
+  const rowStyle = {
+    gridTemplateColumns: grid.gridTemplateColumns,
+    minWidth: god.editing ? undefined : grid.minWidth,
+  };
 
   const editingModel = editingId === null
     ? null : (models?.find((m) => m.id === editingId) ?? null);
@@ -303,42 +321,70 @@ export default function AssetModels() {
             {pd.pendingIds.has(m.id) && <span className="chip tag">Pending delete</span>}
           </div>
         );
-      case 'ru':
-        return <span className="mono">{m.ru_size ?? '—'}</span>;
-      case 'weight':
-        return <span className="cell-top">
-          {m.weight_lbs !== null ? `${m.weight_lbs} lb / ${m.weight_kg} kg` : '—'}
-        </span>;
-      case 'dims':
-        return <span className="cell-top">{formatDims(m.length_in, m.width_in, m.height_in, 'in')}</span>;
-      case 'mount':
-        return <span className="cell-top">{titleCase(m.mount_type)}</span>;
+      case 'ru': {
+        const text = m.ru_size != null ? String(m.ru_size) : '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'weight': {
+        const text = m.weight_lbs !== null ? `${m.weight_lbs} lb / ${m.weight_kg} kg` : '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'dims': {
+        const text = formatDims(m.length_in, m.width_in, m.height_in, 'in');
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'mount': {
+        const text = titleCase(m.mount_type);
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       case 'form':
         return m.form_factor
           ? <span className="chip tag">{formFactorLabel(m.form_factor)}</span>
-          : <span className="cell-top">—</span>;
-      case 'rail':
-        return <span className="mono">{m.rail_type ?? '—'}</span>;
-      case 'aliases':
-        return <span className="cell-top">{m.aliases.length ? m.aliases.join(', ') : '—'}</span>;
-      case 'weight_lbs':
-        return <span className="mono">{m.weight_lbs ?? '—'}</span>;
-      case 'weight_kg':
-        return <span className="mono">{m.weight_kg ?? '—'}</span>;
-      case 'length_in':
-        return <span className="mono">{m.length_in ?? '—'}</span>;
-      case 'width_in':
-        return <span className="mono">{m.width_in ?? '—'}</span>;
-      case 'height_in':
-        return <span className="mono">{m.height_in ?? '—'}</span>;
-      case 'length_cm':
-        return <span className="mono">{m.length_cm ?? '—'}</span>;
-      case 'width_cm':
-        return <span className="mono">{m.width_cm ?? '—'}</span>;
-      case 'height_cm':
-        return <span className="mono">{m.height_cm ?? '—'}</span>;
-      case 'knowledge':
-        return <span className="cell-top">{m.knowledge || '—'}</span>;
+          : <span className="cell-top cell-line">—</span>;
+      case 'rail': {
+        const text = m.rail_type ?? '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'aliases': {
+        const text = m.aliases.length ? m.aliases.join(', ') : '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'weight_lbs': {
+        const text = m.weight_lbs != null ? String(m.weight_lbs) : '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'weight_kg': {
+        const text = m.weight_kg != null ? String(m.weight_kg) : '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'length_in': {
+        const text = m.length_in != null ? String(m.length_in) : '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'width_in': {
+        const text = m.width_in != null ? String(m.width_in) : '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'height_in': {
+        const text = m.height_in != null ? String(m.height_in) : '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'length_cm': {
+        const text = m.length_cm != null ? String(m.length_cm) : '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'width_cm': {
+        const text = m.width_cm != null ? String(m.width_cm) : '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'height_cm': {
+        const text = m.height_cm != null ? String(m.height_cm) : '—';
+        return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'knowledge': {
+        const text = m.knowledge || '—';
+        return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
+      }
       default:
         return null;
     }
@@ -394,32 +440,29 @@ export default function AssetModels() {
       {error && <div className="dir-empty" style={{ marginBottom: 12 }}><b>Cannot load catalog</b>{error}</div>}
 
       {!error && view === 'all' && (
-        <div className="dir-list">
-          <div className="list-head" style={grid}>
-            <span className="col-head">
-              <button className="sortable" onClick={() => toggleSort('primary')}>
-                Make / Model {caret('primary')}
-              </button>
+        <div className={`dir-list list-scroll${god.editing ? ' editing' : ''}`}>
+          <div className="list-head" style={rowStyle}>
+            <ColHead col={PRIMARY_COL} sortDir={sortKey === 'primary' ? sortDir : null}
+                     onToggleSort={() => toggleSort('primary')}>
               <ColumnMenu colKey="primary" label="Make / Model"
                           allRows={models ?? []} filters={filters}
                           text={modelCellText}
                           filter={filters.primary} onFilter={setFilter}
                           sortDir={sortKey === 'primary' ? sortDir : null}
                           onSort={(dir) => setSort('primary', dir)} />
-            </span>
+            </ColHead>
             {shownCols.map((c) => (
-              <span key={c.key} className={`col-head ${headerDrag.dropClass(c.key)}`}
-                    {...headerDrag.dragProps(c.key)}>
-                <button className="sortable" onClick={() => toggleSort(c.key)}>
-                  {c.label} {caret(c.key)}
-                </button>
+              <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
+                       onToggleSort={() => toggleSort(c.key)}
+                       className={headerDrag.dropClass(c.key)}
+                       dragProps={headerDrag.dragProps(c.key)}>
                 <ColumnMenu colKey={c.key} label={c.label}
                             allRows={models ?? []} filters={filters}
                             text={modelCellText}
                             filter={filters[c.key]} onFilter={setFilter}
                             sortDir={sortKey === c.key ? sortDir : null}
                             onSort={(dir) => setSort(c.key, dir)} />
-              </span>
+              </ColHead>
             ))}
             <span />
           </div>
@@ -436,8 +479,8 @@ export default function AssetModels() {
             const open = openId === m.id;
             return (
               <div key={m.id} className={`dir-row ${open ? 'open' : ''}`}
-                   {...vp} style={vp?.style}>
-                <div className="row-main" style={grid}
+                   {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                <div className="row-main" style={rowStyle}
                      onClick={() => { deepLinkTarget.current = null; setOpenId(open ? null : m.id); }}>
                   <div className="cell cell-primary">
                     {god.editing && godFieldFor('primary') && godFieldFor('primary2') ? (

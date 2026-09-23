@@ -54,3 +54,17 @@ it('a model that is both import-created and a duplicate is counted once', async 
   render(<MemoryRouter><AssetModels /></MemoryRouter>);
   expect(await screen.findByRole('tab', { name: 'Review 2' })).toBeTruthy();
 });
+
+it('AssetModels list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  api.listAssetModels.mockResolvedValueOnce([item('m1', 'PowerEdge R740')] as never);
+  render(<MemoryRouter><AssetModels /></MemoryRouter>);
+  const row = (await screen.findByText('PowerEdge R740')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+});

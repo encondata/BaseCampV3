@@ -211,3 +211,16 @@ it('Full details navigates to the asset page', async () => {
   fireEvent.click(await screen.findByText('Full details'));
   expect(await screen.findByText('ASSET PAGE')).toBeTruthy();
 });
+
+it('Assets list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  mount();
+  const row = (await screen.findByText('SN-ALPHA')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+});

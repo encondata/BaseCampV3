@@ -391,3 +391,16 @@ it('flat view is unchanged: no group rows, all containers render directly', asyn
   expect(screen.queryByText('Bravo Crate')).not.toBeNull();
   expect(screen.queryByText('Loose Crate')).not.toBeNull();
 });
+
+it('Containers list: column floors, shared template + minimum, sideways-scroll card', async () => {
+  mount();
+  const row = (await screen.findByText('Rack Cart 1')).closest('.dir-row') as HTMLElement;
+  const card = row.closest('.dir-list') as HTMLElement;
+  expect(card.classList.contains('list-scroll')).toBe(true);
+  const head = card.querySelector('.list-head') as HTMLElement;
+  const main = row.querySelector('.row-main') as HTMLElement;
+  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
+  expect(row.style.minWidth).toBe(head.style.minWidth);
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+});
