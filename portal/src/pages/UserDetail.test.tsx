@@ -60,7 +60,8 @@ export const DETAIL: UserDetailOut = {
   },
   account: { login_email: 'wan@x.test', status: 'active', must_change_password: true,
     last_login_at: '2026-09-14T12:00:00Z', created_at: '2026-01-02T00:00:00Z',
-    password_updated_at: '2026-08-01T00:00:00Z' },
+    password_updated_at: '2026-08-01T00:00:00Z',
+    totp_enrolled: false, totp_enrolled_at: null, totp_required: false, totp_effective_required: false },
   roles: [
     { role: 'staff', label: 'Staff', rank: 40, scope_anchor: 'global', org: null,
       granted_by: { id: 'me-1', display_name: 'Me' }, granted_at: '2026-01-02T00:00:00Z' },
