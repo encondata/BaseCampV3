@@ -304,8 +304,8 @@ it('assets list: columns carry px floors, header and rows share one template and
   expect(head.style.minWidth).toMatch(/^\d+px$/);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   // Nine default columns + actions + chevron must fit a 14-inch window
-  // with the nav expanded (spec: ≤ 1176px).
-  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1176);
+  // with the nav expanded (spec: ≤ 1136px — the panel's 18px padding comes off the 1176px page width).
+  expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(1136);
 });
 
 it('assets list: single-line values truncate with the full text on hover', async () => {

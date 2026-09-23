@@ -53,7 +53,7 @@ at the end, not built here.
 
 A 14-inch M3 MacBook Pro window is 1512 CSS px wide. With the nav expanded
 (`--nav-width: 248px`) and `.portal-page` padding (`clamp(24px, 3.2vw,
-44px)` = 44px a side), a full-width list is **about 1176px** wide. That is
+44px)` = 44px a side), a full-width list is **about 1176px** wide. On the initiative detail page the lists sit inside an `.init-panel` with 18px of padding a side, so they get **1136px**; that is the pilot's fit target. That is
 the width at which every list's default column set must fit with no
 sideways scroll. Wider windows keep today's fluid behavior; narrower ones
 scroll.
@@ -98,26 +98,28 @@ export function listGridStyle(
   full scrolled width, not just the visible part. The helper takes the gap
   as a parameter (default 12, the `list-scroll` gap below).
 - Numbers are px; the helper renders the CSS strings.
+- On the initiative detail page the row minimum is at most 1136px (the panel's
+  18px padding comes off the 1176px page width).
 
 Floors for the pilot page's nine default asset columns, chosen so that with
 the 88px actions track, the 30px chevron track, ten 12px gaps, and 40px of
-padding the row minimum is at most 1176px:
+padding the row minimum is at most 1136px:
 
 | column | short label | min | derived floor |
 | --- | --- | --- | --- |
-| Asset ID | — | 92 | 89 |
-| Asset Name | — | 136 | 104 |
-| Serial | — | 108 | 74 |
-| Make/Model | — | 108 | 104 |
-| Status | — | 96 | 74 |
+| Asset ID | — | 90 | 89 |
+| Asset Name | — | 120 | 104 |
+| Serial | — | 100 | 74 |
+| Make/Model | — | 104 | 104 |
+| Status | — | 90 | 74 |
 | Source Rack | Src Rack | 92 | 89 |
 | Source RU | Src RU | 76 | 74 |
 | Destination Rack | Dest Rack | 100 | 97 |
 | Destination RU | Dest RU | 84 | 82 |
 
-Columns sum to 892; the row minimum is 892 + 88 + 30 + 120 + 40 =
-**1170px**, under the 1176px target. Read-only viewers (no actions track)
-land at 1070px.
+Columns sum to 856; the row minimum is 856 + 88 + 30 + 120 + 40 =
+**1134px**, under the 1136px target. Read-only viewers (no actions track)
+land at 1034px.
 
 Non-default asset columns get short labels where the long one is wordy
 (`Source Verified` → `Src Verified`, `Source Position` → `Src Position`,
