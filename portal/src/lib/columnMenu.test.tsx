@@ -288,6 +288,42 @@ describe('ColumnMenu', () => {
     act(() => { window.dispatchEvent(new Event('scroll')); });
     expect(document.querySelector('.colmenu-menu')).toBeNull();
   });
+
+  it('opens upward when the trigger is near the bottom of the viewport', async () => {
+    const user = userEvent.setup();
+    const { container } = render(
+      <ColumnMenu colKey="name" label="Name" allRows={rows} filters={{}} text={text}
+                  filter={undefined} onFilter={vi.fn()} sortDir={null} onSort={vi.fn()} />,
+    );
+    const wrap = container.querySelector('.colmenu') as HTMLElement;
+    const rect = (top: number, bottom: number, left: number, right: number) =>
+      ({ left, right, top, bottom, width: right - left, height: bottom - top, x: left, y: top, toJSON() {} }) as DOMRect;
+    const wrapRect = vi.spyOn(wrap, 'getBoundingClientRect');
+
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 });
+
+    const trigger = screen.getByRole('button', { name: 'Name column menu' });
+
+    // Near the bottom of the viewport: opens upward.
+    wrapRect.mockReturnValue(rect(850, 870, 200, 260));
+    await user.click(trigger);
+    let menu = document.querySelector('.colmenu-menu') as HTMLElement;
+    expect(menu.style.top).toBe('auto');
+    expect(menu.style.bottom).toBe('58px'); // 900 - 850 + 8
+
+    await user.click(trigger); // close
+    expect(document.querySelector('.colmenu-menu')).toBeNull();
+
+    // Plenty of room below: opens downward.
+    wrapRect.mockReturnValue(rect(100, 120, 200, 260));
+    await user.click(trigger);
+    menu = document.querySelector('.colmenu-menu') as HTMLElement;
+    expect(menu.style.top).toBe('128px'); // 120 + 8
+    expect(menu.style.bottom).toBe('auto');
+
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+  });
 });
 
 /* ── usePersistentListState ───────────────────────────────────────── */
