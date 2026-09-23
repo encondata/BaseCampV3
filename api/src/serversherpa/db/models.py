@@ -245,7 +245,7 @@ class TrustedDevice(Base):
         primary_key=True, server_default=text("gen_random_uuid()"))
     person_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("user_accounts.person_id", ondelete="CASCADE"))
-    token_hash: Mapped[str]
+    token_hash: Mapped[str] = mapped_column(unique=True)
     user_agent: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     last_used_at: Mapped[datetime | None]

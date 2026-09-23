@@ -143,6 +143,8 @@ async def clean_db():
             "label_templates, label_placeholders, label_vocab CASCADE"))
         # role matrix is editable seed data — restore defaults & drop customs
         await session.execute(text("DELETE FROM roles WHERE is_system = false"))
+        # 2FA policy flag on the seeded roles is test-mutable — never leaks
+        await session.execute(text("UPDATE roles SET totp_required = false"))
         await session.execute(text("DELETE FROM role_permissions"))
         from serversherpa.access.defaults import seed_default_grants
         await seed_default_grants(session)
