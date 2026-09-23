@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 import pytest
 import respx
@@ -68,6 +70,23 @@ async def test_redirect_is_followed(kiosk_service):
 async def test_timeout(kiosk_service):
     respx.get("http://kiosk.test/config.js").mock(side_effect=httpx.ConnectTimeout("slow"))
     r = await run(kiosk_service)
+    assert r == type(r)(False, None, "timeout")
+
+
+@respx.mock
+async def test_total_deadline_enforced_even_if_httpx_timeout_does_not_fire(kiosk_service):
+    """httpx's own per-request timeout can be defeated by a side_effect that
+    just sleeps in Python rather than blocking a socket; probe() must still
+    cut it off via an outer asyncio.timeout so a hung service can't wedge a
+    whole check cycle."""
+
+    async def slow(request):
+        await asyncio.sleep(0.2)
+        return httpx.Response(200, text="x")
+
+    respx.get("http://kiosk.test/config.js").mock(side_effect=slow)
+    async with httpx.AsyncClient() as client:
+        r = await probe(client, kiosk_service, 0.05)
     assert r == type(r)(False, None, "timeout")
 
 

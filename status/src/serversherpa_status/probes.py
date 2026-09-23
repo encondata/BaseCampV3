@@ -1,6 +1,7 @@
 """One HTTP probe per service. A probe never raises: every outcome is a
 ProbeResult, and anything short of the expected response is a failure."""
 
+import asyncio
 import time
 from dataclasses import dataclass
 
@@ -38,7 +39,14 @@ async def probe(client: httpx.AsyncClient, service: Service, timeout: float) -> 
     url = service.url + PROBE_PATHS[service.key]
     started = time.monotonic()
     try:
-        resp = await client.get(url, timeout=timeout, follow_redirects=True)
+        # httpx's own timeout only bounds socket I/O; wrapping the whole
+        # call in asyncio.timeout enforces a total deadline even against a
+        # mock/side effect (or an httpx internal wait) that never triggers
+        # httpx.TimeoutException on its own.
+        async with asyncio.timeout(timeout):
+            resp = await client.get(url, timeout=timeout, follow_redirects=True)
+    except TimeoutError:
+        return ProbeResult(False, None, "timeout")
     except httpx.TimeoutException:
         return ProbeResult(False, None, "timeout")
     except httpx.HTTPError as exc:
