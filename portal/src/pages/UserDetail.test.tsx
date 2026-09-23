@@ -192,6 +192,19 @@ it('Account shows the 2FA row with Require switch and Reset 2FA (enrolled only)'
   await waitFor(() => expect(api.adminSetTotpRequired).toHaveBeenCalledWith('p1', true));
 });
 
+it('a failed Require 2FA toggle shows an error, re-enables the switch, and keeps the server value', async () => {
+  const { ApiError } = await import('../lib/api');
+  api.adminSetTotpRequired.mockRejectedValueOnce(new ApiError(403, 'rank_too_low'));
+  renderAt('/people/users/p1');
+  const sw = await screen.findByRole('checkbox', { name: /require 2fa/i }) as HTMLInputElement;
+  expect(sw.checked).toBe(false);
+  fireEvent.click(sw);
+  await waitFor(() => expect(api.adminSetTotpRequired).toHaveBeenCalledWith('p1', true));
+  expect(await screen.findByText(/could not update \(rank_too_low\)/i)).toBeTruthy();
+  await waitFor(() => expect((screen.getByRole('checkbox', { name: /require 2fa/i }) as HTMLInputElement).disabled).toBe(false));
+  expect((screen.getByRole('checkbox', { name: /require 2fa/i }) as HTMLInputElement).checked).toBe(false);
+});
+
 it('Reset 2FA is hidden when not enrolled and the switch is locked when policy requires it', async () => {
   api.getUserDetail.mockResolvedValueOnce({ ...DETAIL, account: { ...DETAIL.account,
     totp_enrolled: false, totp_enrolled_at: null, totp_effective_required: true } });

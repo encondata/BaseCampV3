@@ -36,3 +36,20 @@ it('role card switch PATCHes the role', async () => {
   fireEvent.click(await screen.findByRole('checkbox', { name: /require 2fa/i }));
   await waitFor(() => expect(api.patchRole).toHaveBeenCalledWith('staff', { totp_required: true }));
 });
+
+it('role card switch locks in-flight so a double click only fires one PATCH', async () => {
+  let resolvePatch: () => void = () => {};
+  api.patchRole.mockImplementationOnce(() => new Promise<void>((res) => { resolvePatch = res; }));
+  render(<RolesTab summary={SUMMARY} canEdit maxRank={100} onChanged={() => {}} />);
+  const sw = await screen.findByRole('checkbox', { name: /require 2fa/i }) as HTMLInputElement;
+  const callsBefore = api.patchRole.mock.calls.length;
+  fireEvent.click(sw);
+  await waitFor(() => expect(sw.disabled).toBe(true));
+  // The switch is disabled by now, but jsdom's synthetic `click` still fires
+  // a `change` on a disabled checkbox, so the real guard under test is
+  // `setTotp`'s own `saving` check, not the DOM's disabled state.
+  fireEvent.click(sw);
+  expect(api.patchRole.mock.calls.length - callsBefore).toBe(1);
+  resolvePatch();
+  await waitFor(() => expect(sw.disabled).toBe(false));
+});

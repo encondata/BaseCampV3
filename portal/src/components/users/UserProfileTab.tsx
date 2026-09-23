@@ -7,7 +7,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import DataTable from '../DataTable';
-import type { UserDetailOut } from '../../lib/api';
+import { ApiError, type UserDetailOut } from '../../lib/api';
 import { statusChip } from '../../lib/chips';
 import { describeUserAgent, longDate, relativeTime } from '../../lib/format';
 import { STATUS_META, type DetailMode } from '../../lib/users';
@@ -38,6 +38,7 @@ export default function UserProfileTab({
   const status = STATUS_META[account.status] ?? { label: account.status, cls: 'tag' };
   const canManage = canManageUsers;
   const [toggling, setToggling] = useState(false);
+  const [totpError, setTotpError] = useState('');
   const address = [person.address_line1, person.address_line2,
     [person.city, person.region, person.postal_code].filter(Boolean).join(', '),
     person.country]
@@ -102,13 +103,28 @@ export default function UserProfileTab({
                     <label className="totp-require">
                       <Switch label="Require 2FA" checked={account.totp_required || account.totp_effective_required}
                               disabled={account.totp_effective_required && !account.totp_required || toggling}
-                              onChange={(v) => { setToggling(true); void onToggleTotpRequired(v).finally(() => setToggling(false)); }} />
+                              onChange={(v) => {
+                                setToggling(true);
+                                void (async () => {
+                                  try {
+                                    await onToggleTotpRequired(v);
+                                    setTotpError('');
+                                  } catch (err) {
+                                    setTotpError(err instanceof ApiError
+                                      ? `Could not update (${err.code}).`
+                                      : 'Network error — nothing was saved.');
+                                  } finally {
+                                    setToggling(false);
+                                  }
+                                })();
+                              }} />
                       <span>Require 2FA</span>
                     </label>
                   )}
                   {canManage && account.totp_enrolled && (
                     <button className="mini-btn danger" onClick={onResetTotp}>Reset 2FA</button>
                   )}
+                  {totpError && <span className="pf-error">{totpError}</span>}
                 </dd>
                 <dt>Last sign-in</dt>
                 <dd className="mono" title={account.last_login_at ? new Date(account.last_login_at).toLocaleString() : undefined}>

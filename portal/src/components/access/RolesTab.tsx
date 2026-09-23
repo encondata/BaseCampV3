@@ -151,12 +151,20 @@ export default function RolesTab({ summary, canEdit, maxRank, onChanged }: Props
   };
 
   const setTotp = async (v: boolean) => {
+    // Guard against a double click firing two PATCHes: `editable` (and thus
+    // the switch's `disabled`) already reflects `saving` after the first
+    // click's state update, but this belt-and-suspenders check keeps the
+    // call itself a no-op if a second click still lands before that re-render.
+    if (saving) return;
+    setSaving(true);
     setErr('');
     try {
       await patchRole(role.name, { totp_required: v });
       await onChanged();
     } catch (e) {
       setErr(msgFor(e));
+    } finally {
+      setSaving(false);
     }
   };
 
