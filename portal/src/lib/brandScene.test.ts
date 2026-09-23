@@ -2,6 +2,7 @@
 /** The login terrain scene lives in lib/ so the kiosk app can import it
  *  without pulling in a React component. jsdom has no SVG geometry, so
  *  the few methods gsap's MotionPath needs are stubbed. */
+import { gsap } from 'gsap';
 import { expect, it } from 'vitest';
 
 import { buildBrandScene } from './brandScene';
@@ -44,6 +45,32 @@ it('map layout draws the Dallas → Las Vegas route with callout and state names
   cleanup();
 });
 
+it('map layout reduced motion: whole route shown lit and still, marker hidden', () => {
+  const { brand, svg } = mount();
+  const cleanup = buildBrandScene(brand, svg, true, { layout: 'map' });
+  const reveal = svg.querySelector('mask path') as SVGPathElement;
+  expect(svg.querySelector('.route-lit')).not.toBeNull();
+  expect(reveal.style.strokeDashoffset).toBe('0');
+  expect((svg.querySelector('.route-marker') as SVGGElement).style.opacity).toBe('0');
+  expect(gsap.getById('routeTrip')).toBeFalsy();
+  cleanup();
+});
+
+it('map layout with motion runs the route trip loop instead of the sherpa trek', () => {
+  const { brand, svg } = mount();
+  const cleanup = buildBrandScene(brand, svg, false, { layout: 'map' });
+  const trip = gsap.getById('routeTrip');
+  if (!trip) throw new Error('routeTrip timeline was not created');
+  expect(trip.repeat()).toBe(-1);
+  expect(trip.repeatDelay()).toBeGreaterThanOrEqual(5);
+  expect(trip.repeatDelay()).toBeLessThanOrEqual(8);
+  expect(svg.querySelector('.walker')).toBeNull();
+  // the trail starts dark: nothing revealed before the marker moves
+  const reveal = svg.querySelector('mask path') as SVGPathElement;
+  expect(reveal.style.strokeDashoffset).toBe(reveal.style.strokeDasharray);
+  cleanup();
+});
+
 it('classic layout (the kiosk default) keeps the original route and no map extras', () => {
   const { brand, svg } = mount();
   const cleanup = buildBrandScene(brand, svg, true);
@@ -51,5 +78,7 @@ it('classic layout (the kiosk default) keeps the original route and no map extra
   expect(text).toContain('DEST · ZRH-3');
   expect(svg.querySelector('.route-callout')).toBeNull();
   expect(svg.querySelectorAll('.map-state')).toHaveLength(0);
+  expect(svg.querySelector('.route-marker')).toBeNull();
+  expect(svg.querySelector('.walker')).not.toBeNull();
   cleanup();
 });
