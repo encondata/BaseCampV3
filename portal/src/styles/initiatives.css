@@ -353,6 +353,10 @@
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .idet-rack-cell-btn:hover { color: var(--accent-soft); }
 

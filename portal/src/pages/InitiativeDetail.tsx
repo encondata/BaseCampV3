@@ -74,7 +74,9 @@ import {
 } from '../lib/godEdit';
 import {
   applyColumnOrder,
-  ColumnsButton, ExportButton, exportCsv, moveKey, useReorderDrag, useSearchHaystacks,
+  ColHead,
+  ColumnsButton, ExportButton, exportCsv, listGridStyle, moveKey, useReorderDrag,
+  useSearchHaystacks,
   visibleColumnsFor,
   type ColumnDef,
 } from '../lib/listTools';
@@ -105,11 +107,11 @@ const ACTIONS_TRACK = '88px';
       for the shared sort/filter/columns/search plumbing). ────────────── */
 
 const PEOPLE_COLUMNS: ColumnDef[] = [
-  { key: 'name', label: 'Name', width: '1.4fr', default: true },
-  { key: 'work_type', label: 'Work type', width: '1fr', default: true },
-  { key: 'site_worked', label: 'Site worked', width: '1fr', default: true },
-  { key: 'rating', label: 'Rating', width: '0.7fr', default: true },
-  { key: 'added', label: 'Added', width: '0.9fr', default: false },
+  { key: 'name', label: 'Name', width: '1.4fr', default: true, min: 140 },
+  { key: 'work_type', label: 'Work type', short: 'Type', width: '1fr', default: true, min: 110 },
+  { key: 'site_worked', label: 'Site worked', short: 'Site', width: '1fr', default: true, min: 120 },
+  { key: 'rating', label: 'Rating', width: '0.7fr', default: true, min: 76 },
+  { key: 'added', label: 'Added', width: '0.9fr', default: false, min: 96 },
 ];
 
 const PEOPLE_ALL_COLUMN_KEYS = new Set<string>(PEOPLE_COLUMNS.map((c) => c.key));
@@ -542,12 +544,7 @@ export default function InitiativeDetail() {
     .filter((i) => !linked.has(i.id) && !i.archived_at)
     .map((i) => ({ value: i.id, label: i.name, sub: i.type_label }));
 
-  const peopleGrid = { gridTemplateColumns:
-    `${peopleShownCols.map((c) => c.width).join(' ')}${canChange ? ` ${ACTIONS_TRACK}` : ''}` };
-
-  const peopleCaret = (key: string) =>
-    peopleSortKey === key
-      ? <span className="caret">{peopleSortDir === 1 ? '▲' : '▼'}</span> : null;
+  const peopleGrid = listGridStyle(peopleShownCols, canChange ? [ACTIONS_TRACK] : []);
 
   const personCellFor = (p: InitiativePersonRow, key: string) => {
     if (god.editing) {
@@ -560,27 +557,27 @@ export default function InitiativeDetail() {
       }
     }
     switch (key) {
-      case 'name': return <span className="cell-top">{p.person_name}</span>;
+      case 'name':
+        return <span className="cell-top cell-line" title={p.person_name}>{p.person_name}</span>;
       case 'work_type':
         return p.work_type_label
           ? chip(p.work_type_label, p.work_type_color)
           : <span className="cell-top">—</span>;
-      case 'site_worked':
-        return <span className="cell-top">{p.site_worked_name || '—'}</span>;
+      case 'site_worked': {
+        const site = p.site_worked_name || '—';
+        return <span className="cell-top cell-line" title={site}>{site}</span>;
+      }
       case 'rating':
         return <span className="cell-top">{p.rating != null ? `★ ${p.rating}` : '—'}</span>;
-      case 'added':
-        return <span className="mono">{personCellText(p, 'added')}</span>;
+      case 'added': {
+        const added = personCellText(p, 'added');
+        return <span className="mono cell-line" title={added}>{added}</span>;
+      }
       default: return null;
     }
   };
 
-  const assetsGrid = { gridTemplateColumns:
-    `${assetsShownCols.map((c) => c.width).join(' ')}${canChange ? ` ${ACTIONS_TRACK}` : ''} 30px` };
-
-  const assetsCaret = (key: string) =>
-    assetsSortKey === key
-      ? <span className="caret">{assetsSortDir === 1 ? '▲' : '▼'}</span> : null;
+  const assetsGrid = listGridStyle(assetsShownCols, canChange ? [ACTIONS_TRACK, '30px'] : ['30px']);
 
   /** Status/Asset Status render as chips (move-status and the asset's own
    *  status, respectively); every other column reuses moveAssetCellText's
@@ -637,14 +634,15 @@ export default function InitiativeDetail() {
       const rackName = side === 'source' ? a.source_rack : a.destination_rack;
       if (rackName) {
         return (
-          <button type="button" className="idet-rack-cell-btn"
+          <button type="button" className="idet-rack-cell-btn" title={rackName}
                   onClick={(e) => { e.stopPropagation(); setRackView({ rackName, side }); }}>
             {rackName}
           </button>
         );
       }
     }
-    return <span className="cell-top">{moveAssetCellText(a, key)}</span>;
+    const text = moveAssetCellText(a, key);
+    return <span className="cell-top cell-line" title={text}>{text}</span>;
   };
 
   return (
@@ -804,24 +802,23 @@ export default function InitiativeDetail() {
                 </div>
               </div>
 
-              <div className="dir-list idet-assets-list">
+              <div className={`dir-list idet-assets-list list-scroll${assetsEditing ? ' editing' : ''}`}>
                 <div className="list-head" style={assetsGrid}>
                   {assetsShownCols.map((c) => (
-                    <span key={c.key}
-                          className={`col-head ${assetsHeaderDrag.dropClass(c.key)}`
-                            + `${ASSET_CENTERED_COLS.has(c.key) ? ' idet-col-center' : ''}`}
-                          {...assetsHeaderDrag.dragProps(c.key)}>
-                      <button type="button" className="sortable"
-                              onClick={() => toggleAssetsSort(c.key)}>
-                        {c.label} {assetsCaret(c.key)}
-                      </button>
+                    <ColHead key={c.key} col={c}
+                             sortDir={assetsSortKey === c.key ? assetsSortDir : null}
+                             onToggleSort={() => toggleAssetsSort(c.key)}
+                             className={[assetsHeaderDrag.dropClass(c.key),
+                               ASSET_CENTERED_COLS.has(c.key) ? 'idet-col-center' : '']
+                               .filter(Boolean).join(' ')}
+                             dragProps={assetsHeaderDrag.dragProps(c.key)}>
                       <ColumnMenu colKey={c.key} label={c.label}
                                   allRows={assets} filters={assetsFilters}
                                   text={moveAssetCellText}
                                   filter={assetsFilters[c.key]} onFilter={setAssetsFilter}
                                   sortDir={assetsSortKey === c.key ? assetsSortDir : null}
                                   onSort={(dir) => setAssetsSort(c.key, dir)} />
-                    </span>
+                    </ColHead>
                   ))}
                   {canChange && <span className="col-head" />}
                   <span className="col-head" />
@@ -838,7 +835,8 @@ export default function InitiativeDetail() {
                   renderRow={(a, vp) => {
                     const open = openAssetId === a.id;
                     return (
-                      <div key={a.id} className={`dir-row ${open ? 'open' : ''}`} {...vp} style={vp?.style}>
+                      <div key={a.id} className={`dir-row ${open ? 'open' : ''}`} {...vp}
+                           style={{ ...vp?.style, minWidth: assetsGrid.minWidth }}>
                         <div className="row-main" style={assetsGrid}
                              onClick={() => setOpenAssetId(open ? null : a.id)}>
                           {assetsShownCols.map((c) => (
@@ -1007,23 +1005,21 @@ export default function InitiativeDetail() {
                   </div>
                 </div>
 
-                <div className="dir-list idet-people-list">
+                <div className={`dir-list idet-people-list list-scroll${god.editing ? ' editing' : ''}`}>
                   <div className="list-head" style={peopleGrid}>
                     {peopleShownCols.map((c) => (
-                      <span key={c.key}
-                            className={`col-head ${peopleHeaderDrag.dropClass(c.key)}`}
-                            {...peopleHeaderDrag.dragProps(c.key)}>
-                        <button type="button" className="sortable"
-                                onClick={() => togglePeopleSort(c.key)}>
-                          {c.label} {peopleCaret(c.key)}
-                        </button>
+                      <ColHead key={c.key} col={c}
+                               sortDir={peopleSortKey === c.key ? peopleSortDir : null}
+                               onToggleSort={() => togglePeopleSort(c.key)}
+                               className={peopleHeaderDrag.dropClass(c.key)}
+                               dragProps={peopleHeaderDrag.dragProps(c.key)}>
                         <ColumnMenu colKey={c.key} label={c.label}
                                     allRows={initiative.people} filters={peopleFilters}
                                     text={personCellText}
                                     filter={peopleFilters[c.key]} onFilter={setPeopleFilter}
                                     sortDir={peopleSortKey === c.key ? peopleSortDir : null}
                                     onSort={(dir) => setPeopleSort(c.key, dir)} />
-                      </span>
+                      </ColHead>
                     ))}
                     {canChange && <span className="col-head" />}
                   </div>
@@ -1037,7 +1033,8 @@ export default function InitiativeDetail() {
 
                   <VirtualRows rows={visiblePeople}
                     renderRow={(p, vp) => (
-                    <div key={p.id} className="dir-row" {...vp} style={vp?.style}>
+                    <div key={p.id} className="dir-row" {...vp}
+                         style={{ ...vp?.style, minWidth: peopleGrid.minWidth }}>
                       <div className="row-main" style={peopleGrid}>
                         {peopleShownCols.map((c) => (
                           <div className="cell" key={c.key}>{personCellFor(p, c.key)}</div>
@@ -1141,7 +1138,7 @@ export default function InitiativeDetail() {
               </div>
 
               {timeSummary && timeSummary.people.length > 0 ? (
-                <div className="mini-list idet-time-list">
+                <div className="mini-list idet-time-list list-scroll">
                   <div className="mini-list-head idet-time-list-head">
                     <span>Person</span>
                     <span>Approved</span>
