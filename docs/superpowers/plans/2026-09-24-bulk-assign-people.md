@@ -1160,7 +1160,7 @@ export function downloadTeamExport(jobId: string, format: 'csv' | 'xlsx'): Promi
 }
 ```
 
-`InitiativeItem` has no `archived_at`, and `GET /initiatives` already excludes archived jobs unless asked (verify with `grep -n archived api/src/serversherpa/api/routes/initiatives.py` near line 341). So the page does NOT filter: drop the `.filter(...)` in the page, and in the page test remove the `j3` archived mock row and its `queryByText('Old Job')` assertion.
+`GET /initiatives` returns archived jobs too and `InitiativeItem` carries `archived_at` (`lib/api.ts` ~2617), so the page filters them out as written.
 
 `portal/src/lib/teamBulk.ts`:
 
@@ -1235,7 +1235,7 @@ export default function BulkInitiativePeople() {
 
   useEffect(() => {
     listInitiatives()
-      .then(setJobs)
+      .then((all) => setJobs(all.filter((j) => !j.archived_at)))
       .catch(() => setLoadError('Could not load jobs — refresh to try again.'));
   }, []);
 
