@@ -7,13 +7,14 @@
 import { useMemo, useRef, useState, type FormEvent } from 'react';
 
 import {
-  ApiError, createAccessGroup, deleteAccessGroup, listUsers,
+  ApiError, createAccessGroup, deleteAccessGroup, listUsers, patchAccessGroup,
   setGroupMembers, setResourceGates,
   type AccessGroupOut, type AccessResourceOut, type AccessSummary,
   type UserSummary,
 } from '../../lib/api';
 import { avatarGradient, initials } from '../../lib/format';
 import ComboBox, { type ComboOption } from '../ComboBox';
+import { Switch } from '../Switch';
 
 interface Props {
   summary: AccessSummary;
@@ -207,6 +208,13 @@ function GroupDetail({ group, canEdit, gates, onChanged, onDeleted }: {
     }
   };
 
+  const setTotp = async (v: boolean) => {
+    setBusy(true); setError('');
+    try { await patchAccessGroup(group.id, { totp_required: v }); onChanged(); }
+    catch (err) { setError(msgFor(err)); }
+    finally { setBusy(false); }
+  };
+
   return (
     <div className="grp-card grp-detail">
       <div className="rd-head">
@@ -217,6 +225,11 @@ function GroupDetail({ group, canEdit, gates, onChanged, onDeleted }: {
         <span className="gc-sub">
           {group.member_count} member{group.member_count === 1 ? '' : 's'}
           {' · '}gates {gates} page{gates === 1 ? '' : 's'}
+        </span>
+        <span className="totp-require">
+          <Switch label="Require 2FA" checked={group.totp_required} disabled={!canEdit || busy}
+                  onChange={(v) => void setTotp(v)} />
+          <span aria-hidden="true">Require 2FA</span>
         </span>
         <div className="mtx-actions">
           {error && <span className="pf-error">{error}</span>}

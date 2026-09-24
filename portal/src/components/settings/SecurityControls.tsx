@@ -1,6 +1,7 @@
 /**
- * SecurityControls — System settings › Security. Two-factor POLICY flags
- * (stored + audited now; enforced once the enrollment flow ships) and the
+ * SecurityControls — System settings › Security. Two-factor POLICY flags,
+ * now enforced: enrollment challenges enrolled users at sign-in, and the
+ * "require for everyone" flag forces enrollment at next sign-in. Also the
  * "End all sessions" action, which signs everyone out on every device
  * except the admin pressing it.
  */
@@ -9,6 +10,7 @@ import { useEffect, useState } from 'react';
 
 import { ApiError, getSecurityConfig, revokeAllSessions, updateSecurityConfig,
   type SecurityConfig } from '../../lib/api';
+import { getSystemStatus } from '../../lib/systemStatus';
 import { Switch } from '../Switch';
 
 export default function SecurityControls({ canChange = true }: { canChange?: boolean }) {
@@ -16,9 +18,11 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [revoked, setRevoked] = useState<{ revoked_sessions: number; revoked_people: number } | null>(null);
+  const [trustDays, setTrustDays] = useState<number | null>(null);
 
   useEffect(() => {
     void getSecurityConfig().then(setCfg).catch(() => setError('Could not load security settings.'));
+    void getSystemStatus().then((s) => setTrustDays(s.totp_trust_days)).catch(() => {});
   }, []);
 
   const patch = async (p: Partial<SecurityConfig>) => {
@@ -43,7 +47,7 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
       <div className="set-row">
         <div className="set-label">
           <b>Two-factor authentication</b>
-          <span>Let people enroll a second factor on their account. Enrollment itself arrives with the 2FA feature; this sets the policy now.</span>
+          <span>Lets people enroll an authenticator app and challenges enrolled users at sign-in.</span>
         </div>
         <Switch checked={cfg?.two_factor_enabled ?? false} disabled={locked}
                 onChange={(v) => void patch({ two_factor_enabled: v })} />
@@ -51,10 +55,16 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
       <div className="set-row">
         <div className="set-label">
           <b>Require two-factor for everyone</b>
-          <span>Every account must enroll before using the portal. Turning this on also enables two-factor.</span>
+          <span>Every user must enroll at their next sign-in. Turning this on also enables two-factor.</span>
         </div>
         <Switch checked={cfg?.two_factor_required ?? false} disabled={locked}
                 onChange={(v) => void patch({ two_factor_required: v })} />
+      </div>
+      <div className="set-row">
+        <div className="set-label">
+          <b>Remembered browsers</b>
+          <span>"Remember this browser" at the code step lets that browser skip the code for {trustDays ?? '…'} days (SS_TOTP_TRUST_DAYS).</span>
+        </div>
       </div>
       <div className="set-row">
         <div className="set-label">

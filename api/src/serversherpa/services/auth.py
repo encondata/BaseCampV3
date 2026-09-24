@@ -42,6 +42,15 @@ class AuthResult:
     access: AccessInfo
 
 
+@dataclass
+class LoginChallenge:
+    """Password accepted; a second factor is owed before any session exists."""
+
+    purpose: str                        # "verify" | "enroll"
+    account: UserAccount
+    backup_codes_remaining: int | None
+
+
 async def _load_account(db: AsyncSession, email: str) -> UserAccount | None:
     return await db.scalar(
         select(UserAccount)
@@ -58,8 +67,8 @@ def _check_account_usable(account: UserAccount) -> None:
 async def login(
     db: AsyncSession, *, email: str, password: str,
     ip: str | None = None, user_agent: str | None = None,
-    client: str = "portal",
-) -> AuthResult:
+    client: str = "portal", trust_token: str | None = None,
+) -> AuthResult | LoginChallenge:
     settings = get_settings()
     pepper = settings.password_pepper.get_secret_value()
     now = datetime.now(UTC)
@@ -98,10 +107,29 @@ async def login(
         await db.commit()
         raise AuthError("account_locked")
 
-    if account.totp_confirmed_at is not None:
-        # TOTP verification lands with the enrollment feature; no account can
-        # reach this state until then.
-        raise AuthError("totp_required")
+    if client == "portal":
+        # kiosk password logins and phone pairing are never challenged
+        from serversherpa.services import totp as totp_service
+
+        policy = await totp_service.policy_for(db, account)
+        if policy.enabled:
+            if account.totp_confirmed_at is not None:
+                if not await totp_service.check_trust(db, account, trust_token):
+                    audit(db, actor_id=account.person_id, entity_type="auth",
+                          entity_id=str(account.person_id), action="login_challenged",
+                          changes={"purpose": "verify"}, ip=ip)
+                    await db.commit()
+                    return LoginChallenge(
+                        purpose="verify", account=account,
+                        backup_codes_remaining=await totp_service.backup_codes_remaining(
+                            db, account.person_id))
+            elif policy.required:
+                audit(db, actor_id=account.person_id, entity_type="auth",
+                      entity_id=str(account.person_id), action="login_challenged",
+                      changes={"purpose": "enroll"}, ip=ip)
+                await db.commit()
+                return LoginChallenge(purpose="enroll", account=account,
+                                      backup_codes_remaining=None)
 
     access: AccessInfo | None = None
     if client == "kiosk":
@@ -115,19 +143,25 @@ async def login(
             raise AuthError("kiosk_not_allowed")
 
     return await start_session(db, account, ip=ip, user_agent=user_agent,
-                               access=access)
+                               access=access, client=client)
 
 
 async def start_session(
     db: AsyncSession, account: UserAccount, *,
     ip: str | None, user_agent: str | None,
     audit_action: str = "login", access: AccessInfo | None = None,
+    client: str = "portal",
 ) -> AuthResult:
     """Mint a session for an account whose holder has just proven who they
     are — a password login, or a kiosk pairing they approved on their
     phone (audit_action="login_pair"). Resets lockout state, stamps the
     last-login telemetry, audits, commits. `account.person` must be
-    loaded (see _load_account)."""
+    loaded (see _load_account).
+
+    `client` ("portal" | "kiosk") is recorded on the session row and
+    every token rotated from it. A kiosk login is exempt from the 2FA
+    challenge, so its session is held to the kiosk routes — see
+    enforce_session_scope in api/deps.py."""
     settings = get_settings()
     now = datetime.now(UTC)
     account.failed_login_count = 0
@@ -146,6 +180,7 @@ async def start_session(
         expires_at=now + timedelta(seconds=settings.session_ttl_seconds),
         ip_address=ip,
         user_agent=user_agent,
+        client=client,
     )
     db.add(session)
     audit(db, actor_id=account.person_id, entity_type="auth",
@@ -159,6 +194,7 @@ async def start_session(
             person_id=account.person_id, session_id=session_id,
             secret=settings.jwt_secret.get_secret_value(),
             ttl_seconds=settings.access_token_ttl_seconds,
+            client=client,
         ),
         refresh_token=refresh_token,
         session_expires_at=session.expires_at,
@@ -229,6 +265,7 @@ async def refresh(
         expires_at=session.expires_at,  # ABSOLUTE deadline inherited, never extended
         ip_address=ip,
         user_agent=user_agent,
+        client=session.client,          # a kiosk session stays kiosk-scoped forever
     ))
     # successor row must hit the DB before the old row can point at it
     await db.flush()
@@ -242,6 +279,7 @@ async def refresh(
             person_id=account.person_id, session_id=new_id,
             secret=settings.jwt_secret.get_secret_value(),
             ttl_seconds=settings.access_token_ttl_seconds,
+            client=session.client,
         ),
         refresh_token=new_token,
         session_expires_at=session.expires_at,

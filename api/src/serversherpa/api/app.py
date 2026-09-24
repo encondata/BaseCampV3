@@ -86,7 +86,9 @@ def create_app() -> FastAPI:
         allow_origin_regex=origin_regex,
         allow_credentials=True,  # refresh cookie on /auth/*
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-        allow_headers=["Authorization", "Content-Type"],
+        # X-Totp-Challenge carries the 2FA challenge token between the password
+        # step and the code step (no session exists yet, so no Authorization).
+        allow_headers=["Authorization", "Content-Type", "X-Totp-Challenge"],
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
 

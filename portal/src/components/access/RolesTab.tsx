@@ -10,10 +10,11 @@ import { useLayoutEffect, useMemo, useState, type FormEvent } from 'react';
 import type { Action } from '../../lib/access';
 import { ACTIONS, canTouchRank, RANK_LABELS } from '../../lib/access';
 import {
-  ApiError, cloneRole, deleteRole, putRoleMatrix,
+  ApiError, cloneRole, deleteRole, patchRole, putRoleMatrix,
   type AccessRole, type AccessSummary,
 } from '../../lib/api';
 import ComboBox, { type ComboOption } from '../ComboBox';
+import { Switch } from '../Switch';
 import MatrixTable from './MatrixTable';
 import RoleReviewModal from './RoleReviewModal';
 
@@ -149,6 +150,24 @@ export default function RolesTab({ summary, canEdit, maxRank, onChanged }: Props
     }
   };
 
+  const setTotp = async (v: boolean) => {
+    // Guard against a double click firing two PATCHes: `editable` (and thus
+    // the switch's `disabled`) already reflects `saving` after the first
+    // click's state update, but this belt-and-suspenders check keeps the
+    // call itself a no-op if a second click still lands before that re-render.
+    if (saving) return;
+    setSaving(true);
+    setErr('');
+    try {
+      await patchRole(role.name, { totp_required: v });
+      await onChanged();
+    } catch (e) {
+      setErr(msgFor(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const removeRole = async () => {
     setSaving(true);
     setErr('');
@@ -181,6 +200,11 @@ export default function RolesTab({ summary, canEdit, maxRank, onChanged }: Props
           <span className="rank-badge">{role.rank} · {rankLabel(role.rank)}</span>
           <span className="chip tag">{role.scope_anchor} scope</span>
           {role.is_system && <span className="chip c-blue">system</span>}
+          <span className="totp-require">
+            <Switch label="Require 2FA" checked={role.totp_required} disabled={!editable}
+                    onChange={(v) => void setTotp(v)} />
+            <span aria-hidden="true">Require 2FA</span>
+          </span>
           <div className="mtx-actions">
             {err && <span className="pf-error">{err}</span>}
             {canEdit && (

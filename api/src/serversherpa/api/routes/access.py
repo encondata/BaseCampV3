@@ -2,6 +2,7 @@
 global-anchor role — anti-lockout); writes need access:change + rank rules."""
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -88,12 +89,14 @@ async def summary(
              "description": r.description, "rank": r.rank,
              "scope_anchor": r.scope_anchor, "is_system": r.is_system,
              "member_count": member_counts.get(r.name, 0),
+             "totp_required": r.totp_required,
              "matrix": matrix_for(r.name)}
             for r in roles],
         "groups": [
             {"id": str(g.id), "name": g.name, "description": g.description,
              "icon": g.icon,
              "member_count": len(members_by_group.get(g.id, [])),
+             "totp_required": g.totp_required,
              "members": members_by_group.get(g.id, [])}
             for g in groups],
     }
@@ -408,6 +411,47 @@ async def delete_group(
           changes={"name": {"from": group.name, "to": None}})
     await db.delete(group)   # members + gates cascade
     await db.commit()
+
+
+class TotpFlagIn(BaseModel):
+    totp_required: bool
+
+
+@router.patch("/groups/{group_id}")
+async def patch_group(
+    group_id: uuid.UUID,
+    body: TotpFlagIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("access", "change"),
+) -> dict:
+    group = await db.get(AccessGroup, group_id)
+    if group is None:
+        raise _err(404, "group_not_found")
+    if group.totp_required != body.totp_required:
+        audit(db, actor_id=actor.person.id, entity_type="access_group",
+              entity_id=str(group_id), action="group.update",
+              changes={"totp_required": {"from": group.totp_required, "to": body.totp_required}})
+        group.totp_required = body.totp_required
+        group.updated_at = datetime.now(UTC)
+    await db.commit()
+    return {"id": str(group.id), "name": group.name, "totp_required": group.totp_required}
+
+
+@router.patch("/roles/{name}")
+async def patch_role(
+    name: str,
+    body: TotpFlagIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("access", "change"),
+) -> dict:
+    role = await _load_role_for_edit(db, actor, name)
+    if role.totp_required != body.totp_required:
+        audit(db, actor_id=actor.person.id, entity_type="role", entity_id=name,
+              action="role.update",
+              changes={"totp_required": {"from": role.totp_required, "to": body.totp_required}})
+        role.totp_required = body.totp_required
+    await db.commit()
+    return {"name": role.name, "totp_required": role.totp_required}
 
 
 @router.put("/groups/{group_id}/members")

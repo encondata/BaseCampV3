@@ -201,43 +201,53 @@
   },
   {
     "file": "styles/auth-theme.css",
-    "selector": ".auth-scrim .otp-title",
+    "selector": ".auth-scrim .otp-title, .inline-card .otp-title",
     "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
   },
   {
     "file": "styles/auth-theme.css",
-    "selector": ".auth-scrim .otp-text",
+    "selector": ".auth-scrim .otp-text, .inline-card .otp-text",
     "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
   },
   {
     "file": "styles/auth-theme.css",
-    "selector": ".auth-scrim .otp-text b",
+    "selector": ".auth-scrim .otp-text b, .inline-card .otp-text b",
+    "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
+  },
+  {
+    "file": "styles/auth-theme.css",
+    "selector": ".auth-scrim .otp-inputs input, .inline-card .otp-inputs input",
+    "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
+  },
+  {
+    "file": "styles/auth-theme.css",
+    "selector": ".auth-scrim .otp-error, .inline-card .otp-error",
+    "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
+  },
+  {
+    "file": "styles/auth-theme.css",
+    "selector": ".auth-scrim .otp-info, .inline-card .otp-info",
+    "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
+  },
+  {
+    "file": "styles/auth-theme.css",
+    "selector": ".auth-scrim .otp-foot, .inline-card .otp-foot",
+    "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
+  },
+  {
+    "file": "styles/auth-theme.css",
+    "selector": ".auth-scrim .otp-foot button.link, .inline-card .otp-foot button.link",
     "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
   },
   {
     "file": "styles/auth-theme.css",
     "selector": ".auth-scrim .otp-inputs input",
-    "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
+    "reason": "not list content: OTP verification modal, mobile-breakpoint override (login flow, out of scope per spec)"
   },
   {
     "file": "styles/auth-theme.css",
-    "selector": ".auth-scrim .otp-error",
-    "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
-  },
-  {
-    "file": "styles/auth-theme.css",
-    "selector": ".auth-scrim .otp-info",
-    "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
-  },
-  {
-    "file": "styles/auth-theme.css",
-    "selector": ".auth-scrim .otp-foot",
-    "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
-  },
-  {
-    "file": "styles/auth-theme.css",
-    "selector": ".auth-scrim .otp-foot button.link",
-    "reason": "not list content: OTP verification modal (login flow, out of scope per spec)"
+    "selector": ".login-shell .form-wrap .otp-card.inline-card .remember",
+    "reason": "not list content: 2FA inline card's remember-this-browser checkbox row (login flow, out of scope per spec)"
   },
   {
     "file": "styles/chrome.css",

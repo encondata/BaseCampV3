@@ -8,10 +8,11 @@ export interface SystemStatus {
   read_only_message: string;
   workers_paused: boolean;
   banner: string | null;
+  totp_trust_days: number;
 }
 
 export const DEFAULT_SYSTEM_STATUS: SystemStatus = {
-  read_only: false, read_only_message: '', workers_paused: false, banner: null,
+  read_only: false, read_only_message: '', workers_paused: false, banner: null, totp_trust_days: 7,
 };
 
 export async function getSystemStatus(): Promise<SystemStatus> {

@@ -23,9 +23,10 @@ from serversherpa.api.schemas import (
     AdminConfigIn, AdminConfigOut, LogEntryOut, LogPageOut, SystemProcessOut,
     SystemStatusOut,
 )
+from serversherpa.config import get_settings
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
-    AuthSession, LogEntry, SystemConfig, SystemProcess,
+    AuthSession, LogEntry, SystemConfig, SystemProcess, TrustedDevice,
 )
 from serversherpa.services.audit import audit
 from serversherpa.system.admin_config import read_admin_config
@@ -91,7 +92,8 @@ def _status_from(cfg: dict) -> SystemStatusOut:
         read_only=cfg["read_only"],
         read_only_message=cfg["read_only_message"] if cfg["read_only"] else "",
         workers_paused=bool(cfg["read_only"] and cfg["pause_workers"]),
-        banner=banner or None)
+        banner=banner or None,
+        totp_trust_days=get_settings().totp_trust_days)
 
 
 @router.get("/status", response_model=SystemStatusOut)
@@ -192,19 +194,25 @@ async def revoke_all_sessions(
 ) -> RevokeAllSessionsOut:
     """Sign everyone out everywhere — every live session family except the
     caller's own current one (so the admin pressing the button isn't
-    dumped mid-action; they can sign themselves out from /me)."""
+    dumped mid-action; they can sign themselves out from /me) — and forget
+    every trusted browser too, so a revoked-out device can't skip the 2FA
+    challenge on its next sign-in."""
     live = (await db.execute(
         select(AuthSession.family_id, AuthSession.person_id)
         .where(AuthSession.revoked_at.is_(None),
                AuthSession.family_id != actor.session.family_id))).all()
     families = {f for f, _ in live}
     people = {p for _, p in live}
+    now = datetime.now(UTC)
     if families:
         await db.execute(
             update(AuthSession)
             .where(AuthSession.family_id.in_(families),
                    AuthSession.revoked_at.is_(None))
-            .values(revoked_at=datetime.now(UTC), revoke_reason="admin"))
+            .values(revoked_at=now, revoke_reason="admin"))
+    await db.execute(
+        update(TrustedDevice).where(TrustedDevice.revoked_at.is_(None))
+        .values(revoked_at=now))
     audit(db, actor_id=actor.person.id, entity_type="auth",
           entity_id="all", action="sessions.revoke_all",
           changes={"revoked_sessions": len(live), "revoked_people": len(people)})
@@ -299,8 +307,8 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
 
     Close codes: 4400 bad filter; 4401 unauthenticated (token missing,
     malformed, invalid, or the session ends mid-stream); 4403 forbidden
-    (no devtools:change, or a temp password that must be changed first);
-    4404 no such tailable process.
+    (no devtools:change, a temp password that must be changed first, or a
+    kiosk-scoped session); 4404 no such tailable process.
 
     Read-only maintenance mode is deliberately NOT applied here: a tail is
     a read, and enforce_read_only only gates mutating HTTP methods."""
@@ -319,6 +327,12 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
             actor = await authenticate_token(db, token)
         except HTTPException:
             await ws.close(code=4401)
+            return
+        # Mirror of get_current_user's kiosk-scope guard (403 kiosk_session
+        # on HTTP): a kiosk login skips the 2FA challenge, so its session
+        # may reach only the kiosk routes — never a portal-only log tail.
+        if actor.session.client == "kiosk":
+            await ws.close(code=4403)
             return
         # Mirror of get_current_user's forced-password-change guard (403
         # password_change_required on HTTP): a temp-password session may

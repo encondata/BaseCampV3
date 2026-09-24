@@ -20,7 +20,8 @@ Nothing stateful lives on the droplet.
 
 ### Security design (prime directive)
 
-- Argon2id + server-side pepper for passwords; TOTP seeds encrypted at rest
+- Argon2id + server-side pepper for passwords; TOTP two-factor (authenticator
+  apps, backup codes, remembered browsers) with seeds encrypted at rest
 - Short-lived JWT access tokens; opaque rotating refresh tokens (httpOnly
   cookie scoped to `/auth`) with **replay detection** — a reused token
   revokes the whole session family

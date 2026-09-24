@@ -42,6 +42,8 @@ const api = vi.hoisted(() => ({
   revokeAllUserSessions: vi.fn(async () => {}),
   getOverrides: vi.fn(async () => ({ overrides: {} })),
   putOverrides: vi.fn(async () => {}),
+  adminResetTotp: vi.fn(async () => {}),
+  adminSetTotpRequired: vi.fn(async () => {}),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -60,7 +62,8 @@ export const DETAIL: UserDetailOut = {
   },
   account: { login_email: 'wan@x.test', status: 'active', must_change_password: true,
     last_login_at: '2026-09-14T12:00:00Z', created_at: '2026-01-02T00:00:00Z',
-    password_updated_at: '2026-08-01T00:00:00Z' },
+    password_updated_at: '2026-08-01T00:00:00Z',
+    totp_enrolled: true, totp_enrolled_at: '2026-09-20T00:00:00Z', totp_required: false, totp_effective_required: false },
   roles: [
     { role: 'staff', label: 'Staff', rank: 40, scope_anchor: 'global', org: null,
       granted_by: { id: 'me-1', display_name: 'Me' }, granted_at: '2026-01-02T00:00:00Z' },
@@ -176,6 +179,39 @@ it('Sign out everywhere confirms, posts, and reloads', async () => {
   fireEvent.click(await screen.findByRole('button', { name: 'Sign out all sessions' }));
   await waitFor(() => expect(api.revokeAllUserSessions).toHaveBeenCalledWith('p1'));
   await waitFor(() => expect(api.getUserDetail).toHaveBeenCalledTimes(2));
+});
+
+it('Account shows the 2FA row with Require switch and Reset 2FA (enrolled only)', async () => {
+  renderAt('/people/users/p1');
+  expect(await screen.findByText(/enrolled/i)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: /reset 2fa/i }));
+  fireEvent.click(screen.getByRole('button', { name: /^reset two-factor$/i }));
+  await waitFor(() => expect(api.adminResetTotp).toHaveBeenCalledWith('p1'));
+  const sw = screen.getByRole('checkbox', { name: /require 2fa/i });
+  fireEvent.click(sw);
+  await waitFor(() => expect(api.adminSetTotpRequired).toHaveBeenCalledWith('p1', true));
+});
+
+it('a failed Require 2FA toggle shows an error, re-enables the switch, and keeps the server value', async () => {
+  const { ApiError } = await import('../lib/api');
+  api.adminSetTotpRequired.mockRejectedValueOnce(new ApiError(403, 'rank_too_low'));
+  renderAt('/people/users/p1');
+  const sw = await screen.findByRole('checkbox', { name: /require 2fa/i }) as HTMLInputElement;
+  expect(sw.checked).toBe(false);
+  fireEvent.click(sw);
+  await waitFor(() => expect(api.adminSetTotpRequired).toHaveBeenCalledWith('p1', true));
+  expect(await screen.findByText(/could not update \(rank_too_low\)/i)).toBeTruthy();
+  await waitFor(() => expect((screen.getByRole('checkbox', { name: /require 2fa/i }) as HTMLInputElement).disabled).toBe(false));
+  expect((screen.getByRole('checkbox', { name: /require 2fa/i }) as HTMLInputElement).checked).toBe(false);
+});
+
+it('Reset 2FA is hidden when not enrolled and the switch is locked when policy requires it', async () => {
+  api.getUserDetail.mockResolvedValueOnce({ ...DETAIL, account: { ...DETAIL.account,
+    totp_enrolled: false, totp_enrolled_at: null, totp_effective_required: true } });
+  renderAt('/people/users/p1');
+  expect(await screen.findByText(/required by policy/i)).toBeTruthy();
+  expect(screen.queryByRole('button', { name: /reset 2fa/i })).toBeNull();
+  expect((screen.getByRole('checkbox', { name: /require 2fa/i }) as HTMLInputElement).disabled).toBe(true);
 });
 
 it('shows the not-found state on 404', async () => {

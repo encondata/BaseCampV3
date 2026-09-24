@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import SystemBanners from './SystemBanners';
 import type { SystemStatus } from '../lib/systemStatus';
 
-let current: SystemStatus = { read_only: false, read_only_message: '', workers_paused: false, banner: null };
+let current: SystemStatus = {
+  read_only: false, read_only_message: '', workers_paused: false, banner: null, totp_trust_days: 7,
+};
 vi.mock('../lib/systemStatusContext', () => ({
   useSystemStatus: () => ({ status: current, refresh: vi.fn() }),
 }));
@@ -19,7 +21,7 @@ describe('SystemBanners', () => {
   });
   it('shows read-only (with message) and broadcast bars, read-only first', () => {
     current = { read_only: true, read_only_message: 'Cutover until 14:00',
-                workers_paused: true, banner: 'Welcome to the new portal' };
+                workers_paused: true, banner: 'Welcome to the new portal', totp_trust_days: 7 };
     const { container } = render(<SystemBanners />);
     const bars = [...container.querySelectorAll('.sys-banner')];
     expect(bars.map((b) => b.textContent)).toEqual([
@@ -31,7 +33,7 @@ describe('SystemBanners', () => {
     expect(screen.getAllByRole('status')).toHaveLength(2);
   });
   it('omits the dash when the read-only message is blank', () => {
-    current = { read_only: true, read_only_message: '', workers_paused: false, banner: null };
+    current = { read_only: true, read_only_message: '', workers_paused: false, banner: null, totp_trust_days: 7 };
     render(<SystemBanners />);
     expect(screen.getByRole('status').textContent).toBe('Read-only maintenance mode');
   });

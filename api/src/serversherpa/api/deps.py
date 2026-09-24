@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,6 +77,35 @@ async def authenticate_token(db: AsyncSession, token: str) -> AuthContext:
     )
 
 
+# A kiosk login (POST /auth/login with client="kiosk") and a kiosk
+# pairing claim are both exempt from the 2FA challenge, and "kiosk" is
+# self-asserted — anyone holding a password can send it. So the session
+# they mint is worth no more than a kiosk: the routes the kiosk apps
+# actually call, and nothing else. `/auth/me` is allowed (self-scoped, and
+# the caller already proved the password) but its sub-paths (preferences,
+# password, sessions) are not. Neither is `/auth/totp/*`: a kiosk session
+# must not enroll, verify, or regenerate backup codes for the account it
+# never challenged. The three sign-in lifecycle routes never run the
+# gate (they authenticate by cookie or body, not by bearer token) — they
+# are listed so the allowlist reads as the complete kiosk surface.
+KIOSK_SESSION_PREFIXES = ("/kiosk/",)
+KIOSK_SESSION_PATHS = frozenset({
+    "/auth/login", "/auth/refresh", "/auth/logout", "/auth/me",
+    "/system/status",
+})
+
+
+def enforce_session_scope(request: Request, user: AuthContext) -> None:
+    """A kiosk login is exempt from 2FA, so its session must be worth no
+    more than a kiosk: only the kiosk routes and the sign-in lifecycle."""
+    if user.session.client != "kiosk":
+        return
+    path = request.url.path
+    if path in KIOSK_SESSION_PATHS or path.startswith(KIOSK_SESSION_PREFIXES):
+        return
+    raise HTTPException(status_code=403, detail={"code": "kiosk_session"})
+
+
 MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Never frozen: sign-in/out/refresh/password/preferences/session revocation,
 # and the admin toggle itself — whoever could turn read-only on can always
@@ -95,6 +124,8 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     "/auth/login", "/auth/refresh", "/auth/logout",
     "/auth/me/preferences", "/auth/me/password", "/system/admin",
     "/kiosk/printer-events",
+    "/auth/totp/verify", "/auth/totp/enroll/start", "/auth/totp/enroll/confirm",
+    "/auth/totp/backup-codes/regenerate",
 })
 READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/kiosk/pair")
 
@@ -132,9 +163,20 @@ async def enforce_read_only(db: AsyncSession, request: Request,
 # off, which says nothing about a temp-password admin session. Neither is
 # `/kiosk/printer-events`: read-only exempts it so an already-performed
 # reset still gets recorded, which likewise says nothing about a session
-# that has not finished signing in.
+# that has not finished signing in. Nor are the four `/auth/totp/*` sign-in
+# routes: they're in READ_ONLY_EXEMPT_PATHS for the sign-in lifecycle during
+# a maintenance freeze, but a temp-password session must still change its
+# password before it can enroll in 2FA or regenerate backup codes from My
+# Profile. This subtraction only bites a signed-in session (must_change_
+# password=True); the enroll/verify challenge path is unaffected either
+# way because a challenge holder has no session at all — totp_actor never
+# calls enforce_forced_password_change for it.
 FORCED_CHANGE_EXEMPT_PATHS = (
-    (READ_ONLY_EXEMPT_PATHS - {"/system/admin", "/kiosk/printer-events"})
+    (READ_ONLY_EXEMPT_PATHS - {
+        "/system/admin", "/kiosk/printer-events",
+        "/auth/totp/verify", "/auth/totp/enroll/start",
+        "/auth/totp/enroll/confirm", "/auth/totp/backup-codes/regenerate",
+    })
     | {"/auth/me", "/auth/me/sessions"}
 )
 FORCED_CHANGE_EXEMPT_PREFIXES = READ_ONLY_EXEMPT_PREFIXES
@@ -166,6 +208,7 @@ async def get_current_user(
     if credentials is None:
         raise _unauthorized("missing_token")
     user = await authenticate_token(db, credentials.credentials)
+    enforce_session_scope(request, user)
     enforce_forced_password_change(request, user)
     await enforce_read_only(db, request, user)
     return user
@@ -227,3 +270,53 @@ def rate_limit_ip(request: Request) -> str:
                     return peer or "unknown"
                 return rightmost
     return peer or "unknown"
+
+
+@dataclass
+class TotpActor:
+    """Who is calling a 2FA endpoint: a half-signed-in challenge holder
+    (purpose "verify"/"enroll", no session) or a signed-in user (purpose
+    None)."""
+
+    account: UserAccount
+    purpose: str | None
+    user: AuthContext | None
+
+
+async def totp_actor(
+    request: Request,
+    db: DbSession,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    x_totp_challenge: Annotated[str | None, Header()] = None,
+) -> TotpActor:
+    if x_totp_challenge:
+        from serversherpa.services.totp import decode_challenge_token
+
+        try:
+            person_id, purpose = decode_challenge_token(x_totp_challenge)
+        except TokenError:
+            raise _unauthorized("invalid_challenge") from None
+        account = await db.scalar(
+            select(UserAccount).options(joinedload(UserAccount.person))
+            .where(UserAccount.person_id == person_id))
+        if (account is None or account.disabled_at is not None
+                or account.person.archived_at is not None):
+            raise _unauthorized("account_disabled")
+        # the token must still describe the account: an enroll token is
+        # spent once enrolled, a verify token is void once reset
+        enrolled = account.totp_confirmed_at is not None
+        if (purpose == "verify") != enrolled:
+            raise _unauthorized("invalid_challenge")
+        return TotpActor(account=account, purpose=purpose, user=None)
+    if credentials is None:
+        raise _unauthorized("missing_token")
+    user = await authenticate_token(db, credentials.credentials)
+    # totp_actor authenticates outside get_current_user, so it applies the
+    # same scope gate: no /auth/totp/* route is in the kiosk allowlist.
+    enforce_session_scope(request, user)
+    enforce_forced_password_change(request, user)
+    await enforce_read_only(db, request, user)
+    return TotpActor(account=user.account, purpose=None, user=user)
+
+
+TotpChallengeOrUser = Annotated[TotpActor, Depends(totp_actor)]

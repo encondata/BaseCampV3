@@ -90,6 +90,11 @@ def _prepare_environment() -> None:
     # Tests never talk to a real model: pin the AI assistant off regardless
     # of the developer's .env (routes under test monkeypatch get_client).
     os.environ["SS_AI_ENABLED"] = "false"
+    # 2FA tests need a real Fernet key regardless of what .env carries.
+    from cryptography.fernet import Fernet
+
+    os.environ["SS_TOTP_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
+    os.environ.setdefault("SS_TOTP_TRUST_DAYS", "7")
     get_settings.cache_clear()
 
     subprocess.run(
@@ -138,6 +143,8 @@ async def clean_db():
             "label_templates, label_placeholders, label_vocab CASCADE"))
         # role matrix is editable seed data — restore defaults & drop customs
         await session.execute(text("DELETE FROM roles WHERE is_system = false"))
+        # 2FA policy flag on the seeded roles is test-mutable — never leaks
+        await session.execute(text("UPDATE roles SET totp_required = false"))
         await session.execute(text("DELETE FROM role_permissions"))
         from serversherpa.access.defaults import seed_default_grants
         await seed_default_grants(session)

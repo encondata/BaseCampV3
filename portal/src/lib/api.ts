@@ -136,7 +136,15 @@ export interface SessionInfo {
   current: boolean;
 }
 
+export interface TotpStatus {
+  enrolled: boolean;
+  enrolled_at: string | null;
+  required: boolean;                 // by user flag, group, role or site policy
+  backup_codes_remaining: number;
+}
+
 export interface SessionData {
+  status: 'ok';
   access_token: string;
   expires_in: number;
   session_expires_at: string;
@@ -148,6 +156,20 @@ export interface SessionData {
   max_rank: number;
   scope: ScopeInfo;
   password_min_length: number;
+  totp: TotpStatus;
+}
+
+/** Password accepted; a code (or enrollment) is owed. No session exists yet. */
+export interface TotpChallenge {
+  status: 'totp_verify' | 'totp_enroll';
+  challenge_token: string;
+  backup_codes_remaining: number | null;
+}
+
+export type LoginResult = SessionData | TotpChallenge;
+
+export function isTotpChallenge(result: LoginResult): result is TotpChallenge {
+  return result.status !== 'ok';
 }
 
 export const READ_ONLY_MESSAGE =
@@ -302,16 +324,16 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
 
 // ── auth endpoints ──────────────────────────────────────────────────
 
-export async function loginRequest(email: string, password: string): Promise<SessionData> {
+export async function loginRequest(email: string, password: string): Promise<LoginResult> {
   const resp = await fetch(`${apiUrl()}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    credentials: 'include', // receive the refresh cookie
+    credentials: 'include', // receive the refresh cookie (and send ss_trust)
     body: JSON.stringify({ email, password }),
   });
   if (!resp.ok) throw await errorFrom(resp);
-  const data: SessionData = await resp.json();
-  storeSession(data);
+  const data: LoginResult = await resp.json();
+  if (!isTotpChallenge(data)) storeSession(data);
   return data;
 }
 
@@ -320,6 +342,78 @@ export async function savePreferencesRequest(prefs: UiPreferences): Promise<void
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(prefs),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+// ── two-factor ──────────────────────────────────────────────────────
+
+/** 2FA endpoints run either on a challenge token (mid-login, no session)
+ *  or on the signed-in session (My Profile). Plain fetch when a token is
+ *  given — apiFetch would try to refresh a session that does not exist. */
+async function totpFetch(path: string, body: unknown, token?: string): Promise<Response> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) {
+    headers['X-Totp-Challenge'] = token;
+    return fetch(`${apiUrl()}${path}`, {
+      method: 'POST', headers, credentials: 'include', body: JSON.stringify(body ?? {}),
+    });
+  }
+  return apiFetch(path, { method: 'POST', headers, credentials: 'include', body: JSON.stringify(body ?? {}) });
+}
+
+export async function totpVerify(token: string, code: string, remember: boolean): Promise<SessionData> {
+  const resp = await totpFetch('/auth/totp/verify', { code, remember }, token);
+  if (!resp.ok) throw await errorFrom(resp);
+  const data: SessionData = await resp.json();
+  storeSession(data);
+  return data;
+}
+
+export async function totpEnrollStart(token?: string): Promise<{ secret: string; otpauth_uri: string }> {
+  const resp = await totpFetch('/auth/totp/enroll/start', {}, token);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function totpEnrollConfirm(
+  code: string, opts: { token?: string; remember?: boolean } = {},
+): Promise<{ backup_codes: string[]; session: SessionData | null }> {
+  const resp = await totpFetch('/auth/totp/enroll/confirm', { code, remember: opts.remember ?? false }, opts.token);
+  if (!resp.ok) throw await errorFrom(resp);
+  const data: { backup_codes: string[]; session: SessionData | null } = await resp.json();
+  if (data.session) storeSession(data.session);
+  return data;
+}
+
+export async function totpRegenerateBackupCodes(code: string): Promise<{ backup_codes: string[] }> {
+  const resp = await totpFetch('/auth/totp/backup-codes/regenerate', { code });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function adminResetTotp(personId: string): Promise<void> {
+  const resp = await apiFetch(`/users/${personId}/totp/reset`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function adminSetTotpRequired(personId: string, required: boolean): Promise<void> {
+  const resp = await apiFetch(`/users/${personId}/totp-required`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ required }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function patchAccessGroup(groupId: string, body: { totp_required: boolean }): Promise<void> {
+  const resp = await apiFetch(`/access/groups/${groupId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export async function patchRole(name: string, body: { totp_required: boolean }): Promise<void> {
+  const resp = await apiFetch(`/access/roles/${encodeURIComponent(name)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
   if (!resp.ok) throw await errorFrom(resp);
 }
@@ -510,6 +604,10 @@ export interface UserDetailAccount {
   last_login_at: string | null;
   created_at: string;
   password_updated_at: string | null;
+  totp_enrolled: boolean;
+  totp_enrolled_at: string | null;
+  totp_required: boolean;
+  totp_effective_required: boolean;
 }
 
 export interface UserRoleGrant {
@@ -620,12 +718,14 @@ export interface AccessRole {
   rank: number; scope_anchor: 'global' | 'client' | 'partner' | 'self';
   is_system: boolean; member_count: number;
   matrix: Record<string, Record<Action, boolean>>;
+  totp_required: boolean;
 }
 
 export interface AccessGroupOut {
   id: string; name: string; description: string; icon: string;
   member_count: number;
   members: { person_id: string; display_name: string; avatar_url: string | null }[];
+  totp_required: boolean;
 }
 
 export interface AccessResourceOut {

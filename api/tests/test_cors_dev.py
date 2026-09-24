@@ -48,3 +48,26 @@ async def test_production_stays_allowlist_only(monkeypatch):
         "https://portal.example.com"
     assert _preflight_origin(app, "https://evil.example.com") is None
     get_settings.cache_clear()
+
+
+async def test_preflight_allows_the_totp_challenge_header(monkeypatch):
+    """The 2FA code step runs before any session exists, so the browser
+    sends the challenge token in a custom header — the preflight must
+    accept it or every verify/enroll call dies in CORS."""
+    from starlette.testclient import TestClient
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("SS_ENV", "development")
+    app = create_app()
+    with TestClient(app) as client:
+        resp = client.options(
+            "/auth/totp/verify",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type, x-totp-challenge",
+            },
+        )
+    assert resp.status_code == 200, resp.text
+    assert "x-totp-challenge" in resp.headers.get("access-control-allow-headers", "").lower()
+    get_settings.cache_clear()

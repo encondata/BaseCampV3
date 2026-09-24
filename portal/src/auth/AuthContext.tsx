@@ -9,14 +9,17 @@ import {
 
 import {
   installVisibilityRefresh,
+  isTotpChallenge,
   loginRequest,
   logoutRequest,
   onSessionEnded,
   refreshSession,
   savePreferencesRequest,
+  type LoginResult,
   type PersonDetail,
   type PersonOut,
   type SessionData,
+  type TotpStatus,
   type UiPreferences,
 } from '../lib/api';
 import { computeCan, type Action, type PermMap, type ScopeInfo } from '../lib/access';
@@ -35,10 +38,16 @@ interface AuthState {
   maxRank: number;
   scope: ScopeInfo | null;
   passwordMinLength: number;
+  totp: TotpStatus | null;
 }
 
 interface AuthContextValue extends AuthState {
-  login: (email: string, password: string) => Promise<SessionData>;
+  login: (email: string, password: string) => Promise<LoginResult>;
+  /** Applies a session obtained via the 2FA challenge flow (verify/enroll). */
+  completeLogin: (data: SessionData) => void;
+  /** Updates the signed-in user's totp status in place (e.g. after
+   *  enrolling or regenerating backup codes from My Profile). */
+  applyTotp: (t: TotpStatus) => void;
   logout: () => Promise<void>;
   hasRole: (...names: string[]) => boolean;
   /** Resource/action permission check, backed by the session's perms matrix. */
@@ -69,6 +78,7 @@ const ANON: AuthState = {
   maxRank: 0,
   scope: null,
   passwordMinLength: 8,
+  totp: null,
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -85,6 +95,7 @@ function stateFrom(data: SessionData): AuthState {
     maxRank: data.max_rank,
     scope: data.scope,
     passwordMinLength: data.password_min_length ?? 8,
+    totp: data.totp,
   };
 }
 
@@ -125,9 +136,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => installVisibilityRefresh(), []);
 
   const login = useCallback(async (email: string, password: string) => {
-    const data = await loginRequest(email, password);
-    setState(stateFrom(data));
-    return data;
+    const result = await loginRequest(email, password);
+    if (!isTotpChallenge(result)) setState(stateFrom(result));
+    return result;
+  }, []);
+
+  const completeLogin = useCallback((data: SessionData) => setState(stateFrom(data)), []);
+
+  const applyTotp = useCallback((totp: TotpStatus) => {
+    setState((prev) => ({ ...prev, totp }));
   }, []);
 
   const logout = useCallback(async () => {
@@ -181,8 +198,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return (
     <AuthContext.Provider
       value={{
-        ...state, login, logout, hasRole, can, updatePreferences, applyProfile, clearMustChange,
-        godMode, godNavColor, enableGodMode, exitGodMode,
+        ...state, login, completeLogin, applyTotp, logout, hasRole, can, updatePreferences,
+        applyProfile, clearMustChange, godMode, godNavColor, enableGodMode, exitGodMode,
       }}
     >
       {children}

@@ -17,7 +17,7 @@ from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
     AuthContext, DbSession, client_ip, rate_limit_ip, require_permission,
 )
-from serversherpa.api.routes.auth import session_response
+from serversherpa.api.routes.auth import session_response, totp_status_out
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
     HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut, KioskClockInIn,
@@ -118,8 +118,9 @@ async def poll_pair(
     result = await auth_service.start_session(
         db, account, ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
-        audit_action="login_pair", access=access)
-    return PairPollOut(status="approved", session=session_response(result, response))
+        audit_action="login_pair", access=access, client="kiosk")
+    return PairPollOut(status="approved", session=session_response(
+        result, response, await totp_status_out(db, account)))
 
 
 # ── pairing: phone side (kiosk:view) ────────────────────────────────

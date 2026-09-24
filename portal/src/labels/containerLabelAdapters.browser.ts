@@ -10,6 +10,7 @@
 // bundler or tsc applies — this always gets the canvas-based browser build.
 import * as bwipjs from 'bwip-js/browser';
 
+import { qrDataUrl } from '../lib/qr';
 import type { Adapters, TagDefinition, TagKey } from './containerLabelSheet';
 import { TAG_TYPES } from './containerLabelSheet';
 
@@ -26,23 +27,9 @@ function generateBarcode(text: string): string {
   return canvas.toDataURL('image/png');
 }
 
-// Generate a QR code as a data URL using bwip-js
-function generateQRCode(text: string, color = '000000'): string {
-  const canvas = document.createElement('canvas');
-  bwipjs.toCanvas(canvas, {
-    bcid: 'qrcode',
-    text,
-    scale: 5,
-    width: 25,
-    height: 25,
-    barcolor: color,
-  });
-  return canvas.toDataURL('image/png');
-}
-
 export const browserContainerLabelAdapters: Adapters = {
   barcode: generateBarcode,
-  qr: generateQRCode,
+  qr: (text, color) => qrDataUrl(text, color),
 };
 
 // Load an image from a URL and return a data URL

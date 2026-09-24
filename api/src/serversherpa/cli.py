@@ -331,6 +331,31 @@ def set_password(
     asyncio.run(_run())
 
 
+@app.command(name="reset-totp")
+def reset_totp(
+    email: str = typer.Option(..., help="Login email of the account to reset"),
+) -> None:
+    """Last-resort 2FA reset: forget the authenticator, backup codes and
+    trusted browsers. The user enrolls again at their next sign-in if
+    policy requires it."""
+
+    async def _run() -> None:
+        from serversherpa.services import totp as totp_service
+
+        async with get_sessionmaker()() as db:
+            account = await db.scalar(
+                select(UserAccount).where(UserAccount.email == email))
+            if account is None:
+                typer.secho(f"No account found for {email}.", fg="red")
+                raise typer.Exit(code=1)
+            await totp_service.reset(db, account, actor_id=None, ip=None)
+            await db.commit()
+            typer.secho(f"Two-factor reset for {email}.", fg="green")
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
 def _run_worker_process(poll_seconds: float) -> None:
     """Reload-mode child entry point. Module-level (picklable) so
     watchfiles can re-spawn it in a fresh process after every change;
