@@ -7,80 +7,28 @@
  *  by the polled `job`, never by separate "which screen am I on" UI state
  *  (see `currentStep` below). */
 
-import {
-  useCallback, useEffect, useMemo, useRef, useState, type DragEvent,
-} from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import ImportProgress from '../components/imports/ImportProgress';
+import ImportReport from '../components/imports/ImportReport';
+import ImportUploadFields, { ImportTemplateLinks } from '../components/imports/ImportUploadFields';
 import FixMakeModelDialog from '../components/initiatives/FixMakeModelDialog';
 import {
   cancelImportJob, commitImportJob, createMoveAssetImportJob,
-  downloadMoveAssetTemplate, getImportJob, getInitiative, reprocessImportJob,
-  type ImportJobOut, type ImportRowDetail, type InitiativeDetail,
+  getImportJob, getInitiative, reprocessImportJob,
+  type ImportJobOut, type InitiativeDetail,
 } from '../lib/api';
 import {
-  ColHead, listGridStyle, listScale, titleFor, type ColumnDef,
-} from '../lib/listTools';
-import {
   countDetails, etaSeconds, IMPORT_ERRORS, importErrorMessage, jobIsActive,
-  jobProgressPct, missingMakeModels, reviewMakeModel, rowsPerSecond, suggestSplit,
-  type SpeedSample,
+  rowsPerSecond, type SpeedSample,
 } from '../lib/moveAssetImport';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
 
 const POLL_MS = 2000;
-const PAGE_SIZE = 500;
-
-// No column registry pre-migration (hand-written header spans) — this
-// local REPORT_COLUMNS mirrors them in order (recipe R1), carrying the
-// widths the `.imp-report-grid` CSS template used to hold
-// (initiatives.css, now deleted in favour of the inline template).
-// Fit: default columns ≤ LIST_FIT.initPanel (1134px — the report card is
-// an .init-panel, initiatives.css: 18px padding plus a 1px border each
-// side off the measured 1174px page width, at a 1512px window with the
-// nav expanded).
-const REPORT_COLUMNS: ColumnDef[] = [
-  { key: 'row', label: 'Row', width: '70px', default: true },
-  { key: 'serial', label: 'Serial', width: '160px', default: true },
-  { key: 'status', label: 'Status', width: '130px', default: true },
-  { key: 'message', label: 'Message', width: '1fr', default: true, min: 220 },
-];
-// `message` keeps its wrapping cell-top rather than the single-line
-// cell-line/title treatment: it is prose of unbounded length and it hosts
-// the inline "Fix…" button, which a block-level truncating span would push
-// onto its own line. The 220px floor is what keeps it readable instead.
-
-/** make/model mode descriptions — verbatim intent from the template's
- *  Reference sheet (api/src/serversherpa/imports/parsing.py's
- *  build_template_xlsx), reworded here as a title + one-line description
- *  instead of one cramped all-caps pill label. */
-const MODE_OPTIONS: { value: string; title: string; desc: string }[] = [
-  { value: 'fuzzy', title: 'Match only',
-    desc: 'Unmatched make/models are flagged for review.' },
-  { value: 'force', title: 'Always create',
-    desc: 'Missing make/models are created automatically.' },
-  { value: 'hybrid', title: 'Match, then create',
-    desc: 'Try to match first; create when nothing matches.' },
-];
-
-/** row-status -> chip class, shared by the summary chips and the details
- *  list (matches the c-* chip idiom used across the portal). */
-const STATUS_CHIP: Record<string, string> = {
-  created: 'c-green', updated: 'c-amber', review: 'c-slate', error: 'c-red',
-};
-
-/** summary-chip labels differ by phase — the validate report previews what
- *  WILL happen, the commit report says what DID happen. */
-const PHASE_LABELS: Record<'validate' | 'commit',
-  { created: string; updated: string; review: string; error: string }> = {
-  validate: { created: 'will create', updated: 'will update',
-              review: 'needs review', error: 'errors' },
-  commit: { created: 'created', updated: 'updated',
-            review: 'review skipped', error: 'errors' },
-};
 
 const STEPS: { n: 1 | 2 | 3; label: string }[] = [
   { n: 1, label: 'Upload' },
@@ -102,13 +50,6 @@ function currentStep(job: ImportJobOut | null): 1 | 2 | 3 {
   if (!job) return 1;
   if (job.phase === 'commit') return 3;
   return job.status === 'completed' ? 2 : 1;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`;
-  return `${(kb / 1024).toFixed(1)} MB`;
 }
 
 function ImportStepper({ step }: { step: 1 | 2 | 3 }) {
@@ -137,23 +78,16 @@ function ImportStepper({ step }: { step: 1 | 2 | 3 }) {
 
 export default function ImportMoveAssets() {
   const { id } = useParams<{ id: string }>();
-  const { can, preferences } = useAuth();
-  const listGridScale = listScale(preferences?.list_size);
-  const reportGrid = listGridStyle(REPORT_COLUMNS, [], undefined, listGridScale);
-  const reportRowStyle = {
-    gridTemplateColumns: reportGrid.gridTemplateColumns, minWidth: reportGrid.minWidth,
-  };
+  const { can } = useAuth();
   const canAddModels = can('asset_models', 'add');
   const canChangeModels = can('asset_models', 'change');
   const [initiative, setInitiative] = useState<InitiativeDetail | null>(null);
   const [file, setFile] = useState<File | null>(null);
-  const [dragOver, setDragOver] = useState(false);
   const [mode, setMode] = useState('fuzzy');
   const [generateSerials, setGenerateSerials] = useState(false);
   const [job, setJob] = useState<ImportJobOut | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [page, setPage] = useState(0);
   const samplesRef = useRef<SpeedSample[]>([]);
   const [speed, setSpeed] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -173,9 +107,6 @@ export default function ImportMoveAssets() {
     setFixedTexts((s) => new Set(s).add(text.toLowerCase()));
     setFixTarget(null);
   }, []);
-
-  const reviewDetails: ImportRowDetail[] = job?.results?.details ?? [];
-  const missing = useMemo(() => missingMakeModels(reviewDetails), [reviewDetails]);
 
   useEffect(() => {
     if (!id) return;
@@ -204,7 +135,6 @@ export default function ImportMoveAssets() {
       const next = await fn();
       samplesRef.current = [];
       setSpeed(0);
-      setPage(0);
       setJob(next);
     } catch (e) {
       setError(importErrorMessage(e));
@@ -220,13 +150,7 @@ export default function ImportMoveAssets() {
   const resetImport = useCallback(() => {
     setJob(null);
     setFile(null);
-    setPage(0);
     setError(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  }, []);
-
-  const removeFile = useCallback(() => {
-    setFile(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
   }, []);
 
@@ -270,109 +194,13 @@ export default function ImportMoveAssets() {
             <div className="init-panel imp-card">
               <div className="imp-card-head">
                 <p className="eyebrow-sm">Upload</p>
-                <div className="imp-template-links">
-                  <span>Download template:</span>
-                  <button type="button" className="imp-link-btn" disabled={busy}
-                          onClick={() => void downloadMoveAssetTemplate('xlsx')}>
-                    .xlsx
-                  </button>
-                  <span>·</span>
-                  <button type="button" className="imp-link-btn" disabled={busy}
-                          onClick={() => void downloadMoveAssetTemplate('csv')}>
-                    .csv
-                  </button>
-                </div>
+                <ImportTemplateLinks busy={busy} />
               </div>
 
-              <label
-                className={`imp-dropzone${dragOver ? ' drag' : ''}${file ? ' has-file' : ''}`}
-                onDragOver={(e: DragEvent<HTMLLabelElement>) => {
-                  e.preventDefault();
-                  if (!busy) setDragOver(true);
-                }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={(e: DragEvent<HTMLLabelElement>) => {
-                  e.preventDefault();
-                  setDragOver(false);
-                  if (busy) return;
-                  const dropped = e.dataTransfer.files?.[0];
-                  if (dropped) setFile(dropped);
-                }}
-              >
-                <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls"
-                       disabled={busy} className="imp-dropzone-input"
-                       onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-                {file ? (
-                  <div className="imp-dropzone-file">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                         strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
-                      <path d="M14 2v6h6" />
-                    </svg>
-                    <div className="imp-dropzone-file-meta">
-                      <span className="imp-dropzone-file-name">{file.name}</span>
-                      <span className="imp-dropzone-file-size">{formatBytes(file.size)}</span>
-                    </div>
-                    <button type="button" className="imp-dropzone-remove"
-                            aria-label="Remove file" disabled={busy}
-                            onClick={(e) => { e.preventDefault(); removeFile(); }}>
-                      ×
-                    </button>
-                  </div>
-                ) : (
-                  <div className="imp-dropzone-empty">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                         strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M7 18a4.5 4.5 0 0 1-1.2-8.84A5.5 5.5 0 0 1 16.5 8H17a4 4 0 0 1 1 7.87" />
-                      <path d="M12 12v7" />
-                      <path d="M9.5 14.5 12 12l2.5 2.5" />
-                    </svg>
-                    <p className="imp-dropzone-title">Drop your file here, or click to browse</p>
-                    <p className="imp-dropzone-hint">
-                      CSV or Excel spreadsheet — .csv, .xlsx, or .xls
-                    </p>
-                  </div>
-                )}
-              </label>
-
-              <div className="imp-options">
-                <p className="imp-options-label">Options</p>
-
-                <div className="imp-options-group">
-                  <p className="imp-options-sublabel">Make / model matching</p>
-                  <p className="imp-options-explainer">
-                    How makes and models in your file are matched against the catalog.
-                  </p>
-                  <div className="imp-radio-group" role="radiogroup"
-                       aria-label="Make/model handling">
-                    {MODE_OPTIONS.map((opt) => (
-                      <label key={opt.value} className="imp-radio">
-                        <input type="radio" name="make-model-mode" value={opt.value}
-                               checked={mode === opt.value} disabled={busy}
-                               onChange={() => setMode(opt.value)} />
-                        <span className="imp-radio-body">
-                          <span className="imp-radio-title">{opt.title}</span>
-                          <span className="imp-radio-desc">{opt.desc}</span>
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="imp-options-group">
-                  <p className="imp-options-sublabel">Serial numbers</p>
-                  <label className="imp-checkbox">
-                    <input type="checkbox" checked={generateSerials} disabled={busy}
-                           onChange={(e) => setGenerateSerials(e.target.checked)} />
-                    <span className="imp-radio-body">
-                      <span className="imp-radio-title">Generate serial numbers</span>
-                      <span className="imp-radio-desc">
-                        Blank serial-number rows get one generated automatically.
-                      </span>
-                    </span>
-                  </label>
-                </div>
-              </div>
+              <ImportUploadFields file={file} onFile={setFile} mode={mode} onMode={setMode}
+                                  generateSerials={generateSerials}
+                                  onGenerateSerials={setGenerateSerials}
+                                  busy={busy} inputRef={fileInputRef} />
 
               <div className="imp-card-foot">
                 <button className="btn-solid" type="button"
@@ -394,25 +222,7 @@ export default function ImportMoveAssets() {
                 {job.phase === 'commit' ? 'Importing rows…' : 'Checking the file…'}
               </p>
 
-              <div className="idet-assets-progress">
-                <div className="idet-assets-progress-label">
-                  <span>{jobProgressPct(job)}%</span>
-                </div>
-                <div className="idet-assets-progress-track">
-                  <div className="idet-assets-progress-fill"
-                       style={{ width: `${jobProgressPct(job)}%` }} />
-                </div>
-              </div>
-
-              <p className="page-hint imp-progress-hint">
-                {job.processed_rows} of {job.total_rows} rows
-              </p>
-              {speed > 0 && (
-                <p className="page-hint imp-progress-meta">
-                  ~{Math.round(speed)} rows/s
-                  {eta !== null && eta > 0 ? ` · about ${eta}s left` : ''}
-                </p>
-              )}
+              <ImportProgress job={job} speed={speed} eta={eta} />
 
               <div className="imp-card-foot">
                 <button className="mini-btn" type="button" disabled={busy}
@@ -442,13 +252,6 @@ export default function ImportMoveAssets() {
 
               {job.status === 'completed' && job.results && (() => {
                 const counts = countDetails(job.results.details);
-                const labels = PHASE_LABELS[job.phase];
-                const details = job.results.details;
-                const total = details.length;
-                const start = page * PAGE_SIZE;
-                const end = Math.min(start + PAGE_SIZE, total);
-                const pageRows = details.slice(start, end);
-                const collisions = job.results.summary.collisions_flagged ?? 0;
                 const committable = counts.created + counts.updated;
                 const skippable = counts.review + counts.error;
                 const headline = job.phase === 'validate'
@@ -469,132 +272,8 @@ export default function ImportMoveAssets() {
                     </div>
                     <h2 className="imp-report-headline">{headline}</h2>
 
-                    <div className="chips imp-report-chips">
-                      <span className="chip c-green">
-                        <span className="dot" />{counts.created} {labels.created}
-                      </span>
-                      <span className="chip c-amber">
-                        <span className="dot" />{counts.updated} {labels.updated}
-                      </span>
-                      <span className="chip c-slate">
-                        <span className="dot" />{counts.review} {labels.review}
-                      </span>
-                      <span className="chip c-red">
-                        <span className="dot" />{counts.error} {labels.error}
-                      </span>
-                      {collisions > 0 && (
-                        <span className="chip c-amber">
-                          <span className="dot" />{collisions} collisions flagged
-                        </span>
-                      )}
-                    </div>
-
-                    {missing.length > 0 && (
-                      <div className="init-panel imp-missing-card">
-                        <p className="eyebrow-sm">
-                          {missing.length} missing make/model{missing.length === 1 ? '' : 's'}
-                        </p>
-                        {!canAddModels && !canChangeModels && (
-                          <p className="page-hint">Ask an admin to add these models.</p>
-                        )}
-                        <div className="mini-list imp-missing-list">
-                          {missing.map((g) => {
-                            const fixed = fixedTexts.has(g.text.toLowerCase());
-                            return (
-                              <div key={g.text} className="mini-row flex imp-missing-row">
-                                <span className="mono">{g.text}</span>
-                                <span className="mono">{g.rows.length} rows</span>
-                                {fixed ? (
-                                  <span className="chip c-green">
-                                    <span className="dot" />Ready — reprocess to apply
-                                  </span>
-                                ) : (
-                                  <span className="imp-missing-actions">
-                                    {canAddModels && (
-                                      <button type="button" className="mini-btn"
-                                              onClick={() => setFixTarget(
-                                                { text: g.text, make: g.make, model: g.model })}>
-                                        Create model…
-                                      </button>
-                                    )}
-                                    {canChangeModels && (
-                                      <button type="button" className="mini-btn"
-                                              onClick={() => setFixTarget(
-                                                { text: g.text, make: g.make, model: g.model })}>
-                                        Map to existing…
-                                      </button>
-                                    )}
-                                  </span>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="dir-list imp-report-list list-scroll">
-                      <div className="list-head" style={reportRowStyle}>
-                        {REPORT_COLUMNS.map((c) => <ColHead key={c.key} col={c} />)}
-                      </div>
-                      {pageRows.map((d) => (
-                        <div key={d.row} className="dir-row"
-                             style={{ minWidth: reportRowStyle.minWidth }}>
-                          <div className="row-main" style={reportRowStyle}>
-                            <div className="cell">
-                              <span className="cell-top cell-line" title={titleFor(String(d.row))}>
-                                {d.row}
-                              </span>
-                            </div>
-                            <div className="cell">
-                              <span className="cell-top cell-line"
-                                    title={titleFor(d.serial_number || '—')}>
-                                {d.serial_number || '—'}
-                              </span>
-                            </div>
-                            <div className="cell">
-                              <span className={`chip ${STATUS_CHIP[d.status] ?? 'c-slate'}`}>
-                                <span className="dot" />{d.status}
-                              </span>
-                            </div>
-                            <div className="cell">
-                              <span className="cell-top">{d.message}</span>
-                              {(() => {
-                                const text = reviewMakeModel(d);
-                                if (!text || fixedTexts.has(text.toLowerCase())) return null;
-                                if (!canAddModels && !canChangeModels) return null;
-                                const split = d.suggested_make && d.suggested_model
-                                  ? { make: d.suggested_make, model: d.suggested_model }
-                                  : suggestSplit(text);
-                                return (
-                                  <button type="button" className="mini-btn"
-                                          style={{ marginLeft: 8 }}
-                                          onClick={() => setFixTarget({ text, ...split })}>
-                                    Fix…
-                                  </button>
-                                );
-                              })()}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="imp-pagination">
-                      <button className="mini-btn" type="button"
-                              disabled={page === 0}
-                              onClick={() => setPage((p) => p - 1)}>
-                        Prev
-                      </button>
-                      <button className="mini-btn" type="button"
-                              disabled={end >= total}
-                              onClick={() => setPage((p) => p + 1)}>
-                        Next
-                      </button>
-                      <span className="page-hint">
-                        showing {total === 0 ? 0 : start + 1}–{end} of {total}
-                      </span>
-                    </div>
+                    <ImportReport job={job} fixedTexts={fixedTexts} onFix={setFixTarget}
+                                  canAddModels={canAddModels} canChangeModels={canChangeModels} />
 
                     {job.phase === 'validate' && (
                       <div className="imp-card-foot">
