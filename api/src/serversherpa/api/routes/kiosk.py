@@ -118,7 +118,7 @@ async def poll_pair(
     result = await auth_service.start_session(
         db, account, ip=client_ip(request),
         user_agent=request.headers.get("user-agent"),
-        audit_action="login_pair", access=access)
+        audit_action="login_pair", access=access, client="kiosk")
     return PairPollOut(status="approved", session=session_response(
         result, response, await totp_status_out(db, account)))
 

@@ -143,19 +143,25 @@ async def login(
             raise AuthError("kiosk_not_allowed")
 
     return await start_session(db, account, ip=ip, user_agent=user_agent,
-                               access=access)
+                               access=access, client=client)
 
 
 async def start_session(
     db: AsyncSession, account: UserAccount, *,
     ip: str | None, user_agent: str | None,
     audit_action: str = "login", access: AccessInfo | None = None,
+    client: str = "portal",
 ) -> AuthResult:
     """Mint a session for an account whose holder has just proven who they
     are — a password login, or a kiosk pairing they approved on their
     phone (audit_action="login_pair"). Resets lockout state, stamps the
     last-login telemetry, audits, commits. `account.person` must be
-    loaded (see _load_account)."""
+    loaded (see _load_account).
+
+    `client` ("portal" | "kiosk") is recorded on the session row and
+    every token rotated from it. A kiosk login is exempt from the 2FA
+    challenge, so its session is held to the kiosk routes — see
+    enforce_session_scope in api/deps.py."""
     settings = get_settings()
     now = datetime.now(UTC)
     account.failed_login_count = 0
@@ -174,6 +180,7 @@ async def start_session(
         expires_at=now + timedelta(seconds=settings.session_ttl_seconds),
         ip_address=ip,
         user_agent=user_agent,
+        client=client,
     )
     db.add(session)
     audit(db, actor_id=account.person_id, entity_type="auth",
@@ -187,6 +194,7 @@ async def start_session(
             person_id=account.person_id, session_id=session_id,
             secret=settings.jwt_secret.get_secret_value(),
             ttl_seconds=settings.access_token_ttl_seconds,
+            client=client,
         ),
         refresh_token=refresh_token,
         session_expires_at=session.expires_at,
@@ -257,6 +265,7 @@ async def refresh(
         expires_at=session.expires_at,  # ABSOLUTE deadline inherited, never extended
         ip_address=ip,
         user_agent=user_agent,
+        client=session.client,          # a kiosk session stays kiosk-scoped forever
     ))
     # successor row must hit the DB before the old row can point at it
     await db.flush()
@@ -270,6 +279,7 @@ async def refresh(
             person_id=account.person_id, session_id=new_id,
             secret=settings.jwt_secret.get_secret_value(),
             ttl_seconds=settings.access_token_ttl_seconds,
+            client=session.client,
         ),
         refresh_token=new_token,
         session_expires_at=session.expires_at,

@@ -111,6 +111,13 @@ async def test_kiosk_client_is_never_challenged(client, db, seeded_user):
     await _enroll_direct(db, seeded_user.id)
     resp = await _login(client, client="kiosk")
     assert resp.status_code == 200 and resp.json()["status"] == "ok"
+    # ...and this is why the exemption is safe: the session it hands back
+    # is kiosk-scoped, so the self-asserted "client" field buys nothing
+    # but the kiosk routes.
+    denied = await client.get("/users", headers={
+        "Authorization": f"Bearer {resp.json()['access_token']}"})
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["detail"]["code"] == "kiosk_session"
 
 
 async def test_wrong_password_still_401_when_enrolled(client, db, seeded_user):

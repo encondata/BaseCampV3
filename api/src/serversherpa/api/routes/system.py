@@ -307,8 +307,8 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
 
     Close codes: 4400 bad filter; 4401 unauthenticated (token missing,
     malformed, invalid, or the session ends mid-stream); 4403 forbidden
-    (no devtools:change, or a temp password that must be changed first);
-    4404 no such tailable process.
+    (no devtools:change, a temp password that must be changed first, or a
+    kiosk-scoped session); 4404 no such tailable process.
 
     Read-only maintenance mode is deliberately NOT applied here: a tail is
     a read, and enforce_read_only only gates mutating HTTP methods."""
@@ -327,6 +327,12 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
             actor = await authenticate_token(db, token)
         except HTTPException:
             await ws.close(code=4401)
+            return
+        # Mirror of get_current_user's kiosk-scope guard (403 kiosk_session
+        # on HTTP): a kiosk login skips the 2FA challenge, so its session
+        # may reach only the kiosk routes — never a portal-only log tail.
+        if actor.session.client == "kiosk":
+            await ws.close(code=4403)
             return
         # Mirror of get_current_user's forced-password-change guard (403
         # password_change_required on HTTP): a temp-password session may

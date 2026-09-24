@@ -20,8 +20,13 @@ class TokenError(Exception):
 
 
 def create_access_token(
-    *, person_id: uuid.UUID, session_id: uuid.UUID, secret: str, ttl_seconds: int
+    *, person_id: uuid.UUID, session_id: uuid.UUID, secret: str, ttl_seconds: int,
+    client: str = "portal",
 ) -> str:
+    """`client` ("portal" | "kiosk") rides along as the `cli` claim. It is
+    only a convenience for readers of the token — the authority is
+    `auth_sessions.client`, which the gate in deps.py reads on every
+    request; tokens minted before this claim existed are portal."""
     now = datetime.now(UTC)
     return jwt.encode(
         {
@@ -31,6 +36,7 @@ def create_access_token(
             "iat": now,
             "exp": now + timedelta(seconds=ttl_seconds),
             "typ": "access",
+            "cli": client,
         },
         secret,
         algorithm="HS256",

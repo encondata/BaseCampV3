@@ -21,7 +21,7 @@ next sign-in. Recovery is eight one-time backup codes plus an admin reset.
 | Required but not enrolled | **Forced enrollment** at next portal sign-in (no grace period, no snooze). |
 | "Per group" | **Both** access groups and roles carry a `totp_required` flag. |
 | Remember me | **2FA trust only.** Session TTL is untouched (absolute 24 h). Trust is a separate httpOnly cookie. |
-| Kiosks | **Exempt.** Kiosk password sign-in and phone pairing never challenge. Only `client == "portal"` does. |
+| Kiosks | **Exempt, but kiosk logins mint a kiosk-scoped session** (`auth_sessions.client = 'kiosk'`) that can reach only `/kiosk/*`, the sign-in lifecycle and `/system/status` — the exemption cannot be used to obtain a portal session. Kiosk password sign-in and phone pairing never challenge; only `client == "portal"` does. |
 | Recovery | **Backup codes + admin reset** (+ a CLI reset as the last resort). |
 | Self-service | **Enroll and regenerate backup codes only.** No self-service turn-off. |
 | Login flow shape | **Challenge token; no session until the second factor passes** (approach A). |
@@ -158,7 +158,9 @@ elif await required_for(account):       → LoginChallenge("enroll")
 else                                    → session
 ```
 
-Kiosk client: unchanged path, never challenged. Phone pairing: unchanged.
+Kiosk client: unchanged path, never challenged — but the session it mints is
+kiosk-scoped (migration 0072 `auth_session_client`). Phone pairing: unchanged,
+and its claimed session is kiosk-scoped too.
 The old `raise AuthError("totp_required")` is removed.
 
 `POST /auth/login` response becomes a union:
@@ -301,6 +303,13 @@ for {N} days (SS_TOTP_TRUST_DAYS)".
   on portal login; per-browser; not bound to IP.
 - Timing: bad codes take the same path as bad passwords (counter + lockout);
   the unknown-account dummy hash path is untouched.
+- The kiosk exemption is self-asserted — any caller holding a password can send
+  `"client": "kiosk"` — so the session it mints records `auth_sessions.client =
+  'kiosk'` (inherited by every rotation) and `enforce_session_scope` in
+  `api/deps.py` 403s it (`{"code": "kiosk_session"}`) on everything outside
+  `/kiosk/*`, `/auth/login|refresh|logout|me` and `/system/status`; the log-tail
+  WebSocket closes it with 4403. The bypass therefore yields exactly what an
+  unchallenged kiosk already yields, and no portal data.
 - The refresh cookie is never set before the second factor passes.
 
 ## Out of scope (deferred)

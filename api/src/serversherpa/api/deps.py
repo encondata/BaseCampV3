@@ -77,6 +77,33 @@ async def authenticate_token(db: AsyncSession, token: str) -> AuthContext:
     )
 
 
+# A kiosk login (POST /auth/login with client="kiosk") and a kiosk
+# pairing claim are both exempt from the 2FA challenge, and "kiosk" is
+# self-asserted — anyone holding a password can send it. So the session
+# they mint is worth no more than a kiosk: the routes the kiosk apps
+# actually call, and nothing else. `/auth/me` is in the list because the
+# kiosk web app reads it after a refresh; its sub-paths (preferences,
+# password, sessions) are not. Neither is `/auth/totp/*`: a kiosk session
+# must not enroll, verify, or regenerate backup codes for the account it
+# never challenged.
+KIOSK_SESSION_PREFIXES = ("/kiosk/",)
+KIOSK_SESSION_PATHS = frozenset({
+    "/auth/login", "/auth/refresh", "/auth/logout", "/auth/me",
+    "/system/status",
+})
+
+
+def enforce_session_scope(request: Request, user: AuthContext) -> None:
+    """A kiosk login is exempt from 2FA, so its session must be worth no
+    more than a kiosk: only the kiosk routes and the sign-in lifecycle."""
+    if user.session.client != "kiosk":
+        return
+    path = request.url.path
+    if path in KIOSK_SESSION_PATHS or path.startswith(KIOSK_SESSION_PREFIXES):
+        return
+    raise HTTPException(status_code=403, detail={"code": "kiosk_session"})
+
+
 MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Never frozen: sign-in/out/refresh/password/preferences/session revocation,
 # and the admin toggle itself — whoever could turn read-only on can always
@@ -179,6 +206,7 @@ async def get_current_user(
     if credentials is None:
         raise _unauthorized("missing_token")
     user = await authenticate_token(db, credentials.credentials)
+    enforce_session_scope(request, user)
     enforce_forced_password_change(request, user)
     await enforce_read_only(db, request, user)
     return user
@@ -281,6 +309,9 @@ async def totp_actor(
     if credentials is None:
         raise _unauthorized("missing_token")
     user = await authenticate_token(db, credentials.credentials)
+    # totp_actor authenticates outside get_current_user, so it applies the
+    # same scope gate: no /auth/totp/* route is in the kiosk allowlist.
+    enforce_session_scope(request, user)
     enforce_forced_password_change(request, user)
     await enforce_read_only(db, request, user)
     return TotpActor(account=user.account, purpose=None, user=user)

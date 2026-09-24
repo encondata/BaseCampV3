@@ -217,6 +217,9 @@ class AuthSession(Base):
     revoke_reason: Mapped[str | None]
     ip_address: Mapped[str | None] = mapped_column(INET)
     user_agent: Mapped[str | None]
+    # which app minted the login: "portal" | "kiosk". A kiosk login skips
+    # the 2FA challenge, so its session is held to the kiosk routes.
+    client: Mapped[str] = mapped_column(server_default="portal")
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 

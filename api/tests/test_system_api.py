@@ -196,6 +196,34 @@ async def test_ws_stream_and_auth(client, db, seeded_user):
     sync.dispose()
 
 
+async def test_ws_refuses_a_kiosk_session(client, db, seeded_user):
+    """A kiosk login skips the 2FA challenge, so its session is held to
+    the kiosk routes (403 kiosk_session on HTTP). The WS route
+    authenticates directly, so it must apply the same rule and close
+    4403 — even for a developer, who does hold devtools:change."""
+    await _developer_headers(db, client)          # gives dev@… a password
+    resp = await client.post("/auth/login", json={
+        "email": "dev@test.example.com", "password": "CorrectHorse9!",
+        "client": "kiosk"})
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["access_token"]
+
+    from serversherpa.db.engine import dispose_engine
+    await db.close()
+    await dispose_engine()
+
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+
+    with TestClient(create_app()) as tc:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with tc.websocket_connect(
+                    "/system/processes/api/logs/stream",
+                    subprotocols=["ss-bearer", token]) as ws:
+                ws.receive_json()
+        assert exc.value.code == 4403
+
+
 async def test_ws_refuses_forced_password_change(client, db, seeded_user):
     """A temp-password session (must_change_password=True) is 403'd on
     every HTTP route by get_current_user; the WS route authenticates
