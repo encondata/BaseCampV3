@@ -125,6 +125,13 @@ describe('portal', () => {
     expect(screen.queryByText('Alpha')).toBeNull();
   });
 
+  it('a mousedown on the portaled menu itself (padding, scrollbar) keeps it open', () => {
+    render(<ComboBox portal value="" onChange={() => {}} options={OPTIONS} ariaLabel="Pick" />);
+    fireEvent.focus(screen.getByLabelText('Pick'));
+    fireEvent.mouseDown(screen.getByText('Alpha').closest('.combo-menu')!);
+    expect(screen.queryByText('Alpha')).not.toBeNull();
+  });
+
   it('a window scroll or resize closes it; scrolling the list itself does not', () => {
     render(<ComboBox portal value="" onChange={() => {}} options={OPTIONS} ariaLabel="Pick" />);
     const input = screen.getByLabelText('Pick');

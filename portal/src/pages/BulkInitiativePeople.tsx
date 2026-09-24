@@ -36,7 +36,7 @@ export default function BulkInitiativePeople() {
       title="Assign people to a job"
       hint={<>
         Pick the job, then download the template or its current team, fill in who worked, where, and in what role, and upload it.
-        New names are added; people already on the job are updated only where you tick Update. Nobody is removed.
+        New names are added; people already on the job are updated only where you check Update. Nobody is removed.
         Names the system cannot match can be picked from a list in the preview.
       </>}
       guide={TEAM_COLUMN_GUIDE}
