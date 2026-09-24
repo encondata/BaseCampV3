@@ -11,17 +11,37 @@ by name, status against active asset statuses by key or label. An unknown
 or ambiguous value — or a serial shared by several live assets — leaves the
 row in `attention` with candidates until the admin picks one (an override)
 or skips the row; anything that cannot be fixed by a pick is an `error`
-sentence. Mirrors people/team_bulk.py."""
+sentence. Mirrors people/team_bulk.py.
 
+Apply (`apply_job`) runs in the import worker on a queued job: the same
+preview with the stored picks, then every approved update in one
+transaction — status changes as manual scans through the rules engine,
+a placement recheck for each move holding an asset whose model changed."""
+
+import uuid
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import distinct, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.assets.model_index import ModelIndex, build_model_index, display_name, find_model
-from serversherpa.db.models import Asset, AssetModel, Client, Site, StatusValue
+from serversherpa.db.models import (
+    Asset,
+    AssetModel,
+    Client,
+    ImportJob,
+    InitiativeAsset,
+    Site,
+    StatusValue,
+)
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import BulkImportError
+from serversherpa.racks.recheck import recheck_placement
+from serversherpa.scans.manual import SOURCE_ASSET_BULK_UPDATE, record_asset_status_edit
+from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.status_rules.engine import RuleExecutionError
 
 __all__ = ["BulkImportError"]
 
@@ -44,6 +64,10 @@ TEXT_FIELDS = (("name", "name", "name"), ("location", "location_detail", "locati
                ("pod", "pod_number", "pod"))
 # reference template column → Asset foreign-key attribute
 REF_FIELDS = {"client": "client_id", "site": "site_id"}
+# `changes` carries these ids as strings (JSON-safe); the ORM wants UUIDs
+UUID_ATTRS = frozenset({"model_id", "client_id", "site_id"})
+KIND = "asset_bulk_update"
+PROGRESS_EVERY = 250
 
 SAMPLE_ROWS: list[dict] = [
     {**dict.fromkeys(COLUMNS, ""), "asset_id": "100123", "site": "Example DC West",
@@ -421,6 +445,106 @@ def listing(preview: dict) -> dict:
                   key=lambda r: (LISTING_ORDER[r["action"]], r["row"]))
     return {"rows": rows, "counts": preview["counts"], "can_commit": preview["can_commit"],
             "total": len(preview["rows"])}
+
+
+# ── apply ───────────────────────────────────────────────────────────
+
+def _invalid_rows(preview: dict) -> list[dict]:
+    return [r for r in preview["rows"] if r["action"] in ("attention", "error")]
+
+
+async def apply_job(db: AsyncSession, job: ImportJob, *,
+                    progress: Callable[[int], Awaitable[None]] | None = None) -> None:
+    """All-or-nothing apply of a queued job. Re-runs the preview with the
+    stored picks and skips; anything needing attention or in error fails
+    the job (`rows_invalid`, nothing written). Otherwise writes every
+    approved update (`approve_all`, or its row in `approved_updates`) in one
+    transaction and commits; unapproved updates are reported as skipped. A
+    failing status rule rolls everything back (`rule_failed`).
+
+    Sets the job's status / error / results itself; the caller commits the
+    job row afterwards (a no-op on success, where the job's completion was
+    committed with the data). `progress(n)` is awaited every PROGRESS_EVERY
+    rows while this transaction is still open, so it must write through
+    its own session — and nothing here touches the job row before the
+    final commit, so that session never waits on a lock held here."""
+    numbered = [(r["row"], r["cells"]) for r in job.payload or []]
+    opts = job.options or {}
+    overrides = {int(k): v for k, v in (opts.get("overrides") or {}).items()}
+    skip = set(opts.get("skip") or [])
+    approve_all = bool(opts.get("approve_all"))
+    approved = set(opts.get("approved_updates") or [])
+    actor = job.created_by
+
+    preview = await preview_rows(db, numbered, overrides=overrides, skip=skip)
+    if not preview["can_commit"]:
+        invalid = _invalid_rows(preview)
+        job.status, job.error = "failed", "rows_invalid"
+        job.error_count = len(invalid)
+        job.results = {"rows": invalid}
+        job.finished_at = datetime.now(UTC)
+        return
+
+    now = datetime.now(UTC)
+    counts = {"updated": 0, "skipped": 0, "unchanged": 0}
+    applied: list[dict] = []
+    model_changed: set[uuid.UUID] = set()
+    row_no = None
+    try:
+        for i, r in enumerate(preview["rows"], 1):
+            row_no = r["row"]
+            action = r["action"]
+            if action == "update" and (approve_all or row_no in approved):
+                # already in the session: load_reference put it there
+                asset = await db.get(Asset, uuid.UUID(r["asset_id"]))
+                changes = r["changes"]
+                before = snapshot(asset, list(changes))
+                for attr, value in changes.items():
+                    setattr(asset, attr, uuid.UUID(value) if attr in UUID_ATTRS else value)
+                asset.updated_at = now
+                audit(db, actor_id=actor, entity_type="asset", entity_id=str(asset.id),
+                      action="update", changes=diff(before, snapshot(asset, list(changes))))
+                if "status" in changes:
+                    await record_asset_status_edit(
+                        db, asset=asset, status=changes["status"], actor_person_id=actor,
+                        source=SOURCE_ASSET_BULK_UPDATE)
+                if "model_id" in changes:
+                    model_changed.add(asset.id)
+                result = "updated"
+            elif action == "update":
+                result = "skipped"
+            else:
+                result = action                 # "unchanged" or "skipped"
+            counts[result] += 1
+            applied.append({"row": row_no, "name": r["name"], "asset_id": r["asset_id"],
+                            "action": result,
+                            "diff": r["diff"] if result in ("updated", "skipped") else None})
+            if progress is not None and i % PROGRESS_EVERY == 0:
+                await progress(i)
+
+        if model_changed:
+            moves = await db.scalars(
+                select(distinct(InitiativeAsset.initiative_id))
+                .where(InitiativeAsset.asset_id.in_(model_changed)))
+            for initiative_id in list(moves):
+                await recheck_placement(db, initiative_id)
+
+        audit(db, actor_id=actor, entity_type="asset", entity_id=None,
+              action="bulk_import", changes={**counts, "source": job.filename})
+        finished = datetime.now(UTC)
+        job.status, job.error = "completed", None
+        job.processed_rows = len(preview["rows"])
+        job.updated_count = counts["updated"]
+        job.results = {"summary": counts, "rows": applied}
+        job.progress_at = job.finished_at = finished
+        await db.commit()
+    except RuleExecutionError as exc:
+        await db.rollback()
+        # the rollback expired the job; reload it before writing the failure
+        await db.refresh(job)
+        job.status, job.error = "failed", "rule_failed"
+        job.results = {"row": row_no, "rule_name": exc.rule_name, "message": str(exc)}
+        job.finished_at = datetime.now(UTC)
 
 
 # ── templates / export ──────────────────────────────────────────────

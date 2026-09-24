@@ -1,0 +1,379 @@
+"""Update assets in bulk — apply: the import worker runs a queued
+`asset_bulk_update` job all-or-nothing (approved changes, status changes as
+manual scans through the rules engine, placement rechecks, progress)."""
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+import pytest
+from sqlalchemy import func, select
+
+from serversherpa.assets import bulk_update as bu
+from serversherpa.db.engine import get_sessionmaker
+from serversherpa.db.models import (
+    Asset,
+    AssetModel,
+    AuditLog,
+    ImportJob,
+    Initiative,
+    InitiativeAsset,
+    Person,
+    ProcessedScan,
+    StatusRuleExecution,
+)
+from serversherpa.imports import worker
+from serversherpa.imports.jobs import claim_next, requeue_stale
+from serversherpa.imports.worker import run_once
+from serversherpa.scans.manual import SOURCE_ASSET_BULK_UPDATE
+from serversherpa.status_rules.engine import invalidate_cache
+from tests.test_import_worker import _job as mk_move_job
+from tests.test_status_rules_engine import _rule
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cache():
+    invalidate_cache()
+    yield
+    invalidate_cache()
+
+
+# ── fixtures ────────────────────────────────────────────────────────
+
+async def mk_person(db):
+    p = Person(first_name="Ada", last_name="Admin")
+    db.add(p)
+    await db.commit()
+    return p
+
+
+async def mk_asset(db, number, serial, **fields):
+    a = Asset(legacy_id=number, serial_number=serial, **fields)
+    db.add(a)
+    await db.commit()
+    await db.refresh(a)
+    return a
+
+
+async def mk_job(db, creator, csv_text, *, options=None, status="queued",
+                 filename="assets.csv"):
+    numbered = bu.parse_upload(filename, csv_text.encode())
+    job = ImportJob(kind="asset_bulk_update", initiative_id=None, created_by=creator.id,
+                    filename=filename, phase="commit", status=status,
+                    options=options or {}, total_rows=len(numbered),
+                    payload=[{"row": n, "cells": c} for n, c in numbered])
+    db.add(job)
+    await db.commit()
+    return job.id
+
+
+async def fresh_job(job_id):
+    """The job row as a brand-new session sees it (what was committed)."""
+    async with get_sessionmaker()() as s:
+        return await s.get(ImportJob, job_id)
+
+
+async def fresh_asset(asset_id):
+    async with get_sessionmaker()() as s:
+        return await s.get(Asset, asset_id)
+
+
+# ── apply ───────────────────────────────────────────────────────────
+
+async def test_applies_approved_updates_and_skips_unapproved(db):
+    me = await mk_person(db)
+    a = await mk_asset(db, 100, "SN-A", name="old-a")
+    b = await mk_asset(db, 101, "SN-B", name="old-b")
+    c = await mk_asset(db, 102, "SN-C", name="same-c")
+    job_id = await mk_job(db, me, "asset_id,name,pod\n100,new-a,P1\n101,new-b,\n102,same-c,\n",
+                          options={"approved_updates": [2]})
+
+    assert await run_once(get_sessionmaker()) is True
+
+    job = await fresh_job(job_id)
+    assert job.status == "completed" and job.error is None
+    assert job.processed_rows == 3 and job.updated_count == 1
+    assert job.finished_at is not None
+    assert job.results["summary"] == {"updated": 1, "skipped": 1, "unchanged": 1}
+    rows = {r["row"]: r for r in job.results["rows"]}
+    assert rows[2] == {"row": 2, "name": "old-a", "asset_id": str(a.id), "action": "updated",
+                       "diff": {"name": {"old": "old-a", "new": "new-a"},
+                                "pod": {"old": None, "new": "P1"}}}
+    assert rows[3]["action"] == "skipped"
+    assert rows[3]["diff"] == {"name": {"old": "old-b", "new": "new-b"}}
+    assert rows[4] == {"row": 4, "name": "same-c", "asset_id": str(c.id),
+                       "action": "unchanged", "diff": None}
+
+    fa, fb = await fresh_asset(a.id), await fresh_asset(b.id)
+    assert (fa.name, fa.pod_number) == ("new-a", "P1")
+    assert fa.updated_at > a.updated_at
+    assert fb.name == "old-b"
+
+
+async def test_approve_all_applies_every_update_with_ids_as_uuids(db):
+    me = await mk_person(db)
+    model = AssetModel(make="Dell", model="R740")
+    db.add(model)
+    await db.commit()
+    a = await mk_asset(db, 100, "SN-A")
+    b = await mk_asset(db, 101, "SN-B")
+    job_id = await mk_job(
+        db, me, "asset_id,make,model,has_rails,rfid_tag\n100,Dell,R740,yes,ab12\n101,,,no,\n",
+        options={"approve_all": True})
+
+    await run_once(get_sessionmaker())
+
+    job = await fresh_job(job_id)
+    assert job.status == "completed"
+    assert job.results["summary"] == {"updated": 2, "skipped": 0, "unchanged": 0}
+    fa, fb = await fresh_asset(a.id), await fresh_asset(b.id)
+    assert fa.model_id == model.id and fa.has_rails is True
+    assert fa.rfid_tag == "AB12".rjust(24, "0")
+    assert fb.has_rails is False
+
+
+async def test_audits_each_asset_and_one_bulk_import(db):
+    me = await mk_person(db)
+    a = await mk_asset(db, 100, "SN-A", name="old-a")
+    b = await mk_asset(db, 101, "SN-B", name="old-b")
+    await mk_asset(db, 102, "SN-C", name="c")
+    await mk_job(db, me, "asset_id,name\n100,new-a\n101,new-b\n102,c\n",
+                 options={"approve_all": True}, filename="fleet.csv")
+
+    await run_once(get_sessionmaker())
+
+    logs = (await db.scalars(select(AuditLog).order_by(AuditLog.entity_id))).all()
+    updates = [x for x in logs if x.action == "update"]
+    assert {x.entity_id for x in updates} == {str(a.id), str(b.id)}
+    assert all(x.entity_type == "asset" and x.actor_person_id == me.id for x in updates)
+    by_id = {x.entity_id: x.changes for x in updates}
+    assert by_id[str(a.id)] == {"name": {"from": "old-a", "to": "new-a"}}
+    [summary] = [x for x in logs if x.action == "bulk_import"]
+    assert summary.entity_type == "asset" and summary.entity_id is None
+    assert summary.actor_person_id == me.id
+    assert summary.changes == {"updated": 2, "skipped": 0, "unchanged": 1,
+                               "source": "fleet.csv"}
+
+
+async def test_status_change_records_a_manual_scan_and_runs_rules(db):
+    me = await mk_person(db)
+    a = await mk_asset(db, 100, "SN-A", status="active")
+    b = await mk_asset(db, 101, "SN-B", status="active", name="same")
+    db.add(_rule("Racked means labeled", status="racked",
+                 actions=(("set_asset_status", {"status": "labeled"}),)))
+    await db.commit()
+    job_id = await mk_job(db, me, "asset_id,status,name\n100,Racked,\n101,,same\n",
+                          options={"approve_all": True})
+
+    await run_once(get_sessionmaker())
+
+    assert (await fresh_job(job_id)).status == "completed"
+    scan = (await db.scalars(select(ProcessedScan))).one()     # b had no status change
+    assert scan.scan_type == "manual" and scan.status == "racked"
+    assert scan.source == SOURCE_ASSET_BULK_UPDATE == "asset_bulk_update"
+    assert scan.device_id == "portal" and scan.operator_id == me.id
+    assert scan.match_type == "asset" and scan.asset_id == a.id
+    assert scan.site_id is None and scan.location_detail == ""
+    assert scan.scanned_value == "SN-A"
+    ex = (await db.scalars(select(StatusRuleExecution))).one()
+    assert ex.processed_scan_id == scan.id and ex.conditions_met is True
+    assert (await fresh_asset(a.id)).status == "labeled"          # the rule ran
+    assert (await fresh_asset(b.id)).status == "active"
+    # the per-asset audit is the bulk edit itself, not the rule's follow-up
+    log = await db.scalar(select(AuditLog).where(AuditLog.entity_id == str(a.id)))
+    assert log.changes == {"status": {"from": "active", "to": "racked"}}
+
+
+async def test_rule_failure_fails_the_job_and_changes_nothing(db):
+    me = await mk_person(db)
+    a = await mk_asset(db, 100, "SN-A", name="old-a")
+    b = await mk_asset(db, 101, "SN-B", name="old-b", status="active")
+    db.add(_rule("Broken", status="racked",
+                 actions=(("set_asset_status", {"status": "no-such-status"}),)))
+    await db.commit()
+    job_id = await mk_job(db, me, "asset_id,name,status\n100,new-a,\n101,new-b,racked\n",
+                          options={"approve_all": True})
+
+    assert await run_once(get_sessionmaker()) is True
+
+    job = await fresh_job(job_id)              # committed, seen from a new session
+    assert job.status == "failed" and job.error == "rule_failed"
+    assert job.finished_at is not None
+    assert job.results["row"] == 3
+    assert job.results["rule_name"] == "Broken"
+    assert "Broken" in job.results["message"]
+    fa, fb = await fresh_asset(a.id), await fresh_asset(b.id)
+    assert fa.name == "old-a"                  # row 2 was rolled back too
+    assert (fb.name, fb.status) == ("old-b", "active")
+    assert await db.scalar(select(func.count()).select_from(ProcessedScan)) == 0
+    assert await db.scalar(select(func.count()).select_from(AuditLog)) == 0
+
+
+async def test_stale_job_fails_rows_invalid(db):
+    me = await mk_person(db)
+    a = await mk_asset(db, 100, "SN-A", name="old-a")
+    await mk_asset(db, 101, "SN-B", name="old-b")
+    job_id = await mk_job(db, me, "asset_id,name\n100,new-a\n101,new-b\n",
+                          options={"approve_all": True})
+    b = await db.scalar(select(Asset).where(Asset.legacy_id == 101))
+    b.archived_at = datetime.now(UTC)          # changed after the preview
+    await db.commit()
+
+    await run_once(get_sessionmaker())
+
+    job = await fresh_job(job_id)
+    assert job.status == "failed" and job.error == "rows_invalid"
+    assert job.finished_at is not None
+    [bad] = job.results["rows"]
+    assert bad["row"] == 3 and bad["action"] == "error"
+    assert bad["errors"] == ["Asset 101 is archived."]
+    assert (await fresh_asset(a.id)).name == "old-a"
+
+
+async def test_stored_picks_and_skips_are_used(db):
+    me = await mk_person(db)
+    a1 = await mk_asset(db, 100, "DUP", name="one")
+    a2 = await mk_asset(db, 101, "DUP", name="two")
+    job_id = await mk_job(db, me, "serial_number,pod\nDUP,P9\nNOPE,P1\n",
+                          options={"overrides": {"2": {"asset": str(a2.id)}},
+                                   "skip": [3], "approve_all": True})
+
+    await run_once(get_sessionmaker())
+
+    job = await fresh_job(job_id)
+    assert job.status == "completed"
+    assert job.results["summary"] == {"updated": 1, "skipped": 1, "unchanged": 0}
+    assert (await fresh_asset(a2.id)).pod_number == "P9"
+    assert (await fresh_asset(a1.id)).pod_number is None
+
+
+async def test_model_change_rechecks_placement_of_the_move(db):
+    me = await mk_person(db)
+    one_u = AssetModel(make="M", model="1U", ru_size=1)
+    four_u = AssetModel(make="M", model="4U", ru_size=4)
+    move = Initiative(name="Move", initiative_type="move", status="planned")
+    other = Initiative(name="Other", initiative_type="move", status="planned")
+    db.add_all([one_u, four_u, move, other])
+    await db.flush()
+    big = await mk_asset(db, 100, "SN-BIG", model_id=one_u.id)
+    hit = await mk_asset(db, 101, "SN-HIT", model_id=one_u.id)
+    far = await mk_asset(db, 102, "SN-FAR", model_id=one_u.id)
+    rows = {
+        "big": InitiativeAsset(initiative_id=move.id, asset_id=big.id, status="loaded_in_system",
+                               destination_rack="R1", destination_ru=Decimal(10)),
+        "hit": InitiativeAsset(initiative_id=move.id, asset_id=hit.id, status="loaded_in_system",
+                               destination_rack="R1", destination_ru=Decimal(12)),
+        # a collision in a move no changed asset belongs to is left alone
+        "far": InitiativeAsset(initiative_id=other.id, asset_id=far.id,
+                               status="location_collision",
+                               destination_rack="R9", destination_ru=Decimal(1)),
+    }
+    db.add_all(rows.values())
+    await db.commit()
+    await mk_job(db, me, "asset_id,make,model\n100,M,4U\n", options={"approve_all": True})
+
+    await run_once(get_sessionmaker())
+
+    statuses = dict((await db.execute(
+        select(InitiativeAsset.asset_id, InitiativeAsset.status)
+        .execution_options(populate_existing=True))).all())
+    assert statuses == {big.id: "location_collision", hit.id: "location_collision",
+                        far.id: "location_collision"}
+
+
+async def test_progress_is_reported_every_250_rows(db):
+    me = await mk_person(db)
+    db.add_all([Asset(legacy_id=1000 + i, serial_number=f"SN-{i}", name=f"n-{i}")
+                for i in range(600)])
+    await db.commit()
+    body = "asset_id,pod\n" + "".join(f"{1000 + i},P{i}\n" for i in range(600))
+    job_id = await mk_job(db, me, body, options={"approve_all": True})
+
+    seen: list[int] = []
+
+    async def progress(n: int) -> None:
+        seen.append(n)
+
+    job = await db.get(ImportJob, job_id)
+    await bu.apply_job(db, job, progress=progress)
+    await db.commit()
+
+    assert seen == [250, 500]
+    job = await fresh_job(job_id)
+    assert job.status == "completed" and job.processed_rows == 600
+    assert job.updated_count == 600
+
+
+async def test_worker_writes_progress_through_a_second_session(db, monkeypatch):
+    """While the apply transaction is still open, each progress call is
+    already committed and visible to any other session (the page polls)."""
+    me = await mk_person(db)
+    db.add_all([Asset(legacy_id=1000 + i, serial_number=f"SN-{i}")
+                for i in range(600)])
+    await db.commit()
+    body = "asset_id,pod\n" + "".join(f"{1000 + i},P{i}\n" for i in range(600))
+    job_id = await mk_job(db, me, body, options={"approve_all": True})
+
+    real_apply = bu.apply_job
+    observed: list[tuple[int, int]] = []
+
+    async def spy_apply(session, job, *, progress=None):
+        async def watched(n: int) -> None:
+            await progress(n)
+            seen = await fresh_job(job_id)
+            observed.append((seen.processed_rows, seen.total_rows))
+        await real_apply(session, job, progress=watched)
+
+    monkeypatch.setattr(worker, "apply_job", spy_apply)
+    await run_once(get_sessionmaker())
+
+    assert observed == [(250, 600), (500, 600)]
+    job = await fresh_job(job_id)
+    assert job.status == "completed" and job.processed_rows == 600
+
+
+async def test_run_once_runs_both_kinds_each_on_its_own_path(db):
+    """A roster job next to a bulk job: both reach `completed`, each by its
+    own pipeline (the roster job reads its file; the bulk job has none)."""
+    me = await mk_person(db)
+    await mk_asset(db, 100, "SN-A", name="old-a")
+    move_id, ini_id = await mk_move_job(db, phase="commit")
+    bulk_id = await mk_job(db, me, "asset_id,name\n100,new-a\n", options={"approve_all": True})
+
+    assert await run_once(get_sessionmaker()) is True
+    assert await run_once(get_sessionmaker()) is True
+    assert await run_once(get_sessionmaker()) is False
+
+    move = await fresh_job(move_id)
+    assert move.status == "completed" and move.created_count == 2
+    assert await db.scalar(select(func.count()).select_from(InitiativeAsset)
+                           .where(InitiativeAsset.initiative_id == ini_id)) == 2
+    bulk = await fresh_job(bulk_id)
+    assert bulk.status == "completed" and bulk.file_key == "" and bulk.updated_count == 1
+    assert await db.scalar(select(Asset.name).where(Asset.legacy_id == 100)) == "new-a"
+
+
+async def test_cancel_requested_before_claim_cancels(db):
+    me = await mk_person(db)
+    await mk_asset(db, 100, "SN-A", name="old-a")
+    job_id = await mk_job(db, me, "asset_id,name\n100,new-a\n", options={"approve_all": True})
+    job = await db.get(ImportJob, job_id)
+    job.cancel_requested = True
+    await db.commit()
+    await run_once(get_sessionmaker())
+    assert (await fresh_job(job_id)).status == "cancelled"
+    assert (await db.scalar(select(Asset.name).where(Asset.legacy_id == 100))) == "old-a"
+
+
+async def test_a_preview_job_is_never_claimed_or_requeued(db):
+    me = await mk_person(db)
+    await mk_asset(db, 100, "SN-A", name="old-a")
+    job_id = await mk_job(db, me, "asset_id,name\n100,new-a\n", status="preview")
+    job = await db.get(ImportJob, job_id)
+    job.progress_at = datetime.now(UTC) - timedelta(hours=1)
+    await db.commit()
+
+    assert await claim_next(db) is None
+    assert await run_once(get_sessionmaker()) is False
+    assert await requeue_stale(db) == 0
+    assert (await fresh_job(job_id)).status == "preview"
+

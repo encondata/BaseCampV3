@@ -1,6 +1,9 @@
 """The import worker loop — a separate process from the API
 (`serversherpa import-worker`). Claims queued import_jobs rows and runs
 the pipeline; the API process never parses files or writes import rows.
+Two kinds share the queue: `move_assets` (a roster file, below) and
+`asset_bulk_update` (parsed rows in `payload`, applied by
+assets/bulk_update.apply_job in one transaction).
 
 Shutdown story: no signal handling on purpose. Commit-phase work is
 committed every BATCH_SIZE rows and the update path is idempotent, so
@@ -12,8 +15,12 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
+from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from serversherpa.assets.bulk_update import KIND as ASSET_BULK_UPDATE
+from serversherpa.assets.bulk_update import apply_job
+from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import ImportJob
 from serversherpa.imports.jobs import claim_next, requeue_stale
 from serversherpa.imports.move_assets import parse_row, run_import
@@ -29,11 +36,35 @@ def _finish(job: ImportJob, status: str, error: str | None = None) -> None:
     job.finished_at = datetime.now(UTC)
 
 
+async def _process_asset_bulk_update(db: AsyncSession, job: ImportJob) -> None:
+    """Apply a bulk asset update. Its transaction stays open for the whole
+    file, so progress goes through a second, short-lived session that
+    commits at once — the page polling the job sees it immediately."""
+    job_id = job.id
+    job.total_rows = len(job.payload or [])
+    job.processed_rows = 0
+    job.progress_at = datetime.now(UTC)
+    await db.commit()
+
+    async def _progress(processed: int) -> None:
+        async with get_sessionmaker()() as side:
+            await side.execute(
+                update(ImportJob).where(ImportJob.id == job_id)
+                .values(processed_rows=processed, progress_at=func.now()))
+            await side.commit()
+
+    await apply_job(db, job, progress=_progress)
+    await db.commit()
+
+
 async def process_job(db: AsyncSession, job: ImportJob) -> None:
     """Run one claimed (status='running') job to a terminal status."""
     if job.cancel_requested:
         _finish(job, "cancelled")
         await db.commit()
+        return
+    if job.kind == ASSET_BULK_UPDATE:
+        await _process_asset_bulk_update(db, job)
         return
     try:
         content = await get_object(job.file_key)
