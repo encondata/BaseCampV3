@@ -34,6 +34,7 @@ export const ASSET_BULK_COLUMN_GUIDE: BulkColumnGuide[] = [
 
 export const ASSET_BULK_ERRORS: Record<string, string> = {
   unknown_columns: 'The file has columns that are not in the template.',
+  unknown_format: 'Choose CSV or Excel for the download.',
   too_many_rows: 'Too many rows — the limit is 15,000 per upload.',
   file_too_large: 'File too large — the limit is 20 MB.',
   invalid_csv: 'That CSV could not be read.',

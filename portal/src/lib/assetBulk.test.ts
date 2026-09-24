@@ -17,7 +17,7 @@ it('maps every error code the bulk-update endpoints can raise', () => {
     'apply_conflict', 'empty_file', 'file_too_large', 'forbidden', 'invalid_approved',
     'invalid_csv', 'invalid_json', 'invalid_overrides', 'invalid_skip', 'invalid_xlsx',
     'job_not_cancellable', 'job_not_editable', 'job_not_found', 'missing_file', 'rows_invalid',
-    'rule_failed', 'too_many_rows', 'unknown_columns', 'unsupported_file',
+    'rule_failed', 'too_many_rows', 'unknown_columns', 'unknown_format', 'unsupported_file',
   ]);
 });
 
