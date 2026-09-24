@@ -203,7 +203,7 @@ export default function RolesTab({ summary, canEdit, maxRank, onChanged }: Props
           <span className="totp-require">
             <Switch label="Require 2FA" checked={role.totp_required} disabled={!editable}
                     onChange={(v) => void setTotp(v)} />
-            <span>Require 2FA</span>
+            <span aria-hidden="true">Require 2FA</span>
           </span>
           <div className="mtx-actions">
             {err && <span className="pf-error">{err}</span>}

@@ -48,9 +48,10 @@ export default function OtpInput({
       setAt(i, typed);
       return;
     }
-    const next = (digits.slice(0, i) + typed).slice(0, LENGTH);
+    // overwrite from this box onward, keep whatever sits past the burst
+    const next = (digits.slice(0, i) + typed + digits.slice(i + typed.length)).slice(0, LENGTH);
     commit(next);
-    refs.current[Math.min(next.length, LENGTH - 1)]?.focus();
+    refs.current[Math.min(i + typed.length, LENGTH - 1)]?.focus();
   };
 
   const onKeyDown = (i: number) => (e: KeyboardEvent<HTMLInputElement>) => {

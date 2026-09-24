@@ -81,11 +81,13 @@ async def authenticate_token(db: AsyncSession, token: str) -> AuthContext:
 # pairing claim are both exempt from the 2FA challenge, and "kiosk" is
 # self-asserted — anyone holding a password can send it. So the session
 # they mint is worth no more than a kiosk: the routes the kiosk apps
-# actually call, and nothing else. `/auth/me` is in the list because the
-# kiosk web app reads it after a refresh; its sub-paths (preferences,
+# actually call, and nothing else. `/auth/me` is allowed (self-scoped, and
+# the caller already proved the password) but its sub-paths (preferences,
 # password, sessions) are not. Neither is `/auth/totp/*`: a kiosk session
 # must not enroll, verify, or regenerate backup codes for the account it
-# never challenged.
+# never challenged. The three sign-in lifecycle routes never run the
+# gate (they authenticate by cookie or body, not by bearer token) — they
+# are listed so the allowlist reads as the complete kiosk surface.
 KIOSK_SESSION_PREFIXES = ("/kiosk/",)
 KIOSK_SESSION_PATHS = frozenset({
     "/auth/login", "/auth/refresh", "/auth/logout", "/auth/me",

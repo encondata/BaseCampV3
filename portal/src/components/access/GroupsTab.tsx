@@ -229,7 +229,7 @@ function GroupDetail({ group, canEdit, gates, onChanged, onDeleted }: {
         <span className="totp-require">
           <Switch label="Require 2FA" checked={group.totp_required} disabled={!canEdit || busy}
                   onChange={(v) => void setTotp(v)} />
-          <span>Require 2FA</span>
+          <span aria-hidden="true">Require 2FA</span>
         </span>
         <div className="mtx-actions">
           {error && <span className="pf-error">{error}</span>}

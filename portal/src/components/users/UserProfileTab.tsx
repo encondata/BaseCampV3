@@ -118,7 +118,7 @@ export default function UserProfileTab({
                                   }
                                 })();
                               }} />
-                      <span>Require 2FA</span>
+                      <span aria-hidden="true">Require 2FA</span>
                     </span>
                   )}
                   {canManage && account.totp_enrolled && (

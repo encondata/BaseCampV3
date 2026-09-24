@@ -56,3 +56,12 @@ it('a whole code landing in one box (autofill or a fast burst) fills every box',
   expect(done).toHaveBeenCalledWith('499622');
   expect((boxes[5] as HTMLInputElement).value).toBe('2');
 });
+
+it('a burst landing mid-field overwrites from that box and keeps later digits', () => {
+  const done = vi.fn();
+  render(<Harness onComplete={done} />);
+  const boxes = screen.getAllByLabelText(/^Digit \d$/);
+  fireEvent.change(boxes[0], { target: { value: '123456' } });
+  fireEvent.change(boxes[2], { target: { value: '78' } });
+  expect(done).toHaveBeenLastCalledWith('127856');
+});
