@@ -6,9 +6,10 @@ editor) and the rules run right here, in the caller's transaction,
 anchored to the initiative being edited. Not a presence read: no site,
 no location, and Asset.last_seen_at is left alone.
 
-A status set by "Update assets in bulk" is the same event without a
-roster row to anchor it: record_asset_status_edit lets the engine resolve
-the initiative context the way it does for a scanner read.
+A status set by "Update assets in bulk" or from the asset page itself
+(no roster row to anchor it) is the same event: record_asset_status_edit
+lets the engine resolve the initiative context the way it does for a
+scanner read.
 
 Either caller rolls back on a RuleExecutionError; stamp_rule_failure then
 leaves the error execution row the rules admin UI shows."""
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 SOURCE_INITIATIVE_ASSET_EDIT = "initiative_asset_edit"
 SOURCE_ASSET_BULK_UPDATE = "asset_bulk_update"
+SOURCE_ASSET_EDIT = "asset_edit"
 PORTAL_DEVICE_ID = "portal"
 
 

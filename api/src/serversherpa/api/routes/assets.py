@@ -3,6 +3,7 @@ org roles see their own org's rows read-only (SCOPE_COLUMNS); all writes
 are globally anchored. The embedded model summary (AssetModelRef) is the
 only catalog surface a client actor ever receives."""
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -13,17 +14,37 @@ from serversherpa.access.scope import scope_conditions
 from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    AssetCreateIn, AssetItem, AssetModelRef, AssetMoveRow, AssetUpdateIn, ImportJobOut,
+    AssetCreateIn,
+    AssetItem,
+    AssetModelRef,
+    AssetMoveRow,
+    AssetUpdateIn,
+    ImportJobOut,
 )
 from serversherpa.assets import bulk_update
 from serversherpa.db.models import (
-    Asset, AssetCategory, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
-    Site, StatusValue,
+    Asset,
+    AssetCategory,
+    AssetModel,
+    Client,
+    ImportJob,
+    Initiative,
+    InitiativeAsset,
+    Site,
+    StatusValue,
+)
+from serversherpa.scans.manual import (
+    SOURCE_ASSET_EDIT,
+    record_asset_status_edit,
+    stamp_rule_failure,
 )
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.status.labels import UNKNOWN_COLOR, status_labels
+from serversherpa.status_rules.engine import RuleExecutionError
 
 router = APIRouter(prefix="/assets", tags=["assets"])
+
+logger = logging.getLogger(__name__)
 
 XLSX_MEDIA_TYPE = ("application/vnd.openxmlformats-officedocument"
                    ".spreadsheetml.sheet")
@@ -457,6 +478,22 @@ async def update_asset(
         asset.updated_at = datetime.now(UTC)
         audit(db, actor_id=actor.person.id, entity_type="asset",
               entity_id=str(asset_id), action="update", changes=changes)
+    if "status" in changes:
+        # A status edit from the asset page is a scan event too: record it
+        # and run the rules engine here, same as the roster and bulk-update
+        # paths. A failing rule rolls the whole edit back — nothing is
+        # half-written.
+        try:
+            await record_asset_status_edit(
+                db, asset=asset, status=asset.status, actor_person_id=actor.person.id,
+                source=SOURCE_ASSET_EDIT)
+        except RuleExecutionError as err:
+            await db.rollback()
+            logger.warning("asset %s: rule %r failed on status edit: %s",
+                           asset_id, err.rule_name, err)
+            await stamp_rule_failure(err)
+            raise _err(409, "rule_failed", rule_name=err.rule_name,
+                       reason=str(err.__cause__ or err)) from err
     await db.commit()
     return await _detail(db, asset)
 

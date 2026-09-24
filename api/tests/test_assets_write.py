@@ -1,11 +1,28 @@
 """Assets write paths: create/patch/archive, audit, validation, 403s."""
 
+import pytest
 from sqlalchemy import select
 
 from serversherpa.db.models import (
-    Asset, AuditLog, Client, PermissionOverride, Person, PersonRole,
+    Asset,
+    AuditLog,
+    Client,
+    PermissionOverride,
+    Person,
+    PersonRole,
+    ProcessedScan,
+    StatusRuleExecution,
 )
+from serversherpa.status_rules.engine import invalidate_cache
 from tests.test_assets_api import login, make_login
+from tests.test_status_rules_engine import _rule
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cache():
+    invalidate_cache()
+    yield
+    invalidate_cache()
 
 
 async def test_create_update_archive_with_audit(client, db, seeded_user):
@@ -179,3 +196,96 @@ async def test_pod_number_create_patch_and_clear(client, db, seeded_user):
                               json={"pod_number": None})
     assert resp.status_code == 200, resp.text
     assert resp.json()["pod_number"] is None
+
+
+async def test_status_change_on_asset_page_records_a_manual_scan(client, db, seeded_user):
+    hdrs = await login(client)
+    resp = await client.post("/assets", headers=hdrs, json={
+        "serial_number": "SN-EDIT", "name": "edit-01", "status": "active"})
+    assert resp.status_code == 201, resp.text
+    asset_id = resp.json()["id"]
+
+    resp = await client.patch(f"/assets/{asset_id}", headers=hdrs,
+                              json={"status": "in_transit"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "in_transit"
+
+    scan = (await db.scalars(select(ProcessedScan))).one()
+    assert scan.scan_type == "manual"
+    assert scan.status == "in_transit"
+    assert scan.source == "asset_edit"
+    assert scan.device_id == "portal"
+    assert scan.operator_id == seeded_user.id
+    assert scan.match_type == "asset"
+    assert str(scan.asset_id) == asset_id
+
+
+async def test_no_scan_for_same_status_or_other_fields(client, db, seeded_user):
+    hdrs = await login(client)
+    created = (await client.post("/assets", headers=hdrs, json={
+        "serial_number": "SN-EDIT2", "name": "edit-02", "status": "active"})).json()
+    asset_id = created["id"]
+
+    for body in ({"status": "active"}, {"name": "renamed"}):
+        resp = await client.patch(f"/assets/{asset_id}", headers=hdrs, json=body)
+        assert resp.status_code == 200, resp.text
+    assert (await db.scalars(select(ProcessedScan))).all() == []
+
+
+async def test_rules_fire_on_the_asset_page_status_edit(client, db, seeded_user):
+    hdrs = await login(client)
+    created = (await client.post("/assets", headers=hdrs, json={
+        "serial_number": "SN-EDIT3", "name": "edit-03", "status": "active"})).json()
+    asset_id = created["id"]
+    db.add(_rule("Stage", status="in_transit", actions=(
+        ("set_asset_status", {"status": "in_storage"}),)))
+    await db.commit()
+
+    resp = await client.patch(f"/assets/{asset_id}", headers=hdrs,
+                              json={"status": "in_transit"})
+    assert resp.status_code == 200, resp.text
+    # response already reflects the rule's side-effect on the asset
+    assert resp.json()["status"] == "in_storage"
+    asset = await db.get(Asset, asset_id)
+    await db.refresh(asset)
+    assert asset.status == "in_storage"
+    ex = (await db.scalars(select(StatusRuleExecution))).one()
+    assert ex.conditions_met is True
+    scan = (await db.scalars(select(ProcessedScan))).one()
+    assert ex.processed_scan_id == scan.id
+
+
+async def test_failing_rule_blocks_the_asset_page_edit(client, db, seeded_user):
+    hdrs = await login(client)
+    created = (await client.post("/assets", headers=hdrs, json={
+        "serial_number": "SN-EDIT4", "name": "edit-04", "status": "active"})).json()
+    asset_id = created["id"]
+    db.add(_rule("Broken", status="in_transit", actions=(
+        ("set_asset_status", {"status": "no-such-status"}),)))
+    await db.commit()
+
+    resp = await client.patch(f"/assets/{asset_id}", headers=hdrs,
+                              json={"status": "in_transit", "name": "should-not-stick"})
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "rule_failed"
+    assert detail["rule_name"] == "Broken"
+    assert detail["reason"]
+
+    # nothing persisted: status, other patched fields, scan, audit
+    asset = await db.get(Asset, asset_id)
+    await db.refresh(asset)
+    assert asset.status == "active"
+    assert asset.name == "edit-04"
+    assert (await db.scalars(select(ProcessedScan))).all() == []
+    audits = (await db.scalars(select(AuditLog).where(
+        AuditLog.entity_type == "asset", AuditLog.action == "update"))).all()
+    assert audits == []
+
+    # ...but the failure itself left a server-side trace for the admin UI
+    executions = (await db.scalars(select(StatusRuleExecution))).all()
+    assert len(executions) == 1
+    ex = executions[0]
+    assert ex.rule_name == "Broken"
+    assert ex.processed_scan_id is None
+    assert ex.error
