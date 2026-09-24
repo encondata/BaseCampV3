@@ -2505,6 +2505,7 @@ interface MoveSetupDraft { id; status: MoveSetupStatus; error: string | null; pa
 interface MoveSetupPatch { move?: Record<string, unknown>; crates?: MoveSetupCrates; trucks?: MoveSetupTrucks; skip?: SkippableSection[] }
 createMoveSetup(move) / getMoveSetup(id) / patchMoveSetup(id, body) → Promise<MoveSetupDraft>
 uploadMoveSetupAssets(id, file, { makeModelMode, generateSerials }) / recheckMoveSetupAssets(id) → Promise<ImportJobOut>
+getMoveSetupCheck(id) → Promise<ImportJobOut>          // GET /bulk/move-setup/{id}/assets — the wizard's own poll, never getImportJob
 createMoveFromSetup(id) → Promise<MoveSetupDraft>
 deleteMoveSetup(id, { keepalive? }) → Promise<void>     // a 404 counts as done
 
@@ -2610,6 +2611,11 @@ export async function uploadMoveSetupAssets(
 }
 export const recheckMoveSetupAssets = (id: string) =>
   moveSetupCall<ImportJobOut>(`/${id}/assets/recheck`, { method: 'POST' });
+/** The draft's current check job, however it was uploaded or re-checked —
+ *  so the wizard never polls the initiatives:change-gated
+ *  /initiatives/assets/import-jobs route (getImportJob), which an
+ *  initiatives:add-only admin cannot reach. */
+export const getMoveSetupCheck = (id: string) => moveSetupCall<ImportJobOut>(`/${id}/assets`);
 export const createMoveFromSetup = (id: string) =>
   moveSetupCall<MoveSetupDraft>(`/${id}/create`, { method: 'POST' });
 /** A 404 means it is already gone — the goal either way. `keepalive` lets
@@ -3747,7 +3753,7 @@ export default function BulkNewMove() {
 - Replace the Task 4 stub: `portal/src/components/moveSetup/AssetsStep.tsx`; add `AssetsStep.test.tsx`
 
 **Interfaces:**
-- Consumes: `uploadMoveSetupAssets`, `recheckMoveSetupAssets`, `getImportJob`, `ImportJobOut`, `moveSetupError`, `WizardFooter`, `useSkip`, `FixMakeModelDialog`, and the helpers in `lib/moveAssetImport` (`jobIsActive`, `countDetails`, `IMPORT_ERRORS`).
+- Consumes: `uploadMoveSetupAssets`, `recheckMoveSetupAssets`, `getMoveSetupCheck`, `ImportJobOut`, `moveSetupError`, `WizardFooter`, `useSkip`, `FixMakeModelDialog`, and the helpers in `lib/moveAssetImport` (`jobIsActive`, `countDetails`, `IMPORT_ERRORS`). Never `getImportJob` — that route requires `initiatives:change`, which the wizard's `initiatives:add` guard does not guarantee.
 - Produces:
 
 ```ts
@@ -3855,7 +3861,7 @@ import type { ImportJobOut, MoveSetupDraft } from '../../lib/api';
 
 vi.mock('../../auth/AuthContext', () => ({ useAuth: () => ({ can: () => true }) }));
 const api = vi.hoisted(() => ({
-  uploadMoveSetupAssets: vi.fn(), recheckMoveSetupAssets: vi.fn(), getImportJob: vi.fn(),
+  uploadMoveSetupAssets: vi.fn(), recheckMoveSetupAssets: vi.fn(), getMoveSetupCheck: vi.fn(),
 }));
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()), ...api,
@@ -3891,7 +3897,7 @@ it('uploads, polls the check every 1.5 s, and unlocks Next once it completes', a
   vi.useFakeTimers({ shouldAdvanceTime: true });
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
   api.uploadMoveSetupAssets.mockResolvedValue(job({ status: 'queued' }));
-  api.getImportJob.mockResolvedValueOnce(job({ status: 'running', processed_rows: 1 }))
+  api.getMoveSetupCheck.mockResolvedValueOnce(job({ status: 'running', processed_rows: 1 }))
     .mockResolvedValueOnce(DONE);
   const onNext = vi.fn();
   render(<Harness onNext={onNext} />);
@@ -3909,7 +3915,7 @@ it('uploads, polls the check every 1.5 s, and unlocks Next once it completes', a
   expect(await screen.findByText('1 of 2 rows')).toBeTruthy();
   await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
   expect(await screen.findByText('2 rows will be imported when the move is created')).toBeTruthy();
-  expect(api.getImportJob).toHaveBeenCalledTimes(2);
+  expect(api.getMoveSetupCheck).toHaveBeenCalledTimes(2);
   await user.click(next());
   expect(onNext).toHaveBeenCalled();
 });
@@ -3918,7 +3924,7 @@ it('Check again queues a new check over the same file', async () => {
   const user = userEvent.setup();
   api.uploadMoveSetupAssets.mockResolvedValue(DONE);
   api.recheckMoveSetupAssets.mockResolvedValue(job({ id: 'c2', status: 'queued' }));
-  api.getImportJob.mockResolvedValue(job({ id: 'c2', status: 'running' }));
+  api.getMoveSetupCheck.mockResolvedValue(job({ id: 'c2', status: 'running' }));
   render(<Harness />);
   await user.upload(document.querySelector('input[type=file]') as HTMLInputElement,
     new File(['x'], 'ft.csv', { type: 'text/csv' }));
@@ -3948,7 +3954,7 @@ import { useEffect, useRef, useState } from 'react';
 
 import { useAuth } from '../../auth/AuthContext';
 import {
-  ApiError, getImportJob, recheckMoveSetupAssets, uploadMoveSetupAssets,
+  ApiError, getMoveSetupCheck, recheckMoveSetupAssets, uploadMoveSetupAssets,
   type ImportJobOut, type MoveSetupDraft,
 } from '../../lib/api';
 import { countDetails, IMPORT_ERRORS, jobIsActive } from '../../lib/moveAssetImport';
@@ -3985,16 +3991,20 @@ export default function AssetsStep({ draft, job, setJob, onBack, onSkip, onNext 
   const { skipping, skip } = useSkip(onSkip, setError);
   useEffect(() => { setFixedTexts(new Set()); }, [job?.id]);
 
-  // poll the running check: one request at a time, stopped on unmount; a
-  // network blip keeps polling, an API error (the check is gone) stops
-  const activeId = job && jobIsActive(job) ? job.id : null;
+  // poll the draft's check while it is running: one request at a time,
+  // stopped on unmount; a network blip keeps polling, an API error stops.
+  // Polled by draft id, not the check job's own id — GET
+  // /bulk/move-setup/{id}/assets serves whichever check the draft
+  // currently holds, so this never touches the initiatives:change-gated
+  // /initiatives/assets/import-jobs route.
+  const active = job !== null && jobIsActive(job);
   useEffect(() => {
-    if (!activeId) return undefined;
+    if (!active) return undefined;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
       try {
-        const next = await getImportJob(activeId);
+        const next = await getMoveSetupCheck(draft.id);
         if (stopped) return;
         setJob(next);
         if (!jobIsActive(next)) return;
@@ -4006,7 +4016,7 @@ export default function AssetsStep({ draft, job, setJob, onBack, onSkip, onNext 
     };
     timer = setTimeout(() => void tick(), POLL_MS);
     return () => { stopped = true; clearTimeout(timer); };
-  }, [activeId, setJob]);
+  }, [active, draft.id, setJob]);
 
   const run = async (fn: () => Promise<ImportJobOut>) => {
     setBusy(true);
