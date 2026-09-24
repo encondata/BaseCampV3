@@ -39,11 +39,13 @@ interface Props {
   onOpen?: () => void;                 // lazy-load hook
   clearable?: boolean;
   disabled?: boolean;
+  inputId?: string;
+  ariaLabel?: string;
 }
 
 export default function ComboBox({
   options, value, onChange, placeholder = 'Select…',
-  onOpen, clearable = false, disabled = false,
+  onOpen, clearable = false, disabled = false, inputId, ariaLabel,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
@@ -146,6 +148,7 @@ export default function ComboBox({
     <div className="combo-wrap" ref={wrapRef}>
       <input
         ref={inputRef}
+        id={inputId}
         className="org-select combo-input"
         value={open ? filter : (selected?.label ?? '')}
         placeholder={selected && !open ? selected.label : placeholder}
@@ -156,6 +159,7 @@ export default function ComboBox({
         onKeyDown={onKey}
         role="combobox"
         aria-expanded={open}
+        aria-label={ariaLabel}
       />
       {clearable && value && !open ? (
         <button type="button" className="combo-caret" aria-label="Clear"

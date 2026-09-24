@@ -1,16 +1,17 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
-const authMock = vi.hoisted(() => ({ canSites: true, canWorkers: true, canTrucks: true }));
+const authMock = vi.hoisted(() => ({ canSites: true, canWorkers: true, canTrucks: true, canInitiatives: true }));
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     person: { id: 'me-1', display_name: 'Me' }, roles: ['admin'], maxRank: 60, godMode: false,
     can: (resource: string) =>
       (resource === 'sites' ? authMock.canSites
         : resource === 'workers' ? authMock.canWorkers
-        : resource === 'trucks' ? authMock.canTrucks : true),
+        : resource === 'trucks' ? authMock.canTrucks
+        : resource === 'initiatives' ? authMock.canInitiatives : true),
     preferences: { list_prefs: {} }, updatePreferences: vi.fn(),
   }),
 }));
@@ -19,6 +20,7 @@ afterEach(() => {
   authMock.canSites = true;
   authMock.canWorkers = true;
   authMock.canTrucks = true;
+  authMock.canInitiatives = true;
 });
 const { default: BulkActions } = await import('./BulkActions');
 
@@ -26,6 +28,7 @@ it('renders the empty state until tools are added', () => {
   authMock.canSites = false;
   authMock.canWorkers = false;
   authMock.canTrucks = false;
+  authMock.canInitiatives = false;
   render(<MemoryRouter><BulkActions /></MemoryRouter>);
   expect(screen.getByRole('heading', { name: 'Bulk Actions' })).toBeTruthy();
   expect(screen.getByText('Nothing here yet')).toBeTruthy();
@@ -35,7 +38,7 @@ it('renders the empty state until tools are added', () => {
 it('lists the sites card when the viewer can add sites', () => {
   render(<MemoryRouter><BulkActions /></MemoryRouter>);
   expect(screen.getByText('Add or update sites in bulk')).toBeTruthy();
-  expect(screen.getAllByRole('button', { name: 'Open' })).toHaveLength(3);
+  expect(screen.getAllByRole('button', { name: 'Open' })).toHaveLength(4);
 });
 
 it('lists the workers card only when the viewer can add workers', () => {
@@ -56,4 +59,19 @@ it('lists the trucks card only when the viewer can add trucks', () => {
   authMock.canTrucks = true;
   render(<MemoryRouter><BulkActions /></MemoryRouter>);
   expect(screen.getByText('Add or update trucks in bulk')).toBeTruthy();
+});
+
+it('links the "Assign people to a job" card to /bulk/initiative-people when the viewer can change initiatives', () => {
+  render(
+    <MemoryRouter initialEntries={['/bulk']}>
+      <Routes>
+        <Route path="/bulk" element={<BulkActions />} />
+        <Route path="/bulk/initiative-people" element={<div>initiative-people page</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  expect(screen.getByText('Assign people to a job')).toBeTruthy();
+  const card = screen.getByText('Assign people to a job').closest('.bulk-card') as HTMLElement;
+  fireEvent.click(within(card).getByRole('button', { name: 'Open' }));
+  expect(screen.getByText('initiative-people page')).toBeTruthy();
 });

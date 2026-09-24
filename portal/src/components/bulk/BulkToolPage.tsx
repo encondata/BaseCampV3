@@ -9,17 +9,19 @@ import DataTable from '../DataTable';
 import '../../styles/bulk.css';
 
 export interface BulkColumnGuide { key: string; required: boolean; accepts: string; example: string }
-export interface BulkDownload { key: string; label: string; run: () => Promise<void>; accent?: boolean }
+export interface BulkDownload { key: string; label: string; run: () => Promise<void>; accent?: boolean; disabled?: boolean }
 
 interface Props {
   title: string;
   hint: ReactNode;
   guide: BulkColumnGuide[];
   downloads: BulkDownload[];
+  /** An extra section (e.g. a job picker) rendered right before Download. */
+  beforeDownloads?: ReactNode;
   children: ReactNode;
 }
 
-export default function BulkToolPage({ title, hint, guide, downloads, children }: Props) {
+export default function BulkToolPage({ title, hint, guide, downloads, beforeDownloads, children }: Props) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
 
@@ -51,11 +53,18 @@ export default function BulkToolPage({ title, hint, guide, downloads, children }
         />
       </section>
 
+      {beforeDownloads && (
+        <section className="bulk-section">
+          <p className="eyebrow-sm">Job</p>
+          {beforeDownloads}
+        </section>
+      )}
+
       <section className="bulk-section">
         <p className="eyebrow-sm">Download</p>
         <div className="bulk-actions">
           {downloads.map((d) => (
-            <button key={d.key} className={d.accent ? 'mini-btn accent' : 'mini-btn'} disabled={!!busy}
+            <button key={d.key} className={d.accent ? 'mini-btn accent' : 'mini-btn'} disabled={!!busy || !!d.disabled}
                     onClick={() => void download(d.key, d.run)}>
               {d.label}
             </button>
