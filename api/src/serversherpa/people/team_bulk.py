@@ -150,7 +150,7 @@ def _resolve(ref: dict, field: str, cell: str, picked: str | None,
     if picked:
         obj = ref["by_id"][field].get(picked)
         if obj is None:
-            errors.append(f"the chosen {field} no longer exists — pick again")
+            errors.append(f"The chosen {field} no longer exists. Pick again.")
         return obj
     if not cell:
         return None
@@ -168,8 +168,12 @@ def _resolve(ref: dict, field: str, cell: str, picked: str | None,
 async def preview_rows(db: AsyncSession, initiative_id: uuid.UUID,
                        numbered: list[tuple[int, dict]], *,
                        overrides: dict[int, dict[str, str]] | None = None,
-                       skip: set[int] | None = None) -> dict:
-    ref = await _reference(db, initiative_id)
+                       skip: set[int] | None = None,
+                       ref: dict | None = None) -> dict:
+    """`ref` lets a caller that already loaded the reference data (e.g.
+    `commit_rows`, so it can reuse the same loaded team rows) pass it in
+    instead of paying for a second load."""
+    ref = ref if ref is not None else await _reference(db, initiative_id)
     overrides = overrides or {}
     skip = skip or set()
     out: list[dict] = []
@@ -185,7 +189,7 @@ async def preview_rows(db: AsyncSession, initiative_id: uuid.UUID,
         errors: list[str] = []
         issues: list[dict] = []
         if not row["worker"] and not picks.get("worker"):
-            errors.append("worker is required")
+            errors.append("Worker is required.")
             person = None
         else:
             person = _resolve(ref, "worker", row["worker"], picks.get("worker"), issues, errors)
@@ -209,7 +213,7 @@ async def preview_rows(db: AsyncSession, initiative_id: uuid.UUID,
             lines = ", ".join(str(g["row"]) for g in group)
             for g in group:
                 g["errors"].append(
-                    f"{g['person_name']} appears on more than one row ({lines})")
+                    f"{g['person_name']} appears on more than one row ({lines}).")
                 g["action"] = "error"
 
     for r in out:
@@ -245,60 +249,89 @@ async def commit_rows(db: AsyncSession, actor_id: uuid.UUID, initiative_id: uuid
     """All-or-nothing: re-runs the preview with the same picks and skips,
     refuses (rows_invalid, nothing written) if anything still needs
     attention or errors, then writes adds and APPROVED updates in one
-    transaction. Unapproved updates are reported as skipped."""
-    preview = await preview_rows(db, initiative_id, numbered, overrides=overrides, skip=skip)
+    transaction. Unapproved updates are reported as skipped.
+
+    `ref` (the reference data — workers/sites/roles/current team) is loaded
+    once here and threaded through to `preview_rows`, so the update branch
+    below can reuse the already-loaded `InitiativePerson` rows instead of
+    re-querying each one."""
+    job = await db.get(Initiative, initiative_id)
+    if job is None:
+        raise BulkImportError("initiative_not_found")
+
+    ref = await _reference(db, initiative_id)
+    preview = await preview_rows(db, initiative_id, numbered, overrides=overrides, skip=skip,
+                                 ref=ref)
     if not preview["can_commit"]:
         raise BulkImportError("rows_invalid", rows=preview["rows"])
 
     now = datetime.now(UTC)
     counts = {"created": 0, "updated": 0, "unchanged": 0, "skipped": 0}
     applied: list[dict] = []
-    for r in preview["rows"]:
-        action = r["action"]
-        if action == "add":
-            person_id = uuid.UUID(r["person_id"])
-            db.add(InitiativePerson(
-                initiative_id=initiative_id, person_id=person_id,
-                site_worked_id=uuid.UUID(r["site_id"]) if r["site_id"] else None,
-                work_type=r["role_key"]))
-            audit(db, actor_id=actor_id, entity_type="initiative",
-                  entity_id=str(initiative_id), action="person_add",
-                  changes={"person_id": {"from": None, "to": r["person_id"]}})
-            result = "created"
-        elif action == "update" and r["row"] in approved_updates:
-            assoc = await db.scalar(select(InitiativePerson).where(
-                InitiativePerson.initiative_id == initiative_id,
-                InitiativePerson.person_id == uuid.UUID(r["person_id"])))
-            fields = ["site_worked_id", "work_type"]
-            before = snapshot(assoc, fields)
-            if r["site_id"]:
-                assoc.site_worked_id = uuid.UUID(r["site_id"])
-            if r["role_key"]:
-                assoc.work_type = r["role_key"]
-            assoc.updated_at = now
-            audit(db, actor_id=actor_id, entity_type="initiative",
-                  entity_id=str(initiative_id), action="person_update",
-                  changes=diff(before, snapshot(assoc, fields)))
-            result = "updated"
-        elif action == "update":
-            result = "skipped"
-        else:
-            result = action          # "unchanged" or "skipped"
-        counts[result] += 1
-        applied.append({"row": r["row"], "name": r["person_name"] or r["worker"],
-                        "person_id": r["person_id"], "action": result,
-                        "diff": r["diff"] if result in ("updated", "skipped") else None})
-
-    job = await db.get(Initiative, initiative_id)
-    job.updated_at = now
-    audit(db, actor_id=actor_id, entity_type="initiative", entity_id=str(initiative_id),
-          action="bulk_import", changes={**counts, "source": source_label})
     try:
+        for r in preview["rows"]:
+            action = r["action"]
+            if action == "add":
+                person_id = uuid.UUID(r["person_id"])
+                db.add(InitiativePerson(
+                    initiative_id=initiative_id, person_id=person_id,
+                    site_worked_id=uuid.UUID(r["site_id"]) if r["site_id"] else None,
+                    work_type=r["role_key"]))
+                audit(db, actor_id=actor_id, entity_type="initiative",
+                      entity_id=str(initiative_id), action="person_add",
+                      changes={"person_id": {"from": None, "to": r["person_id"]}})
+                result = "created"
+            elif action == "update" and r["row"] in approved_updates:
+                assoc = ref["team"].get(uuid.UUID(r["person_id"]))
+                if assoc is None:
+                    # the preview said "update" from this same `ref["team"]`
+                    # snapshot, so this should be unreachable in practice —
+                    # guard it anyway rather than let `snapshot` crash on
+                    # None if the assignment vanished mid-commit.
+                    raise BulkImportError("rows_invalid", reason="assignment_changed")
+                fields = ["site_worked_id", "work_type"]
+                before = snapshot(assoc, fields)
+                if r["site_id"]:
+                    assoc.site_worked_id = uuid.UUID(r["site_id"])
+                if r["role_key"]:
+                    assoc.work_type = r["role_key"]
+                assoc.updated_at = now
+                audit(db, actor_id=actor_id, entity_type="initiative",
+                      entity_id=str(initiative_id), action="person_update",
+                      changes=diff(before, snapshot(assoc, fields)))
+                result = "updated"
+            elif action == "update":
+                result = "skipped"
+            else:
+                result = action          # "unchanged" or "skipped"
+            counts[result] += 1
+            applied.append({"row": r["row"], "name": r["person_name"] or r["worker"],
+                            "person_id": r["person_id"], "action": result,
+                            "diff": r["diff"] if result in ("updated", "skipped") else None})
+
+        job.updated_at = now
+        audit(db, actor_id=actor_id, entity_type="initiative", entity_id=str(initiative_id),
+              action="bulk_import", changes={**counts, "source": source_label})
         await db.commit()
-    except IntegrityError:
-        # a concurrent add of the same person beat us to initiative_people_uniq
+    except IntegrityError as exc:
+        # SQLAlchemy autoflushes pending inserts ahead of the per-row update
+        # query and `db.get(Initiative, …)`, so a concurrent duplicate add
+        # can surface here rather than at the explicit `commit()`. Only a
+        # unique violation on initiative_people_uniq means "someone else
+        # just added this same worker" — anything else is a different bug
+        # and must not be swallowed as a friendly "duplicate worker" error.
+        # The constraint name lives on the *original* asyncpg exception, not
+        # SQLAlchemy's DBAPI-wrapper `exc.orig` (which only carries the
+        # message and sqlstate) — the wrapper chains asyncpg's own
+        # exception on as `__cause__`.
         await db.rollback()
+        asyncpg_exc = exc.orig.__cause__ if exc.orig is not None else None
+        if getattr(asyncpg_exc, "constraint_name", None) != "initiative_people_uniq":
+            raise
         raise BulkImportError("rows_invalid", reason="duplicate_worker") from None
+    except BulkImportError:
+        await db.rollback()
+        raise
     return {**counts, "rows": applied}
 
 
@@ -335,7 +368,12 @@ async def build_template_xlsx(db: AsyncSession) -> bytes:
 
 async def export_rows(db: AsyncSession, initiative_id: uuid.UUID) -> list[dict]:
     """The job's current team in template shape, so an export re-uploads
-    as all-unchanged."""
+    as all-unchanged. That does not always hold, though: a team member
+    assigned to a since-archived site, an inactive role, or a worker who
+    shares a name (or preferred name) with another live worker exports a
+    row that comes back from preview needing attention, not unchanged —
+    the sheet round-trips the name/site/role text, not the ids, so those
+    cells no longer resolve uniquely."""
     site_names = {s.id: s.name for s in await db.scalars(select(Site))}
     role_labels = {r.key: r.label for r in await db.scalars(
         select(StatusValue).where(StatusValue.record_type == WORK_TYPE))}

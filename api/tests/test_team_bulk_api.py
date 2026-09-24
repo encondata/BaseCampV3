@@ -5,8 +5,7 @@ import openpyxl
 import pytest
 from sqlalchemy import func, select
 
-from serversherpa.db.models import Initiative, InitiativePerson, Person, PersonRole
-from serversherpa.people import team_bulk as tb
+from serversherpa.db.models import InitiativePerson, Person, PersonRole
 from tests.test_sites_api import login, make_login
 from tests.test_team_bulk_service import mk_job, mk_site, mk_worker
 

@@ -1,8 +1,16 @@
 """Bulk assign people to a job (no HTTP): parse, resolve, preview, commit."""
+import uuid
+
 from sqlalchemy import func, select
 
 from serversherpa.db.models import (
-    AuditLog, Initiative, InitiativePerson, Person, PersonRole, Site,
+    AuditLog,
+    Initiative,
+    InitiativePerson,
+    Person,
+    PersonRole,
+    Site,
+    StatusValue,
 )
 from serversherpa.imports.bulk import BulkImportError
 from serversherpa.people import team_bulk as tb
@@ -126,6 +134,16 @@ async def test_preferred_name_matches(db, seeded_user):
     assert row["action"] == "add"
 
 
+async def test_preferred_name_equal_to_first_name_matches_once(db, seeded_user):
+    """first+last and preferred+last collapse to the same name key when
+    preferred_name echoes first_name — that must not double-count the
+    worker as its own duplicate match (ambiguous) instead of a clean add."""
+    job = await mk_job(db)
+    robert = await mk_worker(db, "Robert", "Stone", preferred="Robert")
+    row = (await preview(db, job, [{"worker": "Robert Stone"}]))["rows"][0]
+    assert row["action"] == "add" and row["person_id"] == str(robert.id)
+
+
 async def test_unknown_and_ambiguous_need_attention(db, seeded_user):
     job = await mk_job(db)
     j1 = await mk_worker(db, "Jimmy", "Henderson", email="j1@x.test")
@@ -149,16 +167,41 @@ async def test_unknown_and_ambiguous_need_attention(db, seeded_user):
     assert res["can_commit"] is False
 
 
+async def test_role_key_equal_to_another_roles_label_is_ambiguous(db, seeded_user):
+    """A custom role whose key collides with another active role's label
+    means one cell text ("tech") now matches two role rows — the cell must
+    come back ambiguous, listing both, not silently pick one."""
+    job = await mk_job(db)
+    ana = await mk_worker(db, "Ana", "Lopez")
+    extra = StatusValue(record_type="initiative_work_type", key="Tech",
+                        label="Legacy Tech", color="#000000", is_active=True, sort_order=99)
+    db.add(extra)
+    await db.commit()
+    res = await preview(db, job, [{"worker": "Ana Lopez", "role": "tech"}])
+    row = res["rows"][0]
+    assert row["action"] == "attention"
+    role_issue = next(i for i in row["issues"] if i["field"] == "role")
+    assert role_issue["kind"] == "ambiguous"
+    assert {c["id"] for c in role_issue["candidates"]} == {"tech", "Tech"}
+    assert row["person_id"] == str(ana.id)
+
+
 async def test_archived_or_non_worker_people_do_not_match(db, seeded_user):
     job = await mk_job(db)
     await mk_worker(db, "Old", "Timer", archived=True)
     await mk_worker(db, "Ex", "Worker", revoked=True)
     await mk_worker(db, "Only", "Staff", role="staff")
+    await mk_worker(db, "Amy", "Live")
     await mk_site(db, "Closed DC", archived=True)
     res = await preview(db, job, [{"worker": "Old Timer"}, {"worker": "Ex Worker"},
                                   {"worker": "Only Staff"},
-                                  {"worker": "Old Timer", "site": "Closed DC"}])
-    assert all(r["action"] == "attention" for r in res["rows"])
+                                  {"worker": "Amy Live", "site": "Closed DC"}])
+    rows = res["rows"]
+    assert all(r["action"] == "attention" for r in rows)
+    # the archived-site row uses a LIVE worker, so its only issue proves
+    # the site itself is excluded — not a coincidental worker mismatch too
+    assert rows[3]["issues"] == [{"field": "site", "kind": "unknown", "value": "Closed DC",
+                                  "candidates": []}]
 
 
 async def test_overrides_resolve_rows(db, seeded_user):
@@ -171,6 +214,21 @@ async def test_overrides_resolve_rows(db, seeded_user):
     row = res["rows"][0]
     assert row["action"] == "add" and row["person_id"] == str(j1.id)
     assert row["site_id"] == str(site.id) and row["role_key"] == "lead"
+
+
+async def test_overrides_keyed_by_posted_row_numbers(db, seeded_user):
+    """A re-posted preview carries the spreadsheet's own row numbers (from
+    `number_posted_rows`), and overrides are keyed by those same numbers —
+    not by list position — so an override for row 9 must resolve the row
+    the sheet called 9, wherever it lands in the posted list."""
+    job = await mk_job(db)
+    j1 = await mk_worker(db, "Jimmy", "Henderson")
+    rows = [{"worker": "Someone Else"}, {"worker": "Nobody Here"}]
+    numbered = tb.number_posted_rows(rows, [5, 9])
+    res = await tb.preview_rows(db, job.id, numbered, overrides={9: {"worker": str(j1.id)}})
+    by_num = {r["row"]: r for r in res["rows"]}
+    assert by_num[5]["action"] == "attention"
+    assert by_num[9]["action"] == "add" and by_num[9]["person_id"] == str(j1.id)
 
 
 async def test_bad_override_is_an_error(db, seeded_user):
@@ -199,7 +257,7 @@ async def test_blank_worker_is_an_error_and_skip_wins(db, seeded_user):
     job = await mk_job(db)
     res = await preview(db, job, [{"site": "X"}, {"worker": "Nobody"}], skip={2})
     rows = by_row(res)
-    assert rows[1]["action"] == "error" and rows[1]["errors"] == ["worker is required"]
+    assert rows[1]["action"] == "error" and rows[1]["errors"] == ["Worker is required."]
     assert rows[2]["action"] == "skipped"
 
 
@@ -241,9 +299,12 @@ async def test_commit_adds_and_approved_updates_only(db, seeded_user):
     assert team[ana.id].site_worked_id == west.id and team[ana.id].work_type == "lead"
     assert team[ben.id].site_worked_id == west.id and team[ben.id].work_type == "tech"
     assert team[cy.id].work_type == "tech"      # not approved → untouched
-    actions = [a.action for a in await db.scalars(
-        select(AuditLog).where(AuditLog.entity_id == str(job.id)))]
-    assert sorted(actions) == ["bulk_import", "person_add", "person_update"]
+    audit_rows = list(await db.scalars(
+        select(AuditLog).where(AuditLog.entity_id == str(job.id))))
+    assert sorted(a.action for a in audit_rows) == ["bulk_import", "person_add", "person_update"]
+    update_row = next(a for a in audit_rows if a.action == "person_update")
+    assert "site_worked_id" in update_row.changes
+    assert update_row.changes["site_worked_id"] == {"from": str(east.id), "to": str(west.id)}
 
 
 async def test_commit_refuses_unresolved_and_writes_nothing(db, seeded_user):
@@ -268,3 +329,17 @@ async def test_commit_with_override_and_skip(db, seeded_user):
                        overrides={1: {"worker": str(ana.id)}}, skip={2})
     assert (out["created"], out["skipped"]) == (1, 1)
     assert await db.scalar(select(func.count()).select_from(InitiativePerson)) == 1
+
+
+async def test_commit_unknown_initiative_writes_nothing(db, seeded_user):
+    missing_id = uuid.uuid4()
+    await mk_worker(db, "Ana", "Lopez")
+    try:
+        await tb.commit_rows(
+            db, seeded_user.id, missing_id, tb.number_json_rows([{"worker": "Ana Lopez"}]),
+            overrides={}, skip=set(), approved_updates=set(), source_label="team.csv")
+    except BulkImportError as exc:
+        assert exc.code == "initiative_not_found"
+    else:
+        raise AssertionError("expected initiative_not_found")
+    assert await db.scalar(select(func.count()).select_from(InitiativePerson)) == 0
