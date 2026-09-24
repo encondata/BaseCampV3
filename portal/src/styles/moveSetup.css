@@ -1,0 +1,6 @@
+/* Create a move in steps — layout only (see wizard.css on typography). */
+.ms-naming { grid-template-columns: repeat(2, minmax(0, 220px)); }
+.ms-names { display: flex; flex-direction: column; gap: 4px; }
+.ms-type { grid-template-columns: minmax(0, 320px); }
+.ms-reasons { margin: 4px 0 0; padding-left: 18px; }
+.ms-discard-card { width: min(460px, 92vw); }

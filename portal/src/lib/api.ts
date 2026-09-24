@@ -3073,6 +3073,8 @@ export interface ImportJobOut {
     make_model_mode?: string; generate_serials?: boolean;
     // set on a reprocess child job — see reprocessImportJob below
     reprocess_of?: string; only_rows?: number[];
+    // set on a Create-a-move-in-steps file check (no move yet)
+    move_setup_id?: string;
   };
   phase: ImportJobPhase;
   status: ImportJobStatus;
@@ -3145,6 +3147,80 @@ export async function downloadMoveAssetTemplate(
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+// ── Bulk Actions › Create a move in steps ───────────────────────────
+// One server-side draft holds every step; nothing real is created until
+// createMoveFromSetup, which the import worker runs as one transaction.
+
+export interface MoveSetupCrates {
+  convention: string; count: number; start: number;
+  container_type: string | null; tags: Record<string, number>;
+}
+export interface MoveSetupTrucks { convention: string; count: number; start: number }
+export interface MoveSetupPayload {
+  move: Record<string, unknown>;
+  assets: { check_job_id: string; filename: string } | null;
+  crates: MoveSetupCrates | null;
+  trucks: MoveSetupTrucks | null;
+}
+export interface MoveSetupNamesPreview { names: string[]; clashes: string[]; error: string | null }
+/** Success carries move_id…trucks; a failure carries only `reasons`. */
+export interface MoveSetupResults {
+  move_id?: string; assets?: ImportJobResults | null; crates?: number; trucks?: number;
+  reasons?: string[];
+}
+export type MoveSetupStatus = 'preview' | 'queued' | 'running' | 'completed' | 'failed';
+export interface MoveSetupDraft {
+  id: string; status: MoveSetupStatus; error: string | null;
+  payload: MoveSetupPayload | null; initiative_id: string | null;
+  total_rows: number; processed_rows: number;
+  results: MoveSetupResults | null; created_at: string;
+  previews: { crates: MoveSetupNamesPreview | null; trucks: MoveSetupNamesPreview | null } | null;
+}
+export interface MoveSetupPatch {
+  move?: Record<string, unknown>; crates?: MoveSetupCrates; trucks?: MoveSetupTrucks;
+  skip?: ('assets' | 'crates' | 'trucks')[];
+}
+
+async function moveSetupCall<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const resp = await apiFetch(`/bulk/move-setup${path}`, init);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+const jsonInit = (method: string, body: unknown): RequestInit => ({
+  method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+});
+
+export const createMoveSetup = (move: Record<string, unknown>) =>
+  moveSetupCall<MoveSetupDraft>('', jsonInit('POST', move));
+export const getMoveSetup = (id: string) => moveSetupCall<MoveSetupDraft>(`/${id}`);
+export const patchMoveSetup = (id: string, body: MoveSetupPatch) =>
+  moveSetupCall<MoveSetupDraft>(`/${id}`, jsonInit('PATCH', body));
+export async function uploadMoveSetupAssets(
+  id: string, file: File, opts: { makeModelMode: string; generateSerials: boolean },
+): Promise<ImportJobOut> {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('make_model_mode', opts.makeModelMode);
+  form.append('generate_serials', String(opts.generateSerials));
+  return moveSetupCall<ImportJobOut>(`/${id}/assets`, { method: 'POST', body: form });
+}
+export const recheckMoveSetupAssets = (id: string) =>
+  moveSetupCall<ImportJobOut>(`/${id}/assets/recheck`, { method: 'POST' });
+/** The draft's current check job, however it was uploaded or re-checked —
+ *  so the wizard never polls the initiatives:change-gated
+ *  /initiatives/assets/import-jobs route (getImportJob), which an
+ *  initiatives:add-only admin cannot reach. */
+export const getMoveSetupCheck = (id: string) => moveSetupCall<ImportJobOut>(`/${id}/assets`);
+export const createMoveFromSetup = (id: string) =>
+  moveSetupCall<MoveSetupDraft>(`/${id}/create`, { method: 'POST' });
+/** A 404 means it is already gone — the goal either way. `keepalive` lets
+ *  the request outlive the page (the wizard's unmount cleanup). */
+export async function deleteMoveSetup(id: string, opts: { keepalive?: boolean } = {}): Promise<void> {
+  const resp = await apiFetch(`/bulk/move-setup/${id}`,
+    { method: 'DELETE', keepalive: opts.keepalive });
+  if (!resp.ok && resp.status !== 404) throw await errorFrom(resp);
 }
 
 export async function addInitiativeLink(

@@ -64,6 +64,7 @@ export const IMPORT_ERRORS: Record<string, string> = {
   job_already_finished: 'This import has already finished.',
   unknown_format: 'Unknown template format.',
   no_review_rows: 'Nothing is flagged for review.',
+  check_only: 'This file check belongs to a move setup. Its rows are imported when the move is created.',
 };
 
 // ApiError stores the FastAPI detail code directly on `.code` (api.ts:141,

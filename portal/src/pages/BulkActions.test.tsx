@@ -43,7 +43,7 @@ it('renders the empty state until tools are added', () => {
 it('lists the sites card when the viewer can add sites', () => {
   render(<MemoryRouter><BulkActions /></MemoryRouter>);
   expect(screen.getByText('Add or update sites in bulk')).toBeTruthy();
-  expect(screen.getAllByRole('button', { name: 'Open' })).toHaveLength(5);
+  expect(screen.getAllByRole('button', { name: 'Open' })).toHaveLength(6);
 });
 
 it('lists the workers card only when the viewer can add workers', () => {
@@ -99,4 +99,20 @@ it('lists the assets card only when the viewer can change assets, and links it t
   const card = screen.getByText('Update assets in bulk').closest('.bulk-card') as HTMLElement;
   fireEvent.click(within(card).getByRole('button', { name: 'Open' }));
   expect(screen.getByText('assets bulk page')).toBeTruthy();
+});
+
+it('lists the "Create a move in steps" card and links it to /bulk/new-move', () => {
+  render(
+    <MemoryRouter initialEntries={['/bulk']}>
+      <Routes>
+        <Route path="/bulk" element={<BulkActions />} />
+        <Route path="/bulk/new-move" element={<div>new move page</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  const card = screen.getByText('Create a move in steps').closest('.bulk-card') as HTMLElement;
+  expect(within(card).getByText(
+    'The move, its From-To assets, crates, and trucks — reviewed, then created together.')).toBeTruthy();
+  fireEvent.click(within(card).getByRole('button', { name: 'Open' }));
+  expect(screen.getByText('new move page')).toBeTruthy();
 });

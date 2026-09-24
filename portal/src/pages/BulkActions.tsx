@@ -49,6 +49,11 @@ export const BULK_TOOLS: BulkTool[] = [
     description: 'Load changes from a spreadsheet. Rows match existing assets by Asset ID or serial; review every change before applying.',
     resource: 'assets', action: 'change', to: '/bulk/assets', button: 'Open',
   },
+  {
+    key: 'new-move', title: 'Create a move in steps',
+    description: 'The move, its From-To assets, crates, and trucks — reviewed, then created together.',
+    resource: 'initiatives', action: 'add', to: '/bulk/new-move', button: 'Open',
+  },
 ];
 
 export default function BulkActions() {
