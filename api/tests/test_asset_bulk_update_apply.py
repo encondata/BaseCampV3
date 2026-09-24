@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from serversherpa.assets import bulk_update as bu
 from serversherpa.db.engine import get_sessionmaker
@@ -93,6 +94,8 @@ async def test_applies_approved_updates_and_skips_unapproved(db):
     assert job.status == "completed" and job.error is None
     assert job.processed_rows == 3 and job.updated_count == 1
     assert job.finished_at is not None
+    # no model_id change in this job, so no placement recheck ran and the
+    # summary carries no "placement" key
     assert job.results["summary"] == {"updated": 1, "skipped": 1, "unchanged": 1}
     # unchanged rows are counted in the summary only, not listed (15,000-row jobs
     # shouldn't store 15,000 result rows for no-op rows)
@@ -125,7 +128,9 @@ async def test_approve_all_applies_every_update_with_ids_as_uuids(db):
 
     job = await fresh_job(job_id)
     assert job.status == "completed"
-    assert job.results["summary"] == {"updated": 2, "skipped": 0, "unchanged": 0}
+    assert job.results["summary"] == {
+        "updated": 2, "skipped": 0, "unchanged": 0,
+        "placement": {"collisions": 0, "orphans": 0, "cleared": 0}}
     fa, fb = await fresh_asset(a.id), await fresh_asset(b.id)
     assert fa.model_id == model.id and fa.has_rails is True
     assert fa.rfid_tag == "AB12".rjust(24, "0")
@@ -199,6 +204,7 @@ async def test_rule_failure_fails_the_job_and_changes_nothing(db):
     job = await fresh_job(job_id)              # committed, seen from a new session
     assert job.status == "failed" and job.error == "rule_failed"
     assert job.finished_at is not None
+    assert job.processed_rows == 0
     assert job.results["row"] == 3
     assert job.results["rule_name"] == "Broken"
     assert "Broken" in job.results["message"]
@@ -207,6 +213,70 @@ async def test_rule_failure_fails_the_job_and_changes_nothing(db):
     assert (fb.name, fb.status) == ("old-b", "active")
     assert await db.scalar(select(func.count()).select_from(ProcessedScan)) == 0
     assert await db.scalar(select(func.count()).select_from(AuditLog)) == 0
+
+
+async def test_progress_resets_to_zero_on_rule_failure(db):
+    """A rule failure late in a big job must not leave the page showing
+    "250 of 300" beside a job that actually wrote nothing."""
+    me = await mk_person(db)
+    db.add_all([Asset(legacy_id=2000 + i, serial_number=f"SN-F{i}", status="active")
+                for i in range(300)])
+    db.add(_rule("Broken", status="racked",
+                 actions=(("set_asset_status", {"status": "no-such-status"}),)))
+    await db.commit()
+    # every row changes its pod (an update); only the last row also sets a
+    # status, so the broken rule fires only after the 250-row heartbeat
+    body = "asset_id,pod,status\n" + "".join(
+        f"{2000 + i},P{i}," + ("racked\n" if i == 299 else "\n") for i in range(300))
+    job_id = await mk_job(db, me, body, options={"approve_all": True})
+
+    assert await run_once(get_sessionmaker()) is True
+
+    job = await fresh_job(job_id)
+    assert job.status == "failed" and job.error == "rule_failed"
+    assert job.processed_rows == 0
+
+
+async def test_integrity_error_at_apply_fails_friendly(db, monkeypatch):
+    """A concurrent write (e.g. someone else's own edit landing a duplicate
+    RFID or serial) can only surface here as a raw SQL / constraint
+    IntegrityError at flush or commit. Forced directly by making the
+    apply's own commit raise one on its first call, same as the brief
+    suggests ("monkeypatch the flush") — everything must roll back and the
+    job must fail with a friendly message, never the raw SQL text."""
+    me = await mk_person(db)
+    a = await mk_asset(db, 100, "SN-A", name="old-a")
+    asset_id = a.id                 # captured before any further commit expires `a`
+    job_id = await mk_job(db, me, "asset_id,name\n100,new-a\n",
+                          options={"approve_all": True})
+    job = await db.get(ImportJob, job_id)
+
+    real_commit = db.commit
+    calls = {"n": 0}
+
+    async def flaky_commit():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise IntegrityError(
+                "UPDATE assets", {},
+                Exception('duplicate key value violates unique constraint '
+                          '"assets_rfid_uniq"'))
+        await real_commit()
+
+    monkeypatch.setattr(db, "commit", flaky_commit)
+    await bu.apply_job(db, job)
+    await db.commit()               # the caller's commit, persisting the failure
+
+    assert calls["n"] == 2
+    job = await fresh_job(job_id)
+    assert job.status == "failed" and job.error == "apply_conflict"
+    assert job.processed_rows == 0
+    assert job.finished_at is not None
+    assert job.results == {"message": bu.CONFLICT_MESSAGE}
+    assert "constraint" not in job.results["message"]        # never the raw SQL message
+    asset = await fresh_asset(asset_id)
+    assert asset.name == "old-a"                              # the update was rolled back
+    assert await db.scalar(select(func.count()).select_from(ProcessedScan)) == 0
 
 
 async def test_stale_job_fails_rows_invalid(db):
@@ -224,6 +294,7 @@ async def test_stale_job_fails_rows_invalid(db):
     job = await fresh_job(job_id)
     assert job.status == "failed" and job.error == "rows_invalid"
     assert job.finished_at is not None
+    assert job.processed_rows == 0
     [bad] = job.results["rows"]
     assert bad["row"] == 3 and bad["action"] == "error"
     assert bad["errors"] == ["Asset 101 is archived."]
@@ -245,6 +316,26 @@ async def test_stored_picks_and_skips_are_used(db):
     assert job.results["summary"] == {"updated": 1, "skipped": 1, "unchanged": 0}
     assert (await fresh_asset(a2.id)).pod_number == "P9"
     assert (await fresh_asset(a1.id)).pod_number is None
+
+
+async def test_approved_updates_and_skip_coerce_string_row_numbers(db):
+    """`approved_updates` / `skip` round-trip through JSON options; a caller
+    that sends row numbers as strings must be honored the same as ints."""
+    me = await mk_person(db)
+    a = await mk_asset(db, 100, "SN-A", name="old-a")
+    b = await mk_asset(db, 101, "SN-B", name="old-b")
+    c = await mk_asset(db, 102, "SN-C", name="old-c")
+    job_id = await mk_job(
+        db, me, "asset_id,name\n100,new-a\n101,new-b\n102,new-c\n",
+        options={"approved_updates": ["2", 3], "skip": ["4"]})
+
+    await run_once(get_sessionmaker())
+
+    job = await fresh_job(job_id)
+    assert job.status == "completed"
+    assert job.results["summary"]["updated"] == 2
+    fa, fb, fc = await fresh_asset(a.id), await fresh_asset(b.id), await fresh_asset(c.id)
+    assert (fa.name, fb.name, fc.name) == ("new-a", "new-b", "old-c")
 
 
 async def test_model_change_rechecks_placement_of_the_move(db):
@@ -270,7 +361,8 @@ async def test_model_change_rechecks_placement_of_the_move(db):
     }
     db.add_all(rows.values())
     await db.commit()
-    await mk_job(db, me, "asset_id,make,model\n100,M,4U\n", options={"approve_all": True})
+    job_id = await mk_job(db, me, "asset_id,make,model\n100,M,4U\n",
+                          options={"approve_all": True})
 
     await run_once(get_sessionmaker())
 
@@ -279,6 +371,58 @@ async def test_model_change_rechecks_placement_of_the_move(db):
         .execution_options(populate_existing=True))).all())
     assert statuses == {big.id: "location_collision", hit.id: "location_collision",
                         far.id: "location_collision"}
+    job = await fresh_job(job_id)
+    # only "move"'s two rows were restated; "other" never went through
+    # recheck_placement (its collision was already there, not one this job
+    # caused), so it isn't counted
+    assert job.results["summary"]["placement"] == {
+        "collisions": 2, "orphans": 0, "cleared": 0}
+
+
+async def test_recheck_only_covers_live_move_initiatives(db, monkeypatch):
+    me = await mk_person(db)
+    one_u = AssetModel(make="M", model="1U", ru_size=1)
+    four_u = AssetModel(make="M", model="4U", ru_size=4)
+    move = Initiative(name="Move", initiative_type="move", status="planned")
+    archived_move = Initiative(name="Archived move", initiative_type="move",
+                               status="planned", archived_at=datetime.now(UTC))
+    project = Initiative(name="Project", initiative_type="project", status="planned")
+    db.add_all([one_u, four_u, move, archived_move, project])
+    await db.flush()
+    on_move = await mk_asset(db, 100, "SN-MOVE", model_id=one_u.id)
+    on_archived = await mk_asset(db, 101, "SN-ARCH", model_id=one_u.id)
+    on_project = await mk_asset(db, 102, "SN-PROJ", model_id=one_u.id)
+    db.add_all([
+        InitiativeAsset(initiative_id=move.id, asset_id=on_move.id,
+                        status="loaded_in_system", destination_rack="R1",
+                        destination_ru=Decimal(10)),
+        InitiativeAsset(initiative_id=archived_move.id, asset_id=on_archived.id,
+                        status="loaded_in_system", destination_rack="R1",
+                        destination_ru=Decimal(10)),
+        InitiativeAsset(initiative_id=project.id, asset_id=on_project.id,
+                        status="loaded_in_system", destination_rack="R1",
+                        destination_ru=Decimal(10)),
+    ])
+    await db.commit()
+    job_id = await mk_job(
+        db, me, "asset_id,make,model\n100,M,4U\n101,M,4U\n102,M,4U\n",
+        options={"approve_all": True})
+
+    checked: list = []
+    real_recheck = bu.recheck_placement
+
+    async def spy(db_, initiative_id):
+        checked.append(initiative_id)
+        return await real_recheck(db_, initiative_id)
+
+    monkeypatch.setattr(bu, "recheck_placement", spy)
+    await run_once(get_sessionmaker())
+
+    # only the live ("move", not archived) initiative was rechecked — not
+    # the archived move, and not the non-move "project"
+    assert checked == [move.id]
+    job = await fresh_job(job_id)
+    assert job.status == "completed"
 
 
 async def test_progress_is_reported_every_250_rows(db):
@@ -298,7 +442,10 @@ async def test_progress_is_reported_every_250_rows(db):
     await bu.apply_job(db, job, progress=progress)
     await db.commit()
 
-    assert seen == [250, 500]
+    # the periodic 250 / 500 heartbeats, plus one more with the full count
+    # right before the recheck/commit tail (fix for a stale progress_at
+    # during a long placement recheck on a big job)
+    assert seen == [250, 500, 600]
     job = await fresh_job(job_id)
     assert job.status == "completed" and job.processed_rows == 600
     assert job.updated_count == 600
@@ -306,7 +453,9 @@ async def test_progress_is_reported_every_250_rows(db):
 
 async def test_worker_writes_progress_through_a_second_session(db, monkeypatch):
     """While the apply transaction is still open, each progress call is
-    already committed and visible to any other session (the page polls)."""
+    already committed and visible to any other session (the page polls) —
+    but the job's own row changes are NOT: the main transaction stays
+    uncommitted the whole time progress is being reported."""
     me = await mk_person(db)
     db.add_all([Asset(legacy_id=1000 + i, serial_number=f"SN-{i}")
                 for i in range(600)])
@@ -317,17 +466,26 @@ async def test_worker_writes_progress_through_a_second_session(db, monkeypatch):
     real_apply = bu.apply_job
     observed: list[tuple[int, int]] = []
 
+    async def watched(progress, n: int) -> None:
+        await progress(n)
+        seen = await fresh_job(job_id)
+        observed.append((seen.processed_rows, seen.total_rows))
+        # row 1 (legacy_id 1000) is one of this job's updates — proving it
+        # is still untouched in a brand-new session proves the main
+        # transaction hasn't committed yet, even though progress has
+        async with get_sessionmaker()() as fresh:
+            pod = await fresh.scalar(
+                select(Asset.pod_number).where(Asset.legacy_id == 1000))
+        assert pod is None
+
     async def spy_apply(session, job, *, progress=None):
-        async def watched(n: int) -> None:
-            await progress(n)
-            seen = await fresh_job(job_id)
-            observed.append((seen.processed_rows, seen.total_rows))
-        await real_apply(session, job, progress=watched)
+        await real_apply(session, job,
+                         progress=lambda n: watched(progress, n))
 
     monkeypatch.setattr(worker, "apply_job", spy_apply)
     await run_once(get_sessionmaker())
 
-    assert observed == [(250, 600), (500, 600)]
+    assert observed == [(250, 600), (500, 600), (600, 600)]
     job = await fresh_job(job_id)
     assert job.status == "completed" and job.processed_rows == 600
 

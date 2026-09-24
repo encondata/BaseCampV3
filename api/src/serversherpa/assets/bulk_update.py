@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import distinct, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.assets.model_index import ModelIndex, build_model_index, display_name, find_model
@@ -32,6 +33,7 @@ from serversherpa.db.models import (
     AssetModel,
     Client,
     ImportJob,
+    Initiative,
     InitiativeAsset,
     Site,
     StatusValue,
@@ -502,6 +504,21 @@ def _invalid_rows(preview: dict) -> list[dict]:
     return [r for r in preview["rows"] if r["action"] in ("attention", "error")]
 
 
+def _assets_by_id(ref: dict) -> dict[str, Asset]:
+    """Every asset `load_reference` found, keyed by id string — reused in
+    the write loop below so an approved row never re-queries an asset the
+    preview already loaded (a job can have up to 15,000 rows)."""
+    out = {str(a.id): a for a in ref["by_number"].values()}
+    for group in ref["by_serial"].values():
+        for a in group:
+            out[str(a.id)] = a
+    return out
+
+
+CONFLICT_MESSAGE = ("Another change to these assets landed while the update was applying. "
+                    "Upload the file again to see the current values.")
+
+
 async def apply_job(db: AsyncSession, job: ImportJob, *,
                     progress: Callable[[int], Awaitable[None]] | None = None) -> None:
     """All-or-nothing apply of a queued job. Re-runs the preview with the
@@ -509,7 +526,9 @@ async def apply_job(db: AsyncSession, job: ImportJob, *,
     the job (`rows_invalid`, nothing written). Otherwise writes every
     approved update (`approve_all`, or its row in `approved_updates`) in one
     transaction and commits; unapproved updates are reported as skipped. A
-    failing status rule rolls everything back (`rule_failed`).
+    failing status rule rolls everything back (`rule_failed`), and so does
+    a concurrent write landing on one of these assets between the preview
+    re-check and the flush (`apply_conflict`).
 
     `job.results["rows"]` lists only the `updated` and `skipped` rows —
     `unchanged` rows are counted in `job.results["summary"]` only, so a
@@ -520,21 +539,30 @@ async def apply_job(db: AsyncSession, job: ImportJob, *,
     committed with the data). `progress(n)` is awaited every PROGRESS_EVERY
     rows while this transaction is still open, so it must write through
     its own session — and nothing here touches the job row before the
-    final commit, so that session never waits on a lock held here."""
+    final commit, so that session never waits on a lock held here. On any
+    failure `processed_rows` is reset to 0 so the page never shows partial
+    progress next to a failed job."""
     numbered = [(r["row"], r["cells"]) for r in job.payload or []]
     opts = job.options or {}
     overrides = {int(k): v for k, v in (opts.get("overrides") or {}).items()}
-    skip = set(opts.get("skip") or [])
+    skip = {int(x) for x in opts.get("skip") or []}
     approve_all = bool(opts.get("approve_all"))
-    approved = set(opts.get("approved_updates") or [])
+    approved = {int(x) for x in opts.get("approved_updates") or []}
     actor = job.created_by
 
-    preview = await preview_rows(db, numbered, overrides=overrides, skip=skip)
+    # loaded once, up front, and kept alive for the whole apply: `preview_rows`
+    # reuses it instead of loading its own copy, and the write loop below reads
+    # every approved row's asset straight out of it instead of re-querying
+    ref = await load_reference(db, numbered)
+    assets = _assets_by_id(ref)
+
+    preview = await preview_rows(db, numbered, overrides=overrides, skip=skip, ref=ref)
     if not preview["can_commit"]:
         invalid = _invalid_rows(preview)
         job.status, job.error = "failed", "rows_invalid"
         job.error_count = len(invalid)
         job.results = {"rows": invalid}
+        job.processed_rows = 0
         job.finished_at = datetime.now(UTC)
         return
 
@@ -548,8 +576,7 @@ async def apply_job(db: AsyncSession, job: ImportJob, *,
             row_no = r["row"]
             action = r["action"]
             if action == "update" and (approve_all or row_no in approved):
-                # already in the session: load_reference put it there
-                asset = await db.get(Asset, uuid.UUID(r["asset_id"]))
+                asset = assets[r["asset_id"]]
                 changes = r["changes"]
                 before = snapshot(asset, list(changes))
                 for attr, value in changes.items():
@@ -575,12 +602,30 @@ async def apply_job(db: AsyncSession, job: ImportJob, *,
             if progress is not None and i % PROGRESS_EVERY == 0:
                 await progress(i)
 
+        if progress is not None:
+            # one more heartbeat right before the (possibly slow) recheck and
+            # commit tail, so progress_at stays fresh and the job doesn't look
+            # stale to requeue_stale while it's still being worked
+            await progress(len(preview["rows"]))
+
+        summary = dict(counts)
         if model_changed:
+            # only the initiatives currently doing a live move get restated —
+            # a project/event holding the asset, or an archived move, is left
+            # exactly as it was
+            placement = {"collisions": 0, "orphans": 0, "cleared": 0}
             moves = await db.scalars(
                 select(distinct(InitiativeAsset.initiative_id))
-                .where(InitiativeAsset.asset_id.in_(model_changed)))
+                .join(Initiative, Initiative.id == InitiativeAsset.initiative_id)
+                .where(InitiativeAsset.asset_id.in_(model_changed),
+                       Initiative.initiative_type == "move",
+                       Initiative.archived_at.is_(None)))
             for initiative_id in list(moves):
-                await recheck_placement(db, initiative_id)
+                restated = await recheck_placement(db, initiative_id)
+                placement["collisions"] += restated["collisions"]
+                placement["orphans"] += restated["orphans"]
+                placement["cleared"] += restated["cleared"]
+            summary["placement"] = placement
 
         audit(db, actor_id=actor, entity_type="asset", entity_id=None,
               action="bulk_import", changes={**counts, "source": job.filename})
@@ -588,7 +633,7 @@ async def apply_job(db: AsyncSession, job: ImportJob, *,
         job.status, job.error = "completed", None
         job.processed_rows = len(preview["rows"])
         job.updated_count = counts["updated"]
-        job.results = {"summary": counts, "rows": applied}
+        job.results = {"summary": summary, "rows": applied}
         job.progress_at = job.finished_at = finished
         await db.commit()
     except RuleExecutionError as exc:
@@ -596,7 +641,19 @@ async def apply_job(db: AsyncSession, job: ImportJob, *,
         # the rollback expired the job; reload it before writing the failure
         await db.refresh(job)
         job.status, job.error = "failed", "rule_failed"
+        job.processed_rows = 0
         job.results = {"row": row_no, "rule_name": exc.rule_name, "message": str(exc)}
+        job.finished_at = datetime.now(UTC)
+    except IntegrityError:
+        # a concurrent write (a duplicate RFID or serial landing on another
+        # row, say) can only surface here as a raw SQL / constraint message —
+        # never show that to the admin, just ask them to re-upload and see
+        # the current values
+        await db.rollback()
+        await db.refresh(job)
+        job.status, job.error = "failed", "apply_conflict"
+        job.processed_rows = 0
+        job.results = {"message": CONFLICT_MESSAGE}
         job.finished_at = datetime.now(UTC)
 
 
