@@ -22,7 +22,7 @@ export interface FixTarget { text: string; make: string; model: string }
 // No column registry pre-migration (hand-written header spans) — this
 // local REPORT_COLUMNS mirrors them in order (recipe R1), carrying the
 // widths the `.imp-report-grid` CSS template used to hold
-// (initiatives.css, now deleted in favour of the inline template).
+// (initiatives.css, now deleted in favor of the inline template).
 // Fit: default columns ≤ LIST_FIT.initPanel (1134px — the report card is
 // an .init-panel, initiatives.css: 18px padding plus a 1px border each
 // side off the measured 1174px page width, at a 1512px window with the
