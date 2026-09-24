@@ -19,7 +19,7 @@ from typing import Literal
 import jwt
 import pyotp
 from cryptography.fernet import Fernet, InvalidToken
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -29,10 +29,12 @@ from serversherpa.db.models import (
     AccessGroupMember,
     PersonRole,
     Role,
+    RolePermission,
     TotpBackupCode,
     TrustedDevice,
     UserAccount,
 )
+from serversherpa.notifications.inbox import notify
 from serversherpa.security.passwords import hash_password, verify_password
 from serversherpa.security.tokens import ISSUER as JWT_ISSUER
 from serversherpa.security.tokens import TokenError
@@ -170,9 +172,24 @@ def _match_counter(secret: str, code: str, last_counter: int | None) -> int | No
     return None
 
 
+async def _user_admin_ids(db: AsyncSession, *, exclude: uuid.UUID) -> list[uuid.UUID]:
+    """People who can manage users (a non-revoked role with users:change) and
+    hold an account, minus the person themselves — the same shape as
+    notifications/requests.py::approver_ids."""
+    rows = await db.scalars(
+        select(PersonRole.person_id).distinct()
+        .join(RolePermission, RolePermission.role == PersonRole.role)
+        .join(UserAccount, UserAccount.person_id == PersonRole.person_id)
+        .where(PersonRole.revoked_at.is_(None),
+               RolePermission.resource == "users",
+               RolePermission.action == "change",
+               PersonRole.person_id != exclude))
+    return list(rows.all())
+
+
 async def confirm_enrollment(
     db: AsyncSession, account: UserAccount, code: str, *,
-    actor_id: uuid.UUID | None, ip: str | None,
+    actor_id: uuid.UUID | None, ip: str | None, user_agent: str | None = None,
 ) -> list[str]:
     """First code from the app confirms the seed; returns the plaintext
     backup codes (shown once). Commits."""
@@ -196,6 +213,29 @@ async def confirm_enrollment(
     codes = await _replace_backup_codes(db, account.person_id)
     audit(db, actor_id=actor_id, entity_type="user_account",
           entity_id=str(account.person_id), action="totp.confirm", ip=ip)
+
+    # A correct password alone can be enough to reach this point on a
+    # required-but-unenrolled account, so make a fresh enrollment visible:
+    # the owner (in case it wasn't them) and everyone who can manage users.
+    if "person" in inspect(account).unloaded:
+        await db.refresh(account, ["person"])
+    name = account.person.display_name
+    where = f" from {ip}" if ip else ""
+    await notify(
+        db, account.person_id, "totp_enrolled", "Two-factor authentication is on",
+        body=f"An authenticator app was enrolled on your account{where}. "
+             "If this was not you, tell an admin right away.",
+        link="/me",
+        payload={"person_id": str(account.person_id), "ip": ip,
+                 "user_agent": user_agent, "self": True})
+    for admin_id in await _user_admin_ids(db, exclude=account.person_id):
+        await notify(
+            db, admin_id, "totp_enrolled", f"{name} enrolled two-factor authentication",
+            body=f"Enrolled{where}. Unexpected? Reset 2FA from their user page.",
+            link=f"/people/users/{account.person_id}",
+            payload={"person_id": str(account.person_id), "person_name": name,
+                     "ip": ip, "user_agent": user_agent, "self": False})
+
     await db.commit()
     return codes
 

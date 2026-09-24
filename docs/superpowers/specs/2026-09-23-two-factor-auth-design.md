@@ -319,6 +319,13 @@ WebAuthn/passkeys, listing/revoking individual trusted browsers, importing
 V2 `totp_*` columns through the workers import, trusted-device binding to
 sessions list.
 
+**Email-verified first enrollment (placeholder).** Once outbound email
+exists, the enroll challenge should first send a one-time link to the
+account's email and only show the QR after it is clicked, closing the
+window where a password alone can enroll an authenticator. Until then the
+in-app `totp_enrolled` notification (owner + every `users:change` holder)
+makes an unexpected enrollment visible.
+
 ## Testing
 
 **API (pytest, real Postgres):**

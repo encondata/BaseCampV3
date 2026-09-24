@@ -374,3 +374,39 @@ async def test_reset_clears_everything(db, seeded_user):
     live = list(await db.scalars(select(TrustedDevice).where(
         TrustedDevice.person_id == account.person_id, TrustedDevice.revoked_at.is_(None))))
     assert live == []
+
+
+async def test_confirm_enrollment_notifies_owner_and_user_admins(db, seeded_user):
+    """Owner gets a self-notification; every users:change holder (except the
+    enrolling person) gets a copy pointing at that person's user page."""
+    from serversherpa.db.models import Notification, Person
+    from serversherpa.security.passwords import hash_password
+
+    admin = Person(first_name="Adam", last_name="Admin", email="admin@test.example.com")
+    db.add(admin)
+    await db.flush()
+    db.add(UserAccount(
+        person_id=admin.id, email="admin@test.example.com",
+        password_hash=hash_password(
+            "CorrectHorse9!", pepper=get_settings().password_pepper.get_secret_value())))
+    db.add(PersonRole(person_id=admin.id, role="admin"))
+    await db.commit()
+
+    account = await _account(db, seeded_user)
+    secret, _uri = await totp.begin_enrollment(db, account, actor_id=account.person_id, ip=None)
+    await totp.confirm_enrollment(
+        db, account, pyotp.TOTP(secret).now(), actor_id=account.person_id,
+        ip="203.0.113.9", user_agent="UA")
+
+    own = list(await db.scalars(select(Notification).where(
+        Notification.person_id == seeded_user.id, Notification.kind == "totp_enrolled")))
+    assert len(own) == 1
+    assert own[0].link == "/me"
+    assert own[0].payload["self"] is True
+    assert "203.0.113.9" in own[0].body
+
+    admin_rows = list(await db.scalars(select(Notification).where(
+        Notification.person_id == admin.id, Notification.kind == "totp_enrolled")))
+    assert len(admin_rows) == 1
+    assert admin_rows[0].link == f"/people/users/{seeded_user.id}"
+    assert admin_rows[0].payload["self"] is False

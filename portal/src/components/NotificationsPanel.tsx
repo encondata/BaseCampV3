@@ -158,6 +158,14 @@ function KindIcon({ kind }: { kind: string }) {
       </svg>
     );
   }
+  if (kind === 'totp_enrolled') {
+    return (
+      <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 3 19 6v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6Z" /><path d="m8.8 12 2.3 2.3L15.5 9.8" />
+      </svg>
+    );
+  }
   return (
     <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
          strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

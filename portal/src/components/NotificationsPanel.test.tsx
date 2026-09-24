@@ -212,3 +212,14 @@ it('a report_ready row renders no membership strip', () => {
   expect(document.querySelector('.notif-strip')).toBeNull();
   expect(document.querySelector('.notif-outcome')).toBeNull();
 });
+
+it('a totp_enrolled row renders its title and icon', () => {
+  ctx.items = [item('a', {
+    kind: 'totp_enrolled', title: 'Two-factor authentication is on',
+    body: 'An authenticator app was enrolled on your account from 203.0.113.9.',
+    link: '/me', payload: { self: true },
+  })];
+  renderPanel();
+  expect(screen.getByText('Two-factor authentication is on')).toBeTruthy();
+  expect(document.querySelector('.notif-icon-totp_enrolled')).toBeTruthy();
+});

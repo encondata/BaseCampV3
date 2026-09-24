@@ -264,6 +264,27 @@ async def test_forced_enrollment_flow_mints_session(client, db, seeded_user):
     assert spent.status_code == 401 and spent.json()["detail"]["code"] == "invalid_challenge"
 
 
+async def test_forced_enrollment_leaves_an_inbox_notification(client, db, seeded_user):
+    """The owner reads their own totp_enrolled row back from the inbox."""
+    await _security(db, two_factor_enabled=True, two_factor_required=True)
+    login = await _login(client)
+    token = login.json()["challenge_token"]
+    hdrs = {"X-Totp-Challenge": token}
+    start = await client.post("/auth/totp/enroll/start", headers=hdrs)
+    secret = start.json()["secret"]
+    good = await client.post("/auth/totp/enroll/confirm", headers=hdrs,
+                             json={"code": pyotp.TOTP(secret).now()})
+    assert good.status_code == 200, good.text
+    access_token = good.json()["session"]["access_token"]
+    inbox = await client.get("/notifications/inbox",
+                             headers={"Authorization": f"Bearer {access_token}"})
+    assert inbox.status_code == 200, inbox.text
+    rows = [n for n in inbox.json()["items"] if n["kind"] == "totp_enrolled"]
+    assert len(rows) == 1
+    assert rows[0]["link"] == "/me"
+    assert rows[0]["payload"]["self"] is True
+
+
 async def test_verify_challenge_cannot_enroll(client, db, seeded_user):
     _secret, _codes, token = await _challenge(client, db, seeded_user)
     resp = await client.post("/auth/totp/enroll/start", headers={"X-Totp-Challenge": token})
