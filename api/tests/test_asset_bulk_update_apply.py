@@ -101,9 +101,12 @@ async def test_applies_approved_updates_and_skips_unapproved(db):
     # shouldn't store 15,000 result rows for no-op rows)
     assert {r["row"] for r in job.results["rows"]} == {2, 3}
     rows = {r["row"]: r for r in job.results["rows"]}
-    assert rows[2] == {"row": 2, "name": "old-a", "asset_id": str(a.id), "action": "updated",
+    assert rows[2] == {"row": 2, "name": "old-a", "asset_id": str(a.id), "asset_number": 100,
+                       "action": "updated",
                        "diff": {"name": {"old": "old-a", "new": "new-a"},
                                 "pod": {"old": None, "new": "P1"}}}
+    assert rows[3]["asset_number"] == 101
+    assert job.payload is None                 # the parsed file is dropped once done
     assert rows[3]["action"] == "skipped"
     assert rows[3]["diff"] == {"name": {"old": "old-b", "new": "new-b"}}
 
@@ -213,6 +216,39 @@ async def test_rule_failure_fails_the_job_and_changes_nothing(db):
     assert (fb.name, fb.status) == ("old-b", "active")
     assert await db.scalar(select(func.count()).select_from(ProcessedScan)) == 0
     assert await db.scalar(select(func.count()).select_from(AuditLog)) == 0
+    assert job.payload is None
+    # the rollback took the rule's own execution row with it; one error row
+    # is stamped afterwards so the rules admin UI shows the failure
+    [ex] = (await db.scalars(select(StatusRuleExecution))).all()
+    assert ex.rule_name == "Broken" and ex.processed_scan_id is None
+    assert ex.error and "Broken" in ex.error
+
+
+async def test_a_failing_rule_failure_stamp_never_masks_rule_failed(db, monkeypatch):
+    """The stamp is best-effort: if its own session can't write, the job
+    still fails cleanly as rule_failed."""
+    from serversherpa.db import engine
+
+    me = await mk_person(db)
+    await mk_asset(db, 100, "SN-A", status="active")
+    db.add(_rule("Broken", status="racked",
+                 actions=(("set_asset_status", {"status": "no-such-status"}),)))
+    await db.commit()
+    job_id = await mk_job(db, me, "asset_id,status\n100,racked\n",
+                          options={"approve_all": True})
+    job = await db.get(ImportJob, job_id)
+
+    def broken_sessionmaker():
+        raise RuntimeError("no database")
+
+    monkeypatch.setattr(engine, "get_sessionmaker", broken_sessionmaker)
+    await bu.apply_job(db, job)
+    await db.commit()
+    monkeypatch.undo()
+
+    job = await fresh_job(job_id)
+    assert job.status == "failed" and job.error == "rule_failed"
+    assert await db.scalar(select(func.count()).select_from(StatusRuleExecution)) == 0
 
 
 async def test_progress_resets_to_zero_on_rule_failure(db):
@@ -277,6 +313,7 @@ async def test_integrity_error_at_apply_fails_friendly(db, monkeypatch):
     asset = await fresh_asset(asset_id)
     assert asset.name == "old-a"                              # the update was rolled back
     assert await db.scalar(select(func.count()).select_from(ProcessedScan)) == 0
+    assert job.payload is None
 
 
 async def test_stale_job_fails_rows_invalid(db):
@@ -298,6 +335,8 @@ async def test_stale_job_fails_rows_invalid(db):
     [bad] = job.results["rows"]
     assert bad["row"] == 3 and bad["action"] == "error"
     assert bad["errors"] == ["Asset 101 is archived."]
+    assert "changes" not in bad
+    assert job.payload is None
     assert (await fresh_asset(a.id)).name == "old-a"
 
 
@@ -519,8 +558,26 @@ async def test_cancel_requested_before_claim_cancels(db):
     job.cancel_requested = True
     await db.commit()
     await run_once(get_sessionmaker())
-    assert (await fresh_job(job_id)).status == "cancelled"
+    job = await fresh_job(job_id)
+    assert job.status == "cancelled" and job.payload is None
     assert (await db.scalar(select(Asset.name).where(Asset.legacy_id == 100))) == "old-a"
+
+
+async def test_an_unexpected_worker_error_fails_the_job_and_drops_its_payload(db, monkeypatch):
+    me = await mk_person(db)
+    await mk_asset(db, 100, "SN-A", name="old-a")
+    job_id = await mk_job(db, me, "asset_id,name\n100,new-a\n", options={"approve_all": True})
+
+    async def boom(session, job, *, progress=None):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(worker, "apply_job", boom)
+    assert await run_once(get_sessionmaker()) is True
+
+    job = await fresh_job(job_id)
+    assert job.status == "failed" and job.error == "worker_error: disk on fire"
+    assert job.finished_at is not None
+    assert job.payload is None
 
 
 async def test_a_preview_job_is_never_claimed_or_requeued(db):

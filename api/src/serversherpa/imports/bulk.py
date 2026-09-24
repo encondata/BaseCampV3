@@ -11,6 +11,7 @@ import csv
 import io
 import json
 import re
+from itertools import islice
 from typing import Any
 
 MAX_ROWS = 1000
@@ -103,8 +104,10 @@ def parse_upload(filename: str, content: bytes, columns: list[str], sheet: str,
         if reader.fieldnames is None:
             raise BulkImportError("invalid_csv")
         check_columns([f.strip() for f in reader.fieldnames if f], columns)
+        # read one row past the limit and stop: `numbered` still raises
+        # too_many_rows exactly as before, without building every row first
         rows = [{(k or "").strip(): v for k, v in r.items() if k}
-                for r in reader]
+                for r in islice(reader, max_rows + 1)]
         return numbered(rows, 2, columns, max_rows=max_rows)
     if name.endswith(".xlsx"):
         import openpyxl
@@ -113,13 +116,19 @@ def parse_upload(filename: str, content: bytes, columns: list[str], sheet: str,
                                         read_only=True, data_only=True)
         except Exception:
             raise BulkImportError("invalid_xlsx") from None
-        ws = wb[sheet] if sheet in wb.sheetnames else wb.worksheets[0]
-        lines = ws.iter_rows(values_only=True)
-        header = [cell(h) for h in (next(lines, None) or tuple())]
-        if not any(header):
-            raise BulkImportError("invalid_xlsx")
-        check_columns([h for h in header if h], columns)
-        rows = [{h: v for h, v in zip(header, line) if h} for line in lines]
+        try:
+            ws = wb[sheet] if sheet in wb.sheetnames else wb.worksheets[0]
+            lines = ws.iter_rows(values_only=True)
+            header = [cell(h) for h in (next(lines, None) or tuple())]
+            if not any(header):
+                raise BulkImportError("invalid_xlsx")
+            check_columns([h for h in header if h], columns)
+            # one row past the limit is enough for `numbered` to raise
+            # too_many_rows; never build the rest of an oversized sheet
+            rows = [{h: v for h, v in zip(header, line) if h}
+                    for line in islice(lines, max_rows + 1)]
+        finally:
+            wb.close()
         return numbered(rows, 2, columns, max_rows=max_rows)
     raise BulkImportError("unsupported_file")
 

@@ -61,6 +61,8 @@ async def process_job(db: AsyncSession, job: ImportJob) -> None:
     """Run one claimed (status='running') job to a terminal status."""
     if job.cancel_requested:
         _finish(job, "cancelled")
+        if job.kind == ASSET_BULK_UPDATE:
+            job.payload = None
         await db.commit()
         return
     if job.kind == ASSET_BULK_UPDATE:
@@ -132,6 +134,7 @@ async def run_once(sessionmaker) -> bool:
         job = await claim_next(db)
         if job is None:
             return False
+        kind = job.kind                  # read now: a rollback below expires the row
         logger.info("claimed job %s (%s phase=%s)",
                     job.id, job.filename, job.phase)
         try:
@@ -140,6 +143,8 @@ async def run_once(sessionmaker) -> bool:
             logger.exception("job %s failed in worker: %s", job.id, exc)
             await db.rollback()
             _finish(job, "failed", f"worker_error: {exc}")
+            if kind == ASSET_BULK_UPDATE:
+                job.payload = None       # the parsed file is never read again
             await db.commit()
         logger.info("job %s finished status=%s rows=%s",
                     job.id, job.status, job.processed_rows)

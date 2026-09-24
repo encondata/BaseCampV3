@@ -236,3 +236,94 @@ async def test_get_asset_by_id_still_works(client, db, seeded_user, admin_hdrs):
     resp = await client.get(f"/assets/{a.id}", headers=admin_hdrs)
     assert resp.status_code == 200
     assert resp.json()["id"] == str(a.id)
+
+
+async def test_cancel_marks_cancel_requested_and_drops_the_payload(
+        client, db, seeded_user, admin_hdrs):
+    a = await mk_asset(db, 100, "SN-A", name="old-a")
+    resp = await upload(client, admin_hdrs, CSV + f"{a.legacy_id},,new-a,,,,,,,,,,\n")
+    job_id = resp.json()["job_id"]
+    await client.post(f"{base(job_id)}/commit", headers=admin_hdrs, json={"approve_all": True})
+
+    cancel = await client.post(f"{base(job_id)}/cancel", headers=admin_hdrs)
+    assert cancel.status_code == 204
+    job = await db.get(ImportJob, uuid.UUID(job_id))
+    await db.refresh(job)
+    assert job.status == "cancelled" and job.cancel_requested is True
+    assert job.payload is None
+
+    from serversherpa.db.engine import get_sessionmaker
+    assert await run_once(get_sessionmaker()) is False          # never claimed
+    assert (await db.scalar(select(Asset.name).where(Asset.legacy_id == 100))) == "old-a"
+
+
+async def test_cancel_waits_for_a_claim_holding_the_row_then_refuses(
+        client, db, seeded_user, admin_hdrs):
+    """The cancel re-reads the job FOR UPDATE: while a worker's claim holds
+    the row it waits, then sees `running` and refuses — it can never flip a
+    job the worker already took."""
+    import asyncio
+
+    from serversherpa.db.engine import get_sessionmaker
+
+    a = await mk_asset(db, 100, "SN-A", name="old-a")
+    resp = await upload(client, admin_hdrs, CSV + f"{a.legacy_id},,new-a,,,,,,,,,,\n")
+    job_id = resp.json()["job_id"]
+    await client.post(f"{base(job_id)}/commit", headers=admin_hdrs, json={"approve_all": True})
+
+    async with get_sessionmaker()() as worker_db:
+        claimed = await worker_db.scalar(
+            select(ImportJob).where(ImportJob.id == uuid.UUID(job_id)).with_for_update())
+        claimed.status = "running"
+        await worker_db.flush()                 # row locked, claim not yet committed
+        cancel = asyncio.create_task(
+            client.post(f"{base(job_id)}/cancel", headers=admin_hdrs))
+        await asyncio.sleep(0.5)
+        assert not cancel.done()                # blocked on the claim's row lock
+        await worker_db.commit()
+    resp = await cancel
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "job_not_cancellable"
+    job = await db.get(ImportJob, uuid.UUID(job_id))
+    await db.refresh(job)
+    assert job.status == "running" and job.cancel_requested is False
+
+
+@pytest.mark.parametrize("path", ["preview", "commit"])
+@pytest.mark.parametrize("payload", [[], "x", 7, None])
+async def test_a_non_object_body_is_422_invalid_json(
+        client, db, seeded_user, admin_hdrs, path, payload):
+    resp = await upload(client, admin_hdrs, CSV)
+    job_id = resp.json()["job_id"]
+    bad = await client.post(f"{base(job_id)}/{path}", headers=admin_hdrs, json=payload)
+    assert bad.status_code == 422, bad.text
+    assert bad.json()["detail"]["code"] == "invalid_json"
+
+
+@pytest.mark.parametrize("value", ["false", "true", 1, "yes"])
+async def test_approve_all_must_be_exactly_true(client, db, seeded_user, admin_hdrs, value):
+    a = await mk_asset(db, 100, "SN-A", name="old-a")
+    resp = await upload(client, admin_hdrs, CSV + f"{a.legacy_id},,new-a,,,,,,,,,,\n")
+    job_id = resp.json()["job_id"]
+    commit = await client.post(f"{base(job_id)}/commit", headers=admin_hdrs,
+                               json={"approve_all": value})
+    assert commit.status_code == 200, commit.text
+    assert commit.json()["options"]["approve_all"] is False
+
+    from serversherpa.db.engine import get_sessionmaker
+    assert await run_once(get_sessionmaker()) is True
+    job = (await client.get(base(job_id), headers=admin_hdrs)).json()
+    assert job["results"]["summary"] == {"updated": 0, "skipped": 1, "unchanged": 0}
+    assert (await db.scalar(select(Asset.name).where(Asset.legacy_id == 100))) == "old-a"
+
+
+async def test_preview_rows_do_not_ship_the_internal_changes_map(
+        client, db, seeded_user, admin_hdrs):
+    a = await mk_asset(db, 100, "SN-A", name="old-a")
+    resp = await upload(client, admin_hdrs, CSV + f"{a.legacy_id},,new-a,,,,,,,,,,\n")
+    [row] = resp.json()["preview"]["rows"]
+    assert row["diff"] == {"name": {"old": "old-a", "new": "new-a"}}
+    assert "changes" not in row
+    again = await client.post(f"{base(resp.json()['job_id'])}/preview",
+                              headers=admin_hdrs, json={})
+    assert all("changes" not in r for r in again.json()["rows"])

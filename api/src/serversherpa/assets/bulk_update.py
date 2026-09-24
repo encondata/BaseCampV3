@@ -41,7 +41,11 @@ from serversherpa.db.models import (
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import BulkImportError
 from serversherpa.racks.recheck import recheck_placement
-from serversherpa.scans.manual import SOURCE_ASSET_BULK_UPDATE, record_asset_status_edit
+from serversherpa.scans.manual import (
+    SOURCE_ASSET_BULK_UPDATE,
+    record_asset_status_edit,
+    stamp_rule_failure,
+)
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.status_rules.engine import RuleExecutionError
 
@@ -185,14 +189,20 @@ async def load_reference(db: AsyncSession, numbered: list[tuple[int, dict]]) -> 
                                     Asset.archived_at.is_(None))
                 .order_by(Asset.legacy_id)):
             by_serial.setdefault((a.serial_number or "").lower(), []).append(a)
-    rfid: dict[str, Asset] = {}
+    rfid: dict[str, list[Asset]] = {}
     if tags:
         # a physical tag is unique regardless of stored padding: compare by
-        # the zero-stripped, upper-cased key on both sides
+        # the zero-stripped, upper-cased key on both sides. One key can have
+        # several holders (the same tag stored padded on one asset and
+        # unpadded on another, which assets_rfid_uniq can't see), so keep
+        # them all — live before archived, then by Asset ID, so the asset an
+        # error names never depends on load order. Archived holders count:
+        # the unique index covers archived rows too.
         keys = {_rfid_key(t) for t in tags}
         for a in await db.scalars(
-                select(Asset).where(func.upper(func.ltrim(Asset.rfid_tag, "0")).in_(keys))):
-            rfid[_rfid_key(a.rfid_tag or "")] = a
+                select(Asset).where(func.upper(func.ltrim(Asset.rfid_tag, "0")).in_(keys))
+                .order_by(Asset.archived_at.is_not(None), Asset.legacy_id)):
+            rfid.setdefault(_rfid_key(a.rfid_tag or ""), []).append(a)
     new_serial_holders: dict[str, Asset] = {}
     if new_serials:
         for a in await db.scalars(
@@ -376,20 +386,19 @@ def _resolve_row(ref: dict, n: int, row: dict, picks: dict[str, str]) -> dict:
         if tag is None:
             errors.append(f"RFID tag '{row['rfid_tag']}' is not valid.")
         else:
-            holder = ref["rfid"].get(_rfid_key(tag))
+            holders = ref["rfid"].get(_rfid_key(tag), [])
             # a row whose asset is still ambiguous (pending a pick) may have
             # its typed tag held by one of its own candidates; don't error
             # against that yet — let the pick decide, then re-check
             candidate_ids = {c["id"] for i in issues if i["field"] == "asset"
                              for c in i["candidates"]}
-            if holder is not None and asset is not None and holder.id == asset.id:
-                if _rfid_key(asset.rfid_tag or "") != _rfid_key(tag):
-                    change("rfid_tag", "rfid_tag", tag, asset.rfid_tag, tag)
-            elif holder is not None and asset is None and str(holder.id) in candidate_ids:
+            if asset is not None and any(h.id == asset.id for h in holders):
+                pass            # the row's own asset already holds this tag
+            elif asset is None and any(str(h.id) in candidate_ids for h in holders):
                 pass
-            elif holder is not None:
+            elif holders:
                 errors.append(f"RFID tag {row['rfid_tag']} is already on asset "
-                              f"{holder.legacy_id}.")
+                              f"{holders[0].legacy_id}.")
             elif asset is not None and _rfid_key(asset.rfid_tag or "") != _rfid_key(tag):
                 change("rfid_tag", "rfid_tag", tag, asset.rfid_tag, tag)
 
@@ -488,11 +497,17 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
             "can_commit": bool(out) and counts["attention"] == 0 and counts["error"] == 0}
 
 
+def public_row(row: dict) -> dict:
+    """A preview row as the API serves it: without `changes`, the internal
+    attribute → value map apply writes from (the portal shows `diff`)."""
+    return {k: v for k, v in row.items() if k != "changes"}
+
+
 def listing(preview: dict) -> dict:
     """The API payload: `unchanged` rows are only counted; the rest are
     listed attention first, then errors, updates, skips (by line within
     each)."""
-    rows = sorted((r for r in preview["rows"] if r["action"] != "unchanged"),
+    rows = sorted((public_row(r) for r in preview["rows"] if r["action"] != "unchanged"),
                   key=lambda r: (LISTING_ORDER[r["action"]], r["row"]))
     return {"rows": rows, "counts": preview["counts"], "can_commit": preview["can_commit"],
             "total": len(preview["rows"])}
@@ -500,8 +515,8 @@ def listing(preview: dict) -> dict:
 
 # ── apply ───────────────────────────────────────────────────────────
 
-def _invalid_rows(preview: dict) -> list[dict]:
-    return [r for r in preview["rows"] if r["action"] in ("attention", "error")]
+def invalid_rows(preview: dict) -> list[dict]:
+    return [public_row(r) for r in preview["rows"] if r["action"] in ("attention", "error")]
 
 
 def _assets_by_id(ref: dict) -> dict[str, Asset]:
@@ -541,7 +556,10 @@ async def apply_job(db: AsyncSession, job: ImportJob, *,
     its own session — and nothing here touches the job row before the
     final commit, so that session never waits on a lock held here. On any
     failure `processed_rows` is reset to 0 so the page never shows partial
-    progress next to a failed job."""
+    progress next to a failed job.
+
+    Every terminal state set here also drops `job.payload` (the whole
+    parsed file): nothing reads it once the job is done."""
     numbered = [(r["row"], r["cells"]) for r in job.payload or []]
     opts = job.options or {}
     overrides = {int(k): v for k, v in (opts.get("overrides") or {}).items()}
@@ -558,10 +576,11 @@ async def apply_job(db: AsyncSession, job: ImportJob, *,
 
     preview = await preview_rows(db, numbered, overrides=overrides, skip=skip, ref=ref)
     if not preview["can_commit"]:
-        invalid = _invalid_rows(preview)
+        invalid = invalid_rows(preview)
         job.status, job.error = "failed", "rows_invalid"
         job.error_count = len(invalid)
         job.results = {"rows": invalid}
+        job.payload = None
         job.processed_rows = 0
         job.finished_at = datetime.now(UTC)
         return
@@ -598,7 +617,8 @@ async def apply_job(db: AsyncSession, job: ImportJob, *,
             counts[result] += 1
             if result != "unchanged":
                 applied.append({"row": row_no, "name": r["name"], "asset_id": r["asset_id"],
-                                "action": result, "diff": r["diff"]})
+                                "asset_number": r["asset_number"], "action": result,
+                                "diff": r["diff"]})
             if progress is not None and i % PROGRESS_EVERY == 0:
                 await progress(i)
 
@@ -634,15 +654,20 @@ async def apply_job(db: AsyncSession, job: ImportJob, *,
         job.processed_rows = len(preview["rows"])
         job.updated_count = counts["updated"]
         job.results = {"summary": summary, "rows": applied}
+        job.payload = None
         job.progress_at = job.finished_at = finished
         await db.commit()
     except RuleExecutionError as exc:
         await db.rollback()
         # the rollback expired the job; reload it before writing the failure
         await db.refresh(job)
+        # the rollback took the rule's own execution row with it; leave the
+        # rules admin UI an error row (fresh session, best-effort)
+        await stamp_rule_failure(exc)
         job.status, job.error = "failed", "rule_failed"
         job.processed_rows = 0
         job.results = {"row": row_no, "rule_name": exc.rule_name, "message": str(exc)}
+        job.payload = None
         job.finished_at = datetime.now(UTC)
     except IntegrityError:
         # a concurrent write (a duplicate RFID or serial landing on another
@@ -654,6 +679,7 @@ async def apply_job(db: AsyncSession, job: ImportJob, *,
         job.status, job.error = "failed", "apply_conflict"
         job.processed_rows = 0
         job.results = {"message": CONFLICT_MESSAGE}
+        job.payload = None
         job.finished_at = datetime.now(UTC)
 
 

@@ -8,15 +8,21 @@ no location, and Asset.last_seen_at is left alone.
 
 A status set by "Update assets in bulk" is the same event without a
 roster row to anchor it: record_asset_status_edit lets the engine resolve
-the initiative context the way it does for a scanner read."""
+the initiative context the way it does for a scanner read.
 
+Either caller rolls back on a RuleExecutionError; stamp_rule_failure then
+leaves the error execution row the rules admin UI shows."""
+
+import logging
 import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import Asset, InitiativeAsset, ProcessedScan
-from serversherpa.status_rules.engine import apply_rules
+from serversherpa.db.models import Asset, InitiativeAsset, ProcessedScan, StatusRuleExecution
+from serversherpa.status_rules.engine import RuleExecutionError, apply_rules
+
+logger = logging.getLogger(__name__)
 
 SOURCE_INITIATIVE_ASSET_EDIT = "initiative_asset_edit"
 SOURCE_ASSET_BULK_UPDATE = "asset_bulk_update"
@@ -65,3 +71,24 @@ async def _add_scan(db: AsyncSession, *, asset: Asset, status: str,
     db.add(scan)
     await db.flush()
     return scan
+
+
+async def stamp_rule_failure(err: RuleExecutionError) -> None:
+    """A failing rule on a status-edit path (a roster status edit, a bulk
+    asset update) rolls back the caller's whole transaction — no scan, no
+    status change — which leaves no trace for the rules admin UI. Stamp an
+    error execution row in a FRESH, short-lived transaction (the caller's
+    session was just rolled back and the scan never committed), mirroring
+    scans/worker.py::_stamp_error. Best-effort: any failure here is logged
+    and swallowed so it never masks the error the caller reports."""
+    from serversherpa.db.engine import get_sessionmaker
+
+    try:
+        async with get_sessionmaker()() as fresh:
+            fresh.add(StatusRuleExecution(
+                rule_id=err.rule_id, rule_name=err.rule_name,
+                processed_scan_id=None, conditions_met=True,
+                actions_applied=[], error=str(err)[:2000]))
+            await fresh.commit()
+    except Exception:
+        logger.exception("failed to record rule-failure execution")

@@ -358,6 +358,30 @@ async def test_archived_rfid_holder_still_blocks(db):
     assert r["errors"] == ["RFID tag 100999 is already on asset 100200."]
 
 
+@pytest.mark.parametrize("own_first", [True, False])
+async def test_own_padded_rfid_with_an_unpadded_archived_twin_is_unchanged(db, own_first):
+    """The row's own asset holds the tag padded while an archived (V2)
+    asset holds the same physical tag unpadded — the unique index can't see
+    the pair. Whichever holder sorts first, an exported row re-uploads as
+    unchanged: the row's own asset is never "another" holder."""
+    own_number, twin_number = (100123, 100900) if own_first else (100900, 100123)
+    await mk_asset(db, twin_number, "SN-V2", rfid_tag="100348", archived=True)
+    await mk_asset(db, own_number, "SN-OWN", rfid_tag=PAD + "100348")
+    for typed in (PAD + "100348", "100348"):
+        r = await one(db, {"asset_id": str(own_number), "rfid_tag": typed})
+        assert r["action"] == "unchanged", (typed, r)
+        assert r["errors"] == []
+
+
+async def test_rfid_on_two_other_holders_names_the_live_one_first(db):
+    await mk_asset(db, 100123, "SN-1")
+    await mk_asset(db, 100100, "SN-OLD", rfid_tag="100348", archived=True)   # lower ID
+    await mk_asset(db, 100500, "SN-LIVE", rfid_tag=PAD + "100348")
+    r = await one(db, {"asset_id": "100123", "rfid_tag": "100348"})
+    assert r["action"] == "error"
+    assert r["errors"] == ["RFID tag 100348 is already on asset 100500."]
+
+
 async def test_ambiguous_serial_rfid_held_by_a_candidate_defers_to_the_pick(db):
     a = await mk_asset(db, 100123, "DUP-1", name="alpha", rfid_tag="100348")
     b = await mk_asset(db, 100124, "DUP-1", name="beta")
@@ -561,6 +585,12 @@ async def test_listing_omits_unchanged_and_orders_rows(db):
     assert out["counts"]["unchanged"] == 1
     assert out["total"] == 6
     assert out["can_commit"] is False
+    # the internal attribute → value map stays on the preview rows (apply
+    # writes from it) but never ships in the API listing
+    assert all("changes" not in r for r in out["rows"])
+    [update] = [r for r in p["rows"] if r["action"] == "update"]
+    assert update["changes"] == {"pod_number": "P1"}
+    assert all("changes" not in r for r in bu.invalid_rows(p))
 
 
 # ── model index ─────────────────────────────────────────────────────

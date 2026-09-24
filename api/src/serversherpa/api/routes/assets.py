@@ -131,10 +131,15 @@ async def _bulk_job(db: DbSession, job_id: uuid.UUID, actor: AuthContext) -> Imp
 
 
 async def _bulk_body(request: Request) -> dict:
+    """The JSON body as an object; anything else (bad JSON, a list, a bare
+    string) is 422 `invalid_json`."""
     try:
-        return await request.json()
+        body = await request.json()
     except ValueError:
         raise _err(422, "invalid_json") from None
+    if not isinstance(body, dict):
+        raise _err(422, "invalid_json")
+    return body
 
 
 def _bulk_picks(body: dict) -> tuple[dict[int, dict[str, str]], set[int]]:
@@ -256,13 +261,13 @@ async def commit_bulk_update_job(
         approved = bulk_update.parse_row_list(body.get("approved_updates"), "invalid_approved")
     except bulk_update.BulkImportError as exc:
         raise bulk_http_error(exc) from None
-    approve_all = bool(body.get("approve_all"))
+    # exactly true — a string like "false" must never approve every row
+    approve_all = body.get("approve_all") is True
 
     numbered = [(r["row"], r["cells"]) for r in job.payload or []]
     preview = await bulk_update.preview_rows(db, numbered, overrides=overrides, skip=skip)
     if not preview["can_commit"]:
-        invalid = [r for r in preview["rows"] if r["action"] in ("attention", "error")]
-        raise _err(422, "rows_invalid", rows=invalid)
+        raise _err(422, "rows_invalid", rows=bulk_update.invalid_rows(preview))
 
     job.options = {"overrides": {str(k): v for k, v in overrides.items()},
                    "skip": sorted(skip), "approved_updates": sorted(approved),
@@ -295,10 +300,17 @@ async def cancel_bulk_update_job(
 ) -> None:
     require_bulk_rank(actor)
     _require_global(actor)
-    job = await _bulk_job(db, job_id, actor)
-    if job.status not in ("preview", "queued"):
+    await _bulk_job(db, job_id, actor)
+    # re-read under a row lock before checking the status: the worker's
+    # claim_next takes the same row FOR UPDATE SKIP LOCKED, so a cancel and
+    # a claim serialize — either the claim wins (the job is running → 409)
+    # or the cancel does (the claim skips the row, then sees it cancelled)
+    job = await db.get(ImportJob, job_id, with_for_update=True, populate_existing=True)
+    if job is None or job.status not in ("preview", "queued"):
         raise _err(409, "job_not_cancellable")
     job.status = "cancelled"
+    job.cancel_requested = True
+    job.payload = None                  # the parsed file is never read again
     job.finished_at = datetime.now(UTC)
     await db.commit()
 
