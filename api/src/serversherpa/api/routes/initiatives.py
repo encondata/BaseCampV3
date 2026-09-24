@@ -11,12 +11,13 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import PurePosixPath
 
-from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.scope import scope_conditions
+from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
     ImportJobOut, InitiativeAssetOut, InitiativeAssetsAddIn,
@@ -34,6 +35,7 @@ from serversherpa.db.models import (
 from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx,
 )
+from serversherpa.people import team_bulk
 from serversherpa.racks.recheck import recheck_placement
 from serversherpa.scans.manual import record_status_edit
 from serversherpa.services.audit import audit, diff, snapshot
@@ -558,6 +560,110 @@ async def add_initiative_person(
         await db.rollback()
         raise _err(409, "duplicate_person") from None
     return await _people_rows(db, initiative_id, actor)
+
+
+# ── bulk assign people to a job ─────────────────────────────────────
+
+_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _attachment(filename: str) -> dict[str, str]:
+    return {"Content-Disposition": f'attachment; filename="{filename}"'}
+
+
+async def _bulk_job(db: DbSession, initiative_id: uuid.UUID, actor: AuthContext) -> Initiative:
+    require_bulk_rank(actor)
+    job = await _get_initiative(db, initiative_id, actor)
+    _require_global(actor)
+    if job.archived_at is not None:
+        raise _err(409, "initiative_archived")
+    return job
+
+
+async def _team_bulk_body(request: Request) -> tuple[list, dict, set, dict]:
+    """(numbered rows, overrides, skip, raw body). Multipart = a first file
+    preview (no picks yet); JSON = a re-preview or commit that re-posts the
+    preview's cells with the spreadsheet row numbers."""
+    try:
+        if request.headers.get("content-type", "").startswith("multipart/"):
+            form = await request.form()
+            upload = form.get("file")
+            if upload is None or isinstance(upload, str):
+                raise team_bulk.BulkImportError("missing_file")
+            numbered = team_bulk.parse_upload(upload.filename or "", await upload.read())
+            return numbered, {}, set(), {}
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise team_bulk.BulkImportError("invalid_json")
+        numbered = team_bulk.number_posted_rows(body.get("rows"), body.get("row_numbers"))
+        overrides = team_bulk.parse_overrides(body.get("overrides"))
+        skip = team_bulk.parse_row_list(body.get("skip"), "invalid_skip")
+        return numbered, overrides, skip, body
+    except team_bulk.BulkImportError as exc:
+        raise bulk_http_error(exc) from None
+    except ValueError:
+        raise _err(422, "invalid_json") from None
+
+
+@router.get("/{initiative_id}/people/bulk/template")
+async def team_bulk_template(
+    initiative_id: uuid.UUID, db: DbSession, format: str = "csv",
+    actor: AuthContext = require_permission("initiatives", "change"),
+):
+    await _bulk_job(db, initiative_id, actor)
+    if format == "csv":
+        return Response(team_bulk.build_template_csv(), media_type="text/csv",
+                        headers=_attachment("team-template.csv"))
+    if format == "xlsx":
+        return Response(await team_bulk.build_template_xlsx(db), media_type=_XLSX,
+                        headers=_attachment("team-template.xlsx"))
+    raise _err(422, "unknown_format")
+
+
+@router.get("/{initiative_id}/people/bulk/export")
+async def team_bulk_export(
+    initiative_id: uuid.UUID, db: DbSession, format: str = "xlsx",
+    actor: AuthContext = require_permission("initiatives", "change"),
+):
+    """The job's current team in the template layout — edit, re-upload."""
+    await _bulk_job(db, initiative_id, actor)
+    if format == "csv":
+        rows = await team_bulk.export_rows(db, initiative_id)
+        return Response(team_bulk.build_rows_csv(rows), media_type="text/csv",
+                        headers=_attachment("team-export.csv"))
+    if format == "xlsx":
+        return Response(await team_bulk.build_export_xlsx(db, initiative_id),
+                        media_type=_XLSX, headers=_attachment("team-export.xlsx"))
+    raise _err(422, "unknown_format")
+
+
+@router.post("/{initiative_id}/people/bulk/preview")
+async def team_bulk_preview(
+    initiative_id: uuid.UUID, request: Request, db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> dict:
+    await _bulk_job(db, initiative_id, actor)
+    numbered, overrides, skip, _ = await _team_bulk_body(request)
+    return await team_bulk.preview_rows(db, initiative_id, numbered,
+                                        overrides=overrides, skip=skip)
+
+
+@router.post("/{initiative_id}/people/bulk/commit")
+async def team_bulk_commit(
+    initiative_id: uuid.UUID, request: Request, db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "change"),
+) -> dict:
+    await _bulk_job(db, initiative_id, actor)
+    if not request.headers.get("content-type", "").startswith("application/json"):
+        raise _err(422, "invalid_json")
+    numbered, overrides, skip, body = await _team_bulk_body(request)
+    try:
+        approved = team_bulk.parse_row_list(body.get("approved_updates"), "invalid_approved")
+        return await team_bulk.commit_rows(
+            db, actor.person.id, initiative_id, numbered, overrides=overrides, skip=skip,
+            approved_updates=approved, source_label=str(body.get("source") or "upload"))
+    except team_bulk.BulkImportError as exc:
+        raise bulk_http_error(exc) from None
 
 
 async def _get_assignment(db: DbSession, assoc_id: uuid.UUID,

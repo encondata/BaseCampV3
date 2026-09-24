@@ -15,6 +15,10 @@
   margin: 0 0 12px;
 }
 
+/* BulkToolPage's optional intro under the hint (the job picker on
+   /bulk/initiative-people) — a .bulk-file-row, kept to a field's width */
+.bulk-intro { margin-top: 18px; max-width: 360px; }
+
 /* ── bulk import pane ─────────────────────────────────────────── */
 
 .bulk-import { display: flex; flex-direction: column; gap: 12px; }
@@ -37,6 +41,9 @@
 .bulk-diff { display: flex; flex-direction: column; gap: 2px; }
 .bulk-diff span { color: var(--muted, #51606f); }
 .bulk-diff label { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+/* a row action (Clear picks) keeps its button size — the column flex
+   would otherwise stretch it across the cell like a text field */
+.bulk-diff .mini-btn { align-self: flex-start; margin-top: 2px; }
 
 /* the apply summary reuses the preview's table styling but has its own
    column order (Row / Site / Result / Changes) — Result is the 3rd td,

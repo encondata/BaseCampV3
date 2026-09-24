@@ -12,6 +12,7 @@ import AssetDetail from './pages/AssetDetail';
 import AssetModels from './pages/AssetModels';
 import Audit from './pages/Audit';
 import BulkActions from './pages/BulkActions';
+import BulkInitiativePeople from './pages/BulkInitiativePeople';
 import BulkSites from './pages/BulkSites';
 import BulkTrucks from './pages/BulkTrucks';
 import BulkWorkers from './pages/BulkWorkers';
@@ -211,6 +212,9 @@ export default function App() {
                 } />
                 <Route path="/bulk/trucks" element={
                   <ProtectedRoute resource="trucks" minRank={ADMIN_RANK}><BulkTrucks /></ProtectedRoute>
+                } />
+                <Route path="/bulk/initiative-people" element={
+                  <ProtectedRoute resource="initiatives" minRank={ADMIN_RANK}><BulkInitiativePeople /></ProtectedRoute>
                 } />
                 <Route path="/system/processes/:name/logs" element={
                   <ProtectedRoute resource="devtools"><ProcessLogs /></ProtectedRoute>

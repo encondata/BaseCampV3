@@ -1,6 +1,7 @@
 /**
  * BulkToolPage — the page shell every Bulk Actions tool shares: title and
- * hint, the column guide, the template / export downloads with the upload
+ * hint (plus an optional intro, e.g. a job picker, right under it), the
+ * column guide, the template / export downloads with the upload
  * limit note, and an Upload section holding the tool's own pane.
  */
 import { useState, type ReactNode } from 'react';
@@ -9,17 +10,19 @@ import DataTable from '../DataTable';
 import '../../styles/bulk.css';
 
 export interface BulkColumnGuide { key: string; required: boolean; accepts: string; example: string }
-export interface BulkDownload { key: string; label: string; run: () => Promise<void>; accent?: boolean }
+export interface BulkDownload { key: string; label: string; run: () => Promise<void>; accent?: boolean; disabled?: boolean }
 
 interface Props {
   title: string;
   hint: ReactNode;
   guide: BulkColumnGuide[];
   downloads: BulkDownload[];
+  /** Optional content (e.g. a job picker) rendered right after the hint, with no heading. */
+  intro?: ReactNode;
   children: ReactNode;
 }
 
-export default function BulkToolPage({ title, hint, guide, downloads, children }: Props) {
+export default function BulkToolPage({ title, hint, guide, downloads, intro, children }: Props) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
 
@@ -34,6 +37,7 @@ export default function BulkToolPage({ title, hint, guide, downloads, children }
       <div className="eyebrow">Bulk Actions</div>
       <h1 className="page-title">{title}</h1>
       <p className="page-hint">{hint}</p>
+      {intro && <div className="bulk-intro">{intro}</div>}
 
       <section className="bulk-section">
         <p className="eyebrow-sm">Columns</p>
@@ -55,7 +59,7 @@ export default function BulkToolPage({ title, hint, guide, downloads, children }
         <p className="eyebrow-sm">Download</p>
         <div className="bulk-actions">
           {downloads.map((d) => (
-            <button key={d.key} className={d.accent ? 'mini-btn accent' : 'mini-btn'} disabled={!!busy}
+            <button key={d.key} className={d.accent ? 'mini-btn accent' : 'mini-btn'} disabled={!!busy || !!d.disabled}
                     onClick={() => void download(d.key, d.run)}>
               {d.label}
             </button>

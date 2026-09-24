@@ -1414,6 +1414,90 @@ export function downloadTruckExport(format: 'csv' | 'xlsx'): Promise<void> {
   return downloadAttachment(`/trucks/bulk-import/export?format=${format}`, `trucks-export.${format}`);
 }
 
+// ── bulk assign people to a job ─────────────────────────────────────
+
+export interface TeamBulkCandidate { id: string; label: string; detail: string }
+export interface TeamBulkIssue {
+  field: 'worker' | 'site' | 'role';
+  kind: 'unknown' | 'ambiguous';
+  value: string;
+  candidates: TeamBulkCandidate[];
+}
+export type TeamBulkAction = 'add' | 'update' | 'unchanged' | 'attention' | 'error' | 'skipped';
+export interface TeamBulkRow {
+  row: number;
+  worker: string | null;
+  person_id: string | null; person_name: string | null;
+  site_id: string | null; site_name: string | null;
+  role_key: string | null; role_label: string | null;
+  action: TeamBulkAction;
+  errors: string[];
+  issues: TeamBulkIssue[];
+  diff: BulkDiff | null;
+  cells: Record<string, string>;
+}
+export interface TeamBulkPreview {
+  rows: TeamBulkRow[];
+  counts: Record<TeamBulkAction, number>;
+  can_commit: boolean;
+}
+export type TeamBulkOverrides = Record<string, Partial<Record<'worker' | 'site' | 'role', string>>>;
+export interface TeamBulkPosted {
+  rows: Record<string, string>[];
+  row_numbers: number[];
+  overrides: TeamBulkOverrides;
+  skip: number[];
+}
+export interface TeamBulkAppliedRow {
+  row: number;
+  name: string | null;
+  person_id: string | null;
+  action: 'created' | 'updated' | 'skipped' | 'unchanged';
+  diff: BulkDiff | null;
+}
+export interface TeamBulkCommitResult {
+  created: number; updated: number; unchanged: number; skipped: number;
+  rows: TeamBulkAppliedRow[];
+}
+
+const teamBulkBase = (jobId: string) => `/initiatives/${jobId}/people/bulk`;
+
+export async function previewTeamBulkFile(
+  jobId: string, file: File | Blob, filename: string,
+): Promise<TeamBulkPreview> {
+  const fd = new FormData();
+  fd.append('file', file, filename);
+  const resp = await apiFetch(`${teamBulkBase(jobId)}/preview`, { method: 'POST', body: fd });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function previewTeamBulk(jobId: string, body: TeamBulkPosted): Promise<TeamBulkPreview> {
+  const resp = await apiFetch(`${teamBulkBase(jobId)}/preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function commitTeamBulk(
+  jobId: string, body: TeamBulkPosted & { approved_updates: number[]; source: string },
+): Promise<TeamBulkCommitResult> {
+  const resp = await apiFetch(`${teamBulkBase(jobId)}/commit`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export function downloadTeamTemplate(jobId: string, format: 'csv' | 'xlsx'): Promise<void> {
+  return downloadAttachment(`${teamBulkBase(jobId)}/template?format=${format}`, `team-template.${format}`);
+}
+
+export function downloadTeamExport(jobId: string, format: 'csv' | 'xlsx'): Promise<void> {
+  return downloadAttachment(`${teamBulkBase(jobId)}/export?format=${format}`, `team-export.${format}`);
+}
+
 export async function listSiteTypes(): Promise<SiteLookup[]> {
   const resp = await apiFetch('/site-types');
   if (!resp.ok) throw await errorFrom(resp);

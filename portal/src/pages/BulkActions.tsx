@@ -39,6 +39,11 @@ export const BULK_TOOLS: BulkTool[] = [
     description: 'Load a fleet list from a spreadsheet. Existing trucks match by name; update or skip each one.',
     resource: 'trucks', action: 'add', to: '/bulk/trucks', button: 'Open',
   },
+  {
+    key: 'initiative-people', title: 'Add or update a job\'s team in bulk',
+    description: 'Load a job\'s team from a spreadsheet. People already on the job match by worker name; update or skip each one.',
+    resource: 'initiatives', action: 'change', to: '/bulk/initiative-people', button: 'Open',
+  },
 ];
 
 export default function BulkActions() {
