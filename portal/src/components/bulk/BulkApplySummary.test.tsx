@@ -54,6 +54,14 @@ it('omits the skipped count when the result has none (sites shape)', () => {
   expect(screen.getByText('Applied: 2 added · 0 updated · 1 unchanged')).toBeTruthy();
 });
 
+it('omits the added count when the tool never adds (assets update shape)', () => {
+  render(<MemoryRouter>
+    <BulkApplySummary result={{ updated: 3, skipped: 1, unchanged: 5, rows: [] }} entityLabel="Asset"
+      filename="assets-bulk-summary" linkFor={() => '/assets'} openTo="/assets" openLabel="Open Assets" />
+  </MemoryRouter>);
+  expect(screen.getByText('Applied: 3 updated · 1 skipped · 5 unchanged')).toBeTruthy();
+});
+
 it('changesText flattens diffs including client add/remove', () => {
   expect(changesText({ name: { old: 'A', new: 'B' }, clients: { add: ['X'], remove: ['Y'] } }))
     .toBe('name: A → B; clients: +X, −Y');

@@ -3,6 +3,7 @@
  *  that list, the test beside this file pins this one, and the two must
  *  agree. */
 import type { BulkColumnGuide } from '../components/bulk/BulkToolPage';
+import { ApiError, type AssetBulkJob } from './api';
 
 export const ASSET_BULK_COLUMN_GUIDE: BulkColumnGuide[] = [
   { key: 'asset_id', required: false,
@@ -35,9 +36,41 @@ export const ASSET_BULK_ERRORS: Record<string, string> = {
   unknown_columns: 'The file has columns that are not in the template.',
   too_many_rows: 'Too many rows — the limit is 15,000 per upload.',
   file_too_large: 'File too large — the limit is 20 MB.',
+  invalid_csv: 'That CSV could not be read.',
+  invalid_xlsx: 'That spreadsheet could not be read.',
+  unsupported_file: 'Unsupported file type — use .csv or .xlsx.',
+  missing_file: 'Choose a file first.',
+  empty_file: 'That file is empty.',
+  invalid_json: 'The server could not read the request — upload the file again.',
+  invalid_overrides: 'The preview is out of date — upload the file again.',
+  invalid_skip: 'The preview is out of date — upload the file again.',
+  invalid_approved: 'The preview is out of date — upload the file again.',
   job_not_found: 'That job no longer exists.',
   job_not_editable: 'That job can no longer be changed — start a new upload.',
+  job_not_cancellable: 'That update has already started and can no longer be canceled.',
   rows_invalid: 'Some rows still need attention — resolve or skip them and try again.',
   rule_failed: 'A status rule stopped the update — nothing was applied.',
+  apply_conflict: 'Something changed while the update ran (a serial number or RFID tag was taken, '
+    + 'for example) — nothing was applied. Upload the file again to see the current values.',
   forbidden: 'You do not have permission to bulk update assets.',
 };
+
+const APPLY_FAILED = 'The update failed — nothing was applied. Try again.';
+
+/** Why a finished job did not apply, as one sentence (null: the job could not be read). */
+export function assetBulkFailure(job: AssetBulkJob | null): string {
+  if (!job) return APPLY_FAILED;
+  if (job.status === 'cancelled') return 'The update was canceled — nothing was applied.';
+  if (job.error === 'rule_failed') {
+    return `Row ${job.results.row}: the status rule “${job.results.rule_name}” stopped the update`
+      + ' — nothing was applied.';
+  }
+  return (job.error && ASSET_BULK_ERRORS[job.error]) || APPLY_FAILED;
+}
+
+/** An API call's failure as one sentence. */
+export function assetBulkError(err: unknown): string {
+  return err instanceof ApiError
+    ? (ASSET_BULK_ERRORS[err.code] ?? 'That did not work — try again.')
+    : 'Network error.';
+}

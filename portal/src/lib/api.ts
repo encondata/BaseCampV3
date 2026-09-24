@@ -1540,6 +1540,39 @@ export interface AssetBulkUploadResult {
   preview: AssetBulkListing;
 }
 
+/** One applied line in a completed job — only `updated` and `skipped` lines
+ *  are listed; `unchanged` lines are counted in `summary` only. */
+export interface AssetBulkResultRow {
+  row: number;
+  name: string | null;
+  asset_id: string | null;
+  action: 'updated' | 'skipped';
+  diff: BulkDiff | null;
+}
+export interface AssetBulkCompletedResults {
+  summary: {
+    updated: number; skipped: number; unchanged: number;
+    /** Rack placement re-checked for moves holding an asset whose model changed. */
+    placement?: { collisions: number; orphans: number; cleared: number };
+  };
+  rows: AssetBulkResultRow[];
+}
+export interface AssetBulkRuleFailure { row: number; rule_name: string; message: string }
+/** `results` per outcome, narrowed on `error`: completed (`error` null),
+ *  or failed with `rows_invalid` (the offending lines), `rule_failed` (the
+ *  line and the status rule that stopped it), `apply_conflict`. */
+export type AssetBulkJobResults =
+  | { error: null; results: AssetBulkCompletedResults | null }
+  | { error: 'rows_invalid'; results: { rows: AssetBulkRow[] } }
+  | { error: 'rule_failed'; results: AssetBulkRuleFailure }
+  | { error: 'apply_conflict'; results: { message: string } };
+/** The asset bulk-update job: an ImportJobOut whose status also covers the
+ *  `preview` stage and whose `results` are typed by `error`. */
+export type AssetBulkJob =
+  Omit<ImportJobOut, 'status' | 'error' | 'results'>
+  & { status: ImportJobStatus | 'preview' }
+  & AssetBulkJobResults;
+
 export async function uploadAssetBulk(file: File | Blob, filename: string): Promise<AssetBulkUploadResult> {
   const fd = new FormData();
   fd.append('file', file, filename);
@@ -1558,7 +1591,7 @@ export async function previewAssetBulk(jobId: string, body: AssetBulkPosted): Pr
 
 export async function commitAssetBulk(
   jobId: string, body: AssetBulkPosted & { approved_updates: number[]; approve_all: boolean },
-): Promise<ImportJobOut> {
+): Promise<AssetBulkJob> {
   const resp = await apiFetch(`/assets/bulk-update/${jobId}/commit`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
@@ -1566,7 +1599,7 @@ export async function commitAssetBulk(
   return resp.json();
 }
 
-export async function getAssetBulkJob(jobId: string): Promise<ImportJobOut> {
+export async function getAssetBulkJob(jobId: string): Promise<AssetBulkJob> {
   const resp = await apiFetch(`/assets/bulk-update/${jobId}`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();

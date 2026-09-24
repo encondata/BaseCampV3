@@ -34,5 +34,6 @@ it('renders the siblings\' sections in order, with the column guide and the 15,0
   await waitFor(() => expect(api.downloadAssetBulkTemplate).toHaveBeenCalledWith('csv'));
 
   expect(screen.getByText('Uploads are limited to 15,000 rows and 20 MB.')).toBeTruthy();
-  expect(screen.getByText('The upload step is coming soon.')).toBeTruthy();
+  expect(screen.getByLabelText('Upload a file (.csv or .xlsx)')).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Update 0 assets' }) as HTMLButtonElement).disabled).toBe(true);
 });
