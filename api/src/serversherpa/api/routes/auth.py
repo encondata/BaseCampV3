@@ -249,7 +249,7 @@ async def totp_enroll_confirm(
     try:
         codes = await totp_service.confirm_enrollment(
             db, actor.account, body.code, actor_id=actor.account.person_id,
-            ip=client_ip(request))
+            ip=client_ip(request), user_agent=request.headers.get("user-agent"))
     except AuthError as exc:
         raise _auth_http_error(exc) from None
     session = None
