@@ -44,6 +44,11 @@ export const BULK_TOOLS: BulkTool[] = [
     description: 'Load a job\'s team from a spreadsheet. People already on the job match by worker name; update or skip each one.',
     resource: 'initiatives', action: 'change', to: '/bulk/initiative-people', button: 'Open',
   },
+  {
+    key: 'assets', title: 'Update assets in bulk',
+    description: 'Load changes from a spreadsheet. Rows match existing assets by Asset ID or serial; review every change before applying.',
+    resource: 'assets', action: 'change', to: '/bulk/assets', button: 'Open',
+  },
 ];
 
 export default function BulkActions() {

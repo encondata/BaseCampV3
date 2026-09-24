@@ -19,10 +19,13 @@ interface Props {
   downloads: BulkDownload[];
   /** Optional content (e.g. a job picker) rendered right after the hint, with no heading. */
   intro?: ReactNode;
+  /** Overrides the default "Uploads are limited to 1,000 rows and 5 MB…"
+   *  note under Download, for tools with a different limit. */
+  limitNote?: string;
   children: ReactNode;
 }
 
-export default function BulkToolPage({ title, hint, guide, downloads, intro, children }: Props) {
+export default function BulkToolPage({ title, hint, guide, downloads, intro, limitNote, children }: Props) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
 
@@ -67,7 +70,7 @@ export default function BulkToolPage({ title, hint, guide, downloads, intro, chi
           {error && <span className="pf-error">{error}</span>}
         </div>
         <p className="set-note">
-          Uploads are limited to 1,000 rows and 5 MB. Larger exports need to be split before re-uploading.
+          {limitNote ?? 'Uploads are limited to 1,000 rows and 5 MB. Larger exports need to be split before re-uploading.'}
         </p>
       </section>
 

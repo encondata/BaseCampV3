@@ -1498,6 +1498,93 @@ export function downloadTeamExport(jobId: string, format: 'csv' | 'xlsx'): Promi
   return downloadAttachment(`${teamBulkBase(jobId)}/export?format=${format}`, `team-export.${format}`);
 }
 
+// ── assets bulk update ──────────────────────────────────────────────
+// Job-based like the team tool, but not scoped to a job: upload creates the
+// job and returns its first preview; the page re-previews on every pick or
+// skip, then commits. Apply runs in the background (see ImportJobOut below)
+// and the page polls getAssetBulkJob until the job is done.
+
+export interface AssetBulkCandidate { id: string; label: string; detail: string }
+export interface AssetBulkIssue {
+  field: 'asset' | 'model' | 'client' | 'site' | 'status';
+  kind: 'unknown' | 'ambiguous';
+  value: string;
+  candidates: AssetBulkCandidate[];
+}
+export type AssetBulkAction = 'update' | 'unchanged' | 'attention' | 'error' | 'skipped';
+export interface AssetBulkRow {
+  row: number;
+  name: string | null;
+  asset_id: string | null;
+  asset_number: number | null;
+  matched_by: string | null;
+  action: AssetBulkAction;
+  errors: string[];
+  issues: AssetBulkIssue[];
+  diff: BulkDiff | null;
+}
+export interface AssetBulkListing {
+  rows: AssetBulkRow[];
+  counts: Record<AssetBulkAction, number>;
+  can_commit: boolean;
+  total: number;
+}
+export type AssetBulkOverrides =
+  Record<string, Partial<Record<'asset' | 'model' | 'client' | 'site' | 'status', string>>>;
+export interface AssetBulkPosted {
+  overrides: AssetBulkOverrides;
+  skip: number[];
+}
+export interface AssetBulkUploadResult {
+  job_id: string;
+  preview: AssetBulkListing;
+}
+
+export async function uploadAssetBulk(file: File | Blob, filename: string): Promise<AssetBulkUploadResult> {
+  const fd = new FormData();
+  fd.append('file', file, filename);
+  const resp = await apiFetch('/assets/bulk-update', { method: 'POST', body: fd });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function previewAssetBulk(jobId: string, body: AssetBulkPosted): Promise<AssetBulkListing> {
+  const resp = await apiFetch(`/assets/bulk-update/${jobId}/preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function commitAssetBulk(
+  jobId: string, body: AssetBulkPosted & { approved_updates: number[]; approve_all: boolean },
+): Promise<ImportJobOut> {
+  const resp = await apiFetch(`/assets/bulk-update/${jobId}/commit`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getAssetBulkJob(jobId: string): Promise<ImportJobOut> {
+  const resp = await apiFetch(`/assets/bulk-update/${jobId}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function cancelAssetBulk(jobId: string): Promise<void> {
+  const resp = await apiFetch(`/assets/bulk-update/${jobId}/cancel`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
+export function downloadAssetBulkTemplate(format: 'csv' | 'xlsx'): Promise<void> {
+  return downloadAttachment(`/assets/bulk-update/template?format=${format}`, `assets-update-template.${format}`);
+}
+
+export function downloadAssetBulkExport(format: 'csv' | 'xlsx'): Promise<void> {
+  return downloadAttachment(`/assets/bulk-update/export?format=${format}`, `assets-export.${format}`);
+}
+
 export async function listSiteTypes(): Promise<SiteLookup[]> {
   const resp = await apiFetch('/site-types');
   if (!resp.ok) throw await errorFrom(resp);
@@ -2943,7 +3030,8 @@ export interface ImportJobResults {
 
 export interface ImportJobOut {
   id: string;
-  initiative_id: string;
+  // null on job kinds that are not scoped to a job (e.g. asset_bulk_update)
+  initiative_id: string | null;
   kind: string;
   filename: string;
   options: {
