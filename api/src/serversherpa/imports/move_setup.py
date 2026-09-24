@@ -19,20 +19,37 @@ job.payload, never edit it in place."""
 
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.schemas import MoveSetupMoveIn
 from serversherpa.db.models import ImportJob
+from serversherpa.imports.move_assets import parse_row, run_import
 from serversherpa.imports.naming import (
-    CRATE_MAX, TRUCK_MAX, NamingError, clash_sentence, generate_names,
+    CRATE_MAX,
+    TRUCK_MAX,
+    NamingError,
+    clash_sentence,
+    generate_names,
 )
-from serversherpa.logistics.bulk_create import ContainerBulkError, check_tags, check_vocab
+from serversherpa.imports.parsing import ImportFileError, parse_upload
+from serversherpa.logistics.bulk_create import (
+    ContainerBulkError,
+    check_tags,
+    check_vocab,
+    create_containers,
+)
 from serversherpa.logistics.bulk_create import find_clashes as container_clashes
-from serversherpa.services.initiatives import ref_problem
+from serversherpa.services.audit import audit
+from serversherpa.services.initiatives import create_initiative_row, ref_problem
+from serversherpa.services.storage import get_object
+from serversherpa.trucks.bulk_create import TruckBulkError, create_trucks
 from serversherpa.trucks.bulk_create import find_clashes as truck_clashes
 
 logger = logging.getLogger(__name__)
@@ -226,3 +243,152 @@ async def retire_check_jobs(db: AsyncSession, draft_id: uuid.UUID, *,
             check.cancel_requested = True
         else:
             await db.delete(check)
+
+
+class SetupFailed(Exception):
+    def __init__(self, code: str, reasons: list[str]) -> None:
+        super().__init__(code)
+        self.code = code
+        self.reasons = reasons
+
+
+@dataclass
+class Plan:
+    move: dict
+    rows: list[dict] | None
+    make_model_mode: str
+    filename: str
+    crates: dict | None
+    crate_names: list[str] = field(default_factory=list)
+    truck_names: list[str] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        return len(self.rows or []) + len(self.crate_names) + len(self.truck_names)
+
+
+async def prepare(db: AsyncSession, job: ImportJob) -> Plan:
+    """Re-validate the draft and re-read its From-To file. Read-only; the
+    worker commits the job's totals before apply_job opens the write."""
+    payload = job.payload or {}
+    invalid, _ = await draft_problems(db, payload)     # clashes: re-checked at each create
+    if invalid:
+        raise SetupFailed("setup_invalid", invalid)
+    rows, mode, filename = None, "fuzzy", ""
+    if payload.get("assets") is not None:
+        check = await check_job(db, payload)
+        try:
+            content = await get_object(check.file_key)
+            numbered = parse_upload(check.filename, content)
+        except ImportFileError:
+            raise SetupFailed("setup_invalid", [FILE_UNREADABLE]) from None
+        except Exception:
+            logger.exception("move setup %s: stored From-To file unreadable", job.id)
+            raise SetupFailed("setup_invalid", [FILE_UNREADABLE]) from None
+        opts = check.options or {}
+        rows = [parse_row(n, canonical, raw,
+                          generate_serials=bool(opts.get("generate_serials")))
+                for n, canonical, raw in numbered]
+        mode = str(opts.get("make_model_mode") or "fuzzy")
+        filename = check.filename
+    crates, trucks = payload.get("crates"), payload.get("trucks")
+    return Plan(move=typed_move(payload["move"]), rows=rows, make_model_mode=mode,
+                filename=filename, crates=crates,
+                crate_names=crate_names(crates) if crates else [],
+                truck_names=truck_names(trucks) if trucks else [])
+
+
+def mark_failed(job: ImportJob, code: str, reasons: list[str]) -> None:
+    """A failed draft stays editable: payload is kept for the retry."""
+    job.status, job.error = "failed", code
+    job.results = {"reasons": reasons}
+    job.processed_rows = 0
+    job.finished_at = datetime.now(UTC)
+
+
+async def _fail(db: AsyncSession, job: ImportJob, code: str, reasons: list[str]) -> None:
+    await db.rollback()
+    await db.refresh(job)          # the rollback expired it; the committed row is the truth
+    mark_failed(job, code, reasons)
+
+
+async def apply_job(db: AsyncSession, job: ImportJob, plan: Plan, *,
+                    progress: Callable[[int], Awaitable[None]] | None = None) -> None:
+    """Create everything in ONE transaction: the move (and its create
+    audit), the From-To rows (run_import with commit=False — rows needing
+    review are left out, as always), the crates at the origin, the trucks
+    origin → destination, and one bulk_import audit. Commits on success.
+    Any failure rolls all of it back and marks the job failed with a
+    sentence code; the caller commits that. Nothing here touches the job
+    row until the end, so `progress` (its own session) never waits on us."""
+    owner = job.created_by
+
+    async def report(done: int) -> None:
+        if progress is not None:
+            await progress(done)
+
+    try:
+        initiative = await create_initiative_row(db, plan.move, owner)
+        n_assets = len(plan.rows or [])
+        imported = None
+        if plan.rows is not None:
+            async def asset_progress(processed, created, updated, errors) -> None:
+                await report(processed)
+
+            imported = await run_import(
+                db, initiative_id=initiative.id, added_by=owner, rows=plan.rows,
+                make_model_mode=plan.make_model_mode, write=True,
+                source_label=f"move-setup {job.id} ({plan.filename})",
+                progress=asset_progress, commit=False, progress_every=PROGRESS_EVERY)
+        crates: list = []
+        if plan.crate_names:
+            try:
+                crates = await create_containers(
+                    db, names=plan.crate_names, container_type=plan.crates["container_type"],
+                    status=None, site_id=initiative.origin_site_id,
+                    initiative_id=initiative.id, tags=plan.crates.get("tags") or {},
+                    actor_id=owner)
+            except ContainerBulkError as exc:
+                if exc.code == "name_collision":
+                    raise SetupFailed("name_taken",
+                                      [clash_sentence("crate", exc.extra["names"])]) from None
+                raise SetupFailed("setup_invalid", [TAG_SENTENCES.get(
+                    exc.code, "Pick a crate type from the list.")]) from None
+            await report(n_assets + len(crates))
+        trucks: list = []
+        if plan.truck_names:
+            try:
+                trucks = await create_trucks(
+                    db, plan.truck_names, initiative.id, initiative.origin_site_id,
+                    initiative.destination_site_id, owner)
+            except TruckBulkError as exc:
+                raise SetupFailed("name_taken", [clash_sentence("truck", exc.names)]) from None
+            await report(plan.total)
+        await retire_check_jobs(db, job.id)
+        summary = (imported or {}).get("summary") or {}
+        audit(db, actor_id=owner, entity_type="initiative", entity_id=str(initiative.id),
+              action="bulk_import",
+              changes={"source": "move_setup", "draft_id": str(job.id),
+                       "assets_created": summary.get("created", 0),
+                       "assets_updated": summary.get("updated", 0),
+                       "assets_left_out": summary.get("review", 0) + summary.get("errors", 0),
+                       "crates": len(crates), "trucks": len(trucks)})
+        finished = datetime.now(UTC)
+        job.status, job.error = "completed", None
+        job.initiative_id = initiative.id
+        job.processed_rows = plan.total
+        job.results = {
+            "move_id": str(initiative.id),
+            "assets": ({"summary": imported["summary"], "details": imported["details"]}
+                       if imported else None),
+            "crates": len(crates), "trucks": len(trucks)}
+        job.payload = None
+        job.progress_at = job.finished_at = finished
+        await db.commit()
+    except SetupFailed as exc:
+        await _fail(db, job, exc.code, exc.reasons)
+    except IntegrityError:
+        await _fail(db, job, "apply_conflict", [CONFLICT_MESSAGE])
+    except Exception:
+        logger.exception("move setup %s failed while creating", job.id)
+        await _fail(db, job, "worker_error", [WORKER_ERROR_MESSAGE])

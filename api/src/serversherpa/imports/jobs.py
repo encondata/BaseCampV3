@@ -4,12 +4,14 @@ FOR UPDATE SKIP LOCKED so any number of workers can run without a broker."""
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import String, cast, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from serversherpa.db.models import ImportJob
 
 STALE_MINUTES = 10
+STALE_DRAFT_HOURS = 24
 
 
 async def claim_next(db: AsyncSession) -> ImportJob | None:
@@ -46,3 +48,39 @@ async def requeue_stale(db: AsyncSession) -> int:
         job.started_at = None
     await db.commit()
     return len(jobs)
+
+
+async def sweep_stale(db: AsyncSession, *, now: datetime | None = None) -> dict[str, int]:
+    """Housekeeping for rows nobody will come back to:
+    - Create-a-move-in-steps drafts still in preview/failed and untouched
+      (progress_at, else created_at) for 24 hours — deleted;
+    - move-setup file checks no live draft points at any more (replaced,
+      skipped, or their draft is gone), unless the worker is still on one —
+      deleted;
+    - bulk asset update previews abandoned for 24 hours — cancelled, their
+      parsed file dropped (error "expired")."""
+    cutoff = (now or datetime.now(UTC)) - timedelta(hours=STALE_DRAFT_HOURS)
+    touched = func.coalesce(ImportJob.progress_at, ImportJob.created_at)
+    drafts = (await db.execute(
+        delete(ImportJob).where(ImportJob.kind == "move_setup",
+                                ImportJob.status.in_(("preview", "failed")),
+                                touched < cutoff)
+        .returning(ImportJob.id))).scalars().all()
+    live = aliased(ImportJob)
+    referenced = select(live.id).where(
+        live.kind == "move_setup",
+        live.payload["assets"]["check_job_id"].astext == cast(ImportJob.id, String))
+    checks = (await db.execute(
+        delete(ImportJob).where(ImportJob.kind == "move_assets",
+                                ImportJob.initiative_id.is_(None),
+                                ImportJob.options["move_setup_id"].astext.is_not(None),
+                                ImportJob.status != "running",
+                                ~referenced.exists())
+        .returning(ImportJob.id))).scalars().all()
+    previews = (await db.execute(
+        update(ImportJob).where(ImportJob.kind == "asset_bulk_update",
+                                ImportJob.status == "preview", touched < cutoff)
+        .values(status="cancelled", error="expired", payload=None, finished_at=func.now())
+        .returning(ImportJob.id))).scalars().all()
+    await db.commit()
+    return {"drafts": len(drafts), "checks": len(checks), "previews": len(previews)}
