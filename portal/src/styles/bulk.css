@@ -42,6 +42,10 @@
 .bulk-diff span { color: var(--muted, #51606f); }
 .bulk-diff label { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
 
+/* team bulk: the Details cell holds match dropdowns, and .data-table-scroll
+   clips (overflow-y: hidden) — let an open menu hang past the table. */
+.team-bulk .data-table-scroll { overflow: visible; }
+
 /* the apply summary reuses the preview's table styling but has its own
    column order (Row / Site / Result / Changes) — Result is the 3rd td,
    not the 4th, so it needs its own color rules, and the 4th-column
