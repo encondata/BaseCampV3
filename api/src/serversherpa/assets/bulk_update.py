@@ -23,7 +23,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import distinct, select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.assets.model_index import ModelIndex, build_model_index, display_name, find_model
@@ -68,6 +68,7 @@ REF_FIELDS = {"client": "client_id", "site": "site_id"}
 UUID_ATTRS = frozenset({"model_id", "client_id", "site_id"})
 KIND = "asset_bulk_update"
 PROGRESS_EVERY = 250
+MAX_LEGACY_ID = 2**63 - 1      # Postgres bigint upper bound (asyncpg overflows past it)
 
 SAMPLE_ROWS: list[dict] = [
     {**dict.fromkeys(COLUMNS, ""), "asset_id": "100123", "site": "Example DC West",
@@ -100,6 +101,14 @@ def normalize_rfid(raw: str) -> str | None:
     if not tag or not tag.isascii() or not tag.isalnum() or len(tag) > RFID_LENGTH:
         return None
     return tag.rjust(RFID_LENGTH, "0")
+
+
+def _rfid_key(tag: str) -> str:
+    """Zero-stripped, upper-cased key so a tag stored unpadded ("100348",
+    however the asset page, the V2 import and the roster importer save it)
+    and a zero-padded typed tag ("000...100348") are recognized as the same
+    physical tag. An all-zero tag strips to "" and is treated as "0"."""
+    return tag.upper().lstrip("0") or "0"
 
 
 def parse_bool(text: str) -> bool | None:
@@ -147,13 +156,21 @@ def _asset_number(text: str) -> int | None:
 async def load_reference(db: AsyncSession, numbered: list[tuple[int, dict]]) -> dict:
     """Everything preview (and apply) needs, loaded once for the whole file:
     the file's assets by Asset ID (live and archived) and by serial (every
-    live asset sharing it), the holders of the file's RFID tags, the model
-    catalog, non-archived clients and sites, active asset statuses, and
-    name maps (archived / inactive included) for the diff's old values."""
-    numbers = {n for _, row in numbered if (n := _asset_number(row["asset_id"])) is not None}
+    live asset sharing it), the holders of the file's RFID tags and new
+    serials, the model catalog, non-archived clients and sites, active
+    asset statuses, and name maps (archived / inactive included) for the
+    diff's old values.
+
+    `asset_id` values past Postgres's bigint range are left out of the
+    query (asyncpg would overflow on the bind) — they simply match no
+    asset, same as any other unknown Asset ID."""
+    numbers = {n for _, row in numbered
+              if (n := _asset_number(row["asset_id"])) is not None and n <= MAX_LEGACY_ID}
     serials = {row["serial_number"].lower() for _, row in numbered
                if not row["asset_id"] and row["serial_number"]}
     tags = {t for _, row in numbered if (t := normalize_rfid(row["rfid_tag"]))}
+    new_serials = {row["new_serial_number"].lower() for _, row in numbered
+                   if row["new_serial_number"]}
 
     by_number: dict[int, Asset] = {}
     if numbers:
@@ -168,8 +185,18 @@ async def load_reference(db: AsyncSession, numbered: list[tuple[int, dict]]) -> 
             by_serial.setdefault((a.serial_number or "").lower(), []).append(a)
     rfid: dict[str, Asset] = {}
     if tags:
-        for a in await db.scalars(select(Asset).where(Asset.rfid_tag.in_(tags))):
-            rfid[(a.rfid_tag or "").upper()] = a
+        # a physical tag is unique regardless of stored padding: compare by
+        # the zero-stripped, upper-cased key on both sides
+        keys = {_rfid_key(t) for t in tags}
+        for a in await db.scalars(
+                select(Asset).where(func.upper(func.ltrim(Asset.rfid_tag, "0")).in_(keys))):
+            rfid[_rfid_key(a.rfid_tag or "")] = a
+    new_serial_holders: dict[str, Asset] = {}
+    if new_serials:
+        for a in await db.scalars(
+                select(Asset).where(Asset.serial_number.in_(new_serials),
+                                    Asset.archived_at.is_(None))):
+            new_serial_holders[(a.serial_number or "").lower()] = a
 
     models = await build_model_index(db)
     all_clients = list(await db.scalars(select(Client).order_by(Client.name)))
@@ -189,7 +216,8 @@ async def load_reference(db: AsyncSession, numbered: list[tuple[int, dict]]) -> 
         return out
 
     return {
-        "by_number": by_number, "by_serial": by_serial, "rfid": rfid, "models": models,
+        "by_number": by_number, "by_serial": by_serial, "rfid": rfid,
+        "new_serial_holders": new_serial_holders, "models": models,
         "index": {"client": index(clients, lambda c: [c.name]),
                   "site": index(sites, lambda s: [s.name]),
                   "status": index(statuses, lambda s: [s.key, s.label])},
@@ -332,21 +360,36 @@ def _resolve_row(ref: dict, n: int, row: dict, picks: dict[str, str]) -> dict:
     if new_serial:
         if not row["asset_id"]:
             errors.append("Change the serial only on rows with an asset_id.")
-        elif asset is not None and (asset.serial_number or "").strip() != new_serial:
-            change("serial_number", "serial_number", new_serial, asset.serial_number,
-                   new_serial)
+        else:
+            holder = ref["new_serial_holders"].get(new_serial.lower())
+            if holder is not None and (asset is None or holder.id != asset.id):
+                errors.append(f"Serial '{new_serial}' is already on asset {holder.legacy_id}.")
+            elif asset is not None and (asset.serial_number or "").strip() != new_serial:
+                change("serial_number", "serial_number", new_serial, asset.serial_number,
+                       new_serial)
 
     tag = None
     if row["rfid_tag"]:
         tag = normalize_rfid(row["rfid_tag"])
-        holder = ref["rfid"].get(tag) if tag else None
         if tag is None:
             errors.append(f"RFID tag '{row['rfid_tag']}' is not valid.")
-        elif holder is not None and (asset is None or holder.id != asset.id):
-            errors.append(f"RFID tag {row['rfid_tag']} is already on asset "
-                          f"{holder.legacy_id}.")
-        elif asset is not None and (asset.rfid_tag or "").upper() != tag:
-            change("rfid_tag", "rfid_tag", tag, asset.rfid_tag, tag)
+        else:
+            holder = ref["rfid"].get(_rfid_key(tag))
+            # a row whose asset is still ambiguous (pending a pick) may have
+            # its typed tag held by one of its own candidates; don't error
+            # against that yet — let the pick decide, then re-check
+            candidate_ids = {c["id"] for i in issues if i["field"] == "asset"
+                             for c in i["candidates"]}
+            if holder is not None and asset is not None and holder.id == asset.id:
+                if _rfid_key(asset.rfid_tag or "") != _rfid_key(tag):
+                    change("rfid_tag", "rfid_tag", tag, asset.rfid_tag, tag)
+            elif holder is not None and asset is None and str(holder.id) in candidate_ids:
+                pass
+            elif holder is not None:
+                errors.append(f"RFID tag {row['rfid_tag']} is already on asset "
+                              f"{holder.legacy_id}.")
+            elif asset is not None and _rfid_key(asset.rfid_tag or "") != _rfid_key(tag):
+                change("rfid_tag", "rfid_tag", tag, asset.rfid_tag, tag)
 
     model = _resolve_model(ref, row, picks.get("model"), issues, errors)
     if model is not None and asset is not None and asset.model_id != model.id:
@@ -379,6 +422,7 @@ def _resolve_row(ref: dict, n: int, row: dict, picks: dict[str, str]) -> dict:
         "asset_number": asset.legacy_id if asset is not None else None,
         "matched_by": matched_by, "errors": errors, "issues": issues,
         "diff": diff, "changes": changes, "rfid": tag,
+        "new_serial": new_serial.casefold() if new_serial else None,
         "action": "error" if errors else ("attention" if issues else "pending"),
     }
 
@@ -410,10 +454,11 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
     cells = dict(numbered)
     for n, row in numbered:
         if n in skip:
-            out.append({"row": n, "name": row["serial_number"] or row["asset_id"] or None,
+            out.append({"row": n, "name": row["serial_number"] or (
+                            f"Asset {row['asset_id']}" if row["asset_id"] else None),
                         "asset_id": None, "asset_number": None, "matched_by": None,
                         "errors": [], "issues": [], "diff": None, "changes": {},
-                        "rfid": None, "action": "skipped"})
+                        "rfid": None, "new_serial": None, "action": "skipped"})
             continue
         out.append(_resolve_row(ref, n, row, overrides.get(n, {})))
 
@@ -422,9 +467,13 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
         f"Asset {g['asset_number']} appears on more than one row ({lines})."))
     _flag_duplicates(live, "rfid", lambda g, lines: (
         f"RFID tag {cells[g['row']]['rfid_tag']} appears on more than one row ({lines})."))
+    _flag_duplicates(live, "new_serial", lambda g, lines: (
+        f"Serial '{cells[g['row']]['new_serial_number']}' is set on more than one row "
+        f"({lines})."))
 
     for r in out:
         r.pop("rfid")
+        r.pop("new_serial")
         if r["action"] == "pending":
             r["action"] = "update" if r["changes"] else "unchanged"
         if r["action"] != "update":
@@ -461,6 +510,10 @@ async def apply_job(db: AsyncSession, job: ImportJob, *,
     approved update (`approve_all`, or its row in `approved_updates`) in one
     transaction and commits; unapproved updates are reported as skipped. A
     failing status rule rolls everything back (`rule_failed`).
+
+    `job.results["rows"]` lists only the `updated` and `skipped` rows —
+    `unchanged` rows are counted in `job.results["summary"]` only, so a
+    15,000-row job with mostly no-op rows doesn't store 15,000 result rows.
 
     Sets the job's status / error / results itself; the caller commits the
     job row afterwards (a no-op on success, where the job's completion was
@@ -516,9 +569,9 @@ async def apply_job(db: AsyncSession, job: ImportJob, *,
             else:
                 result = action                 # "unchanged" or "skipped"
             counts[result] += 1
-            applied.append({"row": row_no, "name": r["name"], "asset_id": r["asset_id"],
-                            "action": result,
-                            "diff": r["diff"] if result in ("updated", "skipped") else None})
+            if result != "unchanged":
+                applied.append({"row": row_no, "name": r["name"], "asset_id": r["asset_id"],
+                                "action": result, "diff": r["diff"]})
             if progress is not None and i % PROGRESS_EVERY == 0:
                 await progress(i)
 
@@ -589,18 +642,23 @@ async def export_rows(db: AsyncSession) -> list[dict]:
     model_names = {m.id: (m.make, m.model) for m in await db.scalars(select(AssetModel))}
     client_names = {c.id: c.name for c in await db.scalars(select(Client))}
     site_names = {s.id: s.name for s in await db.scalars(select(Site))}
+    cols = (Asset.legacy_id, Asset.serial_number, Asset.name, Asset.rfid_tag, Asset.model_id,
+            Asset.client_id, Asset.site_id, Asset.location_detail, Asset.pod_number,
+            Asset.status, Asset.has_rails)
+    rows = (await db.execute(
+        select(*cols).where(Asset.archived_at.is_(None)).order_by(Asset.legacy_id))).all()
     out: list[dict] = []
-    for a in await db.scalars(
-            select(Asset).where(Asset.archived_at.is_(None)).order_by(Asset.legacy_id)):
-        make, model = model_names.get(a.model_id, ("", "")) if a.model_id else ("", "")
+    for (legacy_id, serial_number, name, rfid_tag, model_id, client_id, site_id,
+         location_detail, pod_number, status, has_rails) in rows:
+        make, model = model_names.get(model_id, ("", "")) if model_id else ("", "")
         out.append({
-            "asset_id": a.legacy_id, "serial_number": a.serial_number or "",
-            "name": a.name or "", "new_serial_number": "", "rfid_tag": a.rfid_tag or "",
+            "asset_id": legacy_id, "serial_number": serial_number or "",
+            "name": name or "", "new_serial_number": "", "rfid_tag": rfid_tag or "",
             "make": make, "model": model,
-            "client": client_names.get(a.client_id, "") if a.client_id else "",
-            "site": site_names.get(a.site_id, "") if a.site_id else "",
-            "location": a.location_detail or "", "pod": a.pod_number or "",
-            "status": a.status, "has_rails": _yes_no(a.has_rails) or "",
+            "client": client_names.get(client_id, "") if client_id else "",
+            "site": site_names.get(site_id, "") if site_id else "",
+            "location": location_detail or "", "pod": pod_number or "",
+            "status": status, "has_rails": _yes_no(has_rails) or "",
         })
     return out
 

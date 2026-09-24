@@ -83,7 +83,7 @@ async def test_applies_approved_updates_and_skips_unapproved(db):
     me = await mk_person(db)
     a = await mk_asset(db, 100, "SN-A", name="old-a")
     b = await mk_asset(db, 101, "SN-B", name="old-b")
-    c = await mk_asset(db, 102, "SN-C", name="same-c")
+    await mk_asset(db, 102, "SN-C", name="same-c")
     job_id = await mk_job(db, me, "asset_id,name,pod\n100,new-a,P1\n101,new-b,\n102,same-c,\n",
                           options={"approved_updates": [2]})
 
@@ -94,14 +94,15 @@ async def test_applies_approved_updates_and_skips_unapproved(db):
     assert job.processed_rows == 3 and job.updated_count == 1
     assert job.finished_at is not None
     assert job.results["summary"] == {"updated": 1, "skipped": 1, "unchanged": 1}
+    # unchanged rows are counted in the summary only, not listed (15,000-row jobs
+    # shouldn't store 15,000 result rows for no-op rows)
+    assert {r["row"] for r in job.results["rows"]} == {2, 3}
     rows = {r["row"]: r for r in job.results["rows"]}
     assert rows[2] == {"row": 2, "name": "old-a", "asset_id": str(a.id), "action": "updated",
                        "diff": {"name": {"old": "old-a", "new": "new-a"},
                                 "pod": {"old": None, "new": "P1"}}}
     assert rows[3]["action"] == "skipped"
     assert rows[3]["diff"] == {"name": {"old": "old-b", "new": "new-b"}}
-    assert rows[4] == {"row": 4, "name": "same-c", "asset_id": str(c.id),
-                       "action": "unchanged", "diff": None}
 
     fa, fb = await fresh_asset(a.id), await fresh_asset(b.id)
     assert (fa.name, fa.pod_number) == ("new-a", "P1")

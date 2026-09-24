@@ -213,6 +213,13 @@ async def test_not_found_and_missing_keys_are_errors(db):
     assert p["can_commit"] is False
 
 
+async def test_huge_asset_id_is_not_found_not_a_500(db):
+    huge = 2**63                                # one past Postgres's bigint range
+    r = await one(db, {"asset_id": str(huge), "pod": "P1"})
+    assert r["action"] == "error"
+    assert r["errors"] == [f"No asset with Asset ID {huge}."]
+
+
 async def test_blank_cells_mean_no_change(db):
     client = await mk_client(db, "Acme")
     await mk_asset(db, 100123, "SN-1", name="n1", client_id=client.id, pod_number="P1",
@@ -286,6 +293,26 @@ async def test_new_serial_needs_an_asset_id(db):
     assert r["errors"] == ["Change the serial only on rows with an asset_id."]
 
 
+async def test_new_serial_already_on_another_live_asset_is_an_error(db):
+    await mk_asset(db, 100123, "SN-1")
+    await mk_asset(db, 100124, "SN-2")
+    r = await one(db, {"asset_id": "100123", "new_serial_number": "sn-2"})
+    assert r["action"] == "error"
+    assert r["errors"] == ["Serial 'sn-2' is already on asset 100124."]
+
+
+async def test_two_rows_setting_one_new_serial_are_both_errors(db):
+    await mk_asset(db, 100123, "SN-1")
+    await mk_asset(db, 100124, "SN-2")
+    p = await preview(db, [
+        {"asset_id": "100123", "new_serial_number": "SN-X"},
+        {"asset_id": "100124", "new_serial_number": "sn-x"},
+    ])
+    assert [r["action"] for r in p["rows"]] == ["error", "error"]
+    assert p["rows"][0]["errors"] == ["Serial 'SN-X' is set on more than one row (1, 2)."]
+    assert p["rows"][1]["errors"] == ["Serial 'sn-x' is set on more than one row (1, 2)."]
+
+
 async def test_rfid_is_normalized(db):
     await mk_asset(db, 100123, "SN-1")
     r = await one(db, {"asset_id": "100123", "rfid_tag": " e2 80 11 "})
@@ -306,6 +333,48 @@ async def test_bad_or_taken_rfid_is_an_error(db):
     bad, taken = p["rows"]
     assert bad["errors"] == ["RFID tag 'E2-80' is not valid."]
     assert taken["errors"] == ["RFID tag e28011 is already on asset 100200."]
+
+
+async def test_rfid_holder_stored_unpadded_is_found(db):
+    await mk_asset(db, 100123, "SN-1")
+    await mk_asset(db, 100200, "SN-HOLDER", rfid_tag="100348")   # stored unpadded
+    r = await one(db, {"asset_id": "100123", "rfid_tag": "100348"})
+    assert r["action"] == "error"
+    assert r["errors"] == ["RFID tag 100348 is already on asset 100200."]
+
+
+async def test_own_unpadded_rfid_retyped_padded_or_unpadded_is_unchanged(db):
+    await mk_asset(db, 100123, "SN-1", rfid_tag="100348")        # stored unpadded
+    for typed in ("100348", "0" * 18 + "100348"):
+        r = await one(db, {"asset_id": "100123", "rfid_tag": typed})
+        assert r["action"] == "unchanged", (typed, r)
+
+
+async def test_archived_rfid_holder_still_blocks(db):
+    await mk_asset(db, 100123, "SN-1")
+    await mk_asset(db, 100200, "SN-HOLDER", rfid_tag="100999", archived=True)
+    r = await one(db, {"asset_id": "100123", "rfid_tag": "100999"})
+    assert r["action"] == "error"
+    assert r["errors"] == ["RFID tag 100999 is already on asset 100200."]
+
+
+async def test_ambiguous_serial_rfid_held_by_a_candidate_defers_to_the_pick(db):
+    a = await mk_asset(db, 100123, "DUP-1", name="alpha", rfid_tag="100348")
+    b = await mk_asset(db, 100124, "DUP-1", name="beta")
+    r = await one(db, {"serial_number": "dup-1", "rfid_tag": "100348"})
+    assert r["action"] == "attention"          # only the ambiguous-asset issue, not an error
+    assert r["errors"] == []
+    [issue] = r["issues"]
+    assert issue["field"] == "asset"
+
+    picked_holder = await one(db, {"serial_number": "dup-1", "rfid_tag": "100348"},
+                              overrides={1: {"asset": str(a.id)}})
+    assert picked_holder["action"] == "unchanged"     # picked the tag's own holder
+
+    picked_other = await one(db, {"serial_number": "dup-1", "rfid_tag": "100348"},
+                             overrides={1: {"asset": str(b.id)}})
+    assert picked_other["action"] == "error"
+    assert picked_other["errors"] == ["RFID tag 100348 is already on asset 100123."]
 
 
 async def test_two_rows_setting_one_rfid_are_both_errors(db):
@@ -445,6 +514,18 @@ async def test_two_rows_on_one_asset_are_both_errors(db):
         assert r["errors"] == ["Asset 12345 appears on more than one row (1, 2)."]
 
 
+async def test_two_overrides_picking_the_same_asset_are_both_errors(db):
+    a = await mk_asset(db, 100123, "DUP", name="alpha")
+    await mk_asset(db, 100124, "DUP", name="beta")
+    p = await preview(db, [
+        {"serial_number": "dup", "pod": "P1"},
+        {"serial_number": "dup", "pod": "P2"},
+    ], overrides={1: {"asset": str(a.id)}, 2: {"asset": str(a.id)}})
+    assert [r["action"] for r in p["rows"]] == ["error", "error"]
+    assert p["rows"][0]["errors"] == ["Asset 100123 appears on more than one row (1, 2)."]
+    assert p["rows"][1]["errors"] == ["Asset 100123 appears on more than one row (1, 2)."]
+
+
 async def test_skip(db):
     await mk_asset(db, 100123, "SN-1")
     p = await preview(db, [{"asset_id": "100123", "pod": "P1"}, {"pod": "x"}],
@@ -453,6 +534,13 @@ async def test_skip(db):
     assert p["counts"] == {"update": 1, "unchanged": 0, "attention": 0, "error": 0,
                            "skipped": 1}
     assert p["can_commit"] is True
+
+
+async def test_skipped_row_name_reads_like_an_unresolved_row(db):
+    p = await preview(db, [{"asset_id": "100123", "pod": "P1"}], skip={1})
+    [r] = p["rows"]
+    assert r["action"] == "skipped"
+    assert r["name"] == "Asset 100123"
 
 
 async def test_listing_omits_unchanged_and_orders_rows(db):
