@@ -13,18 +13,19 @@
  * the app instead of inventing a third layout.
  */
 
-import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 
 import {
   ApiError, bulkCreateContainers, type ContainerItem, type InitiativeItem, type SiteItem,
   type StatusValue,
 } from '../../lib/api';
 import {
-  autoPad, clampTags, MAX_PAD, numberOverflow, previewNames, summaryText, tagTotal,
-  TAG_ASSIGNMENT_ORDER, type NamingConfig, type TagCounts,
+  autoPad, clampTags, MAX_PAD, numberOverflow, previewNames, TAG_ASSIGNMENT_ORDER,
+  type NamingConfig, type TagCounts,
 } from '../../lib/bulkContainers';
 import { TAG_TYPES } from '../../labels/tagTypes';
 import ComboBox from '../ComboBox';
+import LabelTagCounts from './LabelTagCounts';
 import '../../styles/reports.css';       // rgm-* (roomy header)
 import '../../styles/bulkContainers.css';
 
@@ -143,7 +144,6 @@ export default function BulkContainersModal({
   const overflow = numberOverflow(namingBase.start, count);
   const naming: NamingConfig = useMemo(() => ({ ...namingBase, pad }), [namingBase, pad]);
   const preview = useMemo(() => previewNames(naming, count), [naming, count]);
-  const total = tagTotal(tags);
 
   const onCountBlur = () => {
     setCountText(String(count));
@@ -152,16 +152,6 @@ export default function BulkContainersModal({
   const setStart = (raw: string) => {
     const n = Math.round(Number(raw));
     setNaming((f) => ({ ...f, start: Number.isFinite(n) ? Math.max(0, n) : 0 }));
-  };
-
-  const inc = (key: (typeof TAG_ASSIGNMENT_ORDER)[number]) => {
-    if (total >= count) return;
-    setClampNotice('');
-    setTags((t) => ({ ...t, [key]: (t[key] ?? 0) + 1 }));
-  };
-  const dec = (key: (typeof TAG_ASSIGNMENT_ORDER)[number]) => {
-    setClampNotice('');
-    setTags((t) => (t[key] ? { ...t, [key]: t[key]! - 1 } : t));
   };
 
   const valid = count >= 1 && !!containerType && !overflow;
@@ -315,31 +305,8 @@ export default function BulkContainersModal({
                 <p className="page-hint">
                   Assigned in order — the first containers get Priority, then Vendor, Accessories, Warehouse, and E-Waste.
                 </p>
-                <div className="bc-tags">
-                  {TAG_ASSIGNMENT_ORDER.map((key) => {
-                    const opt = TAG_TYPES[key];
-                    const n = tags[key] ?? 0;
-                    return (
-                      <div key={key} className="bc-tag-row">
-                        <span className="chip custom" style={{ '--chip': opt.color } as CSSProperties}>
-                          <span className="dot" />{opt.label}
-                        </span>
-                        <div className="bc-stepper" role="group" aria-label={`${opt.label} count`}>
-                          <button type="button" className="mini-btn" aria-label={`Fewer ${opt.label}`}
-                                  disabled={saving || n <= 0} onClick={() => dec(key)}>−</button>
-                          <span className="mono bc-stepper-value">{n}</span>
-                          <button type="button" className="mini-btn" aria-label={`More ${opt.label}`}
-                                  disabled={saving || total >= count} onClick={() => inc(key)}>+</button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="bc-summary">
-                  <span className="eyebrow">Summary</span>
-                  <p className="page-hint">{summaryText(count, tags)}</p>
-                  {clampNotice && <p className="pf-error">{clampNotice}</p>}
-                </div>
+                <LabelTagCounts count={count} tags={tags} disabled={saving} notice={clampNotice}
+                                onChange={(next) => { setClampNotice(''); setTags(next); }} />
               </section>
             </div>
           </div>

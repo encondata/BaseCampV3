@@ -102,9 +102,10 @@ export function clampTags(
 
 /** "15 containers · 1 Priority · 2 Vendor · 12 untagged" — one segment per
  *  non-zero tag (in assignment order), then the untagged remainder if
- *  any. */
-export function summaryText(count: number, tags: TagCounts): string {
-  const parts = [`${count} container${count === 1 ? '' : 's'}`];
+ *  any. `noun` names the things counted ("crate" for Create a move in
+ *  steps). */
+export function summaryText(count: number, tags: TagCounts, noun = 'container'): string {
+  const parts = [`${count} ${noun}${count === 1 ? '' : 's'}`];
   for (const key of TAG_ASSIGNMENT_ORDER) {
     const n = tags[key] ?? 0;
     if (n > 0) parts.push(`${n} ${TAG_TYPES[key].label}`);
