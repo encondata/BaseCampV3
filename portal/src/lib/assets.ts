@@ -219,6 +219,10 @@ export const ASSET_ERRORS: Record<string, string> = {
   location_detail_required: 'Location cannot be null.',
   status_required: 'Status is required.',
   forbidden: 'You do not have permission to change assets.',
+  // AssetEditModal builds a message naming the rule from the response
+  // detail; this generic fallback covers surfaces without detail, like
+  // GodCell's inline edit.
+  rule_failed: 'A status rule stopped the edit — nothing was saved.',
 };
 
 /* ── asset edit/create form ────────────────────────────────────── */
