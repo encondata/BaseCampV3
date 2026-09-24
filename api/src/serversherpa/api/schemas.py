@@ -2077,7 +2077,7 @@ class ImportJobOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    initiative_id: uuid.UUID
+    initiative_id: uuid.UUID | None = None
     kind: str
     filename: str
     options: dict

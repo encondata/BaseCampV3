@@ -10,7 +10,6 @@ pipeline (run_import), and the post-commit placement re-check
 import json
 import logging
 import random
-import re
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -19,9 +18,12 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import (
-    Asset, AssetModel, AssetModelAlias, InitiativeAsset,
+from serversherpa.assets.model_index import (
+    build_model_index,
+    display_name,
+    normalize_model_key,
 )
+from serversherpa.db.models import Asset, AssetModel, InitiativeAsset
 from serversherpa.racks.recheck import recheck_placement
 
 logger = logging.getLogger(__name__)
@@ -54,22 +56,6 @@ def resolve_make_model_for_creation(asset_make: str,
         if make and model.lower().startswith(make.lower() + " "):
             model = model[len(make) + 1:].strip()
     return make, model
-
-
-_HEIGHT_TOKEN = re.compile(r"\s+\d+u$", re.IGNORECASE)
-
-
-def normalize_model_key(text: str) -> str:
-    """The lookup key for matching an imported make/model string against
-    the catalog. Every word is kept — "(Chassis)" and "(Node)" tell two
-    real rows apart — and only the noise that manufactures accidental
-    duplicates goes: underscores become spaces, parentheses are dropped,
-    a trailing height token such as "4U" is removed, whitespace collapses,
-    case folds. Lookup only; stored make and model are never rewritten."""
-    s = text.replace("_", " ").replace("(", " ").replace(")", " ")
-    s = " ".join(s.split())
-    s = _HEIGHT_TOKEN.sub("", s)
-    return s.lower()
 
 
 def generate_serial(asset_name: str) -> str:
@@ -187,54 +173,28 @@ async def _lookups(db: AsyncSession, initiative_id: uuid.UUID,
                 select(Asset).where(Asset.rfid_tag.in_(tags))):
             rfid[(a.rfid_tag or "").lower()] = a
 
-    # Matching is two-tier. `literal` is keyed on the catalog display name
-    # (and on each alias) exactly as it is written, lowercased only; it is
-    # unique by DB constraint, so a row that names a catalog entry
-    # verbatim ALWAYS matches it. Only the looser normalized tier can be
-    # ambiguous: two catalog rows can normalize to the same key ("Shelf
-    # 1U" / "Shelf 2U", "Blank / Panel 1U" / "Blank / Panel 2U", "Dell
-    # R740 (Chassis)" / "Dell R740 Chassis"). Guessing one would be
-    # non-deterministic, so an ambiguous key is dropped from the
-    # normalized map entirely and a row that only reaches it falls through
-    # to the review / force path. The ORDER BYs only make the scans
-    # themselves reproducible.
+    # Matching is two-tier (see assets/model_index.py): a verbatim catalog
+    # name or alias in `literal` always matches; the normalized map has had
+    # every ambiguous key dropped, so a row that only reaches such a key
+    # falls through to the review / force path. Each entry is
+    # (model, method, display) where method is "exact" when the key came
+    # from the catalog display name and "fuzzy" when it came from an alias
+    # (a display name always wins over an alias spelled the same).
+    index = await build_model_index(db)
     literal: dict[str, tuple] = {}
+    for key, m in index.literal.items():
+        display = display_name(m)
+        literal[key] = (m, "exact" if key == display.lower() else "fuzzy", display)
     models: dict[str, tuple] = {}
-    ambiguous: set[str] = set()
-    for m in await db.scalars(select(AssetModel).order_by(
-            AssetModel.make, AssetModel.model, AssetModel.id)):
-        display = f"{m.make} {m.model}".strip()
-        literal[display.lower()] = (m, "exact", display)
-        key = normalize_model_key(display)
-        if key in models:
-            ambiguous.add(key)
-        else:
-            models[key] = (m, "exact", display)
-    alias_rows = (await db.execute(
-        select(AssetModelAlias.alias, AssetModel)
-        .join(AssetModel, AssetModel.id == AssetModelAlias.model_id)
-        .order_by(AssetModelAlias.alias, AssetModel.id))).all()
-    for alias, m in alias_rows:                # exact wins over alias
-        display = f"{m.make} {m.model}".strip()
-        literal.setdefault(alias.lower(), (m, "fuzzy", display))
-        key = normalize_model_key(alias)
-        if key in ambiguous:                   # an alias cannot break the tie
-            continue
-        prior = models.get(key)
-        if prior is None:
-            models[key] = (m, "fuzzy", display)
-        elif prior[0].id != m.id:
-            # The alias normalizes onto another model — an exact row's key
-            # or a second alias. Two answers, so the normalized tier has
-            # none; both strings still match literally.
-            ambiguous.add(key)
-    for key in ambiguous:
-        models.pop(key, None)
-    if ambiguous:
+    for key, m in index.normalized.items():
+        display = display_name(m)
+        method = "exact" if normalize_model_key(display) == key else "fuzzy"
+        models[key] = (m, method, display)
+    if index.ambiguous:
         logger.warning(
             "move-assets import: %d ambiguous make/model key(s) skipped, "
             "rows using them go to review: %s",
-            len(ambiguous), ", ".join(sorted(ambiguous)))
+            len(index.ambiguous), ", ".join(sorted(index.ambiguous)))
 
     roster: dict[str, object] = {}
     ids = [a.id for a in assets.values()]

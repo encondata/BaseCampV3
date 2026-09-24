@@ -35,7 +35,12 @@ interface Props {
 }
 
 function mapError(err: unknown, fallback: string): string {
-  return err instanceof ApiError ? (ASSET_ERRORS[err.code] ?? fallback) : 'Network error.';
+  if (!(err instanceof ApiError)) return 'Network error.';
+  if (err.code === 'rule_failed') {
+    const d = err.detail as { rule_name?: string; reason?: string } | undefined;
+    return `Rule '${d?.rule_name ?? '?'}' failed: ${d?.reason ?? 'unknown error'}`;
+  }
+  return ASSET_ERRORS[err.code] ?? fallback;
 }
 
 export default function AssetEditModal({

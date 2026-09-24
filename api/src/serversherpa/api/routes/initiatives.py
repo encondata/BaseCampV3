@@ -29,15 +29,14 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.db.models import (
     Asset, AssetCategory, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
-    InitiativeLink, InitiativePerson, Partner, Person, Site, StatusRuleExecution,
-    StatusValue,
+    InitiativeLink, InitiativePerson, Partner, Person, Site, StatusValue,
 )
 from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx,
 )
 from serversherpa.people import team_bulk
 from serversherpa.racks.recheck import recheck_placement
-from serversherpa.scans.manual import record_status_edit
+from serversherpa.scans.manual import record_status_edit, stamp_rule_failure
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import put_object
 from serversherpa.status_rules.engine import RuleExecutionError
@@ -1057,27 +1056,6 @@ def _parse_ru(value: object) -> Decimal | None:
     return parsed
 
 
-async def _stamp_rule_failure(err: RuleExecutionError) -> None:
-    """A failing rule on the status-edit path rolls back the whole
-    request (no scan, no status change) — but that leaves no trace for
-    the rules admin UI. Stamp an error execution row in a FRESH,
-    short-lived transaction (the caller's session was just rolled back
-    and record_status_edit's scan never committed), mirroring
-    scans/worker.py::_stamp_error. Best-effort: never let a failure here
-    mask the 409 the caller is about to raise."""
-    from serversherpa.db.engine import get_sessionmaker
-
-    try:
-        async with get_sessionmaker()() as fresh:
-            fresh.add(StatusRuleExecution(
-                rule_id=err.rule_id, rule_name=err.rule_name,
-                processed_scan_id=None, conditions_met=True,
-                actions_applied=[], error=str(err)[:2000]))
-            await fresh.commit()
-    except Exception:
-        logger.exception("failed to record rule-failure execution")
-
-
 async def _check_asset_status(db: DbSession, data: dict) -> None:
     if "status" in data and (data["status"] is None or await db.scalar(
         select(StatusValue).where(
@@ -1129,7 +1107,7 @@ async def update_initiative_asset(
                 logger.warning(
                     "initiative asset %s: rule %r failed on status edit: %s",
                     assoc_id, err.rule_name, err)
-                await _stamp_rule_failure(err)
+                await stamp_rule_failure(err)
                 raise _err(409, "rule_failed", rule_name=err.rule_name,
                            reason=str(err.__cause__ or err)) from err
     await db.commit()

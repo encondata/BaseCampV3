@@ -68,6 +68,82 @@ def test_parse_upload_xlsx_prefers_named_sheet_and_skips_blank_headers():
     assert rows == [(2, {"name": "Right", "city": "Reno", "notes": ""})]
 
 
+def test_parse_upload_honors_a_per_tool_max_rows_and_reports_it_as_the_limit():
+    csv_bytes = b"name,city\nA,Reno\nB,Reno\nC,Reno\n"
+    with pytest.raises(bulk.BulkImportError) as exc:
+        bulk.parse_upload("t.csv", csv_bytes, COLS, "Sheet", max_rows=2)
+    assert exc.value.code == "too_many_rows"
+    assert exc.value.extra["limit"] == 2
+    # the default (1,000) still allows the same 3-row file with no override
+    rows = bulk.parse_upload("t.csv", csv_bytes, COLS, "Sheet")
+    assert len(rows) == 3
+
+
+def _xlsx(header: list[str], lines: list[list[str]]) -> bytes:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "People"
+    ws.append(header)
+    for line in lines:
+        ws.append(line)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("fmt", ["csv", "xlsx"])
+def test_an_oversized_file_is_too_many_rows_and_read_only_one_row_past_the_limit(
+        fmt, monkeypatch):
+    lines = [[f"N{i}", "Reno"] for i in range(10)]
+    content = (_xlsx(["name", "city"], lines) if fmt == "xlsx" else
+               ("name,city\n" + "".join(f"{a},{b}\n" for a, b in lines)).encode())
+    seen: list[int] = []
+    real = bulk.numbered
+
+    def spy(rows, first_row, columns, max_rows=bulk.MAX_ROWS):
+        seen.append(len(rows))
+        return real(rows, first_row, columns, max_rows=max_rows)
+
+    monkeypatch.setattr(bulk, "numbered", spy)
+    with pytest.raises(bulk.BulkImportError) as exc:
+        bulk.parse_upload(f"t.{fmt}", content, COLS, "People", max_rows=3)
+    assert exc.value.code == "too_many_rows"
+    assert exc.value.extra == {"limit": 3}
+    assert seen == [4]                    # stopped one row past the limit, not all 10
+    # at the limit exactly, every row is still read and returned
+    seen.clear()
+    rows = bulk.parse_upload(f"t.{fmt}", content, COLS, "People", max_rows=10)
+    assert seen == [10] and len(rows) == 10
+
+
+def test_parse_upload_xlsx_over_the_default_limit_is_too_many_rows():
+    content = _xlsx(["name"], [[f"N{i}"] for i in range(bulk.MAX_ROWS + 5)])
+    with pytest.raises(bulk.BulkImportError) as exc:
+        bulk.parse_upload("t.xlsx", content, COLS, "People")
+    assert exc.value.code == "too_many_rows"
+    assert exc.value.extra == {"limit": bulk.MAX_ROWS}
+
+
+def test_parse_upload_honors_a_per_tool_max_bytes():
+    csv_bytes = b"name,city\nA,Reno\n"
+    with pytest.raises(bulk.BulkImportError) as exc:
+        bulk.parse_upload("t.csv", csv_bytes, COLS, "Sheet", max_bytes=5)
+    assert exc.value.code == "file_too_large"
+    assert exc.value.extra["limit"] == 5
+
+
+def test_numbered_and_number_json_rows_honor_a_per_tool_max_rows():
+    rows = [{"name": str(i)} for i in range(3)]
+    with pytest.raises(bulk.BulkImportError) as exc:
+        bulk.numbered(rows, 1, COLS, max_rows=2)
+    assert exc.value.code == "too_many_rows"
+    assert exc.value.extra["limit"] == 2
+    with pytest.raises(bulk.BulkImportError) as exc:
+        bulk.number_json_rows(rows, COLS, max_rows=2)
+    assert exc.value.code == "too_many_rows"
+    assert exc.value.extra["limit"] == 2
+
+
 def test_parse_upload_error_codes():
     with pytest.raises(bulk.BulkImportError) as exc:
         bulk.parse_upload("x.txt", b"hi", COLS, "S")

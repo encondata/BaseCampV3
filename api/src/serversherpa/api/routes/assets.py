@@ -3,25 +3,51 @@ org roles see their own org's rows read-only (SCOPE_COLUMNS); all writes
 are globally anchored. The embedded model summary (AssetModelRef) is the
 only catalog surface a client actor ever receives."""
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile
 from sqlalchemy import select
 
 from serversherpa.access.scope import scope_conditions
+from serversherpa.api.bulk_routes import bulk_http_error, require_bulk_rank
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.schemas import (
-    AssetCreateIn, AssetItem, AssetModelRef, AssetMoveRow, AssetUpdateIn,
+    AssetCreateIn,
+    AssetItem,
+    AssetModelRef,
+    AssetMoveRow,
+    AssetUpdateIn,
+    ImportJobOut,
 )
+from serversherpa.assets import bulk_update
 from serversherpa.db.models import (
-    Asset, AssetCategory, AssetModel, Client, Initiative, InitiativeAsset,
-    Site, StatusValue,
+    Asset,
+    AssetCategory,
+    AssetModel,
+    Client,
+    ImportJob,
+    Initiative,
+    InitiativeAsset,
+    Site,
+    StatusValue,
+)
+from serversherpa.scans.manual import (
+    SOURCE_ASSET_EDIT,
+    record_asset_status_edit,
+    stamp_rule_failure,
 )
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.status.labels import UNKNOWN_COLOR, status_labels
+from serversherpa.status_rules.engine import RuleExecutionError
 
 router = APIRouter(prefix="/assets", tags=["assets"])
+
+logger = logging.getLogger(__name__)
+
+XLSX_MEDIA_TYPE = ("application/vnd.openxmlformats-officedocument"
+                   ".spreadsheetml.sheet")
 
 ASSET_FIELDS = [
     "serial_number", "name", "rfid_tag", "pod_number", "model_id",
@@ -109,6 +135,205 @@ async def _context(db: DbSession, assets: list[Asset]) -> tuple:
 async def _detail(db: DbSession, asset: Asset) -> AssetItem:
     statuses, models, clients, sites = await _context(db, [asset])
     return AssetItem(**_item(asset, statuses, models, clients, sites))
+
+
+# ── bulk update ─────────────────────────────────────────────────────
+# Declared ABOVE get_asset: /assets/bulk-update/* must never be swallowed by
+# GET /assets/{asset_id} (which would 422 on the non-UUID segment).
+
+async def _bulk_job(db: DbSession, job_id: uuid.UUID, actor: AuthContext) -> ImportJob:
+    """Jobs are visible only to their creator — another admin's job_id is a
+    404, same as a job that never existed."""
+    job = await db.get(ImportJob, job_id)
+    if (job is None or job.kind != bulk_update.KIND
+            or job.created_by != actor.person.id):
+        raise _err(404, "job_not_found")
+    return job
+
+
+async def _bulk_body(request: Request) -> dict:
+    """The JSON body as an object; anything else (bad JSON, a list, a bare
+    string) is 422 `invalid_json`."""
+    try:
+        body = await request.json()
+    except ValueError:
+        raise _err(422, "invalid_json") from None
+    if not isinstance(body, dict):
+        raise _err(422, "invalid_json")
+    return body
+
+
+def _bulk_picks(body: dict) -> tuple[dict[int, dict[str, str]], set[int]]:
+    try:
+        overrides = bulk_update.parse_overrides(body.get("overrides"))
+        skip = bulk_update.parse_row_list(body.get("skip"), "invalid_skip")
+    except bulk_update.BulkImportError as exc:
+        raise bulk_http_error(exc) from None
+    return overrides, skip
+
+
+@router.get("/bulk-update/template")
+async def bulk_update_template(
+    db: DbSession,
+    format: str = "csv",
+    actor: AuthContext = require_permission("assets", "change"),
+):
+    require_bulk_rank(actor)
+    _require_global(actor)
+    if format == "csv":
+        return Response(bulk_update.build_template_csv(), media_type="text/csv",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="assets-update-template.csv"'})
+    if format == "xlsx":
+        return Response(
+            await bulk_update.build_template_xlsx(db), media_type=XLSX_MEDIA_TYPE,
+            headers={"Content-Disposition":
+                     'attachment; filename="assets-update-template.xlsx"'})
+    raise _err(422, "unknown_format")
+
+
+@router.get("/bulk-update/export")
+async def bulk_update_export(
+    db: DbSession,
+    format: str = "csv",
+    actor: AuthContext = require_permission("assets", "change"),
+):
+    require_bulk_rank(actor)
+    _require_global(actor)
+    if format == "csv":
+        rows = await bulk_update.export_rows(db)
+        return Response(bulk_update.build_rows_csv(rows), media_type="text/csv",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="assets-export.csv"'})
+    if format == "xlsx":
+        return Response(
+            await bulk_update.build_export_xlsx(db), media_type=XLSX_MEDIA_TYPE,
+            headers={"Content-Disposition":
+                     'attachment; filename="assets-export.xlsx"'})
+    raise _err(422, "unknown_format")
+
+
+@router.post("/bulk-update", status_code=201)
+async def create_bulk_update_job(
+    db: DbSession,
+    file: UploadFile = File(...),
+    actor: AuthContext = require_permission("assets", "change"),
+) -> dict:
+    require_bulk_rank(actor)
+    _require_global(actor)
+    filename = file.filename or "upload.csv"
+    content = await file.read()
+    if not content:
+        raise _err(422, "empty_file")
+    try:
+        numbered = bulk_update.parse_upload(filename, content)
+    except bulk_update.BulkImportError as exc:
+        raise bulk_http_error(exc) from None
+
+    job = ImportJob(
+        kind=bulk_update.KIND, initiative_id=None, created_by=actor.person.id,
+        filename=filename, status="preview", phase="preview",
+        total_rows=len(numbered),
+        payload=[{"row": n, "cells": row} for n, row in numbered])
+    db.add(job)
+    await db.flush()
+    audit(db, actor_id=actor.person.id, entity_type="asset", entity_id=None,
+          action="asset_bulk_update_job_create",
+          changes={"job_id": {"from": None, "to": str(job.id)},
+                   "filename": {"from": None, "to": filename}})
+    preview = bulk_update.listing(await bulk_update.preview_rows(db, numbered))
+    await db.commit()
+    return {"job_id": str(job.id), "preview": preview}
+
+
+@router.post("/bulk-update/{job_id}/preview")
+async def preview_bulk_update_job(
+    job_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = require_permission("assets", "change"),
+) -> dict:
+    require_bulk_rank(actor)
+    _require_global(actor)
+    job = await _bulk_job(db, job_id, actor)
+    if job.status != "preview":
+        raise _err(409, "job_not_editable")
+    overrides, skip = _bulk_picks(await _bulk_body(request))
+    numbered = [(r["row"], r["cells"]) for r in job.payload or []]
+    preview = await bulk_update.preview_rows(db, numbered, overrides=overrides, skip=skip)
+    return bulk_update.listing(preview)
+
+
+@router.post("/bulk-update/{job_id}/commit", response_model=ImportJobOut)
+async def commit_bulk_update_job(
+    job_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = require_permission("assets", "change"),
+) -> ImportJob:
+    require_bulk_rank(actor)
+    _require_global(actor)
+    job = await _bulk_job(db, job_id, actor)
+    if job.status != "preview":
+        raise _err(409, "job_not_editable")
+    body = await _bulk_body(request)
+    overrides, skip = _bulk_picks(body)
+    try:
+        approved = bulk_update.parse_row_list(body.get("approved_updates"), "invalid_approved")
+    except bulk_update.BulkImportError as exc:
+        raise bulk_http_error(exc) from None
+    # exactly true — a string like "false" must never approve every row
+    approve_all = body.get("approve_all") is True
+
+    numbered = [(r["row"], r["cells"]) for r in job.payload or []]
+    preview = await bulk_update.preview_rows(db, numbered, overrides=overrides, skip=skip)
+    if not preview["can_commit"]:
+        raise _err(422, "rows_invalid", rows=bulk_update.invalid_rows(preview))
+
+    job.options = {"overrides": {str(k): v for k, v in overrides.items()},
+                   "skip": sorted(skip), "approved_updates": sorted(approved),
+                   "approve_all": approve_all}
+    job.status = "queued"
+    job.phase = "commit"
+    audit(db, actor_id=actor.person.id, entity_type="asset", entity_id=None,
+          action="asset_bulk_update_queued",
+          changes={"job_id": {"from": None, "to": str(job.id)}})
+    await db.commit()
+    return job
+
+
+@router.get("/bulk-update/{job_id}", response_model=ImportJobOut)
+async def get_bulk_update_job(
+    job_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("assets", "change"),
+) -> ImportJob:
+    require_bulk_rank(actor)
+    _require_global(actor)
+    return await _bulk_job(db, job_id, actor)
+
+
+@router.post("/bulk-update/{job_id}/cancel", status_code=204)
+async def cancel_bulk_update_job(
+    job_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("assets", "change"),
+) -> None:
+    require_bulk_rank(actor)
+    _require_global(actor)
+    await _bulk_job(db, job_id, actor)
+    # re-read under a row lock before checking the status: the worker's
+    # claim_next takes the same row FOR UPDATE SKIP LOCKED, so a cancel and
+    # a claim serialize — either the claim wins (the job is running → 409)
+    # or the cancel does (the claim skips the row, then sees it cancelled)
+    job = await db.get(ImportJob, job_id, with_for_update=True, populate_existing=True)
+    if job is None or job.status not in ("preview", "queued"):
+        raise _err(409, "job_not_cancellable")
+    job.status = "cancelled"
+    job.cancel_requested = True
+    job.payload = None                  # the parsed file is never read again
+    job.finished_at = datetime.now(UTC)
+    await db.commit()
 
 
 @router.get("", response_model=list[AssetItem])
@@ -253,6 +478,22 @@ async def update_asset(
         asset.updated_at = datetime.now(UTC)
         audit(db, actor_id=actor.person.id, entity_type="asset",
               entity_id=str(asset_id), action="update", changes=changes)
+    if "status" in changes:
+        # A status edit from the asset page is a scan event too: record it
+        # and run the rules engine here, same as the roster and bulk-update
+        # paths. A failing rule rolls the whole edit back — nothing is
+        # half-written.
+        try:
+            await record_asset_status_edit(
+                db, asset=asset, status=asset.status, actor_person_id=actor.person.id,
+                source=SOURCE_ASSET_EDIT)
+        except RuleExecutionError as err:
+            await db.rollback()
+            logger.warning("asset %s: rule %r failed on status edit: %s",
+                           asset_id, err.rule_name, err)
+            await stamp_rule_failure(err)
+            raise _err(409, "rule_failed", rule_name=err.rule_name,
+                       reason=str(err.__cause__ or err)) from err
     await db.commit()
     return await _detail(db, asset)
 
