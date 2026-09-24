@@ -61,10 +61,10 @@ def check_columns(keys: list[str], columns: list[str]) -> None:
         raise BulkImportError("unknown_columns", columns=unknown)
 
 
-def numbered(rows: list[dict], first_row: int,
-             columns: list[str]) -> list[tuple[int, dict]]:
-    if len(rows) > MAX_ROWS:
-        raise BulkImportError("too_many_rows", limit=MAX_ROWS)
+def numbered(rows: list[dict], first_row: int, columns: list[str],
+             max_rows: int = MAX_ROWS) -> list[tuple[int, dict]]:
+    if len(rows) > max_rows:
+        raise BulkImportError("too_many_rows", limit=max_rows)
     out: list[tuple[int, dict]] = []
     for i, raw in enumerate(rows):
         check_columns(list(raw.keys()), columns)
@@ -74,22 +74,25 @@ def numbered(rows: list[dict], first_row: int,
     return out
 
 
-def number_json_rows(rows: Any, columns: list[str]) -> list[tuple[int, dict]]:
+def number_json_rows(rows: Any, columns: list[str],
+                     max_rows: int = MAX_ROWS) -> list[tuple[int, dict]]:
     if isinstance(rows, dict):
         rows = [rows]          # a single bare object is a one-row import
     if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
         raise BulkImportError("invalid_json")
-    return numbered(rows, 1, columns)
+    return numbered(rows, 1, columns, max_rows=max_rows)
 
 
-def parse_upload(filename: str, content: bytes, columns: list[str],
-                 sheet: str) -> list[tuple[int, dict]]:
-    if len(content) > MAX_BYTES:
-        raise BulkImportError("file_too_large", limit=MAX_BYTES)
+def parse_upload(filename: str, content: bytes, columns: list[str], sheet: str,
+                 max_rows: int = MAX_ROWS, max_bytes: int = MAX_BYTES,
+                 ) -> list[tuple[int, dict]]:
+    if len(content) > max_bytes:
+        raise BulkImportError("file_too_large", limit=max_bytes)
     name = filename.lower()
     if name.endswith(".json"):
         try:
-            return number_json_rows(json.loads(content.decode("utf-8-sig")), columns)
+            return number_json_rows(json.loads(content.decode("utf-8-sig")),
+                                    columns, max_rows=max_rows)
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise BulkImportError("invalid_json") from None
     if name.endswith(".csv"):
@@ -102,7 +105,7 @@ def parse_upload(filename: str, content: bytes, columns: list[str],
         check_columns([f.strip() for f in reader.fieldnames if f], columns)
         rows = [{(k or "").strip(): v for k, v in r.items() if k}
                 for r in reader]
-        return numbered(rows, 2, columns)
+        return numbered(rows, 2, columns, max_rows=max_rows)
     if name.endswith(".xlsx"):
         import openpyxl
         try:
@@ -117,7 +120,7 @@ def parse_upload(filename: str, content: bytes, columns: list[str],
             raise BulkImportError("invalid_xlsx")
         check_columns([h for h in header if h], columns)
         rows = [{h: v for h, v in zip(header, line) if h} for line in lines]
-        return numbered(rows, 2, columns)
+        return numbered(rows, 2, columns, max_rows=max_rows)
     raise BulkImportError("unsupported_file")
 
 

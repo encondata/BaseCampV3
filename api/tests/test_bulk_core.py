@@ -68,6 +68,37 @@ def test_parse_upload_xlsx_prefers_named_sheet_and_skips_blank_headers():
     assert rows == [(2, {"name": "Right", "city": "Reno", "notes": ""})]
 
 
+def test_parse_upload_honors_a_per_tool_max_rows_and_reports_it_as_the_limit():
+    csv_bytes = b"name,city\nA,Reno\nB,Reno\nC,Reno\n"
+    with pytest.raises(bulk.BulkImportError) as exc:
+        bulk.parse_upload("t.csv", csv_bytes, COLS, "Sheet", max_rows=2)
+    assert exc.value.code == "too_many_rows"
+    assert exc.value.extra["limit"] == 2
+    # the default (1,000) still allows the same 3-row file with no override
+    rows = bulk.parse_upload("t.csv", csv_bytes, COLS, "Sheet")
+    assert len(rows) == 3
+
+
+def test_parse_upload_honors_a_per_tool_max_bytes():
+    csv_bytes = b"name,city\nA,Reno\n"
+    with pytest.raises(bulk.BulkImportError) as exc:
+        bulk.parse_upload("t.csv", csv_bytes, COLS, "Sheet", max_bytes=5)
+    assert exc.value.code == "file_too_large"
+    assert exc.value.extra["limit"] == 5
+
+
+def test_numbered_and_number_json_rows_honor_a_per_tool_max_rows():
+    rows = [{"name": str(i)} for i in range(3)]
+    with pytest.raises(bulk.BulkImportError) as exc:
+        bulk.numbered(rows, 1, COLS, max_rows=2)
+    assert exc.value.code == "too_many_rows"
+    assert exc.value.extra["limit"] == 2
+    with pytest.raises(bulk.BulkImportError) as exc:
+        bulk.number_json_rows(rows, COLS, max_rows=2)
+    assert exc.value.code == "too_many_rows"
+    assert exc.value.extra["limit"] == 2
+
+
 def test_parse_upload_error_codes():
     with pytest.raises(bulk.BulkImportError) as exc:
         bulk.parse_upload("x.txt", b"hi", COLS, "S")

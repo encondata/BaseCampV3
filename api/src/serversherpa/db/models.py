@@ -1212,14 +1212,15 @@ class ImportJob(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
-    kind: Mapped[str]                       # 'move_assets' (only kind yet)
-    initiative_id: Mapped[uuid.UUID] = mapped_column(
+    kind: Mapped[str]                       # 'move_assets' | 'asset_bulk_update'
+    initiative_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("initiatives.id", ondelete="CASCADE"))
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     filename: Mapped[str]
     file_key: Mapped[str] = mapped_column(server_default="")
     options: Mapped[dict] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb"))
+    payload: Mapped[list | None] = mapped_column(JSONB)
     phase: Mapped[str] = mapped_column(server_default="validate")
     status: Mapped[str] = mapped_column(server_default="queued")
     total_rows: Mapped[int] = mapped_column(Integer, server_default="0")
