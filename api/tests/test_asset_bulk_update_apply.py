@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.assets import bulk_update as bu
@@ -78,6 +78,17 @@ async def fresh_asset(asset_id):
         return await s.get(Asset, asset_id)
 
 
+async def payload_is_sql_null(job_id) -> bool:
+    """Raw-SQL check that `payload` is a true SQL NULL, not the JSON literal
+    `null` (still non-NULL): the ORM decodes JSON `null` back to Python
+    `None` on read either way, so `job.payload is None` alone can't catch a
+    bare JSONB column storing Python `None` wrong."""
+    async with get_sessionmaker()() as s:
+        return bool(await s.scalar(
+            text("select payload is null from import_jobs where id = :id"),
+            {"id": job_id}))
+
+
 # ── apply ───────────────────────────────────────────────────────────
 
 async def test_applies_approved_updates_and_skips_unapproved(db):
@@ -107,6 +118,7 @@ async def test_applies_approved_updates_and_skips_unapproved(db):
                                 "pod": {"old": None, "new": "P1"}}}
     assert rows[3]["asset_number"] == 101
     assert job.payload is None                 # the parsed file is dropped once done
+    assert await payload_is_sql_null(job_id) is True
     assert rows[3]["action"] == "skipped"
     assert rows[3]["diff"] == {"name": {"old": "old-b", "new": "new-b"}}
 
@@ -217,6 +229,7 @@ async def test_rule_failure_fails_the_job_and_changes_nothing(db):
     assert await db.scalar(select(func.count()).select_from(ProcessedScan)) == 0
     assert await db.scalar(select(func.count()).select_from(AuditLog)) == 0
     assert job.payload is None
+    assert await payload_is_sql_null(job_id) is True
     # the rollback took the rule's own execution row with it; one error row
     # is stamped afterwards so the rules admin UI shows the failure
     [ex] = (await db.scalars(select(StatusRuleExecution))).all()
@@ -314,6 +327,7 @@ async def test_integrity_error_at_apply_fails_friendly(db, monkeypatch):
     assert asset.name == "old-a"                              # the update was rolled back
     assert await db.scalar(select(func.count()).select_from(ProcessedScan)) == 0
     assert job.payload is None
+    assert await payload_is_sql_null(job_id) is True
 
 
 async def test_stale_job_fails_rows_invalid(db):
@@ -337,6 +351,7 @@ async def test_stale_job_fails_rows_invalid(db):
     assert bad["errors"] == ["Asset 101 is archived."]
     assert "changes" not in bad
     assert job.payload is None
+    assert await payload_is_sql_null(job_id) is True
     assert (await fresh_asset(a.id)).name == "old-a"
 
 
@@ -560,6 +575,7 @@ async def test_cancel_requested_before_claim_cancels(db):
     await run_once(get_sessionmaker())
     job = await fresh_job(job_id)
     assert job.status == "cancelled" and job.payload is None
+    assert await payload_is_sql_null(job_id) is True
     assert (await db.scalar(select(Asset.name).where(Asset.legacy_id == 100))) == "old-a"
 
 
@@ -578,6 +594,7 @@ async def test_an_unexpected_worker_error_fails_the_job_and_drops_its_payload(db
     assert job.status == "failed" and job.error == "worker_error: disk on fire"
     assert job.finished_at is not None
     assert job.payload is None
+    assert await payload_is_sql_null(job_id) is True
 
 
 async def test_a_preview_job_is_never_claimed_or_requeued(db):

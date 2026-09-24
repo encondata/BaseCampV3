@@ -5,7 +5,7 @@ import uuid
 
 import openpyxl
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from serversherpa.db.models import Asset, AuditLog, ImportJob, Person, PersonRole
 from serversherpa.imports.worker import run_once
@@ -251,6 +251,12 @@ async def test_cancel_marks_cancel_requested_and_drops_the_payload(
     await db.refresh(job)
     assert job.status == "cancelled" and job.cancel_requested is True
     assert job.payload is None
+    # SQL-level check: the ORM decodes a stored JSON `null` back to Python
+    # `None` on read regardless, so only this catches a bare JSONB column
+    # storing Python `None` as JSON `null` instead of a true SQL NULL.
+    assert await db.scalar(
+        text("select payload is null from import_jobs where id = :id"),
+        {"id": uuid.UUID(job_id)}) is True
 
     from serversherpa.db.engine import get_sessionmaker
     assert await run_once(get_sessionmaker()) is False          # never claimed

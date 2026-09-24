@@ -1220,7 +1220,10 @@ class ImportJob(Base):
     file_key: Mapped[str] = mapped_column(server_default="")
     options: Mapped[dict] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb"))
-    payload: Mapped[list | None] = mapped_column(JSONB)
+    # none_as_null: a bare JSONB type stores Python None as a JSON 'null'
+    # literal (still non-NULL), which would defeat "payload IS NULL" checks
+    # used to detect that a terminal job's payload has been cleared.
+    payload: Mapped[list | None] = mapped_column(JSONB(none_as_null=True))
     phase: Mapped[str] = mapped_column(server_default="validate")
     status: Mapped[str] = mapped_column(server_default="queued")
     total_rows: Mapped[int] = mapped_column(Integer, server_default="0")
