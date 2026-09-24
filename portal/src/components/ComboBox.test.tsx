@@ -6,12 +6,13 @@
  * behavior tests — a host modal (BulkContainersModal) that both listens
  * for Escape itself and hosts ComboBoxes needs Escape, while the list is
  * open, to close only the list and not bubble up as a "close the whole
- * dialog" keypress too.
+ * dialog" keypress too. Last, the opt-in `portal` menu: rendered under
+ * document.body, selectable by mousedown, closed by an outside scroll.
  */
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import ComboBox, { shouldDropUp } from './ComboBox';
 
@@ -88,5 +89,54 @@ describe('Escape', () => {
     }
 
     expect(seenDefaultPrevented).toBe(false);
+  });
+});
+
+describe('portal', () => {
+  afterEach(cleanup);
+
+  const OPTIONS = [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Bravo' }];
+
+  it('renders the menu under document.body, not inside the wrapper', () => {
+    const { container } = render(
+      <ComboBox portal value="" onChange={() => {}} options={OPTIONS} ariaLabel="Pick" />);
+    fireEvent.focus(screen.getByLabelText('Pick'));
+    const menu = screen.getByText('Alpha').closest('.combo-menu') as HTMLElement;
+    expect(menu.parentElement).toBe(document.body);
+    expect(container.querySelector('.combo-wrap')!.contains(menu)).toBe(false);
+    expect(menu.style.position).toBe('fixed');
+  });
+
+  it('without portal, the menu stays inside the wrapper', () => {
+    const { container } = render(
+      <ComboBox value="" onChange={() => {}} options={OPTIONS} ariaLabel="Pick" />);
+    fireEvent.focus(screen.getByLabelText('Pick'));
+    const menu = screen.getByText('Alpha').closest('.combo-menu') as HTMLElement;
+    expect(container.querySelector('.combo-wrap')!.contains(menu)).toBe(true);
+    expect(menu.getAttribute('style')).toBeNull();
+  });
+
+  it('selects an option by mousedown (the outside-click guard sees the portaled menu as inside)', () => {
+    const onChange = vi.fn();
+    render(<ComboBox portal value="" onChange={onChange} options={OPTIONS} ariaLabel="Pick" />);
+    fireEvent.focus(screen.getByLabelText('Pick'));
+    fireEvent.mouseDown(screen.getByText('Bravo'));
+    expect(onChange).toHaveBeenCalledWith('b');
+    expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  it('a window scroll or resize closes it; scrolling the list itself does not', () => {
+    render(<ComboBox portal value="" onChange={() => {}} options={OPTIONS} ariaLabel="Pick" />);
+    const input = screen.getByLabelText('Pick');
+    fireEvent.focus(input);
+    fireEvent.scroll(screen.getByText('Alpha').closest('.combo-menu')!);
+    expect(screen.getByText('Alpha')).toBeTruthy();
+    fireEvent.scroll(window);
+    expect(screen.queryByText('Alpha')).toBeNull();
+
+    fireEvent.click(input);
+    expect(screen.getByText('Alpha')).toBeTruthy();
+    fireEvent(window, new Event('resize'));
+    expect(screen.queryByText('Alpha')).toBeNull();
   });
 });

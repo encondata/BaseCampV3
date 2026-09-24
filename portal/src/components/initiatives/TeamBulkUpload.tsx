@@ -3,7 +3,7 @@
  * a job". Preview parses the file once; its cells and spreadsheet row
  * numbers become the base every later JSON re-preview and the commit post.
  * Unknown or ambiguous values are matched per line (overrides), lines can
- * be skipped, updates are applied only where Update is ticked, and Apply
+ * be skipped, updates are applied only where Update is checked, and Apply
  * shows the server's per-row summary.
  */
 import { useEffect, useRef, useState } from 'react';
@@ -18,7 +18,9 @@ import { TEAM_BULK_ERRORS } from '../../lib/teamBulk';
 import BulkApplySummary from '../bulk/BulkApplySummary';
 import type { ComboOption } from '../ComboBox';
 import DataTable from '../DataTable';
-import TeamBulkRowDetails, { type TeamField, type TeamFieldOptions } from './TeamBulkRowDetails';
+import TeamBulkRowDetails, {
+  type TeamField, type TeamFieldFailed, type TeamFieldOptions,
+} from './TeamBulkRowDetails';
 
 const STATUS: Record<TeamBulkAction, [string, string]> = {
   add: ['Add', 'c-green'],
@@ -62,6 +64,7 @@ export default function TeamBulkUpload({ jobId }: { jobId: string }) {
   const [pending, setPending] = useState(0);
   const [error, setError] = useState('');
   const [options, setOptions] = useState<TeamFieldOptions>({});
+  const [failed, setFailed] = useState<TeamFieldFailed>({});
   const loading = useRef(new Set<TeamField>());
   const seq = useRef(0);
 
@@ -71,19 +74,28 @@ export default function TeamBulkUpload({ jobId }: { jobId: string }) {
       : 'Network error.';
 
   // The full worker / site / role lists back the dropdowns of UNKNOWN
-  // values only — fetched once per field, the first time one shows up.
+  // values only — fetched once per field, the first time one shows up. A
+  // failed load clears the field's flag, so reopening its dropdown retries
+  // (candidates still work meanwhile; the full list is a convenience).
+  const loadField = (field: TeamField) => {
+    if (loading.current.has(field)) return;
+    loading.current.add(field);
+    setFailed((prev) => ({ ...prev, [field]: false }));
+    LOADERS[field]()
+      .then((list) => setOptions((prev) => ({ ...prev, [field]: list })))
+      .catch(() => {
+        loading.current.delete(field);
+        setFailed((prev) => ({ ...prev, [field]: true }));
+      });
+  };
+
   useEffect(() => {
     for (const r of preview?.rows ?? []) {
       for (const issue of r.issues) {
-        if (issue.kind !== 'unknown' || loading.current.has(issue.field)) continue;
-        const field = issue.field;
-        loading.current.add(field);
-        LOADERS[field]()
-          .then((list) => setOptions((prev) => ({ ...prev, [field]: list })))
-          .catch(() => {});   // candidates still work; the full list is a convenience
+        if (issue.kind === 'unknown') loadField(issue.field);
       }
     }
-  }, [preview]);
+  }, [preview]);   // loadField only touches a ref and state setters
 
   const accept = (next: TeamBulkPreview) => {
     setPreview(next);
@@ -106,6 +118,7 @@ export default function TeamBulkUpload({ jobId }: { jobId: string }) {
       setApproved(new Set());          // every update starts unapproved
       setPreview(next);
     } catch (err) {
+      if (mine !== seq.current) return;
       setPreview(null);
       setError(mapError(err));
     } finally {
@@ -208,11 +221,15 @@ export default function TeamBulkUpload({ jobId }: { jobId: string }) {
           ref={fileRef}
           type="file"
           accept=".csv,.xlsx"
-          disabled={busy}
+          disabled={busy || pending > 0}
           onChange={(e) => {
+            seq.current += 1;          // an in-flight preview of the old file is now stale
             setFile(e.target.files?.[0] ?? null);
             setPreview(null);
             setBase(null);
+            setOverrides({});
+            setSkip(new Set());
+            setApproved(new Set());
             setResult(null);
             setError('');
           }}
@@ -284,11 +301,13 @@ export default function TeamBulkUpload({ jobId }: { jobId: string }) {
                   key="details"
                   row={r}
                   options={options}
+                  failed={failed}
                   picked={overrides[r.row] ?? {}}
                   skipped={skip.has(r.row)}
                   approved={approved.has(r.row)}
                   disabled={busy}
                   onPick={(field, id) => pick(r.row, field, id)}
+                  onOpenField={loadField}
                   onClearPicks={() => clearPicks(r.row)}
                   onToggleSkip={() => toggleSkip(r.row)}
                   onToggleApprove={() => toggleApprove(r.row)}

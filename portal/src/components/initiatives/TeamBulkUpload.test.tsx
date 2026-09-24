@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -16,6 +16,13 @@ function preview(rows: TeamBulkRow[]): TeamBulkPreview {
   const counts = { add: 0, update: 0, unchanged: 0, attention: 0, error: 0, skipped: 0 };
   rows.forEach((r) => { counts[r.action] += 1; });
   return { rows, counts, can_commit: counts.attention === 0 && counts.error === 0 };
+}
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
 }
 
 const api = vi.hoisted(() => ({
@@ -162,4 +169,116 @@ it('Clear picks drops the row’s overrides and re-previews', async () => {
   fireEvent.click(clear);
   await waitFor(() => expect(api.previewTeamBulk).toHaveBeenLastCalledWith('job1',
     expect.objectContaining({ overrides: {} })));
+});
+
+it('the newest re-preview wins when responses arrive out of order', async () => {
+  await upload();
+  const first = deferred<TeamBulkPreview>();
+  const second = deferred<TeamBulkPreview>();
+  api.previewTeamBulk.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+  fireEvent.click(screen.getByLabelText('Skip row 3'));     // skip
+  fireEvent.click(screen.getByLabelText('Skip row 3'));     // and un-skip
+  expect(api.previewTeamBulk).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    second.resolve(preview([row(2, { action: 'add', person_id: 'p1', person_name: 'Second Response' })]));
+  });
+  await act(async () => {
+    first.resolve(preview([row(2, { action: 'add', person_id: 'p1', person_name: 'First Response' })]));
+  });
+  expect(screen.getByText('Second Response')).toBeTruthy();
+  expect(screen.queryByText('First Response')).toBeNull();
+});
+
+it('Apply is disabled while a re-preview is pending', async () => {
+  await upload();
+  api.previewTeamBulk.mockResolvedValueOnce(preview([
+    row(2, { action: 'add', person_id: 'p1', person_name: 'Ana Lopez' }),
+    row(3, { action: 'skipped' }),
+  ]));
+  fireEvent.click(screen.getByLabelText('Skip row 3'));
+  const apply = await screen.findByRole('button', { name: /^Add 1 and update 0/ }) as HTMLButtonElement;
+  await waitFor(() => expect(apply.disabled).toBe(false));
+
+  const later = deferred<TeamBulkPreview>();
+  api.previewTeamBulk.mockReturnValueOnce(later.promise);
+  fireEvent.click(screen.getByLabelText('Skip row 3'));
+  expect(apply.disabled).toBe(true);
+  await act(async () => {
+    later.resolve(preview([
+      row(2, { action: 'add', person_id: 'p1', person_name: 'Ana Lopez' }),
+      row(3, { action: 'skipped' }),
+    ]));
+  });
+  expect(apply.disabled).toBe(false);
+});
+
+it('choosing a new file drops an in-flight re-preview and resets picks, skips and approvals', async () => {
+  await upload();
+  fireEvent.click(screen.getByLabelText('Update row 4'));
+  const stale = deferred<TeamBulkPreview>();
+  api.previewTeamBulk.mockReturnValueOnce(stale.promise);
+  fireEvent.click(screen.getByLabelText('Skip row 3'));
+  const input = screen.getByLabelText(/upload a file/i) as HTMLInputElement;
+  expect(input.disabled).toBe(true);           // no new file while a re-preview is pending …
+  // … and should a change land anyway, the old file's response is ignored.
+  fireEvent.change(input, { target: { files: [new File(['y'], 'other.csv')] } });
+  expect(screen.queryByRole('table', { name: 'Team preview' })).toBeNull();
+  await act(async () => {
+    stale.resolve(preview([row(2, { action: 'add', person_id: 'p1', person_name: 'Old File Row' })]));
+  });
+  expect(screen.queryByText('Old File Row')).toBeNull();
+  expect(screen.queryByRole('table', { name: 'Team preview' })).toBeNull();
+
+  api.previewTeamBulkFile.mockResolvedValueOnce(preview([
+    row(3, { action: 'add', person_id: 'p3', person_name: 'Cy Park' }),
+    row(4, { action: 'update', person_id: 'p4', person_name: 'Ben Ng',
+             diff: { site: { old: 'DC East', new: 'DC West' } } }),
+  ]));
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  await screen.findByText('Cy Park');
+  expect((screen.getByLabelText('Update row 4') as HTMLInputElement).checked).toBe(false);
+  api.commitTeamBulk.mockResolvedValue({ created: 1, updated: 0, unchanged: 0, skipped: 1, rows: [] });
+  fireEvent.click(screen.getByRole('button', { name: /^Add 1 and update 0/ }));
+  await waitFor(() => expect(api.commitTeamBulk).toHaveBeenCalledWith('job1', expect.objectContaining({
+    overrides: {}, skip: [], approved_updates: [], source: 'other.csv' })));
+});
+
+it('an error row that also carries issues shows a match dropdown', async () => {
+  api.previewTeamBulkFile.mockResolvedValue(preview([
+    row(2, { action: 'error', errors: ['That worker is archived.'], issues: [{
+      field: 'site', kind: 'ambiguous', value: 'DC',
+      candidates: [{ id: 's1', label: 'DC East', detail: '' }, { id: 's2', label: 'DC West', detail: '' }] }] }),
+  ]));
+  render(<MemoryRouter><TeamBulkUpload jobId="job1" /></MemoryRouter>);
+  fireEvent.change(screen.getByLabelText(/upload a file/i), { target: { files: [new File(['x'], 'team.csv')] } });
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  expect(await screen.findByText('That worker is archived.')).toBeTruthy();
+  fireEvent.focus(screen.getByLabelText('Match site for row 2'));
+  expect(await screen.findByText('DC West')).toBeTruthy();
+});
+
+it('a failed full-list load says so, and reopening the dropdown retries', async () => {
+  api.listWorkerOptions.mockRejectedValueOnce(new Error('down'));
+  api.previewTeamBulkFile.mockResolvedValue(preview([
+    row(2, { action: 'attention', worker: 'Nobody', issues: [{
+      field: 'worker', kind: 'unknown', value: 'Nobody', candidates: [] }] }),
+  ]));
+  render(<MemoryRouter><TeamBulkUpload jobId="job1" /></MemoryRouter>);
+  fireEvent.change(screen.getByLabelText(/upload a file/i), { target: { files: [new File(['x'], 'team.csv')] } });
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  expect(await screen.findByText(/could not load the list/i)).toBeTruthy();
+  expect(api.listWorkerOptions).toHaveBeenCalledTimes(1);
+  fireEvent.focus(screen.getByLabelText('Match worker for row 2'));
+  expect(await screen.findByText('Zed Zulu')).toBeTruthy();
+  expect(api.listWorkerOptions).toHaveBeenCalledTimes(2);
+  expect(screen.queryByText(/could not load the list/i)).toBeNull();
+});
+
+it('a checked Skip keeps "Skip" in its accessible name and says how to undo', async () => {
+  await upload();
+  api.previewTeamBulk.mockResolvedValueOnce(preview([row(3, { action: 'skipped' })]));
+  fireEvent.click(screen.getByLabelText('Skip row 3'));
+  const box = await screen.findByRole('checkbox', { name: 'Skip row 3' });
+  await waitFor(() => expect((box as HTMLInputElement).checked).toBe(true));
+  expect(screen.getByText('Skipped — uncheck to undo.')).toBeTruthy();
 });

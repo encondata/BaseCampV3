@@ -3,9 +3,16 @@
  * ↑↓/Enter keyboard control, click to select, Esc/outside-click to close.
  * House rule: any dropdown over records (people, orgs, …) uses this;
  * native <select> is only for tiny fixed enums.
+ *
+ * `portal` (opt-in) renders the menu under document.body with fixed
+ * positioning, so a ComboBox inside a sideways-scrolling container (a
+ * DataTable cell) is not clipped by it. A portaled menu is placed once per
+ * open and closes on any scroll or resize rather than tracking its trigger.
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
 
 export interface ComboOption {
   value: string;
@@ -15,6 +22,11 @@ export interface ComboOption {
 
 /** Height (px) reserved for the menu when there's no room to measure it yet — mirrors .combo-menu's max-height. */
 const MENU_NEEDED_HEIGHT = 260;
+/** Gap (px) between the trigger and a portaled menu — mirrors .combo-menu's calc(100% + 6px). */
+const MENU_GAP = 6;
+
+/** Viewport placement of a portaled menu: below (top) or above (bottom) the trigger. */
+interface Anchor { left: number; width: number; top?: number; bottom?: number }
 
 /**
  * Pure flip decision: open the menu upward only when there isn't enough
@@ -41,16 +53,18 @@ interface Props {
   disabled?: boolean;
   inputId?: string;
   ariaLabel?: string;
+  portal?: boolean;                    // menu under document.body — escapes overflow clipping
 }
 
 export default function ComboBox({
   options, value, onChange, placeholder = 'Select…',
-  onOpen, clearable = false, disabled = false, inputId, ariaLabel,
+  onOpen, clearable = false, disabled = false, inputId, ariaLabel, portal = false,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
   const [active, setActive] = useState(0);
   const [dropUp, setDropUp] = useState(false);
+  const [anchor, setAnchor] = useState<Anchor | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -68,8 +82,12 @@ export default function ComboBox({
 
   // Decide drop direction on open, and re-check whenever the filter changes
   // while open (fewer/more matches can change the menu's natural height).
+  // A portaled menu is also placed here, from the same measurements.
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!open) {
+      if (portal) setAnchor(null);
+      return;
+    }
     const el = wrapRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
@@ -81,8 +99,33 @@ export default function ComboBox({
     // if the list isn't measurable yet (e.g. momentarily empty).
     const actualHeight = listRef.current?.getBoundingClientRect().height;
     const neededHeight = Math.min(MENU_NEEDED_HEIGHT, actualHeight || MENU_NEEDED_HEIGHT);
-    setDropUp(shouldDropUp({ spaceBelow, spaceAbove, neededHeight }));
-  }, [open, filter]);
+    const up = shouldDropUp({ spaceBelow, spaceAbove, neededHeight });
+    setDropUp(up);
+    if (portal) {
+      setAnchor(up
+        ? { left: rect.left, width: rect.width, bottom: window.innerHeight - rect.top + MENU_GAP }
+        : { left: rect.left, width: rect.width, top: rect.bottom + MENU_GAP });
+    }
+  }, [open, filter, portal]);
+
+  // A portaled menu does not follow its trigger, so any scroll (the page or
+  // a scrolling ancestor — the capture phase sees both) or resize closes
+  // it. Scrolling the menu's own list is not a reason to close.
+  useEffect(() => {
+    if (!open || !portal) return;
+    const close = (e: Event) => {
+      const t = e.target;
+      if (e.type === 'scroll' && t instanceof Node && listRef.current?.contains(t)) return;
+      setOpen(false);
+      setFilter('');
+    };
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open, portal]);
 
   useEffect(() => {
     listRef.current
@@ -90,11 +133,14 @@ export default function ComboBox({
       ?.scrollIntoView({ block: 'nearest' });
   }, [active]);
 
-  // outside click closes
+  // outside click closes — a portaled menu lives outside wrapRef, so a
+  // mousedown on it counts as inside too (otherwise this capture-phase
+  // listener would close the menu before an option's mousedown selects).
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (!wrapRef.current?.contains(target) && !listRef.current?.contains(target)) {
         setOpen(false);
         setFilter('');
       }
@@ -144,6 +190,35 @@ export default function ComboBox({
     }
   };
 
+  // Until the layout effect places it, a portaled menu renders hidden at
+  // the viewport origin — so it can be measured just like the in-place one.
+  const portalStyle: CSSProperties | undefined = !portal ? undefined : anchor
+    ? {
+      position: 'fixed', left: anchor.left, width: anchor.width, right: 'auto',
+      top: anchor.top ?? 'auto', bottom: anchor.bottom ?? 'auto', zIndex: 1200,
+    }
+    : { position: 'fixed', left: 0, top: 0, visibility: 'hidden', zIndex: 1200 };
+
+  const menu = (
+    <div className={`combo-menu ${dropUp ? 'drop-up' : ''}`} ref={listRef} style={portalStyle}>
+      {visible.length === 0 && (
+        <div className="pop-empty">No matches{filter ? ` for “${filter.trim()}”` : ''}.</div>
+      )}
+      {visible.map((o, i) => (
+        <button
+          key={o.value}
+          type="button"
+          className={`kbar-item ${i === active ? 'active' : ''} ${o.value === value ? 'selected' : ''}`}
+          onMouseEnter={() => setActive(i)}
+          onMouseDown={(e) => { e.preventDefault(); select(o.value); }}
+        >
+          {o.label}
+          {o.sub && <span className="sub">{o.sub}</span>}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <div className="combo-wrap" ref={wrapRef}>
       <input
@@ -174,25 +249,7 @@ export default function ComboBox({
         </span>
       )}
 
-      {open && (
-        <div className={`combo-menu ${dropUp ? 'drop-up' : ''}`} ref={listRef}>
-          {visible.length === 0 && (
-            <div className="pop-empty">No matches{filter ? ` for “${filter.trim()}”` : ''}.</div>
-          )}
-          {visible.map((o, i) => (
-            <button
-              key={o.value}
-              type="button"
-              className={`kbar-item ${i === active ? 'active' : ''} ${o.value === value ? 'selected' : ''}`}
-              onMouseEnter={() => setActive(i)}
-              onMouseDown={(e) => { e.preventDefault(); select(o.value); }}
-            >
-              {o.label}
-              {o.sub && <span className="sub">{o.sub}</span>}
-            </button>
-          ))}
-        </div>
-      )}
+      {open && (portal ? createPortal(menu, document.body) : menu)}
     </div>
   );
 }
