@@ -67,3 +67,57 @@ it('changesText flattens diffs including client add/remove', () => {
     .toBe('name: A → B; clients: +X, −Y');
   expect(changesText(null)).toBe('');
 });
+
+const many: BulkSummaryResult<WorkerRow> = {
+  updated: 450, unchanged: 0,
+  rows: Array.from({ length: 450 }, (_, i) => ({
+    row: i + 2, name: i % 2 ? `Worker ${i + 2}` : null, person_id: `p${i + 2}`,
+    action: 'updated' as const, diff: null })),
+};
+const bodyRows = () => screen.getAllByRole('row').length - 1;
+
+it('lists every row with no pageSize (the other tools are unchanged)', () => {
+  render(<MemoryRouter>
+    <BulkApplySummary result={many} entityLabel="Worker" filename="workers-bulk-summary"
+      linkFor={() => '/people/workers'} openTo="/people/workers" openLabel="Open Workers" />
+  </MemoryRouter>);
+  expect(bodyRows()).toBe(450);
+  expect(screen.queryByRole('button', { name: /^Show \d+ more$/ })).toBeNull();
+  expect(screen.getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Row', 'Worker', 'Result', 'Changes']);
+});
+
+it('pages the table by pageSize while the csv still carries every row', () => {
+  render(<MemoryRouter>
+    <BulkApplySummary result={many} entityLabel="Asset" filename="assets-bulk-summary" pageSize={200}
+      linkFor={() => '/assets'} openTo="/assets" openLabel="Open Assets" />
+  </MemoryRouter>);
+  expect(bodyRows()).toBe(200);
+  fireEvent.click(screen.getByRole('button', { name: 'Show 200 more' }));
+  expect(bodyRows()).toBe(400);
+  fireEvent.click(screen.getByRole('button', { name: 'Show 50 more' }));
+  expect(bodyRows()).toBe(450);
+  expect(screen.queryByRole('button', { name: /^Show \d+ more$/ })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Download summary (.csv)' }));
+  expect(listTools.exportCsv).toHaveBeenCalledWith('assets-bulk-summary', expect.any(Array), many.rows);
+  expect(listTools.exportCsv.mock.calls[0][2]).toHaveLength(450);
+});
+
+it('adds an extra column after the name in the table and the csv, and a note line', () => {
+  render(<MemoryRouter>
+    <BulkApplySummary result={many} entityLabel="Asset" filename="assets-bulk-summary" pageSize={200}
+      linkFor={() => '/assets'} openTo="/assets" openLabel="Open Assets"
+      extraColumn={{ label: 'Asset ID', mono: true, value: (r) => (r.row === 3 ? '' : `A-${r.row}`) }}
+      note="Rack placement was rechecked." />
+  </MemoryRouter>);
+  expect(screen.getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Row', 'Asset', 'Asset ID', 'Result', 'Changes']);
+  expect(screen.getByText('A-2')).toBeTruthy();
+  expect(screen.getByText('Rack placement was rechecked.').className).toBe('set-note');
+  const row3 = screen.getAllByRole('row')[2];
+  expect(row3.querySelectorAll('td')[2].textContent).toBe('—');   // blank value → em dash
+  fireEvent.click(screen.getByRole('button', { name: 'Download summary (.csv)' }));
+  const [, columns] = listTools.exportCsv.mock.calls[0];
+  expect(columns.map(([h]: [string]) => h)).toEqual(['Row', 'Asset', 'Asset ID', 'Result', 'Changes']);
+  expect(columns[2][1](many.rows[0])).toBe('A-2');
+});

@@ -3,7 +3,7 @@
  *  that list, the test beside this file pins this one, and the two must
  *  agree. */
 import type { BulkColumnGuide } from '../components/bulk/BulkToolPage';
-import { ApiError, type AssetBulkJob } from './api';
+import { ApiError, type AssetBulkCompletedResults, type AssetBulkJob } from './api';
 
 export const ASSET_BULK_COLUMN_GUIDE: BulkColumnGuide[] = [
   { key: 'asset_id', required: false,
@@ -49,7 +49,7 @@ export const ASSET_BULK_ERRORS: Record<string, string> = {
   job_not_found: 'That job no longer exists.',
   job_not_editable: 'That job can no longer be changed — start a new upload.',
   job_not_cancellable: 'That update has already started and can no longer be canceled.',
-  rows_invalid: 'Some rows still need attention — resolve or skip them and try again.',
+  rows_invalid: 'Some rows changed and now need attention — nothing was applied. Upload the file again to review them.',
   rule_failed: 'A status rule stopped the update — nothing was applied.',
   apply_conflict: 'Something changed while the update ran (a serial number or RFID tag was taken, '
     + 'for example) — nothing was applied. Upload the file again to see the current values.',
@@ -57,6 +57,19 @@ export const ASSET_BULK_ERRORS: Record<string, string> = {
 };
 
 const APPLY_FAILED = 'The update failed — nothing was applied. Try again.';
+
+type Placement = NonNullable<AssetBulkCompletedResults['summary']['placement']>;
+
+const count = (n: number, one: string, many: string) => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
+
+/** The rack-placement recheck a completed job ran, as one sentence (null: none ran). */
+export function placementNote(placement: Placement | undefined): string | null {
+  if (!placement) return null;
+  return 'Rack placement was rechecked on the moves holding these assets: '
+    + `${count(placement.collisions, 'collision', 'collisions')}, `
+    + `${count(placement.orphans, 'orphan node', 'orphan nodes')}, and `
+    + `${count(placement.cleared, 'flag', 'flags')} cleared.`;
+}
 
 /** Why a finished job did not apply, as one sentence (null: the job could not be read). */
 export function assetBulkFailure(job: AssetBulkJob | null): string {

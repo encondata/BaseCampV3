@@ -165,9 +165,9 @@ it('Apply polls the job every 1.5 s, shows progress, then the per-row summary', 
     .mockResolvedValueOnce(job({
       status: 'completed', processed_rows: 9800, total_rows: 9800, error: null, results: {
         summary: { updated: 1, skipped: 1, unchanged: 7 },
-        rows: [{ row: 2, name: 'Server 2', asset_id: 'a2', action: 'updated',
+        rows: [{ row: 2, name: 'Server 2', asset_id: 'a2', asset_number: 1002, action: 'updated',
                  diff: { name: { old: 'Old 2', new: 'Server 2' } } },
-               { row: 4, name: 'Server 4', asset_id: 'a4', action: 'skipped', diff: null }] },
+               { row: 4, name: null, asset_id: 'a4', asset_number: 1004, action: 'skipped', diff: null }] },
     }));
   fireEvent.click(applyButton('Update 1 asset'));
   expect(await screen.findByText('Applying… 0 of 9,800')).toBeTruthy();
@@ -179,10 +179,42 @@ it('Apply polls the job every 1.5 s, shows progress, then the per-row summary', 
   expect(screen.getByText('Applied: 1 updated · 1 skipped · 7 unchanged')).toBeTruthy();
   expect((screen.getByRole('link', { name: 'Server 2' }) as HTMLAnchorElement).getAttribute('href')).toBe('/assets/a2');
   expect((screen.getByRole('link', { name: 'Open Assets' }) as HTMLAnchorElement).getAttribute('href')).toBe('/assets');
+  // the Asset ID column: a nameless row is still identifiable
+  const summary = screen.getByRole('table', { name: 'Apply summary' });
+  expect(within(summary).getByRole('columnheader', { name: 'Asset ID' })).toBeTruthy();
+  expect(within(summary).getByText('1002')).toBeTruthy();
+  expect(within(summary).getByText('1004')).toBeTruthy();
+  expect(screen.queryByText(/^Rack placement/)).toBeNull();     // no model change, no recheck
   expect(screen.queryByRole('table', { name: 'Import preview' })).toBeNull();
   expect(screen.queryByText(/^Applying…/)).toBeNull();
   await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
   expect(api.getAssetBulkJob).toHaveBeenCalledTimes(2);          // polling stopped
+});
+
+it('a completed job with a placement recheck shows the counts; its summary lists 200 rows at a time', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  api.uploadAssetBulk.mockResolvedValue({ job_id: 'job1', preview: listing([row(2)]) });
+  await start();
+  fireEvent.click(screen.getByLabelText('Update row 2'));
+  api.commitAssetBulk.mockResolvedValue(job());
+  const applied = Array.from({ length: 250 }, (_, i) => ({
+    row: i + 2, name: `Server ${i + 2}`, asset_id: `a${i + 2}`, asset_number: 1000 + i + 2,
+    action: 'updated' as const, diff: null }));
+  api.getAssetBulkJob.mockResolvedValue(job({
+    status: 'completed', error: null, results: {
+      summary: { updated: 250, skipped: 0, unchanged: 0,
+                 placement: { collisions: 2, orphans: 1, cleared: 0 } },
+      rows: applied },
+  }));
+  fireEvent.click(applyButton('Update 1 asset'));
+  await screen.findByText('Applying… 0 of 3');
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(screen.getByText('Rack placement was rechecked on the moves holding these assets: '
+    + '2 collisions, 1 orphan node, and 0 flags cleared.').className).toBe('set-note');
+  const summary = screen.getByRole('table', { name: 'Apply summary' });
+  expect(within(summary).getAllByRole('row').length - 1).toBe(200);
+  fireEvent.click(screen.getByRole('button', { name: 'Show 50 more' }));
+  expect(within(summary).getAllByRole('row').length - 1).toBe(250);
 });
 
 it('a failing status rule names the row and the rule, and drops the preview', async () => {
@@ -213,7 +245,8 @@ it('a job that fails with rows_invalid shows the mapped message and drops the pr
   fireEvent.click(applyButton('Update 1 asset'));
   await screen.findByText('Applying… 0 of 3');
   await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
-  expect(screen.getByText(/still need attention/i)).toBeTruthy();
+  expect(screen.getByText('Some rows changed and now need attention — nothing was applied. '
+    + 'Upload the file again to review them.')).toBeTruthy();
   expect(screen.queryByRole('table', { name: 'Import preview' })).toBeNull();
 });
 

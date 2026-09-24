@@ -1546,6 +1546,8 @@ export interface AssetBulkResultRow {
   row: number;
   name: string | null;
   asset_id: string | null;
+  /** The Asset ID (`legacy_id`) people know the asset by. */
+  asset_number: number | null;
   action: 'updated' | 'skipped';
   diff: BulkDiff | null;
 }

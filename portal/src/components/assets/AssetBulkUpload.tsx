@@ -16,7 +16,7 @@ import {
   type AssetBulkAction, type AssetBulkJob, type AssetBulkListing, type AssetBulkOverrides,
   type AssetBulkResultRow, type AssetBulkRow,
 } from '../../lib/api';
-import { assetBulkError, assetBulkFailure } from '../../lib/assetBulk';
+import { assetBulkError, assetBulkFailure, placementNote } from '../../lib/assetBulk';
 import BulkApplySummary, { type BulkSummaryResult } from '../bulk/BulkApplySummary';
 import DataTable from '../DataTable';
 import AssetBulkRowDetails, {
@@ -58,6 +58,7 @@ export default function AssetBulkUpload() {
   const [shown, setShown] = useState(PAGE);
   const [applying, setApplying] = useState<AssetBulkJob | null>(null);
   const [result, setResult] = useState<BulkSummaryResult<AssetBulkResultRow> | null>(null);
+  const [resultNote, setResultNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(0);
   const [error, setError] = useState('');
@@ -133,6 +134,7 @@ export default function AssetBulkUpload() {
       setFile(null);
       if (fileRef.current) fileRef.current.value = '';
       setResult({ updated: summary.updated, skipped: summary.skipped, unchanged: summary.unchanged, rows });
+      setResultNote(placementNote(summary.placement));
     } else {
       setError(message ?? assetBulkFailure(job));
     }
@@ -306,6 +308,10 @@ export default function AssetBulkUpload() {
           filename="assets-bulk-summary"
           openTo="/assets"
           openLabel="Open Assets"
+          pageSize={PAGE}
+          extraColumn={{ label: 'Asset ID', mono: true,
+                         value: (r) => (r.asset_number === null ? '' : String(r.asset_number)) }}
+          note={resultNote ?? undefined}
         />
       )}
 

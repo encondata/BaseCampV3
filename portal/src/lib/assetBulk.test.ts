@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 
 import { ApiError, type AssetBulkJob } from './api';
 import {
-  ASSET_BULK_COLUMN_GUIDE, ASSET_BULK_ERRORS, assetBulkError, assetBulkFailure,
+  ASSET_BULK_COLUMN_GUIDE, ASSET_BULK_ERRORS, assetBulkError, assetBulkFailure, placementNote,
 } from './assetBulk';
 
 it('describes exactly the template columns, in the API column order', () => {
@@ -33,7 +33,8 @@ it('turns a finished job into one sentence per failure', () => {
   expect(assetBulkFailure(failed({ error: 'apply_conflict', results: { message: 'x' } })))
     .toBe(ASSET_BULK_ERRORS.apply_conflict);
   expect(assetBulkFailure(failed({ error: 'rows_invalid', results: { rows: [] } })))
-    .toBe(ASSET_BULK_ERRORS.rows_invalid);
+    .toBe('Some rows changed and now need attention — nothing was applied. '
+      + 'Upload the file again to review them.');
   expect(assetBulkFailure(failed({ status: 'cancelled', error: null })))
     .toBe('The update was canceled — nothing was applied.');
   expect(assetBulkFailure(failed({ error: 'worker_crashed' })))
@@ -45,4 +46,14 @@ it('maps API errors to sentences and anything else to a network error', () => {
   expect(assetBulkError(new ApiError(422, 'empty_file'))).toBe('That file is empty.');
   expect(assetBulkError(new ApiError(500, 'boom'))).toBe('That did not work — try again.');
   expect(assetBulkError(new TypeError('fetch failed'))).toBe('Network error.');
+});
+
+it('describes the placement recheck as one sentence, pluralized, or nothing when none ran', () => {
+  expect(placementNote(undefined)).toBeNull();
+  expect(placementNote({ collisions: 2, orphans: 0, cleared: 1 })).toBe(
+    'Rack placement was rechecked on the moves holding these assets: '
+    + '2 collisions, 0 orphan nodes, and 1 flag cleared.');
+  expect(placementNote({ collisions: 1, orphans: 1, cleared: 1200 })).toBe(
+    'Rack placement was rechecked on the moves holding these assets: '
+    + '1 collision, 1 orphan node, and 1,200 flags cleared.');
 });
