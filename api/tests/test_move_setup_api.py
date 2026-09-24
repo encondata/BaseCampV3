@@ -341,3 +341,54 @@ async def test_delete_removes_the_draft_and_its_check(client, db, admin_hdrs):
     assert await reload(draft["id"]) is None
     assert await reload(check["id"]) is None
     assert (await client.get(f"{BASE}/{draft['id']}", headers=admin_hdrs)).status_code == 404
+
+
+async def test_get_draft_assets_returns_the_check_once_the_worker_validates_it(
+        client, db, admin_hdrs):
+    origin, destination = await make_sites(db)
+    draft = await new_draft(client, admin_hdrs, origin, destination)
+    check = (await upload_assets(client, admin_hdrs, draft["id"])).json()
+    url = f"{BASE}/{draft['id']}/assets"
+    queued = await client.get(url, headers=admin_hdrs)
+    assert queued.status_code == 200, queued.text
+    assert queued.json()["id"] == check["id"]
+    assert queued.json()["status"] == "queued"
+    assert await run_once(get_sessionmaker()) is True
+    done = await client.get(url, headers=admin_hdrs)
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "completed"
+    assert done.json()["results"]["summary"]["created"] == 2
+
+
+async def test_get_draft_assets_for_another_admin_gets_draft_not_found(
+        client, db, admin_hdrs, other_admin_hdrs):
+    origin, destination = await make_sites(db)
+    draft = await new_draft(client, admin_hdrs, origin, destination)
+    await upload_assets(client, admin_hdrs, draft["id"])
+    resp = await client.get(f"{BASE}/{draft['id']}/assets", headers=other_admin_hdrs)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "draft_not_found"
+
+
+async def test_get_draft_assets_with_no_check_gets_no_asset_check(client, db, admin_hdrs):
+    origin, destination = await make_sites(db)
+    draft = await new_draft(client, admin_hdrs, origin, destination)
+    resp = await client.get(f"{BASE}/{draft['id']}/assets", headers=admin_hdrs)
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "no_asset_check"
+
+
+async def test_an_admin_without_initiatives_change_can_still_poll_the_check(client, db):
+    person = Person(first_name="Cam", last_name="NoChange", email="cam@test.example.com")
+    db.add(person)
+    await db.flush()
+    db.add(PersonRole(person_id=person.id, role="admin"))
+    db.add(PermissionOverride(person_id=person.id, resource="initiatives", action="change",
+                              allow=False))
+    await db.commit()
+    hdrs = await make_login(db, client, person, "cam@test.example.com")
+    origin, destination = await make_sites(db)
+    draft = await new_draft(client, hdrs, origin, destination)
+    await upload_assets(client, hdrs, draft["id"])
+    resp = await client.get(f"{BASE}/{draft['id']}/assets", headers=hdrs)
+    assert resp.status_code == 200, resp.text

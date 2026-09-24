@@ -224,6 +224,22 @@ async def recheck_draft_assets(
     return check
 
 
+@router.get("/{draft_id}/assets", response_model=ImportJobOut)
+async def get_draft_assets(
+    draft_id: uuid.UUID,
+    db: DbSession,
+    actor: AuthContext = require_permission("initiatives", "add"),
+) -> ImportJob:
+    """The draft's own check job, so the wizard never has to poll the
+    initiatives:change-gated /initiatives/assets/import-jobs route."""
+    _guard(actor)
+    job = await _draft(db, draft_id, actor)
+    check = await move_setup.check_job(db, job.payload)
+    if check is None:
+        raise _err(404, "no_asset_check")
+    return check
+
+
 @router.post("/{draft_id}/create", response_model=MoveSetupOut)
 async def create_move_from_draft(
     draft_id: uuid.UUID,
