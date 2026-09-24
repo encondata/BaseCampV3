@@ -40,8 +40,8 @@ export const BULK_TOOLS: BulkTool[] = [
     resource: 'trucks', action: 'add', to: '/bulk/trucks', button: 'Open',
   },
   {
-    key: 'initiative-people', title: 'Assign people to a job',
-    description: 'Pick a job and upload who worked it, where, and in what role. Add new people and update existing ones; unmatched names are picked from a list.',
+    key: 'initiative-people', title: 'Add or update a job\'s team in bulk',
+    description: 'Load a job\'s team from a spreadsheet. People already on the job match by worker name; update or skip each one.',
     resource: 'initiatives', action: 'change', to: '/bulk/initiative-people', button: 'Open',
   },
 ];

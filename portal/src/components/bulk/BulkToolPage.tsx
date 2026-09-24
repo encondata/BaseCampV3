@@ -1,6 +1,7 @@
 /**
  * BulkToolPage — the page shell every Bulk Actions tool shares: title and
- * hint, the column guide, the template / export downloads with the upload
+ * hint (plus an optional intro, e.g. a job picker, right under it), the
+ * column guide, the template / export downloads with the upload
  * limit note, and an Upload section holding the tool's own pane.
  */
 import { useState, type ReactNode } from 'react';
@@ -16,12 +17,12 @@ interface Props {
   hint: ReactNode;
   guide: BulkColumnGuide[];
   downloads: BulkDownload[];
-  /** An extra section (e.g. a job picker) rendered right before Download. */
-  beforeDownloads?: ReactNode;
+  /** Optional content (e.g. a job picker) rendered right after the hint, with no heading. */
+  intro?: ReactNode;
   children: ReactNode;
 }
 
-export default function BulkToolPage({ title, hint, guide, downloads, beforeDownloads, children }: Props) {
+export default function BulkToolPage({ title, hint, guide, downloads, intro, children }: Props) {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
 
@@ -36,6 +37,7 @@ export default function BulkToolPage({ title, hint, guide, downloads, beforeDown
       <div className="eyebrow">Bulk Actions</div>
       <h1 className="page-title">{title}</h1>
       <p className="page-hint">{hint}</p>
+      {intro && <div className="bulk-intro">{intro}</div>}
 
       <section className="bulk-section">
         <p className="eyebrow-sm">Columns</p>
@@ -52,13 +54,6 @@ export default function BulkToolPage({ title, hint, guide, downloads, beforeDown
           }))}
         />
       </section>
-
-      {beforeDownloads && (
-        <section className="bulk-section">
-          <p className="eyebrow-sm">Job</p>
-          {beforeDownloads}
-        </section>
-      )}
 
       <section className="bulk-section">
         <p className="eyebrow-sm">Download</p>

@@ -1,7 +1,8 @@
 /**
- * BulkInitiativePeople — /bulk/initiative-people: pick a job, then upload
- * worker / site / role rows. The shared page shell, a job picker, and the
- * TeamBulkUpload pane (per-line matching of unknown values).
+ * BulkInitiativePeople — /bulk/initiative-people: the shared page shell
+ * configured for a job's team, with a job picker under the hint and
+ * TeamBulkUpload as the upload pane (disabled until a job is picked;
+ * per-line matching of unknown values).
  */
 import { useEffect, useMemo, useState } from 'react';
 
@@ -33,12 +34,21 @@ export default function BulkInitiativePeople() {
 
   return (
     <BulkToolPage
-      title="Assign people to a job"
+      title="Add or update a job's team in bulk"
       hint={<>
-        Pick the job, then download the template or its current team, fill in who worked, where, and in what role, and upload it.
-        New names are added; people already on the job are updated only where you check Update. Nobody is removed.
-        Names the system cannot match can be picked from a list in the preview.
+        Download the template or the job's current team, fill it in, upload it, and review every add before applying.
+        Rows match people on the job by worker name; matched rows are skipped unless you check Update.
+        Sites and roles are matched by name and must already exist. Names that do not match can be picked in the preview.
+        Nobody is removed.
       </>}
+      intro={
+        <div className="bulk-file-row">
+          <label htmlFor="bulk-job">Job</label>
+          <ComboBox inputId="bulk-job" ariaLabel="Job" options={options} value={jobId}
+                    placeholder="Pick a job…" onChange={setJobId} />
+          {loadError && <p className="pf-error">{loadError}</p>}
+        </div>
+      }
       guide={TEAM_COLUMN_GUIDE}
       downloads={[
         { key: 't-xlsx', label: 'Template (.xlsx)', run: () => needJob((id) => downloadTeamTemplate(id, 'xlsx')), disabled: noJob },
@@ -46,16 +56,8 @@ export default function BulkInitiativePeople() {
         { key: 'e-xlsx', label: 'Current team (.xlsx)', run: () => needJob((id) => downloadTeamExport(id, 'xlsx')), accent: true, disabled: noJob },
         { key: 'e-csv', label: 'Current team (.csv)', run: () => needJob((id) => downloadTeamExport(id, 'csv')), accent: true, disabled: noJob },
       ]}
-      beforeDownloads={
-        <div className="bulk-job-picker">
-          <label htmlFor="bulk-job">Job</label>
-          <ComboBox inputId="bulk-job" ariaLabel="Job" options={options} value={jobId}
-                    placeholder="Pick a job…" onChange={setJobId} />
-          {loadError && <p className="pf-error">{loadError}</p>}
-        </div>
-      }
     >
-      {jobId ? <TeamBulkUpload key={jobId} jobId={jobId} /> : <p className="set-note">Pick a job to upload a team.</p>}
+      <TeamBulkUpload key={jobId} jobId={jobId || null} />
     </BulkToolPage>
   );
 }

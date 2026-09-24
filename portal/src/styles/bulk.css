@@ -15,9 +15,9 @@
   margin: 0 0 12px;
 }
 
-/* the job picker ahead of Download on /bulk/initiative-people */
-.bulk-job-picker { display: flex; flex-direction: column; gap: 6px; max-width: 360px; }
-.bulk-job-picker label { color: var(--text-mute); }
+/* BulkToolPage's optional intro under the hint (the job picker on
+   /bulk/initiative-people) — a .bulk-file-row, kept to a field's width */
+.bulk-intro { margin-top: 18px; max-width: 360px; }
 
 /* ── bulk import pane ─────────────────────────────────────────── */
 

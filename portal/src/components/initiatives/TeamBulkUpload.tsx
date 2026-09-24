@@ -1,10 +1,13 @@
 /**
- * TeamBulkUpload — the upload → preview → apply pane of "Assign people to
- * a job". Preview parses the file once; its cells and spreadsheet row
- * numbers become the base every later JSON re-preview and the commit post.
- * Unknown or ambiguous values are matched per line (overrides), lines can
- * be skipped, updates are applied only where Update is checked, and Apply
- * shows the server's per-row summary.
+ * TeamBulkUpload — the upload → preview → apply pane of "Add or update a
+ * job's team in bulk", laid out exactly like the shared BulkUpload pane
+ * (file row, Preview / apply / Update all / Skip all, summary line, a
+ * Row / Name / Matched by / Action / Details preview). Always rendered; with
+ * no job picked the file input and Preview are disabled. Preview parses the
+ * file once; its cells and spreadsheet row numbers become the base every
+ * later JSON re-preview and the commit post. Unknown or ambiguous values are
+ * matched per line (overrides), lines can be skipped, updates are applied
+ * only where Update is checked, and Apply shows the server's per-row summary.
  */
 import { useEffect, useRef, useState } from 'react';
 
@@ -22,13 +25,23 @@ import TeamBulkRowDetails, {
   type TeamField, type TeamFieldFailed, type TeamFieldOptions,
 } from './TeamBulkRowDetails';
 
-const STATUS: Record<TeamBulkAction, [string, string]> = {
-  add: ['Add', 'c-green'],
-  update: ['Update', 'c-amber'],
-  unchanged: ['No change', 'tag'],
-  attention: ['Needs a match', 'c-violet'],
-  error: ['Error', 'c-red'],
-  skipped: ['Skipped', 'c-slate'],
+const ACTION_LABEL: Record<TeamBulkAction, string> = {
+  add: 'Add',
+  update: 'Update',
+  unchanged: 'No change',
+  attention: 'Needs a match',
+  error: 'Error',
+  skipped: 'Skipped',
+};
+
+/** bulk.css tints the Action column by these (an attention row blocks Apply, so it reads as an error). */
+const ROW_CLASS: Record<TeamBulkAction, string> = {
+  add: 'create',
+  update: 'update',
+  unchanged: 'unchanged',
+  attention: 'error',
+  error: 'error',
+  skipped: 'skipped',
 };
 
 const LOADERS: Record<TeamField, () => Promise<ComboOption[]>> = {
@@ -40,7 +53,8 @@ const LOADERS: Record<TeamField, () => Promise<ComboOption[]>> = {
     .map((w) => ({ value: w.key, label: w.label })),
 };
 
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
+const people = (n: number) => plural(n, 'person', 'people');
 const sorted = (s: Set<number>) => [...s].sort((a, b) => a - b);
 
 /** Uploaded cell, then "→ matched" when the match reads differently. */
@@ -51,7 +65,7 @@ function matched(cell: string | undefined, name: string | null) {
 
 interface Base { cells: Record<string, string>[]; rows: number[] }
 
-export default function TeamBulkUpload({ jobId }: { jobId: string }) {
+export default function TeamBulkUpload({ jobId }: { jobId: string | null }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [base, setBase] = useState<Base | null>(null);
@@ -104,7 +118,7 @@ export default function TeamBulkUpload({ jobId }: { jobId: string }) {
   };
 
   const runPreview = async () => {
-    if (!file) return;
+    if (!file || !jobId) return;
     const mine = ++seq.current;
     setBusy(true);
     setError('');
@@ -128,7 +142,7 @@ export default function TeamBulkUpload({ jobId }: { jobId: string }) {
 
   /** JSON re-preview with the accumulated picks and skips; a newer request wins. */
   const rerun = async (nextOverrides: TeamBulkOverrides, nextSkip: Set<number>) => {
-    if (!base) return;
+    if (!base || !jobId) return;
     setOverrides(nextOverrides);
     setSkip(nextSkip);
     const mine = ++seq.current;
@@ -180,7 +194,7 @@ export default function TeamBulkUpload({ jobId }: { jobId: string }) {
   const canApply = !!preview && preview.can_commit && pending === 0 && (adds > 0 || updating > 0);
 
   const runApply = async () => {
-    if (!preview || !base || !file) return;
+    if (!preview || !base || !file || !jobId) return;
     setBusy(true);
     setError('');
     try {
@@ -204,16 +218,20 @@ export default function TeamBulkUpload({ jobId }: { jobId: string }) {
     }
   };
 
-  const status = (r: TeamBulkRow) => {
-    const [label, tone] = r.action === 'update' && !approved.has(r.row)
-      ? ['Skip', 'c-slate'] : STATUS[r.action];
-    return <span className={`chip ${tone}`}>{label}</span>;
-  };
+  const willUpdate = (r: TeamBulkRow) => r.action === 'update' && approved.has(r.row);
+  const actionLabel = (r: TeamBulkRow) =>
+    r.action === 'update' ? (willUpdate(r) ? 'Update' : 'Skip') : ACTION_LABEL[r.action];
+  const rowClass = (r: TeamBulkRow) =>
+    `bulk-row-${r.action === 'update' && !willUpdate(r) ? 'skipped' : ROW_CLASS[r.action]}`;
+  /** "name" when the worker matched on its own, "your pick" when an override resolved it. */
+  const matchedBy = (r: TeamBulkRow) =>
+    !r.person_id ? '—' : overrides[r.row]?.worker ? 'your pick' : 'name';
 
-  const inputId = `team-${jobId}-bulk-file`;
+  const noJob = !jobId;
+  const inputId = 'team-bulk-file';
 
   return (
-    <div className="bulk-import team-bulk">
+    <div className="bulk-import">
       <div className="bulk-file-row">
         <label htmlFor={inputId}>Upload a file (.csv or .xlsx)</label>
         <input
@@ -221,7 +239,7 @@ export default function TeamBulkUpload({ jobId }: { jobId: string }) {
           ref={fileRef}
           type="file"
           accept=".csv,.xlsx"
-          disabled={busy || pending > 0}
+          disabled={noJob || busy || pending > 0}
           onChange={(e) => {
             seq.current += 1;          // an in-flight preview of the old file is now stale
             setFile(e.target.files?.[0] ?? null);
@@ -237,13 +255,13 @@ export default function TeamBulkUpload({ jobId }: { jobId: string }) {
       </div>
 
       <div className="bulk-actions">
-        <button className="btn-solid" type="button" disabled={busy || !file}
+        <button className="btn-solid" type="button" disabled={noJob || busy || !file}
                 onClick={() => void runPreview()}>
           {busy ? 'Working…' : 'Preview'}
         </button>
         <button className="btn-solid" type="button" disabled={busy || !canApply}
                 onClick={() => void runApply()}>
-          {`Add ${adds} and update ${updating}`}
+          {`Add ${people(adds)} and update ${people(updating)}`}
         </button>
         {updates.length > 0 && (
           <>
@@ -261,7 +279,7 @@ export default function TeamBulkUpload({ jobId }: { jobId: string }) {
 
       {error && <p className="pf-error">{error}</p>}
 
-      {result && (
+      {result && jobId && (
         <BulkApplySummary
           result={result}
           entityLabel="Worker"
@@ -283,20 +301,19 @@ export default function TeamBulkUpload({ jobId }: { jobId: string }) {
             className="bulk-preview"
             columns={[
               { key: 'row', label: 'Row', width: '64px', mono: true },
-              { key: 'worker', label: 'Worker' },
-              { key: 'site', label: 'Site' },
-              { key: 'role', label: 'Role' },
-              { key: 'status', label: 'Status', width: '130px' },
-              { key: 'details', label: 'Details', width: '34%' },
+              { key: 'name', label: 'Name' },
+              { key: 'matched_by', label: 'Matched by' },
+              { key: 'action', label: 'Action' },
+              { key: 'details', label: 'Details' },
             ]}
             rows={rows.map((r) => ({
               key: String(r.row),
+              className: rowClass(r),
               cells: [
                 r.row,
                 matched(r.cells.worker ?? r.worker ?? '', r.person_name),
-                matched(r.cells.site, r.site_name),
-                matched(r.cells.role, r.role_label),
-                status(r),
+                matchedBy(r),
+                actionLabel(r),
                 <TeamBulkRowDetails
                   key="details"
                   row={r}

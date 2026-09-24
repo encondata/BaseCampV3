@@ -58,7 +58,7 @@ async function upload() {
 
 it('picking a candidate re-previews with the override and enables Apply', async () => {
   await upload();
-  const apply = screen.getByRole('button', { name: /^Add 1 and update 0/ }) as HTMLButtonElement;
+  const apply = screen.getByRole('button', { name: /^Add 1 person and update 0 people$/ }) as HTMLButtonElement;
   expect(apply.disabled).toBe(true);
   api.previewTeamBulk.mockResolvedValue(preview([
     row(2, { action: 'add', person_id: 'p1', person_name: 'Ana Lopez' }),
@@ -73,7 +73,10 @@ it('picking a candidate re-previews with the override and enables Apply', async 
     rows: [{ worker: 'W2', site: '', role: '' }, { worker: 'W3', site: '', role: '' },
            { worker: 'W4', site: '', role: '' }],
     row_numbers: [2, 3, 4], overrides: { 3: { worker: 'j2' } }, skip: [] }));
-  await waitFor(() => expect((screen.getByRole('button', { name: /^Add 2 and update 0/ }) as HTMLButtonElement).disabled).toBe(false));
+  await waitFor(() => expect((screen.getByRole('button', { name: /^Add 2 people and update 0 people$/ }) as HTMLButtonElement).disabled).toBe(false));
+  const row3 = within(screen.getByRole('table', { name: 'Team preview' }))
+    .getByText('3', { selector: 'td' }).closest('tr') as HTMLElement;
+  expect(within(row3).getByText('your pick')).toBeTruthy();
 });
 
 it('skip re-previews; approve is local; apply posts everything and shows the summary', async () => {
@@ -97,7 +100,7 @@ it('skip re-previews; approve is local; apply posts everything and shows the sum
            { row: 4, name: 'Ben Ng', person_id: 'p4', action: 'updated',
              diff: { site: { old: 'DC East', new: 'DC West' } } }],
   });
-  fireEvent.click(screen.getByRole('button', { name: /^Add 1 and update 1/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Add 1 person and update 1 person$/ }));
   await waitFor(() => expect(api.commitTeamBulk).toHaveBeenCalledWith('job1', expect.objectContaining({
     row_numbers: [2, 3, 4], skip: [3], approved_updates: [4], source: 'team.csv' })));
   const summary = await screen.findByRole('table', { name: /applied|summary/i });
@@ -114,7 +117,7 @@ it('an API error is shown and forces a fresh preview', async () => {
   fireEvent.click(screen.getByLabelText('Skip row 3'));
   const { ApiError } = await import('../../lib/api');
   api.commitTeamBulk.mockRejectedValue(new ApiError(422, 'rows_invalid'));
-  fireEvent.click(await screen.findByRole('button', { name: /^Add 1 and update 0/ }));
+  fireEvent.click(await screen.findByRole('button', { name: /^Add 1 person and update 0 people$/ }));
   expect(await screen.findByText(/still need attention/i)).toBeTruthy();
   expect(screen.queryByText('Needs a match')).toBeNull();
 });
@@ -141,14 +144,14 @@ it('an unknown value lists candidates, then every worker (loaded once, lazily)',
 it('approvals are pruned to rows that are still updates after a re-preview', async () => {
   await upload();
   fireEvent.click(screen.getByLabelText('Update row 4'));
-  expect(screen.getByRole('button', { name: /^Add 1 and update 1/ })).toBeTruthy();
+  expect(screen.getByRole('button', { name: /^Add 1 person and update 1 person$/ })).toBeTruthy();
   api.previewTeamBulk.mockResolvedValue(preview([
     row(2, { action: 'add', person_id: 'p1', person_name: 'Ana Lopez' }),
     row(3, { action: 'skipped' }),
     row(4, { action: 'unchanged', person_id: 'p4', person_name: 'Ben Ng' }),
   ]));
   fireEvent.click(screen.getByLabelText('Skip row 3'));
-  const apply = await screen.findByRole('button', { name: /^Add 1 and update 0/ });
+  const apply = await screen.findByRole('button', { name: /^Add 1 person and update 0 people$/ });
   await waitFor(() => expect((apply as HTMLButtonElement).disabled).toBe(false));
   api.commitTeamBulk.mockResolvedValue({ created: 1, updated: 0, unchanged: 1, skipped: 1, rows: [] });
   fireEvent.click(apply);
@@ -196,7 +199,7 @@ it('Apply is disabled while a re-preview is pending', async () => {
     row(3, { action: 'skipped' }),
   ]));
   fireEvent.click(screen.getByLabelText('Skip row 3'));
-  const apply = await screen.findByRole('button', { name: /^Add 1 and update 0/ }) as HTMLButtonElement;
+  const apply = await screen.findByRole('button', { name: /^Add 1 person and update 0 people$/ }) as HTMLButtonElement;
   await waitFor(() => expect(apply.disabled).toBe(false));
 
   const later = deferred<TeamBulkPreview>();
@@ -238,7 +241,7 @@ it('choosing a new file drops an in-flight re-preview and resets picks, skips an
   await screen.findByText('Cy Park');
   expect((screen.getByLabelText('Update row 4') as HTMLInputElement).checked).toBe(false);
   api.commitTeamBulk.mockResolvedValue({ created: 1, updated: 0, unchanged: 0, skipped: 1, rows: [] });
-  fireEvent.click(screen.getByRole('button', { name: /^Add 1 and update 0/ }));
+  fireEvent.click(screen.getByRole('button', { name: /^Add 1 person and update 0 people$/ }));
   await waitFor(() => expect(api.commitTeamBulk).toHaveBeenCalledWith('job1', expect.objectContaining({
     overrides: {}, skip: [], approved_updates: [], source: 'other.csv' })));
 });
@@ -281,4 +284,58 @@ it('a checked Skip keeps "Skip" in its accessible name and says how to undo', as
   const box = await screen.findByRole('checkbox', { name: 'Skip row 3' });
   await waitFor(() => expect((box as HTMLInputElement).checked).toBe(true));
   expect(screen.getByText('Skipped — uncheck to undo.')).toBeTruthy();
+});
+
+it('before a job is picked the pane still renders, with the file input and Preview disabled', () => {
+  render(<MemoryRouter><TeamBulkUpload jobId={null} /></MemoryRouter>);
+  expect((screen.getByLabelText('Upload a file (.csv or .xlsx)') as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Preview' }) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button', { name: 'Add 0 people and update 0 people' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByText(/pick a job/i)).toBeNull();
+});
+
+it('the apply button reads "Add 1 person and update 0 people"', async () => {
+  await upload();
+  expect(screen.getByRole('button', { name: 'Add 1 person and update 0 people' })).toBeTruthy();
+});
+
+it('the preview uses the shared Row / Name / Matched by / Action / Details columns and row tints', async () => {
+  api.previewTeamBulkFile.mockResolvedValue(preview([
+    row(2, { action: 'add', person_id: 'p1', person_name: 'Ana Lopez', worker: 'ana lopez',
+             site_name: 'DC West', cells: { worker: 'ana lopez', site: 'dc west', role: '' } }),
+    row(3, { action: 'attention', worker: 'Jimmy Henderson', issues: [{
+      field: 'worker', kind: 'ambiguous', value: 'Jimmy Henderson',
+      candidates: [{ id: 'j1', label: 'Jimmy Henderson', detail: 'j1@x.test' }] }] }),
+    row(4, { action: 'update', person_id: 'p4', person_name: 'Ben Ng',
+             diff: { site: { old: 'DC East', new: 'DC West' } } }),
+    row(5, { action: 'unchanged', person_id: 'p5', person_name: 'W5' }),
+    row(6, { action: 'error', errors: ['That worker is archived.'] }),
+  ]));
+  render(<MemoryRouter><TeamBulkUpload jobId="job1" /></MemoryRouter>);
+  fireEvent.change(screen.getByLabelText(/upload a file/i), { target: { files: [new File(['x'], 'team.csv')] } });
+  fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+  const table = await screen.findByRole('table', { name: 'Team preview' });
+  expect(within(table).getAllByRole('columnheader').map((h) => h.textContent))
+    .toEqual(['Row', 'Name', 'Matched by', 'Action', 'Details']);
+  expect(screen.queryByText('Site', { selector: 'th' })).toBeNull();
+  expect(table.querySelector('.chip')).toBeNull();
+  const cells = (n: number) => [...(within(table).getByText(String(n), { selector: 'td' })
+    .closest('tr') as HTMLElement).querySelectorAll('td')].map((td) => td.textContent);
+  const tr = (n: number) => within(table).getByText(String(n), { selector: 'td' }).closest('tr') as HTMLElement;
+  expect(cells(2).slice(1, 4)).toEqual(['ana lopez → Ana Lopez', 'name', 'Add']);
+  expect(cells(2)[4]).toBe('Site: DC WestRole: —');
+  expect(tr(2).className).toBe('bulk-row-create');
+  expect(cells(3).slice(2, 4)).toEqual(['—', 'Needs a match']);
+  expect(tr(3).className).toBe('bulk-row-error');
+  expect(cells(4)[3]).toBe('Skip');
+  expect(tr(4).className).toBe('bulk-row-skipped');
+  fireEvent.click(screen.getByLabelText('Update row 4'));
+  expect(cells(4)[3]).toBe('Update');
+  expect(tr(4).className).toBe('bulk-row-update');
+  expect(cells(5)[3]).toBe('No change');
+  expect(tr(5).className).toBe('bulk-row-unchanged');
+  expect(cells(6)[3]).toBe('Error');
+  expect(tr(6).className).toBe('bulk-row-error');
+  expect(within(tr(6)).getByText('That worker is archived.').className).toBe('pf-error');
+  expect(screen.getByText('1 to add · 1 to update · 0 to skip · 1 unchanged · 1 needs a match · 1 error')).toBeTruthy();
 });

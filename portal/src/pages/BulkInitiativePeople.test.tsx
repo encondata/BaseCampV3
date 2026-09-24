@@ -17,7 +17,7 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock('../lib/api', async (importActual) => ({ ...(await importActual<typeof import('../lib/api')>()), ...api }));
 vi.mock('../components/initiatives/TeamBulkUpload', () => ({
-  default: ({ jobId }: { jobId: string }) => <div data-testid="pane">{jobId}</div>,
+  default: ({ jobId }: { jobId: string | null }) => <div data-testid="pane">{jobId ?? ''}</div>,
 }));
 
 const { default: BulkInitiativePeople } = await import('./BulkInitiativePeople');
@@ -29,7 +29,11 @@ it('downloads and the upload pane wait for a job; archived jobs are not offered'
   await waitFor(() => expect(api.listInitiatives).toHaveBeenCalled());
   const template = screen.getByRole('button', { name: 'Template (.xlsx)' }) as HTMLButtonElement;
   expect(template.disabled).toBe(true);
-  expect(screen.queryByTestId('pane')).toBeNull();
+  expect(screen.getByTestId('pane').textContent).toBe('');   // rendered, but with no job
+  expect(screen.queryByText(/pick a job to upload/i)).toBeNull();
+  // the picker is one labeled field under the hint — no "Job" section eyebrow
+  expect(screen.queryByText('Job', { selector: '.eyebrow-sm' })).toBeNull();
+  expect(screen.getByLabelText('Job', { selector: 'input' })).toBeTruthy();
   fireEvent.focus(screen.getByPlaceholderText(/pick a job/i));
   fireEvent.change(screen.getByPlaceholderText(/pick a job/i), { target: { value: 'Dallas' } });
   expect(await screen.findByText('Move · Acme · Oct 1, 2026')).toBeTruthy();

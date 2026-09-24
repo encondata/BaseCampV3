@@ -61,7 +61,7 @@ it('lists the trucks card only when the viewer can add trucks', () => {
   expect(screen.getByText('Add or update trucks in bulk')).toBeTruthy();
 });
 
-it('links the "Assign people to a job" card to /bulk/initiative-people when the viewer can change initiatives', () => {
+it(`links the "Add or update a job's team in bulk" card to /bulk/initiative-people when the viewer can change initiatives`, () => {
   render(
     <MemoryRouter initialEntries={['/bulk']}>
       <Routes>
@@ -70,8 +70,8 @@ it('links the "Assign people to a job" card to /bulk/initiative-people when the 
       </Routes>
     </MemoryRouter>,
   );
-  expect(screen.getByText('Assign people to a job')).toBeTruthy();
-  const card = screen.getByText('Assign people to a job').closest('.bulk-card') as HTMLElement;
+  expect(screen.getByText("Add or update a job's team in bulk")).toBeTruthy();
+  const card = screen.getByText("Add or update a job's team in bulk").closest('.bulk-card') as HTMLElement;
   fireEvent.click(within(card).getByRole('button', { name: 'Open' }));
   expect(screen.getByText('initiative-people page')).toBeTruthy();
 });

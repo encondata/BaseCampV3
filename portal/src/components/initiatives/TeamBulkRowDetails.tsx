@@ -1,10 +1,12 @@
 /**
- * TeamBulkRowDetails — the Details cell of one TeamBulkUpload preview line:
- * a match dropdown per unresolved value (candidates first, then — for an
- * unknown value — every worker / site / role), the row's error sentences,
- * an update's diff with its Update box, and the Skip box. The match menus
- * are portaled so the preview table keeps its sideways scroll. Pure rendering;
- * the pane owns overrides / skip / approvals and re-previews.
+ * TeamBulkRowDetails — the Details cell of one TeamBulkUpload preview line,
+ * in the shared BulkUpload cell's markup: the row's error sentences as
+ * .pf-error spans, then one .bulk-diff block holding an add's "Site: …" /
+ * "Role: …" lines, an update's diff with its Update box, a match dropdown
+ * per unresolved value (candidates first, then — for an unknown value —
+ * every worker / site / role), the Skip box, and Clear picks. The match
+ * menus are portaled so the preview table keeps its sideways scroll. Pure
+ * rendering; the pane owns overrides / skip / approvals and re-previews.
  */
 import { useId } from 'react';
 
@@ -56,55 +58,63 @@ export default function TeamBulkRowDetails({
   const hasPicks = Object.keys(picked).length > 0;
   const skipHintId = useId();
   return (
-    <div className="bulk-diff">
-      {row.action !== 'skipped' && row.issues.map((issue) => (
-        <div key={issue.field} className="bulk-file-row">
-          <span>{issueText(issue)}</span>
-          <ComboBox
-            portal
-            ariaLabel={`Match ${issue.field} for row ${n}`}
-            options={matchOptions(issue, options)}
-            value={picked[issue.field] ?? ''}
-            placeholder={`Pick a ${issue.field}…`}
-            disabled={disabled}
-            onChange={(id) => { if (id) onPick(issue.field, id); }}
-            onOpen={issue.kind === 'unknown' ? () => onOpenField(issue.field) : undefined}
-          />
-          {issue.kind === 'unknown' && failed[issue.field] && (
-            <span className="set-note">Could not load the list — reopen to retry.</span>
-          )}
-        </div>
-      ))}
+    <>
       {row.action !== 'skipped' && row.errors.map((e) => <span key={e} className="pf-error">{e}</span>)}
-      {row.action === 'update' && row.diff && (
-        <>
-          {describeDiff(row.diff).map((d) => (
-            <span key={d.field}>{d.field}: {d.from ? `${d.from} → ` : ''}{d.to}</span>
-          ))}
-          <label>
-            <input type="checkbox" aria-label={`Update row ${n}`} checked={approved}
-                   disabled={disabled} onChange={onToggleApprove} />
-            {' '}Update
-          </label>
-        </>
-      )}
-      {canSkip && (
-        <>
-          <label>
-            <input type="checkbox" aria-label={`Skip row ${n}`} checked={skipped}
-                   aria-describedby={skipped ? skipHintId : undefined}
-                   disabled={disabled} onChange={onToggleSkip} />
-            {' '}Skip
-          </label>
-          {skipped && <span id={skipHintId}>Skipped — uncheck to undo.</span>}
-        </>
-      )}
-      {hasPicks && row.action !== 'skipped' && (
-        <button type="button" className="mini-btn" disabled={disabled}
-                aria-label={`Clear picks for row ${n}`} onClick={onClearPicks}>
-          Clear picks
-        </button>
-      )}
-    </div>
+      <div className="bulk-diff">
+        {row.action === 'add' && (
+          <>
+            <span>Site: {row.site_name || '—'}</span>
+            <span>Role: {row.role_label || '—'}</span>
+          </>
+        )}
+        {row.action === 'update' && row.diff && (
+          <>
+            {describeDiff(row.diff).map((d) => (
+              <span key={d.field}>{d.field}: {d.from ? `${d.from} → ` : ''}{d.to}</span>
+            ))}
+            <label>
+              <input type="checkbox" aria-label={`Update row ${n}`} checked={approved}
+                     disabled={disabled} onChange={onToggleApprove} />
+              {' '}Update
+            </label>
+          </>
+        )}
+        {row.action !== 'skipped' && row.issues.map((issue) => (
+          <div key={issue.field} className="bulk-file-row">
+            <span>{issueText(issue)}</span>
+            <ComboBox
+              portal
+              ariaLabel={`Match ${issue.field} for row ${n}`}
+              options={matchOptions(issue, options)}
+              value={picked[issue.field] ?? ''}
+              placeholder={`Pick a ${issue.field}…`}
+              disabled={disabled}
+              onChange={(id) => { if (id) onPick(issue.field, id); }}
+              onOpen={issue.kind === 'unknown' ? () => onOpenField(issue.field) : undefined}
+            />
+            {issue.kind === 'unknown' && failed[issue.field] && (
+              <span className="set-note">Could not load the list — reopen to retry.</span>
+            )}
+          </div>
+        ))}
+        {canSkip && (
+          <>
+            <label>
+              <input type="checkbox" aria-label={`Skip row ${n}`} checked={skipped}
+                     aria-describedby={skipped ? skipHintId : undefined}
+                     disabled={disabled} onChange={onToggleSkip} />
+              {' '}Skip
+            </label>
+            {skipped && <span id={skipHintId}>Skipped — uncheck to undo.</span>}
+          </>
+        )}
+        {hasPicks && row.action !== 'skipped' && (
+          <button type="button" className="mini-btn" disabled={disabled}
+                  aria-label={`Clear picks for row ${n}`} onClick={onClearPicks}>
+            Clear picks
+          </button>
+        )}
+      </div>
+    </>
   );
 }
