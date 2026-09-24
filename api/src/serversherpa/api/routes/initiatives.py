@@ -1074,9 +1074,22 @@ async def _get_import_job(db: DbSession, job_id: uuid.UUID,
     job = await db.get(ImportJob, job_id)
     if job is None or job.kind != "move_assets":
         raise _err(404, "import_job_not_found")
+    if job.initiative_id is None:
+        # a Create-a-move-in-steps file check: there is no move to scope
+        # it by, so it belongs to whoever uploaded it (like its draft)
+        if job.created_by != actor.person.id:
+            raise _err(404, "import_job_not_found")
+        return job
     await _require_parent_in_scope(db, job.initiative_id, actor,
                                    "import_job_not_found")
     return job
+
+
+def _require_move_job(job: ImportJob) -> None:
+    """A move-setup file check has no move to import into — its rows are
+    written only by the move setup's own create."""
+    if job.initiative_id is None:
+        raise _err(409, "check_only")
 
 
 @router.post("/{initiative_id}/assets/import-jobs",
@@ -1148,6 +1161,7 @@ async def commit_move_asset_import_job(
 ) -> ImportJob:
     job = await _get_import_job(db, job_id, actor)
     _require_global(actor)
+    _require_move_job(job)
     if job.phase != "validate" or job.status != "completed":
         raise _err(409, "job_not_ready")
     job.phase = "commit"
@@ -1198,6 +1212,7 @@ async def reprocess_move_asset_import_job(
     The parent is never mutated; reprocessing twice makes two children."""
     parent = await _get_import_job(db, job_id, actor)
     _require_global(actor)
+    _require_move_job(parent)
     if parent.status != "completed":
         raise _err(409, "job_not_ready")
     details = (parent.results or {}).get("details") or []
