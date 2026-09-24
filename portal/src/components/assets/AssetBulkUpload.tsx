@@ -304,7 +304,7 @@ export default function AssetBulkUpload() {
         <BulkApplySummary
           result={result}
           entityLabel="Asset"
-          linkFor={(r) => (r.asset_id ? `/assets/${r.asset_id}` : '/assets')}
+          linkFor={(r) => (r.asset_id ? `/assets/${r.asset_id}` : null)}
           filename="assets-bulk-summary"
           openTo="/assets"
           openLabel="Open Assets"

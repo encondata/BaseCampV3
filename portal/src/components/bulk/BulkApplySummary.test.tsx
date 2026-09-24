@@ -62,6 +62,23 @@ it('omits the added count when the tool never adds (assets update shape)', () =>
   expect(screen.getByText('Applied: 3 updated · 1 skipped · 5 unchanged')).toBeTruthy();
 });
 
+it('renders plain text instead of a link when linkFor returns null', () => {
+  const rows: WorkerRow[] = [
+    { row: 2, name: 'Asset 999999', person_id: '', action: 'skipped', diff: null },
+    { row: 3, name: 'Asset 5', person_id: 'a5', action: 'updated', diff: null },
+  ];
+  render(<MemoryRouter>
+    <BulkApplySummary result={{ updated: 1, skipped: 1, unchanged: 0, rows }} entityLabel="Asset"
+      filename="assets-bulk-summary"
+      linkFor={(r) => (r.person_id ? `/assets/${r.person_id}` : null)}
+      openTo="/assets" openLabel="Open Assets" />
+  </MemoryRouter>);
+  expect(screen.queryByRole('link', { name: 'Asset 999999' })).toBeNull();
+  expect(screen.getByText('Asset 999999')).toBeTruthy();
+  expect((screen.getByRole('link', { name: 'Asset 5' }) as HTMLAnchorElement).getAttribute('href'))
+    .toMatch(/\/assets\/a5$/);
+});
+
 it('changesText flattens diffs including client add/remove', () => {
   expect(changesText({ name: { old: 'A', new: 'B' }, clients: { add: ['X'], remove: ['Y'] } }))
     .toBe('name: A → B; clients: +X, −Y');

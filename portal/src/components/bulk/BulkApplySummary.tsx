@@ -69,7 +69,9 @@ interface Props<R extends BulkSummaryRow> {
   result: BulkSummaryResult<R>;
   /** Column header and CSV header for the record name ("Site", "Worker"). */
   entityLabel: string;
-  linkFor: (row: R) => string;
+  /** null renders the name as plain text instead of a link (e.g. a row that
+   * never matched a record). */
+  linkFor: (row: R) => string | null;
   /** exportCsv base name, e.g. "sites-bulk-summary". */
   filename: string;
   openTo: string;
@@ -125,7 +127,9 @@ export default function BulkApplySummary<R extends BulkSummaryRow>({
           className: `bulk-row-${ROW_CLASS[r.action]}`,
           cells: [
             r.row,
-            <Link key="name" to={linkFor(r)}>{r.name ?? '—'}</Link>,
+            linkFor(r) === null
+              ? <span key="name">{r.name ?? '—'}</span>
+              : <Link key="name" to={linkFor(r) as string}>{r.name ?? '—'}</Link>,
             ...(extraColumn ? [extraColumn.value(r) || '—'] : []),
             RESULT_LABEL[r.action],
             changesText(r.diff) || '—',
