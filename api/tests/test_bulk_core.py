@@ -176,3 +176,24 @@ def test_csv_and_xlsx_builders_guard_formulas_and_round_trip():
     ref = [row[0].value for row in wb["Reference"].iter_rows()]
     assert ref == ["Valid levels", "L1", "L2", None, "Valid statuses", "active"]
     assert bulk.parse_upload("t.xlsx", blob, COLS, "People")[0][1]["name"] == "=EVIL()"
+
+
+def test_renumber_overrides_and_row_lists_are_shared_helpers():
+    rows = bulk.number_json_rows([{"name": "a"}, {"name": "b"}], COLS)
+    assert [n for n, _ in bulk.renumber(rows, [5, 9])] == [5, 9]
+    assert bulk.renumber(rows, None) == rows
+    for bad in ([5], [5, 5], ["5", 9], [True, 9], "x"):
+        with pytest.raises(bulk.BulkImportError) as info:
+            bulk.renumber(rows, bad)
+        assert info.value.code == "invalid_row_numbers"
+    assert bulk.parse_overrides({"3": {"job": "j1"}}, ("worker", "job")) == {3: {"job": "j1"}}
+    assert bulk.parse_overrides(None, ("worker",)) == {}
+    for bad in ([], {"x": {}}, {"3": {"site": "s1"}}, {"3": {"job": 7}}, {"3": {"job": ""}}):
+        with pytest.raises(bulk.BulkImportError) as info:
+            bulk.parse_overrides(bad, ("worker", "job"))
+        assert info.value.code == "invalid_overrides"
+    assert bulk.parse_row_list([2, 3], "invalid_skip") == {2, 3}
+    assert bulk.parse_row_list(None, "invalid_skip") == set()
+    with pytest.raises(bulk.BulkImportError) as info:
+        bulk.parse_row_list([True], "invalid_skip")
+    assert info.value.code == "invalid_skip"

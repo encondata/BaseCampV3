@@ -49,14 +49,7 @@ def number_posted_rows(rows: Any, row_numbers: Any) -> list[tuple[int, dict]]:
     """JSON rows re-posted after a file preview carry the spreadsheet line
     numbers the preview assigned, so overrides / skips / approvals keyed by
     those numbers still line up."""
-    numbered = number_json_rows(rows)
-    if row_numbers is None:
-        return numbered
-    if (not isinstance(row_numbers, list) or len(row_numbers) != len(numbered)
-            or not all(isinstance(n, int) and not isinstance(n, bool) for n in row_numbers)
-            or len(set(row_numbers)) != len(row_numbers)):
-        raise BulkImportError("invalid_row_numbers")
-    return [(n, row) for n, (_, row) in zip(row_numbers, numbered, strict=True)]
+    return core.renumber(number_json_rows(rows), row_numbers)
 
 
 def parse_upload(filename: str, content: bytes) -> list[tuple[int, dict]]:
@@ -64,30 +57,11 @@ def parse_upload(filename: str, content: bytes) -> list[tuple[int, dict]]:
 
 
 def parse_overrides(raw: Any) -> dict[int, dict[str, str]]:
-    if raw is None:
-        return {}
-    if not isinstance(raw, dict):
-        raise BulkImportError("invalid_overrides")
-    out: dict[int, dict[str, str]] = {}
-    for key, picks in raw.items():
-        try:
-            row = int(key)
-        except (TypeError, ValueError):
-            raise BulkImportError("invalid_overrides") from None
-        if (not isinstance(picks, dict)
-                or not all(f in FIELDS and isinstance(v, str) and v for f, v in picks.items())):
-            raise BulkImportError("invalid_overrides")
-        out[row] = dict(picks)
-    return out
+    return core.parse_overrides(raw, FIELDS)
 
 
 def parse_row_list(raw: Any, code: str) -> set[int]:
-    if raw is None:
-        return set()
-    if not isinstance(raw, list) or not all(
-            isinstance(n, int) and not isinstance(n, bool) for n in raw):
-        raise BulkImportError(code)
-    return set(raw)
+    return core.parse_row_list(raw, code)
 
 
 # ── reference data ──────────────────────────────────────────────────
