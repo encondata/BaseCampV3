@@ -98,6 +98,13 @@ async def test_worker_matches_by_email_then_phone_then_name(db, seeded_user):
     assert all(rows[n]["action"] == "add" for n in (1, 2, 3, 4))
 
 
+async def test_a_phone_looking_worker_falls_back_to_the_name(db, seeded_user):
+    # no one has this phone number, but it is someone's name
+    odd = await worker(db, "555", "0100 200", phone="555-999-8888")
+    [row] = (await preview(db, [shift(worker="555 0100 200")]))["rows"]
+    assert (row["person_id"], row["matched_by"], row["action"]) == (str(odd.id), "name", "add")
+
+
 async def test_unknown_and_ambiguous_values_need_attention(db, seeded_user):
     j1 = await worker(db, "Jo", "Park", email="j1@x.test")
     j2 = await worker(db, "Jo", "Park", email="j2@x.test")
@@ -273,6 +280,27 @@ async def test_overlaps_with_existing_time(db, seeded_user):
     assert rows[4]["action"] == "add"                  # touching is not overlapping
 
 
+async def test_an_open_entry_that_starts_after_the_shift_ends_does_not_overlap(
+        db, seeded_user):
+    await worker(db, "Ana", "Lopez")
+    dee = await worker(db, "Dee", "Moss")
+    eve = await worker(db, "Eve", "Hart")
+    db.add_all([
+        # opened at 3:30 PM EDT, exactly when the imported shift ends
+        TimeEntry(person_id=dee.id, clock_in_at=utc(24, 19, 30), status="open"),
+        # opened at 6:00 PM EDT, well after it
+        TimeEntry(person_id=eve.id, clock_in_at=utc(24, 22), status="open"),
+    ])
+    await db.commit()
+    # Ana's late shift stretches the lookup window past both open entries,
+    # so the per-entry test is what keeps them out
+    rows = by_row(await preview(db, [
+        shift(worker="Dee Moss"), shift(worker="Eve Hart"),
+        shift(clock_in="2026-09-24 20:00", clock_out="2026-09-24 23:00"),
+    ], now=datetime(2026, 9, 26, tzinfo=UTC)))
+    assert [(rows[n]["action"], rows[n]["errors"]) for n in (1, 2, 3)] == [("add", [])] * 3
+
+
 async def test_an_exact_repeat_is_already_there(db, seeded_user):
     ana = await worker(db, "Ana", "Lopez")
     ben = await worker(db, "Ben", "Ng")
@@ -290,6 +318,45 @@ async def test_an_exact_repeat_is_already_there(db, seeded_user):
     assert res["can_commit"] is False                 # nothing is left to add
 
 
+async def test_an_exact_repeat_with_an_unresolved_job_or_site_is_already_there(
+        db, seeded_user):
+    ana = await worker(db, "Ana", "Lopez")
+    ben = await worker(db, "Ben", "Ng")
+    await job(db, "Dallas Move")
+    await job(db, "Dallas Move")
+    db.add_all([
+        TimeEntry(person_id=ana.id, clock_in_at=utc(24, 11), clock_out_at=utc(24, 19, 30),
+                  status="pending"),
+        TimeEntry(person_id=ben.id, clock_in_at=utc(24, 11), clock_out_at=utc(24, 19, 30),
+                  status="approved"),
+    ])
+    await db.commit()
+    res = await preview(db, [
+        shift(job="Mystery Move", site="Nowhere DC"),        # unknown job and site
+        shift(worker="Ben Ng", job="Dallas Move"),           # ambiguous job
+        shift(worker="Nobody", job="Mystery Move"),          # whose shift? still attention
+    ])
+    rows = by_row(res)
+    for n in (1, 2):
+        assert (rows[n]["action"], rows[n]["detail"]) == ("duplicate", "Already there.")
+        assert (rows[n]["errors"], rows[n]["issues"]) == ([], [])
+    assert rows[3]["action"] == "attention"
+    assert res["counts"] == {"attention": 1, "error": 0, "add": 0, "duplicate": 2,
+                             "skipped": 0}
+
+
+async def test_an_exact_repeat_with_a_row_error_is_still_an_error(db, seeded_user):
+    ana = await worker(db, "Ana", "Lopez")
+    db.add(TimeEntry(person_id=ana.id, clock_in_at=utc(24, 11), clock_out_at=utc(24, 19, 30),
+                     status="pending"))
+    await db.commit()
+    [row] = (await preview(db, [shift(break_minutes="abc")]))["rows"]
+    assert row["action"] == "error"
+    assert row["errors"] == [
+        "The break must be a whole number of minutes, 0 or more.",
+        "Overlaps Ana Lopez's existing entry on Sep 24, 7:00 AM – 3:30 PM EDT."]
+
+
 async def test_overlaps_within_the_file(db, seeded_user):
     await worker(db, "Ana", "Lopez")
     await worker(db, "Ben", "Ng")
@@ -303,6 +370,37 @@ async def test_overlaps_within_the_file(db, seeded_user):
     assert rows[2]["errors"] == ["Overlaps row 1 in this file."]
     assert rows[3]["action"] == "add"
     assert rows[4]["action"] == "skipped"
+
+
+async def test_rows_that_touch_in_the_file_do_not_overlap(db, seeded_user):
+    await worker(db, "Ana", "Lopez")
+    rows = by_row(await preview(db, [
+        shift(clock_in="2026-09-24 12:00", clock_out="2026-09-24 15:00"),
+        shift(clock_in="2026-09-24 07:00", clock_out="2026-09-24 12:00"),
+    ]))
+    assert [(rows[n]["action"], rows[n]["errors"]) for n in (1, 2)] == [("add", [])] * 2
+
+
+async def test_a_row_names_at_most_three_overlapping_rows(db, seeded_user):
+    await worker(db, "Ana", "Lopez")
+    # ten shifts that all overlap each other, clock-ins a minute apart
+    crew = [shift(clock_in=f"2026-09-24 07:0{i}", clock_out="2026-09-24 15:00")
+            for i in range(10)]
+    rows = by_row(await preview(db, crew))
+    for n in range(1, 11):
+        errors = rows[n]["errors"]
+        assert len(errors) == 4, errors
+        assert all(e.startswith("Overlaps row ") for e in errors[:3])
+        assert f"Overlaps row {n} in this file." not in errors
+        assert errors[3] == "Also overlaps 6 more rows in this file."
+    # named in clock-in order: the first three rows other than itself
+    assert rows[1]["errors"][:3] == [f"Overlaps row {n} in this file." for n in (2, 3, 4)]
+    assert rows[10]["errors"][:3] == [f"Overlaps row {n} in this file." for n in (1, 2, 3)]
+    # one more reads in the singular
+    five = by_row(await preview(db, crew[:5]))
+    assert five[3]["errors"] == [
+        "Overlaps row 1 in this file.", "Overlaps row 2 in this file.",
+        "Overlaps row 4 in this file.", "Also overlaps 1 more row in this file."]
 
 
 async def test_counts_order_and_can_commit(db, seeded_user):

@@ -20,6 +20,7 @@ as pending, source "import"."""
 
 import re
 import uuid
+from bisect import bisect_left, bisect_right
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -41,6 +42,8 @@ FIELDS = ("worker", "job", "site")
 MAX_ROWS = 5000
 MAX_BYTES = 5 * 1024 * 1024
 MAX_SHIFT = timedelta(hours=24)
+# A row names at most this many other rows of the file it overlaps.
+OVERLAP_NAMES = 3
 # The preview lists problems first.
 ACTION_ORDER = ("attention", "error", "add", "duplicate", "skipped")
 SAMPLE_ROWS: list[dict] = [
@@ -231,7 +234,11 @@ async def _check_existing(db: AsyncSession, rows: list[dict],
                           spans: dict[int, tuple[datetime, datetime, ZoneInfo]]) -> None:
     """Against the database: an exact repeat becomes `duplicate` (and leaves
     `spans`, so it cannot clash with another row); anything else that meets
-    the worker's non-rejected time is an error naming that entry."""
+    the worker's non-rejected time is an error naming that entry.
+
+    Only rows with a resolved worker reach here (a span needs one). A row
+    with errors is never a duplicate, but an unresolved job or site does not
+    stop one: the shift is already there, so there is nothing to pick."""
     if not spans:
         return
     by_row = {r["row"]: r for r in rows}
@@ -249,10 +256,10 @@ async def _check_existing(db: AsyncSession, rows: list[dict],
         row = by_row[n]
         start, end, zone = spans[n]
         mine = existing.get(row["person_id"], [])
-        if not row["errors"] and not row["issues"] and any(
-                _same_shift(e, start, end) for e in mine):
+        if not row["errors"] and any(_same_shift(e, start, end) for e in mine):
             row["action"] = "duplicate"
             row["detail"] = "Already there."
+            row["issues"] = []
             del spans[n]
             continue
         who = row["person_name"]
@@ -270,19 +277,45 @@ async def _check_existing(db: AsyncSession, rows: list[dict],
 
 def _check_file(rows: list[dict], spans: dict[int, tuple[datetime, datetime, ZoneInfo]]) -> None:
     """Within the file: two of one worker's rows whose spans overlap are
-    both errors, each naming the other."""
+    both errors. Each row names the first OVERLAP_NAMES rows it overlaps (in
+    clock-in order), then says how many more there are.
+
+    Bounded work per row, even on a file where every row is one worker:
+    the count comes from two bisects (rows starting before this one ends,
+    minus rows ending by the time it starts, minus itself); the names come
+    from a scan that stops at OVERLAP_NAMES. The backward part of that scan
+    starts MAX_SHIFT before the row's clock-in, since no span is longer."""
     by_row = {r["row"]: r for r in rows}
     groups: dict[str, list[int]] = {}
     for n in spans:
         groups.setdefault(by_row[n]["person_id"], []).append(n)
     for ns in groups.values():
-        ns.sort(key=lambda n: spans[n][0])
+        if len(ns) < 2:
+            continue
+        ns.sort(key=lambda n: (spans[n][0], n))
+        starts = [spans[n][0] for n in ns]
+        ends = sorted(spans[n][1] for n in ns)
         for i, a in enumerate(ns):
-            for b in ns[i + 1:]:
-                if spans[b][0] >= spans[a][1]:
-                    break
-                by_row[a]["errors"].append(f"Overlaps row {b} in this file.")
-                by_row[b]["errors"].append(f"Overlaps row {a} in this file.")
+            start, end, _ = spans[a]
+            count = bisect_left(starts, end) - bisect_right(ends, start) - 1
+            if count <= 0:
+                continue
+            names: list[int] = []
+            for j in range(bisect_left(starts, start - MAX_SHIFT), i):
+                if spans[ns[j]][1] > start:
+                    names.append(ns[j])
+                    if len(names) == OVERLAP_NAMES:
+                        break
+            j = i + 1
+            while len(names) < OVERLAP_NAMES and j < len(ns) and starts[j] < end:
+                names.append(ns[j])
+                j += 1
+            errors = by_row[a]["errors"]
+            errors.extend(f"Overlaps row {b} in this file." for b in names)
+            more = count - len(names)
+            if more:
+                errors.append(f"Also overlaps {more} more row{'s' if more > 1 else ''} "
+                              "in this file.")
 
 
 # ── preview ─────────────────────────────────────────────────────────

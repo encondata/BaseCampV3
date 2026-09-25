@@ -86,6 +86,7 @@ async def test_template_formats(client, db, seeded_user, admin_hdrs):
     assert xlsx.headers["content-disposition"] == 'attachment; filename="time-template.xlsx"'
     wb = openpyxl.load_workbook(io.BytesIO(xlsx.content))
     assert wb.sheetnames == ["Time", "Reference"]
+    assert [c.value for c in wb["Time"][1]] == HEADER.split(",")
     assert "Ana Lopez" in [c.value for c in wb["Reference"]["A"]]
     assert (await client.get(f"{BASE}/template?format=pdf", headers=admin_hdrs)).status_code == 422
 
