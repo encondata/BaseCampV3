@@ -120,12 +120,12 @@ async def _nodes_out_for(ctx: WikiContext, nodes: Sequence[WikiNode],
 @router.post("/nodes", response_model=NodeOut, status_code=201)
 async def create(body: NodeCreateIn, ctx: WikiContext) -> NodeOut:
     space, parent, level = await _destination(ctx, body.space_id, body.parent_id)
+    if not _is_edit(level):
+        raise _forbidden("edit")
     try:
         tree.check_parent(parent, space.id)
     except tree.TreeError as exc:
         raise _tree_error(exc) from exc
-    if not _is_edit(level):
-        raise _forbidden("edit")
 
     actor_id = ctx.user.person.id
     node = await tree.create_node(

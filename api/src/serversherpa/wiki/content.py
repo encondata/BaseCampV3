@@ -7,6 +7,8 @@ rewriting; this Phase-1 slice only needs the empty doc and a flattener.
 """
 from __future__ import annotations
 
+import copy
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 # A single empty paragraph — the smallest document Tiptap's schema
@@ -36,3 +38,46 @@ def doc_to_text(doc: dict | None) -> str:
 
     _walk(doc)
     return " ".join(parts)
+
+
+# node types whose `attrs.assetId` points at a wiki_page_assets row
+ASSET_NODE_TYPES = frozenset({"wikiImage", "fileEmbed"})
+
+
+def _asset_nodes(doc: Any) -> Iterator[dict]:
+    """Every wikiImage/fileEmbed node in `doc` that carries a string
+    `attrs.assetId`, in document order."""
+    stack = [doc]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(reversed(node))
+            continue
+        if not isinstance(node, dict):
+            continue
+        attrs = node.get("attrs")
+        if (node.get("type") in ASSET_NODE_TYPES and isinstance(attrs, dict)
+                and isinstance(attrs.get("assetId"), str) and attrs["assetId"]):
+            yield node
+        content = node.get("content")
+        if isinstance(content, list):
+            stack.extend(reversed(content))
+
+
+def referenced_asset_ids(doc: dict | None) -> set[str]:
+    """The page-asset ids `doc` embeds (wikiImage and fileEmbed
+    `attrs.assetId`), as the strings stored in the JSON."""
+    if not doc:
+        return set()
+    return {node["attrs"]["assetId"] for node in _asset_nodes(doc)}
+
+
+def rewrite_asset_ids(doc: dict, mapping: Mapping[str, str]) -> dict:
+    """A deep copy of `doc` with every embedded asset id found in
+    `mapping` swapped for its value (ids not in `mapping` are kept)."""
+    out = copy.deepcopy(doc)
+    for node in _asset_nodes(out):
+        new_id = mapping.get(node["attrs"]["assetId"])
+        if new_id is not None:
+            node["attrs"]["assetId"] = new_id
+    return out

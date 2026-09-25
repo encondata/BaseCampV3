@@ -229,6 +229,13 @@ async def test_create_needs_edit_and_a_valid_parent(client, db):
                          path=[uuid.UUID(folder["id"])], kind="file", title="f.pdf")
     db.add(file_node)
     await db.commit()
+    # a view-only caller learns they lack edit (403) before whether the
+    # parent could hold the node (422) — same order as move/copy
+    resp = await client.post("/wiki/nodes", headers=s["viewer"], json={
+        "space_id": space["id"], "parent_id": str(file_node.id), "kind": "page",
+        "title": "Under a file"})
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["code"] == "forbidden"
     resp = await client.post("/wiki/nodes", headers=s["owner"], json={
         "space_id": space["id"], "parent_id": str(file_node.id), "kind": "page",
         "title": "Under a file"})
@@ -492,16 +499,22 @@ async def test_copy_page_copies_draft_and_assets_not_versions_or_grants(client, 
     folder = await _create(client, s["owner"], space, "Docs")
     page = await _create(client, s["owner"], space, "Guide", kind="page", parent=folder)
     await _publish(db, page["id"])
-    draft = {"type": "doc", "content": [
-        {"type": "paragraph", "content": [{"type": "text", "text": "draft words"}]}]}
     page_id = uuid.UUID(page["id"])
+    used = WikiPageAsset(node_id=page_id, storage_key="assets/abc.png",
+                         filename="abc.png", content_type="image/png", size_bytes=5)
+    unused = WikiPageAsset(node_id=page_id, storage_key="assets/old.png",
+                           filename="old.png", content_type="image/png", size_bytes=5)
+    db.add_all([used, unused])
+    await db.flush()
+    used_id = used.id
+    draft = {"type": "doc", "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "draft words"}]},
+        {"type": "wikiImage", "attrs": {"assetId": str(used_id), "alt": "abc"}}]}
     row = await db.get(WikiPage, page_id)
     row.draft_json = draft
     row.draft_text = "draft words"
     row.ydoc = b"\x01\x02"
     row.has_unpublished_changes = True
-    db.add(WikiPageAsset(node_id=page_id, storage_key="assets/abc.png",
-                         filename="abc.png", content_type="image/png", size_bytes=5))
     db.add(WikiGrant(space_id=uuid.UUID(space["id"]), node_id=page_id,
                      principal_type="person", principal_id=str(s["viewer_id"]),
                      level="edit"))
@@ -523,16 +536,21 @@ async def test_copy_page_copies_draft_and_assets_not_versions_or_grants(client, 
     copy_id = uuid.UUID(body["id"])
     db.expire_all()
     copy_page = await db.get(WikiPage, copy_id)
-    assert copy_page.draft_json == draft
     assert copy_page.draft_text == "draft words"
     assert copy_page.ydoc is None
     assert (await db.scalars(select(WikiPageVersion).where(
         WikiPageVersion.node_id == copy_id))).all() == []
     assert (await db.scalars(select(WikiGrant).where(
         WikiGrant.node_id == copy_id))).all() == []
+    # only the embedded asset is copied, and the copy's content points at
+    # the new row (the unused one stays behind)
     assets = (await db.scalars(select(WikiPageAsset).where(
         WikiPageAsset.node_id == copy_id))).all()
     assert [a.storage_key for a in assets] == ["assets/abc.png"]
+    assert assets[0].id != used_id
+    assert copy_page.draft_json == {"type": "doc", "content": [
+        draft["content"][0],
+        {"type": "wikiImage", "attrs": {"assetId": str(assets[0].id), "alt": "abc"}}]}
 
     # into a different parent: no "Copy of"
     resp = await client.post(f"/wiki/nodes/{page['id']}/copy", headers=s["editor"],
@@ -635,6 +653,39 @@ async def test_view_only_copy_takes_only_what_the_caller_can_see(client, db):
     resp = await client.post(f"/wiki/nodes/{folder['id']}/copy", headers=s["viewer"],
                              json={"parent_id": None})
     assert resp.status_code == 403
+
+
+async def test_view_only_copy_takes_only_the_published_contents_assets(client, db):
+    s = await _setup(client, db)
+    space = s["space"]
+    dest = await _space(client, s["viewer"], default_access="private", name="Mine")
+    page = await _create(client, s["owner"], space, "Pictures", kind="page")
+    page_id = uuid.UUID(page["id"])
+    shown = WikiPageAsset(node_id=page_id, storage_key="assets/shown.png",
+                          filename="shown.png", content_type="image/png", size_bytes=5)
+    secret = WikiPageAsset(node_id=page_id, storage_key="assets/secret.png",
+                           filename="secret.png", content_type="image/png", size_bytes=5)
+    db.add_all([shown, secret])
+    await db.flush()
+    shown_image = {"type": "wikiImage", "attrs": {"assetId": str(shown.id)}}
+    await _publish(db, page_id, {"type": "doc", "content": [shown_image]})
+    row = await db.get(WikiPage, page_id)
+    row.draft_json = {"type": "doc", "content": [
+        shown_image,
+        {"type": "fileEmbed", "attrs": {"assetId": str(secret.id), "filename": "s"}}]}
+    await db.commit()
+
+    resp = await client.post(f"/wiki/nodes/{page['id']}/copy", headers=s["viewer"],
+                             json={"parent_id": None, "space_id": dest["id"]})
+    assert resp.status_code == 201, resp.text
+    copy_id = uuid.UUID(resp.json()["id"])
+    db.expire_all()
+    assets = (await db.scalars(select(WikiPageAsset).where(
+        WikiPageAsset.node_id == copy_id))).all()
+    assert [a.storage_key for a in assets] == ["assets/shown.png"]
+    copied = await db.get(WikiPage, copy_id)
+    assert copied.draft_json == {"type": "doc", "content": [
+        {"type": "wikiImage", "attrs": {"assetId": str(assets[0].id)}}]}
 
 
 # ── delete ──────────────────────────────────────────────────────────

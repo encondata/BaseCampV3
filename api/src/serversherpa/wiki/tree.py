@@ -33,7 +33,12 @@ from serversherpa.db.models import (
     WikiPageVersion,
     WikiSpace,
 )
-from serversherpa.wiki.content import EMPTY_DOC, doc_to_text
+from serversherpa.wiki.content import (
+    EMPTY_DOC,
+    doc_to_text,
+    referenced_asset_ids,
+    rewrite_asset_ids,
+)
 from serversherpa.wiki.permissions import level_rank
 
 # sibling positions step by POSITION_STEP; a sibling set is renumbered
@@ -284,6 +289,13 @@ async def move_node(db: AsyncSession, node: WikiNode, *,
 # ── copy ────────────────────────────────────────────────────────────
 
 
+def _as_uuid(value: str) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None
+
+
 def _copy_title(title: str) -> str:
     return f"Copy of {title}"[:200]
 
@@ -299,8 +311,8 @@ async def copy_subtree(db: AsyncSession, node: WikiNode, *,
     Copies inherit (no grants copied) and are owned by `actor_id`. A page
     copy is a new unpublished page — no versions — whose draft is the
     source's current draft (`ydoc` left NULL so the collab server seeds
-    from `draft_json`); its asset rows are copied with the same storage
-    keys. A file copy gets one version: a copy of the source's current
+    from `draft_json`); the asset rows that content embeds are copied
+    with the same storage keys, and the copied content points at them. A file copy gets one version: a copy of the source's current
     version row, same object keys (objects are never copied).
 
     `levels`, when given, is the caller's level per node: a descendant
@@ -374,6 +386,9 @@ async def copy_subtree(db: AsyncSession, node: WikiNode, *,
     db.add_all(new_nodes)
     await db.flush()
 
+    # the content each copied page starts from: the draft, or — where the
+    # caller only has view — the published version
+    contents: dict[uuid.UUID, tuple[dict | None, str | None]] = {}
     for n in included:
         if n.kind != "page":
             continue
@@ -385,20 +400,40 @@ async def copy_subtree(db: AsyncSession, node: WikiNode, *,
                 draft_json, draft_text = source.draft_json, source.draft_text
             elif version is not None:
                 draft_json, draft_text = version.content_json, version.content_text
-        db.add(WikiPage(node_id=new_ids[n.id], draft_json=draft_json,
-                        draft_text=draft_text, ydoc=None,
-                        has_unpublished_changes=True))
+        contents[n.id] = (draft_json, draft_text)
 
-    if page_ids:
+    # only the assets that content embeds are copied (a draft-only image
+    # never leaks through a copy of the published version), each as a new
+    # row sharing the storage key, and the copy's content is rewritten to
+    # point at the new rows
+    referenced = {nid: referenced_asset_ids(doc)
+                  for nid, (doc, _) in contents.items()}
+    asset_ids = {u for ids in referenced.values() for a in ids
+                 if (u := _as_uuid(a)) is not None}
+    new_asset_ids: dict[uuid.UUID, dict[str, str]] = {nid: {} for nid in contents}
+    if asset_ids:
         for asset in (await db.scalars(
             select(WikiPageAsset).where(
-                WikiPageAsset.node_id.in_([i for i in page_ids if i in kept]),
+                WikiPageAsset.id.in_(asset_ids),
+                WikiPageAsset.node_id.in_(list(contents)),
                 WikiPageAsset.deleted_at.is_(None))
         )).all():
+            if str(asset.id) not in referenced[asset.node_id]:
+                continue
+            new_asset_id = uuid.uuid4()
+            new_asset_ids[asset.node_id][str(asset.id)] = str(new_asset_id)
             db.add(WikiPageAsset(
-                node_id=new_ids[asset.node_id], storage_key=asset.storage_key,
-                filename=asset.filename, content_type=asset.content_type,
-                size_bytes=asset.size_bytes, uploaded_by=asset.uploaded_by))
+                id=new_asset_id, node_id=new_ids[asset.node_id],
+                storage_key=asset.storage_key, filename=asset.filename,
+                content_type=asset.content_type, size_bytes=asset.size_bytes,
+                uploaded_by=asset.uploaded_by))
+
+    for source_id, (draft_json, draft_text) in contents.items():
+        if draft_json is not None and new_asset_ids[source_id]:
+            draft_json = rewrite_asset_ids(draft_json, new_asset_ids[source_id])
+        db.add(WikiPage(node_id=new_ids[source_id], draft_json=draft_json,
+                        draft_text=draft_text, ydoc=None,
+                        has_unpublished_changes=True))
 
     file_ids = [n.id for n in included if n.kind == "file"]
     new_files: list[tuple[WikiFile, WikiFileVersion]] = []

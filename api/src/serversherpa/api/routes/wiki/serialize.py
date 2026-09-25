@@ -54,12 +54,8 @@ async def person_refs(db, person_ids: Iterable[uuid.UUID | None],
     ids = {pid for pid in person_ids if pid is not None}
     if not ids:
         return {}
-    rows = (await db.execute(
-        select(Person.id, Person.preferred_name, Person.first_name, Person.last_name)
-        .where(Person.id.in_(ids))
-    )).all()
-    return {pid: PersonRef(id=pid, name=f"{preferred or first} {last}")
-            for pid, preferred, first, last in rows}
+    people = (await db.scalars(select(Person).where(Person.id.in_(ids)))).all()
+    return {p.id: PersonRef(id=p.id, name=p.display_name) for p in people}
 
 
 def space_out(space: WikiSpace, level: str | None) -> SpaceOut:
