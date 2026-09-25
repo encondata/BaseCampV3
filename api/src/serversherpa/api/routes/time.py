@@ -160,6 +160,15 @@ def _entry_conditions(
     return conds
 
 
+async def _locked_entry(db: DbSession, entry_id: uuid.UUID) -> TimeEntry | None:
+    """The entry, locked FOR UPDATE and re-read, for the single-row approve,
+    reject and PATCH routes. A bulk run locks its rows the same way, so the
+    two take turns: the second sees the first's committed status rather
+    than acting on a stale copy (a rejected entry that keeps approved_by,
+    or an edit to an approved entry that skips the reset to pending)."""
+    return await db.get(TimeEntry, entry_id, with_for_update=True, populate_existing=True)
+
+
 def _approve_entry(db: DbSession, entry: TimeEntry, actor_id: uuid.UUID,
                    now: datetime) -> None:
     """Approve one pending entry and add its audit row; the caller commits."""
@@ -204,6 +213,8 @@ async def _bulk_targets(
                      person_id=flt.person_id, initiative_id=flt.initiative_id,
                      site_id=flt.site_id, since=flt.from_, until=flt.to))
                  .limit(BULK_LIMIT + 1))
+        if flt.as_of is not None:
+            query = query.where(TimeEntry.created_at <= flt.as_of)
         ids: list[uuid.UUID] = []
     else:
         ids = list(dict.fromkeys(entry_ids or []))
@@ -405,14 +416,17 @@ async def bulk_approve_time_entries(
     """Approve many pending entries in one transaction: the ticked ids, or
     every pending entry the Timesheet's filters match (which reaches rows
     the list has not loaded). `?dry_run=1` counts what would be approved
-    and writes nothing."""
+    and writes nothing. It also returns `as_of`, the database's current
+    time; the confirmed run passes it back in the filter, so an entry
+    created after the count is never approved."""
     if (body.entry_ids is None) == (body.filter is None):
         raise _err(422, "ids_or_filter")
     entries, missing = await _bulk_targets(
         db, entry_ids=body.entry_ids, flt=body.filter, lock=not dry_run)
     ready, skipped = await _partition(db, entries, missing, actor.person.id)
     if dry_run:
-        return {"count": len(ready)}
+        as_of = await db.scalar(select(func.now()))
+        return {"count": len(ready), "as_of": as_of.isoformat()}
     now = datetime.now(UTC)
     for entry in ready:
         _approve_entry(db, entry, actor.person.id, now)
@@ -443,7 +457,7 @@ async def update_time_entry(
     entry_id: uuid.UUID, body: TimeEntryPatchIn, db: DbSession,
     actor: AuthContext = require_permission("time", "change"),
 ) -> TimeEntryItem:
-    entry = await db.get(TimeEntry, entry_id)
+    entry = await _locked_entry(db, entry_id)
     if entry is None:
         raise _err(404, "time_entry_not_found")
 
@@ -522,7 +536,7 @@ async def approve_time_entry(
     entry_id: uuid.UUID, db: DbSession,
     actor: AuthContext = require_permission("time", "change"),
 ) -> TimeEntryItem:
-    entry = await db.get(TimeEntry, entry_id)
+    entry = await _locked_entry(db, entry_id)
     if entry is None:
         raise _err(404, "time_entry_not_found")
     if entry.person_id == actor.person.id:
@@ -540,7 +554,7 @@ async def reject_time_entry(
     entry_id: uuid.UUID, body: TimeEntryRejectIn, db: DbSession,
     actor: AuthContext = require_permission("time", "change"),
 ) -> TimeEntryItem:
-    entry = await db.get(TimeEntry, entry_id)
+    entry = await _locked_entry(db, entry_id)
     if entry is None:
         raise _err(404, "time_entry_not_found")
     if entry.person_id == actor.person.id:

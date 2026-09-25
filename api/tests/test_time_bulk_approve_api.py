@@ -1,9 +1,11 @@
 """Bulk approve / reject on the Timesheet: ids or filter, dry run, skip
 reasons, the 5,000 cap, one audit row per entry, and the time:change gate."""
 
+import asyncio
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
+import pytest
 from sqlalchemy import func, select
 
 from serversherpa.api.routes import time as time_routes
@@ -157,9 +159,91 @@ async def test_dry_run_counts_and_writes_nothing(client, db, seeded_user):
     resp = await client.post("/time/entries/approve?dry_run=1", headers=hdrs,
                              json={"filter": {}})
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"count": 2}
+    body = resp.json()
+    assert body["count"] == 2
+    assert datetime.fromisoformat(body["as_of"]).tzinfo is not None
     assert await _approved_count(db) == 0
     assert await _audits(db) == []
+
+
+async def test_a_filter_run_with_as_of_skips_entries_created_after_the_count(
+        client, db, seeded_user):
+    hdrs = await _admin(client, db, seeded_user)
+    owner = await _person(db, "Ow", "Ner")
+    counted = _entry(owner)
+    db.add(counted)
+    await db.commit()
+    resp = await client.post("/time/entries/approve?dry_run=1", headers=hdrs,
+                             json={"filter": {"person_id": str(owner.id)}})
+    count, as_of = resp.json()["count"], resp.json()["as_of"]
+    assert count == 1
+    # punched after the admin saw "Approve 1 pending entry…"
+    late = _entry(owner, day=1)
+    late.created_at = datetime.fromisoformat(as_of) + timedelta(seconds=1)
+    db.add(late)
+    await db.commit()
+
+    resp = await client.post("/time/entries/approve", headers=hdrs, json={
+        "filter": {"person_id": str(owner.id), "as_of": as_of}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"approved": 1, "skipped": []}
+    statuses = dict((await db.execute(select(TimeEntry.id, TimeEntry.status))).all())
+    assert (statuses[counted.id], statuses[late.id]) == ("approved", "pending")
+    # without as_of the filter reaches it, as before
+    resp = await client.post("/time/entries/approve", headers=hdrs,
+                             json={"filter": {"person_id": str(owner.id)}})
+    assert resp.json() == {"approved": 1, "skipped": []}
+
+
+# ── single-row routes wait for a bulk run's row locks ────────────────
+
+async def _race(db, entry, call):
+    """Lock `entry` in the test's session and approve it there, as a bulk
+    run would, then start the single-row `call` and commit only once it has
+    had time to reach the row. The call must wait for the commit and see
+    the approval, not the pending copy it would have read without a lock."""
+    approver = await _person(db, "Bu", "Lk")
+    locked = await db.get(TimeEntry, entry.id, with_for_update=True, populate_existing=True)
+    locked.status = "approved"
+    locked.approved_by = approver.id
+    locked.approved_at = T0
+    await db.flush()
+    task = asyncio.create_task(call())
+    await asyncio.sleep(0.5)
+    assert not task.done()                          # waiting on the row lock
+    await db.commit()
+    resp = await asyncio.wait_for(task, 10)
+    await db.refresh(entry)
+    return resp, approver
+
+
+@pytest.mark.parametrize("action", ["approve", "reject"])
+async def test_a_single_row_action_sees_a_concurrent_approval(
+        client, db, seeded_user, action):
+    hdrs = await _admin(client, db, seeded_user)
+    entry = _entry(await _person(db, "Ow", "Ner"))
+    db.add(entry)
+    await db.commit()
+    resp, approver = await _race(db, entry, lambda: client.post(
+        f"/time/entries/{entry.id}/{action}", headers=hdrs,
+        json={"reason": "late"} if action == "reject" else None))
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "not_pending"
+    assert (entry.status, entry.approved_by, entry.reject_reason) == (
+        "approved", approver.id, None)
+
+
+async def test_a_single_row_edit_resets_a_concurrent_approval(client, db, seeded_user):
+    hdrs = await _admin(client, db, seeded_user)
+    entry = _entry(await _person(db, "Ow", "Ner"))
+    db.add(entry)
+    await db.commit()
+    resp, _ = await _race(db, entry, lambda: client.patch(
+        f"/time/entries/{entry.id}", headers=hdrs,
+        json={"break_minutes": 30, "adjust_reason": "lunch"}))
+    assert resp.status_code == 200, resp.text
+    assert (entry.status, entry.approved_by, entry.approved_at) == ("pending", None, None)
+    assert (entry.break_minutes, entry.adjusted) == (30, True)
 
 
 async def test_exactly_one_of_ids_or_filter(client, db, seeded_user):

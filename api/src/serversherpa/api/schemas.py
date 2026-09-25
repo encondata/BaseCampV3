@@ -2357,6 +2357,9 @@ class TimeBulkFilterIn(BaseModel):
     site_id: uuid.UUID | None = None
     from_: datetime | None = Field(default=None, alias="from")
     to: datetime | None = None
+    # Bulk approve only: the dry run's `as_of`. Entries created after it
+    # (after the count the admin confirmed) are left alone.
+    as_of: datetime | None = None
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
