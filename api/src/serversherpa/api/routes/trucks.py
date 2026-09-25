@@ -20,15 +20,11 @@ from serversherpa.db.models import (
 )
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.trucks import bulk_import as bulk
+from serversherpa.trucks.bulk_create import TRUCK_FIELDS
 from serversherpa.trucks.location import LocationError, format_location, parse_location
 
 router = APIRouter(prefix="/trucks", tags=["trucks"])
 
-TRUCK_FIELDS = [
-    "name", "driver_name", "co_driver_name", "team_drive", "contact_info",
-    "status", "load_number", "seal_id", "tracking_type",
-    "initiative_id", "start_site_id", "end_site_id",
-]
 NON_NULLABLE_FIELDS = ("name", "status", "contact_info", "team_drive", "tracking_type")
 
 

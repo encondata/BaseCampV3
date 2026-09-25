@@ -5,11 +5,12 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 const authMock = vi.hoisted(() => ({
   canSites: true, canWorkers: true, canTrucks: true, canInitiatives: true, canAssets: true,
+  denied: new Set<string>(),       // resource:action pairs refused on top of the flags
 }));
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     person: { id: 'me-1', display_name: 'Me' }, roles: ['admin'], maxRank: 60, godMode: false,
-    can: (resource: string) =>
+    can: (resource: string, action = 'view') => !authMock.denied.has(`${resource}:${action}`) &&
       (resource === 'sites' ? authMock.canSites
         : resource === 'workers' ? authMock.canWorkers
         : resource === 'trucks' ? authMock.canTrucks
@@ -25,6 +26,7 @@ afterEach(() => {
   authMock.canTrucks = true;
   authMock.canInitiatives = true;
   authMock.canAssets = true;
+  authMock.denied.clear();
 });
 const { default: BulkActions } = await import('./BulkActions');
 
@@ -43,7 +45,7 @@ it('renders the empty state until tools are added', () => {
 it('lists the sites card when the viewer can add sites', () => {
   render(<MemoryRouter><BulkActions /></MemoryRouter>);
   expect(screen.getByText('Add or update sites in bulk')).toBeTruthy();
-  expect(screen.getAllByRole('button', { name: 'Open' })).toHaveLength(5);
+  expect(screen.getAllByRole('button', { name: 'Open' })).toHaveLength(6);
 });
 
 it('lists the workers card only when the viewer can add workers', () => {
@@ -99,4 +101,31 @@ it('lists the assets card only when the viewer can change assets, and links it t
   const card = screen.getByText('Update assets in bulk').closest('.bulk-card') as HTMLElement;
   fireEvent.click(within(card).getByRole('button', { name: 'Open' }));
   expect(screen.getByText('assets bulk page')).toBeTruthy();
+});
+
+it('lists the "Create a move in steps" card and links it to /bulk/new-move', () => {
+  render(
+    <MemoryRouter initialEntries={['/bulk']}>
+      <Routes>
+        <Route path="/bulk" element={<BulkActions />} />
+        <Route path="/bulk/new-move" element={<div>new move page</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  const card = screen.getByText('Create a move in steps').closest('.bulk-card') as HTMLElement;
+  expect(within(card).getByText(
+    'The move, its From-To assets, crates, and trucks — reviewed, then created together.')).toBeTruthy();
+  fireEvent.click(within(card).getByRole('button', { name: 'Open' }));
+  expect(screen.getByText('new move page')).toBeTruthy();
+});
+
+it('hides the "Create a move in steps" card from an admin without trucks:add or containers:add', () => {
+  for (const missing of ['trucks:add', 'containers:add']) {
+    authMock.denied.clear();
+    authMock.denied.add(missing);
+    render(<MemoryRouter><BulkActions /></MemoryRouter>);
+    expect(screen.queryByText('Create a move in steps'), missing).toBeNull();
+    expect(screen.getByText('Add or update sites in bulk')).toBeTruthy();     // others unchanged
+    cleanup();
+  }
 });

@@ -1,0 +1,12 @@
+/* WizardHeader / WizardFooter — page-level wizard chrome. The step row
+   borrows Generate Report's rgm-steps (reports.css); these rules only seat
+   it on a page instead of a modal. No typography here: list typography is
+   directory.css's alone (styles/listTypography.test.ts). */
+.wiz-top { display: flex; flex-direction: column; gap: 6px; }
+.wiz-steps { margin-top: 10px; border: 1px solid var(--paper-line); border-radius: 12px; flex-wrap: wrap; }
+.wiz-body { margin-top: 18px; display: flex; flex-direction: column; gap: 16px; }
+.wiz-foot {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--paper-line);
+}
+.wiz-foot .wiz-next { margin-left: auto; }

@@ -305,3 +305,50 @@ async def test_validate_mode_writes_no_pods(db):
     assert result["summary"]["created"] == 1
     await db.refresh(bare)
     assert bare.pod_number is None
+
+
+async def test_commit_false_never_commits_and_rolls_back_cleanly(db, monkeypatch):
+    """The move-setup worker owns the transaction: with commit=False the
+    pipeline flushes but never commits — not per batch, not at the end."""
+    from serversherpa.db.engine import get_sessionmaker
+
+    monkeypatch.setattr(move_assets, "BATCH_SIZE", 2)
+    ini = await _move(db)
+    await db.commit()
+    commits = 0
+    real_commit = db.commit
+
+    async def counting_commit():
+        nonlocal commits
+        commits += 1
+        await real_commit()
+
+    monkeypatch.setattr(db, "commit", counting_commit)
+    seen = []
+
+    async def progress(processed, created, updated, errors):
+        seen.append(processed)
+
+    rows = [_row(n, serial_number=f"SN-{n}") for n in range(2, 7)]      # 5 rows
+    result = await run_import(db, initiative_id=ini.id, added_by=None, rows=rows,
+                              write=True, progress=progress, commit=False)
+    assert commits == 0
+    assert result["summary"]["created"] == 5
+    assert seen == [2, 4, 5]                      # batch boundaries, then the final call
+    assert await db.scalar(select(func.count()).select_from(InitiativeAsset)) == 5
+    await db.rollback()
+    async with get_sessionmaker()() as other:
+        assert await other.scalar(select(func.count()).select_from(Asset)) == 0
+
+
+async def test_progress_every_overrides_the_batch_size(db):
+    ini = await _move(db)
+    seen = []
+
+    async def progress(processed, created, updated, errors):
+        seen.append(processed)
+
+    rows = [_row(n, serial_number=f"SN-{n}") for n in range(2, 8)]      # 6 rows
+    await run_import(db, initiative_id=ini.id, added_by=None, rows=rows, write=True,
+                     progress=progress, commit=False, progress_every=2)
+    assert seen == [2, 4, 6, 6]

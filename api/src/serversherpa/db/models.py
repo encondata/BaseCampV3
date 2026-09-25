@@ -1212,7 +1212,7 @@ class ImportJob(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
-    kind: Mapped[str]                       # 'move_assets' | 'asset_bulk_update'
+    kind: Mapped[str]              # 'move_assets' | 'asset_bulk_update' | 'move_setup'
     initiative_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("initiatives.id", ondelete="CASCADE"))
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))

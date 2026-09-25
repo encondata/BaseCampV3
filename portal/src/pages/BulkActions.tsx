@@ -8,6 +8,8 @@
 import { useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import type { Action } from '../lib/access';
+import { MOVE_SETUP_PERMISSIONS } from '../lib/moveSetup';
 import '../styles/bulk.css';
 
 export interface BulkTool {
@@ -16,7 +18,10 @@ export interface BulkTool {
   description: string;
   /** Hides the card when the viewer lacks this resource:action. */
   resource?: string;
-  action?: 'view' | 'add' | 'change' | 'delete';
+  action?: Action;
+  /** More resource:action pairs the viewer also needs (a tool whose routes
+   *  write several kinds of record). */
+  also?: readonly (readonly [string, Action])[];
   /** Either navigate somewhere or run something in place. */
   to?: string;
   run?: () => void;
@@ -49,12 +54,19 @@ export const BULK_TOOLS: BulkTool[] = [
     description: 'Load changes from a spreadsheet. Rows match existing assets by Asset ID or serial; review every change before applying.',
     resource: 'assets', action: 'change', to: '/bulk/assets', button: 'Open',
   },
+  {
+    key: 'new-move', title: 'Create a move in steps',
+    description: 'The move, its From-To assets, crates, and trucks — reviewed, then created together.',
+    resource: 'initiatives', action: 'add', also: MOVE_SETUP_PERMISSIONS,
+    to: '/bulk/new-move', button: 'Open',
+  },
 ];
 
 export default function BulkActions() {
   const { can } = useAuth();
   const navigate = useNavigate();
-  const tools = BULK_TOOLS.filter((t) => !t.resource || can(t.resource, t.action ?? 'view'));
+  const tools = BULK_TOOLS.filter((t) => (!t.resource || can(t.resource, t.action ?? 'view'))
+    && (t.also ?? []).every(([resource, action]) => can(resource, action)));
 
   return (
     <div className="portal-page">

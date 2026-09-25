@@ -18,16 +18,13 @@ from serversherpa.db.models import (
     Asset, AssetModel, Container, ContainerAsset, Initiative, Person, Site,
     StatusValue,
 )
-from serversherpa.labels.tags import LABEL_TAG_ASSIGNMENT_ORDER, LABEL_TAG_KEYS
-from serversherpa.logistics import bulk_import as bulk
+from serversherpa.labels.tags import LABEL_TAG_KEYS
+from serversherpa.logistics import bulk_create, bulk_import as bulk
+from serversherpa.logistics.bulk_create import CONTAINER_FIELDS
 from serversherpa.services.audit import audit, diff, snapshot
 
 router = APIRouter(prefix="/containers", tags=["containers"])
 
-CONTAINER_FIELDS = [
-    "name", "rfid_tag", "container_type", "status", "site_id",
-    "initiative_id", "label_tag", "location_detail",
-]
 NON_NULLABLE_FIELDS = ("name", "location_detail", "status")
 
 
@@ -237,73 +234,31 @@ def _bulk_names(naming, count: int) -> list[str]:
     return names
 
 
-def _bulk_tag_assignments(count: int, tags: dict[str, int]) -> list[str | None]:
-    """Assign tags in LABEL_TAG_ASSIGNMENT_ORDER to the first N created
-    rows (by name order); the rest are left untagged."""
-    assignments: list[str | None] = [None] * count
-    idx = 0
-    for key in LABEL_TAG_ASSIGNMENT_ORDER:
-        for _ in range(tags.get(key, 0)):
-            if idx < count:
-                assignments[idx] = key
-            idx += 1
-    return assignments
-
-
 @router.post("/bulk", response_model=ContainerBulkCreateOut, status_code=201)
 async def create_containers_bulk(
     body: ContainerBulkCreateIn,
     db: DbSession,
     actor: AuthContext = require_permission("containers", "add"),
 ) -> ContainerBulkCreateOut:
-    tags = body.tags
-    for key in tags:
-        if key not in LABEL_TAG_KEYS:
-            raise _err(422, "bad_tag_key", allowed=list(LABEL_TAG_KEYS))
-    if sum(tags.values()) > body.count:
-        raise _err(422, "tags_exceed_count")
-
-    await _check_refs(db, {"site_id": body.site_id,
-                           "initiative_id": body.initiative_id})
-
-    statuses, types = await _vocab(db)
-    if body.container_type not in types:
-        raise _err(422, "bad_container_type")
-    if body.status is not None and body.status not in statuses:
-        raise _err(422, "bad_status")
-
+    try:
+        bulk_create.check_tags(body.tags, body.count)
+    except bulk_create.ContainerBulkError as exc:
+        raise _err(exc.status, exc.code, **exc.extra) from None
+    await _check_refs(db, {"site_id": body.site_id, "initiative_id": body.initiative_id})
+    try:
+        await bulk_create.check_vocab(db, body.container_type, body.status)
+    except bulk_create.ContainerBulkError as exc:
+        raise _err(exc.status, exc.code, **exc.extra) from None
     if body.naming.start + body.count - 1 > BULK_MAX_NUMBER:
         raise _err(422, "number_overflow", max_number=BULK_MAX_NUMBER)
-    names = _bulk_names(body.naming, body.count)
-
-    existing = {n.lower() for n in await db.scalars(
-        select(Container.name).where(
-            Container.name.in_(names), Container.archived_at.is_(None)))}
-    colliding = [name for name in names if name.lower() in existing]
-    if colliding:
-        raise _err(422, "name_collision", names=colliding)
-
-    tag_assignments = _bulk_tag_assignments(body.count, tags)
-    status = body.status or "available"
-    containers = []
-    for name, tag in zip(names, tag_assignments, strict=True):
-        container = Container(
-            name=name, container_type=body.container_type, status=status,
+    try:
+        containers = await bulk_create.create_containers(
+            db, names=_bulk_names(body.naming, body.count),
+            container_type=body.container_type, status=body.status,
             site_id=body.site_id, initiative_id=body.initiative_id,
-            label_tag=tag, created_by=actor.person.id)
-        db.add(container)
-        containers.append(container)
-    await db.flush()
-
-    # One audit row per container (same shape as the single create's audit
-    # row) rather than one bulk row — keeps the container audit trail
-    # queryable per-entity the same way regardless of how it was created.
-    for container in containers:
-        initial = snapshot(container, CONTAINER_FIELDS)
-        changes = {field: {"from": None, "to": value}
-                   for field, value in initial.items() if value not in (None, "")}
-        audit(db, actor_id=actor.person.id, entity_type="container",
-              entity_id=str(container.id), action="create", changes=changes)
+            tags=body.tags, actor_id=actor.person.id)
+    except bulk_create.ContainerBulkError as exc:
+        raise _err(exc.status, exc.code, **exc.extra) from None
     await db.commit()
 
     statuses, types, sites, initiatives, counts = await _context(db, containers)

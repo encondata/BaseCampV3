@@ -2095,6 +2095,64 @@ class ImportJobOut(BaseModel):
     finished_at: datetime | None = None
 
 
+# ── bulk: create a move in steps ────────────────────────────────────
+
+class MoveSetupMoveIn(InitiativeCreateIn):
+    """Step 1 — every "New initiative" field; the type is always a move
+    (the route overwrites whatever is sent)."""
+
+    initiative_type: str = "move"
+
+
+class MoveSetupCratesIn(BaseModel):
+    # count/start ranges are the naming rule's, so they fail as sentences
+    convention: str = Field(max_length=60)
+    count: int
+    start: int = 1
+    container_type: str | None = None
+    tags: dict[str, Annotated[int, Field(ge=0)]] = {}
+    model_config = ConfigDict(extra="forbid")
+
+
+class MoveSetupTrucksIn(BaseModel):
+    convention: str = Field(max_length=60)
+    count: int
+    start: int = 1
+    model_config = ConfigDict(extra="forbid")
+
+
+class MoveSetupPatchIn(BaseModel):
+    move: MoveSetupMoveIn | None = None
+    crates: MoveSetupCratesIn | None = None
+    trucks: MoveSetupTrucksIn | None = None
+    skip: list[Literal["assets", "crates", "trucks"]] = []
+    model_config = ConfigDict(extra="forbid")
+
+
+class MoveSetupNamesOut(BaseModel):
+    names: list[str]
+    clashes: list[str]
+    error: str | None = None
+
+
+class MoveSetupPreviewsOut(BaseModel):
+    crates: MoveSetupNamesOut | None = None
+    trucks: MoveSetupNamesOut | None = None
+
+
+class MoveSetupOut(BaseModel):
+    id: uuid.UUID
+    status: str
+    error: str | None = None
+    payload: dict | None = None
+    initiative_id: uuid.UUID | None = None
+    total_rows: int
+    processed_rows: int
+    results: dict | None = None
+    created_at: datetime
+    previews: MoveSetupPreviewsOut | None = None
+
+
 # ── system ────────────────────────────────────────────────────────
 
 class SystemProcessOut(BaseModel):

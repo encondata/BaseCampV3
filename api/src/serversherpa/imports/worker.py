@@ -1,9 +1,13 @@
 """The import worker loop — a separate process from the API
 (`serversherpa import-worker`). Claims queued import_jobs rows and runs
 the pipeline; the API process never parses files or writes import rows.
-Two kinds share the queue: `move_assets` (a roster file, below) and
+Three kinds share the queue: `move_assets` (a roster file, below),
 `asset_bulk_update` (parsed rows in `payload`, applied by
-assets/bulk_update.apply_job in one transaction).
+assets/bulk_update.apply_job in one transaction) and `move_setup` (a
+Create-a-move-in-steps draft in `payload`, created by
+imports/move_setup.apply_job in one transaction). Every hour the loop also
+sweeps stale drafts, their orphaned file checks, and abandoned bulk asset
+update previews (jobs.sweep_stale).
 
 Shutdown story: no signal handling on purpose. Commit-phase work is
 committed every BATCH_SIZE rows and the update path is idempotent, so
@@ -13,6 +17,7 @@ requeue_stale, and the re-run converges on the same result."""
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime
 
 from sqlalchemy import func, update
@@ -22,12 +27,15 @@ from serversherpa.assets.bulk_update import KIND as ASSET_BULK_UPDATE
 from serversherpa.assets.bulk_update import apply_job
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import ImportJob
-from serversherpa.imports.jobs import claim_next, requeue_stale
+from serversherpa.imports import move_setup
+from serversherpa.imports.jobs import claim_next, requeue_stale, sweep_stale
 from serversherpa.imports.move_assets import parse_row, run_import
 from serversherpa.imports.parsing import ImportFileError, parse_upload
 from serversherpa.services.storage import get_object
 
 logger = logging.getLogger("serversherpa.imports.worker")
+
+SWEEP_SECONDS = 3600
 
 
 def _finish(job: ImportJob, status: str, error: str | None = None) -> None:
@@ -57,6 +65,33 @@ async def _process_asset_bulk_update(db: AsyncSession, job: ImportJob) -> None:
     await db.commit()
 
 
+async def _process_move_setup(db: AsyncSession, job: ImportJob) -> None:
+    """Create a move from a queued Create-a-move-in-steps draft. The create
+    runs in one transaction (move_setup.apply_job); progress goes through a
+    second, short-lived session, exactly like the bulk asset update."""
+    job_id = job.id
+    try:
+        plan = await move_setup.prepare(db, job)
+    except move_setup.SetupFailed as exc:
+        move_setup.mark_failed(job, exc.code, exc.reasons)
+        await db.commit()
+        return
+    job.total_rows = plan.total
+    job.processed_rows = 0
+    job.progress_at = datetime.now(UTC)
+    await db.commit()
+
+    async def _progress(processed: int) -> None:
+        async with get_sessionmaker()() as side:
+            await side.execute(
+                update(ImportJob).where(ImportJob.id == job_id)
+                .values(processed_rows=processed, progress_at=func.now()))
+            await side.commit()
+
+    await move_setup.apply_job(db, job, plan, progress=_progress)
+    await db.commit()
+
+
 async def process_job(db: AsyncSession, job: ImportJob) -> None:
     """Run one claimed (status='running') job to a terminal status."""
     if job.cancel_requested:
@@ -67,6 +102,9 @@ async def process_job(db: AsyncSession, job: ImportJob) -> None:
         return
     if job.kind == ASSET_BULK_UPDATE:
         await _process_asset_bulk_update(db, job)
+        return
+    if job.kind == move_setup.KIND:
+        await _process_move_setup(db, job)
         return
     try:
         content = await get_object(job.file_key)
@@ -142,13 +180,35 @@ async def run_once(sessionmaker) -> bool:
         except Exception as exc:                       # job must terminate
             logger.exception("job %s failed in worker: %s", job.id, exc)
             await db.rollback()
-            _finish(job, "failed", f"worker_error: {exc}")
+            if kind == move_setup.KIND:
+                # the draft stays editable: payload kept, a sentence code
+                move_setup.mark_failed(job, "worker_error", [move_setup.WORKER_ERROR_MESSAGE])
+            else:
+                _finish(job, "failed", f"worker_error: {exc}")
             if kind == ASSET_BULK_UPDATE:
                 job.payload = None       # the parsed file is never read again
             await db.commit()
         logger.info("job %s finished status=%s rows=%s",
                     job.id, job.status, job.processed_rows)
         return True
+
+
+async def _sweep(maker) -> None:
+    """One sweep_stale pass that can never stop the loop: a failure (a DB
+    blip) is logged and rolled back, and the next hour's pass tries again."""
+    try:
+        async with maker() as db:
+            try:
+                swept = await sweep_stale(db)
+            except Exception:
+                await db.rollback()
+                raise
+    except Exception:
+        logger.exception("sweep of stale drafts and previews failed; retrying in an hour")
+        return
+    if any(swept.values()):
+        logger.info("swept %d draft(s), %d check(s), %d preview(s)",
+                    swept["drafts"], swept["checks"], swept["previews"])
 
 
 async def run_forever(poll_seconds: float = 2.0) -> None:
@@ -170,6 +230,7 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
             if requeued:
                 logger.info("re-queued %d stale job(s)", requeued)
         logger.info("watching the queue")
+        last_sweep = -SWEEP_SECONDS
         while True:
             # read-only mode's "also pause background services": idle (still
             # heart-beating as paused) until the flag clears — no work lost
@@ -182,6 +243,9 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
             if pause_state["paused"]:
                 logger.info("resumed")
             pause_state["paused"] = False
+            if time.monotonic() - last_sweep >= SWEEP_SECONDS:   # the first pass = start-up
+                await _sweep(maker)
+                last_sweep = time.monotonic()      # even after a failure: retry next hour
             worked = await run_once(maker)
             if not worked:
                 await asyncio.sleep(poll_seconds)

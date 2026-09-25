@@ -239,13 +239,19 @@ async def run_import(
     source_label: str = "",
     progress: ProgressFn | None = None,
     is_cancelled: CancelledFn | None = None,
+    commit: bool = True,
+    progress_every: int | None = None,
 ) -> dict:
     """The shared pipeline. write=False (validate) runs the identical
     decision path with every DB write suppressed — created assets/models
     are simulated in-memory so later rows in the same file resolve exactly
     as they will at commit. write=True commits in BATCH_SIZE batches
     (progress + cancel checks ride the batch boundary), then flags
-    destination collisions and writes ONE audit summary row."""
+    destination collisions and writes ONE audit summary row.
+
+    commit=False leaves every commit to the caller (the move-setup worker
+    runs the whole create in one transaction); progress still fires at each
+    boundary. progress_every overrides BATCH_SIZE as that boundary."""
     from serversherpa.services.audit import audit
 
     ok_rows = [r for r in rows if r["status"] == "ok"]
@@ -410,13 +416,15 @@ async def run_import(
             "match_method": match_method,
             "make_model_final": make_model_final})
 
+    every = progress_every or BATCH_SIZE       # read at call time: tests patch BATCH_SIZE
     for r in rows:
         processed += 1
         await _one_row(r)
-        if write and processed % BATCH_SIZE == 0:
+        if write and processed % every == 0:
             if progress is not None:
                 await progress(processed, created, updated, errors)
-            await db.commit()
+            if commit:
+                await db.commit()
             if is_cancelled is not None and await is_cancelled():
                 cancelled = True
                 break
@@ -437,5 +445,6 @@ async def run_import(
     if write:
         if progress is not None:
             await progress(processed, created, updated, errors)
-        await db.commit()
+        if commit:
+            await db.commit()
     return {"summary": summary, "details": details, "cancelled": cancelled}
