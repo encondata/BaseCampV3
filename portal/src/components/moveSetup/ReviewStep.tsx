@@ -145,7 +145,7 @@ export default function ReviewStep({ draft, onDraft, form, lookups, assetJob, on
         {!payload?.assets ? <p className="page-hint">Skipped</p>
           : assetJob?.results
             ? <ImportReport job={assetJob} fixedTexts={NO_FIXES} onFix={() => undefined}
-                            canAddModels={false} canChangeModels={false} readOnly />
+                            canAddModels={false} canChangeModels={false} readOnly pagingOnlyWhenNeeded />
             : <p className="page-hint">{payload.assets.filename}</p>}
       </section>
 

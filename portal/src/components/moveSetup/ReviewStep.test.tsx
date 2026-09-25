@@ -58,6 +58,33 @@ it('summarizes every step, with Skipped for skipped ones', async () => {
   expect(screen.getAllByText('Skipped')).toHaveLength(2);           // assets and trucks
 });
 
+it('asset import report shows no pagination button for a small check', async () => {
+  api.getMoveSetup.mockResolvedValue(base());
+  const assetJob = {
+    id: 'check1', initiative_id: null, kind: 'move_assets', status: 'completed' as const, error: null,
+    filename: 'assets.xlsx', options: { move_setup_id: 'd1' }, phase: 'validate' as const,
+    total_rows: 4, processed_rows: 4, created_count: 4, updated_count: 0, error_count: 0,
+    created_at: '2026-09-24T00:00:00Z', started_at: '2026-09-24T00:00:00Z', finished_at: '2026-09-24T00:00:01Z',
+    results: {
+      summary: { created: 4, updated: 0, errors: 0 },
+      details: [
+        { row: 1, serial_number: 's1', status: 'created' as const, message: '', asset_id: 'a1' },
+        { row: 2, serial_number: 's2', status: 'created' as const, message: '', asset_id: 'a2' },
+        { row: 3, serial_number: 's3', status: 'created' as const, message: '', asset_id: 'a3' },
+        { row: 4, serial_number: 's4', status: 'created' as const, message: '', asset_id: 'a4' },
+      ],
+    },
+  };
+  const harness = () => (
+    <MemoryRouter>
+      <ReviewStep draft={base()} onDraft={vi.fn()} form={FORM} lookups={LOOKUPS} assetJob={assetJob}
+                  onBack={vi.fn()} onFinished={vi.fn()} />
+    </MemoryRouter>
+  );
+  render(harness());
+  expect(screen.queryByRole('button', { name: /next page/i })).toBeNull();
+});
+
 it('creates, shows progress, then the finish screen', async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
