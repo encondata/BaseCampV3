@@ -13,7 +13,7 @@ from serversherpa.api.routes import (
     notifications, reports, scans, search, sites, stakeholders,
     status_provenance, status_rules, status_values, system,
     time as time_routes, time_bulk as time_bulk_routes, trucks, users, warehouse,
-    workers,
+    wiki, workers,
 )
 from serversherpa.config import get_settings
 from serversherpa.db.engine import dispose_engine
@@ -131,6 +131,7 @@ def create_app() -> FastAPI:
     app.include_router(audit.router)
     app.include_router(system.router)
     app.include_router(notifications.router)
+    app.include_router(wiki.router)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict:
