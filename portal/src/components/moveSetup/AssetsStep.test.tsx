@@ -140,3 +140,14 @@ it('stops polling on unmount and drops a response that lands after it', async ()
   expect(setJob).not.toHaveBeenCalled();
   expect(api.getMoveSetupCheck).toHaveBeenCalledTimes(1);
 });
+
+it('offers no report download: the .xlsx report belongs to the move import page', async () => {
+  const user = userEvent.setup();
+  api.uploadMoveSetupAssets.mockResolvedValue(DONE);
+  render(<Harness />);
+  await user.upload(document.querySelector('input[type=file]') as HTMLInputElement,
+    new File(['x'], 'ft.csv', { type: 'text/csv' }));
+  await user.click(screen.getByRole('button', { name: 'Check file' }));
+  await screen.findByText('2 rows will be imported when the move is created');
+  expect(screen.queryByRole('button', { name: 'Download report (.xlsx)' })).toBeNull();
+});
