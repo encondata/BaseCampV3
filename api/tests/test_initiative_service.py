@@ -7,7 +7,10 @@ from sqlalchemy import select
 
 from serversherpa.db.models import AuditLog, Site
 from serversherpa.services.initiatives import (
-    INITIATIVE_PALETTE, create_initiative_row, next_color, ref_problem,
+    INITIATIVE_PALETTE,
+    create_initiative_row,
+    next_color,
+    ref_problem,
 )
 
 

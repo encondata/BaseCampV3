@@ -8,7 +8,11 @@ from sqlalchemy import func, select
 
 from serversherpa.db.models import AuditLog, Container, Initiative, Site
 from serversherpa.logistics.bulk_create import (
-    ContainerBulkError, check_tags, check_vocab, create_containers, find_clashes,
+    ContainerBulkError,
+    check_tags,
+    check_vocab,
+    create_containers,
+    find_clashes,
 )
 
 

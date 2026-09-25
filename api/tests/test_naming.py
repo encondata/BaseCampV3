@@ -4,7 +4,12 @@ trucks (and mirrored by portal/src/lib/namingConvention.ts)."""
 import pytest
 
 from serversherpa.imports.naming import (
-    CRATE_MAX, TRUCK_MAX, Convention, NamingError, clash_sentence, generate_names,
+    CRATE_MAX,
+    TRUCK_MAX,
+    Convention,
+    NamingError,
+    clash_sentence,
+    generate_names,
     parse_convention,
 )
 
