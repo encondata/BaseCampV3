@@ -206,12 +206,12 @@ export default function ImportReport({
 
       {(!pagingOnlyWhenNeeded || total > PAGE_SIZE) && (
         <div className="imp-pagination">
-          <button className="mini-btn" type="button"
+          <button className="mini-btn" type="button" aria-label="Previous page"
                   disabled={page === 0}
                   onClick={() => setPage((p) => p - 1)}>
             Prev
           </button>
-          <button className="mini-btn" type="button"
+          <button className="mini-btn" type="button" aria-label="Next page"
                   disabled={end >= total}
                   onClick={() => setPage((p) => p + 1)}>
             Next

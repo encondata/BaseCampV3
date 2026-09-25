@@ -164,7 +164,8 @@ export default function AssetsStep({ draft, job, setJob, onBack, onSkip, onNext 
 
       <WizardFooter onBack={onBack} onSkip={skip} onNext={onNext} nextDisabled={!checked}
                     busy={busy || skipping} error={error}
-                    note={job === null ? 'Upload a From-To file, or skip this step.' : undefined} />
+                    note={job === null || replacing
+                      ? 'Upload a From-To file, or skip this step.' : undefined} />
 
       {fixTarget && (
         <FixMakeModelDialog text={fixTarget.text} make={fixTarget.make} model={fixTarget.model}

@@ -90,6 +90,38 @@ it('Skip this step hands off to the page', async () => {
   expect(onSkip).toHaveBeenCalled();
 });
 
+it('keeps the pagination Next and the footer Next distinct past 500 rows', async () => {
+  const user = userEvent.setup();
+  const details = Array.from({ length: 501 }, (_, i) => ({
+    row: i + 2, serial_number: `sn-${i}`, status: 'created' as const,
+    message: 'Asset added to move',
+  }));
+  const big = job({
+    status: 'completed', processed_rows: 501, total_rows: 501,
+    results: { summary: {}, details },
+  });
+  api.uploadMoveSetupAssets.mockResolvedValue(big);
+  render(<Harness />);
+  await user.upload(document.querySelector('input[type=file]') as HTMLInputElement,
+    new File(['x'], 'ft.csv', { type: 'text/csv' }));
+  await user.click(screen.getByRole('button', { name: 'Check file' }));
+  await screen.findByText('501 rows will be imported when the move is created');
+  expect(screen.getAllByRole('button', { name: 'Next' })).toHaveLength(1);
+  expect(screen.getByRole('button', { name: 'Next page' })).toBeTruthy();
+});
+
+it('shows the upload hint while replacing the file', async () => {
+  const user = userEvent.setup();
+  api.uploadMoveSetupAssets.mockResolvedValue(DONE);
+  render(<Harness />);
+  await user.upload(document.querySelector('input[type=file]') as HTMLInputElement,
+    new File(['x'], 'ft.csv', { type: 'text/csv' }));
+  await user.click(screen.getByRole('button', { name: 'Check file' }));
+  await screen.findByText('2 rows will be imported when the move is created');
+  await user.click(screen.getByRole('button', { name: 'Upload a different file' }));
+  expect(screen.getByText('Upload a From-To file, or skip this step.')).toBeTruthy();
+});
+
 it('stops polling on unmount and drops a response that lands after it', async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   let resolve!: (j: ImportJobOut) => void;
