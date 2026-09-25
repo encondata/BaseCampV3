@@ -297,6 +297,66 @@ class RestoreIn(BaseModel):
     from_version_id: uuid.UUID
 
 
+# ── uploads / files / page assets ────────────────────────────────────
+
+
+UploadTarget = Literal["node", "version", "asset"]
+
+
+class UploadStartIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: UploadTarget
+    space_id: uuid.UUID | None = None
+    parent_id: uuid.UUID | None = None
+    node_id: uuid.UUID | None = None
+    page_id: uuid.UUID | None = None
+    filename: str
+    content_type: str
+    size: int
+
+
+class UploadStartOut(BaseModel):
+    upload_id: str
+    url: str
+    headers: dict[str, str]
+
+
+class UploadCompleteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    upload_id: str
+
+
+class AssetOut(BaseModel):
+    id: uuid.UUID
+    filename: str
+    content_type: str
+    size_bytes: int
+
+
+class FilePatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    description: str
+
+
+class FileUrlOut(BaseModel):
+    url: str | None
+    content_type: str
+    preview_status: str
+
+
+class AssetUrlsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[uuid.UUID]
+
+
+class AssetUrlsOut(BaseModel):
+    urls: dict[uuid.UUID, str]
+
+
 # ── internal (collab server) ─────────────────────────────────────────
 
 

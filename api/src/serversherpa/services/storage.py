@@ -11,6 +11,7 @@ from functools import lru_cache, partial
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from serversherpa.config import get_settings
 
@@ -31,23 +32,61 @@ def _client():
     )
 
 
-def presign_get(key: str | None, *, download_filename: str | None = None) -> str | None:
+def presign_get(key: str | None, *, download_filename: str | None = None,
+                inline: bool = False, content_type: str | None = None) -> str | None:
     """Short-lived read URL for a private object (None passes through so
     callers can presign optional keys like avatar_key directly).
 
     `download_filename`, when given, sets Content-Disposition on the
-    response so a browser saves the file under that name instead of the
-    (often opaque, uuid-bearing) storage key."""
+    response so a browser saves/shows the file under that name instead of
+    the (often opaque, uuid-bearing) storage key — `attachment` unless
+    `inline` is set, which asks the browser to render the response (an
+    image, PDF, etc.) in place instead of downloading it.
+
+    `content_type`, when given, overrides the response's Content-Type
+    (`ResponseContentType`) — used to force `text/plain` on an inline
+    text preview so the bucket's origin can never serve stored text back
+    as HTML or SVG that could run script."""
     if not key:
         return None
     s = get_settings()
     params: dict = {"Bucket": s.spaces_bucket, "Key": key}
     if download_filename:
+        disposition = "inline" if inline else "attachment"
         params["ResponseContentDisposition"] = (
-            f'attachment; filename="{download_filename}"')
+            f'{disposition}; filename="{download_filename}"')
+    if content_type:
+        params["ResponseContentType"] = content_type
     return _client().generate_presigned_url(
         "get_object", Params=params, ExpiresIn=s.spaces_presign_ttl_seconds,
     )
+
+
+def presign_put(key: str, content_type: str, expires: int = 3600) -> str:
+    """A short-lived PUT URL for a browser to upload straight to storage.
+    The browser must send `Content-Type: content_type` exactly — the
+    signature covers it, so a mismatched header makes S3 reject the PUT."""
+    s = get_settings()
+    return _client().generate_presigned_url(
+        "put_object",
+        Params={"Bucket": s.spaces_bucket, "Key": key, "ContentType": content_type},
+        ExpiresIn=expires,
+    )
+
+
+async def head_object(key: str) -> dict | None:
+    """The object's size and content type, or None when no object exists
+    at `key` (used to confirm a presigned upload actually landed)."""
+    s = get_settings()
+    try:
+        resp = await asyncio.to_thread(partial(
+            _client().head_object, Bucket=s.spaces_bucket, Key=key))
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return None
+        raise
+    return {"size": resp["ContentLength"], "content_type": resp.get("ContentType", "")}
 
 
 async def put_object(key: str, data: bytes, content_type: str) -> None:

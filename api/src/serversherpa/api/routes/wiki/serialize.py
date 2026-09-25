@@ -68,8 +68,8 @@ def space_out(space: WikiSpace, level: str | None) -> SpaceOut:
     )
 
 
-def _file_version_out(version: WikiFileVersion,
-                      people: Mapping[uuid.UUID, PersonRef]) -> FileVersionOut:
+def file_version_out(version: WikiFileVersion,
+                     people: Mapping[uuid.UUID, PersonRef]) -> FileVersionOut:
     return FileVersionOut(
         id=version.id, version_no=version.version_no,
         filename=version.filename, content_type=version.content_type,
@@ -166,7 +166,7 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
             file_row, version = files[n.id]
             file = NodeFileOut(
                 description=file_row.description,
-                current_version=_file_version_out(version, people) if version else None)
+                current_version=file_version_out(version, people) if version else None)
 
         out.append(NodeOut(
             id=n.id, space_id=n.space_id, space_key=space_key,
