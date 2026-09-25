@@ -308,7 +308,7 @@ async def list_file_versions(node_id: uuid.UUID, ctx: WikiContext) -> list[FileV
     return [file_version_out(v, people) for v in versions]
 
 
-def _presign_upload(key: str, filename: str, content_type: str, *,
+def _presign_view(key: str, filename: str, content_type: str, *,
                     preview_kind: str | None = None) -> str | None:
     """A presigned read meant for in-browser display: inline with the
     type `inline_content_type` allows, or — for anything that could run
@@ -349,7 +349,7 @@ async def file_url(node_id: uuid.UUID, ctx: WikiContext,
         return FileUrlOut(url=url, content_type="application/pdf", preview_status="ready")
 
     if disposition == "inline":
-        url = _presign_upload(version.storage_key, version.filename, version.content_type,
+        url = _presign_view(version.storage_key, version.filename, version.content_type,
                               preview_kind=version.preview_kind)
     else:
         url = storage.presign_get(version.storage_key, download_filename=version.filename)
@@ -434,7 +434,7 @@ async def asset_urls(body: AssetUrlsIn, ctx: WikiContext) -> AssetUrlsOut:
     for asset in assets:
         if asset.node_id not in shown_ids:
             continue
-        url = _presign_upload(asset.storage_key, asset.filename, asset.content_type)
+        url = _presign_view(asset.storage_key, asset.filename, asset.content_type)
         if url is not None:
             urls[asset.id] = url
     return AssetUrlsOut(urls=urls)

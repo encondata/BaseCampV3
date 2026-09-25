@@ -48,7 +48,7 @@ def test_presign_get_inline_disposition_keeps_both_filename_forms():
     url = storage.presign_get("wiki/a/b/c.png", download_filename="日本.png", inline=True)
     [disposition] = parse_qs(urlparse(url).query)["response-content-disposition"]
     assert disposition == (
-        "inline; filename=\"png\"; filename*=UTF-8''%E6%97%A5%E6%9C%AC.png")
+        "inline; filename=\"file.png\"; filename*=UTF-8''%E6%97%A5%E6%9C%AC.png")
 
 
 def test_presign_get_inline_sets_content_disposition_and_type():

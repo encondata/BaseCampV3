@@ -15,7 +15,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from serversherpa.config import get_settings
-from serversherpa.wiki.files import sanitize_filename
+from serversherpa.services.filenames import ascii_header_filename
 
 
 @lru_cache
@@ -41,7 +41,7 @@ def content_disposition(filename: str, *, inline: bool = False) -> str:
     original name, percent-encoded, as RFC 5987 `filename*=UTF-8''…`,
     which every current browser prefers."""
     disposition = "inline" if inline else "attachment"
-    return (f'{disposition}; filename="{sanitize_filename(filename)}"; '
+    return (f'{disposition}; filename="{ascii_header_filename(filename)}"; '
             f"filename*=UTF-8''{quote(filename, safe='')}")
 
 
