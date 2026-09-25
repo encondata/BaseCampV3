@@ -25,16 +25,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import insert, or_, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.db.models import Initiative, Person, Site, TimeEntry
+from serversherpa.db.models import AuditLog, Initiative, Person, Site, TimeEntry
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import BulkImportError
 from serversherpa.people import time_parse as tp
 from serversherpa.people.bulk_import import _worker_query, name_keys, normalize_phone
-from serversherpa.services.audit import audit
 from serversherpa.services.timezone import stored_day
 
 COLUMNS = ["worker", "clock_in", "clock_out", "break_minutes", "job", "site", "notes"]
@@ -417,6 +416,12 @@ async def _lock_time_entries(db: AsyncSession) -> None:
     await db.execute(text("SET LOCAL lock_timeout TO DEFAULT"))
 
 
+def _audit_row(actor_id: uuid.UUID, entity_id: str | None, action: str,
+               changes: dict) -> dict:
+    return {"actor_person_id": actor_id, "entity_type": "time_entry",
+            "entity_id": entity_id, "action": action, "changes": changes}
+
+
 async def commit_rows(db: AsyncSession, actor_id: uuid.UUID,
                       numbered: list[tuple[int, dict]], *,
                       overrides: dict[int, dict[str, str]], skip: set[int],
@@ -450,7 +455,13 @@ async def commit_rows(db: AsyncSession, actor_id: uuid.UUID,
         if not problems:
             raise BulkImportError("nothing_to_add", message=NOTHING_TO_ADD)
         raise BulkImportError("rows_invalid", rows=problems)
+    # Rows go in as two ORM bulk INSERTs (batched by insertmanyvalues)
+    # rather than 2 × N session objects, so the table lock is held for less
+    # time. The ids are made here, so each row still reports its entry's id.
+    # The audit rows are the ones services.audit.audit() would add.
     applied: list[dict] = []
+    entries: list[dict] = []
+    audits: list[dict] = []
     added = skipped = 0
     for r in sorted(preview["rows"], key=lambda r: r["row"]):
         if r["action"] != "add":
@@ -459,22 +470,23 @@ async def commit_rows(db: AsyncSession, actor_id: uuid.UUID,
                             "action": "skipped", "detail": r["detail"] or "Skipped."})
             continue
         entry_id = uuid.uuid4()
-        db.add(TimeEntry(
-            id=entry_id, person_id=uuid.UUID(r["person_id"]),
-            initiative_id=uuid.UUID(r["job_id"]) if r["job_id"] else None,
-            site_id=uuid.UUID(r["site_id"]) if r["site_id"] else None,
-            clock_in_at=datetime.fromisoformat(r["clock_in_at"]),
-            clock_out_at=datetime.fromisoformat(r["clock_out_at"]),
-            break_minutes=r["break_minutes"], notes=r["notes"], status="pending",
-            source="import", created_by=actor_id, adjusted=False))
-        audit(db, actor_id=actor_id, entity_type="time_entry", entity_id=str(entry_id),
-              action="import", changes={"status": {"from": None, "to": "pending"}})
+        entries.append({
+            "id": entry_id, "person_id": uuid.UUID(r["person_id"]),
+            "initiative_id": uuid.UUID(r["job_id"]) if r["job_id"] else None,
+            "site_id": uuid.UUID(r["site_id"]) if r["site_id"] else None,
+            "clock_in_at": datetime.fromisoformat(r["clock_in_at"]),
+            "clock_out_at": datetime.fromisoformat(r["clock_out_at"]),
+            "break_minutes": r["break_minutes"], "notes": r["notes"], "status": "pending",
+            "source": "import", "created_by": actor_id, "adjusted": False})
+        audits.append(_audit_row(actor_id, str(entry_id), "import",
+                                 {"status": {"from": None, "to": "pending"}}))
         added += 1
         applied.append({"row": r["row"], "name": r["name"], "entry_id": str(entry_id),
                         "action": "created", "detail": r["shift"]})
-    audit(db, actor_id=actor_id, entity_type="time_entry", entity_id=None,
-          action="bulk_import",
-          changes={"added": added, "skipped": skipped, "source": source_label})
+    audits.append(_audit_row(actor_id, None, "bulk_import",
+                             {"added": added, "skipped": skipped, "source": source_label}))
+    await db.execute(insert(TimeEntry), entries)
+    await db.execute(insert(AuditLog), audits)
     await db.commit()
     return {"summary": {"added": added, "skipped": skipped}, "rows": applied}
 
