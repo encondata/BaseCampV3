@@ -53,7 +53,7 @@ export default function TrucksStep({
         <p className="eyebrow-sm">Naming</p>
         <NamingConvention idPrefix="trucks" noun="truck" max={TRUCK_MAX} value={value}
                           onChange={setValue} names={names} error={namingError}
-                          clashes={clashes} checking={checking} disabled={busy} />
+                          clashes={clashes} checking={checking} disabled={busy || skipping} />
         <p className="set-note">
           Every truck is attached to this move and runs from {origin?.name ?? 'the origin'} to{' '}
           {destination?.name ?? 'the destination'}. Drivers, loads, and tracking are filled in on each truck later.

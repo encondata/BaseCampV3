@@ -86,21 +86,21 @@ export default function CratesStep({
                           onChange={(v) => setValue({ ...value, ...v })}
                           onCountBlur={() => void clampToCount()}
                           names={names} error={namingError} clashes={clashes}
-                          checking={checking} disabled={busy} />
+                          checking={checking} disabled={busy || skipping} />
       </section>
       <section className="bulk-section">
         <p className="eyebrow-sm">Crate type and label tags</p>
         <div className="pf-form ms-type">
           <div><label htmlFor="crates-type">Crate type</label>
             <ComboBox inputId="crates-type" placeholder="Type to search types…"
-                      value={value.container_type} disabled={busy} options={typeOptions}
+                      value={value.container_type} disabled={busy || skipping} options={typeOptions}
                       onChange={(t) => setValue({ ...value, container_type: t })} /></div>
         </div>
         {typeMissing && <p className="set-note">Pick a crate type to create crates.</p>}
         <p className="page-hint">
           Assigned in order — the first crates get Priority, then Vendor, Accessories, Warehouse, and E-Waste.
         </p>
-        <LabelTagCounts count={count} tags={value.tags} disabled={busy} notice={notice}
+        <LabelTagCounts count={count} tags={value.tags} disabled={busy || skipping} notice={notice}
                         noun="crate"
                         onChange={(tags) => { setNotice(''); setValue({ ...value, tags }); }} />
       </section>
