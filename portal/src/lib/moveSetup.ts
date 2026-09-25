@@ -8,6 +8,7 @@ import {
   ApiError, type ImportJobResults, type MoveSetupCrates, type MoveSetupTrucks, type OrgRef,
   type SiteItem, type StatusValue,
 } from './api';
+import type { Action } from './access';
 import { TAG_ASSIGNMENT_ORDER, type TagCounts } from './bulkContainers';
 import { INITIATIVE_ERRORS, initiativePayload, type InitiativeFormState } from './initiatives';
 import { IMPORT_ERRORS } from './moveAssetImport';
@@ -27,6 +28,8 @@ export const MOVE_SETUP_STEPS = [
 ] as const;
 
 export type SkippableSection = 'assets' | 'crates' | 'trucks';
+/** Shown on a crate or truck step revisited after Skip this step. */
+export const SKIPPED_NOTE = 'This step is skipped. Change any field to include it.';
 export interface CratesValue extends NamingValue { container_type: string; tags: TagCounts }
 export type TrucksValue = NamingValue;
 
@@ -97,7 +100,17 @@ export const MOVE_SETUP_ERRORS: Record<string, string> = {
   no_asset_file: 'Upload a From-To file first.',
   // GET /bulk/move-setup/{id}/assets when the draft holds no check job
   no_asset_check: 'Upload a From-To file first.',
+  // the type is locked to Move here, so "pick a type" (INITIATIVE_ERRORS) can't help
+  unknown_initiative_type: "Moves can't be created because the Move type is missing.",
 };
+
+/** Every permission the /bulk/move-setup routes require (beside admin rank);
+ *  the Bulk Actions card and the page both check all of them. */
+export const MOVE_SETUP_PERMISSIONS: readonly (readonly [string, Action])[] = [
+  ['initiatives', 'add'], ['containers', 'add'], ['trucks', 'add'],
+];
+export const MOVE_SETUP_NO_ACCESS =
+  'You need permission to add initiatives, containers, and trucks to create a move here.';
 
 export function moveSetupError(err: unknown): string {
   if (!(err instanceof ApiError)) return 'Network error. Try again.';

@@ -6,10 +6,14 @@
  * asks "Discard this move setup?" and deletes the draft on confirm; any
  * other unmount (the back button) deletes it without asking — a draft can
  * never be resumed, and the worker's 24-hour sweep is only the backstop.
+ * Once Create is queued or running the worker owns the draft: leaving asks
+ * only whether to go (the move finishes anyway) and never deletes. The
+ * route checks one permission; the page checks all three the API needs.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import { useAuth } from '../auth/AuthContext';
 import WizardHeader from '../components/common/WizardHeader';
 import AssetsStep from '../components/moveSetup/AssetsStep';
 import CratesStep from '../components/moveSetup/CratesStep';
@@ -24,8 +28,9 @@ import {
 } from '../lib/api';
 import { formFromInitiative, type InitiativeFormState } from '../lib/initiatives';
 import {
-  EMPTY_LOOKUPS, initialCrates, initialTrucks, MOVE_SETUP_STEPS, type CratesValue,
-  type MoveSetupLookups, type SkippableSection, type TrucksValue,
+  EMPTY_LOOKUPS, initialCrates, initialTrucks, MOVE_SETUP_NO_ACCESS, MOVE_SETUP_PERMISSIONS,
+  MOVE_SETUP_STEPS, type CratesValue, type MoveSetupLookups, type SkippableSection,
+  type TrucksValue,
 } from '../lib/moveSetup';
 import { useLeaveGuard } from '../lib/useLeaveGuard';
 import '../styles/bulk.css';
@@ -37,6 +42,20 @@ import '../styles/wizard.css';
 import '../styles/moveSetup.css';
 
 export default function BulkNewMove() {
+  const { can } = useAuth();
+  if (!MOVE_SETUP_PERMISSIONS.every(([resource, action]) => can(resource, action))) {
+    return (
+      <div className="portal-page">
+        <div className="eyebrow">Bulk Actions</div>
+        <h1 className="page-title">Create a move in steps</h1>
+        <p className="page-hint">{MOVE_SETUP_NO_ACCESS}</p>
+      </div>
+    );
+  }
+  return <MoveSetupWizard />;
+}
+
+function MoveSetupWizard() {
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [draft, setDraft] = useState<MoveSetupDraft | null>(null);
@@ -49,6 +68,14 @@ export default function BulkNewMove() {
   const [finished, setFinished] = useState(false);
   const [leaveTo, setLeaveTo] = useState<string | null>(null);
   const [discarding, setDiscarding] = useState(false);
+  // skipped, and not edited since: revisiting must not save (include) it again
+  const [skipped, setSkipped] = useState<ReadonlySet<SkippableSection>>(() => new Set());
+  const include = useCallback((section: SkippableSection) => setSkipped((prev) => {
+    if (!prev.has(section)) return prev;
+    const nextSet = new Set(prev);
+    nextSet.delete(section);
+    return nextSet;
+  }), []);
 
   useEffect(() => {
     const put = <K extends keyof MoveSetupLookups>(key: K) => (value: MoveSetupLookups[K]) =>
@@ -71,9 +98,13 @@ export default function BulkNewMove() {
     if (step === 3 && trucks === null) setTrucks(initialTrucks(origin, destination));
   }, [step]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const live = draft !== null && !finished;
-  const liveId = useRef<string | null>(null);
-  liveId.current = live ? draft.id : null;
+  const done = finished || draft?.status === 'completed';
+  const live = draft !== null && !done;
+  // queued or running: the worker holds the draft (the API refuses a DELETE)
+  const creating = draft?.status === 'queued' || draft?.status === 'running';
+  const deletableId = live && !creating ? draft.id : null;
+  const liveId = useRef<string | null>(null);   // what the unmount cleanup may delete
+  useEffect(() => { liveId.current = deletableId; }, [deletableId]);
   const discarded = useRef(false);             // Discard already deleted it
   useEffect(() => () => {
     if (liveId.current && !discarded.current) {
@@ -82,8 +113,9 @@ export default function BulkNewMove() {
   }, []);
   useLeaveGuard(live, setLeaveTo);
 
-  const discard = async () => {
+  const leave = async () => {
     if (leaveTo === null || draft === null) return;
+    if (creating) { navigate(leaveTo); return; }   // it finishes without us; nothing to delete
     setDiscarding(true);
     discarded.current = true;                  // the unmount cleanup must not delete twice
     await deleteMoveSetup(draft.id).catch(() => undefined);
@@ -97,6 +129,7 @@ export default function BulkNewMove() {
     if (!draft) return;
     const saved = await patchMoveSetup(draft.id, { skip: [section] });
     setDraft(saved);
+    setSkipped((prev) => new Set(prev).add(section));
     if (section === 'assets') setAssetJob(null);
     next();
   };
@@ -116,13 +149,16 @@ export default function BulkNewMove() {
                       onBack={back} onSkip={skip('assets')} onNext={next} />
         )}
         {step === 2 && draft && crates && (
-          <CratesStep draft={draft} value={crates} setValue={setCrates}
+          <CratesStep draft={draft} value={crates}
+                      setValue={(v) => { include('crates'); setCrates(v); }}
+                      skipped={skipped.has('crates')}
                       containerTypes={lookups.containerTypes} onDraft={setDraft}
                       onBack={back} onSkip={skip('crates')} onNext={next} />
         )}
         {step === 3 && draft && trucks && (
-          <TrucksStep draft={draft} value={trucks} setValue={setTrucks}
-                      origin={origin} destination={destination} onDraft={setDraft}
+          <TrucksStep draft={draft} value={trucks}
+                      setValue={(v) => { include('trucks'); setTrucks(v); }}
+                      skipped={skipped.has('trucks')} origin={origin} destination={destination} onDraft={setDraft}
                       onBack={back} onSkip={skip('trucks')} onNext={next} />
         )}
         {step === 4 && draft && (
@@ -131,8 +167,8 @@ export default function BulkNewMove() {
         )}
       </div>
       {leaveTo !== null && (
-        <DiscardDialog busy={discarding} onDiscard={() => void discard()}
-                       onKeep={() => setLeaveTo(null)} />
+        <DiscardDialog mode={creating ? 'creating' : 'discard'} busy={discarding}
+                       onConfirm={() => void leave()} onCancel={() => setLeaveTo(null)} />
       )}
     </div>
   );

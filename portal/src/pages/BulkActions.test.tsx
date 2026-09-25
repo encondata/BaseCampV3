@@ -5,11 +5,12 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 const authMock = vi.hoisted(() => ({
   canSites: true, canWorkers: true, canTrucks: true, canInitiatives: true, canAssets: true,
+  denied: new Set<string>(),       // resource:action pairs refused on top of the flags
 }));
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     person: { id: 'me-1', display_name: 'Me' }, roles: ['admin'], maxRank: 60, godMode: false,
-    can: (resource: string) =>
+    can: (resource: string, action = 'view') => !authMock.denied.has(`${resource}:${action}`) &&
       (resource === 'sites' ? authMock.canSites
         : resource === 'workers' ? authMock.canWorkers
         : resource === 'trucks' ? authMock.canTrucks
@@ -25,6 +26,7 @@ afterEach(() => {
   authMock.canTrucks = true;
   authMock.canInitiatives = true;
   authMock.canAssets = true;
+  authMock.denied.clear();
 });
 const { default: BulkActions } = await import('./BulkActions');
 
@@ -115,4 +117,15 @@ it('lists the "Create a move in steps" card and links it to /bulk/new-move', () 
     'The move, its From-To assets, crates, and trucks — reviewed, then created together.')).toBeTruthy();
   fireEvent.click(within(card).getByRole('button', { name: 'Open' }));
   expect(screen.getByText('new move page')).toBeTruthy();
+});
+
+it('hides the "Create a move in steps" card from an admin without trucks:add or containers:add', () => {
+  for (const missing of ['trucks:add', 'containers:add']) {
+    authMock.denied.clear();
+    authMock.denied.add(missing);
+    render(<MemoryRouter><BulkActions /></MemoryRouter>);
+    expect(screen.queryByText('Create a move in steps'), missing).toBeNull();
+    expect(screen.getByText('Add or update sites in bulk')).toBeTruthy();     // others unchanged
+    cleanup();
+  }
 });

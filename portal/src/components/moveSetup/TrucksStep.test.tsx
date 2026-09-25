@@ -19,11 +19,11 @@ const withClashes = (clashes: string[]) => ({
   id: 'd1', previews: { crates: null, trucks: { names: [], clashes, error: null } },
 }) as unknown as MoveSetupDraft;
 
-function Harness({ onNext = vi.fn(), onSkip = vi.fn(async () => {}) }) {
+function Harness({ onNext = vi.fn(), onSkip = vi.fn(async () => {}), skipped = false }) {
   const [value, setValue] = useState<TrucksValue>(initialTrucks(ORIGIN, DESTINATION));
   return <TrucksStep draft={{ id: 'd1' } as MoveSetupDraft} value={value} setValue={setValue}
                      origin={ORIGIN} destination={DESTINATION} onDraft={vi.fn()} onBack={vi.fn()}
-                     onSkip={onSkip} onNext={onNext} />;
+                     onSkip={onSkip} onNext={onNext} skipped={skipped} />;
 }
 
 beforeEach(() => { vi.clearAllMocks(); api.patchMoveSetup.mockResolvedValue(withClashes([])); });
@@ -84,4 +84,16 @@ it('Skip waits out a live save already sent, so the skip lands last', async () =
   expect(onSkip).not.toHaveBeenCalled();
   release(withClashes([]));
   await waitFor(() => expect(onSkip).toHaveBeenCalled());
+});
+
+it('a skipped step never saves on mount, and Next moves on without saving', async () => {
+  const user = userEvent.setup();
+  const onNext = vi.fn();
+  render(<Harness onNext={onNext} skipped />);
+  expect(screen.getByText('This step is skipped. Change any field to include it.')).toBeTruthy();
+  await new Promise((resolve) => { setTimeout(resolve, 600); });   // past the 400 ms save
+  expect(api.patchMoveSetup).not.toHaveBeenCalled();
+  await user.click(screen.getByRole('button', { name: 'Next' }));
+  expect(onNext).toHaveBeenCalled();
+  expect(api.patchMoveSetup).not.toHaveBeenCalled();
 });

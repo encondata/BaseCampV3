@@ -49,6 +49,9 @@ describe('errors', () => {
       .toBe("Use only one run of x's for the number.");
     expect(moveSetupError(new ApiError(422, 'site_not_found'))).toBe('Pick a site from the list.');
     expect(moveSetupError(new ApiError(422, 'unsupported_file'))).toMatch(/csv/);
+    // the wizard locks the type, so its own sentence wins over "Pick a type from the list."
+    expect(moveSetupError(new ApiError(422, 'unknown_initiative_type')))
+      .toBe("Moves can't be created because the Move type is missing.");
     expect(setupReasons(new ApiError(422, 'setup_invalid', { code: 'setup_invalid', reasons: ['Pick a crate type.'] })))
       .toEqual(['Pick a crate type.']);
   });

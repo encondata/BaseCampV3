@@ -8,7 +8,7 @@ import { useMemo, useState } from 'react';
 import type { MoveSetupDraft, StatusValue } from '../../lib/api';
 import { clampTags, tagTotal, TAG_ASSIGNMENT_ORDER, type TagCounts } from '../../lib/bulkContainers';
 import { TAG_TYPES } from '../../labels/tagTypes';
-import { cratesBody, moveSetupError, type CratesValue } from '../../lib/moveSetup';
+import { cratesBody, moveSetupError, SKIPPED_NOTE, type CratesValue } from '../../lib/moveSetup';
 import { CRATE_MAX, namingResult } from '../../lib/namingConvention';
 import ComboBox from '../ComboBox';
 import WizardFooter from '../common/WizardFooter';
@@ -26,6 +26,9 @@ interface Props {
   onBack: () => void;
   onSkip: () => Promise<void>;
   onNext: () => void;
+  /** Skipped earlier and not edited since: no save on mount, and Next moves
+   *  on without saving. Only an edit (the page's setValue) includes it again. */
+  skipped?: boolean;
 }
 
 function trimmedNotice(trimmed: TagCounts): string {
@@ -35,7 +38,7 @@ function trimmedNotice(trimmed: TagCounts): string {
 }
 
 export default function CratesStep({
-  draft, value, setValue, containerTypes, onDraft, onBack, onSkip, onNext,
+  draft, value, setValue, containerTypes, onDraft, onBack, onSkip, onNext, skipped = false,
 }: Props) {
   const { names, error: namingError } = useMemo(() => namingResult(value, CRATE_MAX), [value]);
   const count = names.length;
@@ -46,7 +49,8 @@ export default function CratesStep({
   const tagsFit = tagTotal(value.tags) <= count;
   // live clash check once the rule is happy (tags over the count would be refused)
   const { clashes, checking, saveNow, settle } = useNamesCheck(
-    draft.id, 'crates', namingError || !tagsFit ? null : cratesBody(value), onDraft, setError);
+    draft.id, 'crates', namingError || !tagsFit ? null : cratesBody(value), onDraft, setError,
+    skipped);
   const { skipping, skip } = useSkip(async () => { await settle(); await onSkip(); }, setError);
 
   // never against a count the rule rejects (a cleared field reads as 0 names)
@@ -61,6 +65,7 @@ export default function CratesStep({
   };
 
   const next = async () => {
+    if (skipped) { onNext(); return; }         // still skipped: nothing to save
     if (namingError || typeMissing) return;
     const safe = clampToCount();
     setBusy(true);
@@ -81,6 +86,7 @@ export default function CratesStep({
   return (
     <>
       <section className="bulk-section">
+        {skipped && <p className="set-note">{SKIPPED_NOTE}</p>}
         <p className="eyebrow-sm">Naming</p>
         <NamingConvention idPrefix="crates" noun="crate" max={CRATE_MAX} value={value}
                           onChange={(v) => setValue({ ...value, ...v })}
@@ -105,7 +111,7 @@ export default function CratesStep({
                         onChange={(tags) => { setNotice(''); setValue({ ...value, tags }); }} />
       </section>
       <WizardFooter onBack={onBack} onSkip={skip} onNext={() => void next()}
-                    nextDisabled={!!namingError || typeMissing || clashes.length > 0 || checking}
+                    nextDisabled={!skipped && (!!namingError || typeMissing || clashes.length > 0 || checking)}
                     busy={busy || skipping} error={error} />
     </>
   );

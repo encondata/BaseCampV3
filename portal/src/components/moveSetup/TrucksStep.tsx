@@ -4,7 +4,7 @@
 import { useMemo, useState } from 'react';
 
 import type { MoveSetupDraft, SiteItem } from '../../lib/api';
-import { moveSetupError, trucksBody, type TrucksValue } from '../../lib/moveSetup';
+import { moveSetupError, SKIPPED_NOTE, trucksBody, type TrucksValue } from '../../lib/moveSetup';
 import { namingResult, TRUCK_MAX } from '../../lib/namingConvention';
 import WizardFooter from '../common/WizardFooter';
 import NamingConvention from './NamingConvention';
@@ -21,19 +21,23 @@ interface Props {
   onBack: () => void;
   onSkip: () => Promise<void>;
   onNext: () => void;
+  /** Skipped earlier and not edited since: no save on mount, and Next moves
+   *  on without saving. Only an edit (the page's setValue) includes it again. */
+  skipped?: boolean;
 }
 
 export default function TrucksStep({
-  draft, value, setValue, origin, destination, onDraft, onBack, onSkip, onNext,
+  draft, value, setValue, origin, destination, onDraft, onBack, onSkip, onNext, skipped = false,
 }: Props) {
   const { names, error: namingError } = useMemo(() => namingResult(value, TRUCK_MAX), [value]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const { clashes, checking, saveNow, settle } = useNamesCheck(
-    draft.id, 'trucks', namingError ? null : trucksBody(value), onDraft, setError);
+    draft.id, 'trucks', namingError ? null : trucksBody(value), onDraft, setError, skipped);
   const { skipping, skip } = useSkip(async () => { await settle(); await onSkip(); }, setError);
 
   const next = async () => {
+    if (skipped) { onNext(); return; }         // still skipped: nothing to save
     if (namingError) return;
     setBusy(true);
     setError('');
@@ -50,6 +54,7 @@ export default function TrucksStep({
   return (
     <>
       <section className="bulk-section">
+        {skipped && <p className="set-note">{SKIPPED_NOTE}</p>}
         <p className="eyebrow-sm">Naming</p>
         <NamingConvention idPrefix="trucks" noun="truck" max={TRUCK_MAX} value={value}
                           onChange={setValue} names={names} error={namingError}
@@ -60,7 +65,7 @@ export default function TrucksStep({
         </p>
       </section>
       <WizardFooter onBack={onBack} onSkip={skip} onNext={() => void next()}
-                    nextDisabled={!!namingError || clashes.length > 0 || checking}
+                    nextDisabled={!skipped && (!!namingError || clashes.length > 0 || checking)}
                     busy={busy || skipping} error={error} />
     </>
   );

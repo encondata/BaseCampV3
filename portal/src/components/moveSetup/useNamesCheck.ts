@@ -3,7 +3,9 @@
  *  server can report names already held by non-archived records. Every
  *  save carries a sequence number: a newer save, `saveNow`, `settle`, or
  *  unmounting makes an older response stale, and a stale response is
- *  dropped. */
+ *  dropped. While `paused` (the section was skipped and nothing has been
+ *  edited since) it never saves on its own, so revisiting a skipped step
+ *  can't quietly include it again. */
 import { useEffect, useRef, useState } from 'react';
 
 import {
@@ -19,6 +21,7 @@ type Body<S extends Section> = S extends 'crates' ? MoveSetupCrates : MoveSetupT
 export function useNamesCheck<S extends Section>(
   draftId: string, section: S, body: Body<S> | null,
   onDraft: (draft: MoveSetupDraft) => void, setError: (message: string) => void,
+  paused = false,
 ) {
   const [clashes, setClashes] = useState<string[]>([]);
   const [checking, setChecking] = useState(false);
@@ -42,7 +45,7 @@ export function useNamesCheck<S extends Section>(
   };
 
   useEffect(() => {
-    if (bodyKey === null) { setChecking(false); setClashes([]); return undefined; }
+    if (paused || bodyKey === null) { setChecking(false); setClashes([]); return undefined; }
     const mine = ++seq.current;
     setChecking(true);
     timer.current = setTimeout(() => {
@@ -58,7 +61,7 @@ export function useNamesCheck<S extends Section>(
       });
     }, SAVE_MS);
     return () => clearTimeout(timer.current);
-  }, [bodyKey, draftId, section]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [bodyKey, draftId, section, paused]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // a response landing after the step is gone must not overwrite the page's draft
   useEffect(() => () => { seq.current += 1; }, []);

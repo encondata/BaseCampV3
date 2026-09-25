@@ -6,10 +6,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { MoveSetupDraft, SiteItem, StatusValue } from '../lib/api';
 
+const denied = vi.hoisted(() => new Set<string>());      // resource:action pairs refused
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     person: { id: 'me-1', display_name: 'Me' }, roles: ['admin'], maxRank: 60, godMode: false,
-    can: () => true, preferences: { list_prefs: {} }, updatePreferences: vi.fn(),
+    can: (resource: string, action = 'view') => !denied.has(`${resource}:${action}`),
+    preferences: { list_prefs: {} }, updatePreferences: vi.fn(),
   }),
 }));
 const api = vi.hoisted(() => ({
@@ -17,7 +19,7 @@ const api = vi.hoisted(() => ({
   listInitiativeStatuses: vi.fn(), listInitiativeTypes: vi.fn(), listInitiativeSubTypes: vi.fn(),
   listShippingTypes: vi.fn(), listContainerTypes: vi.fn(),
   getNextInitiativeColor: vi.fn(), createMoveSetup: vi.fn(), patchMoveSetup: vi.fn(),
-  getMoveSetup: vi.fn(), deleteMoveSetup: vi.fn(),
+  getMoveSetup: vi.fn(), deleteMoveSetup: vi.fn(), createMoveFromSetup: vi.fn(),
 }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()), ...api,
@@ -51,8 +53,10 @@ beforeEach(() => {
   api.createMoveSetup.mockResolvedValue(draft());
   api.patchMoveSetup.mockResolvedValue(draft());
   api.deleteMoveSetup.mockResolvedValue(undefined);
+  api.getMoveSetup.mockResolvedValue(draft());
+  api.createMoveFromSetup.mockResolvedValue(draft({ status: 'running', total_rows: 10 }));
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); denied.clear(); });
 
 function mount() {
   return render(
@@ -144,4 +148,127 @@ it('leaving with a draft open asks first, and Discard deletes the draft', async 
   await user.click(await screen.findByRole('button', { name: 'Discard' }));
   expect(await screen.findByText('Initiatives page')).toBeTruthy();
   await waitFor(() => expect(api.deleteMoveSetup).toHaveBeenCalledWith('d1'));
+});
+
+const settle = (ms: number) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+/** Step 1 → Review with every optional step skipped. */
+async function toReview(user: ReturnType<typeof userEvent.setup>) {
+  await heading('Step 1 of 5 · The move');
+  await fillMove(user);
+  await user.click(screen.getByRole('button', { name: 'Next' }));
+  await heading('Step 2 of 5 · From-To assets');
+  await user.click(screen.getByRole('button', { name: 'Skip this step' }));
+  await heading('Step 3 of 5 · Crates');
+  await user.click(screen.getByRole('button', { name: 'Skip this step' }));
+  await heading('Step 4 of 5 · Trucks');
+  await user.click(screen.getByRole('button', { name: 'Skip this step' }));
+  await heading('Step 5 of 5 · Review and create');
+}
+
+async function startCreate(user: ReturnType<typeof userEvent.setup>) {
+  api.getMoveSetup.mockResolvedValue(draft({ status: 'running', total_rows: 10 }));
+  await user.click(screen.getByRole('button', { name: 'Create move' }));
+  await screen.findByRole('button', { name: 'Creating…' });
+}
+
+it('leaving during Create warns it will finish without you, and Leave deletes nothing', async () => {
+  const user = userEvent.setup();
+  mount();
+  await toReview(user);
+  await startCreate(user);
+  await user.click(screen.getByText('Elsewhere'));
+  expect(await screen.findByText(
+    'The move is being created and will finish without you. Leave anyway?')).toBeTruthy();
+  expect(screen.queryByText('Discard this move setup?')).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Stay' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  await user.click(screen.getByText('Elsewhere'));
+  await user.click(await screen.findByRole('button', { name: 'Leave' }));
+  expect(await screen.findByText('Initiatives page')).toBeTruthy();
+  await settle(50);
+  expect(api.deleteMoveSetup).not.toHaveBeenCalled();
+});
+
+it('unmounting while the move is being created deletes nothing; before Create it deletes', async () => {
+  const user = userEvent.setup();
+  const view = mount();
+  await toReview(user);
+  view.unmount();                                  // the back button, before Create
+  expect(api.deleteMoveSetup).toHaveBeenCalledWith('d1', { keepalive: true });
+
+  vi.clearAllMocks();
+  api.patchMoveSetup.mockResolvedValue(draft());
+  api.createMoveSetup.mockResolvedValue(draft());
+  api.createMoveFromSetup.mockResolvedValue(draft({ status: 'running', total_rows: 10 }));
+  const again = mount();
+  await toReview(user);
+  await startCreate(user);
+  again.unmount();                                 // the back button, while running
+  await settle(50);
+  expect(api.deleteMoveSetup).not.toHaveBeenCalled();
+});
+
+it('going Back through a skipped crates step never saves it, and Review still shows Skipped', async () => {
+  const user = userEvent.setup();
+  mount();
+  await heading('Step 1 of 5 · The move');
+  await fillMove(user);
+  await user.click(screen.getByRole('button', { name: 'Next' }));
+  await heading('Step 2 of 5 · From-To assets');
+  await user.click(screen.getByRole('button', { name: 'Skip this step' }));
+  await heading('Step 3 of 5 · Crates');
+  await user.click(screen.getByRole('button', { name: 'Skip this step' }));
+  await heading('Step 4 of 5 · Trucks');
+  await user.click(screen.getByRole('button', { name: 'Skip this step' }));
+  await heading('Step 5 of 5 · Review and create');
+  api.patchMoveSetup.mockClear();
+
+  await user.click(screen.getByRole('button', { name: 'Back' }));
+  await heading('Step 4 of 5 · Trucks');
+  await user.click(screen.getByRole('button', { name: 'Back' }));
+  await heading('Step 3 of 5 · Crates');
+  await settle(600);                               // past the 400 ms auto-save
+  expect(api.patchMoveSetup).not.toHaveBeenCalled();
+  expect(screen.getByText('This step is skipped. Change any field to include it.')).toBeTruthy();
+
+  await user.click(screen.getByRole('button', { name: 'Next' }));      // no edits: still skipped
+  await heading('Step 4 of 5 · Trucks');
+  await user.click(screen.getByRole('button', { name: 'Next' }));
+  await heading('Step 5 of 5 · Review and create');
+  await settle(600);
+  expect(api.patchMoveSetup).not.toHaveBeenCalled();
+  const crates = screen.getByText('Crates', { selector: '.eyebrow-sm' }).closest('section') as HTMLElement;
+  expect(crates.textContent).toContain('Skipped');
+});
+
+it('editing a skipped step includes it again', async () => {
+  const user = userEvent.setup();
+  mount();
+  await heading('Step 1 of 5 · The move');
+  await fillMove(user);
+  await user.click(screen.getByRole('button', { name: 'Next' }));
+  await heading('Step 2 of 5 · From-To assets');
+  await user.click(screen.getByRole('button', { name: 'Skip this step' }));
+  await heading('Step 3 of 5 · Crates');
+  await user.click(screen.getByRole('button', { name: 'Skip this step' }));
+  await heading('Step 4 of 5 · Trucks');
+  await user.click(screen.getByRole('button', { name: 'Back' }));
+  await heading('Step 3 of 5 · Crates');
+  api.patchMoveSetup.mockClear();
+  const convention = screen.getByLabelText('Naming convention');
+  await user.clear(convention);
+  await user.type(convention, 'CRATE-xx');
+  expect(screen.queryByText('This step is skipped. Change any field to include it.')).toBeNull();
+  await waitFor(() => expect(api.patchMoveSetup).toHaveBeenCalledWith(
+    'd1', { crates: expect.objectContaining({ convention: 'CRATE-xx' }) }));
+});
+
+it('says which permissions are missing instead of opening the wizard', async () => {
+  denied.add('containers:add');
+  mount();
+  expect(await screen.findByText(
+    'You need permission to add initiatives, containers, and trucks to create a move here.')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
+  expect(api.listSites).not.toHaveBeenCalled();
 });
