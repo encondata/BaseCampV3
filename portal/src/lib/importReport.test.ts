@@ -78,6 +78,19 @@ describe('Rows sheet', () => {
     ]);
   });
 
+  it('writes truly empty cells for absent optional values, not blank strings', () => {
+    const details: ImportRowDetail[] = [
+      { row: 2, serial_number: 'SN9', status: 'review', message: "Make/Model 'Foo' not found" },
+    ];
+    const { workbook } = build({ results: { summary: {}, details } });
+    const ws = workbook.Sheets.Rows;
+    // Absent, not a blank-string cell: Excel's ISBLANK() reads true.
+    expect(ws.E2).toBeUndefined();
+    expect(ws.F2).toBeUndefined();
+    expect(ws.G2).toBeUndefined();
+    expect(ws.H2).toBeUndefined();
+  });
+
   it('includes every detail row, not only the 500 shown on screen', () => {
     const details: ImportRowDetail[] = Array.from({ length: 1200 }, (_, i) => ({
       row: 1200 - i, serial_number: `SN-${1200 - i}`, status: 'created' as const,
@@ -146,6 +159,43 @@ describe('Rows sheet', () => {
     expect(back.SheetNames).toEqual(['Rows', 'Summary']);
     expect(rowsOf(back)).toEqual(rowsOf(build().workbook));
     expect(xmlOf(bytes, '/xl/worksheets/sheet1.xml')).not.toContain('<pane');
+  });
+
+  it('falls back to a plain, unstyled workbook when styles.xml patches fine '
+    + 'but sheet1.xml does not match', () => {
+    const cfb = XLSX.CFB as unknown as {
+      find: (zip: object, path: string) => { content: Uint8Array; size: number } | null;
+    };
+    const originalFind = cfb.find;
+    const spy = vi.spyOn(cfb, 'find').mockImplementation((zip: object, path: string) => {
+      const entry = originalFind(zip, path);
+      if (path !== '/xl/worksheets/sheet1.xml' || !entry) return entry;
+      // styles.xml patches fine; only sheet1.xml is reshaped so neither the
+      // <sheetView> nor the header <row> regex matches — the shape a future
+      // SheetJS version (or an unanticipated workbook) might produce.
+      const xml = new TextDecoder().decode(entry.content)
+        .replace('<sheetView workbookViewId="0"/>', '<sheetView workbookViewId="0" x="1"/>');
+      const content = new TextEncoder().encode(xml);
+      return { ...entry, content, size: content.length };
+    });
+
+    const bytes = workbookBytes(build().workbook);
+    spy.mockRestore();
+
+    // The whole patch is one unit: a styles.xml change with no matching
+    // sheet1.xml change must not ship as a half-patched file. The result is
+    // the fully unpatched, valid workbook — same as the styles.xml failure.
+    const back = XLSX.read(bytes, { type: 'array' });
+    expect(back.SheetNames).toEqual(['Rows', 'Summary']);
+    expect(rowsOf(back)).toEqual(rowsOf(build().workbook));
+    expect(xmlOf(bytes, '/xl/worksheets/sheet1.xml')).not.toContain('<pane');
+
+    const rawBytes = new Uint8Array(
+      XLSX.write(build().workbook, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer);
+    const originalFontsCount = /<fonts count="(\d+)">/.exec(xmlOf(rawBytes, '/xl/styles.xml'))?.[1];
+    expect(originalFontsCount).toBeDefined();
+    const patchedFontsCount = /<fonts count="(\d+)">/.exec(xmlOf(bytes, '/xl/styles.xml'))?.[1];
+    expect(patchedFontsCount).toBe(originalFontsCount);
   });
 });
 

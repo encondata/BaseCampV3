@@ -20,7 +20,6 @@ import {
   getImportJob, getInitiative, reprocessImportJob,
   type ImportJobOut, type InitiativeDetail,
 } from '../lib/api';
-import { buildImportReport, downloadImportReport } from '../lib/importReport';
 import {
   countDetails, etaSeconds, IMPORT_ERRORS, importErrorMessage, jobIsActive,
   rowsPerSecond, type SpeedSample,
@@ -267,11 +266,14 @@ export default function ImportMoveAssets() {
                       </p>
                       <span className="imp-missing-actions">
                         <button type="button" className="mini-btn"
-                                onClick={() => downloadImportReport(buildImportReport({
-                                  job,
-                                  moveName: initiative?.name ?? '',
-                                  generatedBy: person?.display_name ?? '',
-                                }))}>
+                                onClick={async () => {
+                                  const m = await import('../lib/importReport');
+                                  m.downloadImportReport(m.buildImportReport({
+                                    job,
+                                    moveName: initiative?.name ?? '',
+                                    generatedBy: person?.display_name ?? '',
+                                  }));
+                                }}>
                           Download report (.xlsx)
                         </button>
                         {job.phase === 'validate' && (

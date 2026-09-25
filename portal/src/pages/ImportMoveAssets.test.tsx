@@ -258,7 +258,7 @@ it('downloads the report under the move name and today\'s local date', async () 
   vi.setSystemTime(new Date(2026, 8, 25, 9, 30));
   await userEvent.click(button);
 
-  expect(report.downloadImportReport).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(report.downloadImportReport).toHaveBeenCalledTimes(1));
   const file = report.downloadImportReport.mock.calls[0][0] as ImportReportFile;
   expect(file.filename).toBe('nap11-move-from-to-import-2026-09-25.xlsx');
   const summary = XLSX.utils.sheet_to_json<[string, string | number]>(

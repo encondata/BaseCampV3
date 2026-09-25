@@ -22,7 +22,7 @@ export interface ImportReportFile {
   workbook: XLSX.WorkBook;
 }
 
-type Cell = string | number;
+type Cell = string | number | null;
 
 export const REPORT_HEADERS: Cell[] = [
   'Row', 'Serial', 'Result', 'Message', 'Make / model', 'Matched by',
@@ -61,22 +61,28 @@ export function moveSlug(name: string): string {
   return slug || 'move';
 }
 
-function yesNo(v: boolean | null | undefined): string {
-  if (v === null || v === undefined) return '';
+function yesNo(v: boolean | null | undefined): string | null {
+  if (v === null || v === undefined) return null;
   return v ? 'Yes' : 'No';
 }
 
-/** One width per column: the longest value in it, capped at 60 characters. */
+/** One width per column: the longest value in it, capped at 60 characters.
+ *  A `null` cell (written as truly absent, see `sheetOf`) counts as length 0. */
 function fitColumns(rows: Cell[][]): XLSX.ColInfo[] {
   const widths: number[] = [];
   for (const row of rows) {
-    row.forEach((v, i) => { widths[i] = Math.max(widths[i] ?? 0, String(v).length); });
+    row.forEach((v, i) => {
+      widths[i] = Math.max(widths[i] ?? 0, v === null ? 0 : String(v).length);
+    });
   }
   return widths.map((w) => ({ wch: Math.min(MAX_COLUMN_WIDTH, w) }));
 }
 
+// `sheetStubs: false` (SheetJS 0.20.3's default, named here for clarity) is
+// what makes a `null` array-of-arrays value write no cell at all, rather
+// than a stub "z" (blank) cell — so ISBLANK() reads true for it in Excel.
 function sheetOf(rows: Cell[][]): XLSX.WorkSheet {
-  const sheet = XLSX.utils.aoa_to_sheet(rows);
+  const sheet = XLSX.utils.aoa_to_sheet(rows, { sheetStubs: false });
   sheet['!cols'] = fitColumns(rows);
   return sheet;
 }
@@ -101,8 +107,8 @@ export function buildImportReport(input: ImportReportInput): ImportReportFile {
       d.serial_number ?? '',
       RESULT_LABELS[d.status] ?? d.status,
       d.message ?? '',
-      d.make_model_final ?? '',
-      d.match_method ?? '',
+      d.make_model_final ?? null,
+      d.match_method ?? null,
       yesNo(d.asset_created),
       yesNo(d.serial_generated),
     ]),
