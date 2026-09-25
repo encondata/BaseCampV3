@@ -180,6 +180,62 @@ async def test_an_exact_repeat_is_skipped_as_already_there(client, db, seeded_us
     assert len(await imported(db)) == 1
 
 
+def one_day(day: int) -> dict:
+    return {"rows": [{"worker": "Ana Lopez", "clock_in": f"6/{day}/2026 7:00 AM",
+                      "clock_out": f"6/{day}/2026 3:30 PM"}]}
+
+
+async def time_audits(db) -> list[AuditLog]:
+    return list(await db.scalars(select(AuditLog).where(AuditLog.entity_type == "time_entry")))
+
+
+async def test_a_second_commit_of_the_same_file_has_nothing_to_add(
+        client, db, seeded_user, admin_hdrs):
+    await worker(db, "Ana", "Lopez")
+    first = await client.post(f"{BASE}/commit", headers=admin_hdrs, json=two_days())
+    assert first.status_code == 200, first.text
+    again = await client.post(f"{BASE}/commit", headers=admin_hdrs, json=two_days())
+    assert again.status_code == 422
+    assert again.json()["detail"] == {
+        "code": "nothing_to_add",
+        "message": "Every shift in this file is already there or was skipped."}
+    assert len(await imported(db)) == 2
+    assert sorted(a.action for a in await time_audits(db)) == [
+        "bulk_import", "import", "import"]
+
+
+async def test_the_source_label_is_a_trimmed_capped_string(client, db, seeded_user, admin_hdrs):
+    await worker(db, "Ana", "Lopez")
+    for day, source in ((1, "  " + "x" * 300 + "  "), (2, 123), (3, "   "), (4, None)):
+        resp = await client.post(f"{BASE}/commit", headers=admin_hdrs,
+                                 json={**one_day(day), "source": source})
+        assert resp.status_code == 200, resp.text
+    summaries = sorted((a for a in await time_audits(db) if a.action == "bulk_import"),
+                       key=lambda a: a.at)
+    assert [a.changes["source"] for a in summaries] == ["x" * 255] + ["upload"] * 3
+
+
+async def test_a_commit_that_cannot_get_the_lock_is_busy(
+        client, db, seeded_user, admin_hdrs, monkeypatch):
+    await worker(db, "Ana", "Lopez")
+    monkeypatch.setattr(time_bulk, "LOCK_TIMEOUT", "200ms")
+    # another writer (a kiosk punch, an edit) is mid-transaction on the table
+    async with get_sessionmaker()() as other:
+        await other.execute(text("LOCK TABLE time_entries IN ROW EXCLUSIVE MODE"))
+        resp = await client.post(f"{BASE}/commit", headers=admin_hdrs, json=two_days())
+        await other.rollback()
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == {
+        "code": "busy",
+        "message": "Time entries are being changed right now. Try again in a moment."}
+    assert await imported(db) == []
+    assert await time_audits(db) == []
+    # once the writer is done, the same commit goes through
+    retry = await client.post(f"{BASE}/commit", headers=admin_hdrs, json=two_days())
+    assert retry.status_code == 200, retry.text
+    assert retry.json()["summary"] == {"added": 2, "skipped": 0}
+
+
 async def test_bad_bodies_are_422(client, db, seeded_user, admin_hdrs):
     for body, code in (
         ({"rows": [{"worker": "X"}], "row_numbers": [1, 2]}, "invalid_row_numbers"),

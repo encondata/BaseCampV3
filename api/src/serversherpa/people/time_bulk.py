@@ -26,6 +26,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Initiative, Person, Site, TimeEntry
@@ -42,8 +43,12 @@ FIELDS = ("worker", "job", "site")
 MAX_ROWS = 5000
 MAX_BYTES = 5 * 1024 * 1024
 MAX_SHIFT = timedelta(hours=24)
+# How long the commit waits for the time_entries table lock before it gives
+# up with TimeImportBusy. A literal for SET LOCAL (it takes no bind params).
+LOCK_TIMEOUT = "5s"
 # A row names at most this many other rows of the file it overlaps.
 OVERLAP_NAMES = 3
+NOTHING_TO_ADD = "Every shift in this file is already there or was skipped."
 # The preview lists problems first.
 ACTION_ORDER = ("attention", "error", "add", "duplicate", "skipped")
 SAMPLE_ROWS: list[dict] = [
@@ -388,6 +393,30 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
 
 # ── commit ──────────────────────────────────────────────────────────
 
+class TimeImportBusy(Exception):
+    """The commit could not get the time_entries lock within LOCK_TIMEOUT."""
+
+
+_LOCK_NOT_AVAILABLE = "55P03"   # SQLSTATE lock_not_available
+
+
+async def _lock_time_entries(db: AsyncSession) -> None:
+    """LOCK TABLE, waiting at most LOCK_TIMEOUT. asyncpg's
+    LockNotAvailableError reaches us as a plain DBAPIError whose `orig`
+    carries the SQLSTATE; on it the transaction is rolled back and
+    TimeImportBusy raised. The timeout is SET LOCAL and reset once the lock
+    is held, so it covers only the wait for this lock."""
+    await db.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'"))
+    try:
+        await db.execute(text("LOCK TABLE time_entries IN SHARE ROW EXCLUSIVE MODE"))
+    except DBAPIError as exc:
+        await db.rollback()
+        if getattr(exc.orig, "sqlstate", None) == _LOCK_NOT_AVAILABLE:
+            raise TimeImportBusy from None
+        raise
+    await db.execute(text("SET LOCAL lock_timeout TO DEFAULT"))
+
+
 async def commit_rows(db: AsyncSession, actor_id: uuid.UUID,
                       numbered: list[tuple[int, dict]], *,
                       overrides: dict[int, dict[str, str]], skip: set[int],
@@ -401,17 +430,26 @@ async def commit_rows(db: AsyncSession, actor_id: uuid.UUID,
     do: SELECT … FOR UPDATE on the workers' entries cannot stop a concurrent
     INSERT of a new, overlapping one.
 
+    It waits at most LOCK_TIMEOUT for that lock. A writer that holds on
+    longer (a long edit, another import) makes the commit give up with
+    TimeImportBusy, nothing written, rather than queue behind it while every
+    kiosk punch queues behind the commit.
+
     Then it re-runs the preview with the same picks and skips, and refuses
-    (rows_invalid, nothing written) unless the result can be committed. This
-    is where a shift punched at a kiosk since the preview becomes an overlap
-    error naming its row. Each `add` row becomes one pending `import` entry
-    with its own audit row, plus one bulk_import summary row."""
-    await db.execute(text("LOCK TABLE time_entries IN SHARE ROW EXCLUSIVE MODE"))
+    (nothing written) unless the result can be committed: rows_invalid with
+    the attention and error rows, or nothing_to_add when every row is a
+    duplicate or skipped. This is where a shift punched at a kiosk since the
+    preview becomes an overlap error naming its row. Each `add` row becomes
+    one pending `import` entry with its own audit row, plus one bulk_import
+    summary row."""
+    await _lock_time_entries(db)
     preview = await preview_rows(db, numbered, overrides=overrides, skip=skip, now=now)
     if not preview["can_commit"]:
         await db.rollback()
-        raise BulkImportError("rows_invalid", rows=[
-            r for r in preview["rows"] if r["action"] in ("attention", "error")])
+        problems = [r for r in preview["rows"] if r["action"] in ("attention", "error")]
+        if not problems:
+            raise BulkImportError("nothing_to_add", message=NOTHING_TO_ADD)
+        raise BulkImportError("rows_invalid", rows=problems)
     applied: list[dict] = []
     added = skipped = 0
     for r in sorted(preview["rows"], key=lambda r: r["row"]):

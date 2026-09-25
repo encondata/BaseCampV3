@@ -12,10 +12,20 @@ from serversherpa.people import time_bulk
 router = APIRouter(prefix="/time/bulk", tags=["time"])
 
 _XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_BUSY = "Time entries are being changed right now. Try again in a moment."
+SOURCE_MAX = 255
 
 
 def _err(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
+
+
+def _source_label(raw: object) -> str:
+    """The bulk_import audit's `source`: the client's label (the file name)
+    when it is a non-blank string, trimmed and cut to SOURCE_MAX
+    characters; otherwise "upload"."""
+    label = raw.strip()[:SOURCE_MAX].rstrip() if isinstance(raw, str) else ""
+    return label or "upload"
 
 
 def _attachment(filename: str) -> dict[str, str]:
@@ -84,6 +94,8 @@ async def time_bulk_commit(
     try:
         return await time_bulk.commit_rows(
             db, actor.person.id, numbered, overrides=overrides, skip=skip,
-            source_label=str(body.get("source") or "upload"))
+            source_label=_source_label(body.get("source")))
+    except time_bulk.TimeImportBusy:
+        raise _err(409, "busy", message=_BUSY) from None
     except BulkImportError as exc:
         raise bulk_http_error(exc) from None
