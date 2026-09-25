@@ -5,37 +5,47 @@
  *      gate on the API side, so it renders regardless of `can('time')`).
  *   2. My recent entries — everyone; the caller's own last few punches.
  *   3. On the clock now — `can('time')`; who's currently clocked in.
- *   4. Timesheet — `can('time')`; the full directory-list of entries with
- *      approve/reject/edit.
+ *   4. Timesheet — `can('time')`; server-side person / job / site / day
+ *      filters, the directory-list of entries with approve/reject/edit, and
+ *      (with `time:change`) checkboxes on pending rows plus bulk Approve /
+ *      Reject / Approve all pending in this view.
  * TimeEntryEditModal (components/time/) is both the create-entry form and
  * the approve/reject surface for a pending row.
  */
 
 import {
-  useEffect, useMemo, useState, type CSSProperties,
+  useEffect, useMemo, useRef, useState, type CSSProperties,
 } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
+import DataTable from '../components/DataTable';
 import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
 import StatusHover from '../components/StatusHover';
+import TimeBulkDialog from '../components/time/TimeBulkDialog';
 import TimeEntryEditModal, { mapTimeError } from '../components/time/TimeEntryEditModal';
 import {
   ApiError,
   approveTimeEntry,
+  bulkApproveTimeEntries,
+  bulkRejectTimeEntries,
   clockIn as clockInRequest,
   clockOut as clockOutRequest,
+  countBulkApproveTimeEntries,
   getMyTime,
   getPunchOptions,
   listActiveTimeEntries,
+  listInitiatives,
   listTimeEntries,
   listWorkerOptions,
   type PunchOption,
+  type TimeBulkFilter,
+  type TimeBulkSkip,
   type TimeEntryItem,
   type WorkerOption,
 } from '../lib/api';
 import {
-  ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
+  activeFilterCount, ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState,
 } from '../lib/columnMenu';
 import {
@@ -44,6 +54,10 @@ import {
 } from '../lib/listTools';
 import { naturalCompare } from '../lib/sites';
 import { elapsedSince, formatMinutes } from '../lib/timeFormat';
+import {
+  bulkFilter, bulkResultText, hasFilter, listQuery, NO_FILTER, timeSourceLabel,
+  type TimesheetFilter,
+} from '../lib/timeBulk';
 import { VirtualRows } from '../lib/virtualRows';
 import '../styles/directory.css';
 import '../styles/profile.css';
@@ -70,6 +84,10 @@ const TIMESHEET_COLUMNS: ColumnDef[] = [
 ];
 const ALL_COLUMN_KEYS = new Set<string>(TIMESHEET_COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set<string>(TIMESHEET_COLUMNS.filter((c) => c.default).map((c) => c.key));
+// The leading selection checkbox (time:change only): a fixed track outside
+// the column registry, folded into a ColumnDef so listGridStyle's minWidth
+// counts it (PrintAssetList.tsx's CHECKBOX_COL).
+const CHECKBOX_COL: ColumnDef = { key: 'select', label: '', width: '32px', default: true };
 
 const STATUS_PILLS: { key: string; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -100,7 +118,7 @@ function timeEntryCellText(e: TimeEntryItem, key: string): string {
     case 'break': return formatMinutes(e.break_minutes);
     case 'initiative': return e.initiative_name ?? '';
     case 'site': return e.site_name ?? '';
-    case 'source': return e.source;
+    case 'source': return timeSourceLabel(e.source);
     case 'adjusted': return e.adjusted ? 'Yes' : 'No';
     case 'status': return e.status_label;
     case 'approved_by': return e.approved_by_name ?? '';
@@ -121,7 +139,7 @@ function statusChip(label: string, color: string) {
 }
 
 export default function TimeManagement() {
-  const { can, preferences } = useAuth();
+  const { can, preferences, person: me } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
   const canView = can('time');
   const canAdd = can('time', 'add');
@@ -132,12 +150,21 @@ export default function TimeManagement() {
     { initiatives: [], sites: [] },
   );
   const [workers, setWorkers] = useState<WorkerOption[]>([]);
+  // GET /workers needs workers:view, which a time:view holder may lack; the
+  // Person filter then says so instead of opening empty.
+  const [workersFailed, setWorkersFailed] = useState(false);
   const [activeEntries, setActiveEntries] = useState<TimeEntryItem[] | null>(null);
   const [timesheet, setTimesheet] = useState<TimeEntryItem[] | null>(null);
   const [timesheetError, setTimesheetError] = useState('');
   // Declared here (rather than down with the rest of the timesheet-list
   // state) because the load effects below need it to refetch on pill change.
   const [statusPill, setStatusPill] = useState('all');
+  // Server-side filters (person / job / site / clock-in days). Declared up
+  // here with statusPill for the same reason: the load effect's deps read it.
+  // They also scope "Approve all pending in this view".
+  const [serverFilter, setServerFilter] = useState<TimesheetFilter>(NO_FILTER);
+  const [jobOptions, setJobOptions] = useState<PunchOption[]>([]);
+  const listSeq = useRef(0);
 
   // ── live elapsed ticking (block 1's open span, block 3's since-times) ──
   const [, setTick] = useState(0);
@@ -163,12 +190,18 @@ export default function TimeManagement() {
   // A specific status pill filters server-side (refetch on pill change) so
   // the 500-row cap applies per-status instead of truncating the whole
   // timesheet before the pill even gets a look; 'All' fetches unfiltered
-  // and relies on the client-side pill/column/search filtering below.
-  const loadTimesheet = async (status: string) => {
+  // and relies on the client-side pill/column/search filtering below. The
+  // person / job / site / day filters always apply server-side. A newer
+  // load wins over an older one that answers late.
+  const loadTimesheet = async (status: string, scope: TimesheetFilter) => {
+    const mine = ++listSeq.current;
     try {
-      setTimesheet(await listTimeEntries(status === 'all' ? {} : { status }));
+      const rows = await listTimeEntries(listQuery(status, scope));
+      if (mine !== listSeq.current) return;
+      setTimesheet(rows);
       setTimesheetError('');
     } catch (err) {
+      if (mine !== listSeq.current) return;
       setTimesheet([]);
       setTimesheetError(err instanceof ApiError && err.status === 403
         ? 'You do not have permission to view the timesheet.' : 'Failed to load time entries.');
@@ -189,20 +222,33 @@ export default function TimeManagement() {
 
   useEffect(() => {
     if (!canView) return;
-    void loadTimesheet(statusPill);
+    void loadTimesheet(statusPill, serverFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canView, statusPill]);
+  }, [canView, statusPill, serverFilter]);
 
+  // The Person filter needs the worker list too, not only Add entry.
   useEffect(() => {
-    if (!canAdd) return;
-    void listWorkerOptions().then(setWorkers).catch(() => {});
-  }, [canAdd]);
+    if (!canView && !canAdd) return;
+    listWorkerOptions()
+      .then((list) => { setWorkers(list); setWorkersFailed(false); })
+      .catch(() => setWorkersFailed(true));
+  }, [canView, canAdd]);
+
+  // Job filter: every non-archived job (punch options only carry open
+  // ones); falls back to the punch options when the list cannot load.
+  useEffect(() => {
+    if (!canView) return;
+    listInitiatives()
+      .then((all) => setJobOptions(all.filter((j) => !j.archived_at)
+        .map((j) => ({ id: j.id, name: j.name }))))
+      .catch(() => setJobOptions([]));
+  }, [canView]);
 
   const refreshAll = async () => {
     await loadMyTime();
     if (canView) {
       await loadActive();
-      await loadTimesheet(statusPill);
+      await loadTimesheet(statusPill, serverFilter);
     }
   };
 
@@ -268,6 +314,18 @@ export default function TimeManagement() {
   // and renders as its own dismissible line above the list.
   const [actionError, setActionError] = useState('');
 
+  // ── bulk approval (time:change) ──
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  // approve-all carries the filter it counted, stamped with the count's as_of.
+  const [dialog, setDialog] = useState<
+    { mode: 'reject'; count: number } | { mode: 'approve-all'; count: number; filter: TimeBulkFilter }
+    | null>(null);
+  const [dialogError, setDialogError] = useState('');
+  const [bulkResult, setBulkResult] = useState<{ text: string; skipped: TimeBulkSkip[] } | null>(null);
+  const [showSkipped, setShowSkipped] = useState(false);
+  const headerBoxRef = useRef<HTMLInputElement>(null);
+
   const {
     visibleCols, setVisibleCols,
     sortKey, sortDir, setSort, toggleSort,
@@ -286,7 +344,8 @@ export default function TimeManagement() {
   // The trailing track holds one RowActionsMenu trigger instead of the old
   // Approve + Reject + Edit strip; 88px is the width the other converted
   // lists give that trigger (Warehouse.tsx, InitiativeDetail.tsx).
-  const grid = listGridStyle(shownCols, canChange ? ['88px'] : [], undefined, listGridScale);
+  const grid = listGridStyle(canChange ? [CHECKBOX_COL, ...shownCols] : shownCols,
+    canChange ? ['88px'] : [], undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const haystack = useSearchHaystacks(timesheet, (e: TimeEntryItem) =>
@@ -315,6 +374,113 @@ export default function TimeManagement() {
       return naturalCompare(timeEntryCellText(a, sortKey), timeEntryCellText(b, sortKey)) * sortDir;
     });
   }, [timesheet, filters, query, statusPill, sortKey, sortDir, haystack]);
+
+  // The rows that get a checkbox: pending, and not the viewer's own (the
+  // API skips those as "your own entry", so selecting one only ends in a skip).
+  const meId = me?.id;
+  const selectable = (e: TimeEntryItem) => e.status === 'pending' && e.person_id !== meId;
+  const pendingShown = useMemo(
+    () => visibleEntries.filter((e) => e.status === 'pending' && e.person_id !== meId)
+      .map((e) => e.id),
+    [visibleEntries, meId]);
+
+  // Selection stays in sync with what's visible: prune `selected` down to
+  // the pending ids currently shown whenever that set changes — a reload
+  // (approved/rejected elsewhere), a search, a column filter, or the status
+  // pill. Without this, a row hidden by search or a column filter stayed
+  // selected, so the "N selected" chip and Approve/Reject selected still
+  // counted and acted on an entry the user could no longer see — this is a
+  // payroll action, so the header checkbox, the chip, and the ids sent must
+  // always agree with what is on screen.
+  useEffect(() => {
+    const pending = new Set(pendingShown);
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => pending.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [pendingShown]);
+
+  const selectedShown = pendingShown.filter((id) => selected.has(id)).length;
+  const allSelected = pendingShown.length > 0 && selectedShown === pendingShown.length;
+  const someSelected = selectedShown > 0 && !allSelected;
+  useEffect(() => {
+    if (headerBoxRef.current) headerBoxRef.current.indeterminate = someSelected;
+  }, [someSelected]);
+  const toggleOne = (id: string) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+  // Print Labels' rule: select-all REPLACES the selection with the pending
+  // rows shown; unchecking it clears the selection.
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(pendingShown));
+
+  // Column filters and search narrow only the LOADED rows; the approve-all
+  // filter cannot carry them, so the button waits until they are cleared.
+  const clientNarrowed = query.trim() !== '' || activeFilterCount(filters) > 0;
+  const showApproveAll = canChange && (statusPill === 'all' || statusPill === 'pending')
+    && !!timesheet && (timesheet.some((e) => e.status === 'pending') || timesheet.length === 500);
+
+  const finishBulk = async (text: string, skipped: TimeBulkSkip[]) => {
+    setDialog(null);
+    setBulkResult({ text, skipped });
+    setShowSkipped(false);
+    setSelected(new Set());
+    await refreshAll();
+  };
+
+  const approveSelected = async () => {
+    setBulkBusy(true);
+    setActionError('');
+    try {
+      const res = await bulkApproveTimeEntries({ entry_ids: [...selected].sort() });
+      await finishBulk(bulkResultText('Approved', res.approved, res.skipped), res.skipped);
+    } catch (err) {
+      setActionError(mapTimeError(err, 'Could not approve. Try again.'));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const startApproveAll = async () => {
+    setBulkBusy(true);
+    setActionError('');
+    try {
+      const filter = bulkFilter(serverFilter);
+      const { count, as_of } = await countBulkApproveTimeEntries({ filter });
+      if (count === 0) {
+        setBulkResult({ text: 'No pending entries that you can approve match these filters.', skipped: [] });
+        setShowSkipped(false);
+      } else {
+        setDialogError('');
+        setDialog({ mode: 'approve-all', count, filter: { ...filter, as_of } });
+      }
+    } catch (err) {
+      setActionError(mapTimeError(err, 'Could not count the pending entries. Try again.'));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const confirmDialog = async (reason: string) => {
+    if (!dialog) return;
+    setBulkBusy(true);
+    setDialogError('');
+    try {
+      if (dialog.mode === 'reject') {
+        const res = await bulkRejectTimeEntries([...selected].sort(), reason);
+        await finishBulk(bulkResultText('Rejected', res.rejected, res.skipped), res.skipped);
+      } else {
+        const res = await bulkApproveTimeEntries({ filter: dialog.filter });
+        await finishBulk(bulkResultText('Approved', res.approved, res.skipped), res.skipped);
+      }
+    } catch (err) {
+      setDialogError(mapTimeError(err, 'That did not work. Try again.'));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   const doApproveRow = async (id: string) => {
     setRowBusyId(id);
@@ -362,7 +528,7 @@ export default function TimeManagement() {
         return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
       }
       case 'source': {
-        const text = e.source.charAt(0).toUpperCase() + e.source.slice(1);
+        const text = timeSourceLabel(e.source);
         return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
       }
       default: {
@@ -535,6 +701,75 @@ export default function TimeManagement() {
             </div>
           </div>
 
+          <div className="dir-toolbar audit-toolbar time-filters" role="group"
+               aria-label="Timesheet filters">
+            <div className="time-filter-pick">
+              {workersFailed ? (
+                <span className="set-note">The person list could not be loaded.</span>
+              ) : (
+                <ComboBox ariaLabel="Person" placeholder="Any person…" clearable
+                          value={serverFilter.person_id}
+                          options={workers.map((w) => ({ value: w.person_id, label: w.display_name }))}
+                          onChange={(v) => setServerFilter((f) => ({ ...f, person_id: v }))} />
+              )}
+            </div>
+            <div className="time-filter-pick">
+              <ComboBox ariaLabel="Job" placeholder="Any job…" clearable
+                        value={serverFilter.initiative_id}
+                        options={(jobOptions.length ? jobOptions : punchOptions.initiatives)
+                          .map((j) => ({ value: j.id, label: j.name }))}
+                        onChange={(v) => setServerFilter((f) => ({ ...f, initiative_id: v }))} />
+            </div>
+            <div className="time-filter-pick">
+              <ComboBox ariaLabel="Site" placeholder="Any site…" clearable
+                        value={serverFilter.site_id}
+                        options={punchOptions.sites.map((s) => ({ value: s.id, label: s.name }))}
+                        onChange={(v) => setServerFilter((f) => ({ ...f, site_id: v }))} />
+            </div>
+            <input type="date" aria-label="From date" value={serverFilter.from}
+                   onChange={(e) => setServerFilter((f) => ({ ...f, from: e.target.value }))} />
+            <input type="date" aria-label="To date" value={serverFilter.to}
+                   onChange={(e) => setServerFilter((f) => ({ ...f, to: e.target.value }))} />
+            {hasFilter(serverFilter) && (
+              <button type="button" className="mini-btn" onClick={() => setServerFilter(NO_FILTER)}>
+                Clear filters
+              </button>
+            )}
+          </div>
+
+          {canChange && (selected.size > 0 || showApproveAll) && (
+            <div className="dir-toolbar time-bulk-bar" role="group" aria-label="Bulk actions">
+              {selected.size > 0 && (
+                <>
+                  <span className="chip tag">{selected.size} selected</span>
+                  <button type="button" className="btn-solid" disabled={bulkBusy}
+                          onClick={() => void approveSelected()}>
+                    Approve selected
+                  </button>
+                  <button type="button" className="mini-btn" disabled={bulkBusy}
+                          onClick={() => { setDialogError(''); setDialog({ mode: 'reject', count: selected.size }); }}>
+                    Reject selected
+                  </button>
+                </>
+              )}
+              {showApproveAll && (
+                <div className="toolbar-right">
+                  <button type="button" className="mini-btn" disabled={bulkBusy || clientNarrowed}
+                          aria-describedby={clientNarrowed ? 'time-approve-all-note' : undefined}
+                          onClick={() => void startApproveAll()}>
+                    Approve all pending in this view
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {showApproveAll && clientNarrowed && (
+            <p id="time-approve-all-note" className="set-note">
+              Column filters and search narrow only the loaded rows. Clear them to approve everything
+              that matches the filters above.
+            </p>
+          )}
+
           {timesheetError && (
             <div className="dir-empty" style={{ marginBottom: 12 }}>
               <b>Cannot load timesheet</b>{timesheetError}
@@ -550,6 +785,35 @@ export default function TimeManagement() {
             </div>
           )}
 
+          {bulkResult && (
+            <div className="time-bulk-result">
+              <p className="set-note">{bulkResult.text}</p>
+              {bulkResult.skipped.length > 0 && (
+                <button type="button" className="mini-btn sm" aria-expanded={showSkipped}
+                        onClick={() => setShowSkipped((s) => !s)}>
+                  {showSkipped ? 'Hide skipped' : 'Show skipped'}
+                </button>
+              )}
+              <button type="button" className="mini-btn sm" onClick={() => setBulkResult(null)}>
+                Dismiss
+              </button>
+            </div>
+          )}
+          {bulkResult && showSkipped && (
+            <DataTable
+              ariaLabel="Skipped entries"
+              columns={[
+                { key: 'person', label: 'Person' },
+                { key: 'date', label: 'Date', mono: true },
+                { key: 'reason', label: 'Reason' },
+              ]}
+              rows={bulkResult.skipped.map((s, i) => ({
+                key: `${s.entry_id}-${i}`,
+                cells: [s.person ?? '—', s.date ? fmtDate(s.date) : '—', s.reason],
+              }))}
+            />
+          )}
+
           {!timesheetError && timesheet !== null && timesheet.length === 500 && (
             <p className="page-hint">
               Showing the newest 500 entries — use filters to narrow.
@@ -559,6 +823,13 @@ export default function TimeManagement() {
           {!timesheetError && (
             <div className="dir-list list-scroll">
               <div className="list-head" style={rowStyle}>
+                {canChange && (
+                  <span className="col-head">
+                    <input type="checkbox" ref={headerBoxRef} checked={allSelected}
+                           disabled={pendingShown.length === 0}
+                           aria-label="Select all pending entries shown" onChange={toggleAll} />
+                  </span>
+                )}
                 {shownCols.map((c) => (
                   <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
                            onToggleSort={() => toggleSort(c.key)}
@@ -587,6 +858,15 @@ export default function TimeManagement() {
                   <div key={e.id} className="dir-row" {...vp}
                        style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
                     <div className="row-main time-row-static" style={rowStyle}>
+                      {canChange && (
+                        <div className="cell">
+                          {selectable(e) && (
+                            <input type="checkbox" checked={selected.has(e.id)}
+                                   aria-label={`Select ${e.person_name}, ${fmtDate(e.clock_in_at)}`}
+                                   onChange={() => toggleOne(e.id)} />
+                          )}
+                        </div>
+                      )}
                       {shownCols.map((c) => (
                         <div className="cell" key={c.key}>{cellFor(e, c.key)}</div>
                       ))}
@@ -638,6 +918,10 @@ export default function TimeManagement() {
           onClose={() => setModal(null)}
           onSaved={refreshAll}
         />
+      )}
+      {dialog && (
+        <TimeBulkDialog mode={dialog.mode} count={dialog.count} busy={bulkBusy} error={dialogError}
+                        onCancel={() => setDialog(null)} onConfirm={(reason) => void confirmDialog(reason)} />
       )}
     </div>
   );

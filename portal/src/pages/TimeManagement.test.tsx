@@ -11,12 +11,13 @@
  * lib/api mocks, fixtures at module scope).
  */
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import type { TimeEntryItem, UiPreferences } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
+import { dayStartIso } from '../lib/timeBulk';
 
 const auth = vi.hoisted(() => ({ can: (_r: string, _a?: string): boolean => true }));
 vi.mock('../auth/AuthContext', () => ({
@@ -38,6 +39,7 @@ const api = vi.hoisted(() => ({
   listActiveTimeEntries: vi.fn(),
   listTimeEntries: vi.fn(),
   listWorkerOptions: vi.fn(),
+  listInitiatives: vi.fn(),
   approveTimeEntry: vi.fn(),
   rejectTimeEntry: vi.fn(),
   updateTimeEntry: vi.fn(),
@@ -77,6 +79,7 @@ beforeEach(() => {
   api.listActiveTimeEntries.mockResolvedValue([]);
   api.listTimeEntries.mockResolvedValue([PENDING, APPROVED]);
   api.listWorkerOptions.mockResolvedValue([]);
+  api.listInitiatives.mockResolvedValue([]);
   api.approveTimeEntry.mockResolvedValue(APPROVED);
 });
 
@@ -180,7 +183,8 @@ it('timesheet: column floors, shared template + minimum, sideways-scroll card', 
   expect(card.classList.contains('list-scroll')).toBe(true);
   const head = card.querySelector('.list-head') as HTMLElement;
   const main = row.querySelector('.row-main') as HTMLElement;
-  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  // time:change adds the 32px selection track in front of the columns
+  expect(head.style.gridTemplateColumns).toMatch(/^32px minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
@@ -205,4 +209,32 @@ it('timesheet row: no trigger without can(time, change)', async () => {
   expect(within(row).queryByRole('button', { name: /Actions/ })).toBeNull();
   const main = row.querySelector('.row-main') as HTMLElement;
   expect(main.style.gridTemplateColumns.endsWith('88px')).toBe(false);
+});
+
+it('timesheet filters: a person and a From day refetch the list server-side, Clear filters resets', async () => {
+  api.listWorkerOptions.mockResolvedValue([{ person_id: 'p7', display_name: 'Wes Worker' }]);
+  render(<TimeManagement />);
+  await screen.findByText('Alice Tech');
+  expect(api.listTimeEntries).toHaveBeenLastCalledWith({});
+
+  fireEvent.focus(screen.getByLabelText('Person', { selector: 'input' }));
+  fireEvent.mouseDown(await screen.findByText('Wes Worker'));
+  await waitFor(() => expect(api.listTimeEntries).toHaveBeenLastCalledWith({ person_id: 'p7' }));
+
+  fireEvent.change(screen.getByLabelText('From date'), { target: { value: '2026-09-01' } });
+  await waitFor(() => expect(api.listTimeEntries).toHaveBeenLastCalledWith({
+    person_id: 'p7', since: dayStartIso('2026-09-01'),
+  }));
+
+  fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+  await waitFor(() => expect(api.listTimeEntries).toHaveBeenLastCalledWith({}));
+});
+
+it('timesheet filters: when the person list cannot load, the Person filter says so', async () => {
+  // GET /workers needs workers:view, which a time:view holder may not have
+  api.listWorkerOptions.mockRejectedValue(new Error('403'));
+  render(<TimeManagement />);
+  expect(await screen.findByText('The person list could not be loaded.')).toBeTruthy();
+  expect(screen.queryByLabelText('Person', { selector: 'input' })).toBeNull();
+  expect(screen.getByLabelText('Job', { selector: 'input' })).toBeTruthy();
 });

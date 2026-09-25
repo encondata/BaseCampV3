@@ -143,6 +143,10 @@
 }
 .time-row-static { cursor: default; }
 .time-row-static:hover { background: none; }
+/* Server-side filter row (Person / Job / Site / From / To): the Audit log's
+   toolbar idiom (.audit-toolbar in profile.css). Layout only here — any
+   typography on a .time-* selector trips the list guardrail. */
+.time-filter-pick { min-width: 190px; }
 /* Holds a single RowActionsMenu trigger (Approve / Reject / Edit folded
    into one menu), right-aligned in its 88px track — the `gap` the old
    three-button strip needed is gone with the strip. */
@@ -160,6 +164,13 @@
   gap: 10px;
   margin-bottom: 12px;
 }
+
+/* Bulk approval: the bar under the filters, the result line, and the
+   dialog's width (sized to a one-field form). */
+.time-bulk-bar { margin-top: 0; }
+.time-bulk-result { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.time-bulk-result .set-note { margin: 0; }
+.modal-card.reports-modal-card.rgm-card.time-bulk-card { width: min(560px, 96vw); max-width: 96vw; }
 
 /* ── 5. TimeEntryEditModal's Reason field ───────────────────
    Highlighted once an in-progress edit would count as an

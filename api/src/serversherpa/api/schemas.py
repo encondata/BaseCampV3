@@ -2349,6 +2349,34 @@ class TimeEntryRejectIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class TimeBulkFilterIn(BaseModel):
+    """The Timesheet's server-side filters. `from` / `to` bound clock-in,
+    inclusive at both ends — GET /time/entries' since / until."""
+    person_id: uuid.UUID | None = None
+    initiative_id: uuid.UUID | None = None
+    site_id: uuid.UUID | None = None
+    from_: datetime | None = Field(default=None, alias="from")
+    to: datetime | None = None
+    # Bulk approve only: the dry run's `as_of`. Entries created after it
+    # (after the count the admin confirmed) are left alone.
+    as_of: datetime | None = None
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class TimeBulkApproveIn(BaseModel):
+    """Exactly one of `entry_ids` (the ticked rows) or `filter` (every
+    pending entry the filters match); the route enforces "exactly one"."""
+    entry_ids: list[uuid.UUID] | None = None
+    filter: TimeBulkFilterIn | None = None
+    model_config = ConfigDict(extra="forbid")
+
+
+class TimeBulkRejectIn(BaseModel):
+    entry_ids: list[uuid.UUID]
+    reason: str
+    model_config = ConfigDict(extra="forbid")
+
+
 class NotificationGroupSettings(BaseModel):
     """Shared shape for the group-level notification settings. All fields
     optional so it can be reused for PATCH (partial update)."""

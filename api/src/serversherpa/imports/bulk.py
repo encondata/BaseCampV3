@@ -168,3 +168,46 @@ def build_rows_xlsx(rows: list[dict], columns: list[str], sheet: str,
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def renumber(numbered: list[tuple[int, dict]], row_numbers: Any) -> list[tuple[int, dict]]:
+    """JSON rows re-posted after a file preview carry the spreadsheet line
+    numbers the preview assigned, so overrides / skips keyed by those numbers
+    still line up. None keeps the JSON numbering (from 1)."""
+    if row_numbers is None:
+        return numbered
+    if (not isinstance(row_numbers, list) or len(row_numbers) != len(numbered)
+            or not all(isinstance(n, int) and not isinstance(n, bool) for n in row_numbers)
+            or len(set(row_numbers)) != len(row_numbers)):
+        raise BulkImportError("invalid_row_numbers")
+    return [(n, row) for n, (_, row) in zip(row_numbers, numbered, strict=True)]
+
+
+def parse_overrides(raw: Any, fields: tuple[str, ...]) -> dict[int, dict[str, str]]:
+    """`{"<row>": {"<field>": "<picked id>"}}` → {row: {field: id}}; only the
+    importer's own `fields`, each a non-empty string."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise BulkImportError("invalid_overrides")
+    out: dict[int, dict[str, str]] = {}
+    for key, picks in raw.items():
+        try:
+            row = int(key)
+        except (TypeError, ValueError):
+            raise BulkImportError("invalid_overrides") from None
+        if (not isinstance(picks, dict)
+                or not all(f in fields and isinstance(v, str) and v for f, v in picks.items())):
+            raise BulkImportError("invalid_overrides")
+        out[row] = dict(picks)
+    return out
+
+
+def parse_row_list(raw: Any, code: str) -> set[int]:
+    """A list of row numbers (skips, approvals); `code` names the error."""
+    if raw is None:
+        return set()
+    if not isinstance(raw, list) or not all(
+            isinstance(n, int) and not isinstance(n, bool) for n in raw):
+        raise BulkImportError(code)
+    return set(raw)
