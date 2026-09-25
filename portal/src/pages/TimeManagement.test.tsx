@@ -183,7 +183,8 @@ it('timesheet: column floors, shared template + minimum, sideways-scroll card', 
   expect(card.classList.contains('list-scroll')).toBe(true);
   const head = card.querySelector('.list-head') as HTMLElement;
   const main = row.querySelector('.row-main') as HTMLElement;
-  expect(head.style.gridTemplateColumns).toMatch(/^minmax\(\d+px, [\d.]+fr\)/);
+  // time:change adds the 32px selection track in front of the columns
+  expect(head.style.gridTemplateColumns).toMatch(/^32px minmax\(\d+px, [\d.]+fr\)/);
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);

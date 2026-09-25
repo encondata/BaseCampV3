@@ -5,8 +5,10 @@
  *      gate on the API side, so it renders regardless of `can('time')`).
  *   2. My recent entries — everyone; the caller's own last few punches.
  *   3. On the clock now — `can('time')`; who's currently clocked in.
- *   4. Timesheet — `can('time')`; the full directory-list of entries with
- *      approve/reject/edit.
+ *   4. Timesheet — `can('time')`; server-side person / job / site / day
+ *      filters, the directory-list of entries with approve/reject/edit, and
+ *      (with `time:change`) checkboxes on pending rows plus bulk Approve /
+ *      Reject / Approve all pending in this view.
  * TimeEntryEditModal (components/time/) is both the create-entry form and
  * the approve/reject surface for a pending row.
  */
@@ -17,14 +19,19 @@ import {
 
 import { useAuth } from '../auth/AuthContext';
 import ComboBox from '../components/ComboBox';
+import DataTable from '../components/DataTable';
 import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
 import StatusHover from '../components/StatusHover';
+import TimeBulkDialog from '../components/time/TimeBulkDialog';
 import TimeEntryEditModal, { mapTimeError } from '../components/time/TimeEntryEditModal';
 import {
   ApiError,
   approveTimeEntry,
+  bulkApproveTimeEntries,
+  bulkRejectTimeEntries,
   clockIn as clockInRequest,
   clockOut as clockOutRequest,
+  countBulkApproveTimeEntries,
   getMyTime,
   getPunchOptions,
   listActiveTimeEntries,
@@ -32,11 +39,12 @@ import {
   listTimeEntries,
   listWorkerOptions,
   type PunchOption,
+  type TimeBulkSkip,
   type TimeEntryItem,
   type WorkerOption,
 } from '../lib/api';
 import {
-  ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
+  activeFilterCount, ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState,
 } from '../lib/columnMenu';
 import {
@@ -46,7 +54,8 @@ import {
 import { naturalCompare } from '../lib/sites';
 import { elapsedSince, formatMinutes } from '../lib/timeFormat';
 import {
-  hasFilter, listQuery, NO_FILTER, timeSourceLabel, type TimesheetFilter,
+  bulkFilter, bulkResultText, hasFilter, listQuery, NO_FILTER, timeSourceLabel,
+  type TimesheetFilter,
 } from '../lib/timeBulk';
 import { VirtualRows } from '../lib/virtualRows';
 import '../styles/directory.css';
@@ -74,6 +83,10 @@ const TIMESHEET_COLUMNS: ColumnDef[] = [
 ];
 const ALL_COLUMN_KEYS = new Set<string>(TIMESHEET_COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set<string>(TIMESHEET_COLUMNS.filter((c) => c.default).map((c) => c.key));
+// The leading selection checkbox (time:change only): a fixed track outside
+// the column registry, folded into a ColumnDef so listGridStyle's minWidth
+// counts it (PrintAssetList.tsx's CHECKBOX_COL).
+const CHECKBOX_COL: ColumnDef = { key: 'select', label: '', width: '32px', default: true };
 
 const STATUS_PILLS: { key: string; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -295,6 +308,15 @@ export default function TimeManagement() {
   // and renders as its own dismissible line above the list.
   const [actionError, setActionError] = useState('');
 
+  // ── bulk approval (time:change) ──
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [dialog, setDialog] = useState<{ mode: 'reject' | 'approve-all'; count: number } | null>(null);
+  const [dialogError, setDialogError] = useState('');
+  const [bulkResult, setBulkResult] = useState<{ text: string; skipped: TimeBulkSkip[] } | null>(null);
+  const [showSkipped, setShowSkipped] = useState(false);
+  const headerBoxRef = useRef<HTMLInputElement>(null);
+
   const {
     visibleCols, setVisibleCols,
     sortKey, sortDir, setSort, toggleSort,
@@ -313,7 +335,8 @@ export default function TimeManagement() {
   // The trailing track holds one RowActionsMenu trigger instead of the old
   // Approve + Reject + Edit strip; 88px is the width the other converted
   // lists give that trigger (Warehouse.tsx, InitiativeDetail.tsx).
-  const grid = listGridStyle(shownCols, canChange ? ['88px'] : [], undefined, listGridScale);
+  const grid = listGridStyle(canChange ? [CHECKBOX_COL, ...shownCols] : shownCols,
+    canChange ? ['88px'] : [], undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
   const haystack = useSearchHaystacks(timesheet, (e: TimeEntryItem) =>
@@ -342,6 +365,100 @@ export default function TimeManagement() {
       return naturalCompare(timeEntryCellText(a, sortKey), timeEntryCellText(b, sortKey)) * sortDir;
     });
   }, [timesheet, filters, query, statusPill, sortKey, sortDir, haystack]);
+
+  // A reload drops ids that are no longer loaded and pending (approved
+  // elsewhere, filtered away), so the count never includes a row that
+  // cannot be acted on.
+  useEffect(() => {
+    const pending = new Set((timesheet ?? []).filter((e) => e.status === 'pending').map((e) => e.id));
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => pending.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [timesheet]);
+
+  const pendingShown = useMemo(
+    () => visibleEntries.filter((e) => e.status === 'pending').map((e) => e.id), [visibleEntries]);
+  const selectedShown = pendingShown.filter((id) => selected.has(id)).length;
+  const allSelected = pendingShown.length > 0 && selectedShown === pendingShown.length;
+  const someSelected = selectedShown > 0 && !allSelected;
+  useEffect(() => {
+    if (headerBoxRef.current) headerBoxRef.current.indeterminate = someSelected;
+  }, [someSelected]);
+  const toggleOne = (id: string) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+  // Print Labels' rule: select-all REPLACES the selection with the pending
+  // rows shown; unchecking it clears the selection.
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(pendingShown));
+
+  // Column filters and search narrow only the LOADED rows; the approve-all
+  // filter cannot carry them, so the button waits until they are cleared.
+  const clientNarrowed = query.trim() !== '' || activeFilterCount(filters) > 0;
+  const showApproveAll = canChange && (statusPill === 'all' || statusPill === 'pending')
+    && !!timesheet && (timesheet.some((e) => e.status === 'pending') || timesheet.length === 500);
+
+  const finishBulk = async (text: string, skipped: TimeBulkSkip[]) => {
+    setDialog(null);
+    setBulkResult({ text, skipped });
+    setShowSkipped(false);
+    setSelected(new Set());
+    await refreshAll();
+  };
+
+  const approveSelected = async () => {
+    setBulkBusy(true);
+    setActionError('');
+    try {
+      const res = await bulkApproveTimeEntries({ entry_ids: [...selected].sort() });
+      await finishBulk(bulkResultText('Approved', res.approved, res.skipped), res.skipped);
+    } catch (err) {
+      setActionError(mapTimeError(err, 'Could not approve. Try again.'));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const startApproveAll = async () => {
+    setBulkBusy(true);
+    setActionError('');
+    try {
+      const count = await countBulkApproveTimeEntries({ filter: bulkFilter(serverFilter) });
+      if (count === 0) {
+        setBulkResult({ text: 'No pending entries that you can approve match these filters.', skipped: [] });
+        setShowSkipped(false);
+      } else {
+        setDialogError('');
+        setDialog({ mode: 'approve-all', count });
+      }
+    } catch (err) {
+      setActionError(mapTimeError(err, 'Could not count the pending entries. Try again.'));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const confirmDialog = async (reason: string) => {
+    if (!dialog) return;
+    setBulkBusy(true);
+    setDialogError('');
+    try {
+      if (dialog.mode === 'reject') {
+        const res = await bulkRejectTimeEntries([...selected].sort(), reason);
+        await finishBulk(bulkResultText('Rejected', res.rejected, res.skipped), res.skipped);
+      } else {
+        const res = await bulkApproveTimeEntries({ filter: bulkFilter(serverFilter) });
+        await finishBulk(bulkResultText('Approved', res.approved, res.skipped), res.skipped);
+      }
+    } catch (err) {
+      setDialogError(mapTimeError(err, 'That did not work. Try again.'));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   const doApproveRow = async (id: string) => {
     setRowBusyId(id);
@@ -594,6 +711,39 @@ export default function TimeManagement() {
             )}
           </div>
 
+          {canChange && (selected.size > 0 || showApproveAll) && (
+            <div className="dir-toolbar time-bulk-bar" role="group" aria-label="Bulk actions">
+              {selected.size > 0 && (
+                <>
+                  <span className="chip tag">{selected.size} selected</span>
+                  <button type="button" className="btn-solid" disabled={bulkBusy}
+                          onClick={() => void approveSelected()}>
+                    Approve selected
+                  </button>
+                  <button type="button" className="mini-btn" disabled={bulkBusy}
+                          onClick={() => { setDialogError(''); setDialog({ mode: 'reject', count: selected.size }); }}>
+                    Reject selected
+                  </button>
+                </>
+              )}
+              {showApproveAll && (
+                <div className="toolbar-right">
+                  <button type="button" className="mini-btn" disabled={bulkBusy || clientNarrowed}
+                          aria-describedby={clientNarrowed ? 'time-approve-all-note' : undefined}
+                          onClick={() => void startApproveAll()}>
+                    Approve all pending in this view
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {showApproveAll && clientNarrowed && (
+            <p id="time-approve-all-note" className="set-note">
+              Column filters and search narrow only the loaded rows. Clear them to approve everything
+              that matches the filters above.
+            </p>
+          )}
+
           {timesheetError && (
             <div className="dir-empty" style={{ marginBottom: 12 }}>
               <b>Cannot load timesheet</b>{timesheetError}
@@ -609,6 +759,35 @@ export default function TimeManagement() {
             </div>
           )}
 
+          {bulkResult && (
+            <div className="time-bulk-result">
+              <p className="set-note">{bulkResult.text}</p>
+              {bulkResult.skipped.length > 0 && (
+                <button type="button" className="mini-btn sm" aria-expanded={showSkipped}
+                        onClick={() => setShowSkipped((s) => !s)}>
+                  {showSkipped ? 'Hide skipped' : 'Show skipped'}
+                </button>
+              )}
+              <button type="button" className="mini-btn sm" onClick={() => setBulkResult(null)}>
+                Dismiss
+              </button>
+            </div>
+          )}
+          {bulkResult && showSkipped && (
+            <DataTable
+              ariaLabel="Skipped entries"
+              columns={[
+                { key: 'person', label: 'Person' },
+                { key: 'date', label: 'Date', mono: true },
+                { key: 'reason', label: 'Reason' },
+              ]}
+              rows={bulkResult.skipped.map((s, i) => ({
+                key: `${s.entry_id}-${i}`,
+                cells: [s.person ?? '—', s.date ? fmtDate(s.date) : '—', s.reason],
+              }))}
+            />
+          )}
+
           {!timesheetError && timesheet !== null && timesheet.length === 500 && (
             <p className="page-hint">
               Showing the newest 500 entries — use filters to narrow.
@@ -618,6 +797,13 @@ export default function TimeManagement() {
           {!timesheetError && (
             <div className="dir-list list-scroll">
               <div className="list-head" style={rowStyle}>
+                {canChange && (
+                  <span className="col-head">
+                    <input type="checkbox" ref={headerBoxRef} checked={allSelected}
+                           disabled={pendingShown.length === 0}
+                           aria-label="Select all pending entries shown" onChange={toggleAll} />
+                  </span>
+                )}
                 {shownCols.map((c) => (
                   <ColHead key={c.key} col={c} sortDir={sortKey === c.key ? sortDir : null}
                            onToggleSort={() => toggleSort(c.key)}
@@ -646,6 +832,15 @@ export default function TimeManagement() {
                   <div key={e.id} className="dir-row" {...vp}
                        style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
                     <div className="row-main time-row-static" style={rowStyle}>
+                      {canChange && (
+                        <div className="cell">
+                          {e.status === 'pending' && (
+                            <input type="checkbox" checked={selected.has(e.id)}
+                                   aria-label={`Select ${e.person_name}, ${fmtDate(e.clock_in_at)}`}
+                                   onChange={() => toggleOne(e.id)} />
+                          )}
+                        </div>
+                      )}
                       {shownCols.map((c) => (
                         <div className="cell" key={c.key}>{cellFor(e, c.key)}</div>
                       ))}
@@ -697,6 +892,10 @@ export default function TimeManagement() {
           onClose={() => setModal(null)}
           onSaved={refreshAll}
         />
+      )}
+      {dialog && (
+        <TimeBulkDialog mode={dialog.mode} count={dialog.count} busy={bulkBusy} error={dialogError}
+                        onCancel={() => setDialog(null)} onConfirm={(reason) => void confirmDialog(reason)} />
       )}
     </div>
   );
