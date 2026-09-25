@@ -15,6 +15,7 @@ const auth = vi.hoisted(() => ({ can: (_r: string, _a?: string): boolean => true
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     can: auth.can,
+    person: { id: 'p-me', first_name: 'Mo', last_name: 'Manager' },
     godMode: false,
     preferences: {
       accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default', motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default',
@@ -150,8 +151,10 @@ it('Reject selected asks for one reason in a dialog and sends it with every id',
   expect(screen.queryByRole('dialog')).toBeNull();
 });
 
+const AS_OF = '2026-09-25T12:00:00.123456+00:00';
+
 it('Approve all pending in this view counts with a dry run, confirms, then sends the filter', async () => {
-  api.countBulkApproveTimeEntries.mockResolvedValue(214);
+  api.countBulkApproveTimeEntries.mockResolvedValue({ count: 214, as_of: AS_OF });
   api.bulkApproveTimeEntries.mockResolvedValue({ approved: 214, skipped: [] });
   render(<TimeManagement />);
   await screen.findByText('Alice Tech');
@@ -163,7 +166,8 @@ it('Approve all pending in this view counts with a dry run, confirms, then sends
   expect(api.bulkApproveTimeEntries).not.toHaveBeenCalled();
   fireEvent.click(within(dialog).getByRole('button', { name: 'Approve 214 entries' }));
 
-  await waitFor(() => expect(api.bulkApproveTimeEntries).toHaveBeenCalledWith({ filter: {} }));
+  // as_of from the count, so an entry created since is not approved unseen
+  await waitFor(() => expect(api.bulkApproveTimeEntries).toHaveBeenCalledWith({ filter: { as_of: AS_OF } }));
   expect(await screen.findByText('Approved 214 entries.')).toBeTruthy();
 });
 
@@ -231,7 +235,7 @@ it('a zero dry-run count replaces the result and collapses an open skipped list'
     skipped: [{ entry_id: 'e1', person: 'Alice Tech', date: '2026-09-01T13:00:00Z',
                 reason: 'your own entry' }],
   });
-  api.countBulkApproveTimeEntries.mockResolvedValue(0);
+  api.countBulkApproveTimeEntries.mockResolvedValue({ count: 0, as_of: AS_OF });
   render(<TimeManagement />);
   await screen.findByText('Alice Tech');
   fireEvent.click(within(rowOf('Alice Tech')).getByRole('checkbox'));
@@ -244,4 +248,19 @@ it('a zero dry-run count replaces the result and collapses an open skipped list'
     .toBeTruthy();
   expect(screen.queryByRole('table', { name: 'Skipped entries' })).toBeNull();
   expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('your own pending rows get no checkbox, and select all leaves them out', async () => {
+  const MINE = entry({ id: 'e9', person_id: 'p-me', person_name: 'Mo Manager',
+                       clock_in_at: '2026-09-03T13:00:00Z', clock_out_at: '2026-09-03T21:00:00Z' });
+  api.listTimeEntries.mockResolvedValue([ALICE, BOB, CY, MINE]);
+  api.bulkApproveTimeEntries.mockResolvedValue({ approved: 2, skipped: [] });
+  render(<TimeManagement />);
+  await screen.findByText('Mo Manager');
+  expect(within(rowOf('Mo Manager')).queryByRole('checkbox')).toBeNull();
+  fireEvent.click(selectAll());
+  expect(selectAll().checked).toBe(true);
+  expect(screen.getByText('2 selected')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Approve selected' }));
+  await waitFor(() => expect(api.bulkApproveTimeEntries).toHaveBeenCalledWith({ entry_ids: ['e1', 'e3'] }));
 });

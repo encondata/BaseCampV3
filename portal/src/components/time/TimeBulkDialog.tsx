@@ -3,9 +3,10 @@
  * Generate modal's header pattern (eyebrow, title, one-line description).
  * "Reject selected" asks for the one reason every selected entry gets;
  * "Approve all pending in this view" confirms the dry-run count before the
- * filter is sent. The page owns the API calls; this is only the form.
+ * filter is sent. Escape cancels, as in GenerateReportModal, except while
+ * a request is in flight. The page owns the API calls; this is only the form.
  */
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 
 import { approveAllQuestion, entriesText } from '../../lib/timeBulk';
 import '../../styles/reports.css';
@@ -24,6 +25,16 @@ export default function TimeBulkDialog({ mode, count, busy, error, onCancel, onC
   const rejecting = mode === 'reject';
   const action = rejecting ? `Reject ${entriesText(count)}` : `Approve ${entriesText(count)}`;
   const blocked = busy || (rejecting && !reason.trim());
+
+  useEffect(() => {
+    // defaultPrevented: a nested control that handled Escape itself (an
+    // open menu) keeps the dialog open, as in GenerateReportModal.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented && !busy) onCancel();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [busy, onCancel]);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();

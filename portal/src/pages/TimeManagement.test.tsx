@@ -229,3 +229,12 @@ it('timesheet filters: a person and a From day refetch the list server-side, Cle
   fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
   await waitFor(() => expect(api.listTimeEntries).toHaveBeenLastCalledWith({}));
 });
+
+it('timesheet filters: when the person list cannot load, the Person filter says so', async () => {
+  // GET /workers needs workers:view, which a time:view holder may not have
+  api.listWorkerOptions.mockRejectedValue(new Error('403'));
+  render(<TimeManagement />);
+  expect(await screen.findByText('The person list could not be loaded.')).toBeTruthy();
+  expect(screen.queryByLabelText('Person', { selector: 'input' })).toBeNull();
+  expect(screen.getByLabelText('Job', { selector: 'input' })).toBeTruthy();
+});

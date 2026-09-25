@@ -2862,6 +2862,8 @@ export async function rejectTimeEntry(
  *  (`from` / `to` bound clock-in, inclusive, as ISO instants). */
 export interface TimeBulkFilter {
   person_id?: string; initiative_id?: string; site_id?: string; from?: string; to?: string;
+  /** The dry run's `as_of`: entries created after the count are left alone. */
+  as_of?: string;
 }
 export interface TimeBulkSkip {
   entry_id: string; person: string | null;
@@ -2881,13 +2883,19 @@ export async function bulkApproveTimeEntries(target: TimeBulkTarget): Promise<Ti
   return resp.json();
 }
 
+export interface TimeBulkCount {
+  count: number;
+  /** The server's time at the count; pass it back as the filter's `as_of`. */
+  as_of: string;
+}
+
 /** Dry run: how many entries an approve would approve (own entries left out). */
-export async function countBulkApproveTimeEntries(target: TimeBulkTarget): Promise<number> {
+export async function countBulkApproveTimeEntries(target: TimeBulkTarget): Promise<TimeBulkCount> {
   const resp = await apiFetch('/time/entries/approve?dry_run=1', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(target),
   });
   if (!resp.ok) throw await errorFrom(resp);
-  return ((await resp.json()) as { count: number }).count;
+  return resp.json();
 }
 
 export async function bulkRejectTimeEntries(

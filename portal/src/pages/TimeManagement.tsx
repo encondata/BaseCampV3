@@ -39,6 +39,7 @@ import {
   listTimeEntries,
   listWorkerOptions,
   type PunchOption,
+  type TimeBulkFilter,
   type TimeBulkSkip,
   type TimeEntryItem,
   type WorkerOption,
@@ -138,7 +139,7 @@ function statusChip(label: string, color: string) {
 }
 
 export default function TimeManagement() {
-  const { can, preferences } = useAuth();
+  const { can, preferences, person: me } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
   const canView = can('time');
   const canAdd = can('time', 'add');
@@ -149,6 +150,9 @@ export default function TimeManagement() {
     { initiatives: [], sites: [] },
   );
   const [workers, setWorkers] = useState<WorkerOption[]>([]);
+  // GET /workers needs workers:view, which a time:view holder may lack; the
+  // Person filter then says so instead of opening empty.
+  const [workersFailed, setWorkersFailed] = useState(false);
   const [activeEntries, setActiveEntries] = useState<TimeEntryItem[] | null>(null);
   const [timesheet, setTimesheet] = useState<TimeEntryItem[] | null>(null);
   const [timesheetError, setTimesheetError] = useState('');
@@ -225,7 +229,9 @@ export default function TimeManagement() {
   // The Person filter needs the worker list too, not only Add entry.
   useEffect(() => {
     if (!canView && !canAdd) return;
-    void listWorkerOptions().then(setWorkers).catch(() => {});
+    listWorkerOptions()
+      .then((list) => { setWorkers(list); setWorkersFailed(false); })
+      .catch(() => setWorkersFailed(true));
   }, [canView, canAdd]);
 
   // Job filter: every non-archived job (punch options only carry open
@@ -311,7 +317,10 @@ export default function TimeManagement() {
   // ── bulk approval (time:change) ──
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
-  const [dialog, setDialog] = useState<{ mode: 'reject' | 'approve-all'; count: number } | null>(null);
+  // approve-all carries the filter it counted, stamped with the count's as_of.
+  const [dialog, setDialog] = useState<
+    { mode: 'reject'; count: number } | { mode: 'approve-all'; count: number; filter: TimeBulkFilter }
+    | null>(null);
   const [dialogError, setDialogError] = useState('');
   const [bulkResult, setBulkResult] = useState<{ text: string; skipped: TimeBulkSkip[] } | null>(null);
   const [showSkipped, setShowSkipped] = useState(false);
@@ -366,8 +375,14 @@ export default function TimeManagement() {
     });
   }, [timesheet, filters, query, statusPill, sortKey, sortDir, haystack]);
 
+  // The rows that get a checkbox: pending, and not the viewer's own (the
+  // API skips those as "your own entry", so selecting one only ends in a skip).
+  const meId = me?.id;
+  const selectable = (e: TimeEntryItem) => e.status === 'pending' && e.person_id !== meId;
   const pendingShown = useMemo(
-    () => visibleEntries.filter((e) => e.status === 'pending').map((e) => e.id), [visibleEntries]);
+    () => visibleEntries.filter((e) => e.status === 'pending' && e.person_id !== meId)
+      .map((e) => e.id),
+    [visibleEntries, meId]);
 
   // Selection stays in sync with what's visible: prune `selected` down to
   // the pending ids currently shown whenever that set changes — a reload
@@ -432,13 +447,14 @@ export default function TimeManagement() {
     setBulkBusy(true);
     setActionError('');
     try {
-      const count = await countBulkApproveTimeEntries({ filter: bulkFilter(serverFilter) });
+      const filter = bulkFilter(serverFilter);
+      const { count, as_of } = await countBulkApproveTimeEntries({ filter });
       if (count === 0) {
         setBulkResult({ text: 'No pending entries that you can approve match these filters.', skipped: [] });
         setShowSkipped(false);
       } else {
         setDialogError('');
-        setDialog({ mode: 'approve-all', count });
+        setDialog({ mode: 'approve-all', count, filter: { ...filter, as_of } });
       }
     } catch (err) {
       setActionError(mapTimeError(err, 'Could not count the pending entries. Try again.'));
@@ -456,7 +472,7 @@ export default function TimeManagement() {
         const res = await bulkRejectTimeEntries([...selected].sort(), reason);
         await finishBulk(bulkResultText('Rejected', res.rejected, res.skipped), res.skipped);
       } else {
-        const res = await bulkApproveTimeEntries({ filter: bulkFilter(serverFilter) });
+        const res = await bulkApproveTimeEntries({ filter: dialog.filter });
         await finishBulk(bulkResultText('Approved', res.approved, res.skipped), res.skipped);
       }
     } catch (err) {
@@ -688,10 +704,14 @@ export default function TimeManagement() {
           <div className="dir-toolbar audit-toolbar time-filters" role="group"
                aria-label="Timesheet filters">
             <div className="time-filter-pick">
-              <ComboBox ariaLabel="Person" placeholder="Any person…" clearable
-                        value={serverFilter.person_id}
-                        options={workers.map((w) => ({ value: w.person_id, label: w.display_name }))}
-                        onChange={(v) => setServerFilter((f) => ({ ...f, person_id: v }))} />
+              {workersFailed ? (
+                <span className="set-note">The person list could not be loaded.</span>
+              ) : (
+                <ComboBox ariaLabel="Person" placeholder="Any person…" clearable
+                          value={serverFilter.person_id}
+                          options={workers.map((w) => ({ value: w.person_id, label: w.display_name }))}
+                          onChange={(v) => setServerFilter((f) => ({ ...f, person_id: v }))} />
+              )}
             </div>
             <div className="time-filter-pick">
               <ComboBox ariaLabel="Job" placeholder="Any job…" clearable
@@ -840,7 +860,7 @@ export default function TimeManagement() {
                     <div className="row-main time-row-static" style={rowStyle}>
                       {canChange && (
                         <div className="cell">
-                          {e.status === 'pending' && (
+                          {selectable(e) && (
                             <input type="checkbox" checked={selected.has(e.id)}
                                    aria-label={`Select ${e.person_name}, ${fmtDate(e.clock_in_at)}`}
                                    onChange={() => toggleOne(e.id)} />
