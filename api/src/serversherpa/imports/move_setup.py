@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -233,16 +233,26 @@ async def retire_check_jobs(db: AsyncSession, draft_id: uuid.UUID, *,
                             keep: uuid.UUID | None = None) -> None:
     """Delete the draft's check jobs (except `keep`). A running one is only
     flagged: the worker still holds it and writes its result, so deleting
-    it would fail that write; the sweep removes it once finished."""
-    for check in await db.scalars(select(ImportJob).where(
-            ImportJob.kind == CHECK_KIND, ImportJob.initiative_id.is_(None),
-            ImportJob.options["move_setup_id"].astext == str(draft_id))):
-        if check.id == keep:
-            continue
-        if check.status == "running":
-            check.cancel_requested = True
-        else:
-            await db.delete(check)
+    it would fail that write; the sweep removes it once finished. Both
+    statements are set-based, so a check the worker claims between them is
+    re-read by the database, never deleted from under it."""
+    query = select(ImportJob.id).where(
+        ImportJob.kind == CHECK_KIND, ImportJob.initiative_id.is_(None),
+        ImportJob.options["move_setup_id"].astext == str(draft_id))
+    if keep is not None:
+        query = query.where(ImportJob.id != keep)
+    ids = list(await db.scalars(query))
+    if not ids:
+        return
+    # "fetch": the database decides which rows matched, never a stale
+    # in-session copy of a check the worker has since claimed
+    sync = {"synchronize_session": "fetch"}
+    await db.execute(delete(ImportJob).where(ImportJob.id.in_(ids),
+                                             ImportJob.status != "running")
+                     .execution_options(**sync))
+    await db.execute(update(ImportJob).where(ImportJob.id.in_(ids),
+                                             ImportJob.status == "running")
+                     .values(cancel_requested=True).execution_options(**sync))
 
 
 class SetupFailed(Exception):

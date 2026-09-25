@@ -6,12 +6,20 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
-    Asset, AuditLog, Container, ImportJob, Initiative, PermissionOverride, Person, PersonRole,
-    Site, Truck,
+    Asset,
+    AuditLog,
+    Container,
+    ImportJob,
+    Initiative,
+    PermissionOverride,
+    Person,
+    PersonRole,
+    Site,
+    Truck,
 )
 from serversherpa.imports.worker import run_once
 from serversherpa.services.storage import get_object
@@ -260,6 +268,27 @@ async def test_a_new_upload_replaces_the_previous_check(client, db, admin_hdrs):
     assert await reload(first["id"]) is None
     got = (await client.get(f"{BASE}/{draft['id']}", headers=admin_hdrs)).json()
     assert got["payload"]["assets"] == {"check_job_id": second["id"], "filename": "ft2.csv"}
+
+
+async def test_a_running_check_is_flagged_not_deleted_when_replaced(client, db, admin_hdrs):
+    origin, destination = await make_sites(db)
+    draft = await new_draft(client, admin_hdrs, origin, destination)
+    first = (await upload_assets(client, admin_hdrs, draft["id"])).json()
+    claimed = (await upload_assets(client, admin_hdrs, draft["id"], filename="ft2.csv")).json()
+    async with get_sessionmaker()() as side:          # the worker claims the second one
+        await side.execute(update(ImportJob).where(ImportJob.id == uuid.UUID(claimed["id"]))
+                           .values(status="running"))
+        await side.commit()
+    third = (await upload_assets(client, admin_hdrs, draft["id"], filename="ft3.csv")).json()
+    assert await reload(first["id"]) is None          # queued when replaced: deleted
+    still = await reload(claimed["id"])
+    assert (still.status, still.cancel_requested) == ("running", True)
+    kept = await reload(third["id"])
+    assert (kept.status, kept.cancel_requested) == ("queued", False)
+    resp = await client.delete(f"{BASE}/{draft['id']}", headers=admin_hdrs)
+    assert resp.status_code == 204
+    assert await reload(third["id"]) is None
+    assert (await reload(claimed["id"])).cancel_requested is True
 
 
 async def test_recheck_queues_a_new_check_over_the_same_file(client, db, admin_hdrs):
