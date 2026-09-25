@@ -123,3 +123,58 @@ it('a mount refresh answering after Create never rolls the draft back to preview
   await act(async () => { release(base()); });
   expect(screen.getByText('Creating the move…')).toBeTruthy();
 });
+
+it('keeps polling through a 502 and reaches the finish screen', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  api.getMoveSetup.mockResolvedValueOnce(base())                                    // mount refresh
+    .mockRejectedValueOnce(new ApiError(502, 'server_error'))                       // first poll: 5xx
+    .mockResolvedValueOnce(base({ status: 'completed', initiative_id: 'm1', payload: null,
+      results: { move_id: 'm1', assets: null, crates: 2, trucks: 0 } }));           // second poll: done
+  api.createMoveFromSetup.mockResolvedValue(base({ status: 'queued' }));
+  render(<Harness initial={base()} />);
+  await user.click(screen.getByRole('button', { name: 'Create move' }));
+  expect(await screen.findByText('Creating the move…')).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(screen.queryByText('Check again')).toBeNull();                             // a 5xx is a blip, not terminal
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(await screen.findByText('Move created')).toBeTruthy();
+});
+
+it('a 404 while polling shows the sentence, and Check again restarts polling', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  api.getMoveSetup.mockResolvedValueOnce(base())                                    // mount refresh
+    .mockRejectedValueOnce(new ApiError(404, 'draft_not_found'))                    // first poll: terminal
+    .mockResolvedValueOnce(base({ status: 'running', processed_rows: 1, total_rows: 2 }));
+  api.createMoveFromSetup.mockResolvedValue(base({ status: 'queued' }));
+  render(<Harness initial={base()} />);
+  await user.click(screen.getByRole('button', { name: 'Create move' }));
+  expect(await screen.findByText('Creating the move…')).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(await screen.findByText(
+    'This move setup is gone. It may have expired after a day without changes. Start again.')).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(false);
+  await user.click(screen.getByRole('button', { name: 'Check again' }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(await screen.findByText('Creating… 1 of 2')).toBeTruthy();
+});
+
+it('polling stops on a failed status and shows the reasons while Back and Create stay enabled', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  api.getMoveSetup.mockResolvedValueOnce(base())
+    .mockResolvedValueOnce(base({ status: 'failed', error: 'name_taken',
+      results: { reasons: ['These truck names already exist: TRK-002.'] } }));
+  api.createMoveFromSetup.mockResolvedValue(base({ status: 'queued' }));
+  render(<Harness initial={base()} />);
+  await user.click(screen.getByRole('button', { name: 'Create move' }));
+  expect(await screen.findByText('Creating the move…')).toBeTruthy();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+  expect(await screen.findByText('These truck names already exist: TRK-002.')).toBeTruthy();
+  const calls = api.getMoveSetup.mock.calls.length;
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+  expect(api.getMoveSetup.mock.calls.length).toBe(calls);                           // a failed status stops polling
+  expect((screen.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole('button', { name: 'Create move' }) as HTMLButtonElement).disabled).toBe(false);
+});

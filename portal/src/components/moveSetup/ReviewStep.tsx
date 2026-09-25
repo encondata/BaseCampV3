@@ -1,7 +1,10 @@
 /** Step 5 — review and create. A summary of every step ("Skipped" for a
  *  skipped one), then Create move: queue the draft, poll it every 1.5 s
  *  ("Creating… N of M"), and show the finish screen. A failure shows its
- *  reason as sentences and the draft stays editable (Back, then Create again). */
+ *  reason as sentences and the draft stays editable (Back, then Create again).
+ *  A polling 5xx or 429 is treated like a network blip and keeps polling; a
+ *  404 or 403 (the draft is gone, or access was lost) stops polling, shows
+ *  the error, re-enables Back, and offers "Check again" to resume. */
 import { useEffect, useRef, useState } from 'react';
 
 import {
@@ -59,8 +62,10 @@ export default function ReviewStep({ draft, onDraft, form, lookups, assetJob, on
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [reasons, setReasons] = useState<string[]>([]);
+  const [pollError, setPollError] = useState('');   // terminal poll error (404/403): stops polling
   const creating = useRef(false);        // a Create was sent: the mount refresh is stale
   const running = draft.status === 'queued' || draft.status === 'running';
+  const stalled = running && !!pollError;
 
   // the draft as the server holds it now (the live-saved crate/truck edits included)
   useEffect(() => {
@@ -72,7 +77,7 @@ export default function ReviewStep({ draft, onDraft, form, lookups, assetJob, on
   }, [draft.id]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!running) return undefined;
+    if (!running || pollError) return undefined;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
@@ -83,14 +88,17 @@ export default function ReviewStep({ draft, onDraft, form, lookups, assetJob, on
         if (next.status !== 'queued' && next.status !== 'running') return;
       } catch (err) {
         if (stopped) return;
-        if (err instanceof ApiError) { setError(moveSetupError(err)); return; }
-        // a network blip: keep polling
+        if (err instanceof ApiError && (err.status === 404 || err.status === 403)) {
+          setPollError(moveSetupError(err));
+          return;
+        }
+        // a network blip, or a 5xx/429 response: keep polling
       }
       timer = setTimeout(() => void tick(), POLL_MS);
     };
     timer = setTimeout(() => void tick(), POLL_MS);
     return () => { stopped = true; clearTimeout(timer); };
-  }, [running, draft.id, onDraft]);
+  }, [running, pollError, draft.id, onDraft]);
 
   useEffect(() => { if (draft.status === 'completed') onFinished(); }, [draft.status, onFinished]);
 
@@ -101,6 +109,7 @@ export default function ReviewStep({ draft, onDraft, form, lookups, assetJob, on
     setBusy(true);
     setError('');
     setReasons([]);
+    setPollError('');
     try {
       onDraft(await createMoveFromSetup(draft.id));
     } catch (err) {
@@ -146,8 +155,7 @@ export default function ReviewStep({ draft, onDraft, form, lookups, assetJob, on
           : crateNames.length === 0 ? <p className="page-hint">No crates</p>
           : (<>
               <p className="page-hint">
-                {summaryText(crateNames.length, crateTags, 'crate').replace(
-                  /^(\d+ crates?)/, `$1 · ${typeLabel || 'No crate type'}`)}
+                {summaryText(crateNames.length, crateTags, 'crate', typeLabel || 'No crate type')}
               </p>
               <NamesTable label="Crates" names={crateNames} tags={assignTags(crateNames.length, crateTags)} />
             </>)}
@@ -175,11 +183,20 @@ export default function ReviewStep({ draft, onDraft, form, lookups, assetJob, on
           <ul className="ms-reasons">{reasons.map((r) => <li key={r}>{r}</li>)}</ul>
         </div>
       )}
-      {running && <p className="set-note">{progress}</p>}
+      {running && !stalled && <p className="set-note">{progress}</p>}
+      {stalled && (
+        <div>
+          <p className="pf-error">{pollError}</p>
+          <div className="bulk-actions">
+            <button className="mini-btn" type="button" onClick={() => setPollError('')}>Check again</button>
+          </div>
+        </div>
+      )}
 
-      <WizardFooter onBack={running ? undefined : onBack} onNext={() => void create()}
-                    nextLabel={running ? 'Creating…' : 'Create move'} busy={busy || running}
-                    error={reasons.length > 0 ? '' : error} />
+      <WizardFooter onBack={stalled || !running ? onBack : undefined} onNext={() => void create()}
+                    nextLabel={running ? 'Creating…' : 'Create move'} nextDisabled={stalled}
+                    busy={busy || (running && !stalled)}
+                    error={reasons.length > 0 || stalled ? '' : error} />
     </>
   );
 }
