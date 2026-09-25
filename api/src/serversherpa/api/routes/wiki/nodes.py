@@ -34,6 +34,7 @@ from serversherpa.api.routes.wiki.serialize import node_out, nodes_out, space_ou
 from serversherpa.db.models import Person, WikiFavorite, WikiNode, WikiPage, WikiSpace
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.wiki import tree
+from serversherpa.wiki.pages import check_doc
 from serversherpa.wiki.permissions import (
     AccessIndex,
     level_rank,
@@ -126,6 +127,8 @@ async def create(body: NodeCreateIn, ctx: WikiContext) -> NodeOut:
         tree.check_parent(parent, space.id)
     except tree.TreeError as exc:
         raise _tree_error(exc) from exc
+    if body.initial_content is not None:
+        check_doc(body.initial_content)
 
     actor_id = ctx.user.person.id
     node = await tree.create_node(

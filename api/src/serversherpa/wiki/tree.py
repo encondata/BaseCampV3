@@ -35,10 +35,11 @@ from serversherpa.db.models import (
 )
 from serversherpa.wiki.content import (
     EMPTY_DOC,
-    doc_to_text,
+    doc_text,
     referenced_asset_ids,
     rewrite_asset_ids,
 )
+from serversherpa.wiki.pages import add_version, utcnow
 from serversherpa.wiki.permissions import level_rank
 
 # sibling positions step by POSITION_STEP; a sibling set is renumbered
@@ -138,8 +139,8 @@ async def create_node(
     """Create a node under `parent` (None = space root): sets `path` and
     `position`, and for a page also creates the 1:1 `wiki_pages` row. When
     `initial_content` is given (an import), the page starts with that
-    content as an unpublished draft — `draft_json`/`draft_text` are set,
-    `has_unpublished_changes` is True, and an `imported` version is
+    content as the actor's unpublished draft — `draft_json`/`draft_text`/
+    `draft_updated_*` are set, `has_unpublished_changes` is True, and an `imported` version is
     recorded — the caller still has to publish it separately."""
     path = [*(parent.path or []), parent.id] if parent is not None else []
     position = await next_position(
@@ -159,17 +160,15 @@ async def create_node(
         page = WikiPage(node_id=node.id)
         if initial_content is not None:
             page.draft_json = initial_content
-            page.draft_text = doc_to_text(initial_content)
+            page.draft_text = doc_text(initial_content)
+            page.draft_updated_by = actor_id
+            page.draft_updated_at = utcnow()
             page.has_unpublished_changes = True
         db.add(page)
-        if initial_content is not None:
-            db.add(WikiPageVersion(
-                node_id=node.id, version_no=1, title=title,
-                content_json=initial_content,
-                content_text=doc_to_text(initial_content),
-                kind="imported", created_by=actor_id,
-            ))
         await db.flush()
+        if initial_content is not None:
+            await add_version(db, node, kind="imported", title=title,
+                              content_json=initial_content, actor_id=actor_id)
 
     return node
 
@@ -180,14 +179,9 @@ async def publish_empty_home(db: AsyncSession, page_node: WikiNode,
     doc. Only meant to run once, right after `create_node` makes the
     home page (with no `initial_content`) — it doesn't touch the draft,
     since a brand-new page has none."""
-    version = WikiPageVersion(
-        node_id=page_node.id, version_no=1, title=page_node.title,
-        content_json=EMPTY_DOC, content_text=doc_to_text(EMPTY_DOC),
-        kind="published", created_by=actor_id,
-    )
-    db.add(version)
-    await db.flush()
-
+    version = await add_version(db, page_node, kind="published",
+                                title=page_node.title, content_json=EMPTY_DOC,
+                                actor_id=actor_id)
     page = await db.get(WikiPage, page_node.id)
     assert page is not None
     page.published_version_id = version.id

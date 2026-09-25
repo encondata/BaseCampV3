@@ -1,13 +1,17 @@
-"""Page content helpers shared by the tree and page routes: the empty
-Tiptap document new pages start from, and plain-text extraction from a
-document for `content_text`/`draft_text` (search indexing, previews).
+"""Page content helpers shared by the tree, page and internal routes: the
+empty Tiptap document new pages start from, plain-text extraction
+(`doc_text`, for `content_text`/`draft_text` — search and previews), a
+canonical comparison of two documents (`docs_equal`), the stored-size cap
+(`MAX_DOC_BYTES`), and the embedded-asset walkers page copy uses.
 
-Task 5 extends this module with the editor schema itself and asset-key
-rewriting; this Phase-1 slice only needs the empty doc and a flattener.
+Server-side Python never renders HTML; it only reads the ProseMirror JSON
+the editor's shared schema produces.
 """
 from __future__ import annotations
 
 import copy
+import json
+import re
 from collections.abc import Iterator, Mapping
 from typing import Any
 
@@ -16,28 +20,90 @@ from typing import Any
 # page) starts published/drafted from.
 EMPTY_DOC: dict[str, Any] = {"type": "doc", "content": [{"type": "paragraph"}]}
 
+# the most a stored document (draft or version) may take, as compact JSON
+MAX_DOC_BYTES = 5 * 1024 * 1024
 
-def doc_to_text(doc: dict | None) -> str:
-    """Flatten a Tiptap/ProseMirror JSON document to plain text: every
-    text leaf, in document order, joined with single spaces. Used to
-    populate `content_text`/`draft_text` for search — not for rendering."""
+# block nodes whose text ends with a newline (plus every details* node)
+_BLOCK_TYPES = frozenset({
+    "paragraph", "heading", "listItem", "taskItem", "blockquote", "codeBlock",
+    "tableCell", "tableHeader", "callout",
+})
+_END_BLOCK = object()   # stack marker: "a block just ended, add a newline"
+
+
+def _is_block(node_type: Any) -> bool:
+    return isinstance(node_type, str) and (
+        node_type in _BLOCK_TYPES or node_type.startswith("details"))
+
+
+def _attr(node: dict, name: str) -> str | None:
+    attrs = node.get("attrs")
+    value = attrs.get(name) if isinstance(attrs, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def doc_text(doc: dict | None) -> str:
+    """Flatten a ProseMirror JSON document to plain text for search and
+    previews — not for rendering. Text leaves contribute their text, a
+    `hardBreak` a newline, and every block (paragraph, heading, list/task
+    item, blockquote, code block, table cell/header, callout, details*)
+    ends with a newline. A `wikiImage` contributes its alt text and
+    caption (a line each), a `pageLink` its title, and a `fileEmbed` its
+    filename (a line). Runs of three or more newlines collapse to two,
+    and the result is stripped. Walks iteratively, so a pathologically
+    deep document can't exhaust the stack."""
     if not doc:
         return ""
     parts: list[str] = []
-
-    def _walk(node: Any) -> None:
-        if isinstance(node, dict):
+    stack: list[Any] = [doc]
+    while stack:
+        node = stack.pop()
+        if node is _END_BLOCK:
+            parts.append("\n")
+            continue
+        if isinstance(node, list):
+            stack.extend(reversed(node))
+            continue
+        if not isinstance(node, dict):
+            continue
+        node_type = node.get("type")
+        if node_type == "text":
             text = node.get("text")
             if isinstance(text, str):
                 parts.append(text)
-            for child in node.get("content") or ():
-                _walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                _walk(child)
+        elif node_type == "hardBreak":
+            parts.append("\n")
+        elif node_type == "pageLink":
+            parts.append(_attr(node, "title") or "")
+        elif node_type == "wikiImage":
+            parts.extend(f"{v}\n" for v in (_attr(node, "alt"), _attr(node, "caption")) if v)
+        elif node_type == "fileEmbed":
+            filename = _attr(node, "filename")
+            if filename:
+                parts.append(f"{filename}\n")
+        if _is_block(node_type):
+            stack.append(_END_BLOCK)
+        content = node.get("content")
+        if isinstance(content, list):
+            stack.extend(reversed(content))
+    return re.sub(r"\n{3,}", "\n\n", "".join(parts)).strip()
 
-    _walk(doc)
-    return " ".join(parts)
+
+def _canonical(doc: Any) -> str:
+    return json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def docs_equal(a: dict | None, b: dict | None) -> bool:
+    """Do two documents hold the same content? Key order doesn't matter;
+    None only equals None."""
+    if a is None or b is None:
+        return a is b
+    return _canonical(a) == _canonical(b)
+
+
+def doc_bytes(doc: Any) -> int:
+    """A document's size as compact UTF-8 JSON — what MAX_DOC_BYTES caps."""
+    return len(_canonical(doc).encode())
 
 
 # node types whose `attrs.assetId` points at a wiki_page_assets row

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -267,3 +267,55 @@ class TrashBatch(BaseModel):
     deleted_by: PersonRef | None
     deleted_at: datetime
     purge_at: datetime | None = Field(default=None)
+
+
+# ── page content / publish / restore ─────────────────────────────────
+
+
+class PageContentOut(BaseModel):
+    """One readable state of a page: a version (`version_id` set), or the
+    live draft (`kind` "draft", no version id/number)."""
+    version_id: uuid.UUID | None
+    version_no: int | None
+    kind: Literal["draft", "autosave", "published", "restored", "imported"]
+    title: str
+    content_json: dict
+    created_at: datetime | None
+    created_by: PersonRef | None
+
+
+class PublishIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: Annotated[str, StringConstraints(strip_whitespace=True,
+                                           max_length=1000)] | None = None
+
+
+class RestoreIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    from_version_id: uuid.UUID
+
+
+# ── internal (collab server) ─────────────────────────────────────────
+
+
+class CollabAuthorizeOut(BaseModel):
+    level: Level
+    person: PersonRef
+    color: str
+
+
+class PageStateOut(BaseModel):
+    ydoc_b64: str | None
+    draft_json: dict | None
+    title: str
+
+
+class PageStateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ydoc_b64: str
+    # any JSON: `pages.check_doc` answers a non-document with 422 `bad_doc`
+    content_json: Any
+    editor_ids: list[uuid.UUID] = Field(default_factory=list)
