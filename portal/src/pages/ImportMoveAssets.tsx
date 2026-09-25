@@ -78,7 +78,7 @@ function ImportStepper({ step }: { step: 1 | 2 | 3 }) {
 
 export default function ImportMoveAssets() {
   const { id } = useParams<{ id: string }>();
-  const { can } = useAuth();
+  const { can, person } = useAuth();
   const canAddModels = can('asset_models', 'add');
   const canChangeModels = can('asset_models', 'change');
   const [initiative, setInitiative] = useState<InitiativeDetail | null>(null);
@@ -264,11 +264,24 @@ export default function ImportMoveAssets() {
                       <p className="eyebrow-sm">
                         {job.phase === 'commit' ? 'Import complete' : 'Review'}
                       </p>
-                      {job.phase === 'validate' && (
-                        <button type="button" className="imp-link-btn" onClick={resetImport}>
-                          Start over
+                      <span className="imp-missing-actions">
+                        <button type="button" className="mini-btn"
+                                onClick={async () => {
+                                  const m = await import('../lib/importReport');
+                                  m.downloadImportReport(m.buildImportReport({
+                                    job,
+                                    moveName: initiative?.name ?? '',
+                                    generatedBy: person?.display_name ?? '',
+                                  }));
+                                }}>
+                          Download report (.xlsx)
                         </button>
-                      )}
+                        {job.phase === 'validate' && (
+                          <button type="button" className="imp-link-btn" onClick={resetImport}>
+                            Start over
+                          </button>
+                        )}
+                      </span>
                     </div>
                     <h2 className="imp-report-headline">{headline}</h2>
 
