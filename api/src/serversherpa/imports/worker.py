@@ -193,6 +193,24 @@ async def run_once(sessionmaker) -> bool:
         return True
 
 
+async def _sweep(maker) -> None:
+    """One sweep_stale pass that can never stop the loop: a failure (a DB
+    blip) is logged and rolled back, and the next hour's pass tries again."""
+    try:
+        async with maker() as db:
+            try:
+                swept = await sweep_stale(db)
+            except Exception:
+                await db.rollback()
+                raise
+    except Exception:
+        logger.exception("sweep of stale drafts and previews failed; retrying in an hour")
+        return
+    if any(swept.values()):
+        logger.info("swept %d draft(s), %d check(s), %d preview(s)",
+                    swept["drafts"], swept["checks"], swept["previews"])
+
+
 async def run_forever(poll_seconds: float = 2.0) -> None:
     from serversherpa.db.engine import get_sessionmaker
     from serversherpa.system.admin_config import poll_workers_paused
@@ -225,13 +243,9 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
             if pause_state["paused"]:
                 logger.info("resumed")
             pause_state["paused"] = False
-            if time.monotonic() - last_sweep >= SWEEP_SECONDS:
-                async with maker() as db:
-                    swept = await sweep_stale(db)
-                last_sweep = time.monotonic()
-                if any(swept.values()):
-                    logger.info("swept %d draft(s), %d check(s), %d preview(s)",
-                                swept["drafts"], swept["checks"], swept["previews"])
+            if time.monotonic() - last_sweep >= SWEEP_SECONDS:   # the first pass = start-up
+                await _sweep(maker)
+                last_sweep = time.monotonic()      # even after a failure: retry next hour
             worked = await run_once(maker)
             if not worked:
                 await asyncio.sleep(poll_seconds)

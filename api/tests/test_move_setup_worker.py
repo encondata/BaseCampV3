@@ -284,3 +284,59 @@ async def test_sweep_removes_stale_drafts_their_checks_and_old_previews(
     assert (await reload(queued["id"])).status == "queued"          # never swept
     swept = await reload(preview.id)
     assert (swept.status, swept.error, swept.payload) == ("cancelled", "expired", None)
+
+
+async def _age(db, *ids) -> None:
+    old = datetime.now(UTC) - timedelta(hours=25)
+    await db.execute(update(ImportJob).where(ImportJob.id.in_([uuid.UUID(str(i)) for i in ids]))
+                     .values(progress_at=old, created_at=old))
+    await db.commit()
+
+
+async def test_sweep_removes_an_old_failed_draft(client, db, admin_hdrs):
+    origin, destination = await make_sites(db)
+    old = await new_draft(client, admin_hdrs, origin, destination)
+    old_check = (await upload_assets(client, admin_hdrs, old["id"])).json()
+    recent = await new_draft(client, admin_hdrs, origin, destination)
+    await db.execute(update(ImportJob).where(ImportJob.id.in_([
+        uuid.UUID(old["id"]), uuid.UUID(recent["id"]),
+    ])).values(status="failed", error="name_taken"))
+    await db.commit()
+    await _age(db, old["id"])
+
+    assert await sweep_stale(db) == {"drafts": 1, "checks": 1, "previews": 0}
+    assert await reload(old["id"]) is None
+    assert await reload(old_check["id"]) is None
+    assert (await reload(recent["id"])).status == "failed"          # touched within 24 h
+
+
+async def test_sweep_leaves_an_unreferenced_running_check(client, db, admin_hdrs):
+    origin, destination = await make_sites(db)
+    draft = await new_draft(client, admin_hdrs, origin, destination)
+    check = (await upload_assets(client, admin_hdrs, draft["id"])).json()
+    await db.execute(update(ImportJob).where(ImportJob.id == uuid.UUID(check["id"]))
+                     .values(status="running"))
+    await db.commit()
+    skipped = await client.patch(f"{BASE}/{draft['id']}", headers=admin_hdrs,
+                                 json={"skip": ["assets"]})          # no longer referenced
+    assert skipped.json()["payload"]["assets"] is None
+    await _age(db, check["id"])
+
+    assert await sweep_stale(db) == {"drafts": 0, "checks": 0, "previews": 0}
+    running = await reload(check["id"])
+    assert (running.status, running.cancel_requested) == ("running", True)
+
+
+async def test_sweep_leaves_old_bulk_updates_that_are_past_preview(db):
+    jobs = [ImportJob(kind="asset_bulk_update", initiative_id=None, filename=f"{status}.csv",
+                      status=status, phase="commit", payload=[{"row": 2, "cells": {}}])
+            for status in ("queued", "running", "completed", "failed", "cancelled")]
+    db.add_all(jobs)
+    await db.commit()
+    await _age(db, *(job.id for job in jobs))
+
+    assert await sweep_stale(db) == {"drafts": 0, "checks": 0, "previews": 0}
+    for job in jobs:
+        kept = await reload(job.id)
+        assert (kept.status, kept.error, kept.payload) == (
+            job.status, None, [{"row": 2, "cells": {}}])

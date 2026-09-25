@@ -1,5 +1,6 @@
 """Worker loop: claim -> process -> terminal status, against real MinIO."""
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -7,7 +8,10 @@ from sqlalchemy import func, select
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
-    Asset, ImportJob, Initiative, InitiativeAsset,
+    Asset,
+    ImportJob,
+    Initiative,
+    InitiativeAsset,
 )
 from serversherpa.imports.jobs import claim_next, requeue_stale
 from serversherpa.imports.worker import run_once
@@ -112,3 +116,35 @@ async def test_requeue_stale(db):
     job.progress_at = datetime.now(UTC)
     await db.commit()
     assert await requeue_stale(db) == 0
+
+
+async def test_run_forever_survives_a_failing_sweep(db, monkeypatch):
+    """A sweep that raises (a DB blip) is logged and skipped until the next
+    hour: the loop keeps claiming jobs and never retries the sweep at once."""
+    from serversherpa.imports import worker
+
+    monkeypatch.setattr("serversherpa.system.db_logging.install", lambda name: None)
+    calls = {"n": 0}
+
+    async def broken_sweep(session, **kw):
+        calls["n"] += 1
+        raise RuntimeError("db blip")
+
+    monkeypatch.setattr(worker, "sweep_stale", broken_sweep)
+    job_id, _ = await _job(db)
+    task = asyncio.create_task(worker.run_forever(poll_seconds=0.05))
+    try:
+        job = None
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            job = await db.scalar(select(ImportJob).where(ImportJob.id == job_id)
+                                  .execution_options(populate_existing=True))
+            if job.status == "completed":
+                break
+        assert job.status == "completed"               # the queued job still ran
+        await asyncio.sleep(0.2)                       # several more idle loops
+        assert not task.done()                         # the failing sweep did not kill it
+        assert calls["n"] == 1                         # and is not retried every loop
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
