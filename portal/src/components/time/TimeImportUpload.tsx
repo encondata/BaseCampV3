@@ -190,8 +190,16 @@ export default function TimeImportUpload() {
       if (fileRef.current) fileRef.current.value = '';
       setResult(applied);
     } catch (err) {
+      const code = err instanceof ApiError ? err.code : '';
+      if (code === 'rows_invalid') {
+        // Re-preview with the same picks and skips, so the row that now
+        // fails (a shift punched since the preview, say) shows in place.
+        void rerun(overrides, skip);
+      } else if (code !== 'busy') {
+        setPreview(null);   // stale after a refused commit: force a fresh preview
+      }
+      // busy: nothing was written and the preview still holds; Add again.
       setError(mapError(err));
-      setPreview(null);   // stale after a refused commit: force a fresh preview
     } finally {
       setBusy(false);
     }

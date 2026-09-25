@@ -29,7 +29,7 @@ export function matchOptions(issue: TimeImportIssue, all: TimeFieldOptions): Com
 function issueText(issue: TimeImportIssue): string {
   return issue.kind === 'ambiguous'
     ? `“${issue.value}” matches ${issue.candidates.length} ${issue.field}s — pick one.`
-    : `No ${issue.field} matches “${issue.value}” — pick one.`;
+    : `No ${issue.field} named “${issue.value}” — pick one.`;
 }
 
 /** "Sep 24, 7:00 AM – 3:30 PM EDT · 8h (30m break)" */
@@ -88,7 +88,7 @@ export default function TimeImportRowDetails({
               onOpen={issue.kind === 'unknown' ? () => onOpenField(issue.field) : undefined}
             />
             {issue.kind === 'unknown' && failed[issue.field] && (
-              <span className="set-note">Could not load the list. Reopen to retry.</span>
+              <span className="set-note">Could not load the list — reopen to retry.</span>
             )}
           </div>
         ))}
@@ -100,7 +100,7 @@ export default function TimeImportRowDetails({
                      disabled={disabled} onChange={onToggleSkip} />
               {' '}Skip
             </label>
-            {skipped && <span id={skipHintId}>Skipped. Uncheck to undo.</span>}
+            {skipped && <span id={skipHintId}>Skipped — uncheck to undo.</span>}
           </>
         )}
         {hasPicks && row.action !== 'skipped' && (

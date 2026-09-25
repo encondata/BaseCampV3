@@ -60,7 +60,13 @@ beforeEach(() => {
     row(4, { action: 'duplicate', detail: 'Already there.' }),
   ]));
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+  // no default behavior; reset drops queued ...Once values a failed test left behind
+  api.previewTimeImport.mockReset();
+  api.commitTimeImport.mockReset();
+});
 
 async function upload(waitFor = 'Needs a match') {
   render(<MemoryRouter><TimeImportUpload /></MemoryRouter>);
@@ -127,9 +133,9 @@ it('an unknown job lists every non-archived job, loaded once and lazily', async 
     row(2, { action: 'attention', issues: [{ field: 'job', kind: 'unknown', value: 'Mystery', candidates: [] }] }),
     row(3, { action: 'attention', issues: [{ field: 'job', kind: 'unknown', value: 'Other', candidates: [] }] }),
   ]));
-  await upload('No job matches “Other” — pick one.');   // two rows read "Needs a match"; wait on a unique line
+  await upload('No job named “Other” — pick one.');   // two rows read "Needs a match"; wait on a unique line
   await waitFor(() => expect(api.listInitiatives).toHaveBeenCalledTimes(1));
-  expect(screen.getByText('No job matches “Mystery” — pick one.')).toBeTruthy();
+  expect(screen.getByText('No job named “Mystery” — pick one.')).toBeTruthy();
   fireEvent.focus(screen.getByLabelText('Match job for row 2'));
   expect(await screen.findByText('Dallas Move')).toBeTruthy();
   expect(screen.queryByText('Old Job')).toBeNull();
@@ -161,13 +167,66 @@ it('apply posts the base rows with the file name and shows the per-row summary',
   expect(screen.queryByRole('table', { name: 'Time preview' })).toBeNull();
 });
 
-it('a refused commit explains why and drops the stale preview', async () => {
-  api.previewTimeImportFile.mockResolvedValue(preview([row(2, ANA)]));
+it('a busy commit keeps the preview and the picks, so Add N shifts can be pressed again', async () => {
+  await upload();
+  api.previewTimeImport.mockResolvedValue(preview([
+    row(2, ANA),
+    row(3, { person_id: 'j2', person_name: 'Jo Park', matched_by: 'your pick' }),
+    row(4, { action: 'duplicate', detail: 'Already there.' }),
+  ]));
+  fireEvent.focus(screen.getByLabelText('Match worker for row 3'));
+  fireEvent.mouseDown(await screen.findByText('j2@x.test'));
+  await waitFor(() => expect(addButton('Add 2 shifts').disabled).toBe(false));
+  const { ApiError } = await import('../../lib/api');
+  api.commitTimeImport.mockRejectedValueOnce(new ApiError(409, 'busy'));
+  fireEvent.click(addButton('Add 2 shifts'));
+  expect(await screen.findByText('Time entries are being changed right now. Try again in a moment.'))
+    .toBeTruthy();
+  expect(screen.getByRole('table', { name: 'Time preview' })).toBeTruthy();
+  expect(within(trOf('3')).getByText('your pick')).toBeTruthy();
+  expect(api.previewTimeImport).toHaveBeenCalledTimes(1);          // no re-preview
+  api.commitTimeImport.mockResolvedValueOnce({ summary: { added: 2, skipped: 1 }, rows: [] });
+  await waitFor(() => expect(addButton('Add 2 shifts').disabled).toBe(false));
+  fireEvent.click(addButton('Add 2 shifts'));
+  await waitFor(() => expect(api.commitTimeImport).toHaveBeenCalledTimes(2));
+  expect(api.commitTimeImport.mock.calls[1][0]).toEqual(api.commitTimeImport.mock.calls[0][0]);
+  expect(api.commitTimeImport.mock.calls[1][0]).toMatchObject({ overrides: { 3: { worker: 'j2' } } });
+});
+
+it('a commit refused for invalid rows re-previews with the picks, so the failing row shows in place', async () => {
+  api.previewTimeImportFile.mockResolvedValue(preview([
+    row(3, { action: 'error', errors: ['Clock-in is in the future.'] }), row(2, ANA), row(4, ANA)]));
+  await upload('Clock-in is in the future.');
+  api.previewTimeImport.mockResolvedValueOnce(preview([row(2, ANA), row(3, { action: 'skipped' }), row(4, ANA)]));
+  fireEvent.click(screen.getByLabelText('Skip row 3'));
+  await waitFor(() => expect(addButton('Add 2 shifts').disabled).toBe(false));
   const { ApiError } = await import('../../lib/api');
   api.commitTimeImport.mockRejectedValue(new ApiError(422, 'rows_invalid'));
+  api.previewTimeImport.mockResolvedValueOnce(preview([
+    row(4, { ...ANA, action: 'error',
+             errors: ["Overlaps Ana Lopez's open entry that started Sep 24, 8:00 AM EDT."] }),
+    row(2, ANA), row(3, { action: 'skipped' }),
+  ]));
+  fireEvent.click(addButton('Add 2 shifts'));
+  expect(await screen.findByText(/a shift now overlaps time added since the preview/)).toBeTruthy();
+  await waitFor(() => expect(api.previewTimeImport).toHaveBeenCalledTimes(2));
+  expect(api.previewTimeImport).toHaveBeenLastCalledWith({   // the base keeps the first preview's order
+    rows: [cells(3), cells(2), cells(4)], row_numbers: [3, 2, 4], overrides: {}, skip: [3] });
+  expect(await within(trOf('4')).findByText(
+    "Overlaps Ana Lopez's open entry that started Sep 24, 8:00 AM EDT.")).toBeTruthy();
+  expect(trOf('4').className).toContain('bulk-row-error');
+  expect((screen.getByLabelText('Skip row 3') as HTMLInputElement).checked).toBe(true);
+  expect(within(trOf('3')).getByText('Skipped — uncheck to undo.')).toBeTruthy();   // TeamBulkRowDetails' wording
+  expect(screen.getByText(/a shift now overlaps time added since the preview/)).toBeTruthy();
+});
+
+it('a commit with nothing left to add explains why and drops the stale preview', async () => {
+  api.previewTimeImportFile.mockResolvedValue(preview([row(2, ANA)]));
+  const { ApiError } = await import('../../lib/api');
+  api.commitTimeImport.mockRejectedValue(new ApiError(422, 'nothing_to_add'));
   await upload('Ana Lopez');
   fireEvent.click(addButton('Add 1 shift'));
-  expect(await screen.findByText(/a shift now overlaps time added since the preview/)).toBeTruthy();
+  expect(await screen.findByText('Every shift in this file is already there or was skipped.')).toBeTruthy();
   expect(screen.queryByRole('table', { name: 'Time preview' })).toBeNull();
 });
 

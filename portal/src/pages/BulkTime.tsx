@@ -16,7 +16,7 @@ export default function BulkTime() {
       hint={<>
         Download the template, fill in one row per shift, upload it, and review every shift before adding.
         Workers match by email, phone, or name; jobs and sites match by name and must already exist. Values that do not match can be picked in the preview.
-        A time without an offset is read in the row&apos;s site time zone (or the job&apos;s site&apos;s), and in Eastern time when neither has one.
+        A time without an offset is read in the time zone of the row&apos;s site, or of the job&apos;s site when the row has none, and in Eastern time otherwise.
         Shifts are added as pending, for approval on the Timesheet. A shift that is already there is skipped.
       </>}
       guide={TIME_COLUMN_GUIDE}

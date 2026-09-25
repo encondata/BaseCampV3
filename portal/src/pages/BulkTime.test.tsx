@@ -27,4 +27,6 @@ it('lays out like the other bulk tools: hint, Columns, Download (templates only)
   await waitFor(() => expect(api.downloadTimeImportTemplate).toHaveBeenCalledWith('csv'));
   expect(screen.getByText('Uploads are limited to 5,000 rows and 5 MB. Split larger files before uploading.')).toBeTruthy();
   expect(screen.getByTestId('pane')).toBeTruthy();
+  expect(screen.getByText(/A time without an offset is read in the time zone of the row's site, or of the job's site when the row has none, and in Eastern time otherwise\./))
+    .toBeTruthy();
 });

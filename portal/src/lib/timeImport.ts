@@ -25,7 +25,7 @@ export const TIME_IMPORT_ERRORS: Record<string, string> = {
   invalid_row_numbers: 'The preview is out of date. Upload the file again.',
   invalid_overrides: 'The preview is out of date. Upload the file again.',
   invalid_skip: 'The preview is out of date. Upload the file again.',
-  rows_invalid: 'Some rows need attention, or a shift now overlaps time added since the preview. Preview again, then resolve or skip those rows.',
+  rows_invalid: 'Nothing was added. Some rows need attention, or a shift now overlaps time added since the preview. Resolve or skip those rows, then add again.',
   forbidden: 'You do not have permission to add time in bulk.',
   busy: 'Time entries are being changed right now. Try again in a moment.',
   nothing_to_add: 'Every shift in this file is already there or was skipped.',
