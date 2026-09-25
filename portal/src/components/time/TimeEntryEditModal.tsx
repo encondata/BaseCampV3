@@ -40,6 +40,9 @@ export const TIME_ERRORS: Record<string, string> = {
   initiative_not_found: 'That initiative no longer exists — pick another.',
   site_not_found: 'That site no longer exists — pick another.',
   time_entry_not_found: 'This time entry no longer exists.',
+  too_many: 'More than 5,000 entries match. Narrow the filters and try again.',
+  reason_required: 'Enter a reason for rejecting.',
+  ids_or_filter: 'Something went wrong. Refresh the page and try again.',
   forbidden: 'You do not have permission to do that.',
 };
 

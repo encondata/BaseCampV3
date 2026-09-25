@@ -2716,7 +2716,7 @@ export async function getPunchOptions(): Promise<{
 }
 
 export async function listTimeEntries(q: {
-  person_id?: string; initiative_id?: string; status?: string;
+  person_id?: string; initiative_id?: string; site_id?: string; status?: string;
   since?: string; until?: string; limit?: number; offset?: number;
 }): Promise<TimeEntryItem[]> {
   const params = new URLSearchParams();
@@ -2765,6 +2765,49 @@ export async function rejectTimeEntry(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reason }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** The Timesheet's server-side filters as the bulk-approve API takes them
+ *  (`from` / `to` bound clock-in, inclusive, as ISO instants). */
+export interface TimeBulkFilter {
+  person_id?: string; initiative_id?: string; site_id?: string; from?: string; to?: string;
+}
+export interface TimeBulkSkip {
+  entry_id: string; person: string | null;
+  /** The entry's clock-in instant; null when the id matched nothing. */
+  date: string | null;
+  reason: string;
+}
+export interface TimeBulkApproveResult { approved: number; skipped: TimeBulkSkip[] }
+export interface TimeBulkRejectResult { rejected: number; skipped: TimeBulkSkip[] }
+export type TimeBulkTarget = { entry_ids: string[] } | { filter: TimeBulkFilter };
+
+export async function bulkApproveTimeEntries(target: TimeBulkTarget): Promise<TimeBulkApproveResult> {
+  const resp = await apiFetch('/time/entries/approve', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(target),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Dry run: how many entries an approve would approve (own entries left out). */
+export async function countBulkApproveTimeEntries(target: TimeBulkTarget): Promise<number> {
+  const resp = await apiFetch('/time/entries/approve?dry_run=1', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(target),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return ((await resp.json()) as { count: number }).count;
+}
+
+export async function bulkRejectTimeEntries(
+  entryIds: string[], reason: string,
+): Promise<TimeBulkRejectResult> {
+  const resp = await apiFetch('/time/entries/reject', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entry_ids: entryIds, reason }),
   });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();

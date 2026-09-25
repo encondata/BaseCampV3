@@ -143,6 +143,10 @@
 }
 .time-row-static { cursor: default; }
 .time-row-static:hover { background: none; }
+/* Server-side filter row (Person / Job / Site / From / To): the Audit log's
+   toolbar idiom (.audit-toolbar in profile.css). Layout only here — any
+   typography on a .time-* selector trips the list guardrail. */
+.time-filter-pick { min-width: 190px; }
 /* Holds a single RowActionsMenu trigger (Approve / Reject / Edit folded
    into one menu), right-aligned in its 88px track — the `gap` the old
    three-button strip needed is gone with the strip. */

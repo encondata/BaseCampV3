@@ -12,7 +12,7 @@
  */
 
 import {
-  useEffect, useMemo, useState, type CSSProperties,
+  useEffect, useMemo, useRef, useState, type CSSProperties,
 } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
@@ -28,6 +28,7 @@ import {
   getMyTime,
   getPunchOptions,
   listActiveTimeEntries,
+  listInitiatives,
   listTimeEntries,
   listWorkerOptions,
   type PunchOption,
@@ -44,6 +45,9 @@ import {
 } from '../lib/listTools';
 import { naturalCompare } from '../lib/sites';
 import { elapsedSince, formatMinutes } from '../lib/timeFormat';
+import {
+  hasFilter, listQuery, NO_FILTER, timeSourceLabel, type TimesheetFilter,
+} from '../lib/timeBulk';
 import { VirtualRows } from '../lib/virtualRows';
 import '../styles/directory.css';
 import '../styles/profile.css';
@@ -100,7 +104,7 @@ function timeEntryCellText(e: TimeEntryItem, key: string): string {
     case 'break': return formatMinutes(e.break_minutes);
     case 'initiative': return e.initiative_name ?? '';
     case 'site': return e.site_name ?? '';
-    case 'source': return e.source;
+    case 'source': return timeSourceLabel(e.source);
     case 'adjusted': return e.adjusted ? 'Yes' : 'No';
     case 'status': return e.status_label;
     case 'approved_by': return e.approved_by_name ?? '';
@@ -138,6 +142,12 @@ export default function TimeManagement() {
   // Declared here (rather than down with the rest of the timesheet-list
   // state) because the load effects below need it to refetch on pill change.
   const [statusPill, setStatusPill] = useState('all');
+  // Server-side filters (person / job / site / clock-in days). Declared up
+  // here with statusPill for the same reason: the load effect's deps read it.
+  // They also scope "Approve all pending in this view".
+  const [serverFilter, setServerFilter] = useState<TimesheetFilter>(NO_FILTER);
+  const [jobOptions, setJobOptions] = useState<PunchOption[]>([]);
+  const listSeq = useRef(0);
 
   // ── live elapsed ticking (block 1's open span, block 3's since-times) ──
   const [, setTick] = useState(0);
@@ -163,12 +173,18 @@ export default function TimeManagement() {
   // A specific status pill filters server-side (refetch on pill change) so
   // the 500-row cap applies per-status instead of truncating the whole
   // timesheet before the pill even gets a look; 'All' fetches unfiltered
-  // and relies on the client-side pill/column/search filtering below.
-  const loadTimesheet = async (status: string) => {
+  // and relies on the client-side pill/column/search filtering below. The
+  // person / job / site / day filters always apply server-side. A newer
+  // load wins over an older one that answers late.
+  const loadTimesheet = async (status: string, scope: TimesheetFilter) => {
+    const mine = ++listSeq.current;
     try {
-      setTimesheet(await listTimeEntries(status === 'all' ? {} : { status }));
+      const rows = await listTimeEntries(listQuery(status, scope));
+      if (mine !== listSeq.current) return;
+      setTimesheet(rows);
       setTimesheetError('');
     } catch (err) {
+      if (mine !== listSeq.current) return;
       setTimesheet([]);
       setTimesheetError(err instanceof ApiError && err.status === 403
         ? 'You do not have permission to view the timesheet.' : 'Failed to load time entries.');
@@ -189,20 +205,31 @@ export default function TimeManagement() {
 
   useEffect(() => {
     if (!canView) return;
-    void loadTimesheet(statusPill);
+    void loadTimesheet(statusPill, serverFilter);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canView, statusPill]);
+  }, [canView, statusPill, serverFilter]);
 
+  // The Person filter needs the worker list too, not only Add entry.
   useEffect(() => {
-    if (!canAdd) return;
+    if (!canView && !canAdd) return;
     void listWorkerOptions().then(setWorkers).catch(() => {});
-  }, [canAdd]);
+  }, [canView, canAdd]);
+
+  // Job filter: every non-archived job (punch options only carry open
+  // ones); falls back to the punch options when the list cannot load.
+  useEffect(() => {
+    if (!canView) return;
+    listInitiatives()
+      .then((all) => setJobOptions(all.filter((j) => !j.archived_at)
+        .map((j) => ({ id: j.id, name: j.name }))))
+      .catch(() => setJobOptions([]));
+  }, [canView]);
 
   const refreshAll = async () => {
     await loadMyTime();
     if (canView) {
       await loadActive();
-      await loadTimesheet(statusPill);
+      await loadTimesheet(statusPill, serverFilter);
     }
   };
 
@@ -362,7 +389,7 @@ export default function TimeManagement() {
         return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
       }
       case 'source': {
-        const text = e.source.charAt(0).toUpperCase() + e.source.slice(1);
+        const text = timeSourceLabel(e.source);
         return <span className="cell-top cell-line" title={titleFor(text)}>{text}</span>;
       }
       default: {
@@ -533,6 +560,38 @@ export default function TimeManagement() {
                 </button>
               )}
             </div>
+          </div>
+
+          <div className="dir-toolbar audit-toolbar time-filters" role="group"
+               aria-label="Timesheet filters">
+            <div className="time-filter-pick">
+              <ComboBox ariaLabel="Person" placeholder="Any person…" clearable
+                        value={serverFilter.person_id}
+                        options={workers.map((w) => ({ value: w.person_id, label: w.display_name }))}
+                        onChange={(v) => setServerFilter((f) => ({ ...f, person_id: v }))} />
+            </div>
+            <div className="time-filter-pick">
+              <ComboBox ariaLabel="Job" placeholder="Any job…" clearable
+                        value={serverFilter.initiative_id}
+                        options={(jobOptions.length ? jobOptions : punchOptions.initiatives)
+                          .map((j) => ({ value: j.id, label: j.name }))}
+                        onChange={(v) => setServerFilter((f) => ({ ...f, initiative_id: v }))} />
+            </div>
+            <div className="time-filter-pick">
+              <ComboBox ariaLabel="Site" placeholder="Any site…" clearable
+                        value={serverFilter.site_id}
+                        options={punchOptions.sites.map((s) => ({ value: s.id, label: s.name }))}
+                        onChange={(v) => setServerFilter((f) => ({ ...f, site_id: v }))} />
+            </div>
+            <input type="date" aria-label="From date" value={serverFilter.from}
+                   onChange={(e) => setServerFilter((f) => ({ ...f, from: e.target.value }))} />
+            <input type="date" aria-label="To date" value={serverFilter.to}
+                   onChange={(e) => setServerFilter((f) => ({ ...f, to: e.target.value }))} />
+            {hasFilter(serverFilter) && (
+              <button type="button" className="mini-btn" onClick={() => setServerFilter(NO_FILTER)}>
+                Clear filters
+              </button>
+            )}
           </div>
 
           {timesheetError && (
