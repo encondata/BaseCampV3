@@ -24,13 +24,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Initiative, Person, Site, TimeEntry
 from serversherpa.imports import bulk as core
+from serversherpa.imports.bulk import BulkImportError
 from serversherpa.people import time_parse as tp
 from serversherpa.people.bulk_import import _worker_query, name_keys, normalize_phone
+from serversherpa.services.audit import audit
 from serversherpa.services.timezone import stored_day
 
 COLUMNS = ["worker", "clock_in", "clock_out", "break_minutes", "job", "site", "notes"]
@@ -349,6 +351,61 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
     return {"rows": out, "counts": counts,
             "can_commit": counts["add"] > 0 and counts["attention"] == 0
             and counts["error"] == 0}
+
+
+# ── commit ──────────────────────────────────────────────────────────
+
+async def commit_rows(db: AsyncSession, actor_id: uuid.UUID,
+                      numbered: list[tuple[int, dict]], *,
+                      overrides: dict[int, dict[str, str]], skip: set[int],
+                      source_label: str, now: datetime | None = None) -> dict:
+    """All-or-nothing. First takes a SHARE ROW EXCLUSIVE lock on
+    time_entries. That lock conflicts with the ROW EXCLUSIVE lock every
+    INSERT / UPDATE takes (a kiosk clock-in, a clock-out, an edit, an
+    approval) and with itself. So no other write to time_entries can commit
+    between the overlap re-check below and this commit, and two imports run
+    one after the other; plain reads are not blocked. A row lock would not
+    do: SELECT … FOR UPDATE on the workers' entries cannot stop a concurrent
+    INSERT of a new, overlapping one.
+
+    Then it re-runs the preview with the same picks and skips, and refuses
+    (rows_invalid, nothing written) unless the result can be committed. This
+    is where a shift punched at a kiosk since the preview becomes an overlap
+    error naming its row. Each `add` row becomes one pending `import` entry
+    with its own audit row, plus one bulk_import summary row."""
+    await db.execute(text("LOCK TABLE time_entries IN SHARE ROW EXCLUSIVE MODE"))
+    preview = await preview_rows(db, numbered, overrides=overrides, skip=skip, now=now)
+    if not preview["can_commit"]:
+        await db.rollback()
+        raise BulkImportError("rows_invalid", rows=[
+            r for r in preview["rows"] if r["action"] in ("attention", "error")])
+    applied: list[dict] = []
+    added = skipped = 0
+    for r in sorted(preview["rows"], key=lambda r: r["row"]):
+        if r["action"] != "add":
+            skipped += 1
+            applied.append({"row": r["row"], "name": r["name"], "entry_id": None,
+                            "action": "skipped", "detail": r["detail"] or "Skipped."})
+            continue
+        entry_id = uuid.uuid4()
+        db.add(TimeEntry(
+            id=entry_id, person_id=uuid.UUID(r["person_id"]),
+            initiative_id=uuid.UUID(r["job_id"]) if r["job_id"] else None,
+            site_id=uuid.UUID(r["site_id"]) if r["site_id"] else None,
+            clock_in_at=datetime.fromisoformat(r["clock_in_at"]),
+            clock_out_at=datetime.fromisoformat(r["clock_out_at"]),
+            break_minutes=r["break_minutes"], notes=r["notes"], status="pending",
+            source="import", created_by=actor_id, adjusted=False))
+        audit(db, actor_id=actor_id, entity_type="time_entry", entity_id=str(entry_id),
+              action="import", changes={"status": {"from": None, "to": "pending"}})
+        added += 1
+        applied.append({"row": r["row"], "name": r["name"], "entry_id": str(entry_id),
+                        "action": "created", "detail": r["shift"]})
+    audit(db, actor_id=actor_id, entity_type="time_entry", entity_id=None,
+          action="bulk_import",
+          changes={"added": added, "skipped": skipped, "source": source_label})
+    await db.commit()
+    return {"summary": {"added": added, "skipped": skipped}, "rows": applied}
 
 
 # ── template ────────────────────────────────────────────────────────

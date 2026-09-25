@@ -12,7 +12,8 @@ from serversherpa.api.routes import (
     devices, devtools, initiatives, kiosk, labels, me, move_setup, notes,
     notifications, reports, scans, search, sites, stakeholders,
     status_provenance, status_rules, status_values, system,
-    time as time_routes, trucks, users, warehouse, workers,
+    time as time_routes, time_bulk as time_bulk_routes, trucks, users, warehouse,
+    workers,
 )
 from serversherpa.config import get_settings
 from serversherpa.db.engine import dispose_engine
@@ -120,6 +121,7 @@ def create_app() -> FastAPI:
     app.include_router(initiatives.router)
     app.include_router(move_setup.router)
     app.include_router(time_routes.router)
+    app.include_router(time_bulk_routes.router)
     app.include_router(notes.router)
     app.include_router(labels.router)
     app.include_router(reports.router)
