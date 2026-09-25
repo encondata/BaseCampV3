@@ -14,9 +14,11 @@ from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import Depends
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
+from serversherpa.db.models import WikiSpace
 from serversherpa.wiki.permissions import AccessIndex, Principal, principal_for
 
 
@@ -37,3 +39,9 @@ async def _build_wiki_ctx(
 
 
 WikiContext = Annotated[WikiCtx, Depends(_build_wiki_ctx)]
+
+
+async def space_by_key(db: AsyncSession, key: str) -> WikiSpace | None:
+    # wiki_spaces.key is CITEXT — case-insensitive equality already, this
+    # just normalizes stray whitespace from the path.
+    return await db.scalar(select(WikiSpace).where(WikiSpace.key == key.strip()))

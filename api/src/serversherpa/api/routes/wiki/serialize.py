@@ -17,11 +17,23 @@ from sqlalchemy import func, or_, select
 
 from serversherpa.api.routes.wiki.deps import WikiCtx
 from serversherpa.api.routes.wiki.schemas import (
-    FileVersionOut, Level, NodeFileOut, NodeOut, NodePageOut, PersonRef, SpaceOut,
+    FileVersionOut,
+    Level,
+    NodeFileOut,
+    NodeOut,
+    NodePageOut,
+    PersonRef,
+    SpaceOut,
 )
 from serversherpa.db.models import (
-    Person, WikiFavorite, WikiFile, WikiFileVersion, WikiNode, WikiPage,
-    WikiPageVersion, WikiSpace,
+    Person,
+    WikiFavorite,
+    WikiFile,
+    WikiFileVersion,
+    WikiNode,
+    WikiPage,
+    WikiPageVersion,
+    WikiSpace,
 )
 from serversherpa.wiki.permissions import level_rank
 

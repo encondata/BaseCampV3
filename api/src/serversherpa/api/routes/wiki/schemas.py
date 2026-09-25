@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 Level = Literal["view", "edit", "manage"]
 PrincipalType = Literal[
@@ -166,7 +166,8 @@ class NodeOut(BaseModel):
 
 
 class Breadcrumb(BaseModel):
-    id: uuid.UUID
+    # an ancestor the caller can't view is {id: None, title: "…", kind: "folder"}
+    id: uuid.UUID | None
     title: str
     kind: NodeKind
 
@@ -174,6 +175,55 @@ class Breadcrumb(BaseModel):
 class NodeDetailOut(NodeOut):
     breadcrumbs: list[Breadcrumb]
     space: SpaceOut
+
+
+Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
+                                         max_length=200)]
+
+
+class NodeCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    space_id: uuid.UUID
+    parent_id: uuid.UUID | None = None
+    kind: Literal["folder", "page"]
+    title: Title
+    initial_content: dict | None = None
+    after_id: uuid.UUID | None = None
+
+
+class NodePatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: Title | None = None
+    owner_id: uuid.UUID | None = None
+
+
+class NodeMoveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parent_id: uuid.UUID | None
+    space_id: uuid.UUID | None = None
+    before_id: uuid.UUID | None = None
+    after_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _one_anchor(self) -> NodeMoveIn:
+        if self.before_id is not None and self.after_id is not None:
+            raise ValueError("Give before_id or after_id, not both.")
+        return self
+
+
+class NodeCopyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    parent_id: uuid.UUID | None
+    space_id: uuid.UUID | None = None
+
+
+class NodeDeleteOut(BaseModel):
+    batch_id: uuid.UUID
+    count: int
 
 
 class VersionOut(BaseModel):

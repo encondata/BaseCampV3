@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import or_, select
 
-from serversherpa.api.routes.wiki.deps import WikiContext
+from serversherpa.api.routes.wiki.deps import WikiContext, space_by_key
 from serversherpa.api.routes.wiki.schemas import (
     GrantOut, GrantsOut, GrantsPutIn, MeOut, PersonRef, PrincipalOut, PrincipalType,
     SpaceCreateIn, SpaceOut, SpacePatchIn,
@@ -45,12 +45,6 @@ def _err(status: int, code: str, **extra) -> HTTPException:
 
 def _forbidden(message: str = "You don't have access to do that.") -> HTTPException:
     return _err(403, "forbidden", message=message)
-
-
-async def _space_by_key(db, key: str) -> WikiSpace | None:
-    # wiki_spaces.key is CITEXT — case-insensitive equality already, this
-    # just normalizes stray whitespace from the path.
-    return await db.scalar(select(WikiSpace).where(WikiSpace.key == key.strip()))
 
 
 async def _can_manage_any_space(ctx: WikiContext) -> bool:
@@ -96,7 +90,7 @@ async def create_space(body: SpaceCreateIn, ctx: WikiContext) -> SpaceOut:
         raise _err(422, "bad_key",
                    message="Key must be 2-40 lowercase letters, digits, or "
                            "hyphens, starting with a letter or digit.")
-    if await _space_by_key(ctx.db, key):
+    if await space_by_key(ctx.db, key):
         raise _err(409, "key_taken")
 
     actor_id = ctx.user.person.id
@@ -135,14 +129,14 @@ async def create_space(body: SpaceCreateIn, ctx: WikiContext) -> SpaceOut:
 
 @router.get("/spaces/{key}", response_model=SpaceOut)
 async def get_space(key: str, ctx: WikiContext) -> SpaceOut:
-    space = await require_space_level(ctx.ix, await _space_by_key(ctx.db, key), "view")
+    space = await require_space_level(ctx.ix, await space_by_key(ctx.db, key), "view")
     level = await ctx.ix.level_for_space(space.id)
     return space_out(space, level)
 
 
 @router.patch("/spaces/{key}", response_model=SpaceOut)
 async def patch_space(key: str, body: SpacePatchIn, ctx: WikiContext) -> SpaceOut:
-    space = await require_space_level(ctx.ix, await _space_by_key(ctx.db, key), "manage")
+    space = await require_space_level(ctx.ix, await space_by_key(ctx.db, key), "manage")
     before = snapshot(space, SPACE_FIELDS)
 
     if body.settings is not None:
@@ -170,7 +164,7 @@ async def patch_space(key: str, body: SpacePatchIn, ctx: WikiContext) -> SpaceOu
 
 @router.post("/spaces/{key}/archive", response_model=SpaceOut)
 async def archive_space(key: str, ctx: WikiContext) -> SpaceOut:
-    space = await require_space_level(ctx.ix, await _space_by_key(ctx.db, key), "manage")
+    space = await require_space_level(ctx.ix, await space_by_key(ctx.db, key), "manage")
     if space.archived_at is None:
         space.archived_at = datetime.now(UTC)
         audit(ctx.db, actor_id=ctx.user.person.id, entity_type="wiki_space",
@@ -190,7 +184,7 @@ async def unarchive_space(key: str, ctx: WikiContext) -> SpaceOut:
     # non-admin (including a space manager) to view, so require_space_level
     # would never let anyone but an admin reach "manage" here anyway; this
     # checks the Principal directly so the 403 says what's actually needed.
-    space = await require_space_level(ctx.ix, await _space_by_key(ctx.db, key), "view")
+    space = await require_space_level(ctx.ix, await space_by_key(ctx.db, key), "view")
     if not ctx.principal.is_admin:
         raise _forbidden("Only a wiki administrator can unarchive a space.")
 
@@ -230,7 +224,7 @@ async def _grants_out(db, grants: list[WikiGrant]) -> list[GrantOut]:
 
 @router.get("/spaces/{key}/grants", response_model=GrantsOut)
 async def get_space_grants(key: str, ctx: WikiContext) -> GrantsOut:
-    space = await require_space_level(ctx.ix, await _space_by_key(ctx.db, key), "manage")
+    space = await require_space_level(ctx.ix, await space_by_key(ctx.db, key), "manage")
     return GrantsOut(grants=await _grants_out(ctx.db, await _space_grants(ctx.db, space)))
 
 
@@ -251,7 +245,7 @@ async def _principal_exists(db, principal_type: str, principal_id: str | None) -
 
 @router.put("/spaces/{key}/grants", response_model=GrantsOut)
 async def put_space_grants(key: str, body: GrantsPutIn, ctx: WikiContext) -> GrantsOut:
-    space = await require_space_level(ctx.ix, await _space_by_key(ctx.db, key), "manage")
+    space = await require_space_level(ctx.ix, await space_by_key(ctx.db, key), "manage")
 
     for g in body.grants:
         if not await _principal_exists(ctx.db, g.principal_type, g.principal_id):

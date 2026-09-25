@@ -8,8 +8,14 @@ from serversherpa.api.routes.wiki.deps import WikiCtx
 from serversherpa.api.routes.wiki.serialize import node_out, nodes_out
 from serversherpa.db.engine import get_engine
 from serversherpa.db.models import (
-    Person, WikiFavorite, WikiFile, WikiFileVersion, WikiNode, WikiPage,
-    WikiPageVersion, WikiSpace,
+    Person,
+    WikiFavorite,
+    WikiFile,
+    WikiFileVersion,
+    WikiNode,
+    WikiPage,
+    WikiPageVersion,
+    WikiSpace,
 )
 from serversherpa.wiki.permissions import AccessIndex, Principal
 
@@ -96,7 +102,7 @@ async def _count_statements(coro_fn):
 
 
 async def test_nodes_out_serializes_every_shape(db):
-    space, folder, children, (owner, editor) = await _build_tree(db, 4)
+    space, _, children, (owner, _) = await _build_tree(db, 4)
     db.add(WikiFavorite(person_id=owner.id, node_id=children[1].id))
     await db.commit()
     ctx = _ctx(db, owner.id)
@@ -131,7 +137,7 @@ async def test_nodes_out_serializes_every_shape(db):
 
 
 async def test_has_children_hides_unpublished_pages_from_view_only(db):
-    space, folder, children, (owner, _) = await _build_tree(db, 1)
+    _, folder, children, (owner, _) = await _build_tree(db, 1)
     # the only grandchild is a page without a published version
     await db.commit()
     ctx = _ctx(db, owner.id)
