@@ -1,5 +1,8 @@
 /** The finish screen: Open the move, the crate/truck counts, and the From-To
- *  import's per-row summary with its CSV download (BulkApplySummary). */
+ *  import's per-row summary with its CSV download (BulkApplySummary). The
+ *  top "Open the move" link only shows when there is no asset summary —
+ *  when assets were imported, BulkApplySummary's own "Open the move" link
+ *  serves instead, so the link never appears twice. */
 import { Link } from 'react-router-dom';
 
 import type { MoveSetupDraft } from '../../lib/api';
@@ -15,7 +18,7 @@ export default function MoveSetupFinish({ draft, moveName }: { draft: MoveSetupD
       <p className="eyebrow-sm">Move created</p>
       <div className="bulk-actions">
         <b>{moveName} was created.</b>
-        <Link className="btn-solid" to={`/initiatives/${moveId}`}>Open the move</Link>
+        {!assets && <Link className="btn-solid" to={`/initiatives/${moveId}`}>Open the move</Link>}
       </div>
       <p className="set-note">
         {createdCount(results.crates ?? 0, 'crate')} · {createdCount(results.trucks ?? 0, 'truck')}
