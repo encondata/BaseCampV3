@@ -9,6 +9,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
+from serversherpa.api.routes.wiki import internal as internal_routes
 from serversherpa.config import get_settings
 from serversherpa.db.models import WikiNode, WikiPage, WikiPageVersion
 from serversherpa.wiki import pages
@@ -284,6 +285,15 @@ async def test_put_state_rejects_an_oversized_ydoc(client, db):
     assert resp.json()["detail"]["code"] == "too_large"
     row = await _page_row(db, page["id"])
     assert row.draft_json is None and row.ydoc is None
+
+
+async def test_put_state_too_large_message_follows_the_cap(client, db, monkeypatch):
+    monkeypatch.setattr(internal_routes, "MAX_YDOC_BYTES", 3 * 1024 * 1024)
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "P", kind="page")
+    resp = await _put_state(client, page["id"], _doc("x"),
+                            ydoc=b"\x00" * (3 * 1024 * 1024 + 1), expect=413)
+    assert resp.json()["detail"]["message"] == "The document is larger than 3 MB."
 
 
 async def test_put_state_to_a_trashed_page_is_refused(client, db):

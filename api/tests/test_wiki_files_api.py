@@ -12,21 +12,29 @@ from datetime import timedelta
 from urllib.parse import parse_qs, urlparse
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 
 from serversherpa.config import get_settings
-from serversherpa.db.models import WikiFile, WikiJob, WikiPageAsset
+from serversherpa.db.engine import get_engine
+from serversherpa.db.models import (
+    AuditLog,
+    WikiFile,
+    WikiJob,
+    WikiPageAsset,
+)
 from serversherpa.services import storage
 from serversherpa.wiki import files as wiki_files
 from serversherpa.wiki.files import (
     UploadTokenError,
+    inline_content_type,
     make_upload_token,
     needs_extract,
+    normalize_content_type,
     preview_kind_for,
     read_upload_token,
     sanitize_filename,
 )
-from tests.wiki_helpers import _create, _setup, _space
+from tests.wiki_helpers import _create, _setup, _space, publish_via_db
 
 DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
@@ -67,6 +75,13 @@ def test_sanitize_filename(name, expected):
      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "pdf"),
     ("archive.zip", "application/zip", "none"),
     ("unknown", "", "none"),
+    # parameters are ignored — svg stays 'none' even under an image name
+    ("x.png", "image/svg+xml; charset=utf-8", "none"),
+    ("photo.png", "image/png; charset=binary", "native"),
+    # active markup never renders natively, even though it's text/*
+    ("page.xhtml", "application/xhtml+xml", "none"),
+    ("page.html", "text/html", "none"),
+    ("page.txt", "text/html; charset=utf-8", "none"),
 ])
 def test_preview_kind_for(filename, content_type, expected):
     assert preview_kind_for(filename, content_type) == expected
@@ -84,6 +99,42 @@ def test_preview_kind_for(filename, content_type, expected):
 ])
 def test_needs_extract(filename, content_type, expected):
     assert needs_extract(filename, content_type) == expected
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("image/png", "image/png"),
+    ("Image/SVG+XML; charset=utf-8", "image/svg+xml"),
+    ("  text/plain ;charset=utf-8", "text/plain"),
+    ("", "application/octet-stream"),
+    ("  ", "application/octet-stream"),
+    ("; charset=utf-8", "application/octet-stream"),
+])
+def test_normalize_content_type(raw, expected):
+    assert normalize_content_type(raw) == expected
+
+
+@pytest.mark.parametrize("filename, content_type, expected", [
+    ("photo.png", "image/png", "image/png"),
+    ("clip.mp4", "video/mp4", "video/mp4"),
+    ("song.mp3", "audio/mpeg", "audio/mpeg"),
+    ("report.pdf", "application/pdf", "application/pdf"),
+    ("notes.md", "application/octet-stream", "text/plain; charset=utf-8"),
+    ("data.csv", "text/csv", "text/plain; charset=utf-8"),
+    ("icon.svg", "image/svg+xml", None),
+    ("x.png", "image/svg+xml; charset=utf-8", None),
+    ("page.xhtml", "application/xhtml+xml", None),
+    ("page.html", "text/html", None),
+    ("report.docx", DOCX, None),
+    ("archive.zip", "application/zip", None),
+    ("unknown", "", None),
+])
+def test_inline_content_type(filename, content_type, expected):
+    assert inline_content_type(filename, content_type) == expected
+
+
+def test_inline_content_type_honors_a_stored_preview_kind():
+    # a version whose stored preview_kind isn't native is never inline
+    assert inline_content_type("photo.png", "image/png", preview_kind="none") is None
 
 
 # ── wiki.files: upload tokens ────────────────────────────────────────
@@ -141,6 +192,43 @@ def _mock_head_missing(monkeypatch):
 
 def _query(url):
     return parse_qs(urlparse(url).query)
+
+
+async def _upload_node(client, s, monkeypatch, filename, content_type, *, size=5,
+                       parent_id=None, headers=None):
+    """Start + complete a new file node upload as the editor (or
+    `headers`); returns the NodeOut."""
+    headers = headers or s["editor"]
+    resp = await _start(client, headers, target="node", space_id=s["space"]["id"],
+                        parent_id=parent_id, filename=filename,
+                        content_type=content_type, size=size)
+    assert resp.status_code == 200, resp.text
+    _mock_head(monkeypatch, size=size, content_type=content_type)
+    return await _complete(client, headers, resp.json()["upload_id"])
+
+
+async def _upload_asset(client, headers, monkeypatch, page_id, filename, content_type,
+                        size=10):
+    resp = await _start(client, headers, target="asset", page_id=page_id,
+                        filename=filename, content_type=content_type, size=size)
+    assert resp.status_code == 200, resp.text
+    _mock_head(monkeypatch, size=size, content_type=content_type)
+    return await _complete(client, headers, resp.json()["upload_id"])
+
+
+async def _audits(db, entity_id, action):
+    return (await db.scalars(select(AuditLog).where(
+        AuditLog.entity_type == "wiki_node", AuditLog.entity_id == str(entity_id),
+        AuditLog.action == action))).all()
+
+
+def _capture_statements():
+    statements: list[str] = []
+
+    def _capture(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    return statements, _capture
 
 
 # ── POST /uploads ────────────────────────────────────────────────────
@@ -521,6 +609,7 @@ async def test_restore_file_version(client, db, monkeypatch):
 async def test_asset_urls_omits_unknown_and_unviewable_ids(client, db, monkeypatch):
     s = await _setup(client, db)
     page = await _create(client, s["editor"], s["space"], "Doc", kind="page")
+    await publish_via_db(db, page["id"])
     resp = await _start(client, s["editor"], target="asset", page_id=page["id"],
                         filename="visible.png", content_type="image/png", size=10)
     body = resp.json()
@@ -548,3 +637,246 @@ async def test_asset_urls_empty_ids_returns_empty(client, db):
     resp = await client.post("/wiki/assets/urls", headers=s["editor"], json={"ids": []})
     assert resp.status_code == 200
     assert resp.json() == {"urls": {}}
+
+
+# ── fix wave 1: safe inline serving ─────────────────────────────────
+
+
+async def test_upload_start_strips_content_type_parameters(client, db, monkeypatch):
+    s = await _setup(client, db)
+    resp = await _start(client, s["editor"], target="node", space_id=s["space"]["id"],
+                        parent_id=None, filename="x.png",
+                        content_type="Image/SVG+XML; charset=utf-8", size=5)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["headers"] == {"Content-Type": "image/svg+xml"}
+    _mock_head(monkeypatch, size=5, content_type="image/svg+xml")
+    node = await _complete(client, s["editor"], resp.json()["upload_id"])
+    version = node["file"]["current_version"]
+    assert version["content_type"] == "image/svg+xml"
+    assert version["preview_kind"] == "none"
+
+
+@pytest.mark.parametrize("filename, content_type", [
+    ("icon.svg", "image/svg+xml"),
+    ("x.png", "image/svg+xml; charset=utf-8"),
+    ("page.xhtml", "application/xhtml+xml"),
+    ("page.html", "text/html"),
+])
+async def test_files_url_inline_active_content_is_served_as_an_attachment(
+        client, db, monkeypatch, filename, content_type):
+    s = await _setup(client, db)
+    node = await _upload_node(client, s, monkeypatch, filename, content_type)
+    resp = await client.get(f"/wiki/files/{node['id']}/url", headers=s["viewer"],
+                            params={"disposition": "inline"})
+    assert resp.status_code == 200, resp.text
+    qs = _query(resp.json()["url"])
+    assert qs["response-content-disposition"][0].startswith("attachment")
+    assert qs["response-content-type"][0] == "application/octet-stream"
+
+
+async def test_files_url_inline_office_original_is_served_as_an_attachment(
+        client, db, monkeypatch):
+    s = await _setup(client, db)
+    node = await _upload_node(client, s, monkeypatch, "Policy.docx", DOCX)
+    resp = await client.get(f"/wiki/files/{node['id']}/url", headers=s["viewer"],
+                            params={"disposition": "inline"})
+    qs = _query(resp.json()["url"])
+    assert qs["response-content-disposition"][0].startswith("attachment")
+    assert qs["response-content-type"][0] == "application/octet-stream"
+
+
+async def test_asset_urls_serve_non_allowlisted_assets_as_attachments(
+        client, db, monkeypatch):
+    s = await _setup(client, db)
+    page = await _create(client, s["editor"], s["space"], "Doc", kind="page")
+    html = await _upload_asset(client, s["editor"], monkeypatch, page["id"],
+                               "evil.html", "text/html")
+    png = await _upload_asset(client, s["editor"], monkeypatch, page["id"],
+                              "pic.png", "image/png")
+    resp = await client.post("/wiki/assets/urls", headers=s["editor"],
+                             json={"ids": [html["id"], png["id"]]})
+    assert resp.status_code == 200, resp.text
+    urls = resp.json()["urls"]
+
+    html_qs = _query(urls[html["id"]])
+    assert html_qs["response-content-disposition"][0].startswith("attachment")
+    assert html_qs["response-content-type"][0] == "application/octet-stream"
+
+    png_qs = _query(urls[png["id"]])
+    assert png_qs["response-content-disposition"][0].startswith("inline")
+    assert png_qs["response-content-type"][0] == "image/png"
+
+
+# ── fix wave 1: upload re-validation ────────────────────────────────
+
+
+async def test_upload_complete_rechecks_the_parent(client, db, monkeypatch):
+    s = await _setup(client, db)
+    folder = await _create(client, s["editor"], s["space"], "Folder")
+    resp = await _start(client, s["editor"], target="node", space_id=s["space"]["id"],
+                        parent_id=folder["id"], filename="a.pdf",
+                        content_type="application/pdf", size=5)
+    assert resp.status_code == 200, resp.text
+    assert (await client.delete(f"/wiki/nodes/{folder['id']}",
+                                headers=s["editor"])).status_code == 200
+
+    _mock_head(monkeypatch, size=5, content_type="application/pdf")
+    resp2 = await client.post("/wiki/uploads/complete", headers=s["editor"],
+                              json={"upload_id": resp.json()["upload_id"]})
+    assert resp2.status_code == 422, resp2.text
+    assert resp2.json()["detail"]["code"] == "bad_parent"
+
+
+@pytest.mark.parametrize("field", ["filename", "content_type"])
+async def test_upload_start_bounds_filename_and_content_type(client, db, field):
+    s = await _setup(client, db)
+    body = {"target": "node", "space_id": s["space"]["id"], "parent_id": None,
+            "filename": "a.txt", "content_type": "text/plain", "size": 5}
+    body[field] = "a" * 256
+    resp = await client.post("/wiki/uploads", headers=s["editor"], json=body)
+    assert resp.status_code == 422, resp.text
+
+
+# ── fix wave 1: restore re-queues pending work ──────────────────────
+
+
+async def test_restoring_a_pending_version_queues_jobs_for_the_new_version(
+        client, db, monkeypatch):
+    s = await _setup(client, db)
+    node = await _upload_node(client, s, monkeypatch, "Policy.docx", DOCX)
+    v1_id = node["file"]["current_version"]["id"]
+    resp = await _start(client, s["editor"], target="version", node_id=node["id"],
+                        filename="Policy.png", content_type="image/png", size=7)
+    _mock_head(monkeypatch, size=7, content_type="image/png")
+    await _complete(client, s["editor"], resp.json()["upload_id"])
+
+    resp = await client.post(f"/wiki/files/{node['id']}/versions/{v1_id}/restore",
+                             headers=s["editor"])
+    assert resp.status_code == 201, resp.text
+    restored = resp.json()
+    assert restored["preview_status"] == "pending"
+
+    jobs = (await db.scalars(select(WikiJob).where(
+        WikiJob.file_version_id == uuid.UUID(restored["id"])))).all()
+    assert sorted(j.kind for j in jobs) == ["file_extract", "file_preview"]
+    assert {j.node_id for j in jobs} == {uuid.UUID(node["id"])}
+
+
+async def test_restoring_a_finished_version_queues_nothing(client, db, monkeypatch):
+    s = await _setup(client, db)
+    node = await _upload_node(client, s, monkeypatch, "Pic.png", "image/png")
+    v1_id = node["file"]["current_version"]["id"]
+    resp = await client.post(f"/wiki/files/{node['id']}/versions/{v1_id}/restore",
+                             headers=s["editor"])
+    assert resp.status_code == 201, resp.text
+    jobs = (await db.scalars(select(WikiJob).where(
+        WikiJob.file_version_id == uuid.UUID(resp.json()["id"])))).all()
+    assert jobs == []
+
+
+# ── fix wave 1: audit rows ──────────────────────────────────────────
+
+
+async def test_file_changes_are_audited(client, db, monkeypatch):
+    s = await _setup(client, db)
+    node = await _upload_node(client, s, monkeypatch, "v1.txt", "text/plain", size=3)
+    node_id = node["id"]
+    v1_id = node["file"]["current_version"]["id"]
+    [upload] = await _audits(db, node_id, "upload")
+    assert upload.actor_person_id == s["editor_id"]
+    assert upload.changes["filename"] == {"from": None, "to": "v1.txt"}
+
+    resp = await _start(client, s["editor"], target="version", node_id=node_id,
+                        filename="v2.txt", content_type="text/plain", size=4)
+    _mock_head(monkeypatch, size=4, content_type="text/plain")
+    await _complete(client, s["editor"], resp.json()["upload_id"])
+    [version] = await _audits(db, node_id, "upload_version")
+    assert version.changes["version_no"] == 2
+    assert version.changes["filename"] == "v2.txt"
+
+    resp = await client.post(f"/wiki/files/{node_id}/versions/{v1_id}/restore",
+                             headers=s["editor"])
+    assert resp.status_code == 201
+    [restore] = await _audits(db, node_id, "restore")
+    assert restore.changes["from_version_id"] == v1_id
+    assert restore.changes["version_no"] == 3
+
+    resp = await client.patch(f"/wiki/files/{node_id}", headers=s["editor"],
+                              json={"description": "Now described."})
+    assert resp.status_code == 200
+    [update] = await _audits(db, node_id, "update")
+    assert update.changes == {"description": {"from": "", "to": "Now described."}}
+
+
+async def test_page_asset_upload_is_audited_on_the_page(client, db, monkeypatch):
+    s = await _setup(client, db)
+    page = await _create(client, s["editor"], s["space"], "Doc", kind="page")
+    asset = await _upload_asset(client, s["editor"], monkeypatch, page["id"],
+                                "inline.png", "image/png")
+    [row] = await _audits(db, page["id"], "asset_upload")
+    assert row.actor_person_id == s["editor_id"]
+    assert row.changes == {"asset_id": asset["id"], "filename": "inline.png"}
+
+
+# ── fix wave 1: version numbering locks the file row ────────────────
+
+
+async def test_version_upload_and_restore_lock_the_file_row(client, db, monkeypatch):
+    s = await _setup(client, db)
+    node = await _upload_node(client, s, monkeypatch, "v1.txt", "text/plain", size=3)
+    v1_id = node["file"]["current_version"]["id"]
+    resp = await _start(client, s["editor"], target="version", node_id=node["id"],
+                        filename="v2.txt", content_type="text/plain", size=4)
+    _mock_head(monkeypatch, size=4, content_type="text/plain")
+
+    engine = get_engine().sync_engine
+    statements, listener = _capture_statements()
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        await _complete(client, s["editor"], resp.json()["upload_id"])
+        upload_statements = list(statements)
+        statements.clear()
+        assert (await client.post(
+            f"/wiki/files/{node['id']}/versions/{v1_id}/restore",
+            headers=s["editor"])).status_code == 201
+        restore_statements = list(statements)
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
+
+    for captured in (upload_statements, restore_statements):
+        locks = [i for i, st in enumerate(captured)
+                 if "FROM wiki_files" in st and "FOR UPDATE" in st]
+        numbering = [i for i, st in enumerate(captured)
+                     if "max(wiki_file_versions.version_no)" in st]
+        assert locks and numbering, captured
+        assert locks[0] < numbering[0]
+
+
+# ── fix wave 1: /assets/urls limits and visibility ──────────────────
+
+
+async def test_asset_urls_caps_the_batch(client, db):
+    s = await _setup(client, db)
+    resp = await client.post("/wiki/assets/urls", headers=s["editor"],
+                             json={"ids": [str(uuid.uuid4()) for _ in range(201)]})
+    assert resp.status_code == 422
+
+
+async def test_asset_urls_hide_never_published_pages_from_view_only_callers(
+        client, db, monkeypatch):
+    s = await _setup(client, db)
+    draft = await _create(client, s["editor"], s["space"], "Draft", kind="page")
+    asset = await _upload_asset(client, s["editor"], monkeypatch, draft["id"],
+                                "pic.png", "image/png")
+
+    resp = await client.post("/wiki/assets/urls", headers=s["viewer"],
+                             json={"ids": [asset["id"]]})
+    assert resp.json() == {"urls": {}}
+    resp = await client.post("/wiki/assets/urls", headers=s["editor"],
+                             json={"ids": [asset["id"]]})
+    assert list(resp.json()["urls"]) == [asset["id"]]
+
+    await publish_via_db(db, uuid.UUID(draft["id"]))
+    resp = await client.post("/wiki/assets/urls", headers=s["viewer"],
+                             json={"ids": [asset["id"]]})
+    assert list(resp.json()["urls"]) == [asset["id"]]

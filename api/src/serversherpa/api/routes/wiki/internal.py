@@ -29,7 +29,7 @@ from serversherpa.api.deps import (
     enforce_read_only,
     enforce_session_scope,
 )
-from serversherpa.api.routes.wiki.errors import err
+from serversherpa.api.routes.wiki.errors import err, not_found
 from serversherpa.api.routes.wiki.schemas import (
     CollabAuthorizeOut,
     PageStateIn,
@@ -53,10 +53,6 @@ _SERVICE_USER = SimpleNamespace(roles=())
 # it) — big enough for normal editing history, small enough to refuse an
 # abusive or corrupt payload before it's held in memory
 MAX_YDOC_BYTES = 4 * MAX_DOC_BYTES
-
-
-def _not_found() -> HTTPException:
-    return err(404, "not_found", "Not found.")
 
 
 async def service_auth(
@@ -102,15 +98,15 @@ async def authorize(
     principal = await principal_for(db, user)
     row = await db.get(WikiNode, node)
     if row is None or row.deleted_at is not None or row.kind != "page":
-        raise _not_found()
+        raise not_found()
     level = await AccessIndex(db, principal).level_for_node(row)
     if level is None:
-        raise _not_found()
+        raise not_found()
     if level == "view":
         published_id = await db.scalar(
             select(WikiPage.published_version_id).where(WikiPage.node_id == row.id))
         if published_id is None:
-            raise _not_found()
+            raise not_found()
     person = user.person
     return CollabAuthorizeOut(
         level=level, person=PersonRef(id=person.id, name=person.display_name),
@@ -124,7 +120,7 @@ async def _page(db, node_id: uuid.UUID) -> tuple[WikiNode, WikiPage]:
     node = await db.get(WikiNode, node_id)
     page = await db.get(WikiPage, node_id) if node is not None else None
     if page is None:
-        raise _not_found()
+        raise not_found()
     return node, page
 
 
@@ -155,7 +151,8 @@ async def put_state(node_id: uuid.UUID, body: PageStateIn, request: Request,
     except (binascii.Error, ValueError):
         raise err(422, "bad_ydoc", "ydoc_b64 isn't valid base64.") from None
     if len(ydoc) > MAX_YDOC_BYTES:
-        raise err(413, "too_large", "The document is larger than 20 MB.")
+        raise err(413, "too_large",
+                  f"The document is larger than {MAX_YDOC_BYTES // (1024 * 1024)} MB.")
 
     editor_ids = body.editor_ids
     if editor_ids:

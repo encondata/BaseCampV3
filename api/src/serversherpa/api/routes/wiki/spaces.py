@@ -10,17 +10,33 @@ import re
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from sqlalchemy import or_, select
 
 from serversherpa.api.routes.wiki.deps import WikiContext, space_by_key
+from serversherpa.api.routes.wiki.errors import err
 from serversherpa.api.routes.wiki.schemas import (
-    GrantOut, GrantsOut, GrantsPutIn, MeOut, PersonRef, PrincipalOut, PrincipalType,
-    SpaceCreateIn, SpaceOut, SpacePatchIn,
+    GrantOut,
+    GrantsOut,
+    GrantsPutIn,
+    MeOut,
+    PersonRef,
+    PrincipalOut,
+    PrincipalType,
+    SpaceCreateIn,
+    SpaceOut,
+    SpacePatchIn,
 )
 from serversherpa.api.routes.wiki.serialize import space_out
 from serversherpa.db.models import (
-    AccessGroup, Client, Partner, Person, Role, UserAccount, WikiGrant, WikiSpace,
+    AccessGroup,
+    Client,
+    Partner,
+    Person,
+    Role,
+    UserAccount,
+    WikiGrant,
+    WikiSpace,
 )
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.wiki import space_settings
@@ -37,14 +53,6 @@ SPACE_FIELDS = ["name", "description", "icon", "color", "settings"]
 _UUID_PRINCIPAL_MODELS = {
     "person": Person, "access_group": AccessGroup, "client": Client, "partner": Partner}
 _SEARCHABLE_ORG_MODELS = {"access_group": AccessGroup, "client": Client, "partner": Partner}
-
-
-def _err(status: int, code: str, **extra) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code, **extra})
-
-
-def _forbidden(message: str = "You don't have access to do that.") -> HTTPException:
-    return _err(403, "forbidden", message=message)
 
 
 async def _can_manage_any_space(ctx: WikiContext) -> bool:
@@ -83,15 +91,15 @@ async def list_spaces(ctx: WikiContext, include_archived: bool = False) -> list[
 @router.post("/spaces", response_model=SpaceOut, status_code=201)
 async def create_space(body: SpaceCreateIn, ctx: WikiContext) -> SpaceOut:
     if not ctx.user.access.can("wiki", "add"):
-        raise _forbidden("You need wiki:add access to create a space.")
+        raise err(403, "forbidden", "You need wiki:add access to create a space.")
 
     key = body.key.strip().lower()
     if not KEY_RE.match(key):
-        raise _err(422, "bad_key",
+        raise err(422, "bad_key",
                    message="Key must be 2-40 lowercase letters, digits, or "
                            "hyphens, starting with a letter or digit.")
     if await space_by_key(ctx.db, key):
-        raise _err(409, "key_taken")
+        raise err(409, "key_taken")
 
     actor_id = ctx.user.person.id
     space = WikiSpace(
@@ -142,7 +150,7 @@ async def patch_space(key: str, body: SpacePatchIn, ctx: WikiContext) -> SpaceOu
     if body.settings is not None:
         bad = sorted(k for k in body.settings if k not in space_settings.ALLOWED)
         if bad:
-            raise _err(422, "bad_setting", keys=bad)
+            raise err(422, "bad_setting", keys=bad)
         space.settings = {**(space.settings or {}), **body.settings}
     if body.name is not None:
         space.name = body.name
@@ -186,7 +194,7 @@ async def unarchive_space(key: str, ctx: WikiContext) -> SpaceOut:
     # checks the Principal directly so the 403 says what's actually needed.
     space = await require_space_level(ctx.ix, await space_by_key(ctx.db, key), "view")
     if not ctx.principal.is_admin:
-        raise _forbidden("Only a wiki administrator can unarchive a space.")
+        raise err(403, "forbidden", "Only a wiki administrator can unarchive a space.")
 
     if space.archived_at is not None:
         space.archived_at = None
@@ -249,12 +257,12 @@ async def put_space_grants(key: str, body: GrantsPutIn, ctx: WikiContext) -> Gra
 
     for g in body.grants:
         if not await _principal_exists(ctx.db, g.principal_type, g.principal_id):
-            raise _err(422, "bad_principal",
+            raise err(422, "bad_principal",
                        principal_type=g.principal_type, principal_id=g.principal_id)
 
     has_manager = any(g.level == "manage" for g in body.grants)
     if not has_manager and not ctx.principal.is_admin:
-        raise _err(422, "no_manager")
+        raise err(422, "no_manager")
 
     existing = await _space_grants(ctx.db, space)
     before = [{"principal_type": g.principal_type, "principal_id": g.principal_id,
@@ -290,8 +298,8 @@ async def list_principals(
     q: str = "",
 ) -> list[PrincipalOut]:
     if not await _can_manage_any_space(ctx):
-        raise _forbidden(
-            "You need manage access on at least one space to search principals.")
+        raise err(403, "forbidden",
+                  "You need manage access on at least one space to search principals.")
 
     query = q.strip()
     like = f"%{query}%"
@@ -322,7 +330,7 @@ async def list_principals(
 
     model = _SEARCHABLE_ORG_MODELS.get(principal_type)
     if model is None:
-        raise _err(422, "bad_type")
+        raise err(422, "bad_type")
     stmt = select(model)
     if hasattr(model, "archived_at"):
         stmt = stmt.where(model.archived_at.is_(None))

@@ -19,8 +19,13 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from serversherpa.api.routes.wiki.deps import WikiContext, space_by_key
-from serversherpa.api.routes.wiki.errors import err, is_edit
+from serversherpa.api.routes.wiki.deps import (
+    WikiContext,
+    destination,
+    space_by_key,
+    visible_nodes,
+)
+from serversherpa.api.routes.wiki.errors import err, forbidden, is_edit, not_found
 from serversherpa.api.routes.wiki.schemas import (
     Breadcrumb,
     NodeCopyIn,
@@ -50,58 +55,13 @@ DRAFTS_LIMIT = 50
 NODE_FIELDS = ["title", "owner_id"]
 
 
-def _not_found() -> HTTPException:
-    return err(404, "not_found", "Not found.")
-
-
-def _forbidden(needed: str) -> HTTPException:
-    return err(403, "forbidden", f"You need {needed} access to do that.")
-
-
 def _tree_error(exc: tree.TreeError) -> HTTPException:
     return err(422, exc.code, exc.message)
 
 
-async def _visible(ctx: WikiContext, nodes: Sequence[WikiNode],
-                   ) -> tuple[list[WikiNode], dict[uuid.UUID, str | None]]:
-    """The live nodes the caller can see, in order, with their levels: a
-    level of at least view, and — for view-only — not a never-published
-    page. One extra query at most (the published check)."""
-    live = [n for n in nodes if n.deleted_at is None]
-    levels = await ctx.ix.levels_for_nodes(live)
-    view_only_pages = [n.id for n in live
-                       if n.kind == "page" and levels[n.id] == "view"]
-    unpublished: set[uuid.UUID] = set()
-    if view_only_pages:
-        unpublished = set((await ctx.db.scalars(
-            select(WikiPage.node_id).where(
-                WikiPage.node_id.in_(view_only_pages),
-                WikiPage.published_version_id.is_(None))
-        )).all())
-    return [n for n in live if levels[n.id] and n.id not in unpublished], levels
-
-
-async def _destination(ctx: WikiContext, space_id: uuid.UUID,
-                       parent_id: uuid.UUID | None,
-                       ) -> tuple[WikiSpace, WikiNode | None, str | None]:
-    """Resolve where a node is going: (space, parent, the caller's level
-    there). 404 when the space, or the parent, isn't one they can view.
-    Whether the parent can actually hold the node is `tree.check_parent`'s
-    call (a 422), made after the caller's level has been checked."""
-    space = await ctx.db.get(WikiSpace, space_id)
-    if parent_id is None:
-        space = await require_space_level(ctx.ix, space, "view")
-        return space, None, await ctx.ix.level_for_space(space.id)
-    parent = await ctx.db.get(WikiNode, parent_id)
-    level = await ctx.ix.level_for_node(parent) if parent is not None else None
-    if level is None or space is None:
-        raise _not_found()
-    return space, parent, level
-
-
 async def _nodes_out_for(ctx: WikiContext, nodes: Sequence[WikiNode],
                          limit: int | None = None) -> list[NodeOut]:
-    shown, levels = await _visible(ctx, nodes)
+    shown, levels = await visible_nodes(ctx, nodes)
     if limit is not None:
         shown = shown[:limit]
     return await nodes_out(ctx, shown, levels)
@@ -112,9 +72,9 @@ async def _nodes_out_for(ctx: WikiContext, nodes: Sequence[WikiNode],
 
 @router.post("/nodes", response_model=NodeOut, status_code=201)
 async def create(body: NodeCreateIn, ctx: WikiContext) -> NodeOut:
-    space, parent, level = await _destination(ctx, body.space_id, body.parent_id)
+    space, parent, level = await destination(ctx, body.space_id, body.parent_id)
     if not is_edit(level):
-        raise _forbidden("edit")
+        raise forbidden("edit")
     try:
         tree.check_parent(parent, space.id)
     except tree.TreeError as exc:
@@ -147,7 +107,7 @@ async def list_tree(key: str, ctx: WikiContext,
         parent = await require_node_level(
             ctx.ix, await ctx.db.get(WikiNode, parent_id), "view")
         if parent.space_id != space.id:
-            raise _not_found()
+            raise not_found()
     children = (await ctx.db.scalars(
         select(WikiNode)
         .where(WikiNode.space_id == space.id,
@@ -169,7 +129,7 @@ async def get_node(node_id: uuid.UUID, ctx: WikiContext) -> NodeDetailOut:
         ancestors = {n.id: n for n in (await ctx.db.scalars(
             select(WikiNode).where(WikiNode.id.in_(node.path))
         )).all()}
-        shown, _ = await _visible(ctx, list(ancestors.values()))
+        shown, _ = await visible_nodes(ctx, list(ancestors.values()))
         shown_ids = {n.id for n in shown}
         for ancestor_id in node.path:
             ancestor = ancestors.get(ancestor_id)
@@ -217,12 +177,12 @@ async def patch_node(node_id: uuid.UUID, body: NodePatchIn, ctx: WikiContext) ->
 @router.post("/nodes/{node_id}/move", response_model=NodeOut)
 async def move(node_id: uuid.UUID, body: NodeMoveIn, ctx: WikiContext) -> NodeOut:
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "edit")
-    space, parent, dest_level = await _destination(
+    space, parent, dest_level = await destination(
         ctx, body.space_id or node.space_id, body.parent_id)
     if space.id != node.space_id and await ctx.ix.level_for_node(node) != "manage":
-        raise _forbidden("manage")
+        raise forbidden("manage")
     if not is_edit(dest_level):
-        raise _forbidden("edit")
+        raise forbidden("edit")
 
     fields = ["space_id", "parent_id", "position"]
     before = snapshot(node, fields)
@@ -245,13 +205,13 @@ async def move(node_id: uuid.UUID, body: NodeMoveIn, ctx: WikiContext) -> NodeOu
 @router.post("/nodes/{node_id}/copy", response_model=NodeOut, status_code=201)
 async def copy(node_id: uuid.UUID, body: NodeCopyIn, ctx: WikiContext) -> NodeOut:
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "view")
-    shown, _ = await _visible(ctx, [node])
+    shown, _ = await visible_nodes(ctx, [node])
     if not shown:
-        raise _not_found()
-    space, parent, dest_level = await _destination(
+        raise not_found()
+    space, parent, dest_level = await destination(
         ctx, body.space_id or node.space_id, body.parent_id)
     if not is_edit(dest_level):
-        raise _forbidden("edit")
+        raise forbidden("edit")
 
     subtree = (await ctx.db.scalars(
         select(WikiNode).where(WikiNode.path.contains([node.id]),
@@ -366,7 +326,7 @@ async def list_recent(ctx: WikiContext, space: str | None = None,
     levels: dict[uuid.UUID, str | None] = {}
     for i in range(RECENT_MAX_CHUNKS):
         rows = (await ctx.db.scalars(q.offset(i * chunk).limit(chunk))).all()
-        visible, chunk_levels = await _visible(ctx, rows)
+        visible, chunk_levels = await visible_nodes(ctx, rows)
         shown.extend(visible)
         levels.update(chunk_levels)
         if len(shown) >= limit or len(rows) < chunk:

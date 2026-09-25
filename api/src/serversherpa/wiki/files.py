@@ -11,6 +11,12 @@ URL it writes to directly, then `POST /wiki/uploads/complete` verifies
 the object landed (`storage.head_object`) before creating the file
 node/version or page-asset row. The upload token is the only state kept
 between those two calls — there's no upload table.
+
+Storage keys are not unique to one row: a copied file or page asset, a
+restored file version, and a replayed upload token (same person, same
+key) all point at the same object — so any future purge must
+reference-count a key across `wiki_file_versions` and `wiki_page_assets`
+before deleting the object.
 """
 from __future__ import annotations
 
@@ -39,6 +45,15 @@ OFFICE_EXTS = {".doc", ".docx", ".odt", ".rtf", ".xls", ".xlsx", ".ods",
 # start with "text/" (.md/.json/.csv/.log commonly arrive as
 # application/* or with no recognizable browser-supplied type at all)
 TEXT_LIKE_EXTS = {".md", ".csv", ".json", ".log"}
+
+# markup a browser would run script from if the bucket served it inline —
+# never previewed natively, never served inline (by type or extension,
+# whichever says so)
+ACTIVE_MARKUP_TYPES = {"image/svg+xml", "text/html", "application/xhtml+xml"}
+ACTIVE_MARKUP_EXTS = {".svg", ".html", ".htm", ".xhtml"}
+
+DEFAULT_CONTENT_TYPE = "application/octet-stream"
+INLINE_TEXT_CONTENT_TYPE = "text/plain; charset=utf-8"
 
 _UNSAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._ -]")
 _MULTI_WS_RE = re.compile(r"\s+")
@@ -82,6 +97,33 @@ def display_filename(name: str) -> str:
     return trimmed or "file"
 
 
+# ── content types ────────────────────────────────────────────────────
+
+
+def normalize_content_type(content_type: str | None) -> str:
+    """The bare, lowercased media type — parameters (`; charset=…`)
+    dropped — or application/octet-stream when none was given. Done once
+    at upload start; everything stored and every rule below sees only
+    this form, so `image/svg+xml; charset=utf-8` can't slip past a check
+    for `image/svg+xml`."""
+    bare = (content_type or "").split(";")[0].strip().lower()
+    return bare or DEFAULT_CONTENT_TYPE
+
+
+def _is_active_markup(filename: str, content_type: str) -> bool:
+    return (normalize_content_type(content_type) in ACTIVE_MARKUP_TYPES
+            or _ext(filename) in ACTIVE_MARKUP_EXTS)
+
+
+def _is_inline_media(content_type: str) -> bool:
+    """Types a browser only ever renders as media: images (never svg —
+    see ACTIVE_MARKUP_TYPES), video, audio, and PDF."""
+    ct = normalize_content_type(content_type)
+    if ct in ACTIVE_MARKUP_TYPES:
+        return False
+    return ct.startswith(("image/", "video/", "audio/")) or ct == "application/pdf"
+
+
 # ── preview / extraction classification ─────────────────────────────
 
 
@@ -89,36 +131,53 @@ def is_text_like(filename: str, content_type: str) -> bool:
     """Previewed/extracted/served as plain text: an explicit `text/*`
     type, or one of the extensions upload clients often mislabel or
     leave generic (.md, .csv, .json, .log)."""
-    ct = (content_type or "").lower()
+    ct = normalize_content_type(content_type)
     return ct.startswith("text/") or _ext(filename) in TEXT_LIKE_EXTS
 
 
 def preview_kind_for(filename: str, content_type: str) -> str:
     """'native' (rendered directly: image, pdf, video, audio, text-like),
     'pdf' (an office document the worker converts), or 'none' (icon +
-    metadata + download only). An SVG is 'none' even though it's an
-    image — shown inline it could run script on the bucket's origin."""
-    ct = (content_type or "").lower()
-    ext = _ext(filename)
-    if ct == "image/svg+xml" or ext == ".svg":
+    metadata + download only). Active markup (SVG, HTML, XHTML) is
+    'none' even though it's an image or text — shown inline it could run
+    script on the bucket's origin."""
+    if _is_active_markup(filename, content_type):
         return "none"
-    if ct.startswith(("image/", "video/", "audio/")) or ct == "application/pdf":
+    if _is_inline_media(content_type) or is_text_like(filename, content_type):
         return "native"
-    if is_text_like(filename, content_type):
-        return "native"
-    if ext in OFFICE_EXTS:
+    if _ext(filename) in OFFICE_EXTS:
         return "pdf"
     return "none"
+
+
+def inline_content_type(filename: str, content_type: str,
+                        preview_kind: str | None = None) -> str | None:
+    """The `ResponseContentType` an inline (in-browser) view of this
+    object may be served with, or None when it must be an attachment
+    (served as application/octet-stream) instead. The one rule for every
+    presigned read of an upload: only a native preview is ever inline;
+    media (image except svg, video, audio, pdf) keeps its stored type;
+    text-like files are forced to `text/plain` so the bucket's origin
+    can never serve stored text back as something that runs script.
+    `preview_kind` defaults to what `preview_kind_for` says; pass a
+    version's stored kind to honor it."""
+    if preview_kind is None:
+        preview_kind = preview_kind_for(filename, content_type)
+    if preview_kind != "native" or _is_active_markup(filename, content_type):
+        return None
+    if _is_inline_media(content_type):
+        return normalize_content_type(content_type)
+    if is_text_like(filename, content_type):
+        return INLINE_TEXT_CONTENT_TYPE
+    return None
 
 
 def needs_extract(filename: str, content_type: str) -> bool:
     """Does this file get a `file_extract` job? PDFs, office documents
     (converted to a PDF first), and text-like files all carry searchable
     text; images/video/audio/everything else don't."""
-    ct = (content_type or "").lower()
-    ext = _ext(filename)
-    return (ct == "application/pdf" or ext in OFFICE_EXTS
-            or is_text_like(filename, content_type))
+    return (normalize_content_type(content_type) == "application/pdf"
+            or _ext(filename) in OFFICE_EXTS or is_text_like(filename, content_type))
 
 
 def preview_status_for(preview_kind: str) -> str:
@@ -171,3 +230,4 @@ async def enqueue(db: AsyncSession, kind: str, *, node_id: uuid.UUID | None = No
     db.add(job)
     await db.flush()
     return job
+

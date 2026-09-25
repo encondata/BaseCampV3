@@ -16,7 +16,7 @@ from fastapi import APIRouter
 from sqlalchemy import select
 
 from serversherpa.api.routes.wiki.deps import WikiContext
-from serversherpa.api.routes.wiki.errors import err, is_edit
+from serversherpa.api.routes.wiki.errors import err, forbidden, is_edit, not_found
 from serversherpa.api.routes.wiki.schemas import (
     PageContentOut,
     PersonRef,
@@ -44,12 +44,12 @@ async def _page_for(ctx: WikiContext, node_id: uuid.UUID, needed: str,
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "view")
     page = await ctx.db.get(WikiPage, node.id) if node.kind == "page" else None
     if page is None:
-        raise err(404, "not_found", "Not found.")
+        raise not_found()
     level = await ctx.ix.level_for_node(node)
     if not is_edit(level) and page.published_version_id is None:
         raise err(404, "not_published", "This page hasn't been published yet.")
     if level_rank(level) < level_rank(needed):
-        raise err(403, "forbidden", f"You need {needed} access to do that.")
+        raise forbidden(needed)
     return node, page, level
 
 
@@ -59,9 +59,9 @@ async def _version_for(ctx: WikiContext, node: WikiNode, level: str | None,
     isn't a published one and the caller only has view."""
     version = await ctx.db.get(WikiPageVersion, version_id)
     if version is None or version.node_id != node.id:
-        raise err(404, "not_found", "Not found.")
+        raise not_found()
     if version.kind != "published" and not is_edit(level):
-        raise err(403, "forbidden", "You need edit access to do that.")
+        raise forbidden("edit")
     return version
 
 
@@ -94,7 +94,7 @@ async def get_content(node_id: uuid.UUID, ctx: WikiContext,
 
     if version == "draft":
         if not is_edit(level):
-            raise err(403, "forbidden", "You need edit access to do that.")
+            raise forbidden("edit")
         content = page.draft_json
         if content is None:
             content = await pages.published_content(ctx.db, page) or EMPTY_DOC

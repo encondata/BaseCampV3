@@ -11,19 +11,22 @@ file node + version 1 (target `node`), a new version on an existing
 file (target `version`), or a page-asset row (target `asset`).
 
 `GET /files/{id}/url` and `POST /assets/urls` hand out presigned reads
-for the object itself or its converted preview; nothing here does the
-conversion or text extraction — `wiki.files.enqueue` only queues the
-`file_preview`/`file_extract` jobs Task 8's worker will pick up.
+for the object itself or its converted preview — inline only for what
+`wiki.files.inline_content_type` allows, as an octet-stream attachment
+otherwise, so nothing stored can run script from the bucket's origin.
+Nothing here does the conversion or text extraction —
+`wiki.files.enqueue` only queues the `file_preview`/`file_extract` jobs
+Task 8's worker will pick up.
 """
 from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 from sqlalchemy import func, select
 
-from serversherpa.api.routes.wiki.deps import WikiContext
-from serversherpa.api.routes.wiki.errors import err, is_edit
+from serversherpa.api.routes.wiki.deps import WikiContext, destination, visible_nodes
+from serversherpa.api.routes.wiki.errors import err, forbidden, is_edit, not_found
 from serversherpa.api.routes.wiki.schemas import (
     AssetOut,
     AssetUrlsIn,
@@ -49,29 +52,23 @@ from serversherpa.services import storage
 from serversherpa.services.audit import audit, diff
 from serversherpa.wiki import tree
 from serversherpa.wiki.files import (
+    DEFAULT_CONTENT_TYPE,
     UploadTokenError,
     display_filename,
     enqueue,
     extract_status_for,
-    is_text_like,
+    inline_content_type,
     make_upload_token,
+    normalize_content_type,
     preview_kind_for,
     preview_status_for,
     read_upload_token,
     sanitize_filename,
 )
 from serversherpa.wiki.pages import refresh_search, utcnow
-from serversherpa.wiki.permissions import require_node_level, require_space_level
+from serversherpa.wiki.permissions import require_node_level
 
 router = APIRouter()
-
-
-def _not_found() -> HTTPException:
-    return err(404, "not_found", "Not found.")
-
-
-def _forbidden(needed: str) -> HTTPException:
-    return err(403, "forbidden", f"You need {needed} access to do that.")
 
 
 # ── uploads: start ───────────────────────────────────────────────────
@@ -79,23 +76,21 @@ def _forbidden(needed: str) -> HTTPException:
 
 async def _node_destination(ctx: WikiContext, space_id: uuid.UUID | None,
                             parent_id: uuid.UUID | None,
-                            ) -> tuple[WikiSpace, WikiNode | None, str | None]:
-    """(space, parent, the caller's level there) for a new file node —
-    the same resolution `POST /nodes` uses: 404 when the space or the
-    parent isn't one they can view. Whether the parent can actually hold
-    a file is `tree.check_parent`'s call, made by the caller after the
-    level check."""
+                            ) -> tuple[WikiSpace, WikiNode | None]:
+    """(space, parent) for a new file node, once the caller is known to
+    have edit there and the parent can hold a file — checked at upload
+    start and again at complete, since the parent may have been trashed,
+    moved, or had its grants changed while the bytes were uploading."""
     if space_id is None:
         raise err(422, "bad_target", "space_id is required to upload a new file.")
-    space = await ctx.db.get(WikiSpace, space_id)
-    if parent_id is None:
-        space = await require_space_level(ctx.ix, space, "view")
-        return space, None, await ctx.ix.level_for_space(space.id)
-    parent = await ctx.db.get(WikiNode, parent_id)
-    level = await ctx.ix.level_for_node(parent) if parent is not None else None
-    if level is None or space is None:
-        raise _not_found()
-    return space, parent, level
+    space, parent, level = await destination(ctx, space_id, parent_id)
+    if not is_edit(level):
+        raise forbidden("edit")
+    try:
+        tree.check_parent(parent, space.id)
+    except tree.TreeError as exc:
+        raise err(422, exc.code, exc.message) from exc
+    return space, parent
 
 
 async def _resolve_start(ctx: WikiContext, body: UploadStartIn) -> tuple[uuid.UUID, dict]:
@@ -107,13 +102,7 @@ async def _resolve_start(ctx: WikiContext, body: UploadStartIn) -> tuple[uuid.UU
         "node_id": None, "page_id": None,
     }
     if body.target == "node":
-        space, parent, level = await _node_destination(ctx, body.space_id, body.parent_id)
-        if not is_edit(level):
-            raise _forbidden("edit")
-        try:
-            tree.check_parent(parent, space.id)
-        except tree.TreeError as exc:
-            raise err(422, exc.code, exc.message) from exc
+        space, parent = await _node_destination(ctx, body.space_id, body.parent_id)
         claims["space_id"] = str(space.id)
         claims["parent_id"] = str(parent.id) if parent is not None else None
         return space.id, claims
@@ -124,7 +113,7 @@ async def _resolve_start(ctx: WikiContext, body: UploadStartIn) -> tuple[uuid.UU
         node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, body.node_id),
                                         "edit")
         if node.kind != "file":
-            raise _not_found()
+            raise not_found()
         claims["node_id"] = str(node.id)
         return node.space_id, claims
 
@@ -134,7 +123,7 @@ async def _resolve_start(ctx: WikiContext, body: UploadStartIn) -> tuple[uuid.UU
         node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, body.page_id),
                                         "edit")
         if node.kind != "page":
-            raise _not_found()
+            raise not_found()
         claims["page_id"] = str(node.id)
         return node.space_id, claims
 
@@ -150,7 +139,7 @@ async def start_upload(body: UploadStartIn, ctx: WikiContext) -> UploadStartOut:
         raise err(413, "too_large",
                   f"Files are limited to {settings.wiki_max_upload_bytes} bytes.")
 
-    content_type = (body.content_type or "").strip().lower() or "application/octet-stream"
+    content_type = normalize_content_type(body.content_type)
     filename = display_filename(body.filename)
     safe_name = sanitize_filename(body.filename)
 
@@ -159,7 +148,7 @@ async def start_upload(body: UploadStartIn, ctx: WikiContext) -> UploadStartOut:
     claims.update(key=key, filename=filename, content_type=content_type,
                  size=body.size, person=str(ctx.user.person.id))
 
-    url = storage.presign_put(key, content_type)
+    url = storage.presign_put(key, content_type, body.size)
     return UploadStartOut(upload_id=make_upload_token(claims), url=url,
                           headers={"Content-Type": content_type})
 
@@ -186,11 +175,38 @@ async def _new_file_version(ctx: WikiContext, node: WikiNode, *, storage_key: st
         uploaded_by=ctx.user.person.id)
     ctx.db.add(version)
     await ctx.db.flush()
-    if version.extract_status == "pending":
-        await enqueue(ctx.db, "file_extract", node_id=node.id, file_version_id=version.id)
-    if preview_kind == "pdf":
-        await enqueue(ctx.db, "file_preview", node_id=node.id, file_version_id=version.id)
+    await _enqueue_pending_work(ctx, version)
     return version
+
+
+async def _enqueue_pending_work(ctx: WikiContext, version: WikiFileVersion) -> None:
+    """Queue the extract/preview jobs a version is still waiting on — for
+    a fresh upload, or a restored copy of a version whose own jobs (keyed
+    to the old version id) would never update the new row."""
+    if version.extract_status == "pending":
+        await enqueue(ctx.db, "file_extract", node_id=version.node_id,
+                      file_version_id=version.id)
+    if version.preview_status == "pending":
+        await enqueue(ctx.db, "file_preview", node_id=version.node_id,
+                      file_version_id=version.id)
+
+
+async def _lock_file(ctx: WikiContext, node_id: uuid.UUID) -> WikiFile:
+    """The file row, locked FOR UPDATE — taken before numbering a new
+    version so two concurrent uploads/restores can't both claim n+1."""
+    file_row = await ctx.db.scalar(
+        select(WikiFile).where(WikiFile.node_id == node_id).with_for_update()
+        .execution_options(populate_existing=True))
+    if file_row is None:
+        raise not_found()
+    return file_row
+
+
+async def _next_version_no(ctx: WikiContext, node_id: uuid.UUID) -> int:
+    last_no = await ctx.db.scalar(
+        select(func.max(WikiFileVersion.version_no))
+        .where(WikiFileVersion.node_id == node_id))
+    return (last_no or 0) + 1
 
 
 @router.post("/uploads/complete", response_model=NodeOut | AssetOut, status_code=201)
@@ -212,9 +228,7 @@ async def complete_upload(body: UploadCompleteIn, ctx: WikiContext) -> NodeOut |
     if target == "node":
         space_id = uuid.UUID(claims["space_id"])
         parent_id = uuid.UUID(claims["parent_id"]) if claims["parent_id"] else None
-        space, parent, level = await _node_destination(ctx, space_id, parent_id)
-        if not is_edit(level):
-            raise _forbidden("edit")
+        space, parent = await _node_destination(ctx, space_id, parent_id)
         await _verify_object(key, size)
 
         node = await tree.create_node(ctx.db, space=space, parent=parent, kind="file",
@@ -237,16 +251,13 @@ async def complete_upload(body: UploadCompleteIn, ctx: WikiContext) -> NodeOut |
         node = await require_node_level(ctx.ix, await ctx.db.get(
             WikiNode, uuid.UUID(claims["node_id"])), "edit")
         if node.kind != "file":
-            raise _not_found()
+            raise not_found()
         await _verify_object(key, size)
 
-        last_no = await ctx.db.scalar(
-            select(func.max(WikiFileVersion.version_no))
-            .where(WikiFileVersion.node_id == node.id))
+        file_row = await _lock_file(ctx, node.id)
         version = await _new_file_version(
             ctx, node, storage_key=key, filename=filename, content_type=content_type,
-            size=size, version_no=(last_no or 0) + 1)
-        file_row = await ctx.db.get(WikiFile, node.id)
+            size=size, version_no=await _next_version_no(ctx, node.id))
         file_row.current_version_id = version.id
         node.updated_at = utcnow()
         node.updated_by = actor_id
@@ -262,13 +273,16 @@ async def complete_upload(body: UploadCompleteIn, ctx: WikiContext) -> NodeOut |
     node = await require_node_level(ctx.ix, await ctx.db.get(
         WikiNode, uuid.UUID(claims["page_id"])), "edit")
     if node.kind != "page":
-        raise _not_found()
+        raise not_found()
     await _verify_object(key, size)
 
     asset = WikiPageAsset(node_id=node.id, storage_key=key, filename=filename,
                           content_type=content_type, size_bytes=size,
                           uploaded_by=actor_id)
     ctx.db.add(asset)
+    await ctx.db.flush()
+    audit(ctx.db, actor_id=actor_id, entity_type="wiki_node", entity_id=str(node.id),
+          action="asset_upload", changes={"asset_id": str(asset.id), "filename": filename})
     await ctx.db.commit()
     return AssetOut(id=asset.id, filename=asset.filename,
                     content_type=asset.content_type, size_bytes=asset.size_bytes)
@@ -280,7 +294,7 @@ async def complete_upload(body: UploadCompleteIn, ctx: WikiContext) -> NodeOut |
 async def _file_node(ctx: WikiContext, node_id: uuid.UUID, needed: str) -> WikiNode:
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), needed)
     if node.kind != "file":
-        raise _not_found()
+        raise not_found()
     return node
 
 
@@ -294,14 +308,18 @@ async def list_file_versions(node_id: uuid.UUID, ctx: WikiContext) -> list[FileV
     return [file_version_out(v, people) for v in versions]
 
 
-def _inline_content_type(version: WikiFileVersion) -> str:
-    """`ResponseContentType` for an inline (in-browser) view of the
-    object itself: the stored type for anything rendered as-is, or
-    `text/plain` for a text-like file — so the bucket's origin can never
-    serve stored text back as HTML/SVG that could run script."""
-    if is_text_like(version.filename, version.content_type):
-        return "text/plain; charset=utf-8"
-    return version.content_type
+def _presign_upload(key: str, filename: str, content_type: str, *,
+                    preview_kind: str | None = None) -> str | None:
+    """A presigned read meant for in-browser display: inline with the
+    type `inline_content_type` allows, or — for anything that could run
+    as active content, or simply has no native preview — an attachment
+    served as application/octet-stream."""
+    inline_type = inline_content_type(filename, content_type, preview_kind)
+    if inline_type is None:
+        return storage.presign_get(key, download_filename=filename,
+                                   content_type=DEFAULT_CONTENT_TYPE)
+    return storage.presign_get(key, download_filename=filename, inline=True,
+                               content_type=inline_type)
 
 
 @router.get("/files/{node_id}/url", response_model=FileUrlOut)
@@ -315,10 +333,10 @@ async def file_url(node_id: uuid.UUID, ctx: WikiContext,
     if version_id is not None:
         version = await ctx.db.get(WikiFileVersion, version_id)
         if version is None or version.node_id != node.id:
-            raise _not_found()
+            raise not_found()
     else:
         if file_row is None or file_row.current_version_id is None:
-            raise _not_found()
+            raise not_found()
         version = await ctx.db.get(WikiFileVersion, file_row.current_version_id)
 
     if preview and version.preview_kind == "pdf":
@@ -330,10 +348,11 @@ async def file_url(node_id: uuid.UUID, ctx: WikiContext,
             inline=True, content_type="application/pdf")
         return FileUrlOut(url=url, content_type="application/pdf", preview_status="ready")
 
-    inline = disposition == "inline"
-    url = storage.presign_get(
-        version.storage_key, download_filename=version.filename, inline=inline,
-        content_type=_inline_content_type(version) if inline else None)
+    if disposition == "inline":
+        url = _presign_upload(version.storage_key, version.filename, version.content_type,
+                              preview_kind=version.preview_kind)
+    else:
+        url = storage.presign_get(version.storage_key, download_filename=version.filename)
     return FileUrlOut(url=url, content_type=version.content_type,
                       preview_status=version.preview_status)
 
@@ -359,23 +378,22 @@ async def restore_file_version(node_id: uuid.UUID, version_id: uuid.UUID,
     node = await _file_node(ctx, node_id, "edit")
     source = await ctx.db.get(WikiFileVersion, version_id)
     if source is None or source.node_id != node.id:
-        raise _not_found()
+        raise not_found()
 
-    last_no = await ctx.db.scalar(
-        select(func.max(WikiFileVersion.version_no)).where(WikiFileVersion.node_id == node.id))
+    file_row = await _lock_file(ctx, node.id)
     actor_id = ctx.user.person.id
     version = WikiFileVersion(
-        node_id=node.id, version_no=(last_no or 0) + 1, storage_key=source.storage_key,
-        filename=source.filename, content_type=source.content_type,
-        size_bytes=source.size_bytes, sha256=source.sha256,
+        node_id=node.id, version_no=await _next_version_no(ctx, node.id),
+        storage_key=source.storage_key, filename=source.filename,
+        content_type=source.content_type, size_bytes=source.size_bytes, sha256=source.sha256,
         preview_kind=source.preview_kind, preview_key=source.preview_key,
         preview_status=source.preview_status, text_extract=source.text_extract,
         extract_status=source.extract_status,
         note=f"Restored from version {source.version_no}", uploaded_by=actor_id)
     ctx.db.add(version)
     await ctx.db.flush()
+    await _enqueue_pending_work(ctx, version)
 
-    file_row = await ctx.db.get(WikiFile, node.id)
     file_row.current_version_id = version.id
     node.updated_at = utcnow()
     node.updated_by = actor_id
@@ -395,8 +413,10 @@ async def restore_file_version(node_id: uuid.UUID, version_id: uuid.UUID,
 
 @router.post("/assets/urls", response_model=AssetUrlsOut)
 async def asset_urls(body: AssetUrlsIn, ctx: WikiContext) -> AssetUrlsOut:
-    """Presigned inline URLs for embedded page assets — unknown ids, and
-    ids whose page the caller can't view, are simply omitted."""
+    """Presigned URLs for embedded page assets (inline where
+    `inline_content_type` allows, an attachment otherwise). Unknown ids,
+    and ids on a page the caller can't see — including a never-published
+    page when they only have view, as in the tree — are simply omitted."""
     if not body.ids:
         return AssetUrlsOut(urls={})
     assets = (await ctx.db.scalars(
@@ -405,18 +425,16 @@ async def asset_urls(body: AssetUrlsIn, ctx: WikiContext) -> AssetUrlsOut:
     if not assets:
         return AssetUrlsOut(urls={})
 
-    nodes = (await ctx.db.scalars(
-        select(WikiNode).where(WikiNode.id.in_({a.node_id for a in assets}),
-                               WikiNode.deleted_at.is_(None)))).all()
-    levels = await ctx.ix.levels_for_nodes(nodes)
-    node_ids = {n.id for n in nodes}
+    pages = (await ctx.db.scalars(
+        select(WikiNode).where(WikiNode.id.in_({a.node_id for a in assets})))).all()
+    shown, _ = await visible_nodes(ctx, pages)
+    shown_ids = {n.id for n in shown}
 
     urls: dict[uuid.UUID, str] = {}
     for asset in assets:
-        if asset.node_id not in node_ids or levels.get(asset.node_id) is None:
+        if asset.node_id not in shown_ids:
             continue
-        url = storage.presign_get(asset.storage_key, download_filename=asset.filename,
-                                  inline=True)
+        url = _presign_upload(asset.storage_key, asset.filename, asset.content_type)
         if url is not None:
             urls[asset.id] = url
     return AssetUrlsOut(urls=urls)

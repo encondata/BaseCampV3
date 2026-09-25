@@ -8,12 +8,14 @@ URLs generated here (pure in-process signing — no network round-trip).
 
 import asyncio
 from functools import lru_cache, partial
+from urllib.parse import quote
 
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from serversherpa.config import get_settings
+from serversherpa.wiki.files import sanitize_filename
 
 
 @lru_cache
@@ -32,6 +34,17 @@ def _client():
     )
 
 
+def content_disposition(filename: str, *, inline: bool = False) -> str:
+    """A header-safe Content-Disposition for `filename`: a plain-ASCII
+    `filename="…"` (the storage-safe name — no quotes, CR/LF, or other
+    characters that could break out of the header) plus the full
+    original name, percent-encoded, as RFC 5987 `filename*=UTF-8''…`,
+    which every current browser prefers."""
+    disposition = "inline" if inline else "attachment"
+    return (f'{disposition}; filename="{sanitize_filename(filename)}"; '
+            f"filename*=UTF-8''{quote(filename, safe='')}")
+
+
 def presign_get(key: str | None, *, download_filename: str | None = None,
                 inline: bool = False, content_type: str | None = None) -> str | None:
     """Short-lived read URL for a private object (None passes through so
@@ -41,7 +54,8 @@ def presign_get(key: str | None, *, download_filename: str | None = None,
     response so a browser saves/shows the file under that name instead of
     the (often opaque, uuid-bearing) storage key — `attachment` unless
     `inline` is set, which asks the browser to render the response (an
-    image, PDF, etc.) in place instead of downloading it.
+    image, PDF, etc.) in place instead of downloading it. See
+    `content_disposition` for how the name is encoded.
 
     `content_type`, when given, overrides the response's Content-Type
     (`ResponseContentType`) — used to force `text/plain` on an inline
@@ -52,9 +66,8 @@ def presign_get(key: str | None, *, download_filename: str | None = None,
     s = get_settings()
     params: dict = {"Bucket": s.spaces_bucket, "Key": key}
     if download_filename:
-        disposition = "inline" if inline else "attachment"
-        params["ResponseContentDisposition"] = (
-            f'{disposition}; filename="{download_filename}"')
+        params["ResponseContentDisposition"] = content_disposition(
+            download_filename, inline=inline)
     if content_type:
         params["ResponseContentType"] = content_type
     return _client().generate_presigned_url(
@@ -62,14 +75,16 @@ def presign_get(key: str | None, *, download_filename: str | None = None,
     )
 
 
-def presign_put(key: str, content_type: str, expires: int = 3600) -> str:
+def presign_put(key: str, content_type: str, size: int, expires: int = 3600) -> str:
     """A short-lived PUT URL for a browser to upload straight to storage.
-    The browser must send `Content-Type: content_type` exactly — the
-    signature covers it, so a mismatched header makes S3 reject the PUT."""
+    The signature covers both `Content-Type` and `Content-Length`, so the
+    browser must send exactly `content_type` and exactly `size` bytes —
+    anything else makes storage reject the PUT."""
     s = get_settings()
     return _client().generate_presigned_url(
         "put_object",
-        Params={"Bucket": s.spaces_bucket, "Key": key, "ContentType": content_type},
+        Params={"Bucket": s.spaces_bucket, "Key": key, "ContentType": content_type,
+                "ContentLength": size},
         ExpiresIn=expires,
     )
 

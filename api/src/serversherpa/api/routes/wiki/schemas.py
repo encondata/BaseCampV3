@@ -311,8 +311,8 @@ class UploadStartIn(BaseModel):
     parent_id: uuid.UUID | None = None
     node_id: uuid.UUID | None = None
     page_id: uuid.UUID | None = None
-    filename: str
-    content_type: str
+    filename: str = Field(max_length=255)
+    content_type: str = Field(max_length=255)
     size: int
 
 
@@ -350,7 +350,7 @@ class FileUrlOut(BaseModel):
 class AssetUrlsIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    ids: list[uuid.UUID]
+    ids: list[uuid.UUID] = Field(max_length=200)
 
 
 class AssetUrlsOut(BaseModel):
