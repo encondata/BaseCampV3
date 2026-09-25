@@ -55,6 +55,11 @@ export const BULK_TOOLS: BulkTool[] = [
     resource: 'assets', action: 'change', to: '/bulk/assets', button: 'Open',
   },
   {
+    key: 'time', title: 'Add time punches in bulk',
+    description: 'Load shifts from a spreadsheet or another timekeeping system. Workers, jobs, and sites are matched by name; review every shift before adding.',
+    resource: 'time', action: 'add', to: '/bulk/time', button: 'Open',
+  },
+  {
     key: 'new-move', title: 'Create a move in steps',
     description: 'The move, its From-To assets, crates, and trucks — reviewed, then created together.',
     resource: 'initiatives', action: 'add', also: MOVE_SETUP_PERMISSIONS,

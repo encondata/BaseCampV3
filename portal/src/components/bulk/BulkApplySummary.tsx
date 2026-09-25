@@ -30,8 +30,10 @@ export interface BulkSummaryRow {
 export interface BulkSummaryResult<R extends BulkSummaryRow> {
   /** Absent for tools that only update existing records (assets). */
   created?: number;
-  updated: number;
-  unchanged: number;
+  /** Absent for tools that only add (time punches). */
+  updated?: number;
+  /** Absent for tools that only add. */
+  unchanged?: number;
   /** Present for tools with per-row skip (workers); absent for sites. */
   skipped?: number;
   rows: R[];
@@ -99,9 +101,9 @@ export default function BulkApplySummary<R extends BulkSummaryRow>({
 
   const counts = [
     ...(result.created !== undefined ? [`${result.created} added`] : []),
-    `${result.updated} updated`,
+    ...(result.updated !== undefined ? [`${result.updated} updated`] : []),
     ...(result.skipped !== undefined ? [`${result.skipped} skipped`] : []),
-    `${result.unchanged} unchanged`,
+    ...(result.unchanged !== undefined ? [`${result.unchanged} unchanged`] : []),
   ].join(' · ');
 
   return (

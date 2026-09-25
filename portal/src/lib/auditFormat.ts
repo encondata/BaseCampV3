@@ -46,6 +46,7 @@ export const ACTION_LABELS: Record<string, string> = {
   'session.revoke_all': 'Signed out everywhere',
   'access_groups.set': 'Changed access groups',
   bulk_import: 'Ran a bulk import',
+  import: 'Imported',
   create: 'Created',
   update: 'Updated',
   archive: 'Archived',
@@ -74,6 +75,7 @@ export const ENTITY_LABELS: Record<string, string> = {
   container: 'container',
   processed_scan: 'processed scan',
   device: 'device',
+  time_entry: 'time entry',
 };
 
 export function actionLabel(row: AuditRowLike): string {

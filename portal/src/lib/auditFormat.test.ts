@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { actionLabel, entityHref, targetLabel } from './auditFormat';
+import { actionLabel, entityHref, ENTITY_LABELS, targetLabel } from './auditFormat';
 
 const row = (entity_type: string, entity_id: string | null) =>
   ({ action: 'update', entity_type, entity_id, changes: {} });
@@ -47,5 +47,10 @@ describe('labels', () => {
     expect(targetLabel({ ...row('device', 'd-1'), entity_name: 'Dock Kiosk' }))
       .toBe("device 'Dock Kiosk'");
     expect(targetLabel(row('device', 'd-1'))).toBe('device');
+  });
+  it('names the time import audit rows', () => {
+    expect(actionLabel({ action: 'import', entity_type: 'time_entry', entity_id: 'x', changes: {} }))
+      .toBe('Imported');
+    expect(ENTITY_LABELS.time_entry).toBe('time entry');
   });
 });

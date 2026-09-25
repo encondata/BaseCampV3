@@ -120,6 +120,15 @@ it('pages the table by pageSize while the csv still carries every row', () => {
   expect(listTools.exportCsv.mock.calls[0][2]).toHaveLength(450);
 });
 
+it('an add-only result lists only the counts it has', () => {
+  render(<MemoryRouter>
+    <BulkApplySummary result={{ created: 2, skipped: 1, rows: [] }} entityLabel="Worker"
+      filename="time-bulk-summary" linkFor={() => null} openTo="/people/time"
+      openLabel="Open Time Management" />
+  </MemoryRouter>);
+  expect(screen.getByText('Applied: 2 added · 1 skipped')).toBeTruthy();
+});
+
 it('adds an extra column after the name in the table and the csv, and a note line', () => {
   render(<MemoryRouter>
     <BulkApplySummary result={many} entityLabel="Asset" filename="assets-bulk-summary" pageSize={200}

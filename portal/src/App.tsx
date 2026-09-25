@@ -16,6 +16,7 @@ import BulkAssets from './pages/BulkAssets';
 import BulkInitiativePeople from './pages/BulkInitiativePeople';
 import BulkNewMove from './pages/BulkNewMove';
 import BulkSites from './pages/BulkSites';
+import BulkTime from './pages/BulkTime';
 import BulkTrucks from './pages/BulkTrucks';
 import BulkWorkers from './pages/BulkWorkers';
 import Clients from './pages/Clients';
@@ -220,6 +221,9 @@ export default function App() {
                 } />
                 <Route path="/bulk/assets" element={
                   <ProtectedRoute resource="assets" minRank={ADMIN_RANK}><BulkAssets /></ProtectedRoute>
+                } />
+                <Route path="/bulk/time" element={
+                  <ProtectedRoute resource="time" minRank={ADMIN_RANK}><BulkTime /></ProtectedRoute>
                 } />
                 <Route path="/bulk/new-move" element={
                   <ProtectedRoute resource="initiatives" minRank={ADMIN_RANK}><BulkNewMove /></ProtectedRoute>

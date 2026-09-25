@@ -1498,6 +1498,94 @@ export function downloadTeamExport(jobId: string, format: 'csv' | 'xlsx'): Promi
   return downloadAttachment(`${teamBulkBase(jobId)}/export?format=${format}`, `team-export.${format}`);
 }
 
+// ── bulk time punches (/bulk/time) ──────────────────────────────────
+
+export type TimeImportField = 'worker' | 'job' | 'site';
+export interface TimeImportIssue {
+  field: TimeImportField;
+  kind: 'unknown' | 'ambiguous';
+  value: string;
+  candidates: TeamBulkCandidate[];
+}
+export type TimeImportAction = 'add' | 'duplicate' | 'attention' | 'error' | 'skipped';
+export interface TimeImportRow {
+  row: number;
+  /** The matched worker's name, else the uploaded worker cell. */
+  name: string | null;
+  person_id: string | null; person_name: string | null;
+  matched_by: 'email' | 'phone' | 'name' | 'your pick' | null;
+  job_id: string | null; job_name: string | null;
+  site_id: string | null; site_name: string | null;
+  /** The IANA zone the times were read in. */
+  zone: string | null;
+  clock_in_at: string | null; clock_out_at: string | null;
+  break_minutes: number | null;
+  /** Worked minutes, net of break. */
+  minutes: number | null;
+  /** e.g. "Sep 24, 7:00 AM – 3:30 PM PDT". */
+  shift: string | null;
+  notes: string;
+  action: TimeImportAction;
+  errors: string[];
+  issues: TimeImportIssue[];
+  detail: string | null;
+  cells: Record<string, string>;
+}
+export interface TimeImportPreview {
+  rows: TimeImportRow[];
+  counts: Record<TimeImportAction, number>;
+  can_commit: boolean;
+}
+export type TimeImportOverrides = Record<string, Partial<Record<TimeImportField, string>>>;
+export interface TimeImportPosted {
+  rows: Record<string, string>[];
+  row_numbers: number[];
+  overrides: TimeImportOverrides;
+  skip: number[];
+}
+export interface TimeImportAppliedRow {
+  row: number;
+  name: string | null;
+  entry_id: string | null;
+  action: 'created' | 'skipped';
+  /** The shift for an added row; "Already there." or "Skipped." otherwise. */
+  detail: string | null;
+}
+export interface TimeImportCommitResult {
+  summary: { added: number; skipped: number };
+  rows: TimeImportAppliedRow[];
+}
+
+export async function previewTimeImportFile(file: File | Blob, filename: string): Promise<TimeImportPreview> {
+  const fd = new FormData();
+  fd.append('file', file, filename);
+  const resp = await apiFetch('/time/bulk/preview', { method: 'POST', body: fd });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function previewTimeImport(body: TimeImportPosted): Promise<TimeImportPreview> {
+  const resp = await apiFetch('/time/bulk/preview', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function commitTimeImport(
+  body: TimeImportPosted & { source: string },
+): Promise<TimeImportCommitResult> {
+  const resp = await apiFetch('/time/bulk/commit', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export function downloadTimeImportTemplate(format: 'csv' | 'xlsx'): Promise<void> {
+  return downloadAttachment(`/time/bulk/template?format=${format}`, `time-template.${format}`);
+}
+
 // ── assets bulk update ──────────────────────────────────────────────
 // Job-based like the team tool, but not scoped to a job: upload creates the
 // job and returns its first preview; the page re-previews on every pick or
